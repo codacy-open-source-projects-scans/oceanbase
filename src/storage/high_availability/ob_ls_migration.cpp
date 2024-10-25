@@ -49,7 +49,7 @@ ERRSIM_POINT_DEF(EN_UPDATE_LS_MIGRATION_STATUS_FAILED);
 ERRSIM_POINT_DEF(EN_JOIN_LEARNER_LIST_FAILED);
 ERRSIM_POINT_DEF(EN_MIGRATION_RPC_NOT_SUPPORT);
 ERRSIM_POINT_DEF(EN_DATA_TABLET_MIGRATION_DAG_OUT_OF_RETRY);
-
+ERRSIM_POINT_DEF(MIGRATION_START_RUNNING_FAILED);
 /******************ObMigrationCtx*********************/
 ObMigrationCtx::ObMigrationCtx()
   : ObIHADagNetCtx(),
@@ -202,7 +202,7 @@ int ObCopyTabletCtx::get_copy_tablet_status(ObCopyTabletStatus::STATUS &status) 
   return ret;
 }
 
-int ObCopyTabletCtx::get_copy_tablet_record_extra_info(const ObCopyTabletRecordExtraInfo *&extra_info) const
+int ObCopyTabletCtx::get_copy_tablet_record_extra_info(ObCopyTabletRecordExtraInfo *&extra_info)
 {
   int ret = OB_SUCCESS;
   if (!is_valid()) {
@@ -353,6 +353,18 @@ int ObMigrationDagNet::start_running_for_migration_()
     LOG_WARN("failed to add migration init dag into dag net", K(ret));
   } else if (OB_FAIL(initial_migration_dag->create_first_task())) {
     LOG_WARN("failed to create first task", K(ret));
+  }
+
+#ifdef ERRSIM
+    if (OB_SUCC(ret)) {
+      ret = MIGRATION_START_RUNNING_FAILED ? : OB_SUCCESS;
+      if (OB_FAIL(ret)) {
+        STORAGE_LOG(ERROR, "fake MIGRATION_START_RUNNING_FAILED", K(ret));
+      }
+    }
+#endif
+
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(scheduler->add_dag(initial_migration_dag))) {
     LOG_WARN("failed to add migration finish dag", K(ret), K(*initial_migration_dag));
     if (OB_SIZE_OVERFLOW != ret && OB_EAGAIN != ret) {
@@ -369,6 +381,13 @@ int ObMigrationDagNet::start_running_for_migration_()
       LOG_WARN("failed to erase dag from dag net", K(tmp_ret), KPC(initial_migration_dag));
     }
     scheduler->free_dag(*initial_migration_dag);
+  }
+
+  if (OB_FAIL(ret) && OB_NOT_NULL(ctx_)) {
+    const bool need_retry = false;
+    if (OB_SUCCESS != (tmp_ret = ctx_->set_result(ret, need_retry))) {
+      LOG_ERROR("failed to set migration ctx result", K(ret), K(tmp_ret), K(ctx_));
+    }
   }
 
   return ret;
@@ -1107,7 +1126,6 @@ int ObStartMigrationTask::deal_with_local_ls_()
 #ifdef ERRSIM
   } else if (FALSE_IT(SERVER_EVENT_SYNC_ADD("storage_ha", "before_migration_ls_offline",
     "tenant_id", ctx_->tenant_id_, "ls_id", ctx_->arg_.ls_id_.id()))) {
-
   } else if (FALSE_IT(DEBUG_SYNC(BEFORE_MIGRATION_LS_OFFLINE))) {
 #endif
   } else if (OB_FAIL(ls->offline())) {
@@ -1578,6 +1596,8 @@ int ObStartMigrationTask::inner_build_ls_(bool &is_rpc_not_support)
     LOG_WARN("failed to update local ls", K(ret), KPC(ctx_));
   } else if (OB_FAIL(create_all_tablets_(ob_reader))) {
     LOG_WARN("failed to create all tablets", K(ret), KPC(ctx_));
+  } else {
+    DEBUG_SYNC(AFTER_MIGRATION_CREATE_ALL_TABLET);
   }
 
   if (OB_NOT_NULL(ob_reader)) {

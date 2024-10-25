@@ -21,6 +21,7 @@
 #include "share/scheduler/ob_partition_auto_split_helper.h"
 #include "sql/resolver/ob_resolver_utils.h"
 #include "share/ob_index_builder_util.h"
+#include "src/share/scheduler/ob_partition_auto_split_helper.h"
 
 
 namespace oceanbase
@@ -56,11 +57,23 @@ void ObPartitionPreSplit::get_split_num(
     int64_t &split_num)
 {
   int ret = OB_SUCCESS;
+  int64_t tablet_limit_penalty = 0;
+  int64_t real_split_size = split_size;
   split_num = 0;
-  if (split_size > 0 && tablet_size > split_size) {
-    split_num = (tablet_size % split_size) == 0 ?
-          (tablet_size / split_size) :
-          (tablet_size / split_size + 1);
+  if (tablet_size < 0 || split_size < 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arugument", K(ret), K(tablet_size), K(split_size));
+  } else if (OB_FAIL((ObServerAutoSplitScheduler::check_tablet_creation_limit(MAX_SPLIT_RANGE_NUM/*inc_tablet_cnt*/, 0.8/*safe ratio*/, split_size, real_split_size)))) {
+    if (OB_TOO_MANY_PARTITIONS_ERROR == ret) {
+      LOG_WARN("too many partitions in the observer, choose to not to do the pre split", K(ret));
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("failed to check tablet creation limit", K(ret));
+    }
+  } else if (real_split_size > 0 && tablet_size > real_split_size) {
+    split_num = (tablet_size % real_split_size) == 0 ?
+          (tablet_size / real_split_size) :
+          (tablet_size / real_split_size + 1);
     split_num = split_num < MAX_SPLIT_RANGE_NUM ?
           split_num :
           MAX_SPLIT_RANGE_NUM;
@@ -780,7 +793,7 @@ int ObPartitionPreSplit::generate_all_partition_schema(
             if (OB_FAIL(tmp_part.assign(*ori_part))) {
               LOG_WARN("[PRE_SPLIT] fail to assign original part", K(ret), K(cur_part_idx));
             } else if (FALSE_IT(tmp_part.set_part_idx(cur_part_idx))){
-            } else if (FALSE_IT(tmp_part.set_is_empty_partition_name(true))) { // generate new name for not split part
+            } else if (FALSE_IT(tmp_part.set_is_empty_partition_name(false))) { // not generate new name for not split part
             } else if (OB_FAIL(all_partition_schema.add_partition(tmp_part))) {
               LOG_WARN("[PRE_SPLIT] fail to add new partition", K(ret), K(tmp_part), K(cur_part_idx));
             } else {
@@ -979,6 +992,10 @@ int ObPartitionPreSplit::modify_partition_func_type_if_need(ObTableSchema &new_t
   return ret;
 }
 
+/*
+  目前只有创建全局索引表，need_generate_part_name才会为true
+  如果是重建全局索引表，need_generate_part_name为false
+*/
 int ObPartitionPreSplit::build_split_tablet_partition_schema(
     const int64_t tenant_id,
     const ObTabletID &source_tablet_id,
@@ -1331,6 +1348,7 @@ int ObPartitionPreSplit::build_tablet_pre_split_ranges(
 {
   int ret = OB_SUCCESS;
 
+  split_ranges_.reset(); // reset range
   ObSplitSampler range_builder;
   ObArray<ObNewRange> tmp_ranges;
   ObArray<ObString> part_columns_name;

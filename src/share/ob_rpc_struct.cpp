@@ -882,6 +882,7 @@ int ObCreateHiddenTableRes::assign(const ObCreateHiddenTableRes &res)
   trace_id_ = res.trace_id_;
   task_id_ = res.task_id_;
   schema_version_ = res.schema_version_;
+  is_no_logging_ = res.is_no_logging_;
   return ret;
 }
 
@@ -892,7 +893,8 @@ OB_SERIALIZE_MEMBER(ObCreateHiddenTableRes,
                     dest_table_id_,
                     trace_id_,
                     task_id_,
-                    schema_version_);
+                    schema_version_,
+                    is_no_logging_);
 
 OB_SERIALIZE_MEMBER(ObStartRedefTableRes,
                     task_id_,
@@ -3494,7 +3496,8 @@ DEF_TO_STRING(ObDropIndexArg) {
        K_(is_inner),
        K_(is_vec_inner_drop),
        K_(only_set_status),
-       K_(index_ids));
+       K_(index_ids),
+       K_(table_id));
   J_OBJ_END();
   return pos;
 }
@@ -3511,7 +3514,10 @@ OB_SERIALIZE_MEMBER((ObDropIndexArg, ObIndexArg),
                     is_inner_,
                     is_vec_inner_drop_,
                     only_set_status_,
-                    index_ids_);
+                    index_ids_,
+                    is_parent_task_dropping_fts_index_,
+                    is_parent_task_dropping_multivalue_index_,
+                    table_id_);
 
 OB_SERIALIZE_MEMBER(ObDropIndexRes, tenant_id_, index_table_id_, schema_version_, task_id_);
 
@@ -7424,6 +7430,8 @@ bool ObGetLSReplayedScnRes::is_valid() const
   return OB_INVALID_TENANT_ID != tenant_id_
          && ls_id_.is_valid()
          && cur_readable_scn_.is_valid_and_not_min();
+  //no need check offline_scn,offline_scn可能没有并且有升级兼容性问题
+  //no need check server valid
 }
 int ObGetLSReplayedScnRes::init(
     const uint64_t tenant_id,
@@ -7437,7 +7445,7 @@ int ObGetLSReplayedScnRes::init(
                   || !ls_id.is_valid()
                   || !cur_readable_scn.is_valid_and_not_min()
                   || !server.is_valid())) {
-    //不用校验offline_scn，可能就是一个非法的
+                  //不用校验offline_scn，可能就是一个非法的
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(ls_id), K(cur_readable_scn), K(server));
   } else {
@@ -8967,7 +8975,7 @@ OB_DEF_SERIALIZE(ObDDLBuildSingleReplicaRequestArg)
     parallelism_, tablet_task_id_, data_format_version_, consumer_group_id_, dest_tenant_id_,
     dest_ls_id_, dest_schema_version_,
     compaction_scn_, can_reuse_macro_block_, split_sstable_type_,
-    lob_col_idxs_, parallel_datum_rowkey_list_);
+    lob_col_idxs_, parallel_datum_rowkey_list_, is_no_logging_);
   return ret;
 }
 
@@ -8984,6 +8992,10 @@ OB_DEF_DESERIALIZE(ObDDLBuildSingleReplicaRequestArg)
         rowkey_allocator_, buf, data_len, pos, parallel_datum_rowkey_list_))) {
     LOG_WARN("deserialzie parallel info failed", K(ret));
   }
+
+  if (OB_SUCC(ret)) {
+    LST_DO_CODE(is_no_logging_)
+  }
   return ret;
 }
 
@@ -8995,7 +9007,7 @@ OB_DEF_SERIALIZE_SIZE(ObDDLBuildSingleReplicaRequestArg)
     parallelism_, tablet_task_id_, data_format_version_, consumer_group_id_, dest_tenant_id_,
     dest_ls_id_, dest_schema_version_,
     compaction_scn_, can_reuse_macro_block_, split_sstable_type_,
-    lob_col_idxs_, parallel_datum_rowkey_list_);
+    lob_col_idxs_, parallel_datum_rowkey_list_, is_no_logging_);
   return len;
 }
 
@@ -9374,13 +9386,15 @@ int ObFetchSplitTabletInfoRes::assign(const ObFetchSplitTabletInfoRes &other)
   if (OB_UNLIKELY(!other.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret), K(other));
+  } else if (OB_FAIL(tablet_sizes_.assign(other.tablet_sizes_))) {
+    LOG_WARN("failed to assign", K(ret));
   } else if (OB_FAIL(create_commit_versions_.assign(other.create_commit_versions_))) {
     LOG_WARN("failed to assign", K(ret));
   }
   return ret;
 }
 
-OB_SERIALIZE_MEMBER(ObFetchSplitTabletInfoRes, create_commit_versions_);
+OB_SERIALIZE_MEMBER(ObFetchSplitTabletInfoRes, tablet_sizes_, create_commit_versions_);
 
 // === Functions for tablet split end. ===
 
@@ -11362,6 +11376,10 @@ OB_SERIALIZE_MEMBER(ObEnableSSMicroCacheArg, tenant_id_, is_enabled_);
 OB_SERIALIZE_MEMBER(ObGetSSMicroCacheInfoArg, tenant_id_);
 OB_SERIALIZE_MEMBER(ObGetSSMicroCacheInfoResult, micro_cache_stat_, super_block_, arc_info_);
 OB_SERIALIZE_MEMBER(ObClearSSMicroCacheArg, tenant_id_);
+OB_SERIALIZE_MEMBER(ObDelSSLocalTmpFileArg, tenant_id_, macro_id_);
+OB_SERIALIZE_MEMBER(ObDelSSLocalMajorArg, tenant_id_);
+OB_SERIALIZE_MEMBER(ObCalibrateSSDiskSpaceArg, tenant_id_);
+OB_SERIALIZE_MEMBER(ObDelSSTabletMicroArg, tenant_id_, tablet_id_);
 #endif
 
 ObRpcRemoteWriteDDLIncCommitLogArg::ObRpcRemoteWriteDDLIncCommitLogArg()

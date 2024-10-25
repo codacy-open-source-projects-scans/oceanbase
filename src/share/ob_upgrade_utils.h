@@ -136,6 +136,7 @@ public:
                                  const int64_t end_version,
                                  int64_t &start_idx,
                                  int64_t &end_idx);
+  int get_all_version_processor(ObBaseUpgradeProcessor *&processor) const;
 private:
   virtual int check_inner_stat() const;
   int get_processor_idx_by_version(
@@ -145,6 +146,7 @@ private:
   bool inited_;
   common::ObArenaAllocator allocator_;
   common::ObArray<ObBaseUpgradeProcessor *> processor_list_;
+  ObBaseUpgradeProcessor *all_version_upgrade_processor_;
   DISALLOW_COPY_AND_ASSIGN(ObUpgradeProcesserSet);
 };
 
@@ -174,11 +176,22 @@ public:
              const uint64_t cluster_version,
              uint64_t &data_version);
 public:
-  static const int64_t DATA_VERSION_NUM = 21;
+  static const int64_t DATA_VERSION_NUM = 22;
   static const uint64_t UPGRADE_PATH[];
 };
 
 /* =========== special upgrade processor start ============= */
+class ObUpgradeForAllVersionProcessor : public ObBaseUpgradeProcessor
+{
+public:
+  ObUpgradeForAllVersionProcessor() : ObBaseUpgradeProcessor() {}
+  virtual ~ObUpgradeForAllVersionProcessor() {}
+  virtual int pre_upgrade() override { return common::OB_SUCCESS; }
+  virtual int post_upgrade() override;
+private:
+  int flush_ncomp_dll_job();
+};
+
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 0, 0, 0)
 
 class ObUpgradeFor4100Processor : public ObBaseUpgradeProcessor
@@ -273,8 +286,18 @@ private:
   int post_upgrade_for_service_name();
   int post_upgrade_for_optimizer_stats();
 };
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 3, 3, 1)
 
-DEF_SIMPLE_UPGRARD_PROCESSER(4, 3, 4, 0)
+class ObUpgradeFor4340Processor : public ObBaseUpgradeProcessor
+{
+public:
+  ObUpgradeFor4340Processor() : ObBaseUpgradeProcessor() {}
+  virtual ~ObUpgradeFor4340Processor() {}
+  virtual int pre_upgrade() override { return common::OB_SUCCESS; }
+  virtual int post_upgrade() override;
+private:
+  int post_upgrade_for_persitent_routine();
+};
 
 /* =========== special upgrade processor end   ============= */
 

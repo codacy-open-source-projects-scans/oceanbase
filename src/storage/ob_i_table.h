@@ -163,8 +163,8 @@ public:
     OB_INLINE bool is_true_major_sstable() const { return is_row_store_major_sstable() || is_column_store_major_sstable(); }
 
     OB_INLINE const common::ObTabletID &get_tablet_id() const { return tablet_id_; }
-    share::SCN get_start_scn() const { return scn_range_.start_scn_; }
-    share::SCN get_end_scn() const { return scn_range_.end_scn_; }
+    share::SCN get_start_scn() const { return scn_range_.start_scn_.atomic_get(); }
+    share::SCN get_end_scn() const { return scn_range_.end_scn_.atomic_get(); }
     OB_INLINE int64_t get_snapshot_version() const
     {
       return version_range_.snapshot_version_;
@@ -475,14 +475,6 @@ public:
   static bool is_column_store_major_sstable(const TableType table_type)
   {
     return ObITable::TableType::COLUMN_ORIENTED_SSTABLE == table_type;
-  }
-  static bool is_valid_ddl_table_type(const TableType table_type)
-  {
-    return ObITable::DDL_MEM_SSTABLE == table_type
-        || ObITable::MAJOR_SSTABLE == table_type
-        || ObITable::DDL_DUMP_SSTABLE == table_type
-        || ObITable::COLUMN_ORIENTED_SSTABLE == table_type
-        || ObITable::DDL_MERGE_CO_SSTABLE;
   }
   static bool is_table_with_scn_range(const TableType table_type)
   {

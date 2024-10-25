@@ -437,7 +437,7 @@ public:
   // @param [out] new_table_schemas, the first is new_table_schema, others are its local indexes schema
   // @param [in] orig_table_schema, orig table schema for ddl
   // @param [in] new_table_schema, new table schema for ddl
-  int generate_tables_array(const obrpc::ObAlterTableArg::AlterPartitionType op_type,
+  int generate_tables_array(const obrpc::ObAlterTableArg &alter_table_arg,
                             common::ObIArray<const ObTableSchema*> &orig_table_schemas,
                             common::ObIArray<ObTableSchema*> &new_table_schemas,
                             common::ObIArray<AlterTableSchema*> &inc_table_schemas,
@@ -1576,6 +1576,11 @@ private:
 
                            obrpc::ObAlterTableRes &res,
                            const uint64_t tenant_data_version);
+  int check_need_add_progressive_round(
+    const uint64_t tenant_data_version,
+    const ObTableSchema &table_schema,
+    const AlterTableSchema &alter_table_schema,
+    bool &need_add_progressive_round);
   int need_modify_not_null_constraint_validate(const obrpc::ObAlterTableArg &alter_table_arg,
                                                bool &is_add_not_null_col,
                                                bool &need_modify) const;
@@ -2689,11 +2694,6 @@ private:
       const share::schema::ObTenantSchema &tenant_schema,
       bool &is_permitted);
   int check_revoke_pools_permitted(
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const common::ObIArray<share::ObResourcePoolName> &new_pool_name_list,
-      const share::schema::ObTenantSchema &tenant_schema,
-      bool &is_permitted);
-  int check_gts_tenant_revoke_pools_permitted(
       share::schema::ObSchemaGetterGuard &schema_guard,
       const common::ObIArray<share::ObResourcePoolName> &new_pool_name_list,
       const share::schema::ObTenantSchema &tenant_schema,

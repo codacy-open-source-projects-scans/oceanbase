@@ -96,13 +96,13 @@ public:
   virtual int schedule_merge(const int64_t broadcast_version) = 0;
   void update_merged_version(const int64_t merged_version);
   int64_t get_merged_version() const { return merged_version_; }
-  bool enable_adaptive_compaction() { return tenant_status_.enable_adaptive_compaction(); }
+  bool enable_adaptive_compaction() const { return tenant_status_.enable_adaptive_compaction(); }
   bool enable_adaptive_merge_schedule() const { return tenant_status_.enable_adaptive_merge_schedule(); }
   const ObTenantStatusCache &get_tenant_status() const { return tenant_status_; }
   static const int64_t INIT_COMPACTION_SCN = 1;
 protected:
   void update_frozen_version_and_merge_progress(const int64_t broadcast_version);
-  void update_merge_progress(const int64_t merge_version);
+  void try_finish_merge_progress(const int64_t merge_version);
 protected:
   static const int64_t PRINT_SLOG_REPLAY_INVERVAL = 10_s;
   mutable obsys::ObRWLock frozen_version_lock_;

@@ -2095,6 +2095,15 @@ int ObAlterTableResolver::resolve_add_partition(const ParseNode &node,
       }
     }
 
+    // In ddl_service, we will use alter_table_schema.sub_part_template_def_valid()
+    // to determine whether to set new_table_schema sub_part_template_def as valid.
+    if (OB_FAIL(ret)) {
+    } else if (orig_table_schema.sub_part_template_def_valid()) {
+      alter_table_schema.set_sub_part_template_def_valid();
+    } else {
+      alter_table_schema.unset_sub_part_template_def_valid();
+    }
+
     if (OB_FAIL(ret)) {
     } else if (no_subpart && orig_table_schema.has_sub_part_template_def()) {
       bool generated = false;
@@ -2111,6 +2120,11 @@ int ObAlterTableResolver::resolve_add_partition(const ParseNode &node,
       }
       alter_stmt->set_use_def_sub_part(false);
     } else {
+      if (!no_subpart && orig_table_schema.has_sub_part_template_def()) {
+        // add partition to subpartition template table with subpartition info specified by clause
+        // set sub_part_template_def to invalid, which is only used for schema printer
+        alter_table_schema.unset_sub_part_template_def_valid();
+      }
       const ObPartitionOption &subpart_option = orig_table_schema.get_sub_part_option();
       const ObPartitionFuncType subpart_type = subpart_option.get_part_func_type();
       ParseNode *subpart_func_node = NULL;
@@ -2477,7 +2491,7 @@ int ObAlterTableResolver::generate_index_arg(obrpc::ObCreateIndexArg &index_arg,
           type = INDEX_TYPE_UNIQUE_LOCAL;
         }
 
-        if (index_keyname_ == MULTI_KEY) {
+        if (index_keyname_ == MULTI_KEY || index_keyname_ == MULTI_UNIQUE_KEY) {
           type = INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL;
           if (global_) {
             ret = OB_NOT_SUPPORTED;
@@ -2490,6 +2504,12 @@ int ObAlterTableResolver::generate_index_arg(obrpc::ObCreateIndexArg &index_arg,
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("tenant data version is less than 4.1, spatial index is not supported", K(ret), K(tenant_data_version));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "tenant data version is less than 4.1, spatial index");
+#ifdef OB_BUILD_SHARED_STORAGE
+        } else if (GCTX.is_shared_storage_mode() && FTS_KEY == index_keyname_) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("fulltext search index isn't supported in shared storage mode", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "fulltext search index in shared storage mode is");
+#endif
         } else if (tenant_data_version < DATA_VERSION_4_3_1_0 && index_keyname_ == FTS_KEY) {
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("tenant data version is less than 4.3.1, fulltext index not supported", K(ret), K(tenant_data_version));

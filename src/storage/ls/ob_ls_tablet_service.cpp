@@ -977,7 +977,6 @@ int ObLSTabletService::update_tablet_checkpoint(
     const ObTabletMapKey &key,
     const ObMetaDiskAddr &old_addr,
     const ObMetaDiskAddr &new_addr,
-    const bool is_replay_old,
     ObTabletHandle &new_handle)
 {
   int ret = OB_SUCCESS;
@@ -990,7 +989,7 @@ int ObLSTabletService::update_tablet_checkpoint(
                       || !old_addr.is_valid()
                       || !new_addr.is_valid()
                       || !new_addr.is_block()
-                      || (!is_replay_old && !new_handle.is_valid()))) {
+                      || !new_handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(key), K(new_addr), K(new_handle));
   } else {
@@ -1005,7 +1004,7 @@ int ObLSTabletService::update_tablet_checkpoint(
         ret = OB_TABLET_NOT_EXIST;
       }
       LOG_WARN("fail to get old tablet addr", K(ret), K(key));
-    } else if (!is_replay_old) {
+    } else {
       ObUpdateTabletPointerParam param;
       if (OB_FAIL(t3m->get_tablet(WashTabletPriority::WTP_LOW, key, tablet_handle))) {
         LOG_WARN("fail to get tablet", K(ret), K(key));
@@ -1018,21 +1017,11 @@ int ObLSTabletService::update_tablet_checkpoint(
       } else if (OB_FAIL(t3m->compare_and_swap_tablet(key, tablet_handle, new_handle, param))) {
         LOG_WARN("fail to compare and swap tablet", K(ret), K(tablet_handle), K(new_handle), K(param));
       }
-    } else {
-      time_guard.click("GetOld");
-      if (OB_UNLIKELY(addr != old_addr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("the old tablet has been replaced, which is not allowed during upgrade",
-            K(ret), K(addr), K(old_addr));
-      } else if (OB_FAIL(t3m->compare_and_swap_tablet(key, old_addr, new_addr))) {
-        LOG_WARN("fail to compare and swap tablet", K(ret), K(old_addr), K(new_addr));
-      }
     }
 
     if (OB_SUCC(ret)) {
       time_guard.click("CASwap");
-      FLOG_INFO("succeeded to update tablet ckpt", K(key), K(old_addr), K(new_addr),
-          K(is_replay_old));
+      FLOG_INFO("succeeded to update tablet ckpt", K(key), K(old_addr), K(new_addr));
     }
   }
   return ret;
@@ -1942,7 +1931,7 @@ int ObLSTabletService::upload_major_compaction_tablet_meta(
 
 // TODO 这里的实现不完善，需要进一步完善
 // 2. 对比sn的replay_create_tablet 其中check_and_set_initial_state和start_direct_load_task_if_need是否可以直接去掉，如果去掉，再真正加载的时候还是要补上相应的动作。
-int ObLSTabletService::s2_replay_create_tablet(const ObMetaDiskAddr &disk_addr, const ObTabletID &tablet_id)
+int ObLSTabletService::ss_replay_create_tablet(const ObMetaDiskAddr &disk_addr, const ObTabletID &tablet_id)
 {
   int ret = OB_SUCCESS;
   bool b_exist = false;
@@ -2007,7 +1996,7 @@ int ObLSTabletService::s2_replay_create_tablet(const ObMetaDiskAddr &disk_addr, 
   return ret;
 }
 
-int ObLSTabletService::s2_replay_create_tablet_for_trans_info_tmp(
+int ObLSTabletService::ss_replay_create_tablet_for_trans_info_tmp(
     const ObMetaDiskAddr &current_disk_addr,
     const ObLSHandle &ls_handle,
     const ObTabletID &tablet_id)
@@ -2024,7 +2013,7 @@ int ObLSTabletService::s2_replay_create_tablet_for_trans_info_tmp(
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("restart replay tablet should not exist", K(ret), K(ls_id), K(tablet_id));
   } else {
-    ObTimeGuard time_guard("s2_replay_create_tablet_for_trans_info_tmp", 1_s);
+    ObTimeGuard time_guard("ss_replay_create_tablet_for_trans_info_tmp", 1_s);
     common::ObArenaAllocator allocator(common::ObMemAttr(MTL_ID(), "ReplayCreateTmp"));
     const ObTabletMapKey key(ls_id, tablet_id);
     ObTabletHandle tmp_tablet_hdl;
@@ -6718,6 +6707,26 @@ int ObLSTabletService::remove_ls_inner_tablet(
     LOG_WARN("failed to remove tablet", K(ret), K(ls_id), K(tablet_id));
   }
 
+  return ret;
+}
+
+int ObLSTabletService::build_tablet_iter(ObLSTabletAddrIterator &iter)
+{
+  int ret = common::OB_SUCCESS;
+  GetAllTabletIDOperator op(iter.tablet_ids_, false /*except_ls_inner_tablet*/);
+  iter.ls_tablet_service_ = this;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    STORAGE_LOG(WARN, "not inited", K(ret), K_(is_inited));
+  } else if (OB_FAIL(tablet_id_set_.foreach(op))) {
+    STORAGE_LOG(WARN, "fail to get all tablet ids from set", K(ret));
+  } else if (OB_UNLIKELY(!iter.is_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("iter is invalid", K(ret), K(iter));
+  }
+  if (OB_FAIL(ret)) {
+    iter.reset();
+  }
   return ret;
 }
 

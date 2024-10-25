@@ -1789,24 +1789,12 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
         LOG_WARN("failed to convert udf to agg expr", K(ret));
       }
     }
-    if (OB_SUCC(ret) && aggr_exprs.count() > 0) {
-      if (OB_FAIL(resolve_aggr_exprs(expr, aggr_exprs, need_analyze_aggr))) {
-        LOG_WARN("resolve aggr exprs failed", K(ret));
-      }
-    }
     // resolve sys var(s)
     if (OB_SUCC(ret) && sys_vars.count() > 0) {
       if (OB_FAIL(resolve_sys_vars(sys_vars))) {
         LOG_WARN("resolve system variables failed", K(ret));
       }
     }
-
-    if (OB_SUCC(ret) && win_exprs.count() > 0) {
-      if (OB_FAIL(resolve_win_func_exprs(expr, win_exprs))) {
-        LOG_WARN("resolve aggr exprs failed", K(ret));
-      }
-    }
-
     if (OB_SUCC(ret) && match_exprs.count() > 0) {
       if (OB_FAIL(resolve_match_against_exprs(expr, match_exprs, current_scope_))) { // resolve and add match expr
         LOG_WARN("failed to resolve match against expr", K(ret));
@@ -1823,6 +1811,16 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
                                                                                   ctx.session_info_,
                                                                                   op_exprs))) {
         LOG_WARN("implicit cast faild", K(ret));
+      }
+    }
+    if (OB_SUCC(ret) && aggr_exprs.count() > 0) {
+      if (OB_FAIL(resolve_aggr_exprs(expr, aggr_exprs, need_analyze_aggr))) {
+        LOG_WARN("resolve aggr exprs failed", K(ret));
+      }
+    }
+    if (OB_SUCC(ret) && win_exprs.count() > 0) {
+      if (OB_FAIL(resolve_win_func_exprs(expr, win_exprs))) {
+        LOG_WARN("resolve aggr exprs failed", K(ret));
       }
     }
     // resolve special expression, like functions, e.g abs, concat
@@ -3704,6 +3702,8 @@ int ObDMLResolver::resolve_basic_table_without_cte(const ParseNode &parse_tree, 
         LOG_WARN("resolve base or alias table item for dblink failed", K(ret));
       } else if (OB_FAIL(resolve_transpose_table(transpose_node, table_item))) {
         LOG_WARN("resolve_transpose_table failed", K(ret));
+      } else if (NULL != time_node && OB_FAIL(resolve_flashback_query_node(time_node, table_item))) {
+        LOG_WARN("failed to resolve flashback query node", K(ret));
       }
     }
   }
@@ -17526,8 +17526,14 @@ int ObDMLResolver::resolve_values_table_for_select(const ParseNode &table_node,
                 insert_stmt = upper_insert_resolver_->get_insert_stmt();
                 ObInsertTableInfo &table_info = insert_stmt->get_insert_table_info();
                 ColumnItem *column_item = NULL;
-                uint64_t column_id = table_info.values_desc_.at(j)->get_column_id();
-                if (OB_ISNULL(column_item = insert_stmt->get_column_item_by_id(table_info.table_id_,
+                uint64_t column_id = 0;
+                uint64_t column_count = table_info.values_desc_.count();
+                if (column_count != vector_node->num_child_) {
+                  ret = OB_ERR_COULUMN_VALUE_NOT_MATCH;
+                  LOG_WARN("column count doesn't match value count", KR(ret), K(column_count), K(vector_node->num_child_));
+                } else if (FALSE_IT(column_id = table_info.values_desc_.at(j)->get_column_id())) {
+                  //do nothing
+                } else if (OB_ISNULL(column_item = insert_stmt->get_column_item_by_id(table_info.table_id_,
                                                                               column_id))) {
                   ret = OB_ERR_UNEXPECTED;
                   LOG_WARN("get column item by id failed", K(table_info.table_id_), K(column_id), K(ret));

@@ -332,7 +332,7 @@ int ObTenantStorageMetaPersister::write_active_tablet_array(ObLS *ls)
   } else {
 #ifdef OB_BUILD_SHARED_STORAGE
     ObMetaDiskAddr addr;
-    ObLSTabletIterator tablet_iter(ObMDSGetTabletMode::READ_ALL_COMMITED);
+    ObLSTabletAddrIterator tablet_iter;
     ObTabletMapKey tablet_key;
     ObLSActiveTabletArray active_tablet_arr;
     if (OB_FAIL(ls->get_tablet_svr()->build_tablet_iter(tablet_iter))) {
@@ -351,7 +351,7 @@ int ObTenantStorageMetaPersister::write_active_tablet_array(ObLS *ls)
         LOG_WARN("tablet key or addr is invalid", K(ret), K(tablet_key), K(addr));
       } else if (!addr.is_disked()) {
         FLOG_INFO("skip MEM and NONE type", K(ret), K(tablet_key), K(addr));
-      } else if (OB_FAIL(active_tablet_arr.items_.push_back(ObActiveTabletItem(tablet_key.tablet_id_, addr.block_id().meta_version_id())))) {
+      } else if (OB_FAIL(active_tablet_arr.items_.push_back(ObActiveTabletItem(tablet_key.tablet_id_, addr.block_id().fourth_id())))) {
         LOG_WARN("fail to push back active tablet item", K(ret), K(tablet_key), K(addr));
       }
     }
@@ -880,8 +880,17 @@ int ObTenantStorageMetaPersister::ss_check_and_delete_tablet_current_version(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet version in current_version is the last version of tablet, should equal to the version in pending_free_arr",
         K(ret), K(ls_id), K(tablet_id), K(deleted_tablet_version), K(latest_addr));
-  } else if (OB_FAIL(ss_delete_tablet_current_version_(tablet_id, ls_id, ls_epoch))) {
-    LOG_WARN("failed to delete tablet current version", K(ret), K(tablet_id), K(ls_id), K(ls_epoch));
+  } else {
+    uint64_t retry_count = 0;
+    while (OB_FAIL(ss_delete_tablet_current_version_(tablet_id, ls_id, ls_epoch))) {
+      LOG_WARN("try delete tablet current version failed", K(ret), K(tablet_id), K(ls_id), K(ls_epoch), K(retry_count));
+      retry_count++;
+      usleep(1000 * 1000); // sleep 1s for each time
+      if (retry_count > 60) { // 1min
+        LOG_ERROR("failed to delete tablet current version", K(ret), K(tablet_id), K(ls_id), K(ls_epoch), K(retry_count));
+        break;
+      }
+    }
   }
 
   return ret;
@@ -931,7 +940,7 @@ int ObTenantStorageMetaPersister::ss_remove_tablet_(
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("fail to alloc mem", K(ret), K(key));
       } else if (OB_FAIL(pending_free_tablet_arr_map_.set_refactored(key, array_info))) {
-        ob_delete(array_info);
+        OB_DELETE(PendingFreeTabletArrayInfo, attr, array_info);
         LOG_WARN("fail to set pending free tablet array info", K(ret), K(key));
       }
     }
@@ -1247,7 +1256,7 @@ int ObTenantStorageMetaPersister::ss_batch_remove_ls_tablets(
           ret = OB_ALLOCATE_MEMORY_FAILED;
           LOG_WARN("fail to alloc mem", K(ret), K(key));
         } else if (OB_FAIL(pending_free_tablet_arr_map_.set_refactored(key, array_info))) {
-          ob_delete(array_info);
+          OB_DELETE(PendingFreeTabletArrayInfo, attr, array_info);
           LOG_WARN("fail to set pending free tablet array info", K(ret), K(key));
         }
       }
@@ -1302,6 +1311,59 @@ int ObTenantStorageMetaPersister::ss_batch_remove_ls_tablets(
           } // end for
         }// end persist
       }
+    }
+  }
+
+  return ret;
+}
+
+int ObTenantStorageMetaPersister::ss_replay_ls_pending_free_arr(
+  ObArenaAllocator &allocator,
+  const ObLSID &ls_id,
+  const uint64_t ls_epoch)
+{
+  int ret = OB_SUCCESS;
+
+  ObStorageObjectOpt deleting_opt;
+  ObLSPendingFreeTabletArray deleting_tablets;
+  PendingFreeTabletArrayInfo* info = nullptr;
+  const PendingFreeTabletArrayKey key(ls_id, ls_epoch);
+
+  deleting_opt.set_ss_ls_level_meta_object_opt(ObStorageObjectType::LS_PENDING_FREE_TABLET_ARRAY, ls_id.id());
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (OB_UNLIKELY(!ls_id.is_valid() || ls_epoch < 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", K(ret), K(ls_id), K(ls_epoch));
+  } else if (OB_FAIL(ObStorageMetaIOUtil::read_storage_meta_object(
+        deleting_opt, allocator, MTL_ID(), ls_epoch, deleting_tablets))) {
+    LOG_WARN("fail to get deleting tablets", K(ret), K(deleting_opt), K(ls_id), K(ls_epoch));
+  } else if (pending_free_tablet_arr_map_.get_refactored(key, info)) {
+    if (OB_HASH_NOT_EXIST == ret) {
+      info = nullptr;
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to get pending free tablet array info", K(ret), K(key));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("in rebooting, pending_arr_tablet_info should be nullptr", K(key));
+  }
+
+  if (OB_FAIL(ret)) {
+  } else {
+    const lib::ObMemAttr attr(MTL_ID(), "PendingFreeInfo");
+    lib::ObMutexGuard guard(peding_free_map_lock_);
+    if (OB_ISNULL(info = OB_NEW(PendingFreeTabletArrayInfo, attr))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc mem", K(ret), K(key));
+    } else if (OB_FAIL(info->pending_free_tablet_arr_.assign(deleting_tablets))) {
+      OB_DELETE(PendingFreeTabletArrayInfo, attr, info);
+      LOG_WARN("fail to assign pending_free_arr", K(ret), K(key), K(deleting_tablets), K(info->pending_free_tablet_arr_));
+    } else if (OB_FAIL(pending_free_tablet_arr_map_.set_refactored(key, info))) {
+      OB_DELETE(PendingFreeTabletArrayInfo, attr, info);
+      LOG_WARN("fail to set pending free tablet array info", K(ret), K(key));
     }
   }
 

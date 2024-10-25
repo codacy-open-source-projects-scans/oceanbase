@@ -2393,6 +2393,13 @@ int ObRawExprDeduceType::check_group_aggr_param(ObAggFunRawExpr &expr)
         ret = OB_ERR_INVALID_TYPE_FOR_OP;
         LOG_WARN("lob or json type parameter not expected", K(ret), K(expr));
       }
+    } else if (ob_is_collection_sql_type(param_expr->get_data_type())
+               && (T_FUN_SUM == expr.get_expr_type()
+                   || T_FUN_AVG == expr.get_expr_type()
+                   || T_FUN_COUNT == expr.get_expr_type())
+               && expr.is_param_distinct()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "vector aggregation with distinct is");
     }
   }
   return ret;
@@ -3959,8 +3966,7 @@ int ObRawExprDeduceType::try_add_cast_expr(RawExprType &parent,
       }
 
       // for consistent with mysql, if const cast as json, should regard as scalar, don't need parse
-      if (ObStringTC == ori_tc && ObJsonTC == expect_tc
-          && IS_BASIC_CMP_OP(parent.get_expr_type())) {
+      if (ObStringTC == ori_tc && ObJsonTC == expect_tc && IS_JSON_COMPATIBLE_OP(parent.get_expr_type())) {
         uint64_t extra = new_expr->get_extra();
         new_expr->set_extra(CM_SET_SQL_AS_JSON_SCALAR(extra));
       }

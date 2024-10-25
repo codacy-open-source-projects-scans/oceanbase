@@ -811,6 +811,7 @@ int ObBlockManager::get_marker_status(ObMacroBlockMarkerStatus &status) {
 void ObBlockManager::update_marker_status(const ObMacroBlockMarkerStatus &tmp_status)
 {
   SpinWLockGuard guard(marker_lock_);
+  ObMacroBlockMarkerStatus prev_result = marker_status_;
   marker_status_.reset();
   marker_status_.total_block_count_ = OB_STORAGE_OBJECT_MGR.get_total_macro_block_count();
   marker_status_.reserved_block_count_ = io_device_->get_reserved_block_count() + tmp_status.reserved_block_count_;
@@ -821,6 +822,7 @@ void ObBlockManager::update_marker_status(const ObMacroBlockMarkerStatus &tmp_st
   marker_status_.start_time_ = tmp_status.start_time_;
   marker_status_.mark_finished_ = tmp_status.mark_finished_;
   if (tmp_status.mark_finished_) {
+    // Mark succeed, update marker status with new result.
     marker_status_.last_end_time_ = tmp_status.last_end_time_;
     marker_status_.linked_block_count_ = tmp_status.linked_block_count_;
     marker_status_.index_block_count_ = tmp_status.index_block_count_;
@@ -831,6 +833,18 @@ void ObBlockManager::update_marker_status(const ObMacroBlockMarkerStatus &tmp_st
     marker_status_.pending_free_count_ = tmp_status.pending_free_count_;
     marker_status_.shared_meta_block_count_ = tmp_status.shared_meta_block_count_;
     marker_status_.hold_info_ = tmp_status.hold_info_;
+  } else {
+    // Mark skipped, update marker status with previous result.
+    marker_status_.last_end_time_ = prev_result.last_end_time_;
+    marker_status_.linked_block_count_ = prev_result.linked_block_count_;
+    marker_status_.index_block_count_ = prev_result.index_block_count_;
+    marker_status_.ids_block_count_ = prev_result.ids_block_count_;
+    marker_status_.tmp_file_count_ = prev_result.tmp_file_count_;
+    marker_status_.data_block_count_ = prev_result.data_block_count_;
+    marker_status_.shared_data_block_count_ = prev_result.shared_data_block_count_;
+    marker_status_.pending_free_count_ = prev_result.pending_free_count_;
+    marker_status_.shared_meta_block_count_ = prev_result.shared_meta_block_count_;
+    marker_status_.hold_info_ = prev_result.hold_info_;
   }
 }
 
@@ -1649,7 +1663,6 @@ int ObBlockManager::InspectBadBlockTask::check_block(
     read_info.offset_ = 0;
     read_info.size_ = OB_STORAGE_OBJECT_MGR.get_macro_block_size();
     read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
-    read_info.io_desc_.set_resource_group_id(THIS_WORKER.get_group_id());
     read_info.io_desc_.set_sys_module_id(ObIOModule::INSPECT_BAD_BLOCK_IO);
 
     if (OB_ISNULL(read_info.buf_ = reinterpret_cast<char *>(

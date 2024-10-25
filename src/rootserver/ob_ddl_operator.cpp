@@ -4777,7 +4777,6 @@ int ObDDLOperator::batch_update_system_table_columns(
   const uint64_t table_id = new_table_schema.get_table_id();
   int64_t new_schema_version = OB_INVALID_VERSION;
   ObSchemaService *schema_service_impl = schema_service_.get_schema_service();
-  const bool update_object_status_ignore_version = false;
   if (OB_ISNULL(schema_service_impl)) {
     ret = OB_ERR_SYS;
     LOG_WARN("schema_service_impl must not null", KR(ret));
@@ -4810,9 +4809,9 @@ int ObDDLOperator::batch_update_system_table_columns(
       }
     } // end for
 
-    if (FAILEDx(schema_service_impl->get_table_sql_service().update_table_attribute(
-        trans, new_table_schema, OB_DDL_ALTER_TABLE, update_object_status_ignore_version, ddl_stmt_str))) {
-      LOG_WARN("failed to update table attribute", KR(ret), K(tenant_id), K(table_id));
+    if (FAILEDx(schema_service_impl->get_table_sql_service().update_table_options(trans,
+            orig_table_schema, new_table_schema, OB_DDL_ALTER_TABLE, ddl_stmt_str))) {
+      LOG_WARN("failed to update table options", KR(ret), K(tenant_id), K(table_id));
     }
   }
   return ret;
@@ -10868,11 +10867,11 @@ int ObDDLOperator::drop_inner_generated_domain_extra_column(
   if (OB_ISNULL(ori_data_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, ori_data_schema is nullptr", K(ret));
-  } else if (ori_column_schema.is_multivalue_generated_array_column()) {
+  } else if (ObMulValueIndexBuilderUtil::is_multivalue_array_column(ori_column_schema)) {
   } else if (OB_ISNULL(budy_col = ori_data_schema->get_column_schema(tenant_id, ori_column_schema.get_column_id() + 1))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, budy column schema is nullptr", K(ret), K(ori_column_schema));
-  } else if (!budy_col->is_multivalue_generated_array_column()) {
+  } else if (!ObMulValueIndexBuilderUtil::is_multivalue_array_column(*budy_col)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, budy column schema not fould", K(ret), K(*budy_col));
   } else if (OB_FAIL(ObMulValueIndexBuilderUtil::is_matched_budy_column(ori_column_schema, *budy_col, is_match))) {

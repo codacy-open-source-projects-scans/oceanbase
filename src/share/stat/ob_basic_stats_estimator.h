@@ -116,6 +116,7 @@ public:
   static int do_estimate_block_count_and_row_count(ObExecContext &ctx,
                                                    const uint64_t tenant_id,
                                                    const uint64_t table_id,
+                                                   bool force_leader,
                                                    const ObIArray<ObTabletID> &tablet_ids,
                                                    const ObIArray<ObObjectID> &partition_ids,
                                                    const ObIArray<uint64_t> &column_group_ids,
@@ -159,6 +160,9 @@ public:
                  const ObString &table_name,
                  int64_t gather_vectorize,
                  bool use_column_store);
+
+  static int set_partition_stat_no_regather(const int64_t partition_id,
+                                            ObIArray<ObPartitionStatInfo> &partition_stat_infos);
 
 private:
 

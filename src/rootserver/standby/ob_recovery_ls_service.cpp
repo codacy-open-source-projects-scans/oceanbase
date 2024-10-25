@@ -488,9 +488,20 @@ int ObRecoveryLSService::process_ls_tx_log_(ObTxLogBlock &tx_log_block, const SC
             commit_log.get_multi_source_data();
         const uint64_t exec_tenant_id = gen_meta_tenant_id(tenant_id_);
         ObMySQLTransaction trans;
+        ObLSRecoveryGuard guard;
+
+        share::ObTenantRole::Role tenant_role = MTL_GET_TENANT_ROLE_CACHE();
+        if (is_invalid_tenant(tenant_role)) {
+          ret = OB_EAGAIN;
+          LOG_WARN("tenant role cache is invalid", KR(ret));
+        }
         for (int64_t i = 0; OB_SUCC(ret) && i < source_data.count(); ++i) {
           const ObTxBufferNode &node = source_data.at(i);
-          if (OB_FAIL(try_cancel_clone_job_for_standby_tenant_(node))) {
+          if (is_standby_tenant(tenant_role)
+              && ObTxDataSourceType::MV_UPDATE_SCN == node.get_data_source_type()) {
+            ret = OB_ITER_STOP;
+            LOG_ERROR("new mview has been create in primary tenant, stop", KR(ret), K(sync_scn));
+          } else if (OB_FAIL(try_cancel_clone_job_for_standby_tenant_(node))) {
             LOG_WARN("fail to cancel clone job for standby tenant", KR(ret), K(node));
           } else if (ObTxDataSourceType::STANDBY_UPGRADE == node.get_data_source_type()) {
             if (OB_FAIL(process_upgrade_log_(sync_scn, node))) {
@@ -534,6 +545,9 @@ int ObRecoveryLSService::process_ls_tx_log_(ObTxLogBlock &tx_log_block, const SC
            * 这个日志流已经变成了NORMAL状态，所以可能会导致tenant_info的sync_scn小于系统日志流的sync_scn，这里增加一个校验
            * 是为了防止这种情况
            * */
+        } else if (OB_FAIL(guard.init(tenant_id_, SYS_LS))) {
+          LOG_WARN("failed to init guard", KR(ret), K(tenant_id_));
+
         } else if (OB_FAIL(report_sys_ls_recovery_stat_in_trans_(sync_scn, false, trans,
                 "report recovery stat and has multi data source", true/*need_check_sync_scn*/))) {
           LOG_WARN("failed to report sys ls recovery stat", KR(ret), K(sync_scn));
@@ -676,6 +690,27 @@ int ObRecoveryLSService::process_upgrade_log_(
         }
       }
     }
+  }
+  return ret;
+}
+
+int ObRecoveryLSService::get_ls_(storage::ObLSHandle &ls_handle, storage::ObLS *&ls)
+{
+  int ret = OB_SUCCESS;
+  ObLSService *ls_svr = MTL(ObLSService *);
+  ls = NULL;
+
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret), K(inited_));
+  } else if (OB_ISNULL(ls_svr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls service is null", KR(ret));
+  } else if (OB_FAIL(ls_svr->get_ls(SYS_LS, ls_handle, storage::ObLSGetMod::RS_MOD))) {
+    LOG_WARN("failed to get ls", KR(ret));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("ls is NULL", KR(ret), K(ls_handle));
   }
   return ret;
 }
@@ -839,21 +874,17 @@ int ObRecoveryLSService::construct_sys_ls_recovery_stat_based_on_sync_scn_(
 {
   int ret = OB_SUCCESS;
   ls_stat.reset();
-  ObLSService *ls_svr = MTL(ObLSService *);
-  ObLSHandle ls_handle;
-  ObLS *ls = NULL;
   ObLSRecoveryStat tmp_ls_stat;
   SCN readable_scn;
+  storage::ObLSHandle ls_handle;
+  storage::ObLS *ls = NULL;
 
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), K(inited_));
-  } else if (OB_ISNULL(ls_svr)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls service is null", KR(ret));
-  } else if (OB_FAIL(ls_svr->get_ls(SYS_LS, ls_handle, storage::ObLSGetMod::RS_MOD))) {
-    LOG_WARN("failed to get ls", KR(ret));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+  } else if (OB_FAIL(get_ls_(ls_handle, ls))) {
+    LOG_WARN("failed to get sys ls", KR(ret));
+  } else if (OB_ISNULL(ls)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("ls is NULL", KR(ret), K(ls_handle));
   } else if (OB_FAIL(ls->get_ls_level_recovery_stat(tmp_ls_stat))) {
@@ -1318,17 +1349,12 @@ int ObRecoveryLSService::try_do_ls_balance_task_(
         LOG_WARN("failed to do ls alter task", KR(ret), K(ls_balance_task));
       }
     } else if (ls_balance_task.get_task_op().is_transfer_end()) {
-      can_remove = true;
-      bool is_replay_finish = true;
       if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(
               tenant_id_, ls_balance_task.get_src_ls(),
               ls_balance_task.get_dest_ls(), ls_balance_task.get_operation_scn(),
-              is_replay_finish))) {
+              can_remove))) {
         LOG_WARN("failed to check transfer task replay", KR(ret), K(tenant_id_),
             K(ls_balance_task), K(tenant_info));
-      } else if (!is_replay_finish) {
-        ret = OB_NEED_RETRY;
-        LOG_WARN("can not remove ls balance task helper", KR(ret), K(ls_balance_task));
       }
     } else if (ls_balance_task.get_task_op().is_transfer_begin()) {
       if (OB_FAIL(check_transfer_begin_can_remove_(ls_balance_task, tenant_info, can_remove))) {
@@ -1349,10 +1375,10 @@ int ObRecoveryLSService::try_do_ls_balance_task_(
       LOG_INFO("task can be remove", KR(ret), K(ls_balance_task));
       ROOTSERVICE_EVENT_ADD("standby_tenant", "remove_balance_task",
           K_(tenant_id), "task_type", ls_balance_task.get_task_op(),
-          "task_scn", ls_balance_task.get_operation_scn(),
+          "task_scn", ls_balance_task.get_operation_scn().get_val_for_inner_table_field(),
           "switchover_status", tenant_info.get_switchover_status(),
-          "src_ls", ls_balance_task.get_src_ls(),
-          "dest_ls", ls_balance_task.get_dest_ls());
+          "src_ls", ls_balance_task.get_src_ls().id(),
+          "dest_ls", ls_balance_task.get_dest_ls().id());
     }
     END_TRANSACTION(trans)
   }
@@ -1380,7 +1406,6 @@ int ObRecoveryLSService::check_transfer_begin_can_remove_(
     //find transfer end, or tenant is in flashback
     ObBalanceTaskHelper transfer_end_task;
     SCN transfer_scn;
-    bool is_replay_finish = false;
     ret = ObBalanceTaskHelperTableOperator::try_find_transfer_end(tenant_id_,
         ls_balance_task.get_operation_scn(), ls_balance_task.get_src_ls(),
         ls_balance_task.get_dest_ls(), *proxy_, transfer_end_task);
@@ -1409,17 +1434,19 @@ KR(ret), K(tenant_id_), K(tenant_info), K(ls_balance_task));
       LOG_WARN("can not find transfer end task, can not end transfer begin task", KR(ret), K(tenant_info), K(ls_balance_task));
       ret = OB_SUCCESS;
     }
-    if (OB_FAIL(ret) || !can_remove) {
-    } else if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(
-            tenant_id_, ls_balance_task.get_src_ls(),
-            ls_balance_task.get_dest_ls(), transfer_scn, is_replay_finish))) {
-      LOG_WARN("failed to check transfer task replay", KR(ret), K(tenant_id_), K(ls_balance_task),
-          K(tenant_info), K(transfer_scn));
-    } else if (!is_replay_finish) {
-      ret = OB_NEED_RETRY;
-      LOG_WARN("can not remove ls balance task helper", KR(ret), K(ls_balance_task), K(transfer_scn));
+    if (OB_SUCC(ret) && can_remove) {
+      if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(
+              tenant_id_, ls_balance_task.get_src_ls(),
+              ls_balance_task.get_dest_ls(), transfer_scn, can_remove))) {
+        LOG_WARN("failed to check transfer task replay", KR(ret), K(tenant_id_),
+            K(ls_balance_task), K(transfer_scn));
+      } else if (can_remove) {
+        FLOG_INFO("ls all replica replay to newest, can remove", K(ls_balance_task));
+      } else if (REACH_TENANT_TIME_INTERVAL(10 * 1000 * 1000)) {
+        // 10s
+        LOG_WARN("can not remove ls balance task helper", K(ls_balance_task), K(tenant_info));
+      }
     }
-
   }
   return ret;
 }

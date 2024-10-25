@@ -99,7 +99,7 @@ int ObBackupIoAdapter::open_with_access_type(ObIODevice*& device_handle, ObIOFd 
     OB_LOG(WARN, "invalid access type!", KR(ret), K(access_type));
   } else {
     iod_opts.opts_[0].set("AccessType", OB_STORAGE_ACCESS_TYPES_STR[access_type]);
-    if (access_type == OB_STORAGE_ACCESS_RANDOMWRITER) 
+    if (access_type == OB_STORAGE_ACCESS_APPENDER)
     {
       iod_opts.opts_[1].set("OpenMode", "CREATE_OPEN_NOLOCK");
       iod_opts.opt_cnt_++;
@@ -415,8 +415,7 @@ int ObBackupIoAdapter::pwrite(
   ObIOFd fd;
   ObIODevice *device_handle = NULL;
 
-  if (OB_UNLIKELY((ObStorageAccessType::OB_STORAGE_ACCESS_APPENDER != access_type)
-                  && (ObStorageAccessType::OB_STORAGE_ACCESS_RANDOMWRITER != access_type))) {
+  if (OB_UNLIKELY(ObStorageAccessType::OB_STORAGE_ACCESS_APPENDER != access_type)) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid access type", K(ret), K(access_type));
   } else if (OB_FAIL(open_with_access_type(device_handle, fd, storage_info, uri, access_type, storage_id_mod))) {
@@ -448,15 +447,13 @@ int ObBackupIoAdapter::pwrite(
   int flag = -1;
   ObFdSimulator::get_fd_flag(fd, flag);
   if ((ObStorageAccessType::OB_STORAGE_ACCESS_APPENDER != flag)
-      && (ObStorageAccessType::OB_STORAGE_ACCESS_RANDOMWRITER != flag)
       && (ObStorageAccessType::OB_STORAGE_ACCESS_MULTIPART_WRITER != flag)) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "invalid storage access type", K(ret), K(flag));
   } else if (FALSE_IT(fd.device_handle_ = (&device_handle))) {
   } else if (OB_FAIL(io_manager_write(buf, offset, size, fd, write_size))) {
     STORAGE_LOG(WARN, "fail to io manager write", K(ret), K(offset), K(size), K(fd));
-  } else if (((ObStorageAccessType::OB_STORAGE_ACCESS_APPENDER == flag) ||
-              (ObStorageAccessType::OB_STORAGE_ACCESS_RANDOMWRITER == flag))
+  } else if (ObStorageAccessType::OB_STORAGE_ACCESS_APPENDER == flag
              && is_can_seal
              && OB_FAIL(device_handle.seal_file(fd))) {
     STORAGE_LOG(WARN, "fail to seal file", K(ret), K(offset), K(size), K(fd));
@@ -939,7 +936,7 @@ int ObDelFilesOp::clean_batch_files()
         && (OB_SUCCESS != tmp_ret || !failed_files_idx.empty()));
 
     if (OB_SUCCESS == tmp_ret && !failed_files_idx.empty()) {
-      ret = OB_UTL_FILE_DELETE_FAILED;
+      ret = OB_FILE_DELETE_FAILED;
     }
     ret = COVER_SUCC(tmp_ret);
   }
@@ -1330,7 +1327,6 @@ int ObBackupIoAdapter::async_io_manager_read(
   const int64_t real_timeout_ms = OB_IO_MANAGER.get_object_storage_io_timeout_ms(io_info.tenant_id_);
   io_info.timeout_us_ = real_timeout_ms * 1000L;
   io_info.flag_.set_sync();
-  io_info.flag_.set_resource_group_id(THIS_WORKER.get_group_id());
   io_info.flag_.set_sys_module_id(sys_module_id);
   io_info.flag_.set_wait_event(ObWaitEventIds::OBJECT_STORAGE_READ);
   io_info.flag_.set_read();
@@ -1357,7 +1353,6 @@ int ObBackupIoAdapter::io_manager_write(
   const int64_t real_timeout_ms = OB_IO_MANAGER.get_object_storage_io_timeout_ms(io_info.tenant_id_);
   io_info.timeout_us_ = real_timeout_ms * 1000L;
   io_info.flag_.set_sync();
-  io_info.flag_.set_resource_group_id(THIS_WORKER.get_group_id());
   // io_info.flag_.set_sys_module_id(OB_INVALID_ID);
   io_info.flag_.set_wait_event(ObWaitEventIds::OBJECT_STORAGE_WRITE);
   io_info.flag_.set_write();
@@ -1391,7 +1386,6 @@ int ObBackupIoAdapter::async_io_manager_upload(
   const int64_t real_timeout_ms = OB_IO_MANAGER.get_object_storage_io_timeout_ms(io_info.tenant_id_);
   io_info.timeout_us_ = real_timeout_ms * 1000L;
   io_info.flag_.set_sync();
-  io_info.flag_.set_resource_group_id(THIS_WORKER.get_group_id());
   io_info.flag_.set_sys_module_id(sys_module_id);
   io_info.flag_.set_wait_event(ObWaitEventIds::OBJECT_STORAGE_WRITE);
   io_info.flag_.set_write();

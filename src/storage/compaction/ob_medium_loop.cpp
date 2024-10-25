@@ -183,9 +183,7 @@ void ObMediumLoop::add_event_and_diagnose(const ObScheduleTabletFunc &func)
     LOG_INFO("all tablet major merge finish", K(merged_version), K_(loop_cnt));
 
     DEL_SUSPECT_INFO(MEDIUM_MERGE, UNKNOW_LS_ID, UNKNOW_TABLET_ID, share::ObDiagnoseTabletType::TYPE_MEDIUM_MERGE);
-    if (OB_TMP_FAIL(MTL(ObTenantCompactionProgressMgr *)->update_progress_status(
-        merge_version_,
-        share::ObIDag::DAG_STATUS_FINISH))) {
+    if (OB_TMP_FAIL(MTL(ObTenantCompactionProgressMgr *)->finish_progress(merge_version_))) {
       LOG_WARN("failed to finish progress", K(tmp_ret), K_(merge_version));
     }
 
@@ -265,7 +263,7 @@ int ObScheduleNewMediumLoop::loop()
     } else if (OB_FAIL(ls_handle.get_ls()->get_tablet_svr()->get_tablet(
                  tablet_id, tablet_handle, 0 /*timeout_us*/))) {
       LOG_WARN("get tablet failed", K(ret), K(ls_id), K(tablet_id));
-    } else if (OB_FAIL(func.request_schedule_new_round(tablet_handle, false/*print_warn_log*/))) {
+    } else if (OB_FAIL(func.request_schedule_new_round(tablet_handle, false/*user_request*/))) {
       LOG_WARN("get tablet failed", K(ret), K(ls_id), K(tablet_id));
     }
   } // end of for

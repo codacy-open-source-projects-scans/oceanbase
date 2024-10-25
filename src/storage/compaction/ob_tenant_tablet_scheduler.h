@@ -27,6 +27,7 @@
 #include "share/compaction/ob_schedule_batch_size_mgr.h"
 #include "storage/compaction/ob_compaction_schedule_util.h"
 #include "storage/compaction/ob_medium_loop.h"
+#include "storage/compaction/ob_mview_compaction_util.h"
 
 namespace oceanbase
 {
@@ -126,6 +127,18 @@ private:
   common::hash::ObHashMap<ObTabletID, ProhibitFlag> tablet_id_map_; // tablet is used for transfer of medium compaction
 };
 
+
+struct ObCSReplicaChecksumHelper
+{
+public:
+  static int check_column_type(
+      const common::ObTabletID &tablet_id,
+      const int64_t compaction_scn,
+      const common::ObIArray<int64_t> &column_idxs,
+      bool &is_large_text_column);
+};
+
+
 class ObTenantTabletScheduler : public ObBasicMergeScheduler
 {
 public:
@@ -207,6 +220,7 @@ public:
       ObLSHandle &ls_handle,
       ObTabletHandle &tablet_handle,
       const ObGetMergeTablesResult &result);
+  // check whether major/medium could be scheduled. if not, will schedule convert co merge, or update storage schema if needed.
   static int check_ready_for_major_merge(
       const ObLSID &ls_id,
       const storage::ObTablet &tablet,
@@ -235,6 +249,7 @@ public:
     const bool is_rebuild_column_group);
   OB_INLINE int64_t get_schedule_batch_size() const { return batch_size_mgr_.get_schedule_batch_size(); }
   OB_INLINE int64_t get_checker_batch_size() const { return batch_size_mgr_.get_checker_batch_size(); }
+  OB_INLINE ObMviewCompactionValidation &get_mview_validation() { return mview_validation_; }
 private:
   friend struct ObTenantTabletSchedulerTaskMgr;
   int schedule_all_tablets_medium();
@@ -273,6 +288,7 @@ private:
   ObTenantTabletSchedulerTaskMgr timer_task_mgr_;
   ObScheduleBatchSizeMgr batch_size_mgr_;
   ObMediumLoop medium_loop_;
+  ObMviewCompactionValidation mview_validation_;
 };
 
 } // namespace compaction

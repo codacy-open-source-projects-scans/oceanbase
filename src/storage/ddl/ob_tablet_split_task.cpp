@@ -502,7 +502,7 @@ int ObTabletSplitDag::fill_info_param(compaction::ObIBasicInfoParam *&out_param,
     ret = OB_NOT_INIT;
     LOG_WARN("ObComplementDataDag has not been initialized", K(ret));
   } else if (OB_FAIL(ADD_DAG_WARN_INFO_PARAM(out_param, allocator, get_type(),
-      static_cast<int64_t>(param_.source_tablet_id_.id()), param_.user_parallelism_))) {
+      static_cast<int64_t>(param_.ls_id_.id()), static_cast<int64_t>(param_.source_tablet_id_.id())))) {
     LOG_WARN("failed to fill info param", K(ret));
   }
   return ret;
@@ -740,7 +740,7 @@ int ObTabletSplitWriteTask::generate_next_task(ObITask *&next_task)
   } else if (FALSE_IT(dag = static_cast<ObTabletSplitDag *> (tmp_dag))) {
   } else if (param_->can_reuse_macro_block_) {
     ret = OB_ITER_END;
-  } else if (next_task_id == context_->data_split_ranges_.count()) {
+  } else if (next_task_id >= context_->data_split_ranges_.count()) {
     ret = OB_ITER_END;
   } else if (OB_FAIL(dag->alloc_task(next_write_task))) {
     LOG_WARN("alloc task failed", K(ret));
@@ -1427,7 +1427,7 @@ int ObTabletSplitMergeTask::build_create_sstable_param(
     const ObSSTableBasicMeta &basic_meta = meta_handle.get_sstable_meta().get_basic_meta();
     create_sstable_param.table_key_ = src_table.get_key();
     create_sstable_param.table_key_.tablet_id_ = dst_tablet_id;
-    create_sstable_param.sstable_logic_seq_ = 0;
+    create_sstable_param.sstable_logic_seq_ = basic_meta.sstable_logic_seq_;
     create_sstable_param.filled_tx_scn_ = basic_meta.filled_tx_scn_;
     create_sstable_param.table_mode_ = basic_meta.table_mode_;
     create_sstable_param.index_type_ = static_cast<share::schema::ObIndexType> (basic_meta.index_type_);
@@ -2327,6 +2327,12 @@ int ObTabletSplitUtil::check_satisfy_split_condition(
     ret = OB_NEED_RETRY;
     if (REACH_COUNT_INTERVAL(1000L)) {
       LOG_INFO("should wait memtable dump", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_, K(memtable_handles));
+    }
+  } else if (!source_tablet_handle.get_obj()->get_tablet_meta().ha_status_.check_allow_read()) {
+    ret = OB_NEED_RETRY;
+    if (REACH_COUNT_INTERVAL(1000L)) {
+      LOG_INFO("should wait data complete", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_,
+          "tablet_meta", source_tablet_handle.get_obj()->get_tablet_meta());
     }
   } else if (MTL_TENANT_ROLE_CACHE_IS_RESTORE()) {
     LOG_INFO("dont check compaction in restore progress", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_);

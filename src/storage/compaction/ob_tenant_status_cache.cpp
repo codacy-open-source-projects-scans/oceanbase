@@ -48,13 +48,16 @@ int ObTenantStatusCache::init_or_refresh()
 {
   int ret = OB_SUCCESS;
   if (!is_inited_) {
-    if (OB_FAIL(inner_refresh_remote_tenant())) {
-      if (OB_NEED_WAIT != ret) {
-        LOG_WARN("failed to refresh remote tenant", KR(ret));
+    if (!MTL_TENANT_ROLE_CACHE_IS_PRIMARY_OR_INVALID()) {
+      if (OB_FAIL(inner_refresh_restore_status())) {
+        LOG_WARN("failed to refresh tenant restore status ", KR(ret));
+      } else if (!during_restore_ && OB_FAIL(inner_refresh_remote_tenant())) {
+        if (OB_NEED_WAIT != ret) {
+          LOG_WARN("failed to refresh remote tenant", KR(ret));
+        }
       }
-    } else if (OB_FAIL(inner_refresh_restore_status())) {
-      LOG_WARN("failed to refresh tenant restore status ", KR(ret));
-    } else {
+    }
+    if (OB_SUCC(ret)) {
       IGNORE_RETURN refresh_data_version();
       is_inited_ = true;
     }
@@ -165,19 +168,17 @@ int ObTenantStatusCache::refresh_data_version()
   return ret;
 }
 
-bool ObTenantStatusCache::enable_adaptive_compaction()
+bool ObTenantStatusCache::enable_adaptive_compaction_with_cpu_load() const
 {
   bool bret = enable_adaptive_compaction_;
   if (!bret || !enable_adaptive_merge_schedule()) {
     // do nothing
 #ifdef ENABLE_DEBUG_LOG
   } else if (GCONF.enable_crazy_medium_compaction) {
-    enable_adaptive_compaction_ = true;
     bret = true;
     LOG_DEBUG("set crazy medium, set enable_adaptive_compaction = true");
 #endif
   } else if (MTL(ObTenantTabletStatMgr *)->is_high_tenant_cpu_load()) {
-    enable_adaptive_compaction_ = false;
     bret = false;
     if (REACH_TENANT_TIME_INTERVAL(PRINT_LOG_INVERVAL)) {
       FLOG_INFO("disable adaptive compaction due to the high load CPU", K(bret));

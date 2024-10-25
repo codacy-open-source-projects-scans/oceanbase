@@ -6863,6 +6863,10 @@ THREAD_ID	bigint(20)	YES		NULL
 STMT_TYPE	bigint(20)	YES		NULL	
 TABLET_ID	bigint(20)	YES		NULL	
 PROXY_SID	bigint(20)	YES		NULL	
+IO_READ_COUNT	bigint(20)	NO		0	
+IO_READ_SIZE	bigint(20)	NO		0	
+IO_WRITE_COUNT	bigint(20)	NO		0	
+IO_WRITE_SIZE	bigint(20)	NO		0	
 select /*+QUERY_TIMEOUT(60000000)*/ IF(count(*) >= 0, 1, 0) from oceanbase.__all_virtual_ash;
 IF(count(*) >= 0, 1, 0)
 1
@@ -8270,6 +8274,10 @@ thread_id	bigint(20)	YES		NULL
 stmt_type	bigint(20)	YES		NULL	
 tablet_id	bigint(20)	YES		NULL	
 proxy_sid	bigint(20)	YES		NULL	
+io_read_count	bigint(20)	YES		0	
+io_read_size	bigint(20)	YES		0	
+io_write_count	bigint(20)	YES		0	
+io_write_size	bigint(20)	YES		0	
 select /*+QUERY_TIMEOUT(60000000)*/ IF(count(*) >= 0, 1, 0) from oceanbase.__all_virtual_wr_active_session_history;
 IF(count(*) >= 0, 1, 0)
 1
@@ -10067,5 +10075,20 @@ select /*+QUERY_TIMEOUT(60000000)*/ IF(count(*) >= 0, 1, 0) from oceanbase.__all
 IF(count(*) >= 0, 1, 0)
 1
 "oceanbase.__all_virtual_temp_file runs in single server"
+IF(count(*) >= 0, 1, 0)
+1
+desc oceanbase.__all_virtual_ncomp_dll_v2;
+Field	Type	Null	Key	Default	Extra
+tenant_id	bigint(20)	NO	PRI	NULL	
+database_id	bigint(20)	NO	PRI	NULL	
+key_id	bigint(20)	NO	PRI	NULL	
+compile_db_id	bigint(20)	NO	PRI	NULL	
+arch_type	varchar(128)	NO	PRI	NULL	
+build_version	varchar(256)	NO	PRI	NULL	
+gmt_create	timestamp(6)	NO		NULL	
+gmt_modified	timestamp(6)	NO		NULL	
+merge_version	bigint(20)	NO		NULL	
+dll	longblob	NO		NULL	
+select /*+QUERY_TIMEOUT(60000000)*/ IF(count(*) >= 0, 1, 0) from oceanbase.__all_virtual_ncomp_dll_v2;
 IF(count(*) >= 0, 1, 0)
 1

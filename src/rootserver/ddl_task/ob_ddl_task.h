@@ -196,10 +196,10 @@ struct ObDDLTaskSerializeField final
   OB_UNIS_VERSION(1);
 public:
   TO_STRING_KV(K_(task_version), K_(parallelism), K_(data_format_version), K_(consumer_group_id),
-               K_(is_abort), K_(sub_task_trace_id), K_(is_unique_index), K_(is_global_index) ,K_(is_pre_split));
+               K_(is_abort), K_(sub_task_trace_id), K_(is_unique_index), K_(is_global_index) ,K_(is_pre_split), K_(is_no_logging));
   ObDDLTaskSerializeField() : task_version_(0), parallelism_(0), data_format_version_(0),
                               consumer_group_id_(0), is_abort_(false), sub_task_trace_id_(0),
-                              is_unique_index_(false), is_global_index_(false), is_pre_split_(false) {}
+                              is_unique_index_(false), is_global_index_(false), is_pre_split_(false), is_no_logging_(false) {}
   ObDDLTaskSerializeField(const int64_t task_version,
                           const int64_t parallelism,
                           const uint64_t data_format_version,
@@ -221,6 +221,7 @@ public:
   bool is_unique_index_;
   bool is_global_index_;
   bool is_pre_split_;
+  bool is_no_logging_;
 };
 
 struct ObCreateDDLTaskParam final
@@ -245,7 +246,7 @@ public:
                                  && type_ < share::DDL_MAX && nullptr != allocator_; }
   TO_STRING_KV(K_(tenant_id), K_(object_id), K_(schema_version), K_(parallelism), K_(consumer_group_id), K_(parent_task_id), K_(task_id),
                K_(type), KPC_(src_table_schema), KPC_(dest_table_schema), KPC_(ddl_arg), K_(tenant_data_version),
-               K_(sub_task_trace_id), KPC_(aux_rowkey_doc_schema), KPC_(aux_doc_rowkey_schema), KPC_(aux_doc_word_schema),
+               K_(sub_task_trace_id), KPC_(aux_rowkey_doc_schema), KPC_(aux_doc_rowkey_schema), KPC_(fts_index_aux_schema), KPC_(aux_doc_word_schema),
                K_(vec_rowkey_vid_schema), K_(vec_vid_rowkey_schema), K_(vec_domain_index_schema), K_(vec_index_id_schema), K_(vec_snapshot_data_schema),
                K_(ddl_need_retry_at_executor), K_(is_pre_split));
 public:
@@ -264,6 +265,7 @@ public:
   common::ObIAllocator *allocator_;
   const ObTableSchema *aux_rowkey_doc_schema_;
   const ObTableSchema *aux_doc_rowkey_schema_;
+  const ObTableSchema *fts_index_aux_schema_;
   const ObTableSchema *aux_doc_word_schema_;
   const ObTableSchema *vec_rowkey_vid_schema_;
   const ObTableSchema *vec_vid_rowkey_schema_;

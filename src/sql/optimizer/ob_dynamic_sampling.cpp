@@ -25,6 +25,7 @@
 #include "sql/optimizer/ob_optimizer_context.h"
 #include "sql/optimizer/ob_opt_selectivity.h"
 #include "sql/optimizer/ob_log_plan.h"
+#include "sql/optimizer/ob_access_path_estimation.h"
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 namespace oceanbase {
@@ -673,6 +674,8 @@ int ObDynamicSampling::add_basic_hint_info(ObSqlString &basic_hint_str,
   //Dynamic Sampling SQL shouldn't dynamic sampling
   } else if (OB_FAIL(basic_hint_str.append(" DYNAMIC_SAMPLING(0) "))) {
     LOG_WARN("failed to append", K(ret));
+  } else if (OB_FAIL(basic_hint_str.append(" DBMS_STATS "))) {
+    LOG_WARN("failed to append", K(ret));
   //add query timeout control Dynamic Sampling SQL execute time.
   } else if (OB_FAIL(basic_hint_str.append_fmt(" QUERY_TIMEOUT(%ld) ", query_timeout))) {
     LOG_WARN("failed to append", K(ret));
@@ -870,12 +873,28 @@ int ObDynamicSampling::estimate_table_block_count_and_row_count(const ObDSTableP
   } else if (OB_FAIL(ObBasicStatsEstimator::do_estimate_block_count_and_row_count(*ctx_->get_exec_ctx(),
                                                                                   ctx_->get_session_info()->get_effective_tenant_id(),
                                                                                   param.table_id_,
+                                                                                  false,
                                                                                   tablet_ids,
                                                                                   partition_ids,
                                                                                   column_group_ids,
                                                                                   estimate_result))) {
-    LOG_WARN("failed to do estimate block count and row count", K(ret));
-  } else {
+    LOG_WARN("failed to do estimate block count and row count use best replication", K(ret));
+    if (!ObAccessPathEstimation::is_retry_ret(ret)) {
+      // do nothing
+    } else if (OB_FALSE_IT(ret = OB_SUCCESS)) {
+    } else if (OB_FAIL(ObBasicStatsEstimator::do_estimate_block_count_and_row_count(*ctx_->get_exec_ctx(),
+                                                                                    ctx_->get_session_info()->get_effective_tenant_id(),
+                                                                                    param.table_id_,
+                                                                                    true,
+                                                                                    tablet_ids,
+                                                                                    partition_ids,
+                                                                                    column_group_ids,
+                                                                                    estimate_result))) {
+      LOG_WARN("failed to do estimate block count and row count use leader replication", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     for (int64_t i = 0; i < estimate_result.count(); ++i) {
       macro_block_num_ += estimate_result.at(i).macro_block_count_;
       micro_block_num_ += estimate_result.at(i).micro_block_count_;

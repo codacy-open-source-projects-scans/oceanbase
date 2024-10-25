@@ -2873,7 +2873,7 @@ int ObServerCancelEvolveTaskP::process()
   MTL_SWITCH(arg.tenant_id_) {
     plan_cache = MTL(ObPlanCache*);
     if (evict_baseline && OB_FAIL(plan_cache->
-          cache_evict_baseline_by_sql_id(arg.database_id_, arg.sql_id_))) {
+          cache_evict_baseline(arg.database_id_, arg.sql_id_))) {
       LOG_WARN("failed to evict baseline by sql id", K(ret));
     } else if (evict_plan && OB_FAIL(plan_cache->
           cache_evict_plan_by_sql_id(arg.database_id_, arg.sql_id_))) {
@@ -2909,7 +2909,7 @@ int ObLoadBaselineV2P::process()
   MTL_SWITCH(arg_.tenant_id_) {
     ObPlanCache *plan_cache = MTL(ObPlanCache*);
     uint64_t load_count = 0;
-    if (OB_INVALID_ID == arg_.tenant_id_ || arg_.sql_id_.empty()) {  // load appointed tenant cache
+    if (OB_UNLIKELY(OB_INVALID_ID == arg_.tenant_id_)) {  // load appointed tenant cache
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid argument", K_(arg), K(ret));
     } else if (OB_FAIL(plan_cache->load_plan_baseline(arg_, load_count))) {
@@ -3848,6 +3848,92 @@ int ObDelSSTabletMetaP::process()
   }
   return ret;
 }
+
+int ObDelSSLocalTmpFileP::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("start delete ss_local_tmpfile process", K_(arg));
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K_(arg));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_) {
+      ObTenantFileManager *file_mgr = nullptr;
+      if (OB_ISNULL(file_mgr = MTL(ObTenantFileManager *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("MTL ObTenantFileManager is null", KR(ret), K_(arg_.tenant_id));
+      } else if (OB_FAIL(file_mgr->delete_local_tmp_file(arg_.macro_id_, true/* is_only_delete_read_cache */))) {
+        LOG_WARN("fail to delete ss_local_tmpfile", KR(ret), K_(arg_.macro_id));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDelSSLocalMajorP::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("start delete ss_local_major process", K_(arg));
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K_(arg));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_) {
+      ObTenantFileManager *file_mgr = nullptr;
+      const int64_t cur_time_s = ObTimeUtility::current_time_s();
+      if (OB_ISNULL(file_mgr = MTL(ObTenantFileManager *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("MTL ObTenantFileManager is null", KR(ret), K_(arg_.tenant_id));
+      } else if (OB_FAIL(file_mgr->delete_local_major_data_dir(cur_time_s))) {
+        LOG_WARN("fail to delete ss_local_major", KR(ret), K(cur_time_s));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObCalibrateSSDiskSpaceP::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("start calibrate_ss_disk_space process", K_(arg));
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K_(arg));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_) {
+      ObTenantFileManager *file_mgr = nullptr;
+      if (OB_ISNULL(file_mgr = MTL(ObTenantFileManager *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("MTL ObTenantFileManager is null", KR(ret), K_(arg_.tenant_id));
+      } else if (OB_FAIL(file_mgr->calibrate_disk_space())) {
+        LOG_WARN("fail to calibrate_ss_disk_space", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDelSSTabletMicroP::process()
+{
+  int ret = OB_SUCCESS;
+  LOG_INFO("start del_ss_tablet_micro process", K_(arg));
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K_(arg));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_) {
+      ObSSMicroCache *micro_cache = nullptr;
+      if (OB_ISNULL(micro_cache = MTL(ObSSMicroCache *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ObSSMicroCache is null", KR(ret), K_(arg_.tenant_id));
+      } else if (OB_FAIL(micro_cache->clear_micro_meta_by_tablet_id(arg_.tablet_id_))) {
+        LOG_WARN("fail to del_ss_tablet_micro", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
 
 int ObEnableSSMicroCacheP::process()
 {

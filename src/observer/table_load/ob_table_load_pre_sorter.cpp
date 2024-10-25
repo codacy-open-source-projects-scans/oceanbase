@@ -23,7 +23,8 @@
 #include "storage/direct_load/ob_direct_load_multiple_sstable.h"
 #include "observer/table_load/ob_table_load_task.h"
 #include "observer/table_load/ob_table_load_task_scheduler.h"
-
+#include "observer/table_load/ob_table_load_table_compactor.h"
+#include "observer/table_load/ob_table_load_merger.h"
 namespace oceanbase
 {
 namespace observer
@@ -94,8 +95,9 @@ int ObTableLoadPreSorter::init_task_count()
     ret = OB_INIT_TWICE;
     LOG_WARN("ObTableLoadPreSorter init twice", KR(ret), KP(this));
   } else {
-    dump_task_count_ = ctx_->param_.session_count_ / 5 * 4 >= 1
-                       ? ctx_->param_.session_count_ / 5 * 4 : 1;
+    // dump task count 80%, other task count 20%
+    int32_t tmp_dump_task_count = ctx_->param_.session_count_  * 4 / 5;
+    dump_task_count_ = tmp_dump_task_count >= 1 ? tmp_dump_task_count : 1;
     other_task_count_ = ctx_->param_.session_count_ - dump_task_count_;
     if (other_task_count_ <= 0) {
       other_task_count_ = 1;
@@ -416,6 +418,7 @@ int ObTableLoadPreSorter::build_merge_param(ObDirectLoadMergeParam& merge_param)
   merge_param.dml_row_handler_ = store_ctx_->data_store_table_ctx_->row_handler_;
   merge_param.file_mgr_ = store_ctx_->tmp_file_mgr_;
   merge_param.trans_param_ = store_ctx_->trans_param_;
+  merge_param.index_table_count_ = ctx_->schema_.index_table_count_;
   return ret;
 }
 

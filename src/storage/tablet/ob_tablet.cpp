@@ -94,6 +94,7 @@
 #include "storage/ob_direct_load_table_guard.h"
 #include "share/ob_tablet_replica_checksum_operator.h"
 #include "storage/blocksstable/ob_datum_row_utils.h"
+#include "storage/compaction/ob_partition_merge_policy.h"
 
 namespace oceanbase
 {
@@ -142,6 +143,7 @@ ObTableStoreCache::ObTableStoreCache()
     minor_table_cnt_(0),
     recycle_version_(0),
     last_major_column_count_(0),
+    last_major_macro_block_cnt_(0),
     is_row_store_(true),
     last_major_compressor_type_(ObCompressorType::INVALID_COMPRESSOR),
     last_major_latest_row_store_type_(ObRowStoreType::MAX_ROW_STORE)
@@ -155,6 +157,7 @@ void ObTableStoreCache::reset()
   minor_table_cnt_ = 0;
   recycle_version_ = 0;
   last_major_column_count_ = 0;
+  last_major_macro_block_cnt_ = 0;
   is_row_store_ = true;
   last_major_compressor_type_ = ObCompressorType::INVALID_COMPRESSOR;
   last_major_latest_row_store_type_ = ObRowStoreType::MAX_ROW_STORE;
@@ -167,6 +170,7 @@ void ObTableStoreCache::assign(const ObTableStoreCache &other)
   minor_table_cnt_ = other.minor_table_cnt_;
   recycle_version_ = other.recycle_version_;
   last_major_column_count_ = other.last_major_column_count_;
+  last_major_macro_block_cnt_ = other.last_major_macro_block_cnt_;
   is_row_store_ = other.is_row_store_;
   last_major_compressor_type_ = other.last_major_compressor_type_;
   last_major_latest_row_store_type_ = other.last_major_latest_row_store_type_;
@@ -197,6 +201,7 @@ int ObTableStoreCache::init(
       const ObSSTableMeta &sstable_meta = sst_meta_hdl.get_sstable_meta();
       last_major_snapshot_version_ = last_major->get_snapshot_version();
       recycle_version_ = last_major_snapshot_version_;
+      last_major_macro_block_cnt_ = sstable_meta.get_basic_meta().get_total_macro_block_count();
       last_major_compressor_type_ = sstable_meta.get_basic_meta().get_compressor_type();
       last_major_latest_row_store_type_ = sstable_meta.get_basic_meta().get_latest_row_store_type();
       if (last_major->is_co_sstable()) {
@@ -263,7 +268,7 @@ ObTablet::ObTablet(const bool is_external_tablet)
     is_external_tablet_(is_external_tablet)
 {
 #if defined(__x86_64__) && !defined(ENABLE_OBJ_LEAK_CHECK)
-  check_size<ObTablet, ObRowkeyReadInfo, 1448>();
+  check_size<ObTablet, ObRowkeyReadInfo, 1456>();
 #endif
   MEMSET(memtables_, 0x0, sizeof(memtables_));
 }
@@ -374,7 +379,7 @@ int ObTablet::init_for_first_time_creation(
     LOG_WARN("failed to init shared params", K(ret), K(ls_id), K(tablet_id), K(compat_mode), KP(freezer));
   } else if (OB_FAIL(tablet_meta_.init(ls_id, tablet_id, data_tablet_id,
       create_scn, snapshot_version, compat_mode, table_store_flag, create_tablet_schema.get_schema_version()/*create_schema_version*/,
-      clog_checkpoint_scn, micro_index_clustered, has_cs_replica))) {
+      clog_checkpoint_scn, micro_index_clustered, has_cs_replica, need_generate_cs_replica_cg_array))) {
     LOG_WARN("failed to init tablet meta", K(ret), K(ls_id), K(tablet_id), K(data_tablet_id),
         K(create_scn), K(snapshot_version), K(compat_mode), K(table_store_flag));
   } else if (OB_FAIL(pull_memtables(allocator))) {
@@ -405,7 +410,7 @@ int ObTablet::init_for_first_time_creation(
     LOG_WARN("failed to init table store cache", K(ret), KPC(this));
   } else if (OB_FAIL(check_sstable_column_checksum())) {
     LOG_WARN("failed to check sstable column checksum", K(ret), KPC(this));
-  } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, need_generate_cs_replica_cg_array))) {
+  } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
   } else if (OB_FAIL(init_aggregated_info(allocator, nullptr/* link_writer, tmp_tablet do no write */))) {
     LOG_WARN("fail to init aggregated info", K(ret));
@@ -491,7 +496,7 @@ int ObTablet::init_for_merge(
 
   if (FAILEDx(table_store_cache_.init(table_store_addr_.get_ptr()->get_major_sstables(),
                                       table_store_addr_.get_ptr()->get_minor_sstables(),
-                                      param.storage_schema_->is_row_store()))) {
+                                      storage_schema_addr_.get_ptr()->is_row_store()))) {
     LOG_WARN("failed to init table store cache", K(ret), KPC(this));
   } else if (OB_FAIL(try_update_start_scn())) {
     LOG_WARN("failed to update start scn", K(ret), K(param), K(table_store_addr_));
@@ -504,7 +509,7 @@ int ObTablet::init_for_merge(
   }
 
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, is_convert_co_merge ? true : old_tablet.is_cs_replica_compat()))) {
+  } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
   } else if (OB_FAIL(check_medium_list())) {
     LOG_WARN("failed to check medium list", K(ret), K(param), K(old_tablet));
@@ -598,7 +603,8 @@ int ObTablet::init_for_shared_merge(
             old_tablet.tablet_meta_.create_schema_version_,
             SCN::invalid_scn()/*clog_checkpoint_scn*/,
             old_tablet.tablet_meta_.micro_index_clustered_,
-            false /*has_cs_replica*/))) {
+            false /*has_cs_replica*/,
+            false /*need_generate_cs_replica_cg_array*/))) {
     LOG_WARN("failed to init tablet meta", K(ret), K(old_tablet), K(param));
   } else if (OB_FAIL(ObStorageSchemaUtil::alloc_storage_schema(allocator, storage_schema_addr_.ptr_))) {
     LOG_WARN("failed to alloc mem for tmp storage schema", K(ret));
@@ -695,7 +701,7 @@ int ObTablet::init_with_migrate_param(
       ObTableHandleV2 mds_mini_sstable;
       const blocksstable::ObSSTable *sstable = nullptr;
       const bool need_compat = !tablet_id.is_ls_inner_tablet() && param.version_ < ObMigrationTabletParam::PARAM_VERSION_V3;
-      bool need_process_cs_replica = false;
+      bool need_generate_cs_replica_cg_array = false;
       if (is_transfer) {
         // do nothing
       } else if (!need_compat) {
@@ -747,7 +753,7 @@ int ObTablet::init_with_migrate_param(
         // since transfer use storage schema from ls leader, need convert into cs storage schema in cs replica
         if (!is_transfer) {
           ALLOC_AND_INIT(allocator, storage_schema_addr_, param.storage_schema_);
-        } else if (OB_FAIL(inner_alloc_and_init_storage_schema(allocator, ls_id, tablet_id, param.storage_schema_, need_process_cs_replica))) {
+        } else if (OB_FAIL(inner_alloc_and_init_storage_schema(allocator, ls_id, tablet_id, param.storage_schema_, need_generate_cs_replica_cg_array))) {
           LOG_WARN("failed to int storage schema", K(ret), K(ls_id), K(tablet_id), K(param));
         }
       }
@@ -755,9 +761,9 @@ int ObTablet::init_with_migrate_param(
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(table_store_cache_.init(table_store_addr_.get_ptr()->get_major_sstables(),
               table_store_addr_.get_ptr()->get_minor_sstables(),
-              param.storage_schema_.is_row_store() && !need_process_cs_replica))) {
+              storage_schema_addr_.get_ptr()->is_row_store()))) {
         LOG_WARN("failed to init table store cache", K(ret), KPC(this));
-      } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, need_process_cs_replica || param.is_storage_schema_cs_replica_))) {
+      } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
         LOG_WARN("fail to build read info", K(ret));
       } else if (OB_FAIL(check_medium_list())) {
         LOG_WARN("failed to check medium list", K(ret), K(param));
@@ -831,7 +837,7 @@ int ObTablet::init_for_defragment(
   }
 
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, old_tablet.is_cs_replica_compat()))) {
+  } else if (OB_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("fail to build read info", K(ret));
   } else if (OB_FAIL(check_medium_list())) {
     LOG_WARN("failed to check medium list", K(ret), KPC(this));
@@ -954,14 +960,14 @@ int ObTablet::init_for_sstable_replace(
     LOG_ERROR("find error while checking tablet schema mismatch", K(ret), KPC(storage_schema), K(old_tablet));
   } else if (OB_FAIL(table_store_cache_.init(table_store_addr_.get_ptr()->get_major_sstables(),
       table_store_addr_.get_ptr()->get_minor_sstables(),
-      storage_schema->is_row_store()))) {
+      storage_schema_addr_.get_ptr()->is_row_store()))) {
     LOG_WARN("failed to init table store cache", K(ret), KPC(this));
   } else if (FALSE_IT(finish_medium_scn = get_last_major_snapshot_version())) {
   } else if (nullptr != param.tablet_meta_ && FALSE_IT(tablet_meta_.update_extra_medium_info(
       old_tablet.tablet_meta_.extra_medium_info_, param.tablet_meta_->extra_medium_info_, finish_medium_scn))) {
   } else if (!is_ls_inner_tablet() && !param.is_transfer_replace_ && !is_tablet_split && OB_FAIL(update_tablet_status_from_sstable(false/*expect_persist_status*/))) {
     LOG_WARN("fail to update tablet status from sstable", K(ret));
-  } else if (OB_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, old_tablet.is_cs_replica_compat() || param_is_storage_schema_cs_replica))) {
+  } else if (OB_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
   } else if (OB_FAIL(check_medium_list())) {
     LOG_WARN("failed to check medium list", K(ret), K(param), K(old_tablet));
@@ -1229,7 +1235,7 @@ int ObTablet::init_with_update_medium_info(
   } else {
     ALLOC_AND_INIT(allocator, storage_schema_addr_, *old_storage_schema);
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, old_tablet.is_cs_replica_compat()))) {
+    } else if (OB_FAIL(build_read_info(allocator, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
       LOG_WARN("failed to build read info", K(ret));
     } else {
       if (old_tablet.get_tablet_meta().has_next_tablet_) {
@@ -1352,7 +1358,7 @@ int ObTablet::init_with_replace_members(
     const ObTablet &old_tablet,
     const int64_t snapshot_version,
     const ObTabletDataStatus::STATUS &data_status,
-    bool need_generate_cs_replica_cg_array/*=false*/)
+    const bool need_generate_cs_replica_cg_array/*=false*/)
 {
   int ret = OB_SUCCESS;
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
@@ -1393,10 +1399,6 @@ int ObTablet::init_with_replace_members(
     LOG_WARN("fail to copy table store", K(ret), KPC(old_table_store));
   } else if (OB_FAIL(try_update_start_scn())) {
     LOG_WARN("failed to update start scn", K(ret), KPC(old_table_store));
-  } else if (OB_FAIL(table_store_cache_.init(table_store_addr_.get_ptr()->get_major_sstables(),
-      table_store_addr_.get_ptr()->get_minor_sstables(),
-      need_generate_cs_replica_cg_array ? false /*is_row_store*/ : old_tablet.table_store_cache_.is_row_store_))) {
-    LOG_WARN("failed to init table store cache", K(ret), KPC(this));
   } else if (OB_FAIL(init_aggregated_info(allocator, nullptr/* link_writer, tmp_tablet do no write */))) {
     LOG_WARN("fail to init aggregated info", K(ret));
   } else if (FALSE_IT(set_initial_addr())) {
@@ -1407,6 +1409,22 @@ int ObTablet::init_with_replace_members(
   } else if (need_generate_cs_replica_cg_array) {
     if (OB_FAIL(ObTabletObjLoadHelper::alloc_and_new(allocator, storage_schema_addr_.ptr_))) {
       LOG_WARN("fail to allocate and new object", K(ret));
+    } else if (old_storage_schema->is_column_info_simplified()) {
+      ObUpdateCSReplicaSchemaParam param;
+      ObStorageSchema *full_storage_schema = nullptr;
+      if (OB_FAIL(param.init(*this))) {
+        LOG_WARN("fail to init param", K(ret), KPC(this));
+      } else if (OB_FAIL(ObCSReplicaUtil::get_rebuild_storage_schema(allocator, param, *old_storage_schema, full_storage_schema))) {
+        LOG_WARN("failed to get rebuild storage schema", K(ret), K(param), KPC(old_storage_schema));
+      } else if (OB_ISNULL(full_storage_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null full storage schema", K(ret), KPC(old_storage_schema));
+      } else if (OB_FAIL(ObStorageSchemaUtil::update_tablet_storage_schema(
+          old_tablet.tablet_meta_.tablet_id_, allocator, *old_storage_schema,
+          *full_storage_schema, storage_schema_addr_.ptr_))) {
+        LOG_WARN("failed to choose and save storage schema", K(ret), K(old_tablet), K(param));
+      }
+      ObTabletObjLoadHelper::free(allocator, full_storage_schema);
     } else if (OB_FAIL(storage_schema_addr_.get_ptr()->init(allocator, *old_storage_schema, false /*skip_column_info*/,
                                                             nullptr /*column_group_schema*/, true /*need_generate_cs_replica_cg_array*/))) {
       LOG_WARN("fail to initialize tablet member", K(ret), K(storage_schema_addr_));
@@ -1415,8 +1433,12 @@ int ObTablet::init_with_replace_members(
     ALLOC_AND_INIT(allocator, storage_schema_addr_, *old_storage_schema);
   }
 
-  if (FAILEDx(build_read_info(allocator, nullptr /*tablet*/, need_generate_cs_replica_cg_array ? true : old_tablet.is_cs_replica_compat()))) {
+  if (FAILEDx(build_read_info(allocator, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
+  } else if (OB_FAIL(table_store_cache_.init(table_store_addr_.get_ptr()->get_major_sstables(),
+      table_store_addr_.get_ptr()->get_minor_sstables(),
+      storage_schema_addr_.get_ptr()->is_row_store()))) {
+    LOG_WARN("failed to init table store cache", K(ret), KPC(this));
   } else {
     if (old_tablet.get_tablet_meta().has_next_tablet_) {
       set_next_tablet_guard(old_tablet.next_tablet_guard_);
@@ -1490,7 +1512,7 @@ int ObTablet::init_with_mds_sstable(
       table_store_addr_.get_ptr()->get_minor_sstables(),
       old_tablet.table_store_cache_.is_row_store_))) {
     LOG_WARN("failed to init table store cache", K(ret), KPC(this));
-  } else if (CLICK() && FAILEDx(build_read_info(*allocator_, nullptr /*tablet*/, old_tablet.is_cs_replica_compat()))) {
+  } else if (CLICK() && FAILEDx(build_read_info(*allocator_, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
   } else if (CLICK_FAIL(check_medium_list())) {
     LOG_WARN("failed to check medium list", K(ret), KPC(this));
@@ -1671,7 +1693,7 @@ int ObTablet::inner_init_compat_normal_tablet(
       table_store_addr_.get_ptr()->get_minor_sstables(),
       old_tablet.table_store_cache_.is_row_store_))) {
     LOG_WARN("failed to init table store cache", K(ret), KPC(this));
-  } else if (CLICK_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, old_tablet.is_cs_replica_compat()))) {
+  } else if (CLICK_FAIL(build_read_info(*allocator_, nullptr /*tablet*/, storage_schema_addr_.get_ptr()->is_cs_replica_compat()))) {
     LOG_WARN("failed to build read info", K(ret));
   } else if (CLICK_FAIL(check_medium_list())) {
     LOG_WARN("failed to check medium list", K(ret), KPC(this));
@@ -2997,14 +3019,14 @@ int ObTablet::inc_ref_with_macro_iter(ObMacroInfoIterator &macro_iter, bool &inc
     } else if (OB_TMP_FAIL(print_arr.push_back(block_info.macro_id_))) {
       LOG_WARN("fail to push macro id into print array", K(tmp_ret));
     } else if (MAX_PRINT_COUNT == print_arr.size()) {
-      FLOG_INFO("increase tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+      LOG_DEBUG("increase tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
       print_arr.reuse();
     }
 #endif
   }
 #ifndef OB_BUILD_PACKAGE
   if (0 != print_arr.count()) {
-    FLOG_INFO("increase tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+    LOG_DEBUG("increase tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
     print_arr.reuse();
   }
 #endif
@@ -3033,14 +3055,14 @@ int ObTablet::inc_ref_with_macro_iter(ObMacroInfoIterator &macro_iter, bool &inc
         } else if (OB_TMP_FAIL(print_arr.push_back(block_info.macro_id_))) {
           LOG_WARN("fail to push macro id into print array", K(tmp_ret));
         } else if (MAX_PRINT_COUNT == print_arr.size()) {
-          FLOG_INFO("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+          LOG_DEBUG("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
           print_arr.reuse();
         }
 #endif
       }
 #ifndef OB_BUILD_PACKAGE
       if (0 != print_arr.count()) {
-        FLOG_INFO("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+        LOG_DEBUG("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
         print_arr.reuse();
       }
 #endif
@@ -3278,7 +3300,7 @@ void ObTablet::dec_ref_with_macro_iter(ObMacroInfoIterator &macro_iter) const
         if (OB_TMP_FAIL(print_arr.push_back(block_info.macro_id_))) {
           LOG_WARN("fail to push macro id into print array", K(tmp_ret));
         } else if (MAX_PRINT_COUNT == print_arr.size()) {
-          FLOG_INFO("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+          LOG_DEBUG("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
           print_arr.reuse();
         }
 #endif
@@ -3287,7 +3309,7 @@ void ObTablet::dec_ref_with_macro_iter(ObMacroInfoIterator &macro_iter) const
   }
 #ifndef OB_BUILD_PACKAGE
   if (0 != print_arr.size()) {
-    FLOG_INFO("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
+    LOG_DEBUG("decrease tablet's macro ref", K(ret), K(tablet_meta_.tablet_id_), K(tablet_meta_.ls_id_), K(print_arr));
     print_arr.reuse();
   }
 #endif
@@ -4631,10 +4653,13 @@ int ObTablet::do_rowkey_exists(
         // ROWKEY IN_ROW_CACHE / NOT EXIST
       } else if (FALSE_IT(context.store_ctx_->tablet_stat_.exist_row_read_table_cnt_ = check_table_cnt)) {
       } else if (FALSE_IT(context.store_ctx_->tablet_stat_.exist_row_total_table_cnt_ = table_iter.table_store_iter_.count())) {
-      } else if (ObBasicMergeScheduler::get_merge_scheduler()->enable_adaptive_compaction()) {
-        bool report_succ = false; /*placeholder*/
-        if (OB_TMP_FAIL(MTL(ObTenantTabletStatMgr *)->report_stat(context.store_ctx_->tablet_stat_, report_succ))) {
-          LOG_WARN("failed to report tablet stat", K(tmp_ret), K(stat));
+      } else {
+        const compaction::ObBasicMergeScheduler *scheduler = nullptr;
+        if (OB_NOT_NULL(scheduler = ObBasicMergeScheduler::get_merge_scheduler()) && scheduler->enable_adaptive_compaction()) {
+          bool report_succ = false; /*placeholder*/
+          if (OB_TMP_FAIL(MTL(ObTenantTabletStatMgr *)->report_stat(context.store_ctx_->tablet_stat_, report_succ))) {
+            LOG_WARN("failed to report tablet stat", K(tmp_ret), K(stat));
+          }
         }
       }
     }
@@ -4689,10 +4714,13 @@ int ObTablet::do_rowkeys_exist(
     int tmp_ret = OB_SUCCESS;
     if (0 == access_ctx.table_store_stat_.empty_read_cnt_) {
       // ROWKEY IN_ROW_CACHE / NOT EXIST
-    } else if (ObBasicMergeScheduler::get_merge_scheduler()->enable_adaptive_compaction()) {
-      bool report_succ = false; /*placeholder*/
-      if (OB_TMP_FAIL(MTL(ObTenantTabletStatMgr *)->report_stat(tablet_stat, report_succ))) {
-        LOG_WARN("failed to report tablet stat", K(tmp_ret), K(tablet_stat));
+    } else {
+      const compaction::ObBasicMergeScheduler *scheduler = nullptr;
+      if (OB_NOT_NULL(scheduler = ObBasicMergeScheduler::get_merge_scheduler()) && scheduler->enable_adaptive_compaction()) {
+        bool report_succ = false; /*placeholder*/
+        if (OB_TMP_FAIL(MTL(ObTenantTabletStatMgr *)->report_stat(tablet_stat, report_succ))) {
+          LOG_WARN("failed to report tablet stat", K(tmp_ret), K(tablet_stat));
+        }
       }
     }
   }
@@ -5363,7 +5391,8 @@ int ObTablet::build_read_info(
   tablet = (tablet == nullptr) ? this : tablet;
   if (OB_FAIL(tablet->load_storage_schema(allocator, storage_schema))) {
     LOG_WARN("fail to load storage schema", K(ret));
-  } else if (OB_UNLIKELY(storage_schema->is_row_store() && is_cs_replica_compat)) {
+  } else if (OB_UNLIKELY((storage_schema->is_row_store() && is_cs_replica_compat)
+                      || (storage_schema->is_cg_array_generated_in_cs_replica() && !is_cs_replica_compat))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("mismatch storage schema and cs replica param", K(ret), KPC(storage_schema), K(is_cs_replica_compat));
   } else if (OB_FAIL(storage_schema->get_mulit_version_rowkey_column_ids(cols_desc))) {
@@ -5450,7 +5479,7 @@ int ObTablet::build_migration_tablet_param(
     mig_tablet_param.ddl_execution_id_ = tablet_meta_.ddl_execution_id_;
     mig_tablet_param.ddl_data_format_version_ = tablet_meta_.ddl_data_format_version_;
     mig_tablet_param.ddl_commit_scn_ = tablet_meta_.ddl_commit_scn_;
-    mig_tablet_param.ddl_table_type_ = tablet_meta_.ddl_table_type_;
+    mig_tablet_param.ddl_replay_status_ = tablet_meta_.ddl_replay_status_;
     mig_tablet_param.report_status_ = tablet_meta_.report_status_;
     mig_tablet_param.mds_checkpoint_scn_ = tablet_meta_.mds_checkpoint_scn_;
     mig_tablet_param.transfer_info_ = tablet_meta_.transfer_info_;
@@ -5815,44 +5844,66 @@ int ObTablet::get_kept_snapshot_info(
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   snapshot_info.reset();
-  int64_t max_merged_snapshot = 0;
-  int64_t min_medium_snapshot = INT64_MAX;
-  int64_t old_min_reserved_snapshot = 0;
   const share::ObLSID &ls_id = tablet_meta_.ls_id_;
   const common::ObTabletID &tablet_id = tablet_meta_.tablet_id_;
 
-  if (0 < get_major_table_count()) {
-    max_merged_snapshot = get_last_major_snapshot_version();
+  const int64_t last_major_snapshot_version = get_last_major_snapshot_version();
+  bool need_check_medium_info = false;
+  int64_t max_merged_snapshot = 0;
+  if (0 == last_major_snapshot_version) {
+    // do nothing
+  } else if (!GCTX.is_shared_storage_mode() || last_major_snapshot_version >= MERGE_SCHEDULER_PTR->get_inner_table_merged_scn()) {
+    max_merged_snapshot = last_major_snapshot_version;
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else {
+    max_merged_snapshot = MERGE_SCHEDULER_PTR->get_inner_table_merged_scn();
+    need_check_medium_info = true;
+#endif
   }
 
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(MTL(ObTenantFreezeInfoMgr*)->get_min_reserved_snapshot(
-      tablet_id, max_merged_snapshot, snapshot_info))) {
-    LOG_WARN("failed to get multi version from freeze info mgr", K(ret), K(tablet_id));
-  } else if (!is_ls_inner_tablet()) {
+  int64_t min_medium_snapshot = INT64_MAX;
+  if (!is_ls_inner_tablet()) {
     common::ObArenaAllocator allocator;
     SMART_VARS_2((ObTableScanParam, scan_param), (ObTabletMediumInfoReader, medium_info_reader)) {
-      if (OB_FAIL(ObMdsScanParamHelper::build_medium_info_scan_param(
-          allocator,
-          ls_id,
-          tablet_id,
-          scan_param))) {
+      if (OB_FAIL(ObMdsScanParamHelper::build_medium_info_scan_param(allocator, ls_id, tablet_id, scan_param))) {
         LOG_WARN("fail to build scan param", K(ret), K(ls_id), K(tablet_id));
       } else if (OB_FAIL(medium_info_reader.init(*this, scan_param))) {
         LOG_WARN("failed to init medium info reader", K(ret));
-      } else if (OB_FAIL(medium_info_reader.get_min_medium_snapshot(max_merged_snapshot, min_medium_snapshot))) {
+      } else if (need_check_medium_info) {
+        ObMediumCompactionInfoKey medium_info_key(max_merged_snapshot);
+        ObMediumCompactionInfo *medium_info = nullptr;
+        if (OB_FAIL(ObTabletObjLoadHelper::alloc_and_new(allocator, medium_info))) {
+          LOG_WARN("fail to alloc and new", K(ret));
+        } else if (OB_FAIL(medium_info_reader.get_specified_medium_info(allocator, medium_info_key, *medium_info))) {
+          if (OB_ENTRY_NOT_EXIST == ret) {
+            ret = OB_SUCCESS;
+            max_merged_snapshot = last_major_snapshot_version;
+          } else {
+            LOG_WARN("failed to get specified scn info", K(ret), K(max_merged_snapshot));
+          }
+        } else if (ObAdaptiveMergePolicy::DURING_DDL != medium_info->medium_merge_reason_) {
+          max_merged_snapshot = last_major_snapshot_version;
+        }
+      }
+
+      if (FAILEDx(medium_info_reader.get_min_medium_snapshot(max_merged_snapshot, min_medium_snapshot))) {
         LOG_WARN("failed to get min medium snapshot", K(ret), K(tablet_id));
       }
     }
   }
 
-  if (OB_SUCC(ret)) {
+  ObStorageSnapshotInfo old_snapshot_info;
+  if (FAILEDx(MTL(ObTenantFreezeInfoMgr*)->get_min_reserved_snapshot(tablet_id, max_merged_snapshot, snapshot_info))) {
+    LOG_WARN("failed to get multi version from freeze info mgr", K(ret), K(tablet_id));
+  } else {
+    old_snapshot_info = snapshot_info;
     bool use_multi_version_start_on_tablet = false;
-    old_min_reserved_snapshot = snapshot_info.snapshot_;
-    const bool is_new_mv_in_restore = ObSnapShotType::SNAPSHOT_FOR_MAJOR_REFRESH_MV == snapshot_info.snapshot_type_ &&
-                                      0 == snapshot_info.snapshot_;
-    // if exist new mv in restore, use special snapshot info
-    if (min_reserved_snapshot_on_ls > 0) {
+
+    if (!tablet_meta_.ha_status_.is_data_status_complete()) {
+      use_multi_version_start_on_tablet = true;
+    } else if (ObSnapShotType::SNAPSHOT_FOR_MAJOR_REFRESH_MV == snapshot_info.snapshot_type_ && 0 == snapshot_info.snapshot_) {
+      use_multi_version_start_on_tablet = true; // if exist new mv in restore, use special snapshot info
+    } else if (min_reserved_snapshot_on_ls > 0) {
       snapshot_info.update_by_smaller_snapshot(ObStorageSnapshotInfo::SNAPSHOT_FOR_LS_RESERVED, min_reserved_snapshot_on_ls);
       snapshot_info.update_by_smaller_snapshot(ObStorageSnapshotInfo::SNAPSHOT_FOR_MIN_MEDIUM, min_medium_snapshot);
       if (snapshot_info.snapshot_ < get_multi_version_start()) {
@@ -5862,7 +5913,7 @@ int ObTablet::get_kept_snapshot_info(
       // if not sync ls_reserved_snapshot yet, should use multi_version_start on tablet
       use_multi_version_start_on_tablet = true;
     }
-    if (use_multi_version_start_on_tablet || is_new_mv_in_restore) {
+    if (use_multi_version_start_on_tablet) {
       snapshot_info.snapshot_type_ = ObStorageSnapshotInfo::SNAPSHOT_MULTI_VERSION_START_ON_TABLET;
       snapshot_info.snapshot_ = get_multi_version_start();
     }
@@ -5872,9 +5923,9 @@ int ObTablet::get_kept_snapshot_info(
     if (current_time - (snapshot_info.snapshot_ / 1000 /*use microsecond here*/) > 2_hour) {
       if (REACH_TENANT_TIME_INTERVAL(10_s)) {
         LOG_INFO("tablet multi version start not advance for a long time", K(ret),
-          "ls_id", get_tablet_meta().ls_id_, K(tablet_id),
-          K(snapshot_info), K(old_min_reserved_snapshot), K(min_medium_snapshot),
-          K(min_reserved_snapshot_on_ls));
+                 "ls_id", get_tablet_meta().ls_id_, K(tablet_id),
+                 K(snapshot_info), K(old_snapshot_info), K(min_medium_snapshot),
+                 K(min_reserved_snapshot_on_ls));
       }
     }
   }
@@ -5883,8 +5934,8 @@ int ObTablet::get_kept_snapshot_info(
     LOG_WARN("snapshot info is invalid", KR(ret), K(snapshot_info));
   }
   LOG_INFO("get multi version start", "ls_id", get_tablet_meta().ls_id_, K(tablet_id),
-      K(snapshot_info), K(old_min_reserved_snapshot),
-      K(min_medium_snapshot), K(min_reserved_snapshot_on_ls), K(max_merged_snapshot));
+           K(snapshot_info), K(old_snapshot_info),
+           K(min_medium_snapshot), K(min_reserved_snapshot_on_ls), K(max_merged_snapshot));
   return ret;
 }
 
@@ -5998,6 +6049,9 @@ int ObTablet::update_tablet_autoinc_seq(const uint64_t autoinc_seq, const bool i
   }
 
   if (OB_FAIL(ret)) {
+  } else if (OB_UNLIKELY(!is_committed)) {
+    ret = OB_EAGAIN;
+    LOG_WARN("tablet autoinc not committed", K(ret), K(autoinc_seq));
   } else if (OB_FAIL(curr_autoinc_seq.get_autoinc_seq_value(curr_auto_inc_seqvalue))) {
     LOG_WARN("failed to get autoinc seq value", K(ret));
   } else if (autoinc_seq > curr_auto_inc_seqvalue) {
@@ -6074,7 +6128,7 @@ int ObTablet::inner_pre_process_cs_replica(
   if (is_row_store() || !is_ddl_direct_load(direct_load_type)) {
     // do not need to process cs replica
   } else if (is_cs_replica_compat) {
-    if (tablet_meta_.is_cs_replica_global_visable_when_ddl()) {
+    if (tablet_meta_.is_cs_replica_global_visible_and_replay_column_store()) {
       table_key.table_type_ = ObITable::COLUMN_ORIENTED_SSTABLE; // for passing defence
     } else {
       replay_normal_in_cs_replica = true;
@@ -7103,7 +7157,7 @@ int ObTablet::build_transfer_tablet_param_current_(
     mig_tablet_param.max_sync_storage_schema_version_ = mig_tablet_param.storage_schema_.schema_version_;
     mig_tablet_param.ddl_execution_id_ = tablet_meta_.ddl_execution_id_;
     mig_tablet_param.ddl_data_format_version_ = tablet_meta_.ddl_data_format_version_;
-    mig_tablet_param.ddl_table_type_ = tablet_meta_.ddl_table_type_;
+    mig_tablet_param.ddl_replay_status_ = tablet_meta_.ddl_replay_status_;
     mig_tablet_param.mds_checkpoint_scn_ = user_data.transfer_scn_;
     mig_tablet_param.report_status_.reset();
     mig_tablet_param.is_storage_schema_cs_replica_ = is_cs_replica_compat();
@@ -7491,7 +7545,10 @@ bool ObTablet::exist_memtable_with_end_scn(const ObITable *table, const SCN &end
   // we need to make sure duplicate memtable was not added to tablet,
   // and ensure active memtable could be added to tablet
   bool is_exist = false;
-  if (table->get_end_scn() == end_scn && memtable_count_ >= 1) {
+  if (0 >= memtable_count_) {
+  } else if (table->get_end_scn() == end_scn || end_scn.is_max()) {
+    // Pay Attention!!!
+    // The end scn of memtable can only be max or a certain value.
     for (int64_t i = memtable_count_ - 1; i >= 0 ; --i) {
       const ObIMemtable *memtable = memtables_[i];
       if (memtable == table) {
@@ -8603,24 +8660,24 @@ int ObTablet::inner_alloc_and_init_storage_schema(
     const share::ObLSID &ls_id,
     const ObTabletID &tablet_id,
     const ObStorageSchema &input_storage_schema,
-    bool &need_process_cs_replica)
+    bool &need_generate_cs_replica_cg_array)
 {
   int ret = OB_SUCCESS;
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
-  need_process_cs_replica = false;
+  need_generate_cs_replica_cg_array = false;
   if (OB_FAIL(MTL(ObLSService*)->get_ls(ls_id, ls_handle, ObLSGetMod::HA_MOD))) {
     LOG_WARN("failed to get ls", K(ret), K(ls_id));
   } else if (OB_UNLIKELY(!ls_handle.is_valid()) || OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls is invalid or nullptr", K(ret), K(ls_id), K(ls_handle), KPC(ls));
-  } else if (OB_FAIL(ObCSReplicaUtil::check_need_process_cs_replica(*ls, tablet_id, input_storage_schema, need_process_cs_replica))) {
+  } else if (OB_FAIL(ObCSReplicaUtil::check_need_generate_cs_replica_cg_array(*ls, tablet_id, input_storage_schema, need_generate_cs_replica_cg_array))) {
     LOG_WARN("failed to check need process cs replica", K(ret), K(ls_id), K(tablet_id), K(input_storage_schema));
   } else if (OB_FAIL(ObTabletObjLoadHelper::alloc_and_new(allocator, storage_schema_addr_.ptr_))) {
     LOG_WARN("fail to alloc and new storage schema", K(ret));
   } else if (OB_FAIL(storage_schema_addr_.get_ptr()->init(allocator, input_storage_schema,
-                     false /*skip_column_info*/, nullptr /*column_group_schema*/, need_process_cs_replica))) {
-    LOG_WARN("fail to init storage schema", K(ret), K(input_storage_schema), K(need_process_cs_replica));
+                     false /*skip_column_info*/, nullptr /*column_group_schema*/, need_generate_cs_replica_cg_array))) {
+    LOG_WARN("fail to init storage schema", K(ret), K(input_storage_schema), K(need_generate_cs_replica_cg_array));
   }
   return ret;
 }
