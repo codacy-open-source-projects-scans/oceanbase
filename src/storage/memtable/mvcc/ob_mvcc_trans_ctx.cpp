@@ -574,12 +574,14 @@ int ObTransCallbackMgr::remove_callbacks_for_fast_commit(const ObCallbackScopeAr
 int ObTransCallbackMgr::remove_callback_for_uncommited_txn(const memtable::ObMemtableSet *memtable_set)
 {
   int ret = OB_SUCCESS;
-  const bool serial_final = is_serial_final_();
-  const share::SCN stop_scn = serial_final ? share::SCN::max_scn() : serial_sync_scn_;
   if (OB_ISNULL(memtable_set)) {
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "memtable is null", K(ret));
-  } else {
+  } else if (!memtable_set->empty()) {
+    share::SCN stop_scn = share::SCN::min_scn();
+    for (common::hash::ObHashSet<uint64_t>::const_iterator iter = memtable_set->begin(); iter != memtable_set->end(); ++iter) {
+      stop_scn = share::SCN::max(((const memtable::ObMemtable *)iter->first)->get_max_end_scn(), stop_scn);
+    }
     CALLBACK_LISTS_FOREACH(idx, list) {
       if (OB_FAIL(list->remove_callbacks_for_remove_memtable(memtable_set, stop_scn))) {
         TRANS_LOG(WARN, "fifo remove callback fail", K(ret), K(idx), KPC(memtable_set));
@@ -1999,13 +2001,16 @@ int ObMvccRowCallback::row_delete()
 int64_t ObMvccRowCallback::to_string(char *buf, const int64_t buf_len) const
 {
   int64_t pos = 0;
-  databuff_printf(buf, buf_len, pos,
-      "[this=%p, ctx=%s, is_link=%d, need_submit_log=%d, "
-      "value=%s, tnode=(%s), "
-      "seq_no=%s, memtable=%p, scn=%s",
-      this, to_cstring(ctx_), is_link_, need_submit_log_,
-      to_cstring(value_), NULL == tnode_ ? "null" : to_cstring(*tnode_),
-      to_cstring(seq_no_), memtable_, to_cstring(scn_));
+  databuff_printf(buf, buf_len, pos, "[this=%p, ctx=", this);
+  databuff_printf(buf, buf_len, pos, ctx_);
+  databuff_printf(buf, buf_len, pos, ", is_link=%d, need_submit_log=%d, value=",
+      is_link_, need_submit_log_);
+  databuff_printf(buf, buf_len, pos, value_);
+  databuff_printf(buf, buf_len, pos, ", tnode=(");
+  databuff_printf(buf, buf_len, pos, tnode_);
+  databuff_printf(buf, buf_len, pos, "), seq_no=%ld, memtable=%p, scn=",
+      seq_no_.cast_to_int(), memtable_);
+  databuff_printf(buf, buf_len, pos, scn_);
   return pos;
 }
 

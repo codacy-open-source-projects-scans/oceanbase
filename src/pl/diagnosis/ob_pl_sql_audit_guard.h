@@ -17,6 +17,7 @@
 #include "sql/monitor/ob_exec_stat.h"
 #include "observer/ob_inner_sql_connection.h"
 #include "sql/resolver/ob_stmt_type.h"
+#include "observer/mysql/obmp_base.h"
 
 namespace oceanbase
 {
@@ -107,6 +108,7 @@ private:
   bool enable_perf_event_;
   bool enable_sql_audit_;
   bool enable_sql_stat_;
+  bool enable_sqlstat_;
   sql::ObExecContext &exec_ctx_;
   sql::ObSQLSessionInfo &session_info_;
 
@@ -124,6 +126,11 @@ private:
   observer::ObQueryRetryCtrl &retry_ctrl_;
   sql::ObPLSPITraceIdGuard &traceid_guard_;
   sql::stmt::StmtType stmt_type_;
+
+  ObExecutingSqlStatRecord sqlstat_record_;
+  int64_t sql_used_memory_size_;
+  observer::ObProcessMallocCallback pmcb_;
+  lib::ObMallocCallbackGuard memory_guard_;
 };
 
 }

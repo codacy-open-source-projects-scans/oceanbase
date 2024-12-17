@@ -95,6 +95,8 @@ enum class ObTableLoadExeMode {
 struct ObTableLoadParam
 {
 public:
+  static const int64_t MAX_BATCH_SIZE = 65536;
+  static const int64_t DEFAULT_BATCH_SIZE = 256;
   ObTableLoadParam()
     : tenant_id_(common::OB_INVALID_ID),
       table_id_(common::OB_INVALID_ID),
@@ -116,7 +118,8 @@ public:
       load_mode_(storage::ObDirectLoadMode::INVALID_MODE),
       compressor_type_(ObCompressorType::INVALID_COMPRESSOR),
       online_sample_percent_(1.),
-      load_level_(storage::ObDirectLoadLevel::INVALID_LEVEL)
+      load_level_(storage::ObDirectLoadLevel::INVALID_LEVEL),
+      task_need_sort_(false)
   {
   }
 
@@ -137,7 +140,7 @@ public:
            common::OB_INVALID_ID != table_id_ &&
            parallel_ > 0 &&
            session_count_ > 0 &&
-           batch_size_ > 0 &&
+           batch_size_ > 0 && batch_size_ <= MAX_BATCH_SIZE &&
            column_count_ > 0 &&
            sql::ObLoadDupActionType::LOAD_INVALID_MODE != dup_action_ &&
            storage::ObDirectLoadMethod::is_type_valid(method_) &&
@@ -176,7 +179,8 @@ public:
                "direct_load_mode", storage::ObDirectLoadMode::get_type_string(load_mode_),
                K_(compressor_type),
                K_(online_sample_percent),
-               "direct_load_level", storage::ObDirectLoadLevel::get_type_string(load_level_));
+               "direct_load_level", storage::ObDirectLoadLevel::get_type_string(load_level_),
+               K_(task_need_sort));
 
 public:
   uint64_t tenant_id_;
@@ -187,7 +191,7 @@ public:
   uint64_t max_error_row_count_;
   uint64_t sql_mode_; // unused
   int32_t column_count_;
-  bool need_sort_;
+  bool need_sort_;  // 表示主表是否要排序
   bool px_mode_;
   bool online_opt_stat_gather_;
   sql::ObLoadDupActionType dup_action_;
@@ -200,6 +204,7 @@ public:
   ObCompressorType compressor_type_;
   double online_sample_percent_;
   storage::ObDirectLoadLevel::Type load_level_;
+  bool task_need_sort_; // 表示导入任务是否会走到排序流程
 };
 
 struct ObTableLoadDDLParam

@@ -23,6 +23,7 @@
 #include "storage/backup/ob_backup_factory.h"
 #include "observer/omt/ob_tenant.h"
 #include "common/storage/ob_device_common.h"
+#include "storage/backup/ob_backup_meta_cache.h"
 
 namespace oceanbase
 {
@@ -456,9 +457,6 @@ int ObCopyMacroBlockObReader::get_read_info_(const ObCopyMacroBlockHeader &heade
     } else if (OB_ISNULL(macro_block_reuse_mgr_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("macro block reuse mgr is NULL", K(ret), KP(macro_block_reuse_mgr_));
-    } else if (macro_meta.get_macro_id() != ObIndexBlockRowHeader::DEFAULT_IDX_ROW_MACRO_ID) {
-      ret = OB_INVALID_DATA;
-      LOG_WARN("local macro id of major sstable hasn't been set to default", K(ret), K(macro_meta));
     } else if (OB_FAIL(macro_block_reuse_mgr_->get_macro_block_reuse_info(table_key_, macro_meta.get_logic_id(), macro_id, data_checksum))) {
       LOG_WARN("failed to get macro block reuse info", K(ret), K(table_key_), K(macro_meta.get_logic_id()));
     } else if (macro_meta.get_meta_val().data_checksum_ != data_checksum) {
@@ -1419,12 +1417,6 @@ int ObCopyTabletInfoRestoreReader::fetch_tablet_info(obrpc::ObCopyTabletInfo &ta
     const common::ObTabletID &tablet_id = tablet_id_array_.at(tablet_id_index_);
     tablet_info.tablet_id_ = tablet_id;
     tablet_info.version_ = 0; // for restore this is invalid
-#ifdef ERRSIM
-    if (!tablet_id.is_ls_inner_tablet() && tablet_id_array_.count() > 10 && 5 == tablet_id_index_) {
-      ret = OB_E(EventTable::EN_RESTORE_FETCH_TABLET_INFO) OB_SUCCESS;
-      LOG_WARN("errsim restore fetch tablet info", K(ret), K(tablet_id), K_(tablet_id_index), K(tablet_id_array_.count()), K(tablet_id_array_));
-    }
-#endif
     if (OB_FAIL(ret)) {
       // do nothing
     } else if (OB_FAIL(restore_base_info_->get_restore_data_dest_id(*GCTX.sql_proxy_, MTL_ID(), dest_id))) {
@@ -1966,7 +1958,7 @@ int ObCopySSTableInfoRestoreReader::inner_get_backup_sstable_metas_(
   } else if (OB_FAIL(get_macro_block_backup_path_(sstable_meta_index, data_type, sstable_meta_backup_path))) {
     LOG_WARN("failed to get macro block backup path", K(ret), KPC(restore_base_info_));
   } else if (OB_FAIL(backup::ObLSBackupRestoreUtil::read_sstable_metas(sstable_meta_backup_path.get_obstr(),
-      restore_base_info_->backup_dest_.get_storage_info(), mod, sstable_meta_index, backup_sstable_meta_array))) {
+      restore_base_info_->backup_dest_.get_storage_info(), mod, sstable_meta_index, &OB_BACKUP_META_CACHE, backup_sstable_meta_array))) {
     LOG_WARN("failed to read sstable meta", K(ret), KPC(restore_base_info_));
   } else if (OB_FAIL(filter_backup_sstable_meta_on_data_type_(data_type, backup_sstable_meta_array))) {
     LOG_WARN("failed to filter backup sstable meta on data type", K(ret), K(data_type));
@@ -3857,6 +3849,13 @@ int ObCopyLSViewInfoRestoreReader::get_next_tablet_info(
       LOG_WARN("failed to get next tablet meta", K(ret));
     }
   }
+
+#ifdef ERRSIM
+  if (OB_SUCC(ret)) {
+    ret = OB_E(EventTable::EN_RESTORE_FETCH_TABLET_INFO) OB_SUCCESS;
+    LOG_WARN("errsim restore fetch tablet info", K(ret));
+  }
+#endif
 
   if (OB_SUCC(ret)) {
     tablet_info.data_size_ = 0;

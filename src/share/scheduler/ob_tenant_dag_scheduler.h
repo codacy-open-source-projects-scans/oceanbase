@@ -23,7 +23,6 @@
 #include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_scheduler_config.h"
 #include "share/scheduler/ob_diagnose_config.h"
-#include "share/resource_manager/ob_resource_plan_info.h"
 #include "share/ob_table_range.h"
 #include "common/errsim_module/ob_errsim_module_type.h"
 
@@ -234,6 +233,12 @@ public:
     TASK_TYPE_CHECK_CONVERT_TABLET = 79,
     TASK_TYPE_VECTOR_INDEX_MEMDATA_SYNC = 80,
     TASK_TYPE_DELETE_LOB_META_ROW = 81,
+    TASK_TYPE_TRANSFER_BUILD_TABLET_INFO = 82,
+    TASK_TYPE_BACKUP_LS_LOG_GROUP = 83,
+    TASK_TYPE_BACKUP_LS_LOG = 84,
+    TASK_TYPE_BACKUP_LS_LOG_FILE = 85,
+    TASK_TYPE_BACKUP_LS_LOG_FINISH = 86,
+    TASK_TYPE_BACKUP_LS_LOG_GROUP_FINISH = 87,
     TASK_TYPE_MAX,
   };
 
@@ -408,8 +413,9 @@ public:
     }
     return diagnose_type;
   }
-  bool has_set_stop() { return ATOMIC_LOAD(&is_stop_); }
-  void set_stop() { ATOMIC_SET(&is_stop_, true); }
+  bool has_set_stop() { return is_stop_; }
+  void set_stop();
+  void set_stop_without_lock();
   ObIDagNet *get_dag_net() const { return dag_net_; }
   void set_dag_net(ObIDagNet &dag_net)
   {
@@ -430,6 +436,8 @@ public:
     lib::ObMutexGuard guard(lock_);
     return task_list_.get_size();
   }
+  void set_max_concurrent_task_cnt(int64_t max_concurrent_task_cnt) { max_concurrent_task_cnt_ = max_concurrent_task_cnt; }
+  int64_t get_max_concurrent_task_cnt() const { return max_concurrent_task_cnt_;}
   virtual int gene_warning_info(ObDagWarningInfo &info, ObIAllocator &allocator);
   virtual bool ignore_warning() { return false; }
   virtual bool check_can_retry();
@@ -468,12 +476,9 @@ public:
   }
   void set_start_time() { start_time_ = ObTimeUtility::fast_current_time(); }
   int64_t get_start_time() const { return start_time_; }
-  void set_force_cancel_flag();
-  bool get_force_cancel_flag() { return force_cancel_flag_; }
   int add_child_without_inheritance(ObIDag &child);
   int add_child_without_inheritance(const common::ObIArray<ObINodeWithChild*> &child_array);
   int get_next_ready_task(ObITask *&task);
-  void free_task(ObITask &task);
   int finish_task(ObITask &task);
   bool has_finished();
   virtual int report_result()
@@ -487,6 +492,8 @@ public:
   int fill_comment(char *buf, const int64_t buf_len);
 
   virtual bool is_ha_dag() const { return false; }
+  void set_dag_emergency(const bool emergency) { emergency_ = emergency; }
+  bool get_emergency() const { return emergency_; }
 
   DECLARE_VIRTUAL_TO_STRING;
   DISABLE_COPY_ASSIGN(ObIDag);
@@ -524,10 +531,13 @@ protected:
 private:
   typedef common::ObDList<ObITask> TaskList;
   static const int64_t DEFAULT_TASK_NUM = 32;
+  static const int64_t DUMP_STATUS_INTERVAL = 30 * 60 * 1000L * 1000L /*30min*/;
 private:
   void reset();
   void clear_task_list();
   void clear_running_info();
+  // See ObIDag::finish_task, free_task must be called together with task_list_.remove, otherwise task will be double freed when ~ObIDag
+  void free_task(ObITask &task);
   int check_cycle();
   void inc_running_task_cnt() { ++running_task_cnt_; }
   void dec_running_task_cnt() { --running_task_cnt_; }
@@ -540,13 +550,14 @@ private:
   ObDagId id_;
   ObDagStatus dag_status_;
   int64_t running_task_cnt_;
+  int64_t max_concurrent_task_cnt_;
   TaskList task_list_; // should protect by lock
-  bool is_stop_;
-  bool force_cancel_flag_; // should protect by lock
+  bool is_stop_; // should protect by lock
   uint32_t max_retry_times_;  // should protect by lock
   uint32_t running_times_;
   ObIDagNet *dag_net_; // should protect by lock
   ObDagListIndex list_idx_;
+  bool emergency_;
 };
 
 /*
@@ -920,7 +931,6 @@ public:
   int loop_waiting_dag_list();
   void dump_dag_status();
   int inner_add_dag(
-    const bool emergency,
     const bool check_size_overflow,
     ObIDag *&dag);
   void get_all_dag_scheduler_info(
@@ -1025,11 +1035,9 @@ private:
     const bool add_last = true);
   int add_dag_into_list_and_map_(
     const ObDagListIndex list_index,
-    ObIDag &dag,
-    const bool emergency);
+    ObIDag &dag);
   int get_stored_dag_(ObIDag &dag, ObIDag *&stored_dag);
   int inner_add_dag_(
-    const bool emergency,
     const bool check_size_overflow,
     ObIDag *&dag);
   void add_schedule_info_(const ObDagType::ObDagTypeEnum dag_type, const int64_t data_size);
@@ -1315,15 +1323,18 @@ int ObIDag::alloc_task(T *&task)
     ntask->set_dag(*this);
     {
       lib::ObMutexGuard guard(lock_);
-      if (!task_list_.add_last(ntask)) {
+      if (is_stop_) {
+        ret = OB_CANCELED;
+      } else if (!task_list_.add_last(ntask)) {
         ret = common::OB_ERR_UNEXPECTED;
         COMMON_LOG(WARN, "Failed to add task", K(task), K_(id));
-        ntask->~T();
-        allocator_->free(ntask);
       }
     }
     if (OB_SUCC(ret)) {
       task = ntask;
+    } else {
+      ntask->~T();
+      allocator_->free(ntask);
     }
   }
   return ret;

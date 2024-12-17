@@ -44,10 +44,18 @@ static int release_device(ObIODevice *&dev_handle)
 // This class provides a straightforward wrapper for initializing and releasing a device.
 // It ensures that the URI is properly copied and
 // guarantees that the URI passed to the device handle is null-terminated ('\0').
-struct DeviceGuard
+struct DeviceGuard : public ObObjectStorageTenantGuard
 {
-  DeviceGuard() : allocator_(OB_STORAGE_IO_ADAPTER), device_handle_(nullptr), uri_cstr_(nullptr) {}
-  ~DeviceGuard()
+  DeviceGuard()
+      :  ObObjectStorageTenantGuard(
+             ObBackupIoAdapter::get_tenant_id(),
+             OB_IO_MANAGER.get_object_storage_io_timeout_ms(ObBackupIoAdapter::get_tenant_id()) * 1000LL),
+         allocator_(OB_STORAGE_IO_ADAPTER),
+         device_handle_(nullptr),
+         uri_cstr_(nullptr)
+  {}
+
+  virtual ~DeviceGuard()
   {
     int ret = OB_SUCCESS;
     if (OB_NOT_NULL(device_handle_) && OB_FAIL(release_device(device_handle_))) {
@@ -105,6 +113,8 @@ int ObBackupIoAdapter::open_with_access_type(ObIODevice*& device_handle, ObIOFd 
       iod_opts.opt_cnt_++;
     }
 
+    ObObjectStorageTenantGuard object_storage_tenant_guard(
+        get_tenant_id(), OB_IO_MANAGER.get_object_storage_io_timeout_ms(get_tenant_id()) * 1000LL);
     ObArenaAllocator allocator(OB_STORAGE_IO_ADAPTER);
     char *uri_cstr = nullptr;
     if (OB_FAIL(ob_dup_cstring(allocator, uri, uri_cstr))) {
@@ -265,6 +275,8 @@ int ObBackupIoAdapter::batch_del_files(
     ObIArray<int64_t> &failed_files_idx)
 {
   int ret = OB_SUCCESS;
+  ObObjectStorageTenantGuard object_storage_tenant_guard(
+      get_tenant_id(), OB_IO_MANAGER.get_object_storage_io_timeout_ms(get_tenant_id()) * 1000LL);
   ObIODevice *device_handle = nullptr;
   if (OB_UNLIKELY(files_to_delete.empty())) {
     ret = OB_INVALID_ARGUMENT;
@@ -373,10 +385,10 @@ int ObBackupIoAdapter::write_single_file(const common::ObString &uri, const shar
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(open_with_access_type(device_handle, fd, storage_info, 
                       uri, OB_STORAGE_ACCESS_OVERWRITER, storage_id_mod))) {
-    OB_LOG(WARN, "fail to get device and open file !", K(uri), K(ret));
+    OB_LOG(WARN, "fail to get device and open file !", K(uri), K(ret), K(storage_info));
   } else if (FALSE_IT(fd.device_handle_ = device_handle)) {
   } else if (OB_FAIL(io_manager_write(buf, 0, size, fd, write_size))) {
-    STORAGE_LOG(WARN, "fail to io manager write", K(ret), K(uri), K(size), K(fd));
+    STORAGE_LOG(WARN, "fail to io manager write", K(ret), K(uri), K(storage_info), K(size), K(fd));
   }
   
   if (OB_SUCCESS != (ret_tmp = close_device_and_fd(device_handle, fd))) {
@@ -419,12 +431,12 @@ int ObBackupIoAdapter::pwrite(
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid access type", K(ret), K(access_type));
   } else if (OB_FAIL(open_with_access_type(device_handle, fd, storage_info, uri, access_type, storage_id_mod))) {
-    OB_LOG(WARN, "fail to get device and open file !", K(uri), K(ret));
+    OB_LOG(WARN, "fail to get device and open file !", K(uri), K(storage_info), K(ret));
   } else if (FALSE_IT(fd.device_handle_ = device_handle)) {
   } else if (OB_FAIL(io_manager_write(buf, offset, size, fd, write_size))) {
-    STORAGE_LOG(WARN, "fail to io manager write", K(ret), K(uri), K(size), K(fd));
+    STORAGE_LOG(WARN, "fail to io manager write", K(ret), K(uri), K(storage_info), K(size), K(fd));
   } else if (is_can_seal && OB_FAIL(device_handle->seal_file(fd))) {
-    STORAGE_LOG(WARN, "fail to seal file", K(ret), K(uri), K(fd));
+    STORAGE_LOG(WARN, "fail to seal file", K(ret), K(uri), K(storage_info), K(fd));
   }
 
   if (OB_SUCCESS != (ret_tmp = close_device_and_fd(device_handle, fd))) {
@@ -488,6 +500,8 @@ int ObBackupIoAdapter::async_upload_data(
 int ObBackupIoAdapter::complete(common::ObIODevice &device_handle, common::ObIOFd &fd)
 {
   int ret = OB_SUCCESS;
+  ObObjectStorageTenantGuard object_storage_tenant_guard(
+      get_tenant_id(), OB_IO_MANAGER.get_object_storage_io_timeout_ms(get_tenant_id()) * 1000LL);
   int flag = -1;
   ObFdSimulator::get_fd_flag(fd, flag);
   fd.device_handle_ = &device_handle;
@@ -514,6 +528,8 @@ int ObBackupIoAdapter::complete(common::ObIODevice &device_handle, common::ObIOF
 int ObBackupIoAdapter::abort(common::ObIODevice &device_handle, common::ObIOFd &fd)
 {
   int ret = OB_SUCCESS;
+  ObObjectStorageTenantGuard object_storage_tenant_guard(
+      get_tenant_id(), OB_IO_MANAGER.get_object_storage_io_timeout_ms(get_tenant_id()) * 1000LL);
   int flag = -1;
   ObFdSimulator::get_fd_flag(fd, flag);
   if ((ObStorageAccessType::OB_STORAGE_ACCESS_DIRECT_MULTIPART_WRITER != flag)
@@ -542,13 +558,13 @@ int ObBackupIoAdapter::read_single_file(const common::ObString &uri, const share
     OB_LOG(WARN, "fail to get device and open file !", K(uri), K(ret));
   } else if (FALSE_IT(fd.device_handle_ = device_handle)) {
   } else if (OB_FAIL(io_manager_read(buf, 0, buf_size, fd, read_size))) {
-    OB_LOG(WARN, "fail to io manager read", K(ret), K(uri), K(buf_size), K(fd));
+    OB_LOG(WARN, "fail to io manager read", K(ret), K(uri), K(storage_info), K(buf_size), K(fd));
   } else if (OB_FAIL(get_file_length(uri, storage_info, file_length))) {
-    OB_LOG(WARN, "failed to get file size", K(ret), K(uri));
+    OB_LOG(WARN, "failed to get file size", K(ret), K(uri), K(storage_info));
   } else if (file_length != read_size) {
     ret = OB_BUF_NOT_ENOUGH;
     OB_LOG(WARN, "not whole file read, maybe buf not enough",
-          K(ret), K(read_size), K(file_length), K(uri));
+          K(ret), K(read_size), K(file_length), K(uri), K(storage_info));
   }
 
   if (OB_SUCCESS != (ret_tmp = close_device_and_fd(device_handle, fd))) {
@@ -575,13 +591,13 @@ int ObBackupIoAdapter::adaptively_read_single_file(const common::ObString &uri, 
     OB_LOG(WARN, "fail to get device and open file !", K(uri), K(ret));
   } else if (FALSE_IT(fd.device_handle_ = device_handle)) {
   } else if (OB_FAIL(io_manager_read(buf, 0, buf_size, fd, read_size))) {
-    OB_LOG(WARN, "fail to io manager read", K(ret), K(uri), K(buf_size), K(fd));
+    OB_LOG(WARN, "fail to io manager read", K(ret), K(uri), K(storage_info), K(buf_size), K(fd));
   } else if (OB_FAIL(adaptively_get_file_length(uri, storage_info, file_length))) {
-    OB_LOG(WARN, "failed to get file size", K(ret), K(uri));
+    OB_LOG(WARN, "failed to get file size", K(ret), K(uri), K(storage_info));
   } else if (file_length != read_size) {
     ret = OB_BUF_NOT_ENOUGH;
     OB_LOG(WARN, "not whole file read, maybe buf not enough",
-          K(ret), K(read_size), K(file_length), K(uri));
+          K(ret), K(read_size), K(file_length), K(uri), K(storage_info));
   }
 
   if (OB_SUCCESS != (ret_tmp = close_device_and_fd(device_handle, fd))) {
@@ -599,7 +615,7 @@ int ObBackupIoAdapter::read_single_text_file(const common::ObString &uri, const 
   int ret = OB_SUCCESS;
   int64_t read_size = -1;
   if (OB_FAIL(ObBackupIoAdapter::read_single_file(uri, storage_info, buf, buf_size, read_size, storage_id_mod))) {
-    OB_LOG(WARN, "failed to read_single_object", K(ret), K(uri));
+    OB_LOG(WARN, "failed to read_single_object", K(ret), K(uri), K(storage_info));
   } else if (read_size < 0 || read_size >= buf_size) {
     ret = OB_BUF_NOT_ENOUGH;
     OB_LOG(WARN, "buf not enough", K(ret), K(read_size), K(buf_size));
@@ -616,7 +632,7 @@ int ObBackupIoAdapter::adaptively_read_single_text_file(const common::ObString &
   int ret = OB_SUCCESS;
   int64_t read_size = -1;
   if (OB_FAIL(ObBackupIoAdapter::adaptively_read_single_file(uri, storage_info, buf, buf_size, read_size, storage_id_mod))) {
-    OB_LOG(WARN, "failed to read_single_object", K(ret), K(uri));
+    OB_LOG(WARN, "failed to read_single_object", K(ret), K(uri), K(storage_info));
   } else if (read_size < 0 || read_size >= buf_size) {
     ret = OB_BUF_NOT_ENOUGH;
     OB_LOG(WARN, "buf not enough", K(ret), K(read_size), K(buf_size));
@@ -745,7 +761,7 @@ int ObBackupIoAdapter::pread(
     OB_LOG(WARN, "fail to get device and open file !", K(uri), KR(ret));
   } else if (FALSE_IT(fd.device_handle_ = device_handle)) {
   } else if (OB_FAIL(io_manager_read(buf, offset, buf_size, fd, read_size))) {
-    OB_LOG(WARN, "fail to io manager read", KR(ret), K(uri), K(offset), K(buf_size), K(fd));
+    OB_LOG(WARN, "fail to io manager read", KR(ret), K(uri), K(storage_info), K(offset), K(buf_size), K(fd));
   }
 
   if (OB_SUCCESS != (ret_tmp = close_device_and_fd(device_handle, fd))) {

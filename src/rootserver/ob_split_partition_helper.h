@@ -18,6 +18,12 @@
 
 namespace oceanbase
 {
+namespace obrpc
+{
+struct ObFreezeSplitSrcTabletArg;
+struct ObFreezeSplitSrcTabletRes;
+}
+
 namespace rootserver
 {
 
@@ -50,6 +56,11 @@ public:
   static int check_allow_split(
       share::schema::ObSchemaGetterGuard &schema_guard,
       const share::schema::ObTableSchema &table_schema);
+  static int freeze_split_src_tablet(
+      const obrpc::ObFreezeSplitSrcTabletArg &arg,
+      obrpc::ObFreezeSplitSrcTabletRes &res,
+      const int64_t abs_timeout_us);
+  static int get_split_src_tablet_id_if_any(const share::schema::ObTableSchema &table_schema, ObTabletID &tablet_id);
 
 private:
   static int prepare_start_args_(
@@ -110,16 +121,20 @@ private:
       ObMySQLTransaction &trans);
   static int start_dst_(
       const uint64_t tenant_id,
+      const uint64_t tenant_data_version,
       const share::ObLSID &ls_id,
       const ObAddr &leader_addr,
       const ObIArray<const share::schema::ObTableSchema *> &inc_table_schemas,
       const ObIArray<ObArray<ObTabletID>> &dst_tablet_ids,
-      const storage::ObTabletSplitMdsArg &start_dst_arg,
       const share::SCN &data_end_scn,
       const ObIArray<std::pair<uint64_t, uint64_t>> &end_autoinc_seqs,
       const int64_t task_id,
+      storage::ObTabletSplitMdsArg &start_dst_arg,
       ObTabletCreator *&tablet_creator,
       ObMySQLTransaction &trans);
+  static int check_mem_usage_for_split_(
+      const uint64_t tenant_id,
+      const int64_t dst_tablets_number);
 
 private:
   ObDDLSQLTransaction &trans_;
@@ -130,6 +145,8 @@ private:
   share::ObDDLType split_type_;
   const static int64_t MYSQL_MAX_NUM_TABLETS_IN_TABLE = 8L * 1024L;
   const static int64_t ORACLE_MAX_NUM_TABLETS_IN_TABLE = 1024L * 1024L - 1L;
+  const static int64_t OB_MAX_SPLIT_PER_ROUND = 8L * 1024L;
+  const static int64_t MEMORY_USAGE_SPLIT_PER_DST = 8L * 1024L * 1024L;
   const common::ObIArray<share::schema::ObTableSchema *> &new_table_schemas_;
   const common::ObIArray<share::schema::ObTableSchema *> &upd_table_schemas_;
   const common::ObIArray<const share::schema::ObTableSchema *> &inc_table_schemas_;

@@ -2758,9 +2758,28 @@ int ObSchemaRetrieveUtils::fill_trigger_schema(
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, ref_new_name, trigger_info);
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, ref_parent_name, trigger_info);
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_SKIP_RET(result, when_condition, trigger_info);
-    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, trigger_body, trigger_info);
-    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, package_spec_source, trigger_info);
-    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL(result, package_body_source, trigger_info);
+    if (OB_SUCC(ret)) {
+      ObString str_value;
+      if (OB_FAIL(result.get_varchar("trigger_body", str_value))) {
+        if (OB_ERR_NULL_VALUE == ret) {
+          ret = OB_SUCCESS;
+          if (OB_FAIL(result.get_varchar("trigger_body_v2", str_value))) {
+            SQL_LOG(WARN, "fail to extract varchar field mysql.", K(ret));
+          }
+        } else {
+          SQL_LOG(WARN, "fail to extract varchar field mysql.", K(ret));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(trigger_info.set_trigger_body(str_value))) {
+          SQL_LOG(WARN, "fail to set value", KR(ret), K(str_value));
+        }
+      }
+    }
+    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, package_spec_source, trigger_info,
+      true, false, default_value);
+    EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, package_body_source, trigger_info,
+      true, false, default_value);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL(result, package_flag, trigger_info, int64_t);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL(result, package_comp_flag, trigger_info, int64_t);
     EXTRACT_VARCHAR_FIELD_TO_CLASS_MYSQL_SKIP_RET(result, package_exec_env, trigger_info);
@@ -3206,8 +3225,9 @@ int ObSchemaRetrieveUtils::retrieve_system_variable_obj(
     ObObj casted_val;
     const ObObj *res_val = NULL;
     if (OB_FAIL(ObObjCaster::to_type(var_type, cast_ctx, var_value, casted_val, res_val))) {
+      ObCStringHelper helper;
       _SHARE_SCHEMA_LOG(WARN,"failed to cast object, ret=%d cell=%s from_type=%s to_type=%s",
-                       ret, to_cstring(var_value), ob_obj_type_str(var_value.get_type()), ob_obj_type_str(var_type));
+                       ret, helper.convert(var_value), ob_obj_type_str(var_value.get_type()), ob_obj_type_str(var_type));
     } else if (OB_ISNULL(res_val)) {
       ret = common::OB_ERR_UNEXPECTED;
       SHARE_SCHEMA_LOG(WARN,"casted success, but res_val is NULL", K(ret), K(var_value), K(var_type));
@@ -4745,10 +4765,15 @@ int ObSchemaRetrieveUtils::fill_replica_options(T &result, SCHEMA &schema)
   ObString zone_list_str;
   ObString primary_zone_str;
   ObArray<ObString> zones;
+  ObCStringHelper helper;
+  const char *zone_list_str_ptr = nullptr;
 
   EXTRACT_VARCHAR_FIELD_MYSQL_SKIP_RET(result, "primary_zone", primary_zone_str);
   EXTRACT_VARCHAR_FIELD_MYSQL(result, "zone_list", zone_list_str);
-  if (OB_FAIL(schema.str2string_array(to_cstring(zone_list_str), zones))) {
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(helper.convert(zone_list_str, zone_list_str_ptr))) {
+    SHARE_SCHEMA_LOG(WARN, "convert zone_list_str failed", K(zone_list_str), K(ret));
+  } else if (OB_FAIL(schema.str2string_array(zone_list_str_ptr, zones))) {
     SHARE_SCHEMA_LOG(WARN, "str2string_array failed", K(zone_list_str), K(ret));
   } else {
     if (OB_FAIL(schema.set_zone_list(zones))) {
@@ -4756,7 +4781,7 @@ int ObSchemaRetrieveUtils::fill_replica_options(T &result, SCHEMA &schema)
     } else if (OB_FAIL(schema.set_primary_zone(primary_zone_str))) {
       SHARE_SCHEMA_LOG(WARN, "set_primary_zone failed", K(ret));
     } else if (!ObPrimaryZoneUtil::no_need_to_check_primary_zone(schema.get_primary_zone())) {
-      ObPrimaryZoneUtil primary_zone_util(schema.get_primary_zone());
+      SMART_VAR(ObPrimaryZoneUtil, primary_zone_util, schema.get_primary_zone()) {
       if (OB_FAIL(primary_zone_util.init())) {
         SHARE_SCHEMA_LOG(WARN, "fail to init primary zone util", K(ret));
       } else if (OB_FAIL(primary_zone_util.check_and_parse_primary_zone())) {
@@ -4764,6 +4789,7 @@ int ObSchemaRetrieveUtils::fill_replica_options(T &result, SCHEMA &schema)
       } else if (OB_FAIL(schema.set_primary_zone_array(primary_zone_util.get_zone_array()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to set primary zone array", K(ret));
       } else {} // set primary zone array success
+      } // end smart var
     } else {} // empty primary zone, no need to check and parse
   }
   return ret;

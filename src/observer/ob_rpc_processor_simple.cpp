@@ -78,6 +78,7 @@
 #include "rootserver/ob_admin_drtask_util.h"  // ObAdminDRTaskUtil
 #include "rootserver/ob_primary_ls_service.h" // for ObPrimaryLSService
 #include "rootserver/ob_root_utils.h"
+#include "rootserver/ob_split_partition_helper.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/session/ob_sess_info_verify.h"
 #include "observer/table/ttl/ob_ttl_service.h"
@@ -96,6 +97,8 @@
 #include "close_modules/shared_storage/storage/shared_storage/ob_ss_micro_cache_io_helper.h"
 #endif
 #include "share/object_storage/ob_device_config_mgr.h"
+#include "rootserver/restore/ob_restore_service.h"
+#include "rootserver/backup/ob_archive_scheduler_service.h"
 
 namespace oceanbase
 {
@@ -612,7 +615,7 @@ int ObRpcFreezeSplitSrcTabletP::process()
     LOG_ERROR("invalid arguments", K(ret), KP(gctx_.ob_service_));
   } else {
     const int64_t abs_timeout_us = nullptr == rpc_pkt_ ? 0 : get_receive_timestamp() + rpc_pkt_->get_timeout();
-    ret = gctx_.ob_service_->freeze_split_src_tablet(arg_, result_, abs_timeout_us);
+    ret = ObSplitPartitionHelper::freeze_split_src_tablet(arg_, result_, abs_timeout_us);
   }
   return ret;
 }
@@ -2708,8 +2711,8 @@ int ObCleanSequenceCacheP::process()
   if (OB_ISNULL(GCTX.schema_service_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema service is null", K(ret));
-  } else if (OB_FAIL(sequence_cache.remove(MTL_ID(), sequence_id))) {
-    LOG_WARN("remove sequence item from sequence cache failed", K(ret), K(sequence_id));
+  } else if (OB_FAIL(sequence_cache.remove(MTL_ID(), sequence_id, result_))) {
+    LOG_WARN("remove sequence item from sequence cache failed", K(ret), K(sequence_id), K(result_));
   }
   return ret;
 }
@@ -3753,13 +3756,12 @@ int ObGetSSMicroBlockMetaP::process()
     MTL_SWITCH(arg_.tenant_id_) {
       ObSSMicroCache *micro_cache = nullptr;
       ObSSMicroBlockMetaHandle micro_meta_handle;
+      result_.micro_meta_info_.micro_key_ = arg_.micro_key_;
       if (OB_ISNULL(micro_cache = MTL(ObSSMicroCache *))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("MTL ObSSMicroCache is null", KR(ret), K_(arg_.tenant_id));
       } else if (OB_FAIL(micro_cache->get_micro_meta_handle(arg_.micro_key_, micro_meta_handle))) {
-        if (OB_ENTRY_NOT_EXIST != ret) {
-          LOG_WARN("fail to get micro block meta", KR(ret), K_(arg));
-        }
+        LOG_WARN("fail to get micro block meta", KR(ret), K_(arg));
       } else if (OB_UNLIKELY(!micro_meta_handle.is_valid())) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("micro_meta handle should be valid", KR(ret), K_(arg));
@@ -4002,6 +4004,36 @@ int ObRpcClearSSMicroCacheP::process()
   }
   return ret;
 }
+
+int ObSetSSCkptCompressorP::process()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!arg_.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", K(ret), K_(arg));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_)
+    {
+      ObSSMicroCache *micro_cache = nullptr;
+      if (OB_ISNULL(micro_cache = MTL(ObSSMicroCache *))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("micro_cache is nullptr", KR(ret));
+      } else if (arg_.block_type_ == ObSSPhyBlockType::SS_MICRO_META_CKPT_BLK) {
+        micro_cache->set_micro_ckpt_compressor_type(arg_.compressor_type_);
+      } else if (arg_.block_type_ == ObSSPhyBlockType::SS_PHY_BLOCK_CKPT_BLK) {
+        micro_cache->set_blk_ckpt_compressor_type(arg_.compressor_type_);
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("block_type is unexpected", K(ret), K_(arg_.block_type));
+      }
+
+      if (OB_SUCC(ret)) {
+        LOG_INFO("succeed to set_ss_ckpt_compressor", K_(arg));
+      }
+    }
+  }
+  return ret;
+}
 #endif
 
 int ObNotifySharedStorageInfoP::process()
@@ -4028,6 +4060,46 @@ int ObNotifySharedStorageInfoP::process()
     }
   }
   result_.set_ret(ret);
+  return ret;
+}
+
+int ObRpcNotifyLSRestoreFinishP::process()
+{
+  int ret = OB_SUCCESS;
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg_));
+  } else {
+    MTL_SWITCH(gen_meta_tenant_id(arg_.get_tenant_id())) {
+      rootserver::ObRestoreService* restore_service = MTL(rootserver::ObRestoreService*);
+      if (OB_ISNULL(restore_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("restore service is null", KR(ret), K(arg_));
+      } else {
+        restore_service->wakeup();
+      }
+    }
+  }
+  return ret;
+}
+
+int ObRpcStartArchiveP::process()
+{
+  int ret = OB_SUCCESS;
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg_));
+  } else {
+    MTL_SWITCH(gen_meta_tenant_id(arg_.get_tenant_id())) {
+      rootserver::ObArchiveSchedulerService* archive_service = MTL(rootserver::ObArchiveSchedulerService*);
+      if (OB_ISNULL(archive_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("archive service is null", KR(ret), K(arg_));
+      } else {
+        archive_service->wakeup();
+      }
+    }
+  }
   return ret;
 }
 } // end of namespace observer

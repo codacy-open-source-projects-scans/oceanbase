@@ -19,9 +19,11 @@
 #include "storage/tablet/ob_tablet_split_replay_executor.h"
 #include "storage/ls/ob_ls.h"
 #include "storage/multi_data_source/mds_ctx.h"
+#include "storage/ob_tablet_autoinc_seq_rpc_handler.h"
 #include "storage/tablet/ob_tablet_common.h"
 #include "storage/tablet/ob_tablet_create_delete_helper.h"
 #include "storage/tablet/ob_tablet_binding_helper.h"
+#include "storage/tx_storage/ob_ls_service.h"
 
 using namespace oceanbase::obrpc;
 using namespace oceanbase::common;
@@ -66,6 +68,8 @@ int ObTabletSplitMdsArg::assign(const ObTabletSplitMdsArg &other)
     LOG_WARN("failed to assign tablet ids", K(ret));
   } else if (OB_FAIL(set_freeze_flag_tablet_ids_.assign(other.set_freeze_flag_tablet_ids_))) {
     LOG_WARN("failed to assign", K(ret));
+  } else if (OB_FAIL(autoinc_seq_arg_.assign(other.autoinc_seq_arg_))) {
+    LOG_WARN("failed to assign", K(ret));
   }
   return ret;
 }
@@ -80,6 +84,7 @@ void ObTabletSplitMdsArg::reset()
   tablet_status_ = ObTabletStatus::NONE;
   tablet_status_data_type_ = ObTabletMdsUserDataType::NONE;
   set_freeze_flag_tablet_ids_.reset();
+  autoinc_seq_arg_.reset();
 }
 
 bool ObTabletSplitMdsArg::is_split_data_table(const ObTableSchema &table_schema)
@@ -367,6 +372,19 @@ int ObTabletSplitMdsArg::init_split_start_dst(
   return ret;
 }
 
+int ObTabletSplitMdsArg::set_autoinc_seq_arg(const obrpc::ObBatchSetTabletAutoincSeqArg &arg)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(autoinc_seq_arg_.assign(arg))) {
+    LOG_WARN("failed to assign", K(ret), K(arg));
+  }
+  if (OB_SUCC(ret) && OB_UNLIKELY(!autoinc_seq_arg_.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid autoinc seq arg", K(ret), KPC(this));
+  }
+  return ret;
+}
+
 int ObTabletSplitMdsArg::init_split_end_src(
     const uint64_t tenant_id,
     const ObLSID &ls_id,
@@ -493,7 +511,7 @@ int ObTabletSplitMdsArg::init(
   return ret;
 }
 
-OB_SERIALIZE_MEMBER(ObTabletSplitMdsArg, tenant_id_, ls_id_, split_data_tablet_ids_, split_datas_, tablet_status_tablet_ids_, tablet_status_, tablet_status_data_type_, set_freeze_flag_tablet_ids_);
+OB_SERIALIZE_MEMBER(ObTabletSplitMdsArg, tenant_id_, ls_id_, split_data_tablet_ids_, split_datas_, tablet_status_tablet_ids_, tablet_status_, tablet_status_data_type_, set_freeze_flag_tablet_ids_, autoinc_seq_arg_);
 
 int ObTabletSplitMdsArgPrepareSrcOp::operator()(const int64_t part_idx, ObBasePartition &part)
 {
@@ -707,6 +725,7 @@ int ObTabletSplitMdsHelper::batch_get_tablet_split(
           const ObTabletID &tablet_id = arg.tablet_ids_.at(i);
           ObTabletHandle tablet_handle;
           ObTabletSplitMdsUserData data;
+
           if (OB_FAIL(ls->get_tablet(tablet_id, tablet_handle))) {
             LOG_WARN("failed to get tablet", K(ret), K(tablet_id), K(abs_timeout_us));
           } else if (OB_FAIL(tablet_handle.get_obj()->get_split_data(data, abs_timeout_us - ObTimeUtility::current_time()))) {
@@ -718,15 +737,16 @@ int ObTabletSplitMdsHelper::batch_get_tablet_split(
           // currently not support to read uncommitted mds set by this transaction, so check and avoid such usage
           if (OB_SUCC(ret) && arg.check_committed_) {
             ObTabletSplitMdsUserData tmp_data;
-            bool is_committed = true;
-            if (OB_FAIL(tablet_handle.get_obj()->cross_ls_get_latest<ObTabletSplitMdsUserData>(ReadSplitDataOp(tmp_data), is_committed))) {
+            mds::MdsWriter writer;// will be removed later
+            mds::TwoPhaseCommitState trans_stat;// will be removed later
+            share::SCN trans_version;// will be removed later
+            if (OB_FAIL(tablet_handle.get_obj()->get_latest_split_data(tmp_data, writer, trans_stat, trans_version))) {
               if (OB_EMPTY_RESULT == ret) {
-                is_committed = true;
                 ret = OB_SUCCESS;
               } else {
                 LOG_WARN("failed to get latest split data", K(ret));
               }
-            } else if (OB_UNLIKELY(!is_committed)) {
+            } else if (OB_UNLIKELY(mds::TwoPhaseCommitState::ON_COMMIT != trans_stat)) {
               ret = OB_EAGAIN;
               LOG_WARN("check committed failed", K(ret), K(tenant_id), K(arg.ls_id_), K(tablet_id), K(tmp_data));
             }
@@ -1031,6 +1051,12 @@ int ObTabletSplitMdsHelper::modify(
     }
   }
 
+  if (OB_SUCC(ret) && arg.autoinc_seq_arg_.is_valid()) {
+    if (OB_FAIL(ObTabletAutoincSeqRpcHandler::get_instance().batch_set_tablet_autoinc_seq_in_trans(*ls, arg.autoinc_seq_arg_, scn, ctx))) {
+      LOG_WARN("failed to batch set tablet autoinc seq", K(ret), K(scn));
+    }
+  }
+
   if (OB_SUCC(ret) && need_empty_shell_trigger) {
     if (OB_FAIL(ObTabletCreateDeleteMdsUserData::set_tablet_empty_shell_trigger(ls_id))) {
       LOG_WARN("failed to set_tablet_empty_shell_trigger", K(ret), K(arg));
@@ -1132,7 +1158,9 @@ int ObTabletSplitMdsHelper::set_tablet_status(
   ObTabletHandle tablet_handle;
   ObTablet *tablet = nullptr;
   ObTabletCreateDeleteMdsUserData user_data;
-  bool is_committed = false;
+  mds::MdsWriter writer;// will be removed later
+  mds::TwoPhaseCommitState trans_stat;// will be removed later
+  share::SCN trans_version;// will be removed later
   if (OB_FAIL(ObTabletBindingHelper::get_tablet_for_new_mds(ls, tablet_id, replay_scn, tablet_handle))) {
     if (OB_NO_NEED_UPDATE == ret) {
       ret = OB_SUCCESS;
@@ -1140,9 +1168,9 @@ int ObTabletSplitMdsHelper::set_tablet_status(
       LOG_WARN("failed to get tablet", K(ret));
     }
   } else if (OB_FALSE_IT(tablet = tablet_handle.get_obj())) {
-  } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, is_committed))) {
+  } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
     LOG_WARN("failed to get tx data", K(ret), KPC(tablet));
-  } else if (OB_UNLIKELY(!is_committed)) {
+  } else if (OB_UNLIKELY(trans_stat != mds::TwoPhaseCommitState::ON_COMMIT)) {
     ret = OB_EAGAIN;
     LOG_WARN("tablet status not committed, retry", K(ret), K(user_data), KPC(tablet));
   } else {

@@ -295,8 +295,8 @@ int ObPartitionPreSplit::get_global_index_pre_split_schema_if_need(
   } else if (schema_guard.get_table_schema(tenant_id, database_name, table_name, false/*is_index*/, data_table_schema)) {
     LOG_WARN("[PRE_SPLIT] fail to get table schema", K(ret), K(tenant_id), K(database_name), K(table_name));
   } else if (OB_ISNULL(data_table_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("[PRE_SPLIT] table schema null pointer", K(ret), KP(data_table_schema));
+    ret = OB_TABLE_NOT_EXIST;
+    LOG_WARN("[PRE_SPLIT] table not exist", K(ret), KP(data_table_schema));
   } else if (!data_table_schema->is_auto_partitioned_table() ||
               data_table_schema->is_mysql_tmp_table()) {
     LOG_INFO("[PRE_SPLIT] not support auto split table type", K(ret), K(data_table_schema));
@@ -386,7 +386,7 @@ int ObPartitionPreSplit::do_table_pre_split_if_need(
     // 2. rebuild global index partition/ none partition table, ddl_type will be DDL_CREATE_INDEX
     bool need_pre_split = false;
     bool is_global_index = new_table_schema.is_global_local_index_table() || new_table_schema.is_global_index_table();
-    if (is_global_index && ddl_type == DDL_CREATE_INDEX) {
+    if (is_global_index && ddl_type == DDL_CREATE_INDEX && new_table_schema.get_auto_part_size() > 0) {
       need_pre_split = true;
     } else if (OB_FALSE_IT(need_pre_split = is_supported_pre_split_ddl_type(ddl_type))) {
       LOG_WARN("[PRE_SPLIT] fail to check need pre split partition", K(ret), K(ddl_type), K(new_table_schema));

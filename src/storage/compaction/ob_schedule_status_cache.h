@@ -93,7 +93,9 @@ public:
     DURING_SPLIT,
     NEED_CHECK_LAST_MEDIUM_CKM,
     EXIST_UNFINISH_MEDIUM,
+    SCHEDULE_CONFLICT,
     DIAGNOSE_NORMAL, // for diagnose
+    LOCKED_BY_TRANSFER_OR_SPLIT,
     NEW_ROUND_STATE_MAX,
   };
   static const char *new_round_state_to_str(const TabletScheduleNewRoundState &state);
@@ -131,6 +133,8 @@ public:
   bool need_diagnose() const;
   bool could_schedule_new_round() const { return can_merge() && inner_check_new_round_state(); }
   bool tablet_merge_finish() const { return tablet_merge_finish_; }
+
+  // CAREFUL! medium list may be NULL for some situation
   const compaction::ObMediumCompactionInfoList *medium_list() const { return medium_list_; }
   TabletExecuteState get_execute_state() const { return execute_state_; }
   TabletScheduleNewRoundState get_new_round_state() const { return new_round_state_; }
@@ -148,13 +152,14 @@ protected:
     const bool is_remote_tenant);
   int check_medium_list(
     const share::ObLSID &ls_id,
-    const storage::ObTablet &tablet);
-  int register_map(const ObTabletID &tablet_id);
+    const storage::ObTablet &tablet,
+    const bool normal_schedule);
+  int register_map(const ObTablet &tablet);
   void inner_init_could_schedule_new_round(
     const ObLSID &ls_id,
     const ObTablet &tablet,
     const bool ls_could_schedule_new_round,
-    const bool need_register_map);
+    const bool normal_schedule);
   int update_tablet_report_status(
     storage::ObLS &ls,
     const storage::ObTablet &tablet);

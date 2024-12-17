@@ -21,6 +21,7 @@ ob_set_subtarget(ob_rootserver backup
   backup/ob_backup_proxy.cpp
   backup/ob_backup_data_ls_task_mgr.cpp
   backup/ob_backup_table_list_mgr.cpp
+  backup/ob_backup_param_operator.cpp
 )
 
 ob_set_subtarget(ob_rootserver common
@@ -145,6 +146,9 @@ ob_set_subtarget(ob_rootserver parallel_ddl
   parallel_ddl/ob_create_view_helper.cpp
   parallel_ddl/ob_index_name_checker.cpp
   parallel_ddl/ob_tablet_balance_allocator.cpp
+  parallel_ddl/ob_set_comment_helper.cpp
+  parallel_ddl/ob_create_index_helper.cpp
+  parallel_ddl/ob_update_index_status_helper.cpp
 )
 
 ob_set_subtarget(ob_rootserver freeze

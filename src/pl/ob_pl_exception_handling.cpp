@@ -155,7 +155,7 @@ ObUnwindException *ObPLEH::eh_create_exception(int64_t pl_context,
     CK (pl_ctx->get_exec_stack().count() > 0);
     CK (OB_NOT_NULL(frame = pl_ctx->get_exec_stack().at(0)));
     CK (frame->is_top_call());
-    CK (OB_NOT_NULL(pl_allocator = frame->get_exec_ctx().allocator_));
+    CK (OB_NOT_NULL(pl_allocator = &(frame->get_exec_ctx().expr_alloc_)));
     if (OB_FAIL(ret)) {
     } else if (OB_ALLOCATE_MEMORY_FAILED == value->error_code_) {
       unwind = &pre_reserved_e.body_;
@@ -613,7 +613,7 @@ _Unwind_Reason_Code ObPLEH::eh_personality(int version, _Unwind_Action actions,
                                    ObUnwindException *exceptionObject,
                                    struct _Unwind_Context *context)
 {
-  const uint8_t *lsda = static_cast<const uint8_t *>(_Unwind_GetLanguageSpecificData(context));
+  const uint8_t *lsda = reinterpret_cast<const uint8_t *>(_Unwind_GetLanguageSpecificData(context));
   LOG_DEBUG(">>>>>>>>>>0", K(version), K(actions), K(exceptionClass), K(lsda));
   return handleLsda(version, lsda, actions, exceptionClass, exceptionObject, context);
 }

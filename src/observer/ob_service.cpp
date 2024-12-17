@@ -1351,13 +1351,14 @@ int ObService::check_memtable_cnt(
           result.memtable_cnt_ = memtable_handles.count();
           freeze_finished = result.memtable_cnt_ == 0 ? true : false;
           if (freeze_finished) {
+            share::SCN unused_scn;
             ObTabletFreezeLog freeze_log;
             freeze_log.tablet_id_ = tablet_id;
             if (OB_FAIL(storage::ObDDLRedoLogWriter::
                   write_auto_split_log(ls_id,
                                        ObDDLClogType::DDL_TABLET_FREEZE_LOG,
                                        logservice::ObReplayBarrierType::STRICT_BARRIER,
-                                       freeze_log))) {
+                                       freeze_log, unused_scn))) {
               LOG_WARN("write tablet freeze log failed", K(ret), K(freeze_log));
             }
           }
@@ -1392,7 +1393,7 @@ int ObService::prepare_tablet_split_task_ranges(
   } else if (OB_UNLIKELY(!arg.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(arg));
-  } else if (OB_FAIL(ObTabletSplitUtil::split_task_ranges(result.rowkey_allocator_, arg.ls_id_,
+  } else if (OB_FAIL(ObTabletSplitUtil::split_task_ranges(result.rowkey_allocator_, arg.ddl_type_, arg.ls_id_,
       arg.tablet_id_, arg.user_parallelism_, arg.schema_tablet_size_, result.parallel_datum_rowkey_list_))) {
     LOG_WARN("split task ranges failed", K(ret));
   }
@@ -1692,13 +1693,13 @@ int ObService::set_server_id_(const int64_t server_id)
   if (OB_UNLIKELY(!is_valid_server_id(server_id))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid server_id", KR(ret), K(server_id));
-  } else if (is_valid_server_id(GCTX.server_id_) || is_valid_server_id(GCONF.observer_id)) {
+  } else if (is_valid_server_id(GCTX.get_server_id()) || is_valid_server_id(GCONF.observer_id)) {
     ret = OB_ERR_UNEXPECTED;
     uint64_t server_id_in_gconf = GCONF.observer_id;
     LOG_WARN("server_id is only expected to be set once", KR(ret),
-             K(server_id), K(GCTX.server_id_), K(server_id_in_gconf));
+             K(server_id), K(GCTX.get_server_id()), K(server_id_in_gconf));
   } else {
-    GCTX.server_id_ = server_id;
+    (void) GCTX.set_server_id(server_id);
     GCONF.observer_id = server_id;
     if (OB_ISNULL(GCTX.config_mgr_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -1822,10 +1823,10 @@ int ObService::prepare_server_for_adding_server(
       // If adding server during bootstrap, server is expected to be not empty.
       // Just check this server_id same to the server_id set before.
       const uint64_t server_id_in_GCONF = GCONF.observer_id;
-      if (server_id != GCTX.server_id_ || server_id != server_id_in_GCONF) {
+      if (server_id != GCTX.get_server_id() || server_id != server_id_in_GCONF) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("server_id not same to that set before.", KR(ret),
-                  "server_id_for_adding_server", server_id, K(GCTX.server_id_), K(server_id_in_GCONF));
+                  "server_id_for_adding_server", server_id, K(GCTX.get_server_id()), K(server_id_in_GCONF));
       } else {
         server_empty = false;
       }
@@ -2007,6 +2008,10 @@ int ObService::do_migrate_ls_replica(const obrpc::ObLSMigrateReplicaArg &arg)
       migration_op_arg.paxos_replica_number_ = arg.paxos_replica_number_;
       migration_op_arg.src_ = arg.src_;
       migration_op_arg.type_ = ObMigrationOpType::MIGRATE_LS_OP;
+      migration_op_arg.prioritize_same_zone_src_ = arg.prioritize_same_zone_src_;
+#ifdef ERRSIM
+      migration_op_arg.prioritize_same_zone_src_ = GCONF.enable_parallel_migration;
+#endif
       if (OB_FAIL(ls_service->create_ls_for_ha(arg.task_id_, migration_op_arg))) {
         LOG_WARN("failed to create ls for ha", KR(ret), K(arg), K(migration_op_arg));
       }
@@ -2275,9 +2280,9 @@ int ObService::check_server_empty(bool &is_empty)
   } else {
     uint64_t server_id_in_GCONF = GCONF.observer_id;
     if (is_empty) {
-      if (is_valid_server_id(GCTX.server_id_) || is_valid_server_id(server_id_in_GCONF)) {
+      if (is_valid_server_id(GCTX.get_server_id()) || is_valid_server_id(server_id_in_GCONF)) {
         is_empty = false;
-        FLOG_WARN("[CHECK_SERVER_EMPTY] server_id exists", K(GCTX.server_id_), K(server_id_in_GCONF));
+        FLOG_WARN("[CHECK_SERVER_EMPTY] server_id exists", K(GCTX.get_server_id()), K(server_id_in_GCONF));
       }
     }
     if (is_empty) {
@@ -2843,9 +2848,17 @@ int ObService::build_split_tablet_data_start_request(const obrpc::ObTabletSplitS
     LOG_WARN("invalid arg", K(ret), K(arg));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < arg.split_info_array_.count(); i++) {
+      share::SCN start_scn;
       const ObTabletSplitArg &each_arg = arg.split_info_array_.at(i);
-      if (OB_FAIL(ObTabletLobSplitUtil::process_write_split_start_log_request(each_arg))) {
+      if (OB_FAIL(ObTabletLobSplitUtil::process_write_split_start_log_request(each_arg, start_scn))) {
         LOG_WARN("process write split start log failed", K(ret), K(tmp_ret), K(arg));
+      } else if (0 == i) {
+        if (!start_scn.is_valid_and_not_min()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected start scn", K(ret), K(start_scn));
+        } else {
+          res.min_split_start_scn_ = start_scn;
+        }
       }
       if (OB_TMP_FAIL(res.ret_codes_.push_back(ret))) {
         LOG_WARN("push back result failed", K(ret), K(tmp_ret));
@@ -2882,56 +2895,6 @@ int ObService::build_split_tablet_data_finish_request(const obrpc::ObTabletSplit
     }
   }
   LOG_INFO("process split finish request succ", K(ret), K(arg));
-  return ret;
-}
-
-int ObService::freeze_split_src_tablet(const ObFreezeSplitSrcTabletArg &arg,
-                                       ObFreezeSplitSrcTabletRes &res,
-                                       const int64_t abs_timeout_us)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("service not inited", K(ret));
-  } else if (OB_UNLIKELY(!arg.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(ret), K(arg));
-  } else {
-    MTL_SWITCH(arg.tenant_id_) {
-      ObLSService *ls_service = MTL(ObLSService *);
-      logservice::ObLogService *log_service = MTL(logservice::ObLogService*);
-      ObLSHandle ls_handle;
-      ObLS *ls = nullptr;
-      ObRole role = INVALID_ROLE;
-      int64_t proposal_id = -1;
-      bool has_active_memtable = false;
-      if (OB_ISNULL(ls_service) || OB_ISNULL(log_service)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected ls_service or log_service", K(ret));
-      } else if (OB_FAIL(ls_service->get_ls(arg.ls_id_, ls_handle, ObLSGetMod::OBSERVER_MOD))) {
-        LOG_WARN("get ls failed", K(ret), K(arg));
-      } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("invalid ls", K(ret), K(arg.ls_id_));
-      } else if (OB_FAIL(ls->get_ls_role(role))) {
-        LOG_WARN("get role failed", K(ret), K(MTL_ID()), K(arg.ls_id_));
-      } else if (OB_UNLIKELY(ObRole::LEADER != role)) {
-        ret = OB_NOT_MASTER;
-        LOG_WARN("ls not leader", K(ret), K(MTL_ID()), K(arg.ls_id_));
-      } else if (OB_FAIL(ls->tablet_freeze(checkpoint::INVALID_TRACE_ID, arg.tablet_ids_, true/*is_sync*/, abs_timeout_us,
-              false/*need_rewrite_meta*/, ObFreezeSourceFlag::TABLET_SPLIT))) {
-        LOG_WARN("batch tablet freeze failed", K(ret), K(arg));
-      } else if (OB_FAIL(ls->check_tablet_no_active_memtable(arg.tablet_ids_, has_active_memtable))) {
-        // safer with this check, non-mandatory
-        LOG_WARN("check tablet has active memtable failed", K(ret), K(arg));
-      } else if (has_active_memtable) {
-        ret = OB_EAGAIN;
-        LOG_WARN("tablet has active memtable need retry", K(ret), K(arg));
-      } else if (OB_FAIL(ls->get_log_handler()->get_max_scn(res.data_end_scn_))) {
-        LOG_WARN("log_handler get_max_scn failed", K(ret), K(arg));
-      }
-    }
-  }
   return ret;
 }
 
@@ -3706,6 +3669,7 @@ int ObService::get_ls_replayed_scn(
     ObLSHandle ls_handle;
     ObLS *ls = nullptr;
     share::SCN offline_scn;
+    ObMigrationStatus migration_status = ObMigrationStatus::OB_MIGRATION_STATUS_MAX;
     if (OB_ISNULL(ls_svr)) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("pointer is null", KR(ret), KP(ls_svr));
@@ -3714,17 +3678,44 @@ int ObService::get_ls_replayed_scn(
     } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("log stream is null", KR(ret), K(arg), K(ls_handle));
-    } else if (OB_FAIL(ls->get_max_decided_scn(cur_readable_scn))) {
-      LOG_WARN("failed to get_max_decided_scn", KR(ret), K(arg), KPC(ls));
-    } else if (arg.is_all_replica()) {
-      if (OB_ISNULL(ls->get_ls_recovery_stat_handler())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("failed to get ls recovery stat", KR(ret), K(arg));
-      } else if (OB_FAIL(ls->get_ls_recovery_stat_handler()
-            ->get_all_replica_min_readable_scn(cur_readable_scn))) {
-        LOG_WARN("failed to get all replica min readable_scn", KR(ret), K(arg));
+    } else if (OB_FAIL(ls->get_migration_status(migration_status))) {
+      LOG_WARN("failed to get migration status", K(ret), KPC(ls));
+    } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+      cur_readable_scn = SCN::base_scn();
+      LOG_INFO("ls migration status is not none, report base scn as readable scn", K(migration_status), "ls_id", ls->get_ls_id());
+      if (arg.is_all_replica()) {
+        ret = OB_EAGAIN;
+        LOG_WARN("leader get all replica min readable scn, but leader migration status is not none, need retry",
+            K(ret), K(arg), K(migration_status), "ls_id", ls->get_ls_id());
+      }
+    } else {
+      if (OB_FAIL(ls->get_max_decided_scn(cur_readable_scn))) {
+        LOG_WARN("failed to get_max_decided_scn", KR(ret), K(arg), KPC(ls));
+      } else if (arg.is_all_replica()) {
+        if (OB_ISNULL(ls->get_ls_recovery_stat_handler())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("failed to get ls recovery stat", KR(ret), K(arg));
+        } else if (OB_FAIL(ls->get_ls_recovery_stat_handler()
+              ->get_all_replica_min_readable_scn(cur_readable_scn))) {
+          LOG_WARN("failed to get all replica min readable_scn", KR(ret), K(arg));
+        }
+      }
+
+      if (FAILEDx(ls->get_migration_status(migration_status))) {
+        LOG_WARN("failed to get migration status", K(ret), KPC(ls));
+      } else if (ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status) {
+        const SCN original_readable_scn = cur_readable_scn;
+        cur_readable_scn = SCN::base_scn();
+        LOG_INFO("ls migration status is not none, report base scn as readable scn", K(migration_status),
+            "ls_id", ls->get_ls_id(), K(original_readable_scn));
+        if (arg.is_all_replica()) {
+          ret = OB_EAGAIN;
+          LOG_WARN("leader get all replica min readable scn, but leader migration status is not none, need retry",
+              K(ret), K(arg), K(migration_status), "ls_id", ls->get_ls_id());
+        }
       }
     }
+
     if (OB_SUCC(ret) && ERRSIM_GET_LS_READABLE_SCN_OLD) {
       const int64_t current_time = ObTimeUtility::current_time() -
         GCONF.internal_sql_execute_timeout;

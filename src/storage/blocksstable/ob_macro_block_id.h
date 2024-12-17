@@ -70,10 +70,11 @@ enum class ObStorageObjectType : uint8_t
   CHECKSUM_ERROR_DUMP_MACRO             = 36,
   SHARED_MICRO_DATA_MACRO               = 37,
   SHARED_MICRO_META_MACRO               = 38,
+  UNSEALED_REMOTE_SEG_FILE              = 39,
   MAX   // Forbid insert object type in the middle! Only allow the tail!
         // Add new object type notice:
         // 1. if the object type only store in local cache, must add is_pin_storage_object_type, if the object type only store in remote object storage, must add is_read_through_storage_object_type
-        // 2. need to modify ObBaseFileManager's is_macro_block_id_valid, macro_block_id_to_path and get_file_parent_dir function
+        // 2. need to modify ObPathContext's is_macro_block_id_valid, to_path and ObFileHelper::get_file_parent_dir function
         // 3. need to modify test_file_manager's test_path_convert case and test_get_file_parent_dir case
 };
 
@@ -124,6 +125,7 @@ static const char *get_storage_objet_type_str(const ObStorageObjectType type)
     "CHECKSUM_ERROR_DUMP_MACRO",
     "SHARED_MICRO_DATA_MACRO",
     "SHARED_MICRO_META_MACRO",
+    "UNSEALED_REMOTE_SEG_FILE",
     "MAX"
   };
   const char *type_str = type_str_map_[static_cast<int32_t>(ObStorageObjectType::MAX)];

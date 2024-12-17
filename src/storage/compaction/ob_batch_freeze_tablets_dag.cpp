@@ -19,6 +19,22 @@ using namespace storage;
 namespace compaction
 {
 /*
+ *  ----------------------------------------ObBatchFreezeTabletsDag--------------------------------------------
+ */
+int ObBatchFreezeTabletsDag::inner_init()
+{
+  int ret = OB_SUCCESS;
+  const ObBatchFreezeTabletsParam &param = get_param();
+  if (!param.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid param", K(ret), K(param));
+  } else {
+    (void) set_max_concurrent_task_cnt(MAX_CONCURRENT_FREEZE_TASK_CNT);
+  }
+  return ret;
+}
+
+/*
  *  ----------------------------------------ObBatchFreezeTabletsTask--------------------------------------------
  */
 ObBatchFreezeTabletsTask::ObBatchFreezeTabletsTask()
@@ -115,7 +131,7 @@ int ObBatchFreezeTabletsTask::schedule_tablet_major_after_freeze(
     // no need to schedule merge
   } else if (OB_FAIL(ObTenantTabletScheduler::schedule_merge_dag(
                  ls.get_ls_id(), *tablet, MEDIUM_MERGE,
-                 cur_pair.schedule_merge_scn_, EXEC_MODE_LOCAL))) {
+                 cur_pair.schedule_merge_scn_, EXEC_MODE_LOCAL, nullptr/*dag_net_id*/, cur_pair.co_major_merge_type_))) {
     if (OB_SIZE_OVERFLOW != ret && OB_EAGAIN != ret) {
       LOG_WARN("failed to schedule medium merge dag", K(ret), "ls_id", ls.get_ls_id(), K(cur_pair));
     }

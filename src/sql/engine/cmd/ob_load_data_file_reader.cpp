@@ -21,6 +21,7 @@
 #include "share/io/ob_io_manager.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "lib/compress/zstd_1_3_8/ob_zstd_wrapper.h"
+#include "lib/compress/ob_compress_util.h"
 #include "share/table/ob_table_load_define.h"
 
 namespace oceanbase
@@ -273,12 +274,19 @@ int ObRandomOSSReader::open(const share::ObBackupStorageInfo &storage_info, cons
     LOG_WARN("fail to get device manager", KR(ret), K(filename));
   } else if (OB_FAIL(util.set_access_type(&iod_opts, false, 1))) {
     LOG_WARN("fail to set access type", KR(ret));
-  } else if (OB_FAIL(device_handle_->open(to_cstring(filename), -1, 0, fd_, &iod_opts))) {
-    LOG_WARN("fail to open oss file", KR(ret), K(filename));
   } else {
-    offset_ = 0;
-    eof_ = false;
-    is_inited_ = true;
+    ObCStringHelper helper;
+    const char *filename_str = helper.convert(filename);
+    if (OB_ISNULL(filename_str)) {
+      ret = OB_ERR_NULL_VALUE;
+      LOG_WARN("fail to convert filename", K(ret), K(filename));
+    } else if (OB_FAIL(device_handle_->open(filename_str, -1, 0, fd_, &iod_opts))) {
+      LOG_WARN("fail to open oss file", KR(ret), K(filename));
+    } else {
+      offset_ = 0;
+      eof_ = false;
+      is_inited_ = true;
+    }
   }
   return ret;
 }
@@ -288,6 +296,7 @@ int ObRandomOSSReader::read(char *buf, int64_t count, int64_t &read_size)
   int ret = OB_SUCCESS;
   ObBackupIoAdapter io_adapter;
   ObIOHandle io_handle;
+  CONSUMER_GROUP_FUNC_GUARD(ObFunctionType::PRIO_IMPORT);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObRandomOSSReader not init", KR(ret), KP(this));
@@ -708,26 +717,6 @@ int ObDecompressFileReader::read_compressed_data()
 /**
  * ObZlibDecompressor
  */
-voidpf zlib_alloc(voidpf opaque, uInt items, uInt size)
-{
-  voidpf ret = NULL;
-  ObIAllocator *allocator = static_cast<ObIAllocator *>(opaque);
-  if (OB_ISNULL(allocator)) {
-  } else {
-    ret = allocator->alloc(items * size);
-  }
-  return ret;
-}
-
-void zlib_free(voidpf opaque, voidpf address)
-{
-  ObIAllocator *allocator = static_cast<ObIAllocator *>(opaque);
-  if (OB_ISNULL(allocator)) {
-    free(address);
-  } else {
-    allocator->free(address);
-  }
-}
 
 ObZlibDecompressor::ObZlibDecompressor(ObIAllocator &allocator,
                                        ObCSVGeneralFormat::ObCSVCompression compression_format)
@@ -744,6 +733,7 @@ void ObZlibDecompressor::destroy()
   if (OB_NOT_NULL(zlib_stream_ptr_)) {
     z_streamp zstream_ptr = static_cast<z_streamp>(zlib_stream_ptr_);
     inflateEnd(zstream_ptr);
+    allocator_.free(zlib_stream_ptr_);
     zlib_stream_ptr_ = nullptr;
   }
 }
@@ -758,8 +748,8 @@ int ObZlibDecompressor::init()
     LOG_WARN("allocate memory failed: zlib stream object.", K(sizeof(z_stream)));
   } else {
     z_streamp zstream_ptr = static_cast<z_streamp>(zlib_stream_ptr_);
-    zstream_ptr->zalloc   = zlib_alloc;
-    zstream_ptr->zfree    = zlib_free;
+    zstream_ptr->zalloc   = ob_zlib_alloc;
+    zstream_ptr->zfree    = ob_zlib_free;
     zstream_ptr->opaque   = static_cast<voidpf>(&allocator_);
     zstream_ptr->avail_in = 0;
     zstream_ptr->next_in  = Z_NULL;
@@ -832,25 +822,6 @@ int ObZlibDecompressor::decompress(const char *src, int64_t src_size, int64_t &c
 /**
  * ObZstdDecompressor
  */
-void *zstd_alloc(void* opaque, size_t size)
-{
-  void *ret = nullptr;
-  if (OB_ISNULL(opaque)) {
-  } else {
-    ObIAllocator *allocator = static_cast<ObIAllocator *>(opaque);
-    ret = allocator->alloc(size);
-  }
-  return ret;
-}
-
-void zstd_free(void *opaque, void *address)
-{
-  if (OB_ISNULL(opaque)) {
-  } else {
-    ObIAllocator *allocator = static_cast<ObIAllocator *>(opaque);
-    allocator->free(address);
-  }
-}
 
 ObZstdDecompressor::ObZstdDecompressor(ObIAllocator &allocator)
     : ObDecompressor(allocator)
@@ -882,8 +853,8 @@ int ObZstdDecompressor::init()
     ret = OB_INIT_TWICE;
   } else {
     OB_ZSTD_customMem allocator;
-    allocator.customAlloc = zstd_alloc;
-    allocator.customFree  = zstd_free;
+    allocator.customAlloc = ob_zstd_malloc;
+    allocator.customFree  = ob_zstd_free;
     allocator.opaque      = &allocator_;
 
     ret = ObZstdWrapper::create_stream_dctx(allocator, zstd_stream_context_);

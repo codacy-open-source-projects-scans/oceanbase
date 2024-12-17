@@ -87,6 +87,7 @@ public:
       TabletGCStatus &need_gc,
       bool &need_retry,
       const share::SCN &decided_scn);
+  static int check_tablet_from_aborted_tx(const ObTablet &tablet, TabletGCStatus &gc_status);
   int get_unpersist_tablet_ids(
       common::ObIArray<ObTabletHandle> &deleted_tablets,
       common::ObIArray<ObTabletHandle> &immediately_deleted_tablets,
@@ -118,6 +119,8 @@ private:
   bool is_finish() { obsys::ObWLockGuard lock(wait_lock_, false); return lock.acquired(); }
   void set_stop() { ATOMIC_STORE(&update_enabled_, false); }
   void set_start() { ATOMIC_STORE(&update_enabled_, true); }
+
+  int64_t get_gc_lock_abs_timeout() const;
 
 public:
   static const int64_t GC_LOCK_TIMEOUT = 100_ms; // 100ms

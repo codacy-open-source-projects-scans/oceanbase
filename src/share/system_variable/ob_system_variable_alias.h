@@ -493,6 +493,9 @@ namespace share
   static const char* const OB_SV_SKIP_EXTERNAL_LOCKING = "skip_external_locking";
   static const char* const OB_SV_SUPER_READ_ONLY = "super_read_only";
   static const char* const OB_SV_PLSQL_OPTIMIZE_LEVEL = "plsql_optimize_level";
+  static const char* const OB_SV_LOW_PRIORITY_UPDATES = "low_priority_updates";
+  static const char* const OB_SV_MAX_ERROR_COUNT = "max_error_count";
+  static const char* const OB_SV_MAX_INSERT_DELAYED_THREADS = "max_insert_delayed_threads";
   static const char* const OB_SV_FT_STOPWORD_FILE = "ft_stopword_file";
   static const char* const OB_SV_INNODB_FT_CACHE_SIZE = "innodb_ft_cache_size";
   static const char* const OB_SV_INNODB_FT_SORT_PLL_DEGREE = "innodb_ft_sort_pll_degree";
@@ -622,6 +625,7 @@ namespace share
   static const char* const OB_SV_DELAYED_INSERT_LIMIT = "delayed_insert_limit";
   static const char* const OB_SV_NDB_VERSION = "ndb_version";
   static const char* const OB_SV_AUTO_GENERATE_CERTS = "auto_generate_certs";
+  static const char* const OB_SV__OPTIMIZER_COST_BASED_TRANSFORMATION = "_optimizer_cost_based_transformation";
   static const char* const OB_SV_RANGE_INDEX_DIVE_LIMIT = "range_index_dive_limit";
   static const char* const OB_SV_PARTITION_INDEX_DIVE_LIMIT = "partition_index_dive_limit";
   static const char* const OB_SV_TABLE_ACCESS_POLICY = "ob_table_access_policy";

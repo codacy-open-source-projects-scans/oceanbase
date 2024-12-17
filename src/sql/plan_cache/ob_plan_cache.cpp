@@ -424,6 +424,11 @@ int ObPlanCache::init(int64_t hash_bucket, uint64_t tenant_id)
       SQL_PC_LOG(WARN, "failed to init PlanCache", K(ret));
     } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::PlanCacheEvict, tg_id_))) {
       LOG_WARN("failed to create tg", K(ret));
+    } else {
+      // just for unittest test_create_executor, do not set error code
+      NEW_AND_SET_TIMER_SERVICE(tenant_id);
+    }
+    if (OB_FAIL(ret)) {
     } else if (OB_FAIL(TG_START(tg_id_))) {
       LOG_WARN("failed to start tg", K(ret));
     } else if (OB_FAIL(TG_SCHEDULE(tg_id_, evict_task_, GCONF.plan_cache_evict_interval, true))) {
@@ -1003,7 +1008,7 @@ int ObPlanCache::check_can_do_insert_opt(common::ObIAllocator &allocator,
     } else if (!can_do_batch || ins_params_count <= 0) {
       can_do_batch = false;
       // Only the insert ... values ​​... statement will print this,after trying to do insert batch optimization failure
-      LOG_INFO("can not do batch insert opt", K(ret), K(can_do_batch), K(upd_params_count),
+      LOG_TRACE("can not do batch insert opt", K(ret), K(can_do_batch), K(upd_params_count),
                 K(ins_params_count), K(batch_count), K(pc_ctx.raw_sql_));
     } else if (batch_count <= 1) {
       can_do_batch = false;
@@ -1011,7 +1016,7 @@ int ObPlanCache::check_can_do_insert_opt(common::ObIAllocator &allocator,
       // Only the insert ... values ​​... on duplicate key update ... statement will print this log
       // after trying to do insert batch optimization failure
       can_do_batch = false;
-      LOG_INFO("can not do batch insert opt", K(ret), K(can_do_batch), K(ins_params_count), K(batch_count), K(pc_ctx.raw_sql_));
+      LOG_TRACE("can not do batch insert opt", K(ret), K(can_do_batch), K(ins_params_count), K(batch_count), K(pc_ctx.raw_sql_));
     } else {
       pc_ctx.insert_batch_opt_info_.insert_params_count_ = ins_params_count;
       pc_ctx.insert_batch_opt_info_.update_params_count_ = upd_params_count;
@@ -1082,7 +1087,10 @@ int ObPlanCache::add_plan_cache(ObILibCacheCtx &ctx,
     do {
       if (OB_FAIL(add_cache_obj(ctx, pc_ctx.key_, cache_obj)) && OB_OLD_SCHEMA_VERSION == ret) {
         SQL_PC_LOG(INFO, "table or view in plan cache value is old", K(ret));
+      }
+      if (ctx.need_destroy_node_) {
         int tmp_ret = OB_SUCCESS;
+        SQL_PC_LOG(INFO, "The cache node needs to be evict due to an invalid state", K(ret));
         if (OB_SUCCESS != (tmp_ret = remove_cache_node(pc_ctx.key_))) {
           ret = tmp_ret;
           SQL_PC_LOG(WARN, "fail to remove lib cache node", K(ret));
@@ -1119,6 +1127,7 @@ int ObPlanCache::add_cache_obj(ObILibCacheCtx &ctx,
                                ObILibCacheObject *cache_obj)
 {
   int ret = OB_SUCCESS;
+  ctx.need_destroy_node_ = false;
   ObLibCacheWlockAndRef w_ref_lock(LC_NODE_WR_HANDLE);
   ObILibCacheNode *cache_node = NULL;
   if (OB_ISNULL(key) || OB_ISNULL(cache_obj)) {
@@ -1128,7 +1137,6 @@ int ObPlanCache::add_cache_obj(ObILibCacheCtx &ctx,
     ret = OB_ERR_UNEXPECTED;
     SQL_PC_LOG(ERROR, "unmatched tenant_id", K(ret), K(get_tenant_id()), K(cache_obj->get_tenant_id()));
   } else if (OB_FAIL(get_value(key, cache_node, w_ref_lock /*write locked*/))) {
-    ret = OB_ERR_UNEXPECTED;
     SQL_PC_LOG(TRACE, "failed to get cache node from lib cache by key", K(ret));
   } else if (NULL == cache_node) {
     ObILibCacheKey *cache_key = NULL;
@@ -1209,12 +1217,19 @@ int ObPlanCache::add_cache_obj(ObILibCacheCtx &ctx,
     }
   } else {  /* node exist, add cache obj to it */
     LOG_TRACE("inner add cache obj", K(key), K(cache_node));
-    if (OB_FAIL(cache_node->add_cache_obj(ctx, key, cache_obj))) {
+    if (cache_node->is_invalid()) {
+      ctx.need_destroy_node_ = true;
+    } else if (OB_FAIL(cache_node->add_cache_obj(ctx, key, cache_obj))) {
       SQL_PC_LOG(TRACE, "failed to add cache obj to lib cache node", K(ret));
     } else if (OB_FAIL(cache_node->update_node_stat(ctx))) {
       SQL_PC_LOG(WARN, "failed to update node stat", K(ret));
     } else if (OB_FAIL(add_stat_for_cache_obj(ctx, cache_obj))) {
       LOG_WARN("failed to add stat", K(ret), K(ctx));
+    }
+    if (OB_FAIL(ret)) {
+      if (!ctx.need_destroy_node_ && ret != OB_SQL_PC_PLAN_DUPLICATE) {
+        ctx.need_destroy_node_ = true;
+      }
     }
     // release wlock whatever
     cache_node->unlock();
@@ -1236,14 +1251,15 @@ int ObPlanCache::get_cache_obj(ObILibCacheCtx &ctx,
     ret = OB_INVALID_ARGUMENT;
     SQL_PC_LOG(WARN, "invalid null argument", K(ret), K(key));
   } else if (OB_FAIL(get_value(key, cache_node, r_ref_lock /*read locked*/))) {
-    ret = OB_ERR_UNEXPECTED;
     SQL_PC_LOG(TRACE, "failed to get cache node from lib cache by key", K(ret));
   } else if (OB_UNLIKELY(NULL == cache_node)) {
     ret = OB_SQL_PC_NOT_EXIST;
     SQL_PC_LOG(DEBUG, "cache obj does not exist!", K(key));
   } else {
     LOG_DEBUG("inner_get_cache_obj", K(key), K(cache_node));
-    if (OB_FAIL(cache_node->update_node_stat(ctx))) {
+    if (cache_node->is_invalid()) {
+      ret = OB_SQL_PC_NOT_EXIST;
+    } else if (OB_FAIL(cache_node->update_node_stat(ctx))) {
       SQL_PC_LOG(WARN, "failed to update node stat",  K(ret));
     } else if (OB_FAIL(cache_node->get_cache_obj(ctx, key, cache_obj))) {
       if (OB_SQL_PC_NOT_EXIST != ret) {

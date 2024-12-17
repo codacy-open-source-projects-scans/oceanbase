@@ -446,14 +446,14 @@ void ObServerMemoryConfig::check_limit(bool ignore_error)
               K(hold), K(reserved));
     }
   }
-  // check divisive memory size
-  const int64_t DIVISIVE_MEMORY_LIMIT = 2LL<<30;
-  int64_t divisive_memory_size = get_divisive_mem_size();
-  if (divisive_memory_size > DIVISIVE_MEMORY_LIMIT) {
+  // check unmanaged memory size
+  const int64_t UNMANAGED_MEMORY_LIMIT = 2LL<<30;
+  int64_t unmanaged_memory_size = get_unmanaged_memory_size();
+  if (unmanaged_memory_size > UNMANAGED_MEMORY_LIMIT) {
     if (ignore_error) {
-      LOG_WARN("divisive_memory_size is over the limit", K(divisive_memory_size), K(DIVISIVE_MEMORY_LIMIT));
+      LOG_WARN("unmanaged_memory_size is over the limit", K(unmanaged_memory_size), K(UNMANAGED_MEMORY_LIMIT));
     } else {
-      LOG_ERROR("divisive_memory_size is over the limit", K(divisive_memory_size), K(DIVISIVE_MEMORY_LIMIT));
+      LOG_ERROR("unmanaged_memory_size is over the limit", K(unmanaged_memory_size), K(UNMANAGED_MEMORY_LIMIT));
     }
   }
 }
@@ -480,7 +480,8 @@ int ObServerMemoryConfig::set_500_tenant_limit(const int64_t limit_mode)
     LOG_WARN("invalid limit mode", K(ret), K(limit_mode));
   }
   if (OB_SUCC(ret)) {
-    set_tenant_memory_limit(OB_SERVER_TENANT_ID, tenant_limit);
+    ma->set_tenant_limit(OB_SERVER_TENANT_ID, tenant_limit);
+    ma->set_tenant_max_min(OB_SERVER_TENANT_ID, tenant_limit, 0);
   }
   for (int ctx_id = 0; OB_SUCC(ret) && ctx_id < ObCtxIds::MAX_CTX_ID; ++ctx_id) {
     if (ObCtxIds::SCHEMA_SERVICE == ctx_id ||
@@ -643,6 +644,16 @@ int64_t get_stream_rpc_max_wait_timeout(int64_t tenant_id)
   }
   return stream_rpc_max_wait_timeout;
 }
+
+bool stream_rpc_update_timeout()
+{
+  bool bool_ret = false;
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_0) {
+    bool_ret = true;
+  }
+  return bool_ret;
+}
+
 } // end of namespace obrpc
 } // end of namespace oceanbase
 

@@ -18,6 +18,7 @@
 #include "lib/allocator/page_arena.h"
 #include "share/ob_share_util.h"
 #include "observer/ob_inner_sql_connection.h"
+#include "rootserver/ob_split_partition_helper.h"
 #include "storage/tx/ob_tx_log.h"
 
 namespace oceanbase
@@ -212,6 +213,27 @@ int ObBatchCreateTabletHelper::add_table_schema_(
   HEAP_VAR(ObTableSchema, table_schema) {
   if (OB_FAIL(table_schema.assign(const_table_schema))) {
     LOG_WARN("failed to assign table_schema", KR(ret), K(const_table_schema));
+  } else if (table_schema.is_user_table() && table_schema.is_heap_table()) {
+    /*
+     * When creating heap table (no explicit primary key), or doing offline ddl to drop primary key, the column array in table_schema here is out of order actually.
+     * The `__pk_increment` column is pushed back into column array with column_id 1, and in the LAST of column array in table schema.
+     * Column array in storage schema will be used to construct column group in C-replica, so the `__pk_increment` cg will be the LAST cg.
+     * However, the table schema read from schema_guard (__all_column table) when doing compaction will sort the column array by column id,
+     * so the `__pk_increment` cg will be the FIRST cg when compaction, which cause data inconsistency.
+     *
+     * So we need to sort column array by column id for heap table when creating tablet.
+     *
+     * testcases:
+     * - tools/deploy/mysql_test/test_suite/column_store_replica/t/drop_heap_table_primary_key.test
+     * - tools/deploy/mysql_test/test_suite/column_store_replica/t/drop_heap_table_primary_key_oracle.test
+     * - tools/obtest/t/errsim_storage_compaction/column_store_replica/test_rebuild_heap_table_migrate_major.test
+     */
+    if (OB_FAIL(table_schema.sort_column_array_by_column_id())) {
+      LOG_WARN("failed to sort column array", K(ret), K(table_schema));
+    }
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (tenant_data_version < DATA_VERSION_4_2_2_0) {
     // compatibility with DATA_VERSION_4_2_1.
     table_schema.reset_partition_schema();
@@ -224,30 +246,23 @@ int ObBatchCreateTabletHelper::add_table_schema_(
     ObCreateTabletSchema *create_tablet_schema = NULL;
     void *create_tablet_schema_ptr = batch_arg_.allocator_.alloc(sizeof(ObCreateTabletSchema));
     obrpc::ObCreateTabletExtraInfo create_tablet_extr_info;
-    int64_t storage_schema_version = ObStorageSchema::STORAGE_SCHEMA_VERSION_LATEST;
-    if (tenant_data_version < DATA_VERSION_4_3_0_0) {
-      storage_schema_version = ObStorageSchema::STORAGE_SCHEMA_VERSION_V2;
-    } else if (tenant_data_version < DATA_VERSION_4_3_4_0) {
-      storage_schema_version = ObStorageSchema::STORAGE_SCHEMA_VERSION_V3;
-    } else {
-      // why use v4 instead of latest?
-      // if we add new field in storage schema later, we don't need to change this version,
-      // just add a new branch here
-      storage_schema_version = ObStorageSchema::STORAGE_SCHEMA_VERSION_V4;
-    }
+    ObTabletID split_src_tablet_id;
     if (OB_ISNULL(create_tablet_schema_ptr)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to allocate storage schema", KR(ret), K(table_schema));
     } else if (FALSE_IT(create_tablet_schema = new (create_tablet_schema_ptr)ObCreateTabletSchema())) {
     } else if (OB_FAIL(create_tablet_schema->init(batch_arg_.allocator_, table_schema, compat_mode,
                                                   false /*skip_column_info*/,
-                                                  storage_schema_version))) {
+                                                  tenant_data_version))) {
       LOG_WARN("failed to init storage schema", KR(ret), K(table_schema));
     } else if (OB_FAIL(batch_arg_.create_tablet_schemas_.push_back(create_tablet_schema))) {
       LOG_WARN("failed to push back table schema", KR(ret), K(table_schema));
+    } else if (tenant_data_version >= DATA_VERSION_4_3_5_0 && OB_FAIL(ObSplitPartitionHelper::get_split_src_tablet_id_if_any(table_schema, split_src_tablet_id))) {
+      LOG_WARN("failed to get split src tablet id", K(ret), K(table_schema));
     } else if (OB_FAIL(create_tablet_extr_info.init(tenant_data_version,
                                                     need_create_empty_major,
-                                                    table_schema.get_micro_index_clustered()))) {
+                                                    table_schema.get_micro_index_clustered(),
+                                                    split_src_tablet_id))) {
       LOG_WARN("init create table extra info failed", K(ret), K(tenant_data_version), K(need_create_empty_major), K(table_schema));
     } else if (OB_FAIL(batch_arg_.tablet_extra_infos_.push_back(create_tablet_extr_info))) {
       LOG_WARN("failed to push back tablet extra infos", K(ret), K(create_tablet_extr_info));
@@ -390,6 +405,7 @@ int ObTabletCreator::add_create_tablet_arg(const ObTabletCreatorArg &arg)
 int ObTabletCreator::modify_batch_args(
     const storage::ObTabletMdsUserDataType &create_type,
     const SCN &clog_checkpoint_scn,
+    const SCN &mds_checkpoint_scn,
     const bool clear_auto_part_size)
 {
   int ret = OB_SUCCESS;
@@ -405,6 +421,7 @@ int ObTabletCreator::modify_batch_args(
       } else {
         while (OB_SUCC(ret) && OB_NOT_NULL(batch_arg)) {
           batch_arg->batch_arg_.clog_checkpoint_scn_ = clog_checkpoint_scn;
+          batch_arg->batch_arg_.mds_checkpoint_scn_ = mds_checkpoint_scn;
           batch_arg->batch_arg_.create_type_ = create_type;
           if (clear_auto_part_size) {
             batch_arg->auto_part_size_arr_.reset();

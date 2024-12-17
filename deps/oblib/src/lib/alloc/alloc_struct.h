@@ -255,6 +255,9 @@ struct AChunk {
       };
     };
   };
+#ifdef ENABLE_SANITY
+  void *ref_;
+#endif
   BlockSet *block_set_;
   uint64_t washed_blks_;
   uint64_t washed_size_;
@@ -391,6 +394,9 @@ inline uint64_t align_up2(uint64_t x, uint64_t align)
 
 AChunk::AChunk() :
     MAGIC_CODE_(ACHUNK_MAGIC_CODE),
+#ifdef ENABLE_SANITY
+    ref_(nullptr),
+#endif
     block_set_(nullptr),
     washed_blks_(0), washed_size_(0), alloc_bytes_(0),
     prev_(this), next_(this),
@@ -690,13 +696,50 @@ private:
   const bool last_;
 };
 
-extern void inc_divisive_mem_size(const int64_t size);
-extern void dec_divisive_mem_size(const int64_t size);
-extern int64_t get_divisive_mem_size();
+class ObUnmanagedMemoryStat
+{
+public:
+  class DisableGuard
+  {
+  public:
+    DisableGuard()
+      : last_(tl_disabled())
+    {
+      tl_disabled() = true;
+    }
+    ~DisableGuard()
+    {
+      tl_disabled() = last_;
+    }
+    static bool &tl_disabled()
+    {
+      static __thread bool disabled = false;
+      return disabled;
+    }
+  private:
+    bool last_;
+  };
+  static ObUnmanagedMemoryStat &get_instance()
+  {
+    static ObUnmanagedMemoryStat instance;
+    return instance;
+  }
+  static bool is_disabled()
+  {
+    return DisableGuard::tl_disabled();
+  }
+  void inc(const int64_t size);
+  void dec(const int64_t size);
+  int64_t get_total_hold();
+private:
+  ObUnmanagedMemoryStat()
+  {}
+  int64_t hold_[OB_MAX_CPU_NUM];
+};
 
-extern void set_ob_mem_mgr_path();
-extern void unset_ob_mem_mgr_path();
-extern bool is_ob_mem_mgr_path();
+#define UNMAMAGED_MEMORY_STAT ObUnmanagedMemoryStat::get_instance()
+
+extern int64_t get_unmanaged_memory_size();
 
 extern void enable_memleak_light_backtrace(const bool);
 extern bool is_memleak_light_backtrace_enabled();

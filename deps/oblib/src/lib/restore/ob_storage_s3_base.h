@@ -23,6 +23,7 @@
 #include "lib/allocator/ob_vslice_alloc.h"
 #include <algorithm>
 #include <iostream>
+#include "lib/utility/ob_tracepoint.h"
 
 #pragma push_macro("private")
 #undef private
@@ -52,7 +53,6 @@
 #include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/s3/model/DeleteObjectsRequest.h>
 #pragma pop_macro("private")
-#include "cos/ob_singleton.h"
 
 namespace oceanbase
 {
@@ -137,10 +137,9 @@ struct ObS3Account
   void reset();
   bool is_valid() const { return is_valid_; }
   int64_t hash() const;
-  TO_STRING_KV(K_(is_valid), K_(delete_mode), K_(region), K_(endpoint), K_(access_id));
+  TO_STRING_KV(K_(is_valid), K_(delete_mode), K_(region), K_(endpoint), K_(access_id), KP_(secret_key), K_(sts_token), K_(addressing_model));
 
   int parse_from(const char *storage_info_str, const int64_t size);
-  int set_field(const char *value, char *field, const uint32_t field_length);
 
   bool is_valid_;
   int64_t delete_mode_;
@@ -148,6 +147,8 @@ struct ObS3Account
   char endpoint_[MAX_S3_ENDPOINT_LENGTH];
   char access_id_[MAX_S3_ACCESS_ID_LENGTH];     // ak
   char secret_key_[MAX_S3_SECRET_KEY_LENGTH];   // sk
+  ObSTSToken sts_token_;
+  ObStorageAddressingModel addressing_model_;
 };
 
 class ObS3MemoryManager : public Aws::Utils::Memory::MemorySystemInterface
@@ -250,7 +251,7 @@ private:
   template<typename RequestType, typename OutcomeType>
   int do_s3_operation_(S3OperationFunc<RequestType, OutcomeType> s3_op_func,
                        const RequestType &request, OutcomeType &outcome,
-                       const int64_t retry_timeout_us = OB_STORAGE_MAX_IO_TIMEOUT_US);
+                       const int64_t retry_timeout_us = ObObjectStorageTenantGuard::get_timeout_us());
 
 private:
   SpinRWLock lock_;
@@ -294,7 +295,7 @@ public:
   using ObStorageIORetryStrategy<OutcomeType>::start_time_us_;
   using ObStorageIORetryStrategy<OutcomeType>::timeout_us_;
 
-  ObStorageS3RetryStrategy(const int64_t timeout_us = OB_STORAGE_MAX_IO_TIMEOUT_US)
+  ObStorageS3RetryStrategy(const int64_t timeout_us = ObObjectStorageTenantGuard::get_timeout_us())
       : ObStorageIORetryStrategy<OutcomeType>(timeout_us)
   {}
   virtual ~ObStorageS3RetryStrategy() {}
@@ -323,7 +324,10 @@ protected:
       const RetType &outcome, const int64_t attempted_retries) const override
   {
     bool bret = false;
-    if (outcome.IsSuccess()) {
+    if (OB_SUCCESS != EventTable::EN_OBJECT_STORAGE_IO_RETRY) {
+      bret = true;
+      OB_LOG(INFO, "errsim object storage IO retry", K(outcome.IsSuccess()));
+    } else if (outcome.IsSuccess()) {
       bret = false;
     } else if (outcome.GetError().ShouldRetry()) {
       bret = true;
@@ -346,10 +350,10 @@ public:
     try {
       ret = std::mem_fn(f)(obj, std::forward<Args>(args)...);
     } catch (const std::exception &e) {
-      ret = OB_S3_ERROR;
+      ret = OB_OBJECT_STORAGE_IO_ERROR;
       OB_LOG(WARN, "caught exception when doing s3 operation", K(ret), K(e.what()), KP(this));
     } catch (...) {
-      ret = OB_S3_ERROR;
+      ret = OB_OBJECT_STORAGE_IO_ERROR;
       OB_LOG(WARN, "caught unknown exception when doing s3 operation", K(ret), KP(this));
     }
     return ret;
@@ -392,7 +396,6 @@ protected:
 private:
   bool is_inited_;
   ObS3Account s3_account_;
-
   friend class ObStorageS3Util;
   DISALLOW_COPY_AND_ASSIGN(ObStorageS3Base);
 };

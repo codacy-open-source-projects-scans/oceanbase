@@ -93,8 +93,8 @@ ObPartitionSplitTask::ObPartitionSplitTask()
     wait_trans_ctx_(),
     tablet_size_(0),
     data_tablet_parallel_rowkey_list_(),
-    index_tablet_parallel_rowkey_list_()
-
+    index_tablet_parallel_rowkey_list_(),
+    min_split_start_scn_()
 {
   ObMemAttr attr(OB_SERVER_TENANT_ID, "RSSplitRange", ObCtxIds::DEFAULT_CTX_ID);
   data_tablet_parallel_rowkey_list_.set_attr(attr);
@@ -980,6 +980,7 @@ int ObPartitionSplitTask::send_split_request(
     param.execution_id_ = execution_id_;
     param.data_format_version_ = data_format_version_;
     param.consumer_group_id_ = partition_split_arg_.consumer_group_id_;
+    param.min_split_start_scn_ = min_split_start_scn_;
     if (OB_ISNULL(root_service_)) {
       ret = OB_ERR_SYS;
       LOG_WARN("error sys", K(ret));
@@ -1308,6 +1309,7 @@ int ObPartitionSplitTask::wait_trans_end(const share::ObDDLTaskStatus next_task_
 {
   int ret = OB_SUCCESS;
   ObDDLTaskStatus new_status = task_status_;
+  int64_t new_fetched_snapshot = 0;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObConstraintTask has not been inited", K(ret));
@@ -1318,26 +1320,29 @@ int ObPartitionSplitTask::wait_trans_end(const share::ObDDLTaskStatus next_task_
     new_status = next_task_status;
   }
 
-  if (OB_SUCC(ret) && new_status != next_task_status && !wait_trans_ctx_.is_inited()) {
+  if (OB_SUCC(ret) && snapshot_version_ <= 0 && !wait_trans_ctx_.is_inited()) {
     if (OB_FAIL(wait_trans_ctx_.init(tenant_id_, task_id_, object_id_, all_src_tablet_ids_, ObDDLWaitTransEndCtx::WaitTransType::WAIT_SCHEMA_TRANS, schema_version_))) {
       LOG_WARN("init wait trans ctx failed", K(ret));
     }
   }
 
-  if (OB_SUCC(ret) && new_status != next_task_status && snapshot_version_ <= 0) {
+  if (OB_SUCC(ret) && snapshot_version_ <= 0) {
     bool is_trans_end = false;
-    if (OB_FAIL(wait_trans_ctx_.try_wait(is_trans_end, snapshot_version_))) {
+    if (OB_FAIL(wait_trans_ctx_.try_wait(is_trans_end, new_fetched_snapshot))) {
       LOG_WARN("try wait transaction failed", K(ret));
     }
   }
 
-  if (OB_SUCC(ret) && new_status != next_task_status && snapshot_version_ > 0) {
-    if (OB_FAIL(ObDDLTaskRecordOperator::update_snapshot_version(root_service_->get_sql_proxy(),
+  if (OB_SUCC(ret) && snapshot_version_ <= 0 && new_fetched_snapshot > 0) {
+    int64_t persisted_snapshot = 0;
+    if (OB_FAIL(ObDDLTaskRecordOperator::update_snapshot_version_if_not_exist(root_service_->get_sql_proxy(),
                                                                  tenant_id_,
                                                                  task_id_,
-                                                                 snapshot_version_))) {
+                                                                 new_fetched_snapshot,
+                                                                 persisted_snapshot))) {
       LOG_WARN("update snapshot version failed", K(ret), K(task_id_));
     } else {
+      snapshot_version_ = persisted_snapshot > 0 ? persisted_snapshot : new_fetched_snapshot;
       new_status = next_task_status;
     }
   }
@@ -1525,7 +1530,17 @@ int ObPartitionSplitTask::send_split_rpc(
     if (OB_UNLIKELY(resp_ret_codes.count() > target_split_info_array.count())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected err", K(ret), K(target_split_info_array), K(resp_ret_codes));
-    } else {
+    } else if (is_split_start && !min_split_start_scn_.is_valid_and_not_min()) {
+      if (OB_UNLIKELY(!start_result.min_split_start_scn_.is_valid_and_not_min())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected split start scn", K(ret), K(start_result));
+      } else if (FALSE_IT(min_split_start_scn_ = start_result.min_split_start_scn_)) {
+      } else if (OB_FAIL(update_task_message())) {
+        LOG_WARN("update split start scn failed", K(ret));
+      }
+    }
+
+    if (OB_SUCC(ret)) {
       TCWLockGuard guard(lock_);
       for (int64_t i = 0; OB_SUCC(ret) && i < resp_ret_codes.count(); i++) {
         const ObTabletID &tablet_id = target_split_info_array.at(i).source_tablet_id_;
@@ -1861,7 +1876,7 @@ int ObPartitionSplitTask::serialize_params_to_message(
   } else {
     LST_DO_CODE(OB_UNIS_ENCODE, all_src_tablet_ids_, data_tablet_compaction_scn_,
       index_tablet_compaction_scns_, lob_tablet_compaction_scns_, partition_split_arg_,
-      tablet_size_, data_tablet_parallel_rowkey_list_, index_tablet_parallel_rowkey_list_);
+      tablet_size_, data_tablet_parallel_rowkey_list_, index_tablet_parallel_rowkey_list_, min_split_start_scn_);
   }
   return ret;
 }
@@ -1901,6 +1916,9 @@ int ObPartitionSplitTask::deserialize_params_from_message(
       }
       LOG_TRACE("parallel datum rowkey info", K(ret), K(data_tablet_parallel_rowkey_list_), K(index_tablet_parallel_rowkey_list_));
     }
+    if (OB_SUCC(ret)) {
+      LST_DO_CODE(OB_UNIS_DECODE, min_split_start_scn_);
+    }
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(ObDDLUtil::replace_user_tenant_id(tenant_id, tmp_arg))) {
@@ -1921,7 +1939,7 @@ int64_t ObPartitionSplitTask::get_serialize_param_size() const
   int len = ObDDLTask::get_serialize_param_size();
   LST_DO_CODE(OB_UNIS_ADD_LEN, all_src_tablet_ids_, data_tablet_compaction_scn_,
       index_tablet_compaction_scns_, lob_tablet_compaction_scns_, partition_split_arg_,
-      tablet_size_, data_tablet_parallel_rowkey_list_, index_tablet_parallel_rowkey_list_);
+      tablet_size_, data_tablet_parallel_rowkey_list_, index_tablet_parallel_rowkey_list_, min_split_start_scn_);
   return len;
 }
 
@@ -2467,7 +2485,8 @@ int ObPartitionSplitTask::prepare_tablet_split_ranges(
       arg.ls_id_              = ls_id;
       arg.tablet_id_          = src_tablet_id;
       arg.user_parallelism_   = parallelism_; // parallelism_;
-      arg.schema_tablet_size_ = tablet_size_;
+      arg.schema_tablet_size_ = std::max(tablet_size_, 128 * 1024 * 1024L/*128MB*/);
+      arg.ddl_type_ = task_type_;
       if (OB_FAIL(root_service_->get_rpc_proxy().to(leader_addr)
         .by(tenant_id_).timeout(rpc_timeout).prepare_tablet_split_task_ranges(arg, result))) {
         LOG_WARN("prepare tablet split task ranges failed", K(ret), K(arg));
@@ -2572,6 +2591,7 @@ int ObPartitionSplitTask::prepare_tablet_split_infos(
       split_info.consumer_group_id_   = partition_split_arg_.consumer_group_id_;
       split_info.can_reuse_macro_block_ = can_reuse_macro_blocks.at(i);
       split_info.split_sstable_type_  = share::ObSplitSSTableType::SPLIT_BOTH;
+      split_info.min_split_start_scn_ = min_split_start_scn_;
       const ObIArray<blocksstable::ObDatumRowkey> &parallel_datum_rowkey_list = i > 0 && i < lob_tablet_start_idx ?
           index_tablet_parallel_rowkey_list_.at(i - 1) : data_tablet_parallel_rowkey_list_;
       int64_t index = 0;

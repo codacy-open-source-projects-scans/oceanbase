@@ -296,8 +296,10 @@ int ObDMLStmtPrinter::print_table(const TableItem *table_item,
         if (OB_FAIL(print_base_table(table_item))) {
           LOG_WARN("failed to print base table", K(ret), K(*table_item));
         } else if (!no_print_alias && !table_item->alias_name_.empty()) {
-          DATA_PRINTF(lib::is_oracle_mode() ? " \"%.*s\"" : " `%.*s`",
-                      LEN_AND_PTR(table_item->alias_name_));
+          //DATA_PRINTF(lib::is_oracle_mode() ? " \"%.*s\"" : " `%.*s`",
+          //            LEN_AND_PTR(table_item->alias_name_));
+          DATA_PRINTF(" ");
+          PRINT_IDENT_WITH_QUOT(table_item->alias_name_);
         }
         break;
       }
@@ -305,8 +307,10 @@ int ObDMLStmtPrinter::print_table(const TableItem *table_item,
         if (OB_FAIL(print_base_table(table_item))) {
           LOG_WARN("failed to print base table", K(ret), K(*table_item));
         } else if (!no_print_alias && !table_item->alias_name_.empty()) {
-          DATA_PRINTF(lib::is_oracle_mode() ? " \"%.*s\"" : " `%.*s`",
-                      LEN_AND_PTR(table_item->alias_name_));
+          //DATA_PRINTF(lib::is_oracle_mode() ? " \"%.*s\"" : " `%.*s`",
+          //            LEN_AND_PTR(table_item->alias_name_));
+          DATA_PRINTF(" ");
+          PRINT_IDENT_WITH_QUOT(table_item->alias_name_);
         }
         break;
       }
@@ -473,6 +477,32 @@ int ObDMLStmtPrinter::print_table(const TableItem *table_item,
             }
             DATA_PRINTF(")");
             DATA_PRINTF(" %.*s", LEN_AND_PTR(table_item->alias_name_));
+            DATA_PRINTF("(");
+            DATA_PRINTF("%.*s", LEN_AND_PTR(table_item->json_table_def_->all_cols_.at(1)->col_name_));
+            DATA_PRINTF(")");
+          }
+          break;
+        }
+        case MulModeTableType::OB_UNNEST_TABLE_TYPE : {
+          DATA_PRINTF("UNNEST(");
+          for (int64_t i = 0; OB_SUCC(ret) && i < table_item->json_table_def_->doc_exprs_.count(); ++i) {
+            if (OB_FAIL(expr_printer_.do_print(table_item->json_table_def_->doc_exprs_.at(i), T_FROM_SCOPE))) {
+              LOG_WARN("failed to print expr", K(ret));
+            } else if (i != table_item->json_table_def_->doc_exprs_.count() - 1) {
+              DATA_PRINTF(",");
+            } else {
+              DATA_PRINTF(")");
+            }
+          }
+          DATA_PRINTF(" %.*s", LEN_AND_PTR(table_item->alias_name_));
+          DATA_PRINTF("(");
+          for (int64_t i = 1; OB_SUCC(ret) && i < table_item->json_table_def_->all_cols_.count(); ++i) {
+            DATA_PRINTF("%.*s", LEN_AND_PTR(table_item->json_table_def_->all_cols_.at(i)->col_name_));
+            if (i != table_item->json_table_def_->all_cols_.count() - 1) {
+              DATA_PRINTF(",");
+            } else {
+              DATA_PRINTF(")");
+            }
           }
           break;
         }
@@ -525,30 +555,34 @@ int ObDMLStmtPrinter::print_values_table(const TableItem &table_item, bool no_pr
     LOG_WARN("values table def should not be NULL", K(ret), KP(table_def));
   } else {
     const int64_t column_cnt = table_def->column_cnt_;
-    const int64_t row_cnt = table_def->row_cnt_;
-    const ObIArray<ObRawExpr *> &values = table_def->access_exprs_;
-    if (OB_UNLIKELY(column_cnt <= 0 || values.empty() || values.count() % column_cnt != 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected error", K(ret), K(column_cnt), K(values));
-    } else {
-      DATA_PRINTF("(VALUES ");
-      for (int64_t i = 0; OB_SUCC(ret) && i < values.count(); ++i) {
-        if (i % column_cnt == 0) {
-          if (i == 0) {
-            DATA_PRINTF("ROW(");  // first row
-          } else {
-            DATA_PRINTF("), ROW("); // next row
+    if (ObValuesTableDef::ACCESS_EXPR == table_def->access_type_ ||
+        ObValuesTableDef::FOLD_ACCESS_EXPR == table_def->access_type_) {
+      const ObIArray<ObRawExpr *> &values = table_def->access_exprs_;
+      if (OB_UNLIKELY(column_cnt <= 0 || values.empty() || values.count() % column_cnt != 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(column_cnt), K(values));
+      } else {
+        DATA_PRINTF("(VALUES ");
+        for (int64_t i = 0; OB_SUCC(ret) && i < values.count(); ++i) {
+          if (i % column_cnt == 0) {
+            if (i == 0) {
+              DATA_PRINTF("ROW(");  // first row
+            } else {
+              DATA_PRINTF("), ROW("); // next row
+            }
+          }
+          if (OB_SUCC(ret)) {
+            OZ (expr_printer_.do_print(values.at(i), T_FROM_SCOPE));
+            if (OB_SUCC(ret) && (i + 1) % column_cnt != 0) {
+              DATA_PRINTF(", ");
+            }
           }
         }
-        if (OB_SUCC(ret)) {
-          OZ (expr_printer_.do_print(values.at(i), T_FROM_SCOPE));
-          if (OB_SUCC(ret) && (i + 1) % column_cnt != 0) {
-            DATA_PRINTF(", ");
-          }
-        }
+        DATA_PRINTF("))");
+        DATA_PRINTF(" %.*s", LEN_AND_PTR(table_item.alias_name_));
       }
-      DATA_PRINTF("))");
-      DATA_PRINTF(" %.*s", LEN_AND_PTR(table_item.alias_name_));
+    } else {
+      DATA_PRINTF("%.*s", LEN_AND_PTR(table_item.get_table_name()));
     }
   }
   return ret;

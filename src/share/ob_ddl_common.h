@@ -82,6 +82,12 @@ enum ObDDLType
   DDL_CREATE_VEC_INDEX = 15,
   DDL_CREATE_MULTIVALUE_INDEX = 16,
   DDL_REBUILD_INDEX = 17,
+  DDL_CREATE_VEC_IVFFLAT_INDEX = 18,
+  DDL_CREATE_VEC_IVFSQ8_INDEX = 19,
+  DDL_CREATE_VEC_IVFPQ_INDEX = 20,
+  DDL_DROP_VEC_IVFFLAT_INDEX = 21,
+  DDL_DROP_VEC_IVFSQ8_INDEX = 22,
+  DDL_DROP_VEC_IVFPQ_INDEX = 23,
 
   ///< @note tablet split.
   DDL_AUTO_SPLIT_BY_RANGE = 100,
@@ -197,6 +203,13 @@ enum ObDDLTaskStatus {
   WRITE_SPLIT_START_LOG = 37,
   DROP_AUX_INDEX_TABLE = 38,
   DROP_LOB_META_ROW = 39,
+  GENERATE_SQ_META_TABLE_SCHEMA = 40,
+  WAIT_SQ_META_TABLE_COMPLEMENT = 41,
+  GENERATE_CENTROID_TABLE_SCHEMA = 42,
+  WAIT_CENTROID_TABLE_COMPLEMENT = 43,
+  GENERATE_PQ_CENTROID_TABLE_SCHEMA = 44,
+  WAIT_PQ_CENTROID_TABLE_COMPLEMENT = 45,
+
   FAIL = 99,
   SUCCESS = 100
 };
@@ -348,6 +361,24 @@ static const char* ddl_task_status_to_str(const ObDDLTaskStatus &task_status) {
       break;
     case ObDDLTaskStatus::DROP_LOB_META_ROW:
       str = "DROP_LOB_META_ROW";
+      break;
+    case ObDDLTaskStatus::GENERATE_SQ_META_TABLE_SCHEMA:
+      str = "GENERATE_SQ_META_TABLE_SCHEMA";
+      break;
+    case ObDDLTaskStatus::WAIT_SQ_META_TABLE_COMPLEMENT:
+      str = "WAIT_SQ_META_TABLE_COMPLEMENT";
+      break;
+    case ObDDLTaskStatus::GENERATE_CENTROID_TABLE_SCHEMA:
+      str = "GENERATE_CENTROID_TABLE_SCHEMA";
+      break;
+    case ObDDLTaskStatus::WAIT_CENTROID_TABLE_COMPLEMENT:
+      str = "WAIT_CENTROID_TABLE_COMPLEMENT";
+      break;
+    case ObDDLTaskStatus::GENERATE_PQ_CENTROID_TABLE_SCHEMA:
+      str = "GENERATE_PQ_CENTROID_TABLE_SCHEMA";
+      break;
+    case ObDDLTaskStatus::WAIT_PQ_CENTROID_TABLE_COMPLEMENT:
+      str = "WAIT_PQ_CENTROID_TABLE_COMPLEMENT";
       break;
     case ObDDLTaskStatus::FAIL:
       str = "FAIL";
@@ -639,7 +670,7 @@ public:
                                              ObSqlString &rowkey_column_sql_string);
 
   static int ddl_get_tablet(
-      storage::ObLSHandle &ls_handle,
+      const storage::ObLSHandle &ls_handle,
       const ObTabletID &tablet_id,
       storage::ObTabletHandle &tablet_handle,
       const storage::ObMDSGetTabletMode mode = storage::ObMDSGetTabletMode::READ_WITHOUT_CHECK);
@@ -746,7 +777,8 @@ public:
      int64_t &snapshot_version,
      share::ObDDLTaskStatus &task_status,
      uint64_t &target_object_id,
-     int64_t &schema_version);
+     int64_t &schema_version,
+     bool &is_no_logging);
 
   static int replace_user_tenant_id(
     const ObDDLType &ddl_type,
@@ -889,8 +921,8 @@ public:
       const uint64_t table_id,
       const uint64_t target_table_id,
       int64_t &snapshot_version,
-      bool &snapshot_held,
-      rootserver::ObDDLTask* task);
+      rootserver::ObDDLTask* task,
+      const common::ObIArray<common::ObTabletID> *extra_mv_tablet_ids = NULL);
   static int release_snapshot(
       rootserver::ObDDLTask* task,
       const uint64_t table_id,
@@ -904,18 +936,22 @@ public:
       int64_t &check_dag_exit_retry_cnt,
       bool is_complement_data_dag,
       bool &all_dag_exit);
-private:
-  static int hold_snapshot(
-      rootserver::ObDDLTask* task,
-      const uint64_t table_id,
-      const uint64_t target_table_id,
-      rootserver::ObRootService *root_service,
-      const int64_t snapshot_version);
+  static int get_no_logging_param(const int64_t tenant_id, bool &is_no_logging);
   static int batch_check_tablet_checksum(
       const uint64_t tenant_id,
       const int64_t start_idx,
       const int64_t end_idx,
-      const ObArray<ObTabletID> &tablet_ids);
+      const ObIArray<ObTabletID> &tablet_ids);
+
+private:
+  static int hold_snapshot(
+      common::ObMySQLTransaction &trans,
+      rootserver::ObDDLTask* task,
+      const uint64_t table_id,
+      const uint64_t target_table_id,
+      rootserver::ObRootService *root_service,
+      const int64_t snapshot_version,
+      const common::ObIArray<common::ObTabletID> *extra_mv_tablet_ids);
 
   static int check_table_column_checksum_error(
       const uint64_t tenant_id,
@@ -933,7 +969,7 @@ private:
       const sql::ObOpSpec *spec,
       uint64_t &table_id);
 
-private:
+public:
   const static int64_t MAX_BATCH_COUNT = 128;
 };
 
@@ -1050,6 +1086,29 @@ public:
       common::ObIAllocator &rowkey_allocator,
       const char *buf, const int64_t data_len, int64_t &pos,
       ObIArray<blocksstable::ObDatumRowkey> &parallel_datum_rowkey_list);
+};
+
+class ObSplitTabletInfo final
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObSplitTabletInfo() : split_info_(0), split_src_tablet_id_() { }
+  ~ObSplitTabletInfo() { reset(); }
+  void reset() { split_info_ = 0; split_src_tablet_id_.reset(); }
+  void set_data_incomplete(const bool is_data_incomplete) { is_data_incomplete_ = is_data_incomplete; }
+  void set_split_src_tablet_id(const ObTabletID &split_src_tablet_id) { split_src_tablet_id_ = split_src_tablet_id; }
+  bool is_data_incomplete() const { return is_data_incomplete_; }
+  const ObTabletID &get_split_src_tablet_id() const { return split_src_tablet_id_; }
+  TO_STRING_KV(K_(split_info), K_(split_src_tablet_id));
+private:
+  union {
+    uint32_t split_info_;
+    struct {
+      uint32_t is_data_incomplete_: 1; // whether the data of split dest tablet is complete.
+      uint32_t reserved: 31;
+    };
+  };
+  ObTabletID split_src_tablet_id_;
 };
 
 typedef common::ObCurTraceId::TraceId DDLTraceId;

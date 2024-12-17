@@ -39,7 +39,7 @@ const int64_t OB_MIN_PARALLEL_TASK_COUNT = 13; //期望每一个并行度最低�
 const int64_t OB_MAX_PARALLEL_TASK_COUNT = 100; //期望每一个并行度最大持有task数量
 const int64_t OB_MIN_MARCO_COUNT_IN_TASK = 1; //每个task最少负责的宏块个数
 const int64_t OB_INVAILD_PARALLEL_TASK_COUNT = -1;
-const int64_t OB_EXPECTED_TASK_LOAD = 100; //MB, one task will get 100MB data from disk
+const int64_t OB_EXPECTED_TASK_LOAD = 102400; //KB, one task will get 100MB data from disk
 const int64_t OB_GET_MACROS_COUNT_BY_QUERY_RANGE = 1;
 const int64_t OB_GET_BLOCK_RANGE = 2;
 const int64_t OB_BROADCAST_THRESHOLD = 100;
@@ -125,6 +125,7 @@ enum JtColType {
   COL_TYPE_XMLTYPE_XML, // 8
   COL_TYPE_ORDINALITY_XML = 9,
   COL_TYPE_RB_ITERATE = 10,
+  COL_TYPE_UNNEST = 11,
 };
 
 enum ObNameTypeClass
@@ -327,6 +328,7 @@ enum ExplainType
   EXPLAIN_EXTENDED_NOADDR,
   EXPLAIN_DBLINK_STMT,
   EXPLAIN_HINT_FORMAT,
+  EXPLAIN_PLAN_TABLE
 };
 
 enum DiagnosticsType
@@ -426,6 +428,13 @@ enum DistinctType
 };
 
 enum class ObPDMLOption {
+  NOT_SPECIFIED = -1,
+  ENABLE,
+  DISABLE,
+  MAX_VALUE
+};
+
+enum class ObParallelDASOption {
   NOT_SPECIFIED = -1,
   ENABLE,
   DISABLE,
@@ -761,6 +770,10 @@ static int16_t get_type_fixed_length(ObObjType type) {
   }
   return len;
 }
+
+#define SPM_MODE_DISABLE 0
+#define SPM_MODE_ONLINE_EVOLVE 1
+#define SPM_MODE_BASELINE_FIRST 2
 
 }  // namespace sql
 }  // namespace oceanbase

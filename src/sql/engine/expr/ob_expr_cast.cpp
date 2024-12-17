@@ -278,6 +278,8 @@ int ObExprCast::get_explicit_cast_cm(const ObExprResType &src_type,
         cast_mode |= CM_WARN_ON_FAIL;
       }
     }
+    OZ (ObRawExprUtils::wrap_cm_warn_on_fail_if_need(cast_raw_expr.get_param_expr(0), dst_type,
+                                                     &session, cast_mode));
   }
   return ret;
 }
@@ -437,8 +439,9 @@ int ObExprCast::calc_result_type2(ObExprResType &type,
       ObCollationType collation_nation = session->get_nls_collation_nation();
       type1.set_calc_type(get_calc_cast_type(type1.get_type(), dst_type.get_type()));
       int32_t length = 0;
-      if (ob_is_string_or_lob_type(dst_type.get_type()) || ob_is_raw(dst_type.get_type()) || ob_is_json(dst_type.get_type())
-          || ob_is_geometry(dst_type.get_type())) {
+      if (ob_is_string_or_lob_type(dst_type.get_type()) || ob_is_raw(dst_type.get_type())
+                                         || ob_is_json(dst_type.get_type())
+                                         || ob_is_geometry(dst_type.get_type())) {
         type.set_collation_level(dst_type.get_collation_level());
         int32_t len = dst_type.get_length();
         int16_t length_semantics = ((dst_type.is_string_or_lob_locator_type() || dst_type.is_json())
@@ -557,15 +560,19 @@ int ObExprCast::calc_result_type2(ObExprResType &type,
         sql_xml_type.set_sql_udt(ObXMLSqlType);
         type1.set_calc_meta(sql_xml_type.get_obj_meta());
       } else {
-        bool need_warp = false;
+        bool need_wrap = false;
         if (ob_is_enumset_tc(type1.get_type())) {
           // For enum/set type, need to check whether warp to string is required.
-          if (OB_FAIL(ObRawExprUtils::need_wrap_to_string(type1.get_type(), type1.get_calc_type(),
-                                                          false, need_warp))) {
+          if (OB_FAIL(ObRawExprUtils::need_wrap_to_string(type1, type1.get_calc_type(),
+                                                          false, need_wrap))) {
             LOG_WARN("need_wrap_to_string failed", K(ret), K(type1));
+          } else if (!need_wrap) {
+            // need_wrap is false, set calc_type to type1 itself.
+            type1.set_calc_meta(type1.get_obj_meta());
+            type1.set_calc_accuracy(type1.get_calc_accuracy());
           }
-        } else if (OB_LIKELY(need_warp)) {
-          // need_warp is true, no-op and keep type1's calc_type is dst_type. It will be wrapped
+        } else if (OB_LIKELY(need_wrap)) {
+          // need_wrap is true, no-op and keep type1's calc_type is dst_type. It will be wrapped
           // to string in ObRawExprWrapEnumSet::visit(ObSysFunRawExpr &expr) later.
         } else {
           if (ob_is_geometry_tc(dst_type.get_type())) {
@@ -581,7 +588,7 @@ int ObExprCast::calc_result_type2(ObExprResType &type,
             }
           }
           if (OB_SUCC(ret)) {
-            // need_warp is false, set calc_type to type1 itself.
+            // need_wrap is false, set calc_type to type1 itself.
             type1.set_calc_meta(type1.get_obj_meta());
           }
         }
@@ -930,6 +937,11 @@ int ObExprCast::construct_collection(const sql::ObExpr &expr,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Unexpected collection type to construct", K(info->type_), K(ret));
   }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(coll->init_allocator(alloc, true))) {
+      LOG_WARN("failed to init allocator", K(ret));
+    }
+  }
 
   // set collection property
   if (OB_FAIL(ret)) {
@@ -1081,7 +1093,7 @@ int ObExprCast::fill_element(const sql::ObExpr &expr,
               static_cast<ObObj*>(coll->get_data())[i] = new_composite;
             }
           } else {
-            static_cast<ObObj*>(coll->get_data())[i] = v;
+            OZ (pl::ObUserDefinedType::deep_copy_obj(*coll->get_allocator(), v, coll->get_data()[i]));
           }
         }
       }
@@ -1091,13 +1103,18 @@ int ObExprCast::fill_element(const sql::ObExpr &expr,
         if (OB_FAIL(ObSPIService::spi_pad_char_or_varchar(session,
                                                           info->elem_type_.get_obj_type(),
                                                           info->elem_type_.get_accuracy(),
-                                                          coll->get_allocator(),
+                                                          &alloc,
                                                           &v))) {
           LOG_WARN("failed to pad", K(ret));
-        } else {
-          static_cast<ObObj*>(coll->get_data())[i] = v;
+        } else if (OB_FAIL(deep_copy_obj(*coll->get_allocator(), v, coll->get_data()[i]))) {
+          LOG_WARN("failed to deep copy", K(ret));
         }
       }
+    }
+  }
+  if (info->elem_type_.get_meta_type().is_ext()) {
+    for (int64_t i = 0; i < data_arr.count(); ++i) {
+      pl::ObUserDefinedType::destruct_obj(data_arr.at(i), nullptr);
     }
   }
 
@@ -1319,6 +1336,10 @@ int ObExprCast::cg_expr(ObExprCGCtx &op_cg_ctx,
                                               rt_expr.get_vec_value_tc(), just_eval_arg,
                                               rt_expr.eval_func_, cast_mode) :
             nullptr;
+        // 有些VEC_TC_XXXX类中尚有部分类型暂时没有实现向量化，仍走非向量化接口
+        if (ObTinyTextType == in_type || ObTinyTextType == out_type) {
+          rt_expr.eval_vector_func_ = nullptr;
+        }
       }
     }
     if (OB_SUCC(ret)) {

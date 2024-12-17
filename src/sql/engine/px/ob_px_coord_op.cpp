@@ -166,7 +166,7 @@ int ObPxCoordOp::init_dfc(ObDfo &dfo, dtl::ObDtlChTotalInfo *ch_info)
       K(dfo.get_qc_id()), K(dfo.get_dfo_id()));
   } else {
     ObDtlDfoKey dfo_key;
-    dfo_key.set(GCTX.server_id_, dfo.get_px_sequence_id(), dfo.get_qc_id(), dfo.get_dfo_id());
+    dfo_key.set(GCTX.get_server_index(), dfo.get_px_sequence_id(), dfo.get_qc_id(), dfo.get_dfo_id());
     dfc_.set_timeout_ts(phy_plan_ctx->get_timeout_timestamp());
     dfc_.set_receive();
     dfc_.set_qc_coord();
@@ -238,6 +238,7 @@ int ObPxCoordOp::inner_rescan()
 int ObPxCoordOp::rescan()
 {
   int ret = OB_SUCCESS;
+  const uint64_t server_index = GCTX.get_server_index();
   if (NULL == coord_info_.batch_rescan_ctl_
       || batch_rescan_param_version_ != coord_info_.batch_rescan_ctl_->param_version_) {
     ObDfo *root_dfo = NULL;
@@ -274,12 +275,12 @@ int ObPxCoordOp::rescan()
       LOG_WARN("fail to register detectable_id", K(ret));
     } else if (OB_FAIL(init_dfo_mgr(
                 ObDfoInterruptIdGen(interrupt_id_,
-                                    (uint32_t)GCTX.server_id_,
+                                    (uint32_t)server_index,
                                     (uint32_t)MY_SPEC.qc_id_,
                                     px_sequence_id_),
                 coord_info_.dfo_mgr_))) {
       LOG_WARN("fail parse dfo tree",
-               "server_id", GCTX.server_id_,
+               "server_index", server_index,
                "qc_id", MY_SPEC.qc_id_,
                "execution_id", ctx_.get_my_session()->get_current_execution_id(),
                K(ret));
@@ -309,6 +310,7 @@ int ObPxCoordOp::rescan()
 int ObPxCoordOp::inner_open()
 {
   int ret = OB_SUCCESS;
+  const uint64_t server_index = GCTX.get_server_index();
   ObDfo *root_dfo = NULL;
   ObString cur_query_str = ctx_.get_my_session()->get_current_query_string();
   char *buf = reinterpret_cast<char*>(ctx_.get_allocator().alloc(cur_query_str.length() + 1));
@@ -321,9 +323,9 @@ int ObPxCoordOp::inner_open()
   }
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObPxReceiveOp::inner_open())) {
-  } else if (!is_valid_server_id(GCTX.server_id_)) {
+  } else if (OB_UNLIKELY(!is_valid_server_index(server_index))) {
     ret = OB_SERVER_IS_INIT;
-    LOG_WARN("Server is initializing", K(ret), K(GCTX.server_id_));
+    LOG_WARN("Server is initializing", K(ret), K(server_index));
   } else if (OB_FAIL(post_init_op_ctx())) {
     LOG_WARN("init operator context failed", K(ret));
   } else if (OB_FAIL(coord_info_.init())) {
@@ -336,12 +338,12 @@ int ObPxCoordOp::inner_open()
     LOG_WARN("fail to register detectable_id", K(ret));
   } else if (OB_FAIL(init_dfo_mgr(
               ObDfoInterruptIdGen(interrupt_id_,
-                                  (uint32_t)GCTX.server_id_,
+                                  (uint32_t)server_index,
                                   (uint32_t)(static_cast<const ObPxCoordSpec*>(&get_spec()))->qc_id_,
                                   px_sequence_id_),
                                   coord_info_.dfo_mgr_))) {
     LOG_WARN("fail parse dfo tree",
-             "server_id", GCTX.server_id_,
+             "server_index", server_index,
              "qc_id", (static_cast<const ObPxCoordSpec*>(&get_spec()))->qc_id_,
              "execution_id", ctx_.get_my_session()->get_current_execution_id(),
              K(ret));
@@ -890,7 +892,7 @@ int ObPxCoordOp::register_interrupt()
 {
   int ret = OB_SUCCESS;
   px_sequence_id_ = GCTX.sql_engine_->get_px_sequence_id();
-  ObInterruptUtil::generate_query_interrupt_id((uint32_t)GCTX.server_id_,
+  ObInterruptUtil::generate_query_interrupt_id((uint32_t)GCTX.get_server_index(),
       px_sequence_id_,
       interrupt_id_);
   if (OB_FAIL(SET_INTERRUPTABLE(interrupt_id_))) {
@@ -924,6 +926,7 @@ int ObPxCoordOp::receive_channel_root_dfo(
   } else if (OB_FAIL(ObPxReceiveOp::link_ch_sets(task_ch_set_, task_channels_, &dfc_))) {
     LOG_WARN("fail link px coord data channels with its only child dfo", K(ret));
   } else {
+    uint16_t min_cluster_version = ctx.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version();
     if (OB_FAIL(get_listenner().on_root_data_channel_setup())) {
       LOG_WARN("fail notify listener", K(ret));
     }
@@ -949,6 +952,7 @@ int ObPxCoordOp::receive_channel_root_dfo(
         ch->set_operator_owner();
         ch->set_thread_id(thread_id);
         ch->set_enable_channel_sync(true);
+        ch->set_send_by_tenant(min_cluster_version >= CLUSTER_VERSION_4_3_5_0);
         if (enable_px_batch_rescan()) {
           ch->set_interm_result(true);
           ch->set_batch_id(get_batch_id());
@@ -995,6 +999,7 @@ int ObPxCoordOp::receive_channel_root_dfo(
   } else if (OB_FAIL(ObPxReceiveOp::link_ch_sets(task_ch_set_, task_channels_, &dfc_))) {
     LOG_WARN("fail link px coord data channels with its only child dfo", K(ret));
   } else {
+    uint64_t min_cluster_version = ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version();
     if (OB_FAIL(get_listenner().on_root_data_channel_setup())) {
       LOG_WARN("fail notify listener", K(ret));
     }
@@ -1020,6 +1025,7 @@ int ObPxCoordOp::receive_channel_root_dfo(
         ch->set_audit(enable_audit);
         ch->set_is_px_channel(true);
         ch->set_enable_channel_sync(true);
+        ch->set_send_by_tenant(min_cluster_version >= CLUSTER_VERSION_4_3_5_0);
         if (enable_px_batch_rescan()) {
           ch->set_interm_result(true);
           ch->set_batch_id(get_batch_id());

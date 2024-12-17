@@ -257,7 +257,7 @@ int ObWhereSubQueryPullup::check_limit(const ObItemType op_type,
       OB_ISNULL(plan_ctx = ctx_->exec_ctx_->get_physical_plan_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(subquery), K(ctx_), K(ctx_->exec_ctx_), K(plan_ctx));
-  } else if (OB_FAIL(check_const_select(*subquery, is_const_select))) {
+  } else if (OB_FAIL(ObTransformUtils::check_const_select(ctx_, subquery, is_const_select))) {
     LOG_WARN("failed to check const select", K(ret));
   } else if (op_type != T_OP_EXISTS && op_type != T_OP_NOT_EXISTS && !is_const_select) {
     has_limit = subquery->has_limit();
@@ -484,9 +484,12 @@ int ObWhereSubQueryPullup::do_transform_pullup_subquery(ObDMLStmt *stmt,
                                                                    ctx_))) {
     LOG_WARN("failed to add const param constraints", K(ret));
   } else if (trans_param.need_create_spj_) {
+    bool ignore_select_item = T_OP_EXISTS == expr->get_expr_type() ||
+                              T_OP_NOT_EXISTS == expr->get_expr_type();
     if (OB_FAIL(ObTransformUtils::create_spj_and_pullup_correlated_exprs(query_ref->get_exec_params(),
                                                                          subquery,
-                                                                         ctx_))) {
+                                                                         ctx_,
+                                                                         ignore_select_item))) {
       LOG_WARN("failed to create spj and pullup correlated exprs", K(ret));
     } else {
       query_ref->set_ref_stmt(subquery);
@@ -1688,22 +1691,6 @@ int ObWhereSubQueryPullup::trans_from_list(ObDMLStmt *stmt,
       LOG_WARN("failed to append from items", K(ret));
     } else if (OB_FAIL(append(stmt->get_condition_exprs(), subquery->get_condition_exprs()))) {
       LOG_WARN("failed to append condition exprs", K(ret));
-    }
-  }
-  return ret;
-}
-
-int ObWhereSubQueryPullup::check_const_select(const ObSelectStmt &stmt,
-                                              bool &is_const_select) const
-{
-  int ret = OB_SUCCESS;
-  is_const_select = true;
-  for (int64_t i = 0; OB_SUCC(ret) && is_const_select && i < stmt.get_select_item_size(); ++i) {
-    if (OB_ISNULL(stmt.get_select_item(i).expr_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("expr is null", K(ret));
-    } else {
-      is_const_select = stmt.get_select_item(i).expr_->is_const_expr();
     }
   }
   return ret;

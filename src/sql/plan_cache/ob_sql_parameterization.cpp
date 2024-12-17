@@ -364,6 +364,8 @@ bool ObSqlParameterization::is_tree_not_param(const ParseNode *tree)
     ret_bool = true;
   } else if (T_EXTERNAL_TABLE_PARTITION == tree->type_) {
     ret_bool = true;
+  } else if (T_EXTERNAL_FILE_FORMAT == tree->type_) {
+    ret_bool = true;
   } else if (T_PIVOT_IN_LIST == tree->type_) {
     ret_bool = true;
   } else if (T_CHAR_CHARSET == tree->type_) {
@@ -2075,13 +2077,11 @@ int ObSqlParameterization::mark_tree(ParseNode *tree ,SqlInfo &sql_info)
         if (OB_FAIL(mark_args(node[1], mark_arr, ARGS_NUMBER_ONE, sql_info))) {
           SQL_PC_LOG(WARN, "fail to mark arg", K(ret));
         }
-      } else if ((0 == func_name.case_compare("substr")
-                  || 0 == func_name.case_compare("extract_xml"))
-          && (3 == node[1]->num_child_)) {
+      } else if (0 == func_name.case_compare("substr") && (3 == node[1]->num_child_)) {
         const int64_t ARGS_NUMBER_THREE = 3;
         bool mark_arr[ARGS_NUMBER_THREE] = {0, 1, 1}; //0表示参数化, 1 表示不参数化
         if (OB_FAIL(mark_args(node[1], mark_arr, ARGS_NUMBER_THREE, sql_info))) {
-          SQL_PC_LOG(WARN, "fail to mark arg", K(ret));
+          SQL_PC_LOG(WARN, "fail to mark substr arg", K(ret));
         }
       } else if (0 == func_name.case_compare("xmlserialize")
             && (10 == node[1]->num_child_)) {

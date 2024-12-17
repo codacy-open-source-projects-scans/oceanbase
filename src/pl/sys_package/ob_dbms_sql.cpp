@@ -209,7 +209,7 @@ int ObDbmsInfo::set_bind_param(const ObString &param_name, const ObObjParam&para
               && param_value.get_ext() != 0
               && param_value.get_meta().get_extend_type() != PL_REF_CURSOR_TYPE) {
         if (bind_params_.at(idx).param_value_.get_ext() != 0) {
-          OZ (ObUserDefinedType::destruct_obj(bind_params_.at(idx).param_value_));
+          OZ (ObUserDefinedType::destruct_obj(bind_params_.at(idx).param_value_, nullptr, true));
         }
         OZ (ObUserDefinedType::deep_copy_obj(alloc, param_value, bind_params_.at(idx).param_value_));
       } else {
@@ -457,13 +457,19 @@ int ObDbmsInfo::column_value(sql::ObSQLSessionInfo *session,
           int64_t index = OB_INVALID_INDEX;
           ObNewRow &row = fetch_rows_.at(i);
           ObObjParam src = row.get_cell(col_idx);
+          ObObj tmp;
           OX (key.set_int32(desc->lower_bnd_ + desc->cur_idx_));
           OZ (ObExprPLAssocIndex::do_eval_assoc_index(index, session, info, *table, key, *allocator));
           CK(table->get_count() >= index);
-          OZ (ObSPIService::spi_convert(session, table->get_allocator(), src, element_type, obj));
-          OZ (deep_copy_obj(*table->get_allocator(),
-                            obj,
-                            reinterpret_cast<ObObj*>(table->get_data())[index-1]));
+          OZ (ObSPIService::spi_convert(session, allocator, src, element_type, obj));
+          OZ (deep_copy_obj(*table->get_allocator(), obj, tmp));
+          if (OB_SUCC(ret)) {
+            void *ptr = (table->get_data())[index-1].get_deep_copy_obj_ptr();
+            if (nullptr != ptr) {
+              table->get_allocator()->free(ptr);
+            }
+            (table->get_data())[index-1] = tmp;
+          }
           LOG_DEBUG("column add key ", K(col_idx), K(index), K(desc->cur_idx_), K(desc->lower_bnd_), K(key.get_int32()), K(table->get_key(index-1)->get_int32()));
           OX (++desc->cur_idx_);
         }
@@ -725,6 +731,7 @@ int ObPLDbmsSql::parse_6p(ObExecContext &exec_ctx, ParamStore &params, ObObj &re
   CK (sql_arr->get_count() >= upper_bound - low_bound);
   CK (low_bound <= upper_bound);
   ObSqlString sql_txt;
+  ObCollationType coll_type = CS_TYPE_INVALID;
   if (OB_SUCC(ret)) {
     ObString elem_txt;
     ObPLAssocArray *assoc_arr = static_cast<ObPLAssocArray *>(sql_arr);
@@ -790,6 +797,7 @@ int ObPLDbmsSql::parse_6p(ObExecContext &exec_ctx, ParamStore &params, ObObj &re
             if (elem.is_null()) {
               ret = OB_READ_NOTHING;
             } else {
+              coll_type = elem.get_collation_type();
               OZ (elem.get_varchar(elem_txt), elem);
               OZ (sql_txt.append(elem_txt));
               if (linefeed) {
@@ -808,7 +816,7 @@ int ObPLDbmsSql::parse_6p(ObExecContext &exec_ctx, ParamStore &params, ObObj &re
   OZ (get_cursor(exec_ctx, params, cursor));// 这儿只用了params的第一个参数，cursor id
   OZ (ob_write_string(exec_ctx.get_allocator(), sql_txt.string(), sql_stmt));
   LOG_DEBUG("parse 6p, concated sql stmt", K(sql_stmt), K(sql_txt.string()));
-  OZ (do_parse(exec_ctx, cursor, sql_stmt));
+  OZ (do_parse(exec_ctx, cursor, sql_stmt, coll_type));
   return ret;
 }
 
@@ -831,7 +839,7 @@ int ObPLDbmsSql::parse(ObExecContext &exec_ctx, ParamStore &params, ObObj &resul
       OZ (params.at(1).get_varchar(sql_stmt), params.at(1));
 
       OZ (get_cursor(exec_ctx, params, cursor));
-      OZ (do_parse(exec_ctx, cursor, sql_stmt));
+      OZ (do_parse(exec_ctx, cursor, sql_stmt, params.at(1).get_collation_type()));
     } else if (6 == param_count) {
       OZ (parse_6p(exec_ctx, params, result));
     } else {
@@ -842,13 +850,25 @@ int ObPLDbmsSql::parse(ObExecContext &exec_ctx, ParamStore &params, ObObj &resul
   return ret;
 }
 
-int ObPLDbmsSql::do_parse(ObExecContext &exec_ctx, ObDbmsCursorInfo *cursor, ObString &sql_stmt)
+int ObPLDbmsSql::do_parse(ObExecContext &exec_ctx,
+                          ObDbmsCursorInfo *cursor,
+                          ObString &sql_stmt,
+                          ObCollationType coll_type)
 {
   int ret = OB_SUCCESS;
   CK (OB_NOT_NULL(cursor));
   // do parse.
   ObSQLSessionInfo *session = exec_ctx.get_my_session();
-  OZ (cursor->parse(sql_stmt, *session), sql_stmt);
+  ObCollationType conn_coll_type = CS_TYPE_INVALID;
+  ObString sql_cs;
+  CK (OB_NOT_NULL(session));
+  OX (conn_coll_type = session->get_local_collation_connection());
+  OZ (ObCharset::charset_convert(exec_ctx.get_allocator(),
+                                 sql_stmt,
+                                 coll_type,
+                                 conn_coll_type,
+                                 sql_cs));
+  OZ (cursor->parse(sql_cs, *session), sql_cs);
   if (OB_SUCC(ret)) {
     ObString ps_sql;
     stmt::StmtType stmt_type = stmt::StmtType::T_NONE;
@@ -861,7 +881,7 @@ int ObPLDbmsSql::do_parse(ObExecContext &exec_ctx, ObDbmsCursorInfo *cursor, ObS
     ObPLExecCtx pl_ctx(cursor->get_allocator(), &exec_ctx, &dummy_params,
                      NULL/*result*/, &ret, NULL/*func*/, true);
     CK (OB_NOT_NULL(exec_ctx.get_my_session()));
-    OZ (sql_str.append(sql_stmt));
+    OZ (sql_str.append(sql_cs));
     OX (cursor->get_field_columns().set_allocator(&cursor->get_dbms_entity()->get_arena_allocator()));
     OZ (ObSPIService::prepare_dynamic(&pl_ctx,
                                       cursor->get_dbms_entity()->get_arena_allocator(),
@@ -1390,11 +1410,12 @@ int ObPLDbmsSql::do_describe(ObExecContext &exec_ctx, ParamStore &params, Descri
     ObPLAssocArray *table = reinterpret_cast<ObPLAssocArray*>(params.at(2).get_ext());
     CK (OB_NOT_NULL(exec_ctx.get_my_session()));
     CK (OB_NOT_NULL(table));
-    OZ (ObSPIService::spi_extend_assoc_array(exec_ctx.get_my_session()->get_effective_tenant_id(),
+    OZ (ObSPIService::spi_set_collection(exec_ctx.get_my_session()->get_effective_tenant_id(),
                                              NULL,
                                              exec_ctx.get_allocator(),
                                              *table,
-                                             cursor->get_field_columns().count()));
+                                             cursor->get_field_columns().count(),
+                                             true));
 
   /*
    * TYPE desc_rec IS RECORD ( col_type BINARY_INTEGER := 0,

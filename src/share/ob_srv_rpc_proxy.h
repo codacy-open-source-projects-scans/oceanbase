@@ -239,10 +239,11 @@ public:
   RPC_S(PR5 del_ss_local_major, OB_DEL_SS_LOCAL_MAJOR, (obrpc::ObDelSSLocalMajorArg));
   RPC_S(PR5 calibrate_ss_disk_space, OB_CALIBRATE_SS_DISK_SPACE, (obrpc::ObCalibrateSSDiskSpaceArg));
   RPC_S(PR5 del_ss_tablet_micro, OB_DEL_SS_TABLET_MICRO, (obrpc::ObDelSSTabletMicroArg));
+  RPC_S(PR5 set_ss_ckpt_compressor, OB_SET_SS_CKPT_COMPRESSOR, (obrpc::ObSetSSCkptCompressorArg));
   #endif
   RPC_S(PR5 remote_write_ddl_inc_commit_log, OB_REMOTE_WRITE_DDL_INC_COMMIT_LOG, (obrpc::ObRpcRemoteWriteDDLIncCommitLogArg), ObRpcRemoteWriteDDLIncCommitLogRes);
   RPC_S(PR5 check_ls_can_offline, OB_CHECK_LS_CAN_OFFLINE, (obrpc::ObCheckLSCanOfflineArg));
-  RPC_S(PR5 clean_sequence_cache, obrpc::OB_CLEAN_SEQUENCE_CACHE, (obrpc::UInt64));
+  RPC_S(PR5 clean_sequence_cache, obrpc::OB_CLEAN_SEQUENCE_CACHE, (obrpc::UInt64), obrpc::ObSeqCleanCacheRes);
   RPC_S(PR5 register_tx_data, OB_REGISTER_TX_DATA, (ObRegisterTxDataArg), ObRegisterTxDataResult);
   RPC_S(PR5 query_ls_is_valid_member, OB_QUERY_LS_IS_VALID_MEMBER, (ObQueryLSIsValidMemberRequest),
       ObQueryLSIsValidMemberResponse);
@@ -302,6 +303,8 @@ public:
   RPC_AP(PR5 collect_mv_merge_info, OB_COLLECT_MV_MERGE_INFO, (obrpc::ObCollectMvMergeInfoArg), obrpc::ObCollectMvMergeInfoResult);
   RPC_S(PR5 fetch_stable_member_list, OB_FETCH_STABLE_MEMBER_LIST, (obrpc::ObFetchStableMemberListArg), obrpc::ObFetchStableMemberListInfo);
   RPC_S(PR5 notify_shared_storage_info, OB_NOTIFY_SHARED_STORAGE_INFO, (obrpc::ObNotifySharedStorageInfoArg), obrpc::ObNotifySharedStorageInfoResult);
+  RPC_S(PR5 notify_ls_restore_finish, OB_NOTIFY_LS_RESTORE_FINISH, (obrpc::ObNotifyLSRestoreFinishArg));
+  RPC_S(PR5 notify_start_archive, OB_NOTIFY_START_ARCHIVE, (obrpc::ObNotifyStartArchiveArg));
 }; // end of class ObSrvRpcProxy
 
 } // end of namespace rpc

@@ -216,8 +216,9 @@ int ObPLLabelTable::add_label(const common::ObString &name,
 {
   int ret = OB_SUCCESS;
   if (count_ < 0 || count_ >= FUNC_MAX_LABELS) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_NOT_SUPPORTED;
     LOG_WARN("Invalid condition count in condition table", K(get_count()), K(FUNC_MAX_LABELS), K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "label count greater than 1024");
   } else {
     labels_[count_].label_ = name;
     labels_[count_].type_ = type;
@@ -772,7 +773,10 @@ int ObPLRoutineTable::make_routine_ast(ObIAllocator &allocator,
           CK (OB_NOT_NULL(ret_param->get_type().get_data_type()));
           if (OB_SUCC(ret)
               && ob_is_enum_or_set_type(ret_param->get_type().get_data_type()->get_obj_type())) {
-            OZ (routine_ast->set_ret_type_info(ret_param->get_type().get_type_info()));
+            common::ObIArray<common::ObString>* type_info = NULL;
+            OZ (ret_param->get_type().get_type_info(type_info));
+            CK (OB_NOT_NULL(type_info));
+            OZ (routine_ast->set_ret_type_info(*type_info, &routine_ast->get_enum_set_ctx()));
           }
         }
       }
@@ -786,10 +790,12 @@ int ObPLRoutineTable::make_routine_ast(ObIAllocator &allocator,
           ret = OB_ERR_SP_UNDECLARED_TYPE;
           LOG_WARN("undeclare type", K(ret), KPC(param));
         }
+        common::ObIArray<common::ObString>* type_info = NULL;
+        OZ (param->get_type().get_type_info(type_info));
         OZ (routine_ast->add_argument(param->get_name(),
                                       param->get_type(),
                                       NULL,
-                                      &(param->get_type().get_type_info()),
+                                      type_info,
                                       param->is_in_param(),
                                       param->is_self_param()));
       }
@@ -1457,7 +1463,8 @@ int ObPLExternalNS::resolve_synonym(uint64_t object_db_id,
                                     uint64_t &parent_id,
                                     int64_t &var_idx,
                                     const ObString &synonym_name,
-                                    const uint64_t cur_db_id) const
+                                    const uint64_t cur_db_id,
+                                    const pl::ObPLDependencyTable *&dep_table) const
 {
   int ret = OB_SUCCESS;
   uint64_t object_id = OB_INVALID_ID;
@@ -1505,12 +1512,15 @@ int ObPLExternalNS::resolve_synonym(uint64_t object_db_id,
           }
         }
       } else {
+        OZ (add_dependency_obj(schema::ObSchemaType::UDT_SCHEMA, object_id, DEPENDENCY_TYPE, true, dep_table));
         type = UDT_NS;
       }
     } else {
+      OZ (add_dependency_obj(schema::ObSchemaType::PACKAGE_SCHEMA, object_id, DEPENDENCY_PACKAGE, true, dep_table));
       type = PKG_NS;
     }
   } else {
+    OZ (add_dependency_obj(schema::ObSchemaType::TABLE_SCHEMA, object_id, DEPENDENCY_TABLE, true, dep_table));
     type = TABLE_NS;
   }
   if (OB_FAIL(ret)) {
@@ -1519,6 +1529,32 @@ int ObPLExternalNS::resolve_synonym(uint64_t object_db_id,
   } else {
     var_idx = static_cast<int64_t>(object_id);
     parent_id = object_db_id;
+  }
+  return ret;
+}
+int ObPLExternalNS::add_dependency_obj(const ObSchemaType schema_type,
+                                      const uint64_t schema_id,
+                                      const ObDependencyTableType table_type,
+                                      bool is_db_expilicit,
+                                      const pl::ObPLDependencyTable *&dep_table) const
+{
+  int ret = OB_SUCCESS;
+  int64_t schema_version = OB_INVALID_VERSION;
+  if (OB_INVALID_ID == schema_id) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid schema id", K(ret), K(schema_id));
+  } else if (OB_FAIL(resolve_ctx_.schema_guard_.get_schema_version(schema_type,
+                                              resolve_ctx_.session_info_.get_effective_tenant_id(),
+                                              schema_id,
+                                              schema_version))) {
+    LOG_WARN("get schema version failed", K(resolve_ctx_.session_info_.get_effective_tenant_id()),
+                                            K(schema_id), K(ret));
+  } else if (OB_NOT_NULL(dep_table)) {
+    ObSchemaObjVersion ver(schema_id, schema_version, table_type);
+    ver.is_db_explicit_ = is_db_expilicit;
+    if (OB_FAIL(ObPLCompileUnitAST::add_dependency_object_impl(*dep_table, ver))) {
+      LOG_WARN("add dependency object failed", K(schema_id), K(ret));
+    }
   }
   return ret;
 }
@@ -1699,11 +1735,13 @@ int ObPLExternalNS::resolve_external_symbol(const common::ObString &name,
         }
         const ObRoutineInfo *routine_info = NULL;
         OZ (schema_guard.get_standalone_procedure_info(tenant_id, db_id, name, routine_info));
-        if (NULL == routine_info) {
+        if (NULL == routine_info && !ObPLResolver::is_unrecoverable_error(ret)) {
           ret = OB_SUCCESS;
           OZ (schema_guard.get_standalone_function_info(tenant_id, db_id, name, routine_info));
         }
-        if (NULL == routine_info) {
+        if (ObPLResolver::is_unrecoverable_error(ret)) {
+          // do nothing
+        } else if (NULL == routine_info) {
           ret = OB_SUCCESS;
           type = ObPLExternalNS::INVALID_VAR;
         } else {
@@ -1733,7 +1771,8 @@ int ObPLExternalNS::resolve_external_symbol(const common::ObString &name,
             schema_checker, synonym_checker,
             tenant_id, db_id, name, object_db_id, object_name, exist, OB_INVALID_INDEX == parent_id));
           if (exist) {
-            OZ (resolve_synonym(object_db_id, object_name, type, parent_id, var_idx, name, db_id));
+            const ObPLDependencyTable *dep_table = get_dependency_table();
+            OZ (resolve_synonym(object_db_id, object_name, type, parent_id, var_idx, name, db_id, dep_table));
             if (synonym_checker.has_synonym() && OB_NOT_NULL(get_dependency_table())) {
               OZ (ObResolverUtils::add_dependency_synonym_object(&resolve_ctx_.schema_guard_,
                                                                 &resolve_ctx_.session_info_,
@@ -3943,7 +3982,11 @@ int ObPLInto::generate_into_variable_info(ObPLBlockNS &ns, const ObRawExpr &expr
           ObDataType ext_type;
           ObDataType type;
           ObPLIntegerRange range;
-          ext_type.set_obj_type(ObExtendType);
+          ObObjMeta meta;
+          meta.set_type(ObExtendType);
+          meta.set_extend_type(final_type.get_type());
+          ext_type.set_meta_type(meta);
+          ext_type.set_udt_id(final_type.get_user_type_id());
           OZ (data_type_.push_back(ext_type));
           OZ (not_null_flags_.push_back(false));
           OZ (pl_integer_ranges_.push_back(range.range_));
@@ -4597,7 +4640,8 @@ int ObPLFunctionAST::add_argument(const common::ObString &name,
     }
   }
   if (OB_SUCC(ret)) {
-    if (OB_NOT_NULL(type_info) && OB_FAIL(copy.set_type_info(type_info))) {
+    copy.set_enum_set_ctx(&get_enum_set_ctx());
+    if (OB_NOT_NULL(type_info) && type_info->count() != 0 && OB_FAIL(copy.set_type_info(*type_info))) {
       LOG_WARN("fail to set type info", K(ret));
     } else if (OB_NOT_NULL(expr)
                && OB_FAIL(get_exprs().push_back(const_cast<ObRawExpr*>(expr)))) {

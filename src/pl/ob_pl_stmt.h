@@ -1178,7 +1178,13 @@ public:
                       uint64_t &parent_id,
                       int64_t &var_idx,
                       const ObString &synonym_name,
-                      const uint64_t cur_db_id) const;
+                      const uint64_t cur_db_id,
+                      const pl::ObPLDependencyTable *&dep_table) const;
+  int add_dependency_obj(const ObSchemaType schema_type,
+                        const uint64_t schema_id,
+                        const ObDependencyTableType table_type,
+                        bool is_db_expilicit,
+                        const pl::ObPLDependencyTable *&dep_table) const;
   int resolve_external_symbol(const common::ObString &name, ExternalType &type, ObPLDataType &data_type,
                               uint64_t &parent_id, int64_t &var_idx) const;
   int resolve_external_type_by_name(const ObString &db_name,
@@ -1593,6 +1599,7 @@ public:
        cursor_table_(allocator),
        routine_table_(allocator),
        dependency_table_(),
+       enum_set_ctx_(allocator),
        compile_flag_(),
        can_cached_(true),
        priv_user_(),
@@ -1646,6 +1653,7 @@ public:
   inline const ObPLRoutineTable &get_routine_table() const { return routine_table_; }
   inline const ObPLDependencyTable &get_dependency_table() const { return dependency_table_; }
   inline ObPLDependencyTable &get_dependency_table() { return dependency_table_; }
+  inline pl::ObPLEnumSetCtx &get_enum_set_ctx() { return enum_set_ctx_; }
   int add_dependency_objects(
                   const common::ObIArray<share::schema::ObSchemaObjVersion> &dependency_objects);
   int add_dependency_object(const share::schema::ObSchemaObjVersion &obj_version);
@@ -1732,6 +1740,7 @@ protected:
   ObPLCursorTable cursor_table_;
   ObPLRoutineTable routine_table_;
   ObPLDependencyTable dependency_table_;
+  ObPLEnumSetCtx enum_set_ctx_;
   ObPLCompileFlag compile_flag_;
   bool can_cached_;
   ObString priv_user_;

@@ -27,6 +27,7 @@
 #include "rpc/obrpc/ob_rpc_proxy_macros.h"
 #include "rpc/obrpc/ob_rpc_processor.h"
 #include "rpc/obrpc/ob_rpc_opts.h"
+#include "lib/stat/ob_diagnostic_info_guard.h"
 
 namespace oceanbase
 {
@@ -293,6 +294,7 @@ public:
   Handle();
   ~Handle();
   const common::ObAddr &get_dst_addr() const { return dst_; }
+  void reset_timeout();
 
 protected:
   bool has_more_;
@@ -305,6 +307,7 @@ protected:
   bool do_ratelimit_;
   int8_t is_bg_flow_;
   int64_t first_pkt_id_;
+  int64_t abs_timeout_ts_;
 private:
   DISALLOW_COPY_AND_ASSIGN(Handle);
 };

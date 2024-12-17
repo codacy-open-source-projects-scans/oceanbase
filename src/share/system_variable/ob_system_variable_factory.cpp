@@ -539,6 +539,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "_ob_proxy_weakread_feedback",
   "_ob_px_bcast_optimization",
   "_ob_px_slave_mapping_threshold",
+  "_optimizer_cost_based_transformation",
   "_optimizer_gather_stats_on_load",
   "_optimizer_null_aware_antijoin",
   "_oracle_sql_select_limit",
@@ -820,6 +821,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "log_builtin_as_identified_by_password",
   "log_row_value_options",
   "long_query_time",
+  "low_priority_updates",
   "lower_case_file_system",
   "lower_case_table_names",
   "master_info_repository",
@@ -831,7 +833,9 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_NAME[] = {
   "max_connect_errors",
   "max_connections",
   "max_digest_length",
+  "max_error_count",
   "max_execution_time",
+  "max_insert_delayed_threads",
   "max_join_size",
   "max_length_for_sort_data",
   "max_prepared_stmt_count",
@@ -1151,6 +1155,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR__OB_PROXY_WEAKREAD_FEEDBACK,
   SYS_VAR__OB_PX_BCAST_OPTIMIZATION,
   SYS_VAR__OB_PX_SLAVE_MAPPING_THRESHOLD,
+  SYS_VAR__OPTIMIZER_COST_BASED_TRANSFORMATION,
   SYS_VAR__OPTIMIZER_GATHER_STATS_ON_LOAD,
   SYS_VAR__OPTIMIZER_NULL_AWARE_ANTIJOIN,
   SYS_VAR__ORACLE_SQL_SELECT_LIMIT,
@@ -1432,6 +1437,7 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_LOG_BUILTIN_AS_IDENTIFIED_BY_PASSWORD,
   SYS_VAR_LOG_ROW_VALUE_OPTIONS,
   SYS_VAR_LONG_QUERY_TIME,
+  SYS_VAR_LOW_PRIORITY_UPDATES,
   SYS_VAR_LOWER_CASE_FILE_SYSTEM,
   SYS_VAR_LOWER_CASE_TABLE_NAMES,
   SYS_VAR_MASTER_INFO_REPOSITORY,
@@ -1443,7 +1449,9 @@ const ObSysVarClassType ObSysVarFactory::SYS_VAR_IDS_SORTED_BY_NAME[] = {
   SYS_VAR_MAX_CONNECT_ERRORS,
   SYS_VAR_MAX_CONNECTIONS,
   SYS_VAR_MAX_DIGEST_LENGTH,
+  SYS_VAR_MAX_ERROR_COUNT,
   SYS_VAR_MAX_EXECUTION_TIME,
+  SYS_VAR_MAX_INSERT_DELAYED_THREADS,
   SYS_VAR_MAX_JOIN_SIZE,
   SYS_VAR_MAX_LENGTH_FOR_SORT_DATA,
   SYS_VAR_MAX_PREPARED_STMT_COUNT,
@@ -2217,6 +2225,9 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_ID[] = {
   "skip_external_locking",
   "super_read_only",
   "plsql_optimize_level",
+  "low_priority_updates",
+  "max_error_count",
+  "max_insert_delayed_threads",
   "ft_stopword_file",
   "innodb_ft_cache_size",
   "innodb_ft_sort_pll_degree",
@@ -2346,6 +2357,7 @@ const char *ObSysVarFactory::SYS_VAR_NAMES_SORTED_BY_ID[] = {
   "delayed_insert_limit",
   "ndb_version",
   "auto_generate_certs",
+  "_optimizer_cost_based_transformation",
   "range_index_dive_limit",
   "partition_index_dive_limit",
   "ob_table_access_policy"
@@ -3030,6 +3042,9 @@ int ObSysVarFactory::create_all_sys_vars()
         + sizeof(ObSysVarSkipExternalLocking)
         + sizeof(ObSysVarSuperReadOnly)
         + sizeof(ObSysVarPlsqlOptimizeLevel)
+        + sizeof(ObSysVarLowPriorityUpdates)
+        + sizeof(ObSysVarMaxErrorCount)
+        + sizeof(ObSysVarMaxInsertDelayedThreads)
         + sizeof(ObSysVarFtStopwordFile)
         + sizeof(ObSysVarInnodbFtCacheSize)
         + sizeof(ObSysVarInnodbFtSortPllDegree)
@@ -3159,6 +3174,7 @@ int ObSysVarFactory::create_all_sys_vars()
         + sizeof(ObSysVarDelayedInsertLimit)
         + sizeof(ObSysVarNdbVersion)
         + sizeof(ObSysVarAutoGenerateCerts)
+        + sizeof(ObSysVarOptimizerCostBasedTransformation)
         + sizeof(ObSysVarRangeIndexDiveLimit)
         + sizeof(ObSysVarPartitionIndexDiveLimit)
         + sizeof(ObSysVarObTableAccessPolicy)
@@ -7464,6 +7480,33 @@ int ObSysVarFactory::create_all_sys_vars()
       }
     }
     if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarLowPriorityUpdates())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarLowPriorityUpdates", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_LOW_PRIORITY_UPDATES))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarLowPriorityUpdates));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarMaxErrorCount())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarMaxErrorCount", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_MAX_ERROR_COUNT))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarMaxErrorCount));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarMaxInsertDelayedThreads())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarMaxInsertDelayedThreads", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_MAX_INSERT_DELAYED_THREADS))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarMaxInsertDelayedThreads));
+      }
+    }
+    if (OB_SUCC(ret)) {
       if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarFtStopwordFile())) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_ERROR("fail to new ObSysVarFtStopwordFile", K(ret));
@@ -8622,6 +8665,15 @@ int ObSysVarFactory::create_all_sys_vars()
       } else {
         store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR_AUTO_GENERATE_CERTS))] = sys_var_ptr;
         ptr = (void *)((char *)ptr + sizeof(ObSysVarAutoGenerateCerts));
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarOptimizerCostBasedTransformation())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarOptimizerCostBasedTransformation", K(ret));
+      } else {
+        store_buf_[ObSysVarsToIdxMap::get_store_idx(static_cast<int64_t>(SYS_VAR__OPTIMIZER_COST_BASED_TRANSFORMATION))] = sys_var_ptr;
+        ptr = (void *)((char *)ptr + sizeof(ObSysVarOptimizerCostBasedTransformation));
       }
     }
     if (OB_SUCC(ret)) {
@@ -13908,6 +13960,39 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
       }
       break;
     }
+    case SYS_VAR_LOW_PRIORITY_UPDATES: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarLowPriorityUpdates)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarLowPriorityUpdates)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarLowPriorityUpdates())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarLowPriorityUpdates", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_MAX_ERROR_COUNT: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarMaxErrorCount)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarMaxErrorCount)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarMaxErrorCount())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarMaxErrorCount", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR_MAX_INSERT_DELAYED_THREADS: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarMaxInsertDelayedThreads)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarMaxInsertDelayedThreads)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarMaxInsertDelayedThreads())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarMaxInsertDelayedThreads", K(ret));
+      }
+      break;
+    }
     case SYS_VAR_FT_STOPWORD_FILE: {
       void *ptr = NULL;
       if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarFtStopwordFile)))) {
@@ -15324,6 +15409,17 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
       } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarAutoGenerateCerts())) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_ERROR("fail to new ObSysVarAutoGenerateCerts", K(ret));
+      }
+      break;
+    }
+    case SYS_VAR__OPTIMIZER_COST_BASED_TRANSFORMATION: {
+      void *ptr = NULL;
+      if (OB_ISNULL(ptr = allocator_.alloc(sizeof(ObSysVarOptimizerCostBasedTransformation)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to alloc memory", K(ret), K(sizeof(ObSysVarOptimizerCostBasedTransformation)));
+      } else if (OB_ISNULL(sys_var_ptr = new (ptr)ObSysVarOptimizerCostBasedTransformation())) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_ERROR("fail to new ObSysVarOptimizerCostBasedTransformation", K(ret));
       }
       break;
     }

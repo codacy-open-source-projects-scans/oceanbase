@@ -36,9 +36,11 @@ public:
   OB_INLINE void set_count_flag(const bool t_count) { t_count_ = t_count; }
   OB_INLINE void set_minmax_flag(const bool t_minmax) { t_minmax_ = t_minmax; }
   OB_INLINE void set_sum_flag(const bool t_sum) { t_sum_ = t_sum; }
+  OB_INLINE void set_has_rb_build_agg(const bool t_rb_build_agg) { t_rb_build_agg_ = t_rb_build_agg; }
   OB_INLINE bool has_count() const { return t_count_; }
   OB_INLINE bool has_minmax() const { return t_minmax_; }
   OB_INLINE bool has_sum() const { return t_sum_; }
+  OB_INLINE bool has_rb_build_agg() const { return t_rb_build_agg_; }
   OB_INLINE bool only_count() const { return t_flag_ == 1; }
   TO_STRING_KV(K_(t_flag));
 
@@ -66,38 +68,34 @@ public:
   int eval_batch(
       const ObTableIterParam *iter_param,
       const ObTableAccessContext *context,
-      const int32_t col_idx,
+      const int32_t col_offset,
       blocksstable::ObIMicroBlockReader *reader,
       const int32_t *row_ids,
       const int64_t row_count,
       const bool reserve_memory) override;
-  int can_use_index_info(const blocksstable::ObMicroIndexInfo &index_info, bool &can_agg) override;
+  int can_use_index_info(const blocksstable::ObMicroIndexInfo &index_info, const int32_t col_index, bool &can_agg) override;
   int fill_index_info(const blocksstable::ObMicroIndexInfo &index_info, const bool is_cg) override;
   int collect_result();
   OB_INLINE int set_agg_type_flag(const ObPDAggType agg_type);
   OB_INLINE bool check_need_project(
       blocksstable::ObIMicroBlockReader *reader,
+      const int32_t col_offset,
       const int32_t *row_ids,
       const int64_t row_count)
   {
     bool bret = false;
-    if (agg_type_flag_.has_sum()) {
+    if (agg_type_flag_.has_sum() || agg_type_flag_.has_rb_build_agg()) {
       bret = true;
     } else if (agg_type_flag_.has_minmax()) {
       for (int64_t i = 0; !bret && i < agg_cells_.count(); ++i) {
         const ObAggCellVec *agg_cell = agg_cells_.at(i);
-        bret |= !agg_cell->can_pushdown_decoder(reader, col_offset_, row_ids, row_count);
+        bret |= !agg_cell->can_pushdown_decoder(reader, col_offset, row_ids, row_count);
       }
     }
     return bret;
   }
   OB_INLINE ObAggCellVec* at(const int64_t idx) { return agg_cells_.at(idx); }
   OB_INLINE int64_t get_agg_count() const { return agg_cells_.count(); }
-  OB_INLINE void set_cg_offset_and_index()
-  {
-    col_offset_ = 0;
-    col_index_ = 0;
-  }
   OB_INLINE bool is_vec() const override { return true; }
   OB_INLINE bool check_finished() const override { return false; }
   TO_STRING_KV(K_(col_offset), K_(col_index), K_(need_access_data),
@@ -107,8 +105,8 @@ public:
   ObSEArray<ObAggCellVec*, 1> agg_cells_;
   ObColumnParam* col_param_;
   sql::ObExpr* project_expr_;
-  int32_t col_offset_;
-  int32_t col_index_;
+  int32_t col_offset_; // for row store
+  int32_t col_index_;  // for row store
   ObAggTypeFlag agg_type_flag_;
   bool need_access_data_;
   bool need_get_row_ids_;

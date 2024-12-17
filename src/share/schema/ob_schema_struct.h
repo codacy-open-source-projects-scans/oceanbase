@@ -134,6 +134,7 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define GENERATED_FTS_WORD_SEGMENT_COLUMN_FLAG (INT64_C(1) << 25) // word segment column for full-text search flag
 #define GENERATED_VEC_VID_COLUMN_FLAG (INT64_C(1) << 26)
 #define GENERATED_VEC_VECTOR_COLUMN_FLAG (INT64_C(1) << 27)
+#define GENERATED_VEC_IVF_CENTER_ID_COLUMN_FLAG (INT64_C(1) << 28)
 
 //the high 32-bit flag isn't stored in __all_column
 #define GENERATED_DEPS_CASCADE_FLAG (INT64_C(1) << 32)
@@ -150,6 +151,13 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 #define GENERATED_VEC_SCN_COLUMN_FLAG (INT64_C(1) << 41)
 #define GENERATED_VEC_KEY_COLUMN_FLAG (INT64_C(1) << 42)
 #define GENERATED_VEC_DATA_COLUMN_FLAG (INT64_C(1) << 43)
+#define GENERATED_VEC_IVF_CENTER_VECTOR_COLUMN_FLAG (INT64_C(1) << 44)
+#define GENERATED_VEC_IVF_DATA_VECTOR_COLUMN_FLAG (INT64_C(1) << 45)
+#define GENERATED_VEC_IVF_META_ID_COLUMN_FLAG (INT64_C(1) << 46)
+#define GENERATED_VEC_IVF_META_VECTOR_COLUMN_FLAG (INT64_C(1) << 47)
+#define GENERATED_VEC_IVF_PQ_CENTER_ID_COLUMN_FLAG (INT64_C(1) << 48)
+#define GENERATED_VEC_IVF_PQ_CENTER_IDS_COLUMN_FLAG (INT64_C(1) << 49)
+
 #define SPATIAL_COLUMN_SRID_MASK (0xffffffffffffffe0L)
 
 #define STORED_COLUMN_FLAGS_MASK 0xFFFFFFFF
@@ -303,6 +311,27 @@ bool is_aux_lob_piece_table(const ObTableType table_type);
 bool is_aux_lob_table(const ObTableType table_type);
 bool is_mlog_table(const ObTableType table_type);
 
+const int64_t OB_MLOG_TABLE_CNT = 1;
+const int64_t OB_AUX_LOB_TABLE_CNT = 2; // aux lob meta + aux lob piece
+// The max count of aux tables that can be created for each index.
+// Some special indexes such as full-text index(FTS), multi-value index, vector index, etc., have multiple aux tables.
+// The current index with max aux tables: vector index
+// They need to be changed at the same time, choosing OB_MAX_AUX_TABLE_PER_MAIN_TABLE is larger.
+const int64_t OB_MAX_SHARED_TABLE_CNT_PER_INDEX_TYPE = 2; // number of common aux tables for all vect indexes in a table.
+const int64_t OB_MAX_TABLE_CNT_PER_INDEX = 3; // number of aux tables private per vec index.
+// The max count of aux tables with physical tablets per user data table.
+const int64_t OB_MAX_AUX_TABLE_PER_MAIN_TABLE = OB_MAX_INDEX_PER_TABLE * OB_MAX_TABLE_CNT_PER_INDEX +
+                                           OB_MAX_SHARED_TABLE_CNT_PER_INDEX_TYPE + OB_AUX_LOB_TABLE_CNT + OB_MLOG_TABLE_CNT; // 389
+// The max tablet count of a transfer is one data table tablet with max aux tablets bound together.
+const int64_t OB_MAX_TRANSFER_BINDING_TABLET_CNT = OB_MAX_AUX_TABLE_PER_MAIN_TABLE + 1; // 390
+
+// Note: When adding new index type, you should modifiy "tools/obtest/t/quick/partition_balance.test" and
+//       "tools/obtest/t/shared_storage/local_cache/partition_balance.test" to verify that all aux tables of the new index
+//       can be properly distributed after table creation and partition rebalanceing.
+//
+//       If the new index has multiple aux tables, you need to make sure that OB_MAX_AUX_TABLE_PER_MAIN_TABLE is correct and
+//       modify "tools/obtest/t/quick/include/transfer_max_aux.test" to verify that a partition with
+//       max aux tables can be transferred.
 enum ObIndexType
 {
   INDEX_TYPE_IS_NOT = 0,//is not index table
@@ -474,6 +503,28 @@ public:
   int64_t snapshot_timestamp_;
   int64_t readable_schema_version_;
 
+};
+
+class ObIndexSchemaInfo
+{
+public:
+  ObIndexSchemaInfo()
+    : index_name_(), index_id_(common::OB_INVALID_ID), schema_version_(common::OB_INVALID_VERSION), index_type_(INDEX_TYPE_IS_NOT) {}
+  ~ObIndexSchemaInfo() {}
+  int init(const ObString &index_name, const uint64_t index_id, const int64_t schema_version, const ObIndexType index_type);
+  void reset();
+  bool is_valid() const;
+  int assign(const ObIndexSchemaInfo &other);
+  const ObString &get_index_name() const { return index_name_; }
+  uint64_t get_index_id() const { return index_id_; }
+  int64_t get_schema_version() const {return schema_version_; }
+  ObIndexType get_index_type() const {return index_type_;}
+  TO_STRING_KV(K_(index_name), K_(index_id), K_(schema_version), K_(index_type));
+private:
+  ObString index_name_;
+  uint64_t index_id_;
+  int64_t schema_version_;
+  ObIndexType index_type_;
 };
 
 class ObSchemaIdVersion
@@ -757,6 +808,8 @@ inline bool is_vec_index(const ObIndexType index_type)
   return is_vec_delta_buffer_type(index_type) || is_built_in_vec_index(index_type);
 }
 
+
+// new built in index type should add case in built_in_index_not_visible.test
 inline bool is_built_in_index(const ObIndexType index_type)
 {
   return is_built_in_vec_index(index_type) ||
@@ -779,6 +832,7 @@ inline bool is_index_local_storage(ObIndexType index_type)
            || is_local_multivalue_index(index_type);
 }
 
+// Note: When adding new related table, you need to modify OB_MAX_TRANSFER_BINDING_TABLET_CNT
 inline bool is_related_table(
     const ObTableType &table_type,
     const ObIndexType &index_type)
@@ -3162,6 +3216,27 @@ public:
 
   static bool is_default_list_part(const ObPartition &part);
 
+  static int check_param_valid(
+        const share::schema::ObTableSchema &table_schema,
+        RelatedTableInfo *related_table)
+  {
+    return check_param_valid_(table_schema, related_table);
+  }
+
+  static int fill_tablet_and_object_ids(
+      const bool fill_tablet_id,
+      const int64_t part_idx,
+      const common::ObIArray<PartitionIndex> &partition_indexes,
+      const share::schema::ObTableSchema &table_schema,
+      RelatedTableInfo *related_table,
+      common::ObIArray<common::ObTabletID> &tablet_ids,
+      common::ObIArray<common::ObObjectID> &object_ids)
+  {
+    return fill_tablet_and_object_ids_(fill_tablet_id, part_idx, partition_indexes,
+                                       table_schema, related_table,
+                                       tablet_ids, object_ids);
+  }
+
   /* ----------------------------------------------------------------- */
 
 private:
@@ -4462,7 +4537,8 @@ public:
      max_connections_(0),
      max_user_connections_(0),
      proxied_user_info_(NULL), proxied_user_info_capacity_(0), proxied_user_info_cnt_(0),
-     proxy_user_info_(NULL), proxy_user_info_capacity_(0), proxy_user_info_cnt_(0), user_flags_()
+     proxy_user_info_(NULL), proxy_user_info_capacity_(0), proxy_user_info_cnt_(0), user_flags_(),
+     trigger_list_()
   { }
   explicit ObUserInfo(common::ObIAllocator *allocator);
   virtual ~ObUserInfo();
@@ -4554,7 +4630,7 @@ public:
                K_(profile_id), K_(proxied_user_info_cnt), K_(proxy_user_info_cnt),
                "proxied info", ObArrayWrap<ObProxyInfo*>(proxied_user_info_, proxied_user_info_cnt_),
                "proxy info", ObArrayWrap<ObProxyInfo*>(proxy_user_info_, proxy_user_info_cnt_),
-               K_(user_flags)
+               K_(user_flags), K_(trigger_list)
               );
   bool role_exists(const uint64_t role_id, const uint64_t option) const;
   int get_seq_by_role_id(uint64_t role_id, uint64_t &seq) const;
@@ -4604,6 +4680,7 @@ private:
   uint64_t proxy_user_info_capacity_;
   uint64_t proxy_user_info_cnt_;
   ObUserFlags user_flags_;
+  common::ObSArray<uint64_t> trigger_list_;
   DISABLE_COPY_ASSIGN(ObUserInfo);
 };
 

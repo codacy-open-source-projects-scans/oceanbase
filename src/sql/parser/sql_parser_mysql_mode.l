@@ -818,7 +818,7 @@ B'([01])*'|0B([01])+ {
     STORE_PARAM_NODE();
   } else {
     yylval->node->sql_str_off_ = yylloc->first_column - 1;
-    return HEX_STRING_VALUE;
+    return BIN_STRING_VALUE;
   }
 }
 
@@ -998,6 +998,8 @@ Timestamp{whitespace}?\"[^\"]*\" {
   }
 }
 <hint>INDEX { return INDEX_HINT; }
+<hint>INDEX_ASC { return INDEX_ASC_HINT; }
+<hint>INDEX_DESC { return INDEX_DESC_HINT; }
 <hint>NO_INDEX { return NO_INDEX_HINT; }
 <hint>UNION_MERGE { return UNION_MERGE_HINT; }
 <hint>USE_DAS { return USE_DAS_HINT; }
@@ -1061,6 +1063,8 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>WF_TOPN  { return WF_TOPN; }
 <hint>USE_LATE_MATERIALIZATION  { return USE_LATE_MATERIALIZATION; }
 <hint>NO_USE_LATE_MATERIALIZATION  { return NO_USE_LATE_MATERIALIZATION; }
+<hint>TRANSFORM_DISTINCT_AGG  { return TRANSFORM_DISTINCT_AGG; }
+<hint>NO_TRANSFORM_DISTINCT_AGG  { return NO_TRANSFORM_DISTINCT_AGG; }
 <hint>TRACE_LOG { return TRACE_LOG; }
 <hint>LOAD_BATCH_SIZE { return LOAD_BATCH_SIZE; }
 <hint>NO_DIRECT { return NO_DIRECT; }
@@ -1117,6 +1121,8 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>NO_REPLACE_CONST { return NO_REPLACE_CONST; }
 <hint>ENABLE_PARALLEL_DML  { return ENABLE_PARALLEL_DML; }
 <hint>DISABLE_PARALLEL_DML  { return DISABLE_PARALLEL_DML; }
+<hint>ENABLE_PARALLEL_DAS_DML  { return ENABLE_PARALLEL_DAS_DML; }
+<hint>DISABLE_PARALLEL_DAS_DML  { return DISABLE_PARALLEL_DAS_DML; }
 <hint>INLINE { return INLINE; }
 <hint>MATERIALIZE { return MATERIALIZE; }
 <hint>SEMI_TO_INNER { return SEMI_TO_INNER; }

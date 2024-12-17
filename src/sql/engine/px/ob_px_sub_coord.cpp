@@ -353,12 +353,13 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
       LOG_WARN("fail to setup gi op input", K(ret));
     } else {
       gi_input->set_parallelism(sqc.get_task_count());
+      sqc_ctx.gi_pump_.set_parallelism(sqc.get_task_count());
+
     }
   } else if (IS_PX_JOIN_FILTER(root.get_type())) {
     ObPxSqcMeta &sqc = sqc_arg_.sqc_;
     ObJoinFilterSpec *filter_spec = reinterpret_cast<ObJoinFilterSpec *>(&root);
     ObJoinFilterOpInput *filter_input = NULL;
-    ObPxBloomFilter *filter_create = NULL;
     int64_t tenant_id = ctx.get_my_session()->get_effective_tenant_id();
     ObOperatorKit *kit = ctx.get_operator_kit(root.id_);
     if (OB_ISNULL(kit) || OB_ISNULL(kit->input_)) {
@@ -380,6 +381,10 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
           ctx, sqc.get_task_count(),
           filter_spec->is_shuffle_? sqc.get_sqc_count() : 1))) {
         LOG_WARN("fail to init share info", K(ret));
+      } else if (ctx.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version()
+                     < CLUSTER_VERSION_4_3_5_0
+                 && OB_FAIL(filter_spec->update_sync_row_count_flag())) {
+        LOG_WARN("failed to update_sync_row_count_flag");
       } else {
         if (OB_FAIL(all_shared_rf_msgs_.push_back(filter_input->share_info_.shared_msgs_))) {
           LOG_WARN("fail to push back rf msgs", K(ret));
@@ -905,11 +910,11 @@ int ObPxSubCoord::start_ddl()
     const int64_t ddl_table_id = phy_plan->get_ddl_table_id();
     const int64_t ddl_task_id = phy_plan->get_ddl_task_id();
     const int64_t ddl_execution_id = phy_plan->get_ddl_execution_id();
-
     uint64_t unused_taget_object_id = OB_INVALID_ID;
     int64_t schema_version = OB_INVALID_VERSION;
+    bool is_no_logging = false;
 
-    if (OB_FAIL(ObDDLUtil::get_data_information(tenant_id, ddl_task_id, data_format_version, snapshot_version, unused_task_status, unused_taget_object_id, schema_version))) {
+    if (OB_FAIL(ObDDLUtil::get_data_information(tenant_id, ddl_task_id, data_format_version, snapshot_version, unused_task_status, unused_taget_object_id, schema_version, is_no_logging))) {
       LOG_WARN("get ddl cluster version failed", K(ret));
     } else if (OB_UNLIKELY(snapshot_version <= 0)) {
       ret = OB_NEED_RETRY;
@@ -920,12 +925,12 @@ int ObPxSubCoord::start_ddl()
     } else {
       ddl_ctrl_.direct_load_type_ = ObDDLUtil::use_idempotent_mode(data_format_version) ?
           ObDirectLoadType::DIRECT_LOAD_DDL_V2 : ObDirectLoadType::DIRECT_LOAD_DDL;
-
       ObTabletDirectLoadInsertParam direct_load_param;
       direct_load_param.is_replay_ = false;
       direct_load_param.common_param_.direct_load_type_ = ddl_ctrl_.direct_load_type_;
       direct_load_param.common_param_.data_format_version_ = data_format_version;
       direct_load_param.common_param_.read_snapshot_ = snapshot_version;
+      direct_load_param.common_param_.is_no_logging_ = is_no_logging;
       direct_load_param.runtime_only_param_.exec_ctx_ = exec_ctx;
       direct_load_param.runtime_only_param_.task_id_ = ddl_task_id;
       direct_load_param.runtime_only_param_.table_id_ = ddl_table_id;
@@ -965,6 +970,9 @@ int ObPxSubCoord::start_ddl()
       }
       FLOG_INFO("start ddl", K(ret), "context_id", ddl_ctrl_.context_id_, K(direct_load_param), K(ls_tablet_ids));
     }
+  }
+  if (OB_EAGAIN == ret) {
+    ret = OB_STATE_NOT_MATCH; // avoid px hang
   }
   return ret;
 }

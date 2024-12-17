@@ -247,6 +247,14 @@ int ObCreateIndexResolver::resolve_index_column_node(
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("fulltext search index isn't supported in shared storage mode", K(ret));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "fulltext search index in shared storage mode is");
+        } else if (GCTX.is_shared_storage_mode() && VEC_KEY == index_keyname_) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("vector index isn't supported in shared storage mode", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "vector index in shared storage mode is");
+        } else if (GCTX.is_shared_storage_mode() && (MULTI_KEY == index_keyname_ || MULTI_UNIQUE_KEY == index_keyname_)) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("multivalue search index isn't supported in shared storage mode", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "multivalue search index in shared storage mode is");
         }
       }
 #endif
@@ -259,15 +267,23 @@ int ObCreateIndexResolver::resolve_index_column_node(
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "build multivalue index afterward");
         }
       } else if (index_keyname_ == FTS_KEY) {
-        if (!GCONF._enable_add_fulltext_index_to_existing_table) {
-          ret = OB_NOT_SUPPORTED;
-          LOG_WARN("build fulltext index afterward is experimental feature", K(ret));
-          LOG_USER_ERROR(OB_NOT_SUPPORTED, "experimental feature: build fulltext index afterward");
+        uint64_t tenant_data_version = 0;
+        if (OB_ISNULL(session_info_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null", K(ret));
+        } else if (OB_FAIL(GET_MIN_DATA_VERSION(session_info_->get_effective_tenant_id(), tenant_data_version))) {
+          LOG_WARN("get tenant data version failed", K(ret));
+        } else if (tenant_data_version < DATA_VERSION_4_3_5_0) {
+          LOG_WARN("there are the observers with version lower than 4.3.5 in cluster, build fulltext index afterward not supported", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "there are the observers with version lower than 4.3.5 in cluster, build fulltext index afterward");
         } else if (OB_FAIL(resolve_fts_index_constraint(*tbl_schema,
-                                                 sort_item.column_name_,
-                                                 index_keyname_value))) {
-          SQL_RESV_LOG(WARN, "check fts index constraint fail",K(ret),
-              K(sort_item.column_name_));
+                                                        sort_item.column_name_,
+                                                        index_keyname_value))) {
+          SQL_RESV_LOG(WARN, "check fts index constraint fail", K(ret), K(sort_item.column_name_));
+        } else if (OB_UNLIKELY(tbl_schema->mv_container_table())) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("create fulltext index on materialized view not supported", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "create fulltext index on materialized view");
         }
       } else if (index_keyname_ == INDEX_KEYNAME::VEC_KEY) {
         if (sort_item.is_func_index_) {
@@ -591,8 +607,9 @@ int ObCreateIndexResolver::resolve(const ParseNode &parse_tree)
                                                        new_tbl_name,
                                                        tbl_schema))) {
     if (OB_TABLE_NOT_EXIST == ret) {
-      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(crt_idx_stmt->get_create_index_arg().database_name_),
-          to_cstring(crt_idx_stmt->get_create_index_arg().table_name_));
+      ObCStringHelper helper;
+      LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(crt_idx_stmt->get_create_index_arg().database_name_),
+          helper.convert(crt_idx_stmt->get_create_index_arg().table_name_));
       LOG_WARN("table not exist", K(ret),
           "database_name", crt_idx_stmt->get_create_index_arg().database_name_,
           "table_name", crt_idx_stmt->get_create_index_arg().table_name_);
@@ -766,6 +783,8 @@ int ObCreateIndexResolver::resolve(const ParseNode &parse_tree)
       SQL_RESV_LOG(WARN, "failed to add based_schema_object_info to arg",
                    K(ret), K(tbl_schema->get_table_id()),
                    K(tbl_schema->get_schema_version()));
+    } else if (OB_FAIL(add_based_udt_info(*tbl_schema))) {
+      SQL_RESV_LOG(WARN, "failed to add based_schema_object_info to arg", KR(ret));
     }
   }
   DEBUG_SYNC(HANG_BEFORE_RESOLVER_FINISH);
@@ -926,5 +945,45 @@ int ObCreateIndexResolver::set_table_option_to_stmt(const uint64_t data_table_id
   }
   return ret;
 }
+
+int ObCreateIndexResolver::add_based_udt_info(const share::schema::ObTableSchema &tbl_schema)
+{
+  int ret = OB_SUCCESS;
+  ObCreateIndexStmt *create_index_stmt = static_cast<ObCreateIndexStmt*>(stmt_);
+  if (OB_ISNULL(create_index_stmt) || OB_ISNULL(session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("create index stmt is nullptr", KR(ret));
+  } else {
+    ObTableSchema::const_column_iterator begin = tbl_schema.column_begin();
+    ObTableSchema::const_column_iterator end = tbl_schema.column_end();
+    ObCreateIndexArg &arg = create_index_stmt->get_create_index_arg();
+    for (; OB_SUCC(ret) && begin != end; begin++) {
+      ObColumnSchemaV2 *col = (*begin);
+      if (OB_ISNULL(col)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get column schema failed", KR(ret));
+      } else if (col->is_extend()) {
+        const ObUDTTypeInfo *udt_info = nullptr;
+        const uint64_t udt_id = col->get_sub_data_type();
+        const uint64_t tenant_id = pl::get_tenant_id_by_object_id(udt_id);
+        if (OB_FAIL(schema_checker_->get_udt_info(tenant_id,
+                                                  udt_id,
+                                                  udt_info))) {
+          LOG_WARN("fail to get udt info", KR(ret), K(tenant_id), K(udt_id));
+        } else if (OB_ISNULL(udt_info)) {
+          ret = OB_ERR_OBJECT_NOT_EXIST;
+          LOG_WARN("udt not exist", KR(ret), K(tenant_id), K(udt_id));
+        } else if (OB_FAIL(ob_udt_check_and_add_ddl_dependency(udt_id, UDT_SCHEMA,
+                                                               udt_info->get_schema_version(),
+                                                               udt_info->get_tenant_id(),
+                                                               arg))) {
+          LOG_WARN("fail to push back udt info", KR(ret), K(udt_id), K(tenant_id));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 }  // namespace sql
 }  // namespace oceanbase

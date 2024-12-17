@@ -1149,7 +1149,7 @@ int ObBackupRetryCtx::inner_recover_need_reuse_macro_block_(
                          "turn_id", retry_desc.turn_id_,
                          "retry_id", retry_desc.retry_id_,
                          "file_id", file_id,
-                         to_cstring(this));
+                         *this);
         break;
       } else if (OB_FAIL(iter.fetch_macro_index_list_(file_id, index_list))) {
         LOG_WARN("failed to fetch macro index list", K(ret), K(file_id));
@@ -1205,7 +1205,7 @@ int ObBackupRetryCtx::add_recover_retry_ctx_event_(
       "turn_id", param_.turn_id_,
       "retry_id", param_.retry_id_,
       "retry_list_count", retry_list.count(),
-      to_cstring(*this));
+      *this);
   return ret;
 }
 
@@ -1236,7 +1236,8 @@ ObLSBackupCtx::ObLSBackupCtx()
       index_builder_mgr_(),
       bandwidth_throttle_(NULL),
       mview_dep_tablet_set_(),
-      wait_reuse_across_sstable_time_(0)
+      wait_reuse_across_sstable_time_(0),
+      mv_mutex_()
 {}
 
 ObLSBackupCtx::~ObLSBackupCtx()
@@ -1265,7 +1266,7 @@ int ObLSBackupCtx::open(
   } else if (!param.is_valid() || !backup_data_type.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid args", K(ret), K(param), K(backup_data_type));
-  } else if (OB_FAIL(cond_.init(ObWaitEventIds::IO_CONTROLLER_COND_WAIT))) {
+  } else if (OB_FAIL(cond_.init(ObWaitEventIds::LS_BACKUP_CTX_COND_WAIT))) {
     LOG_WARN("failed to init condition", K(ret));
   } else if (OB_FAIL(tablet_stat_.init(
                  param.tenant_id_, param.backup_set_desc_.backup_set_id_, param.ls_id_, backup_data_type))) {

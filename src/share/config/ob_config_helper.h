@@ -301,6 +301,18 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigSyslogFileUncompressedCountChecker);
 };
 
+// Used to check the format of STS credential
+class ObConfigSTScredentialChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigSTScredentialChecker() {}
+  virtual ~ObConfigSTScredentialChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigSTScredentialChecker);
+};
+
 class ObConfigUseLargePagesChecker
   : public ObConfigChecker
 {
@@ -896,6 +908,13 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigTableStoreFormatChecker);
 };
 
+class ObConfigDDLNoLoggingChecker: public ObConfigChecker {
+  public:
+    static bool check(const uint64_t tenant_id, const obrpc::ObAdminSetConfigItem &t);
+  private:
+    DISALLOW_COPY_AND_ASSIGN(ObConfigDDLNoLoggingChecker);
+};
+
 class ObConfigArchiveLagTargetChecker {
 public:
   ObConfigArchiveLagTargetChecker(){}
@@ -963,6 +982,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigS3URLEncodeTypeChecker);
 };
 
+class ObConfigReplicaParallelMigrationChecker : public ObConfigChecker
+{
+public:
+  ObConfigReplicaParallelMigrationChecker() {}
+  virtual ~ObConfigReplicaParallelMigrationChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigReplicaParallelMigrationChecker);
+};
+
 class ObConfigDegradationPolicyChecker : public ObConfigChecker
 {
 public:
@@ -985,6 +1014,18 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigVectorMemoryChecker);
 };
 
+
+class ObConfigEnableHashRollupChecker: public ObConfigChecker
+{
+public:
+  ObConfigEnableHashRollupChecker()
+  {}
+  virtual ~ObConfigEnableHashRollupChecker()
+  {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigEnableHashRollupChecker);
+};
 } // namespace common
 } // namespace oceanbase
 

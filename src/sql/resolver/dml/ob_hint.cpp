@@ -238,6 +238,19 @@ void ObGlobalHint::merge_parallel_dml_hint(ObPDMLOption pdml_option)
   }
 }
 
+void ObGlobalHint::merge_parallel_das_dml_hint(ObParallelDASOption parallel_das_option)
+{
+  if (ObParallelDASOption::DISABLE != parallel_das_dml_option_ && ObParallelDASOption::ENABLE != parallel_das_dml_option_) {
+    if (ObParallelDASOption::DISABLE == parallel_das_option || ObParallelDASOption::ENABLE == parallel_das_option) {
+      parallel_das_dml_option_ = parallel_das_option;
+    }
+  } else if (ObParallelDASOption::ENABLE == parallel_das_dml_option_ || ObParallelDASOption::ENABLE == parallel_das_option) {
+    parallel_das_dml_option_ = ObParallelDASOption::ENABLE;
+  } else {
+    parallel_das_dml_option_ = ObParallelDASOption::DISABLE;
+  }
+}
+
 void ObGlobalHint::merge_param_option_hint(ObParamOption opt)
 {
   if (ObParamOption::FORCE != param_option_ && ObParamOption::EXACT != param_option_) {
@@ -356,7 +369,8 @@ bool ObGlobalHint::has_hint_exclude_concurrent() const
          || -1 != dynamic_sampling_
          || flashback_read_tx_uncommitted_
          || has_direct_load()
-         || !resource_group_.empty();
+         || !resource_group_.empty()
+         || ObParallelDASOption::NOT_SPECIFIED != parallel_das_dml_option_;
 }
 
 void ObGlobalHint::reset()
@@ -390,6 +404,7 @@ void ObGlobalHint::reset()
   direct_load_hint_.reset();
   dblink_hints_.reset();
   resource_group_.reset();
+  parallel_das_dml_option_ = ObParallelDASOption::NOT_SPECIFIED;
 }
 
 int ObGlobalHint::merge_global_hint(const ObGlobalHint &other)
@@ -416,6 +431,7 @@ int ObGlobalHint::merge_global_hint(const ObGlobalHint &other)
   has_dbms_stats_hint_ |= other.has_dbms_stats_hint_;
   flashback_read_tx_uncommitted_ |= other.flashback_read_tx_uncommitted_;
   dblink_hints_ = other.dblink_hints_;
+  merge_parallel_das_dml_hint(other.parallel_das_dml_option_);
   merge_dynamic_sampling_hint(other.dynamic_sampling_);
   merge_direct_load_hint(other.direct_load_hint_);
   merge_resource_group_hint(other.resource_group_);
@@ -550,6 +566,18 @@ int ObGlobalHint::print_global_hint(PlanText &plan_text) const
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected pdml hint value", K(ret), K_(pdml_option));
     }
+  }
+  if (OB_SUCC(ret) && ObParallelDASOption::NOT_SPECIFIED != parallel_das_dml_option_) { //PDML
+   if (ObParallelDASOption::ENABLE == parallel_das_dml_option_) {
+     if (!ignore_parallel_for_dblink) {
+       PRINT_GLOBAL_HINT_STR("ENABLE_PARALLEL_DAS_DML");
+     }
+   } else if (ObParallelDASOption::DISABLE == parallel_das_dml_option_) {
+     PRINT_GLOBAL_HINT_STR("DISABLE_PARALLEL_DAS_DML");
+   } else {
+     ret = OB_ERR_UNEXPECTED;
+     LOG_WARN("unexpected pdml hint value", K(ret), K_(pdml_option));
+   }
   }
   if (OB_SUCC(ret) && ObParamOption::NOT_SPECIFIED != param_option_) { // PARAM
     if (OB_UNLIKELY(ObParamOption::EXACT != param_option_)) {
@@ -821,7 +849,8 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
     case OPTIMIZER_BETTER_INLIST_COSTING:
     case OPTIMIZER_GROUP_BY_PLACEMENT:
     case ENABLE_SPF_BATCH_RESCAN:
-    case NLJ_BATCHING_ENABLED: {
+    case NLJ_BATCHING_ENABLED:
+    case ENABLE_PX_ORDERED_COORD: {
       is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
@@ -891,8 +920,8 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
       is_valid = val.is_int() && (0 <= val.get_int() && val.get_int() < 100);
       break;
     }
-    case PUSHDOWN_STORAGE_LEVEL: {
-      is_valid = val.is_int() && (0 <= val.get_int() && val.get_int() <= 4);
+    case OPTIMIZER_COST_BASED_TRANSFORMATION: {
+      is_valid = val.is_int() && (0 <= val.get_int() && val.get_int() <= 2);
       break;
     }
     case CORRELATION_FOR_CARDINALITY_ESTIMATION:
@@ -926,6 +955,22 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
       break;
     }
     case PARTITION_WISE_PLAN_ENABLED: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
+    case USE_HASH_ROLLUP: {
+      is_valid = val.is_varchar()
+                 && (0 == val.get_varchar().case_compare("auto")
+                     || 0 == val.get_varchar().case_compare("forced")
+                     || 0 == val.get_varchar().case_compare("disabled"));
+      break;
+    }
+    case LOB_ROWSETS_MAX_ROWS: {
+      is_valid = val.is_int() && val.get_int() >= 1 && val.get_int() <= 65535;
+      break;
+    }
+    case ENABLE_ENUM_SET_SUBSCHEMA: {
       is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
@@ -1037,6 +1082,21 @@ int ObOptParamHint::get_opt_param_runtime_filter_type(int64_t &rf_type) const
     ObString str_val = obj.get_varchar();
     rf_type = ObConfigRuntimeFilterChecker::get_runtime_filter_type(str_val.ptr(),
                                                                     str_val.length());
+  }
+  return ret;
+}
+
+int ObOptParamHint::get_hash_rollup_param(ObObj &val, bool &has_param) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(has_opt_param(USE_HASH_ROLLUP, has_param))) {
+    LOG_WARN("failed to check param", K(ret));
+  } else if (has_param) {
+    if (OB_FAIL(get_opt_param(USE_HASH_ROLLUP, val))) {
+      LOG_WARN("get opt param failed", K(ret));
+    } else {
+      has_param = is_param_val_valid(USE_HASH_ROLLUP, val);
+    }
   }
   return ret;
 }
@@ -1198,6 +1258,7 @@ ObItemType ObHint::get_hint_type(ObItemType type)
     case T_NO_COALESCE_AGGR:      return T_COALESCE_AGGR;
     case T_MV_NO_REWRITE:       return T_MV_REWRITE;
     case T_NO_USE_LATE_MATERIALIZATION: return T_USE_LATE_MATERIALIZATION;
+    case T_NO_TRANSFORM_DISTINCT_AGG:     return T_TRANSFORM_DISTINCT_AGG;
 
     // optimize hint
     case T_NO_USE_DAS_HINT:     return T_USE_DAS_HINT;
@@ -1258,6 +1319,8 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_MV_REWRITE:          return is_enable_hint ? "MV_REWRITE" : "NO_MV_REWRITE";
     case T_USE_LATE_MATERIALIZATION:
       return is_enable_hint ? "USE_LATE_MATERIALIZATION" : "NO_USE_LATE_MATERIALIZATION";
+    case T_TRANSFORM_DISTINCT_AGG:
+      return is_enable_hint ? "TRANSFORM_DISTINCT_AGG" : "NO_TRANSFORM_DISTINCT_AGG";
     // optimize hint
     case T_INDEX_HINT:          return "INDEX";
     case T_FULL_HINT:           return "FULL";
@@ -1292,6 +1355,8 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_PQ_SUBQUERY: return "PQ_SUBQUERY";
     case T_PQ_GBY_HINT: return "PQ_GBY";
     case T_PQ_DISTINCT_HINT:  return "PQ_DISTINCT";
+    case T_INDEX_ASC_HINT:    return "INDEX_ASC";
+    case T_INDEX_DESC_HINT:   return "INDEX_DESC";
     default:                    return NULL;
   }
 }
@@ -2272,7 +2337,8 @@ int ObIndexHint::print_hint_desc(PlanText &plan_text) const
     /* do nothing */
   } else if (OB_FAIL(BUF_PRINTF(" \"%.*s\"", index_name_.length(), index_name_.ptr()))) {
     LOG_WARN("fail to print index name", K(ret));
-  } else if (T_INDEX_HINT != hint_type_  || index_prefix_ < 0) {
+  } else if ((T_INDEX_HINT != hint_type_ && T_INDEX_ASC_HINT != hint_type_ && T_INDEX_DESC_HINT != hint_type_)
+             || index_prefix_ < 0) {
     //do nothing
   } else if (OB_FAIL(BUF_PRINTF(" %ld", index_prefix_))) {
     LOG_WARN("fail to print index prefix", K(ret));
@@ -2466,16 +2532,8 @@ int ObPQSetHint::set_pq_set_hint(const DistAlgo dist_algo,
         dist_methods_.at(1) = T_DISTRIBUTE_LOCAL;
         break;
       } 
-      case DistAlgo::DIST_PARTITION_WISE:  {
-        dist_methods_.at(0) = T_DISTRIBUTE_NONE;
-        dist_methods_.at(1) = T_DISTRIBUTE_NONE;
-        break;
-      }
-      case DistAlgo::DIST_EXT_PARTITION_WISE:  {
-        dist_methods_.at(0) = T_DISTRIBUTE_NONE;
-        dist_methods_.at(1) = T_DISTRIBUTE_NONE;
-        break;
-      }
+      case DistAlgo::DIST_PARTITION_WISE:
+      case DistAlgo::DIST_EXT_PARTITION_WISE:
       case DistAlgo::DIST_SET_PARTITION_WISE:  {
         dist_methods_.at(0) = T_DISTRIBUTE_NONE;
         dist_methods_.at(1) = T_DISTRIBUTE_NONE;
@@ -2583,10 +2641,10 @@ bool ObPQSetHint::is_valid_dist_methods(const ObIArray<ObItemType> &dist_methods
 }
 
 // DistAlgo::DIST_BASIC_METHOD indicate 
-DistAlgo ObPQSetHint::get_dist_algo(const ObIArray<ObItemType> &dist_methods,
+uint64_t ObPQSetHint::get_dist_algo(const ObIArray<ObItemType> &dist_methods,
                                     int64_t &random_none_idx)
 {
-  DistAlgo dist_algo = DistAlgo::DIST_INVALID_METHOD;
+  uint64_t dist_algo = DistAlgo::DIST_INVALID_METHOD;
   random_none_idx = OB_INVALID_INDEX;
   if (dist_methods.empty()) {
     dist_algo = DistAlgo::DIST_BASIC_METHOD;
@@ -2647,6 +2705,11 @@ DistAlgo ObPQSetHint::get_dist_algo(const ObIArray<ObItemType> &dist_methods,
         || DistAlgo::DIST_SET_RANDOM == tmp) {
       dist_algo = sql::get_dist_algo(tmp);
     }
+  }
+  if (DistAlgo::DIST_PARTITION_WISE == dist_algo) {
+    dist_algo = DistAlgo::DIST_PARTITION_WISE
+                | DistAlgo::DIST_EXT_PARTITION_WISE
+                | DistAlgo::DIST_SET_PARTITION_WISE;
   }
   return dist_algo;
 }
@@ -2725,6 +2788,7 @@ const char *ObPQHint::get_dist_method_str(ObItemType dist_method)
     case T_DISTRIBUTE_BASIC:  return  "BASIC";
     case T_DISTRIBUTE_NONE:   return  "NONE";
     case T_DISTRIBUTE_HASH:   return  "HASH";
+    case T_DISTRIBUTE_LOCAL:  return  "LOCAL";
     default:  return NULL;
   }
   return NULL;

@@ -33,6 +33,9 @@ namespace sql
 ObObjDatumMapType ObFTIndexRowCache::FTS_INDEX_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 ObObjDatumMapType ObFTIndexRowCache::FTS_DOC_WORD_TYPES[] = {OBJ_DATUM_STRING, OBJ_DATUM_STRING, OBJ_DATUM_8BYTE_DATA, OBJ_DATUM_8BYTE_DATA};
 
+ObExprOperatorType ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE[] = {T_FUN_SYS_WORD_SEGMENT, T_FUN_SYS_DOC_ID, T_FUN_SYS_WORD_COUNT, T_FUN_SYS_DOC_LENGTH};
+ObExprOperatorType ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE[] = {T_FUN_SYS_DOC_ID, T_FUN_SYS_WORD_SEGMENT, T_FUN_SYS_WORD_COUNT, T_FUN_SYS_DOC_LENGTH};
+
 ObFTIndexRowCache::ObFTIndexRowCache()
   : rows_(),
     row_idx_(0),
@@ -416,6 +419,7 @@ int ObDASDomainUtils::generate_multivalue_index_rows(ObIAllocator &allocator,
 {
   int ret = OB_SUCCESS;
   bool is_save_rowkey = true;
+  const int64_t index_rowkey_cnt = das_ctdef.table_param_.get_data_table().get_rowkey_column_num();
   bool is_unique_index = das_ctdef.table_param_.get_data_table().get_index_type() == ObIndexType::INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL;
   const int64_t data_table_rowkey_cnt = das_ctdef.table_param_.get_data_table().get_data_table_rowkey_column_num();
   const char* data = nullptr;
@@ -429,15 +433,14 @@ int ObDASDomainUtils::generate_multivalue_index_rows(ObIAllocator &allocator,
   uint64_t rowkey_column_end = column_num - 1;
 
   void *rows_buf = nullptr;
-
   if (OB_FAIL(get_pure_mutivalue_data(json_str, data, data_len, record_num))) {
     LOG_WARN("failed to parse binary.", K(ret), K(json_str));
-  } else if (record_num == 0 && (is_unique_index && rowkey_column_start == 1)) {
+  } else if (record_num == 0 && is_unique_index) {
   } else if (OB_FAIL(calc_save_rowkey_policy(allocator, das_ctdef, row_projector, dml_row, record_num, is_save_rowkey))) {
     LOG_WARN("failed to calc store policy.", K(ret), K(data_table_rowkey_cnt));
   } else {
     uint32_t real_record_num = record_num;
-    if (record_num == 0 && !(is_unique_index && rowkey_column_start == 1)) {
+    if (record_num == 0 && !is_unique_index) {
       real_record_num = 1;
     }
 
@@ -641,6 +644,8 @@ int ObDomainDMLIterator::get_next_domain_row(blocksstable::ObDatumRow *&row)
       } else if (OB_FAIL(generate_domain_rows(sr))) {
         if (ret != OB_ITER_END) {
           LOG_WARN("fail to generate domain index row", K(ret), KPC(sr));
+        } else {
+          ret = OB_SUCCESS;
         }
       }
     }
@@ -684,6 +689,8 @@ int ObDomainDMLIterator::get_next_domain_rows(blocksstable::ObDatumRow *&row, in
         } else if (OB_FAIL(generate_domain_rows(sr))) {
           if (ret != OB_ITER_END) {
             LOG_WARN("fail to generate domain index row", K(ret), KPC(sr));
+          } else {
+            ret = OB_SUCCESS;
           }
         }
       }

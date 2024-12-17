@@ -10,6 +10,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "storage/multi_data_source/runtime_utility/common_define.h"
 #define USING_LOG_PREFIX STORAGE
 
 #include "lib/utility/utility.h"
@@ -1967,8 +1968,10 @@ int ObLS::replay_get_tablet(
   ObTabletHandle tablet_handle;
   ObTablet *tablet = nullptr;
   ObTabletCreateDeleteMdsUserData data;
-  bool is_committed = false;
   const bool replay_allow_tablet_not_exist = true;
+  mds::MdsWriter writer;// will be removed later
+  mds::TwoPhaseCommitState trans_stat;// will be removed later
+  share::SCN trans_version;// will be removed later
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -1979,11 +1982,12 @@ int ObLS::replay_get_tablet(
     // do nothing
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tablet should not be NULL", K(ret), KP(tablet), K(tablet_id), K(scn));
+    LOG_WARN("tablet should not be NULL", K(ret), KP(tablet), K(ls_id), K(tablet_id), K(scn));
   } else if (tablet->is_empty_shell()) {
-    if (OB_FAIL(tablet->get_latest_tablet_status(data, is_committed))) {
-      LOG_WARN("failed to get latest tablet status", K(ret), KPC(tablet));
-    } else if (!is_committed) {
+    ObTabletStatus::Status tablet_status = ObTabletStatus::MAX;
+    if (OB_FAIL(tablet->get_latest(data, writer, trans_stat, trans_version))) {
+      LOG_WARN("failed to get latest tablet status", K(ret), K(ls_id), K(tablet_id));
+    } else if (OB_UNLIKELY(mds::TwoPhaseCommitState::ON_COMMIT != trans_stat)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tablet is empty shell but user data is uncommitted, unexpected", K(ret), KPC(tablet));
     } else if (OB_UNLIKELY(!data.tablet_status_.is_deleted_for_gc())) {
@@ -1995,14 +1999,14 @@ int ObLS::replay_get_tablet(
     }
   } else if ((!is_update_mds_table && scn > tablet->get_clog_checkpoint_scn())
       || (is_update_mds_table && scn > tablet->get_mds_checkpoint_scn())) {
-    if (OB_FAIL(tablet->get_latest_tablet_status(data, is_committed))) {
+    if (OB_FAIL(tablet->get_latest(data, writer, trans_stat, trans_version))) {
       if (OB_EMPTY_RESULT == ret) {
         ret = OB_EAGAIN;
         LOG_INFO("read empty mds data, should retry", KR(ret), K(ls_id), K(tablet_id), K(scn));
       } else {
         LOG_WARN("failed to get latest tablet status", K(ret), KPC(tablet));
       }
-    } else if (!is_committed) {
+    } else if (mds::TwoPhaseCommitState::ON_COMMIT != trans_stat) {
       if ((ObTabletStatus::NORMAL == data.tablet_status_ && data.create_commit_version_ == ObTransVersion::INVALID_TRANS_VERSION)
           || ObTabletStatus::TRANSFER_IN == data.tablet_status_
           || ObTabletStatus::SPLIT_DST == data.tablet_status_) {
@@ -2256,22 +2260,14 @@ int ObLS::advance_checkpoint_by_flush(SCN recycle_scn,
                                       const ObFreezeSourceFlag source)
 {
   int ret = OB_SUCCESS;
-  int64_t read_lock = LSLOCKALL;
-  int64_t write_lock = 0;
-  ObLSLockGuard lock_myself(this, lock_, read_lock, write_lock, abs_timeout_ts);
-  if (!lock_myself.locked()) {
-    ret = OB_TIMEOUT;
-    LOG_WARN("lock failed, please retry later", K(ret), K(ls_meta_));
-  } else {
-    if (is_tenant_freeze) {
-      ObDataCheckpoint::set_tenant_freeze();
-      LOG_INFO("set tenant_freeze", K(ls_meta_.ls_id_));
-    }
-    ObDataCheckpoint::set_freeze_source(source);
-    ret = checkpoint_executor_.advance_checkpoint_by_flush(recycle_scn);
-    ObDataCheckpoint::reset_freeze_source();
-    ObDataCheckpoint::reset_tenant_freeze();
+  if (is_tenant_freeze) {
+    ObDataCheckpoint::set_tenant_freeze();
+    LOG_INFO("set tenant_freeze", K(ls_meta_.ls_id_));
   }
+  ObDataCheckpoint::set_freeze_source(source);
+  ret = checkpoint_executor_.advance_checkpoint_by_flush(recycle_scn);
+  ObDataCheckpoint::reset_freeze_source();
+  ObDataCheckpoint::reset_tenant_freeze();
   return ret;
 }
 
@@ -2778,7 +2774,7 @@ int ObLS::inner_check_allow_read_(
     LOG_WARN("inner check allow read get invalid argument", K(ret), K(migration_status), K(restore_status));
   }  else if ((ObMigrationStatus::OB_MIGRATION_STATUS_NONE == migration_status
           || ObMigrationStatus::OB_MIGRATION_STATUS_HOLD == migration_status)
-              && restore_status.check_allow_read()) {
+              && (restore_status.check_allow_read() || is_sys_ls())) {
     allow_read = true;
   } else {
     allow_read = false;

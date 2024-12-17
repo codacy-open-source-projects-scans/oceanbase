@@ -207,7 +207,7 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
     if (OB_NOT_NULL(var) && var->get_type().is_cursor_type() && !var->get_type().is_cursor_var()) {
       // package ref cursor variable, refrence outside, do not destruct it.
     } else if (OB_FAIL(ret)) {
-      ObUserDefinedType::destruct_obj(value, &(resolve_ctx.session_info_));
+      ObUserDefinedType::destruct_objparam(package_state.get_pkg_allocator(), value, &(resolve_ctx.session_info_));
     }
   }
   if (OB_SUCC(ret) && !package_state.get_serially_reusable()) {
@@ -226,15 +226,17 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
       } else if (OB_NOT_NULL(ser_value = resolve_ctx.session_info_.get_user_variable_value(key))) {
         need_deserialize = true;
       }
-      if (OB_SUCC(ret) && need_deserialize) {
+      if (OB_FAIL(ret)) {
+      } else if (need_deserialize) {
         if (OB_FAIL(package_state.get_package_var_val(var_idx, value))) {
           LOG_WARN("failt to get package var", K(ret), K(var_idx));
         } else {
           if (var_type.is_cursor_type()) {
-            OV (ser_value->is_tinyint() || ser_value->is_number(),
+            OV (ser_value->is_tinyint() || ser_value->is_number() || ser_value->is_decimal_int(),
                 OB_ERR_UNEXPECTED, KPC(ser_value), K(lbt()));
-            if (OB_SUCC(ret)
-                && ser_value->is_tinyint() ? ser_value->get_bool() : !ser_value->is_zero_number()) {
+            if (OB_SUCC(ret) && (ser_value->is_tinyint() ? ser_value->get_bool()
+                                  : (ser_value->is_number() ? !ser_value->is_zero_number()
+                                                            : !ser_value->is_zero_decimalint()))) {
               ObPLCursorInfo *cursor = reinterpret_cast<ObPLCursorInfo *>(value.get_ext());
               CK (OB_NOT_NULL(cursor));
               OX (cursor->set_sync_cursor());
@@ -248,7 +250,7 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
           } else {
             // sync other server modify for this server! (from porxy or distribute plan)
             if (var_type.is_obj_type()) {
-              // do nothing
+              OZ (ObUserDefinedType::destruct_objparam(package_state.get_pkg_allocator(), value, &(resolve_ctx.session_info_)));
             } else {
               OZ (ObUserDefinedType::destruct_obj(value, &(resolve_ctx.session_info_), true));
               if (OB_SUCC(ret) && var_type.is_record_type() && PL_RECORD_TYPE == value.get_meta().get_extend_type()) {
@@ -275,7 +277,7 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
                       int64_t init_size = OB_INVALID_SIZE;
                       int64_t member_ptr = 0;
                       OZ (record_type->get_member(i)->get_size(PL_TYPE_INIT_SIZE, init_size));
-                      OZ (record_type->get_member(i)->newx(package_state.get_pkg_allocator(), &resolve_ctx, member_ptr));
+                      OZ (record_type->get_member(i)->newx(*record->get_allocator(), &resolve_ctx, member_ptr));
                       OX (member->set_extend(member_ptr, record_type->get_member(i)->get_type(), init_size));
                     }
                   }
@@ -291,13 +293,20 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
                                     value));
             // need set var again if var is baisc type
             if (var_type.is_obj_type()) {
-              OZ (package_state.set_package_var_val(var_idx, value, !need_deserialize));
+              OZ (package_state.set_package_var_val(var_idx, value, resolve_ctx, !need_deserialize));
             }
           }
           // record sync variable, avoid to sync tiwce!
           if (OB_NOT_NULL(resolve_ctx.session_info_.get_pl_sync_pkg_vars())) {
             OZ (resolve_ctx.session_info_.get_pl_sync_pkg_vars()->set_refactored(key));
           }
+        }
+      } else {
+        const sql::ObSqlExpression *default_expr = var->is_formal_param() ? NULL : get_default_expr(var->get_default());
+        if (OB_NOT_NULL(default_expr) &&
+            !IS_CONST_TYPE(default_expr->get_expr_items().at(0).get_item_type())) { // has default value, make user var to sync it
+          OZ (package_state.update_changed_vars(var_idx));
+          OX (resolve_ctx.session_info_.set_pl_can_retry(false));
         }
       }
     }

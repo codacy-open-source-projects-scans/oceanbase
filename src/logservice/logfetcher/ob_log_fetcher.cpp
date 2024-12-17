@@ -111,12 +111,14 @@ int ObLogFetcher::init(
     log_fetcher_user_ = log_fetcher_user;
     fetching_mode_ = fetching_mode;
     self_tenant_id_ = self_tenant_id;
+
     // Before the LogFetcher module is initialized, the following configuration items need to be loaded
     configure(cfg);
     const int64_t max_log_file_buffer_cnt = max(
       (get_tenant_memory_limit(self_tenant_id_) >> 5) / palf::PALF_PHY_BLOCK_SIZE, 1);
     const int64_t MIN_FETCH_LOG_ARPC_RES_CNT = 4;
     const common::ObRegion region(cfg.region.str());
+    const obrpc::ObCdcClientType client_type = get_client_type_from_user_type(log_fetcher_user_);
 
     if (is_integrated_fetching_mode(fetching_mode_) && OB_FAIL(log_route_service_.init(
         proxy,
@@ -155,7 +157,7 @@ int ObLogFetcher::init(
       LOG_ERROR("init part fetch mgr fail", KR(ret));
     } else if (OB_FAIL(init_self_addr_())) {
       LOG_ERROR("init_self_addr_ fail", KR(ret));
-    } else if (OB_FAIL(rpc_.init(cluster_id, self_tenant_id, cfg.io_thread_num, cfg))) {
+    } else if (OB_FAIL(rpc_.init(cluster_id, self_tenant_id, client_type, cfg.io_thread_num, cfg))) {
       LOG_ERROR("init rpc handler fail", KR(ret));
     } else if (is_cdc(log_fetcher_user_) && OB_FAIL(start_lsn_locator_.init(
             cfg.start_lsn_locator_thread_num,
@@ -914,11 +916,12 @@ void ObLogFetcher::print_fetcher_stat_()
   }
 
   if (OB_SUCC(ret)) {
+    ObCStringHelper helper;
     LOG_INFO("[STAT] [LOG_FETCHER]", "upper_limit", NTS_TO_STR(upper_limit_ns),
         "global_upper_limit", NTS_TO_STR(global_upper_limit),
         "dml_progress_limit_sec", dml_progress_limit / _SEC_,
         "fetcher_delay", TVAL_TO_STR(fetcher_delay),
-        "min_observer_version", OB_SUCCESS == tmp_ret ? to_cstring(cluster_version) : "INVALID");
+        "min_observer_version", OB_SUCCESS == tmp_ret ? helper.convert(cluster_version) : "INVALID");
   }
 }
 
@@ -990,14 +993,15 @@ int ObLogFetcher::print_delay()
       int64_t min_progress = hb_func.min_progress_;
       int64_t max_progress = hb_func.max_progress_;
 
+      ObCStringHelper helper;
       _LOG_INFO("[STAT] [LOG_FETCHER] DELAY=[%.3lf, %.3lf](sec) LS_COUNT=%ld "
           "MIN_DELAY=%s(%ld) MAX_DELAY=%s(%ld) DATA_PROGRESS=%s(%ld)",
           get_delay_sec(max_progress),
           get_delay_sec(min_progress),
           hb_func.ls_count_,
-          to_cstring(max_progress_tls_id),
+          helper.convert(max_progress_tls_id),
           max_progress,
-          to_cstring(min_progress_tls_id),
+          helper.convert(min_progress_tls_id),
           min_progress,
           NTS_TO_STR(data_progress),
           data_progress);

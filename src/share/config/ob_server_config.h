@@ -53,6 +53,7 @@ const char* const SSL_EXTERNAL_KMS_INFO = "ssl_external_kms_info";
 const char* const CLUSTER_ID = "cluster_id";
 const char* const CLUSTER_NAME = "cluster";
 const char* const FREEZE_TRIGGER_PERCENTAGE = "freeze_trigger_percentage";
+const char* const _NO_LOGGING = "_no_logging";
 const char* const WRITING_THROTTLEIUNG_TRIGGER_PERCENTAGE = "writing_throttling_trigger_percentage";
 const char* const DATA_DISK_WRITE_LIMIT_PERCENTAGE = "data_disk_write_limit_percentage";
 const char* const DATA_DISK_USAGE_LIMIT_PERCENTAGE = "data_disk_usage_limit_percentage";
@@ -70,6 +71,7 @@ const char* const LOG_DISK_UTILIZATION_LIMIT_THRESHOLD = "log_disk_utilization_l
 const char* const LOG_DISK_THROTTLING_PERCENTAGE = "log_disk_throttling_percentage";
 const char* const ARCHIVE_LAG_TARGET = "archive_lag_target";
 const char* const OB_VECTOR_MEMORY_LIMIT_PERCENTAGE = "ob_vector_memory_limit_percentage";
+const char* const _TRANSFER_TASK_TABLET_COUNT_THRESHOLD = "_transfer_task_tablet_count_threshold";
 
 class ObServerMemoryConfig;
 

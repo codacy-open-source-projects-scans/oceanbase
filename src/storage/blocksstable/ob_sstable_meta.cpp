@@ -67,7 +67,8 @@ ObSSTableBasicMeta::ObSSTableBasicMeta()
     table_backup_flag_(),
     table_shared_flag_(),
     root_macro_seq_(0),
-    tx_data_recycle_scn_(SCN::min_scn())
+    tx_data_recycle_scn_(SCN::min_scn()),
+    co_base_snapshot_version_(0)
 {
   MEMSET(encrypt_key_, 0, share::OB_MAX_TABLESPACE_ENCRYPT_KEY_LENGTH);
 }
@@ -123,7 +124,8 @@ bool ObSSTableBasicMeta::check_basic_meta_equality(const ObSSTableBasicMeta &oth
       && table_backup_flag_ == other.table_backup_flag_
       && table_shared_flag_ == other.table_shared_flag_
       && root_macro_seq_ == other.root_macro_seq_
-      && tx_data_recycle_scn_ == other.tx_data_recycle_scn_;
+      && tx_data_recycle_scn_ == other.tx_data_recycle_scn_
+      && co_base_snapshot_version_ == other.co_base_snapshot_version_;
 }
 
 bool ObSSTableBasicMeta::is_valid() const
@@ -154,7 +156,8 @@ bool ObSSTableBasicMeta::is_valid() const
            && table_backup_flag_.is_valid()
            && table_shared_flag_.is_valid()
            && root_macro_seq_ >= 0
-           && tx_data_recycle_scn_.is_valid();
+           && tx_data_recycle_scn_.is_valid()
+           && co_base_snapshot_version_ >= 0;
   return ret;
 }
 
@@ -198,6 +201,7 @@ void ObSSTableBasicMeta::reset()
   table_shared_flag_.reset();
   root_macro_seq_ = 0;
   tx_data_recycle_scn_.set_min();
+  co_base_snapshot_version_ = 0;
 }
 
 DEFINE_SERIALIZE(ObSSTableBasicMeta)
@@ -257,7 +261,8 @@ DEFINE_SERIALIZE(ObSSTableBasicMeta)
                   table_backup_flag_,
                   table_shared_flag_,
                   root_macro_seq_,
-                  tx_data_recycle_scn_);
+                  tx_data_recycle_scn_,
+                  co_base_snapshot_version_);
       if (OB_FAIL(ret)) {
       } else if (OB_UNLIKELY(length_ != pos - start_pos)) {
         ret = OB_ERR_UNEXPECTED;
@@ -341,7 +346,8 @@ int ObSSTableBasicMeta::decode_for_compat(const char *buf, const int64_t data_le
               table_backup_flag_,
               table_shared_flag_,
               root_macro_seq_,
-              tx_data_recycle_scn_);
+              tx_data_recycle_scn_,
+              co_base_snapshot_version_);
   return ret;
 }
 
@@ -386,7 +392,8 @@ DEFINE_GET_SERIALIZE_SIZE(ObSSTableBasicMeta)
               table_backup_flag_,
               table_shared_flag_,
               root_macro_seq_,
-              tx_data_recycle_scn_);
+              tx_data_recycle_scn_,
+              co_base_snapshot_version_);
   return len;
 }
 
@@ -665,6 +672,7 @@ int ObSSTableMeta::init_base_meta(
     basic_meta_.table_shared_flag_ = param.table_shared_flag_;
     basic_meta_.root_macro_seq_ = param.root_macro_seq_;
     basic_meta_.tx_data_recycle_scn_ = param.tx_data_recycle_scn_;
+    basic_meta_.co_base_snapshot_version_ = param.co_base_snapshot_version_;
     basic_meta_.length_ = basic_meta_.get_serialize_size();
     if (OB_FAIL(column_ckm_struct_.assign(allocator, param.column_checksums_))) {
       LOG_WARN("fail to prepare column checksum", K(ret), K(param));
@@ -868,7 +876,7 @@ int ObSSTableMeta::deserialize_(
   if (OB_FAIL(basic_meta_.deserialize(buf, data_len, pos))) {
     LOG_WARN("fail to deserialize basic meta", K(ret), KP(buf), K(data_len), K(pos));
   } else if (OB_FAIL(column_ckm_struct_.deserialize(allocator, buf, data_len, pos))) {
-    LOG_WARN("fail to deserialize column checksum", K(ret), K(column_ckm_struct_));
+    LOG_WARN("fail to deserialize column checksum", K(ret));
   } else {
     ObMicroBlockDesMeta des_meta(basic_meta_.compressor_type_,
                                  basic_meta_.root_row_store_type_,
@@ -1409,6 +1417,9 @@ int ObSSTableMetaChecker::check_sstable_basic_meta(
   } else if (new_sstable_basic_meta.table_shared_flag_ != old_sstable_basic_meta.table_shared_flag_) {
     ret = OB_INVALID_DATA;
     LOG_WARN("table_shared_flag_ not match", K(ret), K(old_sstable_basic_meta), K(new_sstable_basic_meta));
+  } else if (new_sstable_basic_meta.co_base_snapshot_version_ != old_sstable_basic_meta.co_base_snapshot_version_) {
+    ret = OB_INVALID_DATA;
+    LOG_WARN("co_base_snapshot_version_ not match", K(ret), K(old_sstable_basic_meta), K(new_sstable_basic_meta));
   }
   return ret;
 }
@@ -1467,7 +1478,7 @@ int ObSSTableMetaCompactUtil::fix_filled_tx_scn_value_for_compact(
     //do nothing
   } else if (table_key.is_major_sstable()) {
     //do nothing
-  } else if (filled_tx_scn.is_min()) {
+  } else if (filled_tx_scn.is_min() || filled_tx_scn.is_max()) {
     filled_tx_scn = table_key.get_end_scn();
     LOG_WARN("fix filled tx scn value for compact", K(table_key), K(filled_tx_scn));
   }

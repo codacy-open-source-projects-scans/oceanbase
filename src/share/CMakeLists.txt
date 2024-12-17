@@ -11,6 +11,7 @@ ob_set_subtarget(ob_share ALONE
   aggregate/sum.cpp
   aggregate/sys_bit.cpp
   aggregate/aggr_extra.cpp
+  aggregate/rb_build_agg.cpp
   datum/ob_datum_funcs.cpp
   ob_rpc_struct.cpp
   ob_tenant_mgr.cpp
@@ -51,6 +52,10 @@ ob_set_subtarget(ob_share ALONE
 file(GLOB SCHEMA_CPPS "inner_table/ob_inner_table_schema.*.cpp")
 ob_set_subtarget(ob_share SCHEMA_CPPS
   ${SCHEMA_CPPS}
+)
+
+ob_set_subtarget(ob_share aggregates
+  aggregate/grouping.cpp
 )
 
 ob_set_subtarget(ob_share allocator
@@ -234,6 +239,7 @@ ob_set_subtarget(ob_share common
   ob_domain_index_builder_util.cpp
   ob_service_name_proxy.cpp
   ob_compatibility_control.cpp
+  ob_device_credential_task.cpp
 )
 
 ob_set_subtarget(ob_share common_mixed
@@ -242,6 +248,7 @@ ob_set_subtarget(ob_share common_mixed
   client_feedback/ob_feedback_int_struct.cpp
   client_feedback/ob_feedback_partition_struct.cpp
   datum/ob_datum.cpp
+  datum/ob_datum_cmp_func_def.cpp
   diagnosis/ob_sql_monitor_statname.cpp
   diagnosis/ob_sql_plan_monitor_node_list.cpp
   interrupt/ob_global_interrupt_call.cpp
@@ -340,6 +347,8 @@ ob_set_subtarget(ob_share common_mixed
   longops_mgr/ob_longops_mgr.cpp
   ash/ob_active_sess_hist_list.cpp
   ash/ob_active_sess_hist_task.cpp
+  ash/ob_ash_refresh_task.cpp
+  ash/ob_di_util.cpp
   throttle/ob_share_throttle_define.cpp
   throttle/ob_throttle_common.cpp
   restore/ob_restore_data_mode.cpp
@@ -546,6 +555,7 @@ ob_set_subtarget(ob_share stat
   stat/ob_dbms_stats_gather.cpp
   stat/ob_opt_system_stat.cpp
   stat/ob_opt_system_stat_cache.cpp
+  stat/ob_min_max_estimator.cpp
 )
 
 ob_set_subtarget(ob_share external_table
@@ -558,6 +568,7 @@ ob_set_subtarget(ob_share external_table
 ob_set_subtarget(ob_share io
   io/ob_io_define.cpp
   io/io_schedule/ob_io_mclock.cpp
+  io/io_schedule/ob_io_schedule_v2.cpp
   io/ob_io_struct.cpp
   io/ob_io_calibration.cpp
   io/ob_io_manager.cpp

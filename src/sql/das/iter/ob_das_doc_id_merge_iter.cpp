@@ -169,9 +169,6 @@ int ObDASDocIdMergeIter::inner_reuse()
       LOG_WARN("fail to reuse rowkey doc iter", K(ret));
     }
   }
-  if (OB_SUCC(ret) && OB_NOT_NULL(merge_memctx_)) {
-    merge_memctx_->reset_remain_one_page();
-  }
   return ret;
 }
 
@@ -479,7 +476,7 @@ int ObDASDocIdMergeIter::sorted_merge_join_row()
         LOG_WARN("fail to get next rowkey doc row", K(ret));
       } else if (OB_FAIL(get_rowkey(allocator, rowkey_doc_ctdef_, rowkey_doc_rtdef_, rowkey_doc_rowkey))) {
         LOG_WARN("fail to get rowkey doc rowkey");
-      } else if (rowkey_doc_rowkey.equal(data_table_rowkey, is_found)) {
+      } else if (OB_FAIL(rowkey_doc_rowkey.equal(data_table_rowkey, is_found))) {
         LOG_WARN("fail to equal rowkey between data table and rowkey", K(ret));
       }
       LOG_TRACE("compare one row in rowkey doc", K(ret), "need_skip=", !is_found, K(data_table_rowkey),
@@ -541,7 +538,7 @@ int ObDASDocIdMergeIter::sorted_merge_join_rows(int64_t &count, int64_t capacity
           bool is_equal = false;
           LOG_TRACE("compare one row in rowkey doc", K(ret), K(i), K(j), K(rowkeys_in_data_table.at(i)),
               K(rowkeys_in_rowkey_doc.at(j)));
-          if (rowkeys_in_rowkey_doc.at(j).equal(rowkeys_in_data_table.at(i), is_equal)) {
+          if (OB_FAIL(rowkeys_in_rowkey_doc.at(j).equal(rowkeys_in_data_table.at(i), is_equal))) {
             LOG_WARN("fail to equal rowkey between data table and rowkey", K(ret));
           } else if (is_equal) {
             if (OB_FAIL(doc_ids.push_back(doc_ids_in_rowkey_doc.at(j)))) {
@@ -577,29 +574,39 @@ int ObDASDocIdMergeIter::get_rowkey(
     LOG_WARN("invalid arguments", K(ret), KP(ctdef), KP(rtdef));
   } else {
     const int64_t rowkey_cnt = ctdef->table_param_.get_read_info().get_schema_rowkey_count();
+    const int64_t output_cnt = ctdef->pd_expr_spec_.access_exprs_.count();
     void *buf = nullptr;
     if (OB_ISNULL(buf = allocator.alloc(sizeof(ObObj) * rowkey_cnt))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to allocate rowkey obj buffer", K(ret), K(rowkey_cnt));
     } else {
       ObObj *obj_ptr = new (buf) ObObj[rowkey_cnt];
-      for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_cnt; ++i) {
-        ObExpr *expr = ctdef->result_output_.at(i);
+      int64_t j = 0;
+      for (int64_t i = 0; OB_SUCC(ret) && j < rowkey_cnt && i < output_cnt; ++i) {
+        ObExpr *expr = ctdef->pd_expr_spec_.access_exprs_.at(i);
         if (OB_ISNULL(expr)) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected error, expr is nullptr", K(ret), K(i), KPC(ctdef));
-        } else if (T_PSEUDO_GROUP_ID == expr->type_) {
+          LOG_WARN("unexpected error, expr is nullptr", K(ret), K(i), K(j), KPC(ctdef));
+        } else if (T_PSEUDO_GROUP_ID == expr->type_ || T_PSEUDO_ROW_TRANS_INFO_COLUMN == expr->type_) {
           // nothing to do.
+          LOG_TRACE("skip expr", K(i), K(j), KPC(expr));
         } else {
           ObDatum &datum = expr->locate_expr_datum(*rtdef->eval_ctx_);
-          if (OB_FAIL(datum.to_obj(obj_ptr[i], expr->obj_meta_, expr->obj_datum_map_))) {
+          if (OB_FAIL(datum.to_obj(obj_ptr[j], expr->obj_meta_, expr->obj_datum_map_))) {
             LOG_WARN("fail to convert datum to obj", K(ret));
+          } else {
+            ++j;
           }
         }
       }
-      if (OB_SUCC(ret)) {
+      if (OB_FAIL(ret)) {
+      } else if (OB_UNLIKELY(j < rowkey_cnt)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected error, outputs is less than rowkey count", K(ret), K(output_cnt), K(j),
+            K(rowkey_cnt), KPC(ctdef));
+      } else {
         rowkey.assign(obj_ptr, rowkey_cnt);
-        LOG_TRACE("get one rowkey", K(rowkey));
+        LOG_TRACE("get one rowkey", K(rowkey), K(output_cnt), K(j), K(rowkey_cnt));
       }
     }
   }

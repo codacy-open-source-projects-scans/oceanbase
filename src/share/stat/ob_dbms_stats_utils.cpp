@@ -1106,16 +1106,20 @@ int ObDbmsStatsUtils::prepare_gather_stat_param(const ObTableStatParam &param,
   gather_param.gather_vectorize_ = gather_vectorize;
   gather_param.use_column_store_ = use_column_store;
   gather_param.is_async_gather_ = param.is_async_gather_;
-  gather_param.async_gather_sample_size_ = param.async_gather_sample_size_;
   gather_param.async_full_table_size_ = param.async_full_table_size_;
   gather_param.hist_sample_info_.is_sample_ = param.hist_sample_info_.is_sample_;
   gather_param.hist_sample_info_.is_block_sample_ = param.hist_sample_info_.is_block_sample_;
   gather_param.hist_sample_info_.sample_type_ = param.hist_sample_info_.sample_type_;
   gather_param.hist_sample_info_.sample_value_ = param.hist_sample_info_.sample_value_;
+  gather_param.is_auto_sample_size_ = param.is_auto_sample_size_;
+  gather_param.auto_sample_row_cnt_ = param.auto_sample_row_cnt_;
+  gather_param.need_refine_min_max_ = param.need_refine_min_max_;
   gather_param.is_global_index_ = param.is_global_index_;
   gather_param.data_table_id_ = param.data_table_id_;
   gather_param.part_level_ = param.part_level_;
-  return gather_param.column_group_params_.assign(param.column_group_params_);
+  gather_param.consumer_group_id_ = param.consumer_group_id_;
+  ret = gather_param.column_group_params_.assign(param.column_group_params_);
+  return ret;
 }
 
 int ObDbmsStatsUtils::get_current_opt_stats(ObIAllocator &allocator,
@@ -1651,8 +1655,6 @@ int ObDbmsStatsUtils::get_prefix_index_text_pairs(share::schema::ObSchemaGetterG
   if (OB_ISNULL(schema_guard)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (OB_FAIL(ObOptimizerUtil::remove_item(func_idxs, ignore_cols))) {
-    LOG_WARN("failed to remove item", K(ret));
   } else if (func_idxs.empty()) {
     // do nothing
   } else if (OB_FAIL(schema_guard->get_table_schema(tenant_id,
@@ -1663,6 +1665,7 @@ int ObDbmsStatsUtils::get_prefix_index_text_pairs(share::schema::ObSchemaGetterG
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
   } else if (OB_FAIL(get_all_prefix_index_text_pairs(*table_schema,
+                                                     ignore_cols,
                                                      all_text_pairs))) {
     LOG_WARN("failed to get all prefix index text pairs", K(ret));
   } else if (all_text_pairs.empty()) {
@@ -1739,6 +1742,7 @@ int ObDbmsStatsUtils::fetch_need_cancel_async_gather_stats_task(ObIAllocator &al
   return ret;
 }
 int ObDbmsStatsUtils::get_all_prefix_index_text_pairs(const share::schema::ObTableSchema &table_schema,
+                                                      ObIArray<uint64_t> &filter_cols,
                                                       ObIArray<PrefixColumnPair> &pairs)
 {
   int ret = OB_SUCCESS;
@@ -1760,6 +1764,8 @@ int ObDbmsStatsUtils::get_all_prefix_index_text_pairs(const share::schema::ObTab
       if (OB_FAIL(col->get_cascaded_column_ids(ref_column_ids))) {
         LOG_WARN("failed to get cascaded column ids", K(ret));
       } else if (ref_column_ids.count() != 1) {
+        // do nothing
+      } else if (ObOptimizerUtil::find_item(filter_cols, ref_column_ids.at(0))) {
         // do nothing
       } else if (OB_ISNULL(ref_col = table_schema.get_column_schema(ref_column_ids.at(0)))) {
         ret = OB_ERR_UNEXPECTED;

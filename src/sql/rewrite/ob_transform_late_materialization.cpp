@@ -371,6 +371,8 @@ int ObTransformLateMaterialization::get_accessible_index(const ObSelectStmt &sel
     } else if (FALSE_IT(index_hint = static_cast<ObIndexHint *>(opt_hints.at(i)))) {
       /* do nothing */
     } else if (T_INDEX_HINT == index_hint->get_hint_type() ||
+               T_INDEX_ASC_HINT == index_hint->get_hint_type() ||
+               T_INDEX_DESC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_ASC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_DESC_HINT == index_hint->get_hint_type()) {
@@ -598,9 +600,9 @@ int ObTransformLateMaterialization::inner_accept_transform(ObIArray<ObParentDMLS
                          (check_ctx.base_index_ != common::OB_INVALID_ID &&
                           ObOptimizerUtil::find_item(check_ctx.late_material_indexs_, check_ctx.base_index_));
       }
-      if (OB_SUCC(ret) && !trans_happened &&
-          OB_FAIL(try_trans_helper.recover(stmt->get_query_ctx()))) {
-        LOG_WARN("failed to recover params", K(ret));
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(try_trans_helper.finish(trans_happened, stmt->get_query_ctx(), ctx_))) {
+        LOG_WARN("failed to finish try trans helper", K(ret));
       }
     }
     ctx_->in_accept_transform_ = false;
@@ -962,6 +964,8 @@ int ObTransformLateMaterialization::generate_late_materialization_hint(
         } else if (hint->is_access_path_hint()) {
           ObIndexHint *index_hint = static_cast<ObIndexHint *>(hint);
           if ((T_INDEX_HINT == index_hint->get_hint_type() ||
+               T_INDEX_ASC_HINT == index_hint->get_hint_type() ||
+               T_INDEX_DESC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_ASC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_DESC_HINT == index_hint->get_hint_type() ||
@@ -982,6 +986,8 @@ int ObTransformLateMaterialization::generate_late_materialization_hint(
         } else if (hint->is_access_path_hint()) {
           ObIndexHint *index_hint = static_cast<ObIndexHint *>(hint);
           if ((T_INDEX_HINT == index_hint->get_hint_type() ||
+               T_INDEX_ASC_HINT == index_hint->get_hint_type() ||
+               T_INDEX_DESC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_ASC_HINT == index_hint->get_hint_type() ||
                T_INDEX_SS_DESC_HINT == index_hint->get_hint_type() ||
@@ -1146,8 +1152,6 @@ int ObTransformLateMaterialization::check_transform_plan_expected(ObLogicalOpera
         if (OB_ISNULL(join_left_branch = join_op->get_child(ObLogicalOperator::first_child))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected null", K(ret), KP(join_left_branch));
-        } else if (static_cast<ObLogTableScan *>(full_table_scan)->use_column_store()) {
-          is_expected = false;
         } else {
           is_expected = true;
         }

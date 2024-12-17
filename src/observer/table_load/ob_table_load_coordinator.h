@@ -49,6 +49,7 @@ public:
   static bool is_ctx_inited(ObTableLoadTableCtx *ctx);
   static int init_ctx(ObTableLoadTableCtx *ctx,
                       const common::ObIArray<uint64_t> &column_ids,
+                      const common::ObIArray<ObTabletID> &tablet_ids,
                       ObTableLoadExecCtx *exec_ctx);
   static void abort_ctx(ObTableLoadTableCtx *ctx);
   int init();
@@ -65,6 +66,7 @@ public:
   int get_status(table::ObTableLoadStatusType &status, int &error_code);
   int heart_beat();
 private:
+  int check_need_sort_for_lob_or_index(bool &need_sort) const;
   int gen_apply_arg(ObDirectLoadResourceApplyArg &apply_arg);
   int pre_begin_peers(ObDirectLoadResourceApplyArg &apply_arg);
   int confirm_begin_peers();
@@ -75,6 +77,10 @@ private:
   int write_sql_stat(table::ObTableLoadSqlStatistics &sql_statistics,
                      table::ObTableLoadDmlStat &dml_stats);
   int heart_beat_peer();
+private:
+  int init_empty_tablets();
+  class InitEmptyTabletTaskProcessor;
+  class InitEmptyTabletTaskCallback;
 private:
   int add_check_begin_result_task();
   int check_peers_begin_result(bool &is_finish);

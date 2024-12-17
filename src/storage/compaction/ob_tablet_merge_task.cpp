@@ -858,7 +858,6 @@ int ObTabletMergeDag::prepare_merge_ctx(bool &finish_flag)
 int ObTabletMergePrepareTask::process()
 {
   int ret = OB_SUCCESS;
-  ObTenantStatEstGuard stat_est_guard(MTL_ID());
   ObBasicTabletMergeCtx *ctx = NULL;
   ObTaskController::get().switch_task(share::ObTaskType::DATA_MAINTAIN);
   bool finish_flag = false;
@@ -1126,7 +1125,6 @@ int ObTabletMergeTask::generate_next_task(ObITask *&next_task)
 int ObTabletMergeTask::process()
 {
   int ret = OB_SUCCESS;
-  ObTenantStatEstGuard stat_est_guard(MTL_ID());
   ObTaskController::get().switch_task(share::ObTaskType::DATA_MAINTAIN);
 
 #ifdef ERRSIM
@@ -1140,7 +1138,7 @@ int ObTabletMergeTask::process()
   }
   ret = SPECIFIED_SERVER_STOP_COMPACTION;
   if (OB_FAIL(ret)) {
-    if (-ret == GCTX.server_id_) {
+    if (-ret == GCTX.get_server_id()) {
       STORAGE_LOG(INFO, "ERRSIM SPECIFIED_SERVER_STOP_COMPACTION", K(ret));
       return OB_EAGAIN;
     } else {

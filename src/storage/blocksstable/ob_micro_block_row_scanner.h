@@ -95,7 +95,7 @@ public:
       uint32_t *len_array,
       const bool init_vector_header = true);
   int get_aggregate_result(
-      const int32_t col_idx,
+      const int32_t col_offset,
       const int32_t *row_ids,
       const int64_t row_cap,
       const bool reserve_memory,
@@ -156,7 +156,6 @@ public:
   VIRTUAL_TO_STRING_KV(K_(can_ignore_multi_version));
 protected:
   virtual int inner_get_next_row(const ObDatumRow *&row);
-  int inner_get_row_header(const ObRowHeader *&row_header);
   int set_reader(const ObRowStoreType store_type);
   int set_base_scan_param(const bool is_left_bound_block,
                           const bool is_right_bound_block);

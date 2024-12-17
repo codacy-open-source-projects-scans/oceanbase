@@ -19,6 +19,7 @@
 #include "lib/allocator/ob_tc_malloc.h"
 #include "lib/utility/ob_print_utils.h"
 #include "lib/utility/ob_tracepoint.h"
+#include "lib/utility/ob_sort.h"
 #include "lib/alloc/memory_dump.h"
 #include "lib/alloc/memory_sanity.h"
 #include "lib/alloc/ob_malloc_callback.h"
@@ -35,9 +36,9 @@ void *ObTenantCtxAllocator::alloc(const int64_t size, const ObMemAttr &attr)
   abort_unless(attr.ctx_id_ == ctx_id_);
   void *ptr = NULL;
   if (OB_LIKELY(ObSubCtxIds::MAX_SUB_CTX_ID == attr.sub_ctx_id_)) {
-    ptr = common_realloc(NULL, size, attr, *this, obj_mgr_);
+    ptr = inner_common_realloc(NULL, size, attr, *this, obj_mgr_);
   } else if (OB_UNLIKELY(attr.sub_ctx_id_ < ObSubCtxIds::MAX_SUB_CTX_ID)) {
-    ptr = common_realloc(NULL, size, attr, *this, obj_mgrs_[attr.sub_ctx_id_]);
+    ptr = inner_common_realloc(NULL, size, attr, *this, obj_mgrs_[attr.sub_ctx_id_]);
   } else {
     LIB_LOG_RET(WARN, OB_ERR_UNEXPECTED, "allocate memory with unexpected sub_ctx_id");
   }
@@ -53,7 +54,7 @@ int64_t ObTenantCtxAllocator::get_obj_hold(void *ptr)
 
 void* ObTenantCtxAllocator::realloc(const void *ptr, const int64_t size, const ObMemAttr &attr)
 {
-  void *nptr = common_realloc(ptr, size, attr, *this, obj_mgr_);
+  void *nptr = inner_common_realloc(ptr, size, attr, *this, obj_mgr_);
   return nptr;
 }
 
@@ -84,12 +85,20 @@ int ObTenantCtxAllocator::iter_label(VisitFunc func) const
       int tcr_cnt = mem_dump.r_stat_->tcr_cnt_;
       auto it = std::lower_bound(tcrs, tcrs + tcr_cnt, std::make_pair(tenant_id_, ctx_id_),
                                   &ObMemoryDump::TenantCtxRange::compare);
-      items[item_cnt].label_ = ObNewModIds::OB_KVSTORE_CACHE_MB;
-      int len = strlen(ObNewModIds::OB_KVSTORE_CACHE_MB);
-      MEMCPY(mb_item.str_, ObNewModIds::OB_KVSTORE_CACHE_MB, len);
-      mb_item.str_[len] = '\0';
-      mb_item.str_len_ = len;
-      items[item_cnt++].item_ = &mb_item;
+      if (ObCtxIds::KVSTORE_CACHE_ID == ctx_id_) {
+        items[item_cnt].label_ = ObNewModIds::OB_KVSTORE_CACHE_MB;
+        int len = strlen(ObNewModIds::OB_KVSTORE_CACHE_MB);
+        MEMCPY(mb_item.str_, ObNewModIds::OB_KVSTORE_CACHE_MB, len);
+        mb_item.str_[len] = '\0';
+        mb_item.str_len_ = len;
+
+        IGNORE_RETURN with_resource_handle_invoke([&](const ObTenantMemoryMgr *mgr) {
+          mb_item.hold_ += mgr->get_cache_hold();
+          mb_item.count_ += mgr->get_cache_item_count();
+          return OB_SUCCESS;
+        });
+        items[item_cnt++].item_ = &mb_item;
+      }
       if (it != tcrs + tcr_cnt &&
           it->tenant_id_ == tenant_id_ &&
           it->ctx_id_ == ctx_id_) {
@@ -108,15 +117,7 @@ int ObTenantCtxAllocator::iter_label(VisitFunc func) const
             {
               return (l.item_->hold_  > r.item_->hold_);
             });
-        ObLabel label(ObNewModIds::OB_KVSTORE_CACHE_MB);
         for (int64_t i = 0; OB_SUCC(ret) && i < item_cnt; ++i) {
-          if (ObCtxIds::KVSTORE_CACHE_ID == ctx_id_ && label == items[i].label_) {
-            IGNORE_RETURN with_resource_handle_invoke([&](const ObTenantMemoryMgr *mgr) {
-              items[i].item_->hold_ += mgr->get_cache_hold();
-              items[i].item_->count_ += mgr->get_cache_item_count();
-              return OB_SUCCESS;
-            });
-          }
           ret = func(items[i].label_, items[i].item_);
         }
       }
@@ -423,8 +424,10 @@ void ObTenantCtxAllocator::on_alloc(AObject& obj, const ObMemAttr& attr)
     obj.version_ = ObMemVersionNode::tl_node->version_;
   }
   get_mem_leak_checker().on_alloc(obj, attr);
-  SANITY_POISON(&obj, obj.nobjs_ * AOBJECT_CELL_BYTES);
+  SANITY_POISON(&obj, AOBJECT_HEADER_SIZE);
   SANITY_UNPOISON(obj.data_, obj.alloc_bytes_);
+  SANITY_POISON(obj.data_ + obj.alloc_bytes_,
+                AOBJECT_TAIL_SIZE + (obj.on_malloc_sample_ ? AOBJECT_BACKTRACE_SIZE : 0));
   if (OB_NOT_NULL(malloc_callback)) {
     const int64_t size = obj.alloc_bytes_;
     (*malloc_callback)(attr, size);
@@ -466,17 +469,19 @@ void ObTenantCtxAllocator::on_free(AObject &obj)
 }
 
 template <typename T>
-void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
+void* ObTenantCtxAllocator::inner_common_realloc(const void *ptr, const int64_t size,
                                            const ObMemAttr &attr, ObTenantCtxAllocator& ta,
                                            T &allocator)
 {
+  ObDisableDiagnoseGuard disable_diagnose_guard;
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
   void *nptr = NULL;
   if (!attr.label_.is_valid()) {
     LIB_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "OB_MOD_DO_NOT_USE_ME REALLOC", K(size));
   }
 
-  AObject *obj = NULL;
+  AObject *obj = NULL; // original object
+  AObject *nobj = NULL; // newly allocated object
   bool sample_allowed = false;
   bool is_errsim = false;
   if (NULL != ptr) {
@@ -487,7 +492,7 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
   const ObErrsimModuleType type = THIS_WORKER.get_module_type();
   if (is_errsim_module(ta.get_tenant_id(), type.type_)) {
     //errsim alloc memory failed.
-    obj = nullptr;
+    nobj = nullptr;
     is_errsim = true;
   }
 #endif
@@ -499,17 +504,13 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
   if (OB_UNLIKELY(OB_FAIL(ret) || is_errsim)) {
     AllocFailedCtx &afc = g_alloc_failed_ctx();
     afc.reason_ = AllocFailedReason::ERRSIM_INJECTION;
-    if (OB_NOT_NULL(obj)) {
-      allocator.free_object(obj);
-      obj = NULL;
-    }
   } else {
     BASIC_TIME_GUARD(time_guard, "ObMalloc");
     DEFER(ObMallocTimeMonitor::get_instance().record_malloc_time(time_guard, size, inner_attr));
     sample_allowed = ObMallocSampleLimiter::malloc_sample_allowed(size, inner_attr);
     inner_attr.alloc_extra_info_ = sample_allowed;
-    obj = allocator.realloc_object(obj, size, inner_attr);
-    if(OB_ISNULL(obj)) {
+    nobj = allocator.realloc_object(obj, size, inner_attr);
+    if(OB_ISNULL(nobj)) {
       int64_t total_size = 0;
       if (g_alloc_failed_ctx().need_wash_block()) {
         total_size += ta.sync_wash();
@@ -519,14 +520,18 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
         BASIC_TIME_GUARD_CLICK("WASH_CHUNK_END");
       }
       if (total_size > 0) {
-        obj = allocator.realloc_object(obj, size, inner_attr);
+        nobj = allocator.realloc_object(obj, size, inner_attr);
       }
     }
   }
 
-  if (obj != NULL) {
-    on_alloc(*obj, inner_attr);
-    nptr = obj->data_;
+  if (OB_UNLIKELY(NULL == nobj && NULL != obj)) {
+    SANITY_UNPOISON(obj->data_, obj->alloc_bytes_);
+  }
+
+  if (OB_NOT_NULL(nobj)) {
+    on_alloc(*nobj, inner_attr);
+    nptr = nobj->data_;
   } else if (TC_REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
 #ifdef FATAL_ERROR_HANG
     if (REACH_TIME_INTERVAL(60 * 1000 * 1000)) {
@@ -549,6 +554,7 @@ void* ObTenantCtxAllocator::common_realloc(const void *ptr, const int64_t size,
 
 void ObTenantCtxAllocator::common_free(void *ptr)
 {
+  ObDisableDiagnoseGuard disable_diagnose_guard;
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
   if (NULL != ptr) {
     AObject *obj = reinterpret_cast<AObject*>((char*)ptr - AOBJECT_HEADER_SIZE);

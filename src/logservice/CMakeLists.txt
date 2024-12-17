@@ -156,6 +156,7 @@ ob_set_subtarget(ob_logservice palf
   palf/log_io_worker_wrapper.cpp
   palf/log_throttle.cpp
   palf/log_io_context.cpp
+  palf/log_io_adapter.cpp
 )
 
 ob_set_subtarget(ob_logservice palf_election
@@ -243,5 +244,15 @@ ob_set_subtarget(ob_logservice common_util
 )
 
 ob_server_add_target(ob_logservice)
-add_subdirectory(libobcdc)
-add_subdirectory(logminer)
+
+if (BUILD_CDC_ONLY)
+  add_subdirectory(logminer EXCLUDE_FROM_ALL)
+else()
+  add_subdirectory(logminer)
+endif()
+
+if (CMAKE_BUILD_RPM AND NOT BUILD_CDC_ONLY)
+  add_subdirectory(libobcdc EXCLUDE_FROM_ALL)
+else()
+  add_subdirectory(libobcdc)
+endif()

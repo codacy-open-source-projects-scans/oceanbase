@@ -36,7 +36,7 @@
 #include "storage/tablet/ob_tablet_space_usage.h"
 #include "storage/tx/ob_trans_define.h"
 #include "share/scn.h"
-#include "ob_i_tablet_mds_interface.h"
+#include "ob_i_tablet_mds_customized_interface.h"
 #include <type_traits>
 
 namespace oceanbase
@@ -134,7 +134,7 @@ public:
   common::ObRowStoreType last_major_latest_row_store_type_;
 };
 
-class ObTablet final : public ObITabletMdsInterface
+class ObTablet final : public ObITabletMdsCustomizedInterface
 {
   friend class ObLSTabletService;
   friend class ObTabletPointer;
@@ -179,11 +179,12 @@ public:
   inline common::ObTabletID get_data_tablet_id() const { return tablet_meta_.data_tablet_id_; }
   inline int64_t get_last_compaction_scn() const { return tablet_meta_.extra_medium_info_.last_medium_scn_; }
   inline bool is_row_store() const { return table_store_cache_.is_row_store_; }
-  int get_mds_table_rec_scn(share::SCN &rec_scn);
+  int get_mds_table_rec_scn(share::SCN &rec_scn) const;
   int mds_table_flush(const share::SCN &decided_scn);
   int scan_mds_table_with_op(
       const int64_t mds_construct_sequence,
       ObMdsMiniMergeOperator &op) const;
+  int get_valid_last_major_column_count(int64_t &last_major_column_cnt) const;
 
 public:
   // first time create tablet
@@ -197,6 +198,9 @@ public:
       const ObCreateTabletSchema &storage_schema,
       const bool need_create_empty_major_sstable,
       const share::SCN &clog_checkpoint_scn,
+      const share::SCN &mds_checkpoint_scn,
+      const bool is_split_dest_tablet,
+      const ObTabletID &split_src_tablet_id,
       const bool micro_index_clustered,
       const bool need_generate_cs_replica_cg_array,
       const bool has_cs_replica,
@@ -499,6 +503,7 @@ private:
       const ObDirectLoadType direct_load_type,
       ObITable::TableKey &table_key,
       bool &replay_normal_in_cs_replica);
+  int check_table_store_without_backup_table_(const ObSSTableArray &sstable_array);
 public:
   // other
   const ObMetaDiskAddr &get_tablet_addr() const { return tablet_addr_; }
@@ -546,7 +551,6 @@ public:
   int get_kept_snapshot_info(
       const int64_t min_reserved_snapshot_on_ls,
       ObStorageSnapshotInfo &snapshot_info) const;
-  int get_end_autoinc_seq(uint64_t &end_autoinc_seq);
   int check_schema_version_elapsed(
       const int64_t schema_version,
       const bool need_wait_trans_end,
@@ -567,9 +571,9 @@ public:
   int get_mds_table_for_dump(mds::MdsTableHandle &mds_table) const;
   int64_t get_memtable_count() const { return memtable_count_; }
 
-  int check_new_mds_with_cache(const int64_t snapshot_version, const int64_t timeout);
+  int check_new_mds_with_cache(const int64_t snapshot_version);
   int check_tablet_status_for_read_all_committed();
-  int check_schema_version_with_cache(const int64_t schema_version, const int64_t timeout);
+  int check_schema_version_with_cache(const int64_t schema_version);
   int check_snapshot_readable_with_cache(
       const int64_t snapshot_version,
       const int64_t schema_version,
@@ -782,7 +786,8 @@ private:
       bool &succ_get_split_src_tables);
   int get_split_dst_read_table(
       const int64_t snapshot_version,
-      ObTabletTableIterator &iter);
+      ObTabletTableIterator &iter,
+      bool &succ_get_split_dst_tables);
 
   int allow_to_read_();
 
@@ -801,6 +806,10 @@ private:
   int read_medium_array(
       common::ObArenaAllocator &allocator,
       common::ObIArray<compaction::ObMediumCompactionInfo*> &medium_info_array) const;
+  int pre_check_empty_shell(const ObTablet &old_tablet, ObTabletCreateDeleteMdsUserData &user_data);
+  int build_user_data_for_aborted_tx_tablet(
+    const share::SCN &flush_scn,
+    ObTabletCreateDeleteMdsUserData &user_data);
   int set_initial_state(const bool initial_state);
   int set_macro_info_addr(
       const blocksstable::MacroBlockId &macro_id,
@@ -875,6 +884,10 @@ private:
   int wait_release_memtables_();
   int mark_mds_table_switched_to_empty_shell_();
   int handle_transfer_replace_(const ObBatchUpdateTableStoreParam &param);
+
+  // DDL.
+  int update_restore_status_for_split_(const ObBatchUpdateTableStoreParam &param);
+
   // NOTICE:
   // - Because the `calc_tablet_attr()` may has I/O operations, you can bypass it if wantn't to update it.
   int get_updating_tablet_pointer_param(
@@ -1029,15 +1042,21 @@ inline void ObTablet::update_wash_score(const int64_t score)
 inline void ObTablet::inc_ref()
 {
   const int64_t cnt = ATOMIC_AAF(&ref_cnt_, 1);
-  const common::ObTabletID &tablet_id = tablet_meta_.tablet_id_;
+#ifdef DEBUG
+  const common::ObTabletID tablet_id = tablet_meta_.tablet_id_;
   STORAGE_LOG(DEBUG, "tablet inc ref", KP(this), K(tablet_id), "ref_cnt", cnt, K(lbt()));
+#endif
 }
 
 inline int64_t ObTablet::dec_ref()
 {
+#ifdef DEBUG
+  const common::ObTabletID tablet_id = tablet_meta_.tablet_id_;
+#endif
   const int64_t cnt = ATOMIC_SAF(&ref_cnt_, 1/* just sub 1 */);
-  const common::ObTabletID &tablet_id = tablet_meta_.tablet_id_;
+#ifdef DEBUG
   STORAGE_LOG(DEBUG, "tablet dec ref", KP(this), K(tablet_id), "ref_cnt", cnt, K(lbt()));
+#endif
 
   return cnt;
 }

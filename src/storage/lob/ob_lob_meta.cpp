@@ -650,6 +650,8 @@ int ObLobMetaWriteIter::open(ObLobAccessParam &param,
   remain_buf_ = remain_buf;
   is_store_char_len_ = param.is_store_char_len_;
   allocator_ = param.get_tmp_allocator();
+  seq_id_.set_allocator(allocator_);
+  seq_id_end_.set_allocator(allocator_);
 
   if (OB_FAIL(get_last_meta_info(param, meta_manager))) {
     LOG_WARN("get_last_meta_info fail", K(ret), K(param));
@@ -691,11 +693,16 @@ int ObLobMetaWriteIter::open(ObLobAccessParam &param,
     remain_buf_ = remain_buf;
     iter_ = iter;
     is_store_char_len_ = param.is_store_char_len_;
-    data_.assign_buffer(read_buf.ptr(), piece_block_size_);
+    data_.assign_buffer(read_buf.ptr(), OB_MIN(read_buf.size(), piece_block_size_));
     allocator_ = param.get_tmp_allocator();
+    seq_id_.set_allocator(allocator_);
+    seq_id_end_.set_allocator(allocator_);
 
     char *buf = nullptr;
-    if (OB_FAIL(get_last_meta_info(param, meta_manager))) {
+    if (read_buf.size() < 0) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("read buffer is not enough", K(ret), K(piece_block_size_), K(read_buf.length()), K(read_buf.size()));
+    } else if (OB_FAIL(get_last_meta_info(param, meta_manager))) {
       LOG_WARN("get_last_meta_info fail", K(ret), K(param));
     } else if (OB_ISNULL(buf = reinterpret_cast<char*>(allocator_->alloc(piece_block_size_)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1107,7 +1114,8 @@ int ObInRowLobDataSpliter::get_next_row(ObLobMetaInfo &info)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("byte_pos is larger than data length", K(ret), K(byte_pos_), "data_length", inrow_data_.length());
   } else {
-    byte_len = ObCharset::max_bytes_charpos(cs_type_, inrow_data_.ptr() + byte_pos_, inrow_data_.length() - byte_pos_, chunk_size_, char_len);
+    int64_t max_bytes = OB_MIN(inrow_data_.length() - byte_pos_, chunk_size_);
+    byte_len = ObCharset::max_bytes_charpos(cs_type_, inrow_data_.ptr() + byte_pos_, inrow_data_.length() - byte_pos_, max_bytes, char_len);
     if (byte_len <= 0 || char_len <= 0) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("no data can be return when has remain data", K(ret), K(byte_pos_), "data_length", inrow_data_.length());

@@ -304,6 +304,12 @@ const ObCollationWrapper ObCharset::collation_wrap_arr_[ObCharset::VALID_COLLATI
   {CS_TYPE_GB18030_CHINESE_CI, CHARSET_GB18030, CS_TYPE_GB18030_CHINESE_CI, true, true, 2},
   {CS_TYPE_GB18030_BIN, CHARSET_GB18030, CS_TYPE_GB18030_BIN, false, true, 1},
   {CS_TYPE_LATIN1_SWEDISH_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_SWEDISH_CI,true, true, 1},
+  {CS_TYPE_LATIN1_GERMAN1_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_GERMAN1_CI, false, true, 1},
+  {CS_TYPE_LATIN1_DANISH_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_DANISH_CI, false, true, 1},
+  {CS_TYPE_LATIN1_GERMAN2_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_GERMAN2_CI, false, true, 1},
+  {CS_TYPE_LATIN1_GENERAL_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_GENERAL_CI, false, true, 1},
+  {CS_TYPE_LATIN1_GENERAL_CS, CHARSET_LATIN1, CS_TYPE_LATIN1_GENERAL_CS, false, true, 1},
+  {CS_TYPE_LATIN1_SPANISH_CI, CHARSET_LATIN1, CS_TYPE_LATIN1_SPANISH_CI, false, true, 1},
   {CS_TYPE_LATIN1_BIN, CHARSET_LATIN1, CS_TYPE_LATIN1_BIN,false, true, 1},
   {CS_TYPE_GB18030_2022_BIN, CHARSET_GB18030_2022, CS_TYPE_GB18030_2022_BIN, false, true, 1},
   {CS_TYPE_GB18030_2022_PINYIN_CI, CHARSET_GB18030_2022, CS_TYPE_GB18030_2022_PINYIN_CI, true, true, 1},
@@ -446,19 +452,22 @@ const ObCollationWrapper ObCharset::collation_wrap_arr_[ObCharset::VALID_COLLATI
 ObCharsetType ObCharset::collation_charset_map[CS_TYPE_MAX] = {CHARSET_INVALID};
 
 ObCharsetInfo *ObCharset::charset_arr[CS_TYPE_MAX] = {
-  NULL, &ob_charset_big5_chinese_ci, NULL, NULL, NULL, NULL, NULL, NULL,    // 0 ~ 7
+  NULL, &ob_charset_big5_chinese_ci, NULL, NULL, NULL, &ob_charset_latin1_german1_ci, NULL, NULL,    // 0 ~ 7
   &ob_charset_latin1, NULL, NULL, NULL, NULL,                     // 8
-  &ob_charset_sjis_japanese_ci, NULL, NULL,                       // 13
+  &ob_charset_sjis_japanese_ci, NULL,                             // 13
+  &ob_charset_latin1_danish_ci,                                   // 15
   NULL, NULL,                                                     // 16
   &ob_charset_tis620_thai_ci, NULL, NULL, NULL, NULL, NULL,       // 18
   NULL, NULL, NULL, NULL, &ob_charset_gbk_chinese_ci,             // 24
-                                NULL, NULL, NULL,                 // 29
+                                NULL, NULL,                       // 29
+  &ob_charset_latin1_german2_ci,                                  // 31
   NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,                 // 32
   NULL, NULL, NULL, NULL, NULL,                                   // 40
                                 &ob_charset_utf8mb4_general_ci,   // 45
                                       &ob_charset_utf8mb4_bin,    // 46
                                       &ob_charset_latin1_bin,     // 47
-  NULL, NULL, NULL, NULL, NULL, NULL,                             // 48
+  &ob_charset_latin1_general_ci, &ob_charset_latin1_general_cs,   // 48
+  NULL, NULL, NULL, NULL,                                         // 50
                                      &ob_charset_utf16_general_ci,// 54
                                      &ob_charset_utf16_bin,       // 55
   &ob_charset_utf16le_general_ci,                                 // 56
@@ -470,7 +479,8 @@ ObCharsetInfo *ObCharset::charset_arr[CS_TYPE_MAX] = {
   NULL, NULL, NULL, NULL, &ob_charset_big5_bin, NULL, NULL,       // 80
                                            &ob_charset_gbk_bin,   // 87
   &ob_charset_sjis_bin,                                           // 88
-  &ob_charset_tis620_bin, NULL, NULL, NULL, NULL, NULL, NULL,     // 89
+  &ob_charset_tis620_bin, NULL, NULL, NULL, NULL,                 // 89
+  &ob_charset_latin1_spanish_ci, NULL,                            // 94
   NULL, NULL, NULL, NULL, NULL,                                   // 96
                                 &ob_charset_utf16_unicode_ci,     // 101
                                       NULL, NULL,                 // 102
@@ -3265,7 +3275,10 @@ inline bool ObCharset::is_argument_valid(const ObCharsetInfo *cs, const char *st
       OB_ISNULL(cs->cset)) {
     is_arg_valid = false;
     const ObFatalErrExtraInfoGuard *extra_info = ObFatalErrExtraInfoGuard::get_thd_local_val_ptr();
-    BACKTRACE_RET(WARN, OB_INVALID_ARGUMENT, true, "invalid argument. charset info = %p, str = %p, str_len = %ld, extra_info=(%s), lbt=(%s)", cs, str, str_len, (NULL == extra_info) ? NULL : to_cstring(*extra_info), lbt());
+    ObCStringHelper helper;
+    BACKTRACE_RET(WARN, OB_INVALID_ARGUMENT, true,
+        "invalid argument. charset info = %p, str = %p, str_len = %ld, extra_info=(%s), lbt=(%s)",
+        cs, str, str_len, (NULL == extra_info) ? NULL : helper.convert(*extra_info), lbt());
   }
   return is_arg_valid;
 }
@@ -3280,6 +3293,7 @@ inline bool ObCharset::is_argument_valid(const ObCollationType collation_type, c
       (OB_ISNULL(str2) && OB_UNLIKELY(0 != str_len2))) {
     is_arg_valid = false;
     const ObFatalErrExtraInfoGuard *extra_info = ObFatalErrExtraInfoGuard::get_thd_local_val_ptr();
+    ObCStringHelper helper;
     BACKTRACE_RET(WARN, OB_INVALID_ARGUMENT, true, "invalid argument."
         "collation_type = %d,"
         "str1 = %p,"
@@ -3288,7 +3302,7 @@ inline bool ObCharset::is_argument_valid(const ObCollationType collation_type, c
         "str2_len = %ld,"
         "extra_info=(%s),"
         "lbt=(%s)", collation_type, str1, str_len1, str2, str_len2,
-        (NULL == extra_info) ? NULL : to_cstring(*extra_info), lbt());
+        (NULL == extra_info) ? NULL : helper.convert(*extra_info), lbt());
   } else {
     ObCharsetInfo *cs = static_cast<ObCharsetInfo *>(ObCharset::charset_arr[collation_type]);
     if (OB_ISNULL(cs->cset) || OB_ISNULL(cs->coll)) {

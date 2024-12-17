@@ -1,3 +1,6 @@
+// owner: handora.qc
+// owner group: transaction
+
 /**
  * Copyright (c) 2021 OceanBase
  * OceanBase CE is licensed under Mulan PubL v2.
@@ -276,7 +279,10 @@ TEST_F(TestTrans, basic)
   memtable::ObMemtable *mt;
   ASSERT_EQ(OB_SUCCESS, mt_handle.get_data_memtable(mt));
 
-  printf("mt size=%ld occ_size=%ld bree_item_count=%ld rec_scn=%s end_scn=%s\n", mt->get_size(), mt->get_occupied_size(), mt->get_btree_item_count(), to_cstring(mt->get_rec_scn()),to_cstring(mt->get_max_end_scn()));
+  ObCStringHelper helper;
+  printf("mt size=%ld occ_size=%ld bree_item_count=%ld rec_scn=%s end_scn=%s\n",
+      mt->get_size(), mt->get_occupied_size(), mt->get_btree_item_count(),
+      helper.convert(mt->get_rec_scn()),helper.convert(mt->get_max_end_scn()));
 
   /*
   ObStoreRow store_row;
@@ -506,7 +512,7 @@ TEST_F(TestTrans, tablet_to_ls_cache)
     ASSERT_EQ(true, is_local);
     // tablet not exist
     const ObTabletID &tablet_id_2 = tablet_ids_2.at(i);
-    ASSERT_EQ(OB_ENTRY_NOT_EXIST, tx_service->check_and_get_ls_info(tablet_id_2, ls_id, is_local));
+    ASSERT_EQ(OB_SUCCESS, tx_service->check_and_get_ls_info(tablet_id_2, ls_id, is_local));
   }
   ASSERT_EQ(TABLET_NUM + base_size, tx_service->tablet_to_ls_cache_.size());
 
@@ -521,7 +527,7 @@ TEST_F(TestTrans, tablet_to_ls_cache)
     ASSERT_EQ(ls_id_1, ls_id);
     ASSERT_EQ(true, is_local);
     tx_service->remove_tablet(tablet_id, ls_id);
-    ASSERT_EQ(OB_ENTRY_NOT_EXIST, tx_service->check_and_get_ls_info(tablet_id, ls_id, is_local));
+    ASSERT_EQ(OB_SUCCESS, tx_service->check_and_get_ls_info(tablet_id, ls_id, is_local));
   }
   ASSERT_EQ(0, tx_service->tablet_to_ls_cache_.size());
   ASSERT_EQ(base_ref, ls_tx_ctx_mgr->get_ref());

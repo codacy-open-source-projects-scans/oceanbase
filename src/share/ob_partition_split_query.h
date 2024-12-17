@@ -58,7 +58,8 @@ public:
       const blocksstable::ObStorageDatumUtils &datum_utils,
       const storage::ObTabletSplitTscInfo &split_info,
       ObIAllocator &allocator,
-      blocksstable::ObDatumRange &src_range);
+      blocksstable::ObDatumRange &src_range,
+      bool &is_empty_range);
 
   int get_tablet_split_ranges(
       const common::ObIArray<common::ObStoreRange> &ori_ranges,
@@ -68,7 +69,8 @@ public:
   int get_split_datum_range(
       const blocksstable::ObStorageDatumUtils *datum_utils,
       ObIAllocator &allocator,
-      blocksstable::ObDatumRange &datum_range);
+      blocksstable::ObDatumRange &datum_range,
+      bool &is_empty_range);
 
   int get_tablet_split_info(
       const ObTabletID &tablet_id,
@@ -83,8 +85,8 @@ public:
       bool &is_splited_range);
 
   int fill_auto_split_params(
-      const ObTabletID &tablet_id,
-      const share::ObLSID &ls_id,
+      ObTablet &tablet,
+      const bool is_split_dst,
       sql::ObPushdownOperator *op,
       const uint64_t filter_type,
       sql::ExprFixedArray *filter_params,

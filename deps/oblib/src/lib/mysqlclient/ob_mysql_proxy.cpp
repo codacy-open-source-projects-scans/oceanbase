@@ -101,6 +101,12 @@ int ObCommonSqlProxy::read(ReadResult &result, const uint64_t tenant_id, const c
         LOG_WARN("set inner connection sql mode failed", K(ret));
       }
     }
+    if (OB_SUCC(ret) && nullptr != session_param && nullptr != session_param->tz_info_wrap_) {
+      if (OB_FAIL(conn->set_tz_info_wrap(*session_param->tz_info_wrap_))) {
+        LOG_WARN("fail to set time zone info wrap", K(ret));
+      }
+    }
+
     if (session_param->ddl_info_.is_ddl()) {
       conn->set_force_remote_exec(true);
     }
@@ -215,6 +221,9 @@ int ObCommonSqlProxy::write(const uint64_t tenant_id, const ObString sql,
     if (param->ddl_info_.is_ddl()) {
       conn->set_force_remote_exec(true);
       conn->set_nls_formats(param->nls_formats_);
+    }
+    if (!param->secure_file_priv_.empty()) {
+      conn->set_session_variable("secure_file_priv", param->secure_file_priv_);
     }
   }
   if (OB_SUCC(ret) && nullptr != param && nullptr != param->sql_mode_) {
@@ -527,7 +536,7 @@ int ObDbLinkProxy::execute_init_sql(const sqlclient::dblink_param_ctx &param_ctx
       } else if (OB_FAIL(stmt.execute_update())) {
         LOG_WARN("execute sql failed",  K(ret), K(param_ctx));
       } else {
-        // do nothing
+        LOG_TRACE("succ to excute initial dblink sql", K(sql_ptr[i]), K(ret));
       }
     }
   } else if (DBLINK_DRV_OB == param_ctx.link_type_) {
@@ -550,6 +559,8 @@ int ObDbLinkProxy::execute_init_sql(const sqlclient::dblink_param_ctx &param_ctx
         LOG_WARN("create statement failed", K(ret), K(param_ctx));
       } else if (OB_FAIL(stmt.execute_update())) {
         LOG_WARN("execute sql failed",  K(ret), K(param_ctx));
+      } else {
+        LOG_TRACE("succ to excute initial dblink sql", K(sql_ptr[i]), K(ret));
       }
     }
   }
@@ -575,6 +586,8 @@ int ObDbLinkProxy::execute_init_sql(const sqlclient::dblink_param_ctx &param_ctx
         LOG_WARN("failed to set sql text", K(ret), K(ObString(sql_ptr_ora[i])));
       } else if (OB_FAIL(stmt.execute_update(affected_rows))) {
         LOG_WARN("execute sql failed",  K(ret), K(param_ctx));
+      } else {
+        LOG_TRACE("succ to excute initial dblink sql", K(sql_ptr_ora[i]), K(ret));
       }
       int tmp_ret = OB_SUCCESS;
       if (OB_SUCCESS != (tmp_ret = stmt.terminate())) {

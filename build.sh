@@ -19,6 +19,8 @@ LLD_OPTION=ON
 ASAN_OPTION=ON
 STATIC_LINK_LGPL_DEPS_OPTION=ON
 ENABLE_BOLT_OPTION=OFF
+CPP_STANDARD_OPTION=11
+CPP_STANDARD_20_OPTION=OFF
 
 echo "$0 ${ALL_ARGS[@]}"
 
@@ -63,6 +65,14 @@ function parse_args
         elif [[ "$i" == "--make" ]]
         then
             NEED_MAKE=make
+        elif [[ "$i" == "-DCPP_STANDARD_20=ON" ]]
+        then
+            CPP_STANDARD_OPTION=20
+            CPP_STANDARD_20_OPTION=ON
+        elif [[ "$i" == "-DBUILD_CDC_ONLY=ON" ]]
+        then
+            ENABLE_BOLT_OPTION=OFF
+            BUILD_ARGS+=("$i")
         elif [[ $NEED_MAKE == false ]]
         then
             BUILD_ARGS+=("$i")
@@ -105,6 +115,7 @@ function prepare_build_dir
 # dep_create
 function do_init
 {
+    export CPP_STANDARD=${CPP_STANDARD_OPTION}
     time1_ms=$(echo $[$(date +%s%N)/1000000])
     (cd $TOPDIR/deps/init && bash dep_create.sh)
     if [ $? -ne 0 ]; then
@@ -130,7 +141,7 @@ function do_build
 
     TYPE=$1; shift
     prepare_build_dir $TYPE || return
-    ${CMAKE_COMMAND} ${TOPDIR} "$@"
+    ${CMAKE_COMMAND} ${TOPDIR} "$@" -DCPP_STANDARD_20=$CPP_STANDARD_20_OPTION
     if [ $? -ne 0 ]; then
       echo_err "Failed to generate Makefile"
       exit 1
@@ -146,7 +157,7 @@ function do_clean
 
 function build_package
 {
-   STATIC_LINK_LGPL_DEPS_OPTION=OFF
+   STATIC_LINK_LGPL_DEPS_OPTION=ON
    ENABLE_BOLT_OPTION=OFF
     do_build "$@" -DOB_BUILD_PACKAGE=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DENABLE_FATAL_ERROR_HANG=OFF -DENABLE_AUTO_FDO=ON -DENABLE_THIN_LTO=ON -DENABLE_HOTFUNC=ON -DENABLE_BOLT=$ENABLE_BOLT_OPTION -DOB_STATIC_LINK_LGPL_DEPS=$STATIC_LINK_LGPL_DEPS_OPTION
 }
@@ -169,7 +180,7 @@ function build
         do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DOB_ENABLE_UNITY=OFF
         ;;
       xrelease_asan)
-        do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DOB_USE_ASAN=$ASAN_OPTION
+        do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DOB_USE_ASAN=$ASAN_OPTION -DOB_ENABLE_MCMODEL=ON
         ;;
       xrelease_coverage)
         do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DWITH_COVERAGE=ON
@@ -237,7 +248,7 @@ function build
         do_build "$@" -DCMAKE_BUILD_TYPE=Debug -DOB_USE_LLD=$LLD_OPTION -DWITH_COVERAGE=ON
         ;;
       xsanity)
-        do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DENABLE_SANITY=ON
+        do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_USE_LLD=$LLD_OPTION -DENABLE_SANITY=ON -DOB_ENABLE_MCMODEL=ON
         ;;
       xerrsim_sanity)
         do_build "$@" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DOB_ERRSIM=ON -DOB_USE_LLD=$LLD_OPTION -DENABLE_SANITY=ON

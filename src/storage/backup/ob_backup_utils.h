@@ -224,12 +224,14 @@ enum ObBackupProviderItemType {
   PROVIDER_ITEM_MACRO_ID = 0,
   PROVIDER_ITEM_DDL_OTHER_BLOCK_ID = 1,
   PROVIDER_ITEM_TABLET_AND_SSTABLE_META = 2,
+  PROVIDER_ITEM_TABLET_SSTABLE_INDEX_BUILDER_PREPARE = 3,
   PROVIDER_ITEM_MAX,
 };
 
 class ObBackupProviderItem {
   friend class ObBackupTabletStat;
   friend class ObBackupTabletProvider;
+  OB_UNIS_VERSION(1);
 public:
   ObBackupProviderItem();
   virtual ~ObBackupProviderItem();
@@ -259,9 +261,7 @@ public:
   void set_no_need_copy() { need_copy_ = false; }
   bool get_need_copy() const { return need_copy_; }
   void set_macro_index(const ObBackupMacroBlockIndex &macro_index) { macro_index_ = macro_index; }
-  void set_need_reuse_across_sstable() { need_reuse_across_sstable_ = true; }
-  bool get_need_reuse_across_sstable() const { return need_reuse_across_sstable_; }
-  const ObBackupMacroBlockIndex &get_macro_index() { return macro_index_; }
+  const ObBackupMacroBlockIndex &get_macro_index() const { return macro_index_; }
   int64_t get_absolute_row_offset() const { return absolute_row_offset_; }
   TO_STRING_KV(K_(item_type), K_(backup_data_type), K_(logic_id), K_(macro_block_id), K_(table_key), K_(tablet_id), K_(nested_offset), K_(nested_size), K_(timestamp));
 private:
@@ -283,7 +283,6 @@ private:
   bool need_copy_;
   ObBackupMacroBlockIndex macro_index_;
   int64_t absolute_row_offset_;
-  bool need_reuse_across_sstable_;
 };
 
 class ObBackupProviderItemCompare {
@@ -316,6 +315,31 @@ public:
 };
 
 class ObBackupTabletIndexBlockBuilderMgr;
+
+class ObBackupTmpFileQueue final {
+public:
+  ObBackupTmpFileQueue();
+  ~ObBackupTmpFileQueue();
+  int init(const uint64_t tenant_id);
+  int put_item(const ObBackupProviderItem &item);
+  int get_item(ObBackupProviderItem &item);
+  void reset();
+
+  TO_STRING_KV(K_(is_inited), K_(tenant_id), K_(read_count), K_(write_count));
+
+private:
+  int get_next_item_size_(int64_t &size);
+
+private:
+  bool is_inited_;
+  uint64_t tenant_id_;
+  ObBackupTmpFile tmp_file_;
+  int64_t read_offset_;
+  int64_t read_count_;
+  int64_t write_count_;
+  blocksstable::ObSelfBufferWriter buffer_writer_;
+  DISALLOW_COPY_AND_ASSIGN(ObBackupTmpFileQueue);
+};
 
 class ObBackupTabletProvider : public ObIBackupTabletProvider {
 public:
@@ -358,10 +382,6 @@ private:
   int fetch_tablet_sstable_array_(const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
       const ObTabletTableStore &table_store, const share::ObBackupDataType &backup_data_type,
       const bool is_major_compaction_mview_dep_tablet, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
-  int prepare_tablet_sstable_index_builders_(const common::ObTabletID &tablet_id,
-      const bool is_major_compaction_mview_dep_tablet, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
-  int open_tablet_sstable_index_builder_(const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
-      const storage::ObITable::TableKey &table_key, blocksstable::ObSSTable *sstable, const bool is_empty_sstable);
   int prepare_tablet_logic_id_reader_(const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
       const storage::ObITable::TableKey &table_key, const blocksstable::ObSSTable &sstable,
       ObITabletLogicMacroIdReader *&reader);
@@ -374,6 +394,7 @@ private:
       const common::ObIArray<ObBackupMacroBlockId> &list, int64_t &added_count);
   int get_backup_data_type_(const storage::ObITable::TableKey &table_key, share::ObBackupDataType &backup_data_type);
   bool is_same_type_(const storage::ObITable::TableKey &lhs, const storage::ObITable::TableKey &rhs);
+  int add_prepare_tablet_item_(const common::ObTabletID &tablet_id);
   int add_tablet_item_(const common::ObTabletID &tablet_id, const bool has_ss_ddl, const storage::ObITable::TableKey &table_key);
   int remove_duplicates_(common::ObIArray<ObBackupProviderItem> &array);
   int check_tablet_status_(const storage::ObTabletHandle &tablet_handle, bool &is_normal, bool &is_split_dst);
@@ -387,8 +408,6 @@ private:
   int push_item_to_queue_(const ObBackupProviderItem &item);
   int pop_item_from_queue_(ObBackupProviderItem &item);
   void free_queue_item_();
-  int check_need_reuse_across_sstable_(const common::ObTabletID &tablet_id, const storage::ObITable::TableKey &table_key,
-      const blocksstable::ObLogicMacroBlockId &logic_id, bool &need_reuse_across_sstable);
 
 private:
   static const int64_t BATCH_SIZE = 2000;
@@ -415,8 +434,7 @@ private:
   ObBackupMetaIndexStore meta_index_store_;
   ObBackupProviderItem prev_item_;
   bool has_prev_item_;
-  common::ObLightyQueue lighty_queue_;
-  common::ObFIFOAllocator fifo_allocator_;
+  ObBackupTmpFileQueue item_queue_;
   DISALLOW_COPY_AND_ASSIGN(ObBackupTabletProvider);
 };
 

@@ -27,6 +27,7 @@ namespace oceanbase
 namespace common {
 class ObObj;
 class ObDSResultItem;
+class ObTabletID;
 }
 using namespace common;
 namespace sql
@@ -35,6 +36,7 @@ class ObDMLStmt;
 class ObSelectStmt;
 class ObRawExpr;
 class ObLogPlan;
+class ObLogicalOperator;
 class ObJoinOrder;
 class Path;
 class JoinPath;
@@ -329,6 +331,7 @@ public:
 ////print plan info
 /***********************************************/
   int append(const ObLogPlan *log_plan);
+  int append(const ObLogicalOperator *plan_top);
   int append(const ObJoinOrder *join_order);
   int append(const Path *value);
   int append(const JoinPath *value);
@@ -342,6 +345,7 @@ public:
   int append(const ObOptTabletLoc& tablet_loc);
   int append(const ObCandiTabletLoc& candi_tablet_loc);
   int append(const ObBatchEstTasks& task);
+  int append(const ObTabletID& id);
 /***********************************************/
 ////print template type
 /***********************************************/

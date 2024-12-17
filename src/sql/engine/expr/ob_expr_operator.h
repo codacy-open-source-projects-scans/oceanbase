@@ -40,7 +40,6 @@
 #include "sql/engine/expr/ob_expr_extra_info_factory.h"
 #include "sql/engine/expr/ob_i_expr_extra_info.h"
 #include "lib/hash/ob_hashset.h"
-#include "share/schema/ob_schema_struct.h"
 #include "lib/udt/ob_array_type.h"
 #include "sql/session/ob_local_session_var.h"
 
@@ -507,6 +506,8 @@ public:
     J_OBJ_END();
     return pos;
   }
+  bool is_enum_set_with_subschema_arg(const int64_t arg_idx) const;
+  ObObjType get_enumset_calc_type(const ObObjType expected_type, const int64_t arg_idx) const;
 public:
   /*
     Aggregate arguments for comparison, e.g: a=b, a LIKE b, a RLIKE b
@@ -660,6 +661,7 @@ public:
       const ObExprResType *types,
       int64_t param_num);
   static int aggregate_collection_sql_type(
+      common::ObExprTypeCtx &type_ctx,
       ObExprResType &type,
       const ObExprResType *types,
       int64_t param_num);
@@ -706,10 +708,10 @@ protected:
                                        const ObExprResType *types,
                                        int64_t param_num);
   static common::ObObjType get_calc_cast_type(common::ObObjType param_type, common::ObObjType calc_type);
-  static common::ObObjType enumset_calc_types_[common::ObMaxTC];
 
   void disable_operand_auto_cast() { operand_auto_cast_ = false; }
 private:
+  static common::ObObjType enumset_calc_types_[2 /*use_subschema*/][common::ObMaxTC];
   /*
    * 计算框架本身提供了一个通用的数据类型转换方法，将参数转为input_types_中的类型。
    * 这可能并不是表达式期望的行为，如需要禁止此行为，需要在构造函数中显示调 disable_operand_auto_cast().
@@ -740,14 +742,14 @@ protected:
     const common::ObObjMeta *types,
     int64_t param_num,
     uint32_t flags,
-    const common::ObCollationType conn_coll_type);
+    common::ObExprTypeCtx &type_ctx);
 
   static int aggregate_charsets(
     common::ObObjMeta &type,
     const ObExprResType *types,
     int64_t param_num,
     uint32_t flags,
-    const common::ObCollationType conn_coll_type);
+    common::ObExprTypeCtx &type_ctx);
 
 
   // data members
@@ -1257,10 +1259,9 @@ public:
                            bool is_null_safe,
                            common::ObCmpOp cmp_op) const;
 
-  static int is_equivalent(const common::ObObjMeta &meta1,
-                           const common::ObObjMeta &meta2,
-                           const common::ObObjMeta &meta3,
-                           bool &result);
+  static int is_equal_transitive(const common::ObObjMeta &meta1,
+                                 const common::ObObjMeta &meta2,
+                                 bool &result);
   int assign(const ObExprOperator &other);
   int set_cmp_func(const common::ObObjType type1,
                    const common::ObObjType type2);
@@ -1936,6 +1937,11 @@ public:
                                       common::ObIAllocator *allocator);
   void calc_temporal_format_result_length(ObExprResType &type, const ObExprResType &format) const;
 protected:
+  static int extract_enum_set_collation_for_args(const ObExprResType &text,
+                                                 const ObExprResType &pattern,
+                                                 ObExprTypeCtx &type_ctx,
+                                                 ObObjMeta *real_types);
+protected:
   common::ObObjType get_result_type_mysql(int64_t char_length) const;
   static const int64_t MAX_CHAR_LENGTH_FOR_VARCAHR_RESULT = 512;
   static const int64_t MAX_CHAR_LENGTH_FOR_TEXT_RESULT = 65535;
@@ -1990,7 +1996,14 @@ public:
                                  ObDatum &res_datum);
   static int calc_result2_mysql(const ObExpr &expr, ObEvalCtx &ctx,
                                 ObDatum &res_datum);
+
+  static int calc_bitwise_result2_mysql_vector(VECTOR_EVAL_FUNC_ARG_DECL);
+  static int calc_bitwise_result2_oracle_vector(VECTOR_EVAL_FUNC_ARG_DECL);
   DECLARE_SET_LOCAL_SESSION_VARS;
+
+private:
+  static void convert_tc_size(VecValueTypeClass vec_tc, int &len);
+
 protected:
   enum BitOperator
   {
@@ -2003,6 +2016,18 @@ protected:
     BIT_COUNT,
     BIT_MAX,
   };
+
+  static int dispatch_calc_vector(VECTOR_EVAL_FUNC_ARG_DECL, ObCastMode cast_mode);
+  template <typename RES_VEC, typename L_VEC, typename R_VEC>
+  static int inner_calc_vector(VECTOR_EVAL_FUNC_ARG_DECL, ObCastMode cast_mode);
+
+  // 从datum中获取int64/uint64, 针对number需要有round/trunc操作，针对int tc会直接获取
+  // int值
+  typedef int (*GetIntFunc)(const ObDatumMeta &, const common::ObDatum &, bool, int64_t &,
+                            common::ObCastMode &);
+  typedef int (*GetUIntFunc)(const ObDatumMeta &, const common::ObDatum &, bool, uint64_t &,
+                             common::ObCastMode &);
+
   int calc_(common::ObObj &res,
             const common::ObObj &obj1,
             const common::ObObj &obj2,
@@ -2021,12 +2046,7 @@ protected:
                             ObExpr &rt_expr, const BitOperator op);
   // 根据参数类型，从4个get_int/get_uint方法中选择合适的get_int64/get_uint64方法
   static int choose_get_int_func(const ObDatumMeta datum_meta, void *&out_func);
-  // 从datum中获取int64/uint64, 针对number需要有round/trunc操作，针对int tc会直接获取
-  // int值
-  typedef int (*GetIntFunc)(const ObDatumMeta &, const common::ObDatum &, bool,
-                            int64_t&, common::ObCastMode&);
-  typedef int (*GetUIntFunc)(const ObDatumMeta &, const common::ObDatum &, bool,
-                             uint64_t&, common::ObCastMode&);
+
   static int get_int64_from_int_tc(
       const ObDatumMeta &datum_meta, const common::ObDatum &datum, bool is_round,
       int64_t &out, const common::ObCastMode &cast_mode);

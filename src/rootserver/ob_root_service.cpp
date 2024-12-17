@@ -121,6 +121,9 @@
 
 #include "parallel_ddl/ob_create_table_helper.h" // ObCreateTableHelper
 #include "parallel_ddl/ob_create_view_helper.h"  // ObCreateViewHelper
+#include "parallel_ddl/ob_set_comment_helper.h" //ObCommentHelper
+#include "parallel_ddl/ob_create_index_helper.h" // ObCreateIndexHelper
+#include "parallel_ddl/ob_update_index_status_helper.h" // ObUpdateIndexStatusHelper
 
 namespace oceanbase
 {
@@ -3419,9 +3422,10 @@ int ObRootService::create_table(const ObCreateTableArg &arg, ObCreateTableRes &r
                 LOG_WARN("db schema is null", K(ret));
               } else {
                 ret = OB_ERR_WRONG_OBJECT;
+                ObCStringHelper helper;
                 LOG_USER_ERROR(OB_ERR_WRONG_OBJECT,
-                    to_cstring(db_schema->get_database_name_str()),
-                    to_cstring(table_schema.get_table_name_str()), "VIEW");
+                    helper.convert(db_schema->get_database_name_str()),
+                    helper.convert(table_schema.get_table_name_str()), "VIEW");
                 LOG_WARN("table exist", K(ret), K(table_schema));
               }
             }
@@ -3452,9 +3456,10 @@ int ObRootService::create_table(const ObCreateTableArg &arg, ObCreateTableRes &r
           LOG_WARN("db schema is null", K(ret));
         } else {
           ret = OB_TABLE_NOT_EXIST;
+          ObCStringHelper helper;
           LOG_USER_ERROR(OB_TABLE_NOT_EXIST,
-                         to_cstring(simple_db_schema->get_database_name_str()),
-                         to_cstring(table_schema.get_table_name_str()));
+                         helper.convert(simple_db_schema->get_database_name_str()),
+                         helper.convert(table_schema.get_table_name_str()));
           LOG_WARN("table not exist", K(ret), K(table_schema));
         }
       }
@@ -3668,7 +3673,9 @@ int ObRootService::create_table(const ObCreateTableArg &arg, ObCreateTableRes &r
                            && 0 != parent_schema->get_session_id()
                            && OB_INVALID_ID != schema_guard.get_session_id()) {
               ret = OB_TABLE_NOT_EXIST;
-              LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(foreign_key_arg.parent_database_), to_cstring(foreign_key_arg.parent_table_));
+              ObCStringHelper helper;
+              LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(foreign_key_arg.parent_database_),
+                  helper.convert(foreign_key_arg.parent_table_));
             } else if (!arg.is_inner_ && parent_schema->is_in_recyclebin()) {
               ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
               LOG_WARN("parent table is in recyclebin", K(ret), K(foreign_key_arg));
@@ -4539,6 +4546,33 @@ int ObRootService::recover_restore_table_ddl(const obrpc::ObRecoverRestoreTableD
   return ret;
 }
 
+int ObRootService::set_comment(const obrpc::ObSetCommentArg &arg, obrpc::ObParallelDDLRes &res)
+{
+  LOG_TRACE("receive set comment arg", K(arg));
+  int64_t begin_time = ObTimeUtility::current_time();
+  const uint64_t tenant_id = arg.exec_tenant_id_;
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (OB_UNLIKELY(!arg.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", KR(ret), K(arg));
+  } else if (OB_FAIL(parallel_ddl_pre_check_(tenant_id))) {
+    LOG_WARN("fail to pre check parallel ddl", KR(ret), K(tenant_id));
+  } else {
+    ObSetCommentHelper comment_helper(schema_service_, tenant_id, arg, res);
+    if (OB_FAIL(comment_helper.init(ddl_service_))) {
+      LOG_WARN("fail to init comment helper", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(comment_helper.execute())) {
+      LOG_WARN("fail to execute comment", KR(ret), K(tenant_id));
+    }
+  }
+  int64_t cost = ObTimeUtility::current_time() - begin_time;
+  LOG_TRACE("finish set comment", KR(ret), K(arg), K(cost));
+  return ret;
+}
+
 int ObRootService::alter_table(const obrpc::ObAlterTableArg &arg, obrpc::ObAlterTableRes &res)
 {
   LOG_DEBUG("receive alter table arg", K(arg));
@@ -4781,6 +4815,52 @@ int ObRootService::create_mlog(const obrpc::ObCreateMLogArg &arg, obrpc::ObCreat
       LOG_WARN("failed to create mlog", KR(ret), K(arg));
     }
   }
+  return ret;
+}
+
+int ObRootService::parallel_create_index(const ObCreateIndexArg &arg, obrpc::ObAlterTableRes &res)
+{
+  LOG_TRACE("receive parallel create index arg", K(arg));
+  int ret = OB_SUCCESS;
+  int64_t begin_time = ObTimeUtility::current_time();
+  const uint64_t tenant_id = arg.exec_tenant_id_;
+  uint64_t data_version = 0;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", KR(ret), K(arg));
+  } else if (OB_FAIL(parallel_ddl_pre_check_(tenant_id))) {
+    LOG_WARN("pre check failed before parallel ddl execute", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
+    LOG_WARN("fail to get data version", KR(ret), K(tenant_id));
+  } else if (data_version < DATA_VERSION_4_2_2_0
+            || (data_version >= DATA_VERSION_4_3_0_0 && data_version < DATA_VERSION_4_3_5_0)
+            || share::schema::is_fts_or_multivalue_index(arg.index_type_)
+            || share::schema::is_vec_index(arg.index_type_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("not supported", KR(ret), K(data_version), K(arg.index_type_));
+  } else {
+    ObCreateIndexHelper create_index_helper(schema_service_, tenant_id, ddl_service_, arg, res);
+    if (OB_FAIL(create_index_helper.init(ddl_service_))) {
+      LOG_WARN("fail to init create index helper", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(create_index_helper.execute())) {
+      LOG_WARN("fail to execute create index table", KR(ret), K(tenant_id));
+    }
+  }
+  int64_t cost = ObTimeUtility::current_time() - begin_time;
+  char table_id_buffer[256];
+  snprintf(table_id_buffer, sizeof(table_id_buffer), "data_table_id:%ld, index_table_id:%ld",
+            arg.data_table_id_, arg.index_table_id_);
+  ROOTSERVICE_EVENT_ADD("ddl scheduler", "parallel create index",
+                        "tenant_id", arg.tenant_id_,
+                        "ret", ret,
+                        "trace_id", *ObCurTraceId::get_trace_id(),
+                        "task_id", res.task_id_,
+                        "table_id", table_id_buffer,
+                        "schema_version", res.schema_version_);
+  LOG_TRACE("finish parallel create index", KR(ret), K(arg), K(cost), "ddl_event_info", ObDDLEventInfo());
   return ret;
 }
 
@@ -5610,6 +5690,7 @@ int ObRootService::clone_tenant(const obrpc::ObCloneTenantArg &arg,
   ObTenantSnapItem tenant_snapshot_item;
   bool is_unit_config_exist = false;
   bool is_resource_pool_exist = false;
+  ObCStringHelper helper;
 
   if (!inited_) {
     ret = OB_NOT_INIT;
@@ -5640,7 +5721,7 @@ int ObRootService::clone_tenant(const obrpc::ObCloneTenantArg &arg,
     } else if (OB_NOT_NULL(clone_tenant_schema)) {
       ret = OB_TENANT_EXIST;
       LOG_WARN("clone tenant already exists", KR(ret), K(clone_tenant_name));
-      LOG_USER_ERROR(OB_TENANT_EXIST, to_cstring(clone_tenant_name));
+      LOG_USER_ERROR(OB_TENANT_EXIST, helper.convert(clone_tenant_name));
     } else if (OB_FAIL(schema_guard.get_tenant_info(source_tenant_name, source_tenant_schema))) {
       LOG_WARN("fail to get source tenant info", KR(ret), K(source_tenant_name));
     } else if (OB_ISNULL(source_tenant_schema)) {
@@ -5659,13 +5740,13 @@ int ObRootService::clone_tenant(const obrpc::ObCloneTenantArg &arg,
     LOG_WARN("fail to check unit config exist", KR(ret), K(arg));
   } else if (!is_unit_config_exist) {
     ret = OB_RESOURCE_UNIT_NOT_EXIST;
-    LOG_USER_ERROR(OB_RESOURCE_UNIT_NOT_EXIST, to_cstring(arg.get_unit_config_name()));
+    LOG_USER_ERROR(OB_RESOURCE_UNIT_NOT_EXIST, helper.convert(arg.get_unit_config_name()));
     LOG_WARN("config not exist", KR(ret), K(arg));
   } else if (OB_FAIL(unit_manager_.check_resource_pool_exist(arg.get_resource_pool_name(), is_resource_pool_exist))) {
     LOG_WARN("fail to check resource pool exist", KR(ret), K(arg));
   } else if (is_resource_pool_exist) {
     ret = OB_RESOURCE_POOL_EXIST;
-    LOG_USER_ERROR(OB_RESOURCE_POOL_EXIST, to_cstring(arg.get_resource_pool_name()));
+    LOG_USER_ERROR(OB_RESOURCE_POOL_EXIST, helper.convert(arg.get_resource_pool_name()));
     LOG_WARN("resource_pool already exist", "name", arg.get_resource_pool_name(), K(ret));
   } else if (is_fork_tenant) { // fork tenant (clone tenant without snapshot)
     // precheck
@@ -5734,6 +5815,33 @@ int ObRootService::clone_tenant(const obrpc::ObCloneTenantArg &arg,
                           "prev_clone_status", "NULL",
                           "cur_clone_status", status_str);
   }
+  return ret;
+}
+
+int ObRootService::parallel_update_index_status(const obrpc::ObUpdateIndexStatusArg &arg, obrpc::ObParallelDDLRes &res)
+{
+  LOG_TRACE("receive update index status arg", K(arg));
+  int64_t begin_time = ObTimeUtility::current_time();
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = arg.exec_tenant_id_;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (OB_UNLIKELY(!arg.is_valid() || OB_INVALID_ID == arg.data_table_id_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", KR(ret), K(arg));
+  } else if (OB_FAIL(parallel_ddl_pre_check_(tenant_id))) {
+    LOG_WARN("pre check failed before parallel ddl execute", KR(ret), K(tenant_id));
+  } else {
+    ObUpdateIndexStatusHelper update_index_status_helper(schema_service_, tenant_id, arg, res);
+    if (OB_FAIL(update_index_status_helper.init(ddl_service_))) {
+      LOG_WARN("fail to init create table helper", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(update_index_status_helper.execute())) {
+      LOG_WARN("fail to execute update index status helper", KR(ret));
+    }
+  }
+  int64_t cost = ObTimeUtility::current_time() - begin_time;
+  LOG_TRACE("finish update index status", KR(ret), K(arg), K(cost));
   return ret;
 }
 
@@ -6056,7 +6164,6 @@ int ObRootService::do_restart()
     FLOG_INFO("root_inspection_ started");
     int64_t now = ObTimeUtility::current_time();
     core_meta_table_version_ = now;
-    EVENT_SET(RS_START_SERVICE_TIME, now);
     // reset fail count for self checker and print log.
     reset_fail_count();
   }
@@ -10615,7 +10722,8 @@ int ObRootService::table_allow_ddl_operation(const obrpc::ObAlterTableArg &arg)
   } else if (OB_ISNULL(schema)) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("invalid schema", K(ret));
-    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(origin_database_name), to_cstring(origin_table_name));
+    ObCStringHelper helper;
+    LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(origin_database_name), helper.convert(origin_table_name));
   } else if (schema->is_ctas_tmp_table()) {
     if (!alter_table_schema.alter_option_bitset_.has_member(ObAlterTableArg::SESSION_ID)) {
       //to prevet alter table after failed to create table, the table is invisible.
@@ -10749,6 +10857,8 @@ int ObRootService::set_config_pre_hook(obrpc::ObAdminSetConfigArg &arg)
       ret = check_freeze_trigger_percentage_(*item);
     } else if (0 == STRCMP(item->name_.ptr(), WRITING_THROTTLEIUNG_TRIGGER_PERCENTAGE)) {
       ret = check_write_throttle_trigger_percentage(*item);
+    } else if (0 == STRCMP(item->name_.ptr(), _NO_LOGGING)) {
+      ret = check_no_logging(*item);
     } else if (0 == STRCMP(item->name_.ptr(), WEAK_READ_VERSION_REFRESH_INTERVAL)) {
       int64_t refresh_interval = ObConfigTimeParser::get(item->value_.ptr(), valid);
       if (valid && OB_FAIL(check_weak_read_version_refresh_interval(refresh_interval, valid))) {
@@ -10824,6 +10934,8 @@ int ObRootService::set_config_pre_hook(obrpc::ObAdminSetConfigArg &arg)
           LOG_WARN("config invalid", "item", *item, K(ret), K(i), K(item->tenant_ids_.at(i)));
         }
       }
+    } else if (0 == STRCMP(item->name_.ptr(), _TRANSFER_TASK_TABLET_COUNT_THRESHOLD)) {
+      ret = check_transfer_task_tablet_count_threshold_(*item);
     }
   }
   return ret;
@@ -10939,6 +11051,14 @@ int ObRootService::check_write_throttle_trigger_percentage(obrpc::ObAdminSetConf
   const char *warn_log = "tenant writing_throttling_trigger_percentage "
                          "which should greater than freeze_trigger_percentage";
   CHECK_TENANTS_CONFIG_WITH_FUNC(ObConfigWriteThrottleTriggerIntChecker, warn_log);
+  return ret;
+}
+
+int ObRootService::check_no_logging(obrpc::ObAdminSetConfigItem &item)
+{
+  int ret = OB_SUCCESS;
+  const char *warn_log = "set _no_logging, becacuse archivelog and _no_logging are exclusive parameters";
+  CHECK_TENANTS_CONFIG_WITH_FUNC(ObConfigDDLNoLoggingChecker, warn_log);
   return ret;
 }
 
@@ -12254,6 +12374,28 @@ int ObRootService::reload_master_key(const obrpc::ObReloadMasterKeyArg &arg,
   return ret;
 }
 #endif
+
+int ObRootService::check_transfer_task_tablet_count_threshold_(obrpc::ObAdminSetConfigItem &item)
+{
+  int ret = OB_SUCCESS;
+  bool valid = true;
+  for (int i = 0; i < item.tenant_ids_.count() && valid; i++) {
+    const uint64_t tenant_id = item.tenant_ids_.at(i);
+    int64_t value = ObConfigIntParser::get(item.value_.ptr(), valid);
+    if (valid && (value > OB_MAX_TRANSFER_BINDING_TABLET_CNT)) {
+      valid = false;
+      char err_msg[DEFAULT_BUF_LENGTH];
+      (void)snprintf(err_msg, sizeof(err_msg), "_transfer_task_tablet_count_threshold of tenant %ld, "
+          "it cannot be greater than %ld", tenant_id, OB_MAX_TRANSFER_BINDING_TABLET_CNT);
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, err_msg);
+    }
+    if (!valid) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("config invalid", KR(ret), K(value), K(item), K(tenant_id));
+    }
+  }
+  return ret;
+}
 
 } // end namespace rootserver
 } // end namespace oceanbase

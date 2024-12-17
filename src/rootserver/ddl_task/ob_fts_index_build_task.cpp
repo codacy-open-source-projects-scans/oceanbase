@@ -112,7 +112,14 @@ int ObFtsIndexBuildTask::init(
     tenant_id_ = tenant_id;
     task_id_ = task_id;
     schema_version_ = schema_version;
-    parallelism_ = std::max(parallelism, 1L);
+    // temporaty disabled parallel post-build index
+    // do sample failed when enable
+    // ref: issue workItemId=2024092400104554530
+    // todo yunyi, jinzhu
+    if (parallelism > 0) {
+      FLOG_INFO("post-create multivalue index or fts index, prune parallel", K(parallelism), K(task_type_));
+    }
+    parallelism_ = 1; // std::max(parallelism, 1L);
     consumer_group_id_ = consumer_group_id;
     parent_task_id_ = parent_task_id;
     if (snapshot_version > 0) {
@@ -137,6 +144,8 @@ int ObFtsIndexBuildTask::init(
     } else if (FALSE_IT(task_status_ = static_cast<ObDDLTaskStatus>(task_status))) {
     } else if (OB_FAIL(init_ddl_task_monitor_info(index_schema->get_table_id()))) {
       LOG_WARN("init ddl task monitor info failed", K(ret));
+    } else if (OB_FAIL(ObDDLUtil::get_no_logging_param(tenant_id_, is_no_logging_))) {
+      LOG_WARN("fail to get no logging param", K(ret), K(tenant_id_));
     } else {
       dst_tenant_id_ = tenant_id_;
       dst_schema_version_ = schema_version_;
@@ -336,24 +345,9 @@ int ObFtsIndexBuildTask::check_health()
                                                       object_id_,
                                                       is_data_table_exist))) {
       LOG_WARN("check data table exist failed", K(ret), K(tenant_id_), K(object_id_));
-    } else if (OB_FAIL(check_aux_table_schemas_exist(is_all_indexes_exist))) {
-      LOG_WARN("check aux index table exist failed", K(ret), K(tenant_id_));
-    } else if (status != ObDDLTaskStatus::FAIL && (!is_data_table_exist || !is_all_indexes_exist)) {
+    } else if (status != ObDDLTaskStatus::FAIL && !is_data_table_exist) {
       ret = OB_TABLE_NOT_EXIST;
-      LOG_WARN("data table or index table not exist", K(ret), K(is_data_table_exist),
-          K(is_all_indexes_exist));
-    } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_,
-                                                     index_table_id_,
-                                                     index_schema))) {
-      LOG_WARN("get table schema failed", K(ret), K(tenant_id_), K(index_table_id_));
-    } else if (OB_ISNULL(index_schema)) {
-      ret = OB_SCHEMA_ERROR;
-      LOG_WARN("index schema is null, but index table exist", K(ret),
-          K(index_table_id_));
-    } else if (ObIndexStatus::INDEX_STATUS_INDEX_ERROR == index_schema->get_index_status()) {
-      ret = OB_SUCCESS == ret_code_ ? OB_ERR_ADD_INDEX : ret_code_;
-      LOG_WARN("index status error", K(ret), K(index_table_id_), K(index_schema->get_table_name_str()),
-          K(index_schema->get_index_status()));
+      LOG_WARN("data table not exist", K(ret), K(is_data_table_exist));
     }
     #ifdef ERRSIM
       if (OB_SUCC(ret)) {
@@ -373,78 +367,6 @@ int ObFtsIndexBuildTask::check_health()
     }
   }
   check_ddl_task_execute_too_long();
-  return ret;
-}
-
-int ObFtsIndexBuildTask::check_aux_table_schemas_exist(bool &is_all_exist)
-{
-  int ret = OB_SUCCESS;
-  is_all_exist = false;
-  const ObDDLTaskStatus status = static_cast<ObDDLTaskStatus>(task_status_);
-  ObMultiVersionSchemaService &schema_service = root_service_->get_schema_service();
-  ObSchemaGetterGuard schema_guard;
-  const ObTableSchema *index_schema = nullptr;
-  if (OB_FAIL(schema_service.get_tenant_schema_guard(tenant_id_, schema_guard))) {
-    LOG_WARN("get tenant schema guard failed", K(ret), K(tenant_id_));
-  } else {
-    bool rowkey_doc_exist = true;
-    bool doc_rowkey_exist = true;
-    bool domain_index_aux_exist = true;
-    bool fts_doc_word_exist = true;
-    if (status <= ObDDLTaskStatus::GENERATE_DOC_AUX_SCHEMA) {
-      is_all_exist = true;
-      if (OB_INVALID_ID != rowkey_doc_aux_table_id_) {
-        if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                   rowkey_doc_aux_table_id_,
-                                                   rowkey_doc_exist))) {
-          LOG_WARN("check rowkey doc table exist failed", K(ret), K(tenant_id_),
-              K(rowkey_doc_aux_table_id_));
-        } else {
-          is_all_exist &= rowkey_doc_exist;
-        }
-      }
-      if (OB_INVALID_ID != domain_index_aux_table_id_) {
-        if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                   domain_index_aux_table_id_,
-                                                   domain_index_aux_exist))) {
-          LOG_WARN("check fts index aux table exist failed", K(ret), K(tenant_id_),
-              K(domain_index_aux_table_id_));
-        } else {
-          is_all_exist &= domain_index_aux_exist;
-        }
-      }
-    } else {
-      if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                 rowkey_doc_aux_table_id_,
-                                                 rowkey_doc_exist))) {
-        LOG_WARN("check rowkey doc table exist failed", K(ret), K(tenant_id_),
-            K(rowkey_doc_aux_table_id_));
-      } else if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                        doc_rowkey_aux_table_id_,
-                                                        doc_rowkey_exist))) {
-        LOG_WARN("check doc rowkey table exist failed", K(ret), K(tenant_id_),
-            K(doc_rowkey_aux_table_id_));
-      } else if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                        domain_index_aux_table_id_,
-                                                        domain_index_aux_exist))) {
-        LOG_WARN("check fts index aux table exist failed", K(ret), K(tenant_id_),
-            K(domain_index_aux_table_id_));
-      } else if (is_fts_task()
-        && OB_FAIL(schema_guard.check_table_exist(tenant_id_,
-                                                  fts_doc_word_aux_table_id_,
-                                                  fts_doc_word_exist))) {
-        LOG_WARN("check fts doc word table exist failed", K(ret), K(tenant_id_),
-            K(fts_doc_word_aux_table_id_));
-      } else {
-        is_all_exist = (rowkey_doc_exist && doc_rowkey_exist &&
-                        domain_index_aux_exist && fts_doc_word_exist);
-        if (!is_all_exist) {
-          LOG_WARN("fts aux table not exist", K(rowkey_doc_exist),
-              K(doc_rowkey_exist), K(domain_index_aux_exist), K(fts_doc_word_exist));
-        }
-      }
-    }
-  }
   return ret;
 }
 
@@ -506,7 +428,7 @@ int ObFtsIndexBuildTask::prepare()
   } else {
     state_finished = true;
   }
-
+  DEBUG_SYNC(BUILD_FTS_INDEX_PREPARE_STATUS);
   if (state_finished || OB_FAIL(ret)) {
     ObDDLTaskStatus next_status = static_cast<ObDDLTaskStatus>(task_status_);
     ObDDLTaskStatus old_status = static_cast<ObDDLTaskStatus>(task_status_);
@@ -604,6 +526,7 @@ int ObFtsIndexBuildTask::prepare_rowkey_doc_table()
   int ret = OB_SUCCESS;
   bool state_finished = false;
   const ObIndexType index_type = ObIndexType::INDEX_TYPE_ROWKEY_DOC_ID_LOCAL;
+  DEBUG_SYNC(CREATE_TFS_INDEX_ROWKEY_DOC_STATUS);
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
@@ -663,6 +586,7 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
       }
     }
 #endif
+    DEBUG_SYNC(BEFOR_PREPARE_CREATE_TFS_INDEX_DOC_ROWKEY);
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(prepare_aux_table(doc_rowkey_type,
                                        doc_rowkey_task_submitted_,
@@ -679,6 +603,7 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
         }
       }
 #endif
+     DEBUG_SYNC(BEFOR_PREPARE_CREATE_TFS_INDEX_WORD_DOC);
      if (OB_FAIL(ret)) {
      } else if (OB_FAIL(prepare_aux_table(domain_index_aux_type,
                                        domain_index_aux_task_submitted_,
@@ -697,6 +622,7 @@ int ObFtsIndexBuildTask::prepare_aux_index_tables()
         }
       }
 #endif
+      DEBUG_SYNC(BEFOR_PREPARE_CREATE_TFS_INDEX_DOC_WORD);
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(prepare_aux_table(fts_doc_word_type,
                                        fts_doc_word_task_submitted_,
@@ -1651,7 +1577,8 @@ int ObFtsIndexBuildTask::submit_drop_fts_index_task()
     drop_index_arg.session_id_        = data_table_schema->get_session_id();
     drop_index_arg.table_name_        = data_table_schema->get_table_name();
     drop_index_arg.database_name_     = database_schema->get_database_name_str();
-    drop_index_arg.is_parent_task_dropping_fts_index_ = true;  // if want to drop only one index, is_parent_task_dropping_fts_index_ should be false, else should be true.
+    drop_index_arg.is_parent_task_dropping_fts_index_ = is_fts_task();  // if want to drop only one index, is_parent_task_dropping_fts_index_ should be false, else should be true.
+    drop_index_arg.is_parent_task_dropping_multivalue_index_ = !is_fts_task();
     if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(data_table_schema->get_all_part_num() + data_table_schema->get_all_part_num(), ddl_rpc_timeout))) {
       LOG_WARN("failed to get ddl rpc timeout", KR(ret));
     } else if (OB_FAIL(DDL_SIM(tenant_id_, task_id_, DROP_INDEX_RPC_FAILED))) {
@@ -1678,9 +1605,6 @@ int ObFtsIndexBuildTask::wait_drop_index_finish(bool &is_finish)
     LOG_WARN("task status not match", K(ret), K(task_status_));
   } else if (-1 == drop_index_task_id_) {
      is_finish = true;
-  } else if (!is_rowkey_doc_succ_ && !is_doc_rowkey_succ_ && !is_fts_doc_word_succ_ && !is_domain_aux_succ_) {
-    is_finish = true;
-    LOG_WARN("all aux table not create success, needn't submit task", K(ret), K(is_fts_task()), K(*this));
   } else {
     HEAP_VAR(ObDDLErrorMessageTableOperator::ObBuildDDLErrorMessage, error_message) {
       const int64_t target_object_id = -1;
@@ -1706,6 +1630,7 @@ int ObFtsIndexBuildTask::wait_drop_index_finish(bool &is_finish)
           ret = error_message.ret_code_;
           drop_index_task_submitted_ = false; // retry
         } else {
+          LOG_INFO("wait drop index task finish", K(*this), K(error_message));
           is_finish = true;
         }
       }

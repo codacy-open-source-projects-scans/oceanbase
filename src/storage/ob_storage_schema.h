@@ -175,14 +175,26 @@ public:
 struct ObUpdateCSReplicaSchemaParam
 {
 public:
+  enum UpdateType : uint8_t {
+    REFRESH_TABLE_SCHEMA = 0,  // storage schema is simplified, need get storage schema from table schema
+    TRUNCATE_COLUMN_ARRAY = 1, // column array in tablet storage schema is newer than last row store major, need truncate
+    MAX_TYPE
+  };
+public:
   ObUpdateCSReplicaSchemaParam();
   ~ObUpdateCSReplicaSchemaParam();
-  int init(const ObTablet &tablet);
+  int init(
+      const ObTabletID &tablet_id,
+      const int64_t major_column_cnt,
+      const UpdateType update_type);
   bool is_valid() const;
-  TO_STRING_KV(K_(tablet_id), K_(major_column_cnt), K_(is_inited));
+  inline bool need_refresh_schema() const { return REFRESH_TABLE_SCHEMA == update_type_; }
+  inline bool need_truncate_column_array() const { return TRUNCATE_COLUMN_ARRAY == update_type_; }
+  TO_STRING_KV(K_(tablet_id), K_(major_column_cnt), K_(update_type), K_(is_inited));
 public:
   ObTabletID tablet_id_;
   int64_t major_column_cnt_;
+  UpdateType update_type_;
   bool is_inited_;
 };
 
@@ -197,7 +209,7 @@ public:
       const share::schema::ObTableSchema &input_schema,
       const lib::Worker::CompatMode compat_mode,
       const bool skip_column_info = false,
-      const int64_t compat_version = STORAGE_SCHEMA_VERSION_LATEST,
+      const uint64_t tenant_data_version = DATA_CURRENT_VERSION,
       const bool generate_cs_replica_cg_array = false);
   int init(
       common::ObIAllocator &allocator,
@@ -214,7 +226,6 @@ public:
       common::ObIAllocator &allocator,
       const ObStorageSchema &src_schema,
       const ObUpdateCSReplicaSchemaParam &update_param);
-  int sort_out_of_order_column_array_for_heap_table();
   int deep_copy_column_group_array(
       common::ObIAllocator &allocator,
       const ObStorageSchema &src_schema);
@@ -245,6 +256,7 @@ public:
   inline int64_t get_column_group_count() const { return column_group_array_.count(); }
   inline int64_t has_all_column_group() const { return has_all_column_group_; }
   inline bool is_row_store() const { return column_group_array_.count() <= 1; }
+  inline bool need_generate_cg_array() const { return column_group_array_.count() <= column_array_.count(); }
   virtual inline int64_t get_pctfree() const override { return pctfree_; }
   virtual inline int64_t get_progressive_merge_round() const override { return progressive_merge_round_; }
   virtual inline int64_t get_progressive_merge_num() const override { return progressive_merge_num_; }
@@ -317,12 +329,6 @@ public:
       const uint64_t &column_id,
       const int32_t &column_idx,
       int32_t &cg_idx) const;
-  /*
-   * For heap table (no pk, only has __pk_increment), the column array is out of order when tablet firstly created.
-   * The the __pk_increment column is in the LAST of column array in ObCreateTableSchema,
-   * but in the FIRST in ObTableSchema read by schema guard from inner table.
-   */
-  int check_is_column_array_out_of_order_for_heap_table(bool &is_out_of_order) const;
   bool is_cg_array_generated_in_cs_replica() const;
   // Use this comparison function to determine which schema has been updated later
   // true: input_schema is newer
@@ -336,8 +342,8 @@ public:
   inline bool is_aux_lob_meta_table() const { return share::schema::is_aux_lob_meta_table(table_type_); }
   inline bool is_aux_lob_piece_table() const { return share::schema::is_aux_lob_piece_table(table_type_); }
   OB_INLINE bool is_user_hidden_table() const { return share::schema::TABLE_STATE_IS_HIDDEN_MASK & table_mode_.state_flag_; }
-  OB_INLINE bool is_heap_table() const { return share::schema::TOM_HEAP_ORGANIZED == (enum share::schema::ObTableOrganizationMode)table_mode_.organization_mode_; }
   OB_INLINE bool is_cs_replica_compat() const { return is_cs_replica_compat_; }
+  int set_storage_schema_version(const uint64_t tenant_data_version);
 
   VIRTUAL_TO_STRING_KV(KP(this), K_(storage_schema_version), K_(version),
       K_(is_use_bloomfilter), K_(column_info_simplified), K_(compat_mode), K_(table_type), K_(index_type),
@@ -348,7 +354,7 @@ public:
       "skip_index_cnt", skip_idx_attr_array_.count(), K_(skip_idx_attr_array),
       "column_group_cnt", column_group_array_.count(), K_(column_group_array), K_(has_all_column_group));
 public:
-  static void trim(const ObCollationType type, blocksstable::ObStorageDatum &storage_datum);
+  static int trim(const ObCollationType type, blocksstable::ObStorageDatum &storage_datum);
 private:
   int copy_from(const share::schema::ObMergeSchema &input_schema);
   int deep_copy_str(const ObString &src, ObString &dest);
@@ -390,7 +396,7 @@ public:
   static const int32_t SS_ONE_BIT = 1;
   static const int32_t SS_HALF_BYTE = 4;
   static const int32_t SS_ONE_BYTE = 8;
-  static const int32_t SS_RESERVED_BITS = 17;
+  static const int32_t SS_RESERVED_BITS = 16;
 
   // STORAGE_SCHEMA_VERSION is for serde compatibility.
   // Currently we do not use "standard" serde function macro,
@@ -415,6 +421,7 @@ public:
       uint32_t is_use_bloomfilter_  :SS_ONE_BIT;
       uint32_t column_info_simplified_ :SS_ONE_BIT;
       uint32_t is_cs_replica_compat_ :SS_ONE_BIT; // for storage schema on tablet
+      uint32_t is_column_table_schema_ :SS_ONE_BIT;
       uint32_t reserved_            :SS_RESERVED_BITS;
     };
   };
@@ -473,7 +480,7 @@ public:
       const share::schema::ObTableSchema &input_schema,
       const lib::Worker::CompatMode compat_mode,
       const bool skip_column_info,
-      const int64_t compat_version);
+      const uint64_t tenant_data_version);
   int init(common::ObIAllocator &allocator,
       const ObCreateTabletSchema &old_schema);
   INHERIT_TO_STRING_KV("ObStorageSchema", ObStorageSchema, K_(table_id), K_(index_status), K_(truncate_version));

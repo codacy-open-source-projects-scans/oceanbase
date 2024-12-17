@@ -93,6 +93,8 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
 {
   int ret = OB_SUCCESS;
   ObMemtableCtx *mt_ctx = nullptr;
+  const char *can_not_do_tx_end_reason = nullptr;
+  bool can_do_tx_end = true;
   ObMulSourceDataNotifyArg tmp_notify_arg = arg;
   if (OB_ISNULL(part_ctx)) {
     ret = OB_INVALID_ARGUMENT;
@@ -192,8 +194,27 @@ int ObMulSourceTxDataNotifier::notify(const ObTxBufferNodeArray &array,
               buffer_ctx.on_redo(arg.scn_);\
               break;\
               case NotifyType::TX_END:\
-              MDS_LOG(INFO, "buffer ctx before_prepare", K(node), KP(&buffer_ctx), K(buffer_ctx));\
-              buffer_ctx.before_prepare();\
+              if (node.type_ == ObTxDataSourceType::TEST1 ||\
+                  node.type_ == ObTxDataSourceType::START_TRANSFER_IN ||\
+                  node.type_ == ObTxDataSourceType::TRANSFER_IN_ABORTED ||\
+                  node.type_ == ObTxDataSourceType::FINISH_TRANSFER_IN) {\
+                can_do_tx_end = common::meta::MdsCheckCanDoTxEndWrapper<HELPER_CLASS>::\
+                                check_can_do_tx_end(arg.willing_to_commit_,\
+                                                    arg.for_replay_,\
+                                                    arg.scn_,\
+                                                    buf,\
+                                                    len,\
+                                                    *const_cast<mds::BufferCtx*>(node.get_buffer_ctx_node().get_ctx()),\
+                                                    can_not_do_tx_end_reason);\
+              }\
+              if (!can_do_tx_end) {\
+                ret = OB_EAGAIN;\
+                MDS_ASSERT(OB_NOT_NULL(can_not_do_tx_end_reason));\
+                MDS_LOG(INFO, "check can do tx end return false", KR(ret), K(node), K(can_not_do_tx_end_reason));\
+              } else {\
+                MDS_LOG(INFO, "buffer ctx before_prepare", K(node), KP(&buffer_ctx), K(buffer_ctx));\
+                buffer_ctx.before_prepare();\
+              }\
               break;\
               case NotifyType::ON_PREPARE:\
               MDS_LOG(INFO, "buffer ctx on_prepare", K(node), KP(&buffer_ctx), K(buffer_ctx));\
@@ -386,7 +407,11 @@ int ObMulSourceTxDataNotifier::notify_ddl_barrier(const NotifyType type,
 // ObMulSourceTxDataDump
 //#####################################################
 const char *
-ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf, const int64_t len)
+ObMulSourceTxDataDump::dump_buf(
+    ObTxDataSourceType source_type,
+    const char *buf,
+    const int64_t len,
+    ObCStringHelper &helper)
 {
   int ret = OB_SUCCESS;
   const char *dump_str = "Unkown Multi Data Source";
@@ -405,7 +430,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(lock_op);
+        dump_str = helper.convert(lock_op);
       }
       break;
     }
@@ -417,7 +442,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(ls_attr);
+        dump_str = helper.convert(ls_attr);
       }
       break;
     }
@@ -429,7 +454,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(create_arg);
+        dump_str = helper.convert(create_arg);
       }
       break;
     }
@@ -441,7 +466,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(remove_arg);
+        dump_str = helper.convert(remove_arg);
       }
       break;
     }
@@ -453,7 +478,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(log);
+        dump_str = helper.convert(log);
       }
       break;
     }
@@ -465,7 +490,7 @@ ObMulSourceTxDataDump::dump_buf(ObTxDataSourceType source_type, const char *buf,
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(WARN, "deserialize error", KR(ret), K(pos), K(len));
       } else {
-        dump_str = to_cstring(modify_arg);
+        dump_str = helper.convert(modify_arg);
       }
       break;
     }

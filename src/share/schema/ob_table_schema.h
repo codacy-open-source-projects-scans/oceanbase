@@ -895,6 +895,16 @@ public:
       const ObTabletID &tablet_id,
       int64_t &part_id,
       int64_t &subpart_id) const;
+  int get_all_first_level_part_ids(
+      ObIArray<int64_t> &first_level_part_ids) const;
+  int get_part_ids_by_subpart_ids(
+      const ObIArray<int64_t> &subpart_ids,
+      ObIArray<int64_t> &part_ids,
+      int64_t &subpart_cnt_in_parts) const;
+  int get_part_idx_by_part_id(
+      const ObIArray<int64_t> &part_ids,
+      ObIArray<int64_t> &part_idx,
+      ObIArray<int64_t> &subpart_idx) const;
   int get_hidden_part_id_by_tablet_id(
       const ObTabletID &tablet_id,
       int64_t &part_id) const;
@@ -1388,8 +1398,10 @@ public:
   // Copy all constraint information in src_schema
   int assign_constraint(const ObTableSchema &other);
   int assign_partition_schema_without_auto_part_attr(const ObTableSchema &other);
-  int enable_auto_partition(const int64_t auto_part_size);
-  int detect_part_func_type(ObPartitionFuncType &part_func_type);
+  int enable_auto_partition(const int64_t auto_part_size, const ObPartitionFuncType &part_func_type);
+  int detect_auto_part_func_type(ObPartitionFuncType &part_func_type);
+
+  int is_range_col_part_type(bool &is_range_column_type) const;
   void forbid_auto_partition();
   void clear_constraint();
   int set_ttl_definition(const common::ObString &ttl_definition) { return deep_copy_str(ttl_definition, ttl_definition_); }
@@ -1401,6 +1413,7 @@ public:
   { auto_increment_cache_size_ = auto_increment_cache_size; }
 //get methods
   bool is_valid() const;
+  int check_valid(const bool count_varchar_size_by_byte) const;
 
   int get_generated_column_by_define(const common::ObString &col_def,
                                      const bool only_hidden_column,
@@ -1430,7 +1443,7 @@ public:
   const ObConstraint *get_constraint(const common::ObString &constraint_name) const;
   int get_pk_constraint_name(common::ObString &pk_name) const;
   const ObConstraint *get_pk_constraint() const;
-
+  int64_t get_index_count() const;
   int64_t get_column_idx(const uint64_t column_id, const bool ignore_hidden_column = false) const;
   int64_t get_replica_num() const;
   int64_t get_tablet_size() const { return tablet_size_; }
@@ -1518,7 +1531,6 @@ public:
   inline ObNameGeneratedType get_name_generated_type() const { return name_generated_type_; }
   bool is_sys_generated_name(bool check_unknown) const;
   inline bool is_user_specified_partition_for_external_table() const { return (table_flags_ & EXTERNAL_TABLE_USER_SPECIFIED_PARTITION_FLAG) != 0; }
-  inline bool is_odps_external_table() const { return !external_properties_.empty(); }
   inline bool is_index_visible() const
   {
     return 0 == (index_attributes_set_ & ((uint64_t)(1) << INDEX_VISIBILITY));
@@ -1665,6 +1677,8 @@ public:
   void set_column_store(const bool support_column_store) { is_column_store_supported_ = support_column_store; }
   int get_is_column_store(bool &is_column_store) const;
   uint64_t get_max_used_column_group_id() const { return max_used_column_group_id_; }
+  uint64_t get_next_single_column_group_id() const { return max_used_column_group_id_ > ROWKEY_COLUMN_GROUP_ID ? max_used_column_group_id_ + 1 : ROWKEY_COLUMN_GROUP_ID + 1; }
+  int check_is_normal_cgs_at_the_end(bool &is_normal_cgs_at_the_end) const;
   void set_max_used_column_group_id(const uint64_t id) { max_used_column_group_id_ = id; }
   int add_column_group(const ObColumnGroupSchema &other);
   // This function is only used when add default cg for sys_schema in 'hard-code' python script
@@ -1677,6 +1691,8 @@ public:
                               const bool filter_empty_cg = true) const;
   int remove_column_group(const uint64_t column_group_id);
   int has_all_column_group(bool &has_all_column_group) const;
+  int has_non_default_column_group(bool &has_non_default_column_group) const;
+  int adjust_column_group_array();
   // materialized view log related
   template <typename Allocator>
   static int build_mlog_table_name(Allocator &allocator,
@@ -1692,10 +1708,6 @@ public:
   inline bool is_ordered() const { return USING_BTREE == index_using_type_; }
   virtual int serialize_columns(char *buf, const int64_t data_len, int64_t &pos) const;
   virtual int deserialize_columns(const char *buf, const int64_t data_len, int64_t &pos);
-  int serialize_constraints(char *buf, const int64_t data_len, int64_t &pos) const;
-  int deserialize_constraints(const char *buf, const int64_t data_len, int64_t &pos);
-  int serialize_column_groups(char *buf, const int64_t data_len, int64_t &pos) const;
-  int deserialize_column_groups(const char *buf, const int64_t data_len, int64_t &pos);
 
   /**
    * FIXME: move to ObPartitionSchema
@@ -1912,6 +1924,8 @@ public:
   bool has_lob_aux_table() const { return (aux_lob_meta_tid_ != OB_INVALID_ID && aux_lob_piece_tid_ != OB_INVALID_ID); }
   bool has_mlog_table() const { return (OB_INVALID_ID != mlog_tid_); }
   bool required_by_mview_refresh() const { return has_mlog_table() || table_referenced_by_fast_lsm_mv(); }
+  // ObColumnIterByPrevNextID's column id is not in order, it means table has add column instant and return true
+  int has_add_column_instant(bool &add_column_instant) const;
   inline void add_table_flag(uint64_t flag) { table_flags_ |= flag; }
   inline void del_table_flag(uint64_t flag) { table_flags_ &= ~flag; }
   inline void add_or_del_table_flag(uint64_t flag, bool is_add)

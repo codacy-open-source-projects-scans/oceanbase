@@ -370,12 +370,12 @@ int ObPartitionMergePolicy::find_mini_merge_tables(
   // Freezing in the restart phase may not satisfy end >= last_max_sstable,
   // so the memtable cannot be filtered by scn
   // can only take out all frozen memtable
-  ObITabletMemtable *memtable = nullptr;
+  ObIMemtable *memtable = nullptr;
   const ObTabletID &tablet_id = tablet.get_tablet_meta().tablet_id_;
   bool has_release_memtable = false;
 
   for (int64_t i = 0; OB_SUCC(ret) && i < memtable_handles.count(); ++i) {
-    if (OB_ISNULL(memtable = static_cast<ObITabletMemtable *>(memtable_handles.at(i).get_table()))) {
+    if (OB_ISNULL(memtable = static_cast<ObIMemtable *>(memtable_handles.at(i).get_table()))) {
       ret = OB_ERR_SYS;
       LOG_ERROR("memtable must not null", K(ret), K(tablet));
     } else if (memtable->is_direct_load_memtable()) {
@@ -1105,12 +1105,18 @@ int ObPartitionMergePolicy::get_multi_version_start(
   if (tablet.is_ls_inner_tablet()) {
     result_version_range.multi_version_start_ = INT64_MAX;
   } else if (OB_FAIL(tablet.get_kept_snapshot_info(ls.get_min_reserved_snapshot(), snapshot_info))) {
-    if (is_mini_merge(merge_type) || OB_TENANT_NOT_EXIST == ret) {
+    // Minor Merge need read medium list to decide boundary snapshot and multi version start.
+    // Bug when ls is migrating, data is not complete and mds data can not be read.
+    // So if the sstable cnt is unsafe, a emergency minor should be scheduled.
+    const bool need_emergency_minor = OB_EAGAIN == ret && is_minor_merge_type(merge_type)
+                                   && !tablet.get_tablet_meta().ha_status_.is_data_status_complete()
+                                   && (tablet.get_major_table_count() + tablet.get_minor_table_count()) > OB_UNSAFE_TABLE_CNT;
+    if (is_mini_merge(merge_type) || OB_TENANT_NOT_EXIST == ret || need_emergency_minor) {
       snapshot_info.reset();
       snapshot_info.snapshot_type_ = ObStorageSnapshotInfo::SNAPSHOT_MULTI_VERSION_START_ON_TABLET;
       snapshot_info.snapshot_ = tablet.get_multi_version_start();
       FLOG_INFO("failed to get multi_version_start, use multi_version_start on tablet", K(ret),
-          "merge_type", merge_type_to_str(merge_type), K(snapshot_info));
+          "merge_type", merge_type_to_str(merge_type), K(snapshot_info), K(need_emergency_minor));
       ret = OB_SUCCESS; // clear errno
     } else {
       LOG_WARN("failed to get kept multi_version_start", K(ret),
@@ -1836,6 +1842,7 @@ const char * ObCOMajorMergeTypeStr[] = {
   "BUILD_COLUMN_STORE_MERGE",
   "BUILD_ROW_STORE_MERGE",
   "USE_RS_BUILD_SCHEMA_MATCH_MERGE",
+  "BUILD_REDUNDANT_ROW_STORE_MERGE",
 };
 
 const char* ObCOMajorMergePolicy::co_major_merge_type_to_str(const ObCOMajorMergeType co_merge_type)
@@ -1862,6 +1869,8 @@ int ObCOMajorMergePolicy::decide_co_major_sstable_status(
   if (storage_schema.has_all_column_group()) {
     if (co_sstable.is_row_store_only_co_table()) {
       major_sstable_status = ObCOMajorSSTableStatus::COL_ONLY_ALL;
+    } else if (co_sstable.is_rowkey_cg_base()) {
+      major_sstable_status = ObCOMajorSSTableStatus::PURE_COL_WITH_ALL;
     } else {
       major_sstable_status = ObCOMajorSSTableStatus::COL_WITH_ALL;
     }

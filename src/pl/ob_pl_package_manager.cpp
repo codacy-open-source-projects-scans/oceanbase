@@ -1045,9 +1045,9 @@ int ObPLPackageManager::set_package_var_val(const ObPLResolveCtx &resolve_ctx,
                                             bool from_proxy)
 {
   int ret = OB_SUCCESS;
-  ObPLPackageState *package_state = NULL;
   bool need_free_new = false;
   bool need_free_old = false;
+  ObPLPackageState *package_state = NULL;
   ObObj old_var_val;
   ObObj new_var_val;
   const ObPLVar *var = NULL;
@@ -1109,19 +1109,26 @@ int ObPLPackageManager::set_package_var_val(const ObPLResolveCtx &resolve_ctx,
     ret = OB_ERR_NUMERIC_OR_VALUE_ERROR;
     LOG_WARN("not null check violated", K(var->is_not_null()), K(var_val.is_null()), K(ret));
   }
-  OZ (package_state->set_package_var_val(var_idx, new_var_val, !need_deserialize));
+  OZ (package_state->set_package_var_val(var_idx, new_var_val, resolve_ctx, !need_deserialize));
   OX (need_free_old = true);
   OX (need_free_new = false);
   OZ (update_special_package_status(resolve_ctx, package_id, *var, old_var_val, new_var_val));
 
   if (OB_NOT_NULL(var) && var->get_type().is_cursor_type() && !var->get_type().is_cursor_var()) {
-    // package ref cursor variable, refrence outside, do not destruct it.
+    // package ref cursor variable, refrence outside, do not destruct old var val.
   } else {
     if (OB_FAIL(ret) && need_free_new) {
-      ObUserDefinedType::destruct_obj(new_var_val, &(resolve_ctx.session_info_));
+      ObUserDefinedType::destruct_objparam(package_state->get_pkg_allocator(), new_var_val, &(resolve_ctx.session_info_));
     }
     if (need_free_old) {
-      ObUserDefinedType::destruct_obj(old_var_val, &(resolve_ctx.session_info_));
+      if (new_var_val.is_null() &&
+          old_var_val.is_pl_extend() &&
+          var->get_type().get_type() != PL_CURSOR_TYPE &&
+          var->get_type().get_type() != PL_REF_CURSOR_TYPE) {
+        // do nothing
+      } else {
+        ObUserDefinedType::destruct_objparam(package_state->get_pkg_allocator(), old_var_val, &(resolve_ctx.session_info_));
+      }
     }
   }
   if (!need_deserialize) {
@@ -1584,6 +1591,7 @@ int ObPLPackageManager::get_package_item_state(const ObPLResolveCtx &resolve_ctx
       ObArenaAllocator tmp_allocator;
       OX (exec_ctx_bak.backup(exec_ctx));
       OZ (exec_env_bak.load(resolve_ctx.session_info_, &tmp_allocator));
+      OZ (package_state->init());
       if (OB_SUCC(ret)) {
         OZ (package.get_exec_env().store(resolve_ctx.session_info_));
         sql::ObPhysicalPlanCtx phy_plan_ctx(exec_ctx.get_allocator());
@@ -1697,8 +1705,6 @@ int ObPLPackageManager::add_package_to_plan_cache(const ObPLResolveCtx &resolve_
       pc_ctx.session_info_ = &resolve_ctx.session_info_;
       pc_ctx.schema_guard_ = &resolve_ctx.schema_guard_;
       (void)ObSQLUtils::md5(sql,pc_ctx.sql_id_, (int32_t)sizeof(pc_ctx.sql_id_));
-      int64_t sys_schema_version = OB_INVALID_VERSION;
-      int64_t tenant_schema_version = OB_INVALID_VERSION;
       pc_ctx.key_.namespace_ = ObLibCacheNameSpace::NS_PKG;
       pc_ctx.key_.db_id_ = database_id;
       pc_ctx.key_.key_id_ = package_id;
@@ -1708,15 +1714,6 @@ int ObPLPackageManager::add_package_to_plan_cache(const ObPLResolveCtx &resolve_
       pc_ctx.key_.mode_ = resolve_ctx.session_info_.get_pl_profiler() != nullptr
                           ? ObPLObjectKey::ObjectMode::PROFILE : ObPLObjectKey::ObjectMode::NORMAL;
 
-      if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(resolve_ctx.schema_guard_.get_schema_version(tenant_id, tenant_schema_version))
-          || OB_FAIL(resolve_ctx.schema_guard_.get_schema_version(OB_SYS_TENANT_ID, sys_schema_version))) {
-        LOG_WARN("fail to get schema version", K(ret), K(tenant_id));
-      } else {
-        package->set_tenant_schema_version(tenant_schema_version);
-        package->set_sys_schema_version(sys_schema_version);
-        package->get_stat_for_update().name_ = package->get_name();
-      }
       if (OB_FAIL(ret)) {
         // do nothing
       } else if (OB_FAIL(ObPLCacheMgr::add_pl_cache(resolve_ctx.session_info_.get_plan_cache(), package, pc_ctx))) {

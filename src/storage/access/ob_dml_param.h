@@ -138,7 +138,8 @@ public:
         need_switch_param_(false),
         is_mds_query_(false),
         is_thread_scope_(true),
-        tx_seq_base_(-1)
+        tx_seq_base_(-1),
+        need_update_tablet_param_(false)
   {}
   virtual ~ObTableScanParam() {}
 public:
@@ -172,6 +173,7 @@ public:
   bool is_thread_scope_;
   ObRangeArray ss_key_ranges_;  // used for index skip scan, use as postfix range for ObVTableScanParam::key_ranges_
   int64_t tx_seq_base_;  // used by lob when main table is read_latest
+  bool need_update_tablet_param_; // whether need to update tablet-level param, such as split filter param
 
   DECLARE_VIRTUAL_TO_STRING;
 private:
@@ -241,7 +243,6 @@ struct ObDMLBaseParam
   mutable ObArenaAllocator lob_allocator_;
   const blocksstable::ObDatumRow *data_row_for_lob_; // for tablet split
   bool is_valid() const { return (timeout_ > 0 && schema_version_ >= 0) && nullptr != store_ctx_guard_; }
-  bool is_direct_insert() const { return (direct_insert_task_id_ > 0); }
   DECLARE_TO_STRING;
 };
 

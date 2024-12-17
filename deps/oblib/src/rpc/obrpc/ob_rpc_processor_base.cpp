@@ -31,6 +31,7 @@
 #include "rpc/obrpc/ob_rpc_processor_base.h"
 #include "rpc/obrpc/ob_rpc_net_handler.h"
 #include "rpc/obrpc/ob_poc_rpc_server.h"
+#include "lib/ash/ob_active_session_guard.h"
 
 using namespace oceanbase::common;
 
@@ -52,6 +53,13 @@ int64_t __attribute__((weak)) get_stream_rpc_max_wait_timeout(int64_t tenant_id)
   UNUSED(tenant_id);
   return ObRpcProcessorBase::DEFAULT_WAIT_NEXT_PACKET_TIMEOUT;
 }
+
+bool __attribute__((weak)) stream_rpc_update_timeout()
+{
+  //do nothing
+  return false;
+}
+
 void ObRpcProcessorBase::reuse()
 {
   rpc_pkt_ = NULL;
@@ -167,6 +175,7 @@ int ObRpcProcessorBase::update_data_version()
 int ObRpcProcessorBase::deserialize()
 {
   int ret = OB_SUCCESS;
+  ACTIVE_SESSION_FLAG_SETTER_GUARD(in_rpc_decode);
   if (OB_ISNULL(rpc_pkt_)) {
     ret = OB_ERR_UNEXPECTED;
     RPC_OBRPC_LOG(ERROR, "rpc_pkt_ should not be NULL", K(ret));
@@ -498,6 +507,7 @@ int ObRpcProcessorBase::part_response(const int retcode, bool is_last)
 
     // serialize
     if (OB_SUCC(ret)) {
+      ACTIVE_SESSION_FLAG_SETTER_GUARD(in_rpc_encode);
       if (OB_ISNULL(using_buffer_)) {
         ret = OB_ERR_UNEXPECTED;
         RPC_OBRPC_LOG(ERROR, "using_buffer_ is NULL", K(ret));
@@ -638,7 +648,9 @@ int ObRpcProcessorBase::flush(int64_t wait_timeout, const ObAddr *src_addr)
     } else if (rpc_pkt_->is_stream_last()) {
       ret = OB_ITER_END;
     } else {
-      //do nothing
+      if (stream_rpc_update_timeout()) { // not to reset timeout_is if rpc is from the old version observer
+        THIS_WORKER.set_timeout_ts(rpc_pkt_->get_timestamp() + rpc_pkt_->get_timeout());
+      }
     }
   }
 

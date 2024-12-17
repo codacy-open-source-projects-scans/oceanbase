@@ -42,11 +42,12 @@ const char *ObLogTableScan::get_name() const
   const char *name = NULL;
   int ret = OB_SUCCESS;
   SampleInfo::SampleMethod sample_method = get_sample_info().method_;
-  if (NULL != pre_query_range_) {
-    if (OB_FAIL(get_pre_query_range()->is_get(is_get))) {
+  const ObQueryRangeProvider *pre_range = get_pre_graph();
+  if (NULL != pre_range) {
+    if (OB_FAIL(pre_range->is_get(is_get))) {
       // is_get always return true
       LOG_WARN("failed to get is_get", K(ret));
-    } else if (range_conds_.count() > 0) {
+    } else if (use_query_range()) {
       is_range = true;
     }
   }
@@ -86,6 +87,39 @@ const char *ObLogTableScan::get_name() const
     }
   }
   return name;
+}
+
+bool ObLogTableScan::use_query_range() const
+{
+  bool res = false;
+  const ObRangeNode *head = NULL;
+  bool cnt_dynamic_param = false;
+  if (range_conds_.count() > 0) {
+    // can extract precise range (for old query range)
+    res = true;
+  } else {
+    if (!ranges_.empty()) {
+      bool valid_range = false;
+      for (int64_t i = 0; !valid_range && i < ranges_.count(); ++i) {
+        if (!ranges_.at(i).is_whole_range()) {
+          valid_range = true;
+        }
+      }
+      res = valid_range;
+    }
+    // check pre range graph head for dynamic param
+    if (!res && OB_NOT_NULL(get_pre_range_graph()) &&
+                OB_NOT_NULL(head = get_pre_range_graph()->get_range_head())) {
+      for (int64_t i = 0; !cnt_dynamic_param && i < filter_exprs_.count(); ++i) {
+        cnt_dynamic_param = OB_NOT_NULL(filter_exprs_.at(i)) &&
+                            filter_exprs_.at(i)->has_flag(CNT_DYNAMIC_PARAM);
+      }
+      res = cnt_dynamic_param &&
+            get_pre_range_graph()->get_skip_scan_offset() == -1 &&
+            head->min_offset_ == 0 && !head->always_true_;
+    }
+  }
+  return res;
 }
 
 void ObLogTableScan::set_ref_table_id(uint64_t ref_table_id)
@@ -136,6 +170,7 @@ int ObLogTableScan::do_re_est_cost(EstimateCostInfo &param, double &card, double
                                             limit_percent, limit_count, offset_count))) {
     LOG_WARN("failed to get limit offset value", K(ret));
   } else {
+    est_cost_info_->rescan_left_server_list_ = param.rescan_left_server_list_;
     card = get_output_row_count();
     int64_t part_count = est_cost_info_->index_meta_info_.index_part_count_;
     double limit_count_double = static_cast<double>(limit_count);
@@ -169,10 +204,12 @@ int ObLogTableScan::do_re_est_cost(EstimateCostInfo &param, double &card, double
                                             *est_cost_info_,
                                             sample_info_,
                                             get_plan()->get_optimizer_context(),
+                                            access_path_->can_batch_rescan_,
                                             card,
                                             op_cost))) {
       LOG_WARN("failed to re estimate cost", K(ret));
     } else {
+      est_cost_info_->rescan_left_server_list_ = NULL;
       cost = op_cost;
       if (0 <= limit_count && param.need_row_count_ == -1) {
         // full scan with table filters
@@ -215,12 +252,15 @@ int ObLogTableScan::get_op_exprs(ObIArray<ObRawExpr*> &all_exprs)
     LOG_WARN("failed to push back expr", K(ret));
   } else if (NULL != group_id_expr_ && OB_FAIL(all_exprs.push_back(group_id_expr_))) {
     LOG_WARN("failed to push back expr", K(ret));
-  } else if (is_text_retrieval_scan() && OB_FAIL(get_text_retrieval_calc_exprs(all_exprs))) {
+  } else if (is_text_retrieval_scan()
+      && OB_FAIL(get_text_retrieval_calc_exprs(get_text_retrieval_info(), all_exprs))) {
     LOG_WARN("failed to get text retrieval exprs", K(ret));
   } else if (is_vec_idx_scan() && OB_FAIL(get_vec_idx_calc_exprs(all_exprs))) {
     LOG_WARN("failed to get text retrieval exprs", K(ret));
   } else if (OB_FAIL(append(all_exprs, rowkey_id_exprs_))) {
     LOG_WARN("failed to append rowkey doc exprs", K(ret));
+  } else if (has_func_lookup() && OB_FAIL(get_func_lookup_calc_exprs(all_exprs))) {
+    LOG_WARN("failed to get functional lookup exprs", K(ret));
   } else if (OB_FAIL(append(all_exprs, access_exprs_))) {
     LOG_WARN("failed to append exprs", K(ret));
   } else if (OB_FAIL(append(all_exprs, pushdown_aggr_exprs_))) {
@@ -267,19 +307,15 @@ int ObLogTableScan::allocate_expr_post(ObAllocExprContext &ctx)
       LOG_WARN("failed to mark expr as produced", K(*expr), K(branch_id_), K(id_), K(ret));
     }
   }
-  if (OB_SUCC(ret) && is_text_retrieval_scan()) {
+  if (OB_SUCC(ret)) {
     // match against relevance expr will be calculated in storage
     ObSEArray<ObRawExpr *, 8> tmp_exprs;
-    if (OB_FAIL(ObRawExprUtils::extract_column_exprs(get_text_retrieval_info().relevance_expr_, tmp_exprs))) {
-      LOG_WARN("failed to extract column exprs", K(ret));
-    } else if (OB_FAIL(tmp_exprs.push_back(get_text_retrieval_info().doc_token_cnt_))) {
-      LOG_WARN("failed to append tmp exprs", K(ret));
-    } else if (OB_FAIL(tmp_exprs.push_back(get_text_retrieval_info().total_doc_cnt_))) {
-      LOG_WARN("failed to append tmp exprs", K(ret));
-    } else if (OB_FAIL(tmp_exprs.push_back(get_text_retrieval_info().related_doc_cnt_))) {
-      LOG_WARN("failed to append tmp exprs", K(ret));
-    } else if (OB_FAIL(tmp_exprs.push_back(get_text_retrieval_info().match_expr_))) {
-      LOG_WARN("failed to append tmp exprs", K(ret));
+    if (is_text_retrieval_scan()
+        && OB_FAIL(get_text_retrieval_calc_exprs(get_text_retrieval_info(), tmp_exprs))) {
+      LOG_WARN("failed to get text retrieval calc exprs", K(ret));
+    } else if (has_func_lookup()
+        && OB_FAIL(get_func_lookup_calc_exprs(tmp_exprs))) {
+      LOG_WARN("failed to get func lookup exprs", K(ret));
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < tmp_exprs.count(); ++i) {
       ObRawExpr *expr = tmp_exprs.at(i);
@@ -481,12 +517,14 @@ int ObLogTableScan::generate_access_exprs()
     LOG_WARN("get unexpected null", K(get_plan()), K(get_stmt()), K(ret));
   } else if (OB_FAIL(copy_filter_before_index_back())) {
     LOG_WARN("failed to copy filter before index back", K(ret));
-  } else if (is_text_retrieval_scan() && OB_FAIL(prepare_text_retrieval_dep_exprs())) {
+  } else if (is_text_retrieval_scan() && OB_FAIL(prepare_text_retrieval_dep_exprs(get_text_retrieval_info()))) {
     LOG_WARN("failed to copy text retrieval aggr exprs", K(ret));
   } else if (is_vec_idx_scan() && OB_FAIL(prepare_vector_access_exprs())) {
     LOG_WARN("failed to copy vec idx scan exprs", K(ret));
-  } else if ((is_tsc_with_doc_id() || is_tsc_with_vid()) && OB_FAIL(prepare_rowkey_domain_id_dep_exprs())) {
+  } else if (need_rowkey_doc_expr() && OB_FAIL(prepare_rowkey_domain_id_dep_exprs())) {
     LOG_WARN("failed to prepare table scan with doc id info", K(ret));
+  } else if (has_func_lookup() && OB_FAIL(prepare_func_lookup_dep_exprs())) {
+    LOG_WARN("failed to prepare functional lookup dependent exprs", K(ret));
   } else if (OB_FAIL(generate_necessary_rowkey_and_partkey_exprs())) {
     LOG_WARN("failed to generate rowkey and part exprs", K(ret));
   } else if (OB_FAIL(allocate_group_id_expr())) {
@@ -755,9 +793,16 @@ int ObLogTableScan::extract_pushdown_filters(ObIArray<ObRawExpr*> &nonpushdown_f
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
           LOG_WARN("push variable assign filter store non-pushdown filter failed", K(ret), K(i));
         }
+      } else if (has_func_lookup() &&
+          (filters.at(i)->has_flag(CNT_MATCH_EXPR) || !flags.at(i))) {
+        // for filter with match expr in functional lookup, need to be evaluated after func lookup
+        // push-down filter on main-table lookup with functional lookup not supported by executor
+        if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
+          LOG_WARN("push func-lookup match filter to non-pushdown array failed", K(ret), K(i));
+        }
       } else if (is_text_retrieval_scan() && need_text_retrieval_calc_relevance()) {
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
-          LOG_WARN("push variable assign filter store non-pushdown filter failed", K(ret), K(i));
+          LOG_WARN("push text retrieval scan store non-pushdown filter failed", K(ret), K(i));
         }
       } else if (ignore_pd_filter) {
         //ignore_pd_filter: only extract non-pushdown filters, ignore others
@@ -1087,14 +1132,18 @@ int ObLogTableScan::generate_necessary_rowkey_and_partkey_exprs()
     LOG_WARN("failed to check whether stmt has mbr column", K(ret));
   } else if (need_doc_id_index_back() && OB_FAIL(extract_doc_id_index_back_expr(domain_exprs_, is_vec_idx_scan()))) {
     LOG_WARN("failed to extract doc id index back exprs", K(ret));
-  } else if (is_text_retrieval_scan() && OB_FAIL(extract_text_retrieval_access_expr(domain_exprs_))) {
+  } else if (is_text_retrieval_scan()
+      && OB_FAIL(extract_text_retrieval_access_expr(get_text_retrieval_info(), domain_exprs_))) {
     LOG_WARN("failed to extract text retrieval access exprs", K(ret));
   } else if (is_vec_idx_scan() && OB_FAIL(extract_vec_idx_access_expr(domain_exprs_))) {
     LOG_WARN("failed to extract vector index access exprs", K(ret));
-  }else if (is_heap_table && is_index_global_ && index_back_ &&
+  } else if (has_func_lookup()
+      && OB_FAIL(extract_func_lookup_access_exprs(domain_exprs_))) {
+    LOG_WARN("failed to extract functional lookup access exprs", K(ret));
+  } else if (is_heap_table && is_index_global_ && index_back_ &&
              OB_FAIL(get_part_column_exprs(table_id_, ref_table_id_, part_exprs_))) {
     LOG_WARN("failed to get part column exprs", K(ret));
-  } else if ((has_lob_column || index_back_) &&
+  } else if ((has_lob_column || index_back_ || has_func_lookup()) &&
              OB_FAIL(get_plan()->get_rowkey_exprs(table_id_, ref_table_id_, rowkey_exprs_))) {
     LOG_WARN("failed to generate rowkey exprs", K(ret));
   } else { /*do nothing*/ }
@@ -1379,6 +1428,7 @@ int ObLogTableScan::pick_out_query_range_exprs()
   ObOptimizerContext *opt_ctx = NULL;
   ObSqlSchemaGuard *schema_guard = NULL;
   const share::schema::ObTableSchema *index_schema = NULL;
+  const ObQueryRangeProvider *pre_range = get_pre_graph();
   /*
   * virtual table may have hash index,
   * for hash index, if it is a get, we should still extract the range condition
@@ -1397,8 +1447,8 @@ int ObLogTableScan::pick_out_query_range_exprs()
     LOG_WARN("get unexpected null", K(ret));
   } else if (OB_FAIL(is_table_get(is_get))) {
     LOG_WARN("failed to check is table get", K(ret));
-  } else if ((index_schema->is_ordered() || is_get) && NULL != pre_query_range_) {
-    const ObIArray<ObRawExpr *> &range_exprs = pre_query_range_->get_range_exprs();
+  } else if ((index_schema->is_ordered() || is_get) && NULL != pre_range) {
+    const ObIArray<ObRawExpr *> &range_exprs = pre_range->get_range_exprs();
     ObArray<ObRawExpr *> filter_exprs;
     if (OB_FAIL(filter_exprs.assign(filter_exprs_))) {
       LOG_WARN("assign filter exprs failed", K(ret));
@@ -1595,21 +1645,11 @@ int ObLogTableScan::get_plan_item_info(PlanText &plan_text,
       LOG_WARN("unexpected null param", K(ret));
     } else if (OB_FAIL(explain_index_selection_info(buf, buf_len, pos))) {
       LOG_WARN("failed to explain index selection info", K(ret));
-    } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
-    } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_ISNULL(table_meta =
       plan->get_basic_table_metas().get_table_meta_by_table_id(table_id_))) {
       //do nothing
-    } else if (OB_FAIL(BUF_PRINTF("stats info:[version=%ld", table_meta->get_version()))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
-    } else if (OB_FAIL(BUF_PRINTF(", is_locked=%d", table_meta->is_stat_locked()))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
-    } else if (OB_FAIL(BUF_PRINTF(", is_expired=%d", table_meta->is_opt_stat_expired()))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
-    } else if (OB_FAIL(BUF_PRINTF("]"))) {
-      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(print_stats_version(*table_meta, buf, buf_len, pos))) {
+      LOG_WARN("failed to print stats version", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
       LOG_WARN("BUF_PRINTF fails", K(ret));
     } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
@@ -1725,10 +1765,56 @@ int ObLogTableScan::get_plan_item_info(PlanText &plan_text,
         LOG_WARN("BUF_PRINTF fails", K(ret));
       }
     }
+
+    if (OB_SUCC(ret) && has_func_lookup()) {
+      if (OB_FAIL(BUF_PRINTF(", "))) {
+        LOG_WARN("BUF_PRINTF failed", K(ret));
+      } else if (OB_FAIL(BUF_PRINTF("has_functional_lookup=true"))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      }
+    }
+
     END_BUF_PRINT(plan_item.special_predicates_,
                   plan_item.special_predicates_len_);
   }
 
+  return ret;
+}
+
+int ObLogTableScan::print_stats_version(OptTableMeta &table_meta, char *buf, int64_t &buf_len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  ObLogPlan *plan = NULL;
+  ObSQLSessionInfo *session_info = NULL;
+  const ObTimeZoneInfo *cur_tz_info = NULL;
+  if (OB_ISNULL(plan = get_plan()) ||
+      OB_ISNULL(session_info = plan->get_optimizer_context().get_session_info()) ||
+      OB_ISNULL(cur_tz_info = session_info->get_tz_info_wrap().get_time_zone_info())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null param", K(ret));
+  } else {
+    char date[OB_CAST_TO_VARCHAR_MAX_LENGTH] = {0};
+    int64_t date_len = 0;
+    const ObDataTypeCastParams dtc_params(cur_tz_info);
+    ObOTimestampData in_val;
+    in_val.time_us_ = table_meta.get_version();
+    if (OB_FAIL(ObTimeConverter::otimestamp_to_str(in_val, dtc_params, 6, ObTimestampLTZType, date,
+                                                   sizeof(date), date_len))) {
+      LOG_WARN("failed to convert otimestamp to string", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF(NEW_LINE))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF(OUTPUT_PREFIX))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF("stats info:[version=%.*s", int32_t(date_len), date))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF(", is_locked=%d", table_meta.is_stat_locked()))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF(", is_expired=%d", table_meta.is_opt_stat_expired()))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    } else if (OB_FAIL(BUF_PRINTF("]"))) {
+      LOG_WARN("BUF_PRINTF fails", K(ret));
+    }
+  }
   return ret;
 }
 
@@ -2187,7 +2273,7 @@ int ObLogTableScan::print_range_annotation(char *buf,
     }
 
     if (OB_SUCC(ret) && is_skip_scan()) {
-      int64_t skip_scan_offset = get_pre_query_range()->get_skip_scan_offset();
+      int64_t skip_scan_offset = get_pre_graph()->get_skip_scan_offset();
       if (OB_FAIL(BUF_PRINTF("\n      prefix_columns_cnt = %ld , skip_scan_range", skip_scan_offset))) {
         LOG_WARN("BUF_PRINTF fails", K(ret));
       } else if (ss_ranges_.empty() && OB_FAIL(BUF_PRINTF("(MIN ; MAX)"))) {
@@ -2207,6 +2293,16 @@ int ObLogTableScan::print_range_annotation(char *buf,
           LOG_WARN("BUF_PRINTF fails", K(ret));
         }
         EXPLAIN_PRINT_EXPRS(range_cond, type);
+      }
+    }
+  }
+
+  if (OB_SUCC(ret) && EXPLAIN_EXTENDED == type) {
+    if (pre_range_graph_ != nullptr && pre_range_graph_->is_fast_nlj_range()) {
+      if (OB_FAIL(BUF_PRINTF(", "))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else if (OB_FAIL(BUF_PRINTF(" is_fast_range = true"))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
       }
     }
   }
@@ -2265,10 +2361,12 @@ int ObLogTableScan::print_outline_data(PlanText &plan_text)
   TableItem *table_item = NULL;
   ObString qb_name;
   const ObString *index_name = NULL;
-  int64_t index_prefix = -1;
+  int64_t index_prefix = index_prefix_;
   ObItemType index_type = T_INDEX_HINT;
   const ObDMLStmt *stmt = NULL;
-  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt())) {
+  bool use_desc_hint = get_scan_direction() == default_desc_direction();
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(stmt = get_plan()->get_stmt()) ||
+      OB_ISNULL(stmt->get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected NULl", K(ret), K(get_plan()), K(stmt));
   } else if (OB_FAIL(stmt->get_qb_name(qb_name))) {
@@ -2285,23 +2383,22 @@ int ObLogTableScan::print_outline_data(PlanText &plan_text)
       LOG_WARN("failed to print table parallel hint", K(ret));
     }
   }
+  if (OB_SUCC(ret)) {
+    use_desc_hint &= stmt->get_query_ctx()->check_opt_compat_version(COMPAT_VERSION_4_3_5);
+  }
   if (OB_FAIL(ret)) {
   } else if (is_skip_scan()) {
-    index_type = T_INDEX_SS_HINT;
+    index_type = use_desc_hint ? T_INDEX_SS_DESC_HINT : T_INDEX_SS_HINT;
     if (ref_table_id_ == index_table_id_) {
       index_name = &ObIndexHint::PRIMARY_KEY;
     } else {
       index_name = &get_index_name();
     }
-  } else if (OB_FAIL(get_plan()->get_log_plan_hint().get_index_prefix(table_id_,
-                                                  index_table_id_,
-                                                  index_prefix))) {
-    LOG_WARN("failed to get index prefix", K(table_id_), K(index_table_id_), K(index_prefix), K(ret));
-  } else if (ref_table_id_ == index_table_id_ && index_prefix < 0) {
+  } else if (ref_table_id_ == index_table_id_ && index_prefix < 0 && !use_desc_hint) {
     index_type = T_FULL_HINT;
     index_name = &ObIndexHint::PRIMARY_KEY;
   } else {
-    index_type = T_INDEX_HINT;
+    index_type = use_desc_hint ? T_INDEX_DESC_HINT : T_INDEX_HINT;
     if (ref_table_id_ == index_table_id_) {
       index_name = &ObIndexHint::PRIMARY_KEY;
     } else {
@@ -2407,16 +2504,17 @@ int ObLogTableScan::print_used_hint(PlanText &plan_text)
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected log index hint", K(ret), K(*table_hint));
     } else if (table_hint->is_use_index_hint()) {// print used use index hint
+      const ObIndexHint *index_hint = NULL;
       if (ObOptimizerUtil::find_item(table_hint->index_list_, index_table_id_, &idx)) {
         if (OB_UNLIKELY(idx < 0 || idx >= table_hint->index_list_.count())
-            || OB_ISNULL(hint = table_hint->index_hints_.at(idx))) {
+            || OB_ISNULL(index_hint = static_cast<const ObIndexHint *>(table_hint->index_hints_.at(idx)))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected idx", K(ret), K(idx), K(table_hint->index_list_));
-        } else if (!is_skip_scan() && T_INDEX_SS_HINT == hint->get_hint_type()) {
+        } else if (!is_skip_scan() && index_hint->use_skip_scan()) {
           /* is not index skip scan but exist index_ss hint */
-        } else if (hint->is_trans_added()) {
+        } else if (index_hint->is_trans_added()) {
           //do nothing
-        } else if (OB_FAIL(hint->print_hint(plan_text))) {
+        } else if (OB_FAIL(index_hint->print_hint(plan_text))) {
           LOG_WARN("failed to print index hint", K(ret), K(*hint));
         }
       }
@@ -2538,8 +2636,9 @@ int ObLogTableScan::allocate_granule_post(AllocGIContext &ctx)
 int ObLogTableScan::is_table_get(bool &is_get) const
 {
   int ret = OB_SUCCESS;
-  if (pre_query_range_ != NULL) {
-    if (OB_FAIL(pre_query_range_->is_get(is_get))) {
+  const ObQueryRangeProvider *pre_range = get_pre_graph();
+  if (pre_range != NULL) {
+    if (OB_FAIL(pre_range->is_get(is_get))) {
       LOG_WARN("check query range is table get", K(ret));
     }
   }
@@ -2600,34 +2699,34 @@ bool ObLogTableScan::is_duplicate_table()
 int ObLogTableScan::extract_bnlj_param_idxs(ObIArray<int64_t> &bnlj_params)
 {
   int ret = OB_SUCCESS;
-  ObArray<ObRawExpr*> range_param_exprs;
-  ObArray<ObRawExpr*> filter_param_exprs;
-  if (OB_FAIL(ObRawExprUtils::extract_params(range_conds_, range_param_exprs))) {
-    LOG_WARN("extract range params failed", K(ret));
-  } else if (OB_FAIL(ObRawExprUtils::extract_params(filter_exprs_, filter_param_exprs))) {
-    LOG_WARN("extract filter params failed", K(ret));
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < range_param_exprs.count(); ++i) {
-    ObRawExpr *expr = range_param_exprs.at(i);
-    if (expr->has_flag(IS_DYNAMIC_PARAM)) {
-      ObConstRawExpr *exec_param = static_cast<ObConstRawExpr*>(expr);
-      if (OB_FAIL(add_var_to_array_no_dup(bnlj_params, exec_param->get_value().get_unknown()))) {
-        LOG_WARN("add var to array no dup failed", K(ret));
+  if (use_batch()) {
+    ObArray<ObRawExpr*> range_param_exprs;
+    ObArray<ObRawExpr*> filter_param_exprs;
+    if (OB_FAIL(ObRawExprUtils::extract_params(range_conds_, range_param_exprs))) {
+      LOG_WARN("extract range params failed", K(ret));
+    } else if (OB_FAIL(ObRawExprUtils::extract_params(filter_exprs_, filter_param_exprs))) {
+      LOG_WARN("extract filter params failed", K(ret));
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < range_param_exprs.count(); ++i) {
+      ObRawExpr *expr = range_param_exprs.at(i);
+      if (expr->has_flag(IS_DYNAMIC_PARAM)) {
+        ObConstRawExpr *exec_param = static_cast<ObConstRawExpr*>(expr);
+        if (OB_FAIL(add_var_to_array_no_dup(bnlj_params, exec_param->get_value().get_unknown()))) {
+          LOG_WARN("add var to array no dup failed", K(ret));
+        }
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < filter_param_exprs.count(); ++i) {
+      ObRawExpr *expr = filter_param_exprs.at(i);
+      if (expr->has_flag(IS_DYNAMIC_PARAM)) {
+        ObConstRawExpr *exec_param = static_cast<ObConstRawExpr*>(expr);
+        if (OB_FAIL(add_var_to_array_no_dup(bnlj_params, exec_param->get_value().get_unknown()))) {
+          LOG_WARN("add var to array no dup failed", K(ret));
+        }
       }
     }
   }
-  for (int64_t i = 0; OB_SUCC(ret) && i < filter_param_exprs.count(); ++i) {
-    ObRawExpr *expr = filter_param_exprs.at(i);
-    if (expr->has_flag(IS_DYNAMIC_PARAM)) {
-      ObConstRawExpr *exec_param = static_cast<ObConstRawExpr*>(expr);
-      if (OB_FAIL(add_var_to_array_no_dup(bnlj_params, exec_param->get_value().get_unknown()))) {
-        LOG_WARN("add var to array no dup failed", K(ret));
-      }
-    }
-  }
-  if (OB_SUCC(ret)) {
-    LOG_DEBUG("extract bnlj params", K(range_param_exprs), K(filter_param_exprs), K(bnlj_params));
-  }
+  LOG_TRACE("extract bnlj params", K(use_batch_), K(bnlj_params), K(ret));
   return ret;
 }
 
@@ -2925,10 +3024,10 @@ int ObLogTableScan::extract_doc_id_index_back_expr(ObIArray<ObRawExpr *> &exprs,
   return ret;
 }
 
-int ObLogTableScan::extract_text_retrieval_access_expr(ObIArray<ObRawExpr *> &exprs)
+int ObLogTableScan::extract_text_retrieval_access_expr(ObTextRetrievalInfo &tr_info,
+                                                       ObIArray<ObRawExpr *> &exprs)
 {
   int ret = OB_SUCCESS;
-  ObTextRetrievalInfo &tr_info = get_text_retrieval_info();
   if (OB_ISNULL(tr_info.match_expr_) || OB_ISNULL(tr_info.total_doc_cnt_) ||
       OB_ISNULL(tr_info.doc_token_cnt_) || OB_ISNULL(tr_info.related_doc_cnt_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -3026,31 +3125,59 @@ int ObLogTableScan::get_vec_idx_calc_exprs(ObIArray<ObRawExpr *> &all_exprs)
   return ret;
 }
 
-int ObLogTableScan::get_text_retrieval_calc_exprs(ObIArray<ObRawExpr *> &all_exprs)
+int ObLogTableScan::get_text_retrieval_calc_exprs(ObTextRetrievalInfo &tr_info,
+                                                  ObIArray<ObRawExpr *> &all_exprs)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(get_text_retrieval_info().match_expr_)) {
+  if (OB_ISNULL(tr_info.match_expr_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null match against expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().related_doc_cnt_))) {
+  } else if (OB_FAIL(all_exprs.push_back(tr_info.related_doc_cnt_))) {
     LOG_WARN("failed to append relevanced doc cnt expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().doc_token_cnt_))) {
+  } else if (OB_FAIL(all_exprs.push_back(tr_info.doc_token_cnt_))) {
     LOG_WARN("failed to append doc token cnt expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().total_doc_cnt_))) {
+  } else if (OB_FAIL(all_exprs.push_back(tr_info.total_doc_cnt_))) {
     LOG_WARN("failed to append total doc cnt expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().relevance_expr_))) {
+  } else if (OB_FAIL(all_exprs.push_back(tr_info.relevance_expr_))) {
     LOG_WARN("failed to append relevance expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().match_expr_))) {
+  } else if (OB_FAIL(all_exprs.push_back(tr_info.match_expr_))) {
     LOG_WARN("failed to append text retrieval expr", K(ret));
-  } else if (OB_FAIL(all_exprs.push_back(get_text_retrieval_info().pushdown_match_filter_))) {
+  } else if (nullptr != tr_info.pushdown_match_filter_
+      && OB_FAIL(all_exprs.push_back(tr_info.pushdown_match_filter_))) {
     LOG_WARN("failed to append match filter", K(ret));
-  } else if (OB_NOT_NULL(get_text_retrieval_info().topk_limit_expr_) &&
-             OB_FAIL(all_exprs.push_back(get_text_retrieval_info().topk_limit_expr_))) {
+  } else if (nullptr != tr_info.topk_limit_expr_
+      && OB_FAIL(all_exprs.push_back(tr_info.topk_limit_expr_))) {
     LOG_WARN("failed to append limit expr", K(ret));
-  } else if (OB_NOT_NULL(get_text_retrieval_info().topk_offset_expr_) &&
-             OB_FAIL(all_exprs.push_back(get_text_retrieval_info().topk_offset_expr_))) {
+  } else if (nullptr != tr_info.topk_offset_expr_
+      && OB_FAIL(all_exprs.push_back(tr_info.topk_offset_expr_))) {
     LOG_WARN("failed to append offset expr", K(ret));
   }
+  return ret;
+}
+
+int ObLogTableScan::extract_func_lookup_access_exprs(ObIArray<ObRawExpr *> &all_exprs)
+{
+  int ret = OB_SUCCESS;
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < lookup_tr_infos_.count(); ++i) {
+    if (OB_FAIL(extract_text_retrieval_access_expr(lookup_tr_infos_.at(i), all_exprs))) {
+      LOG_WARN("failed to extract text retrieval access expr", K(ret), K(i), K(lookup_tr_infos_.at(i)));
+    }
+  }
+
+  return ret;
+}
+
+int ObLogTableScan::get_func_lookup_calc_exprs(ObIArray<ObRawExpr *> &all_exprs)
+{
+  int ret = OB_SUCCESS;
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < lookup_tr_infos_.count(); ++i) {
+    if (OB_FAIL(get_text_retrieval_calc_exprs(lookup_tr_infos_.at(i), all_exprs))) {
+      LOG_WARN("failed to get text retrieval calc expr", K(ret), K(i), K(lookup_tr_infos_.at(i)));
+    }
+  }
+
   return ret;
 }
 
@@ -3374,7 +3501,7 @@ int ObLogTableScan::prepare_vector_access_exprs()
   return ret;
 }
 
-int ObLogTableScan::prepare_text_retrieval_dep_exprs()
+int ObLogTableScan::prepare_text_retrieval_dep_exprs(ObTextRetrievalInfo &tr_info)
 {
   int ret = OB_SUCCESS;
   const ObTableSchema *table_schema;
@@ -3394,7 +3521,6 @@ int ObLogTableScan::prepare_text_retrieval_dep_exprs()
   ObAggFunRawExpr *total_doc_cnt = nullptr;
   ObAggFunRawExpr *doc_token_cnt = nullptr;
   ObOpRawExpr *relevance_expr = nullptr;
-  ObTextRetrievalInfo &tr_info = get_text_retrieval_info();
   if (OB_NOT_NULL(tr_info.doc_id_column_) && OB_NOT_NULL(tr_info.doc_length_column_) &&
       OB_NOT_NULL(tr_info.token_column_) && OB_NOT_NULL(tr_info.token_cnt_column_) &&
       OB_NOT_NULL(tr_info.doc_token_cnt_) && OB_NOT_NULL(tr_info.total_doc_cnt_) &&
@@ -3507,8 +3633,11 @@ int ObLogTableScan::prepare_text_retrieval_dep_exprs()
     // Copy column ref expr referenced by aggregation in different index table scan
     // to avoid share expression
     } else if (OB_FAIL(copier.copy(related_doc_cnt->get_param_expr(0)))) {
+      LOG_WARN("failed to copy related_doc_cnt expr", K(ret));
     } else if (OB_FAIL(copier.copy(total_doc_cnt->get_param_expr(0)))) {
+      LOG_WARN("failed to copy total_doc_cnt expr", K(ret));
     } else if (OB_FAIL(copier.copy(doc_token_cnt->get_param_expr(0)))) {
+      LOG_WARN("failed to copy doc_token_cnt expr", K(ret));
     } else {
       tr_info.token_column_ = token_column;
       tr_info.token_cnt_column_ = token_cnt_column;
@@ -3520,6 +3649,20 @@ int ObLogTableScan::prepare_text_retrieval_dep_exprs()
       tr_info.relevance_expr_ = relevance_expr;
     }
   }
+  return ret;
+}
+
+int ObLogTableScan::prepare_func_lookup_dep_exprs()
+{
+  int ret = OB_SUCCESS;
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < lookup_tr_infos_.count(); ++i) {
+    if (OB_FAIL(prepare_text_retrieval_dep_exprs(lookup_tr_infos_.at(i)))) {
+      LOG_WARN("failed to prepare text retrieval dependent exprs",
+          K(ret), K(i), K(lookup_tr_infos_.at(i)));
+    }
+  }
+
   return ret;
 }
 
@@ -3937,7 +4080,7 @@ int ObLogTableScan::prepare_rowkey_domain_id_dep_exprs()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, table schema is nullptr", K(ret));
   } else {
-    if (is_tsc_with_doc_id()) {
+    if (is_tsc_with_doc_id() || has_func_lookup()) {
       if (OB_FAIL(schema_guard->get_table_schema(rowkey_doc_tid_, rowkey_doc_schema))) {
         LOG_WARN("fail toprint_ranges get rowkey doc table schema", K(ret), K(rowkey_doc_tid_));
       } else if (OB_ISNULL(rowkey_doc_schema)) {
@@ -4058,6 +4201,36 @@ int ObLogTableScan::copy_gen_col_range_exprs()
           }
         }
       }
+    }
+  }
+  return ret;
+}
+
+int ObLogTableScan::try_adjust_scan_direction(const ObIArray<OrderItem> &sort_keys)
+{
+  int ret = OB_SUCCESS;
+  bool order_used = false;
+  const AccessPath *path = NULL;
+  if (OB_ISNULL(path = get_access_path())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(path));
+  } else if (sort_keys.empty() || path->ordering_.empty() ||
+             path->force_direction_ || use_batch()) {
+    // do nothing
+  } else if (OB_FAIL(check_op_orderding_used_by_parent(order_used))) {
+    LOG_WARN("failed to check op ordering", K(ret));
+  } else if (!order_used) {
+    const OrderItem &first_sortkey = sort_keys.at(0);
+    bool found = false;
+    bool need_reverse = false;
+    for (int64_t i = 0; !found && i < path->ordering_.count(); i ++) {
+      const OrderItem &path_order = path->ordering_.at(i);
+      if (path_order.expr_ == first_sortkey.expr_) {
+        found = true;
+      }
+    }
+    if (OB_SUCC(ret) && found) {
+      set_scan_direction(first_sortkey.order_type_);
     }
   }
   return ret;

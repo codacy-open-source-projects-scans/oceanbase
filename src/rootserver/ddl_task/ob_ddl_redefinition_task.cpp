@@ -375,23 +375,17 @@ int ObDDLRedefinitionTask::add_table_tablets_for_snapshot_(
   return ret;
 }
 
-int ObDDLRedefinitionTask::hold_snapshot_for_major_refresh_mv_(const int64_t snapshot_version)
+int ObDDLRedefinitionTask::prepare_tablets_for_major_refresh_mv_(common::ObIArray<common::ObTabletID> &tablet_ids)
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObTabletID, 1> tablet_ids;
-  ObRootService *root_service = GCTX.root_service_;
   ObMultiVersionSchemaService &schema_service = ObMultiVersionSchemaService::get_instance();
   ObSchemaGetterGuard schema_guard;
   SCN snapshot_scn;
+  tablet_ids.reset();
 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObDDLRedefinitionTask has not been inited", K(ret));
-  } else if (OB_ISNULL(root_service)) {
-    ret = OB_ERR_SYS;
-    LOG_WARN("error sys, root service must not be nullptr", K(ret));
-  } else if (OB_FAIL(snapshot_scn.convert_for_tx(snapshot_version))) {
-    LOG_WARN("failed to convert", K(snapshot_version), K(ret));
   } else if (OB_FAIL(schema_service.get_tenant_schema_guard(tenant_id_, schema_guard))) {
     LOG_WARN("get tenant schema guard failed", K(ret));
   } else if (OB_FAIL(add_table_tablets_for_snapshot_(target_object_id_, schema_guard, tablet_ids))) {
@@ -408,17 +402,9 @@ int ObDDLRedefinitionTask::hold_snapshot_for_major_refresh_mv_(const int64_t sna
         LOG_WARN("failed to get base table snapshot", K(ret), K(base_info.schema_id_));
       }
     }
-    if (OB_SUCC(ret)) {
-      ObDDLService &ddl_service = root_service->get_ddl_service();
-      if (OB_FAIL(ddl_service.get_snapshot_mgr().batch_acquire_snapshot(
-              ddl_service.get_sql_proxy(), SNAPSHOT_FOR_MAJOR_REFRESH_MV, tenant_id_,
-              schema_version_, snapshot_scn, nullptr, tablet_ids))) {
-        LOG_WARN("batch acquire snapshot failed", K(ret), K(tablet_ids));
-      }
-      LOG_INFO("[MAJ_REF_MV] hold snapshot for major refresh mv", KR(ret), K(snapshot_scn),
-               K(tablet_ids));
-    }
   }
+
+  LOG_INFO("prepare tablets for major refresh mv", K(ret), K(tablet_ids));
 
   return ret;
 }
@@ -477,19 +463,22 @@ int ObDDLRedefinitionTask::release_snapshot(const int64_t snapshot_version)
 int ObDDLRedefinitionTask::obtain_snapshot(const ObDDLTaskStatus next_task_status)
 {
   int ret = OB_SUCCESS;
+  ObSEArray<ObTabletID, 1> mv_tablet_ids;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObDDLRedefinitionTask has not been inited", K(ret));
-  } else if (snapshot_version_ > 0 && snapshot_held_) {
-    // do nothing, already hold snapshot.
-  } else if (OB_FAIL(ObDDLUtil::obtain_snapshot(next_task_status, object_id_,
-                                                target_object_id_, snapshot_version_,
-                                                snapshot_held_, this))) {
-    LOG_WARN("fail to obtain_snapshot", K(ret), K(snapshot_version_), K(snapshot_held_));
+  } else if (snapshot_version_ > 0) {
+    // already obtained, to switch to the next status.
+    if (OB_FAIL(switch_status(next_task_status, true, ret))) {
+      LOG_WARN("fail to switch task status", K(ret));
+    }
   } else if (alter_table_arg_.mview_refresh_info_.is_mview_complete_refresh_ &&
              alter_table_arg_.alter_table_schema_.mv_major_refresh() &&
-             OB_FAIL(hold_snapshot_for_major_refresh_mv_(snapshot_version_))) {
-    LOG_WARN("failed to hold snapshot for major refresh mv", K(ret), K(snapshot_version_));
+             OB_FAIL(prepare_tablets_for_major_refresh_mv_(mv_tablet_ids))) {
+    LOG_WARN("fail to prepare major refresh mv tablets", K(ret));
+  } else if (OB_FAIL(ObDDLUtil::obtain_snapshot(next_task_status, object_id_, target_object_id_,
+                                                snapshot_version_, this, &mv_tablet_ids))) {
+    LOG_WARN("fail to obtain_snapshot", K(ret), K(snapshot_version_));
   }
   return ret;
 }
@@ -689,6 +678,7 @@ int ObDDLRedefinitionTask::send_build_single_replica_request()
       param.execution_id_ = execution_id_;
       param.data_format_version_ = data_format_version_;
       param.consumer_group_id_ = alter_table_arg_.consumer_group_id_;
+      param.is_no_logging_ = is_no_logging_;
       if (OB_FAIL(ObDDLUtil::get_tablets(tenant_id_, object_id_, param.source_tablet_ids_))) {
         LOG_WARN("fail to get tablets", K(ret), K(tenant_id_), K(object_id_));
       } else if (OB_FAIL(ObDDLUtil::get_tablets(dst_tenant_id_, target_object_id_, param.dest_tablet_ids_))) {
@@ -2489,6 +2479,11 @@ int ObDDLRedefinitionTask::generate_rebuild_index_arg_list(
           LOG_WARN("fail to assign schema", K(ret));
         } else if (OB_FAIL(pre_split.do_table_pre_split_if_need(database_name, ObDDLType::DDL_CREATE_INDEX, false, *table_schema, *index_schema, new_index_schema))) {
           LOG_WARN("fail to pre split index partition", K(ret), K(index_id));
+          //overwrite ret code
+          ret = OB_SUCCESS;
+          if (OB_FAIL(alter_table_arg.rebuild_index_arg_list_.push_back(*index_schema))) {
+            LOG_WARN("fail to push back index schema", K(ret));
+          }
         } else if (OB_FAIL(alter_table_arg.rebuild_index_arg_list_.push_back(new_index_schema))) {
           LOG_WARN("fail to push back index schema", K(ret));
         }

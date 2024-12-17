@@ -229,6 +229,7 @@
 #include "observer/virtual_table/ob_tenant_show_restore_preview.h"
 #include "observer/virtual_table/ob_all_virtual_tenant_resource_limit.h"
 #include "observer/virtual_table/ob_all_virtual_tenant_resource_limit_detail.h"
+#include "observer/virtual_table/ob_all_virtual_res_mgr_sys_stat.h"
 #include "observer/virtual_table/ob_all_virtual_tracepoint_info.h"
 #include "observer/virtual_table/ob_all_virtual_nic_info.h"
 #include "observer/virtual_table/ob_all_virtual_sys_variable_default_value.h"
@@ -236,9 +237,11 @@
 #include "observer/virtual_table/ob_information_schema_enable_roles_table.h"
 #include "observer/virtual_table/ob_all_virtual_tenant_scheduler_running_job.h"
 #include "observer/virtual_table/ob_all_virtual_compatibility_control.h"
+#include "observer/virtual_table/ob_all_virtual_sql_stat.h"
 #include "observer/virtual_table/ob_all_virtual_ss_local_cache_info.h"
 #include "observer/virtual_table/ob_all_virtual_vector_index_info.h"
 #include "observer/virtual_table/ob_all_virtual_tmp_file.h"
+#include "observer/virtual_table/ob_all_virtual_log_transport_dest_stat.h"
 #include "observer/virtual_table/ob_all_virtual_kv_client_info.h"
 #include "observer/virtual_table/ob_all_virtual_kv_group_commit_info.h"
 
@@ -2826,6 +2829,14 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             }
             break;
           }
+          case OB_ALL_VIRTUAL_SQLSTAT_TID: {
+            ObAllVirtualSqlStat *all_virtual_sqlstat = NULL;
+            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualSqlStat, all_virtual_sqlstat))) {
+              all_virtual_sqlstat->set_allocator(&allocator);
+              vt_iter = static_cast<ObVirtualTableIterator *>(all_virtual_sqlstat);
+            }
+            break;
+          }
           case OB_ALL_VIRTUAL_SS_LOCAL_CACHE_INFO_TID: {
             ObAllVirtualSSLocalCacheInfo *local_cache_info = nullptr;
             if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualSSLocalCacheInfo, local_cache_info))) {
@@ -2858,11 +2869,34 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             }
             break;
           }
+          case OB_ALL_VIRTUAL_LOG_TRANSPORT_DEST_STAT_TID:
+          {
+            ObAllVirtualLogTransportDestStat *all_virtual_log_transport_dest_stat = NULL;
+            omt::ObMultiTenant *omt = GCTX.omt_;
+            if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualLogTransportDestStat,
+                                          all_virtual_log_transport_dest_stat, omt))) {
+              SERVER_LOG(ERROR, "ObAllVirtualLogTransportDestStat construct fail", K(ret));
+            } else {
+              all_virtual_log_transport_dest_stat->set_allocator(&allocator);
+              vt_iter = all_virtual_log_transport_dest_stat;
+            }
+            break;
+          }
           case OB_ALL_VIRTUAL_KV_GROUP_COMMIT_STATUS_TID:
           {
             ObAllVirtualKvGroupCommitInfo *all_virtual_kv_group_commit_info = NULL;
              if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualKvGroupCommitInfo, all_virtual_kv_group_commit_info))) {
               vt_iter = static_cast<ObAllVirtualKvGroupCommitInfo *>(all_virtual_kv_group_commit_info);
+            }
+            break;
+          }
+          case OB_ALL_VIRTUAL_RES_MGR_SYSSTAT_TID:
+          {
+            ObAllVirtualResMgrSysStat *all_virtual_res_mgr_sysstat = nullptr;
+            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualResMgrSysStat,
+                                          all_virtual_res_mgr_sysstat))) {
+              vt_iter = static_cast<ObAllVirtualResMgrSysStat *>(all_virtual_res_mgr_sysstat);
+              all_virtual_res_mgr_sysstat->set_addr(addr_);
             }
             break;
           }

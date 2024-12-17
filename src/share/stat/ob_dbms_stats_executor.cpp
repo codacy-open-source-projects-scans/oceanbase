@@ -300,6 +300,10 @@ int ObDbmsStatsExecutor::prepare_gather_stats(ObExecContext &ctx,
                                                const_cast<ObTableStatParam&>(param),
                                                gather_helper.use_split_part_))) {
     LOG_WARN("failed to adjsut async gather param", K(ret));
+  } else if (!gather_helper.use_split_part_ && param.is_auto_sample_size_ &&
+             OB_FAIL(adjust_auto_gather_param(partition_id_block_map,
+                                              param, gather_helper.use_split_part_))) {
+    LOG_WARN("failed to adjust auto gather param", K(ret));
   } else if (OB_FAIL(check_need_split_gather(param, gather_helper))) {
     LOG_WARN("failed to check need split gather", K(ret));
   } else {
@@ -440,6 +444,7 @@ int ObDbmsStatsExecutor::split_derive_part_stats_by_subpart_stats(ObExecContext 
 {
   int ret = OB_SUCCESS;
   ObArenaAllocator allocator("SplitDeriveStat", OB_MALLOC_NORMAL_BLOCK_SIZE, param.tenant_id_);
+  ObArenaAllocator tmp_allocator("SplitDeriveStat", OB_MALLOC_NORMAL_BLOCK_SIZE, param.tenant_id_);
   if (OB_UNLIKELY(!param.part_stat_param_.can_use_approx_ ||
                   !param.subpart_stat_param_.need_modify_ ||
                    param.part_level_ != share::schema::PARTITION_LEVEL_TWO ||
@@ -484,11 +489,19 @@ int ObDbmsStatsExecutor::split_derive_part_stats_by_subpart_stats(ObExecContext 
           }
         } else {
           int64_t idx_col = 0;
-          ObOptTableStat part_Stat;
-          ObSEArray<ObOptTableStat *, 1> all_tstats;
-          if (OB_FAIL(all_tstats.push_back(&part_Stat))) {
-            LOG_WARN("faile to push back", K(ret));
-          } else {
+          ObSEArray<ObOptTableStat *, 8> all_tstats;
+          for (int64_t i = 0; OB_SUCC(ret) && i < approx_part_infos.count(); ++i) {
+            ObOptTableStat *opt_stat = NULL;
+            void *p = NULL;
+            if (OB_ISNULL(p = tmp_allocator.alloc(sizeof(ObOptTableStat)))) {
+              ret = OB_ALLOCATE_MEMORY_FAILED;
+              LOG_WARN("failed to allocate opt table stat", K(ret));
+            } else if (OB_FALSE_IT(opt_stat = new(p) ObOptTableStat())) {
+            } else if (OB_FAIL(all_tstats.push_back(opt_stat))) {
+              LOG_WARN("faile to push back", K(ret));
+            }
+          }
+          if (OB_SUCC(ret)) {
             do {
               ObSEArray<ObColumnStatParam, 4> gather_column_params;
               for (int64_t i = 0; OB_SUCC(ret) && i < gather_helper.maximum_gather_col_cnt_ && idx_col < param.column_params_.count(); ++i) {
@@ -520,6 +533,12 @@ int ObDbmsStatsExecutor::split_derive_part_stats_by_subpart_stats(ObExecContext 
               }
             } while(OB_SUCC(ret) && idx_col < param.column_params_.count());
           }
+          for (int64_t i = 0; i < all_tstats.count(); ++i) {
+            if (NULL != all_tstats.at(i)) {
+              all_tstats.at(i)->~ObOptTableStat();
+            }
+          }
+          tmp_allocator.reuse();
         }
       }
       extra_ratio += split_extra_ratio;
@@ -683,7 +702,8 @@ int ObDbmsStatsExecutor::check_need_split_gather(const ObTableStatParam &param,
                                                  GatherHelper &gather_helper)
 {
   int ret = OB_SUCCESS;
-  int64_t column_cnt = param.get_need_gather_column();
+  int64_t origin_column_cnt = param.get_need_gather_column();
+  int64_t column_cnt = origin_column_cnt > MAX_GATHER_COLUMN_COUNT_PER_QUERY ? MAX_GATHER_COLUMN_COUNT_PER_QUERY : origin_column_cnt;
   int64_t partition_cnt = param.subpart_stat_param_.need_modify_ ? param.subpart_infos_.count() :
                             (param.part_stat_param_.need_modify_ ? param.part_infos_.count() + param.approx_part_infos_.count() : 1);
   bool need_histgoram = param.subpart_stat_param_.need_modify_ ? param.subpart_stat_param_.gather_histogram_ :
@@ -711,7 +731,7 @@ int ObDbmsStatsExecutor::check_need_split_gather(const ObTableStatParam &param,
   } else if (max_memory_used <= max_wa_memory_size && (!gather_helper.use_split_part_ || partition_cnt<=1)) {
     gather_helper.maximum_gather_col_cnt_ = column_cnt;
     gather_helper.maximum_gather_part_cnt_ = partition_cnt;
-    gather_helper.is_split_gather_ = false;
+    gather_helper.is_split_gather_ = column_cnt != origin_column_cnt;
     gather_helper.gather_vectorize_ = gather_vectorize;
   } else {
     //firstly, split according the partition
@@ -732,7 +752,8 @@ int ObDbmsStatsExecutor::check_need_split_gather(const ObTableStatParam &param,
     if (max_memory_used <= max_wa_memory_size) {
       gather_helper.maximum_gather_col_cnt_ = column_cnt;
       gather_helper.maximum_gather_part_cnt_ = partition_cnt;
-      gather_helper.is_split_gather_ = origin_partition_cnt != partition_cnt;
+      gather_helper.is_split_gather_ = origin_partition_cnt != partition_cnt ||
+                                       column_cnt != origin_column_cnt;
       gather_helper.gather_vectorize_ = gather_vectorize;
     } else {
       const int64_t MINIMUM_OF_VECTOR_SIZE = 8;
@@ -745,7 +766,8 @@ int ObDbmsStatsExecutor::check_need_split_gather(const ObTableStatParam &param,
       if (max_memory_used <= max_wa_memory_size) {
         gather_helper.maximum_gather_col_cnt_ = column_cnt;
         gather_helper.maximum_gather_part_cnt_ = partition_cnt;
-        gather_helper.is_split_gather_ = origin_partition_cnt != partition_cnt;
+        gather_helper.is_split_gather_ = origin_partition_cnt != partition_cnt ||
+                                         column_cnt != origin_column_cnt;
         gather_helper.gather_vectorize_ = gather_vectorize;
       } else {
         //lastly, split according the column
@@ -1904,7 +1926,7 @@ int ObDbmsStatsExecutor::adjsut_async_gather_param(const PartitionIdBlockMap &pa
         LOG_WARN("get unexpected error", K(ret), K(block_num_stat));
       } else {
         int64_t total_row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_;
-        if (total_row_cnt < param.async_full_table_size_) {
+        if (total_row_cnt < param.auto_sample_row_cnt_) {
           //do nothing
         } else if (param.part_level_ == share::schema::ObPartitionLevel::PARTITION_LEVEL_ONE ||
                    param.part_level_ == share::schema::ObPartitionLevel::PARTITION_LEVEL_TWO) {
@@ -1928,7 +1950,7 @@ int ObDbmsStatsExecutor::adjsut_async_gather_param(const PartitionIdBlockMap &pa
               } else {
                 int64_t row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_;
                 gather_scan_row_cnt += row_cnt;
-                if (row_cnt > param.async_full_table_size_) {
+                if (row_cnt > param.auto_sample_row_cnt_) {
                   need_split_part = true;
                   if (OB_FAIL(add_var_to_array_no_dup(no_derive_part_ids,
                                                       param.subpart_infos_.at(i).first_part_id_))) {
@@ -1994,7 +2016,7 @@ int ObDbmsStatsExecutor::adjsut_async_gather_param(const PartitionIdBlockMap &pa
               } else {
                 int64_t row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_;
                 gather_scan_row_cnt += row_cnt;
-                if (row_cnt > param.async_full_table_size_) {
+                if (row_cnt > param.auto_sample_row_cnt_) {
                   need_split_part = true;
                   can_derive = false;
                 }
@@ -2036,6 +2058,75 @@ bool ObDbmsStatsExecutor::is_async_gather_partition_id(const int64_t partition_i
     }
   }
   return is_found;
+}
+
+int ObDbmsStatsExecutor::adjust_auto_gather_param(const PartitionIdBlockMap &partition_id_block_map,
+                                                  const ObTableStatParam &param,
+                                                  bool &need_split_part)
+{
+  int ret = OB_SUCCESS;
+  if (param.is_auto_gather_) {
+    LOG_TRACE("begin to adjsut auto gather param", K(param));
+    if (param.part_level_ == share::schema::ObPartitionLevel::PARTITION_LEVEL_ZERO) {
+      //do nohting
+    } else {
+      BlockNumStat *block_num_stat = NULL;
+      int64_t row_cnt = 0;
+      if (OB_FAIL(partition_id_block_map.get_refactored(param.global_part_id_, block_num_stat))) {
+        if (OB_LIKELY(OB_HASH_NOT_EXIST == ret)) {
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("failed to get refactored", K(ret));
+        }
+      } else if (OB_ISNULL(block_num_stat)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(block_num_stat));
+      } else if (OB_FALSE_IT(row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_)) {
+      } else if (row_cnt < param.auto_sample_row_cnt_) {
+        // do nothing
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && !need_split_part && i < param.subpart_infos_.count(); ++i) {
+          if (OB_FAIL(partition_id_block_map.get_refactored(param.subpart_infos_.at(i).part_id_, block_num_stat))) {
+            if (OB_LIKELY(OB_HASH_NOT_EXIST == ret)) {
+              ret = OB_SUCCESS;
+            } else {
+              LOG_WARN("failed to get refactored", K(ret));
+            }
+          } else if (OB_ISNULL(block_num_stat)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("get unexpected error", K(ret), K(block_num_stat));
+          } else if (OB_FALSE_IT(row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_)) {
+          } else if (row_cnt < param.auto_sample_row_cnt_) {
+            //do nothing
+          } else {
+            need_split_part = true;
+          }
+        }
+        if (OB_SUCC(ret) && !need_split_part && param.part_stat_param_.need_modify_) {
+          for (int64_t i = 0; OB_SUCC(ret) && !need_split_part && i < param.part_infos_.count(); ++i) {
+            if (OB_FAIL(partition_id_block_map.get_refactored(param.part_infos_.at(i).part_id_, block_num_stat))) {
+              if (OB_LIKELY(OB_HASH_NOT_EXIST == ret)) {
+                ret = OB_SUCCESS;
+              } else {
+                LOG_WARN("failed to get refactored", K(ret));
+              }
+            } else if (OB_ISNULL(block_num_stat)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("get unexpected error", K(ret), K(block_num_stat));
+            } else if (OB_FALSE_IT(row_cnt = block_num_stat->sstable_row_cnt_ + block_num_stat->memtable_row_cnt_)) {
+            } else if (row_cnt < param.auto_sample_row_cnt_) {
+              //do nothing
+            } else {
+              need_split_part = true;
+            }
+          }
+        }
+      }
+
+    }
+    LOG_TRACE("end to adjsut auto gather param", K(param), K(need_split_part));
+  }
+  return ret;
 }
 
 } // namespace common

@@ -51,6 +51,7 @@ ObTableLoadPreSorter::ObTableLoadPreSorter(ObTableLoadTableCtx *ctx,
 
 ObTableLoadPreSorter::~ObTableLoadPreSorter()
 {
+  mem_ctx_.has_error_ = true; //avoid the stuck of sampling thread
   if (OB_NOT_NULL(sample_task_scheduler_)) {
     sample_task_scheduler_->stop();
     sample_task_scheduler_->wait();
@@ -156,14 +157,11 @@ int ObTableLoadPreSorter::init_chunks_manager()
   return ret;
 }
 
-void ObTableLoadPreSorter::stop() {
+void ObTableLoadPreSorter::stop()
+{
   set_has_error();
   if (OB_NOT_NULL(sample_task_scheduler_)) {
     sample_task_scheduler_->stop();
-    sample_task_scheduler_->wait();
-    sample_task_scheduler_->~ObITableLoadTaskScheduler();
-    ob_free(sample_task_scheduler_);
-    sample_task_scheduler_ = nullptr;
   }
 }
 
@@ -405,7 +403,6 @@ int ObTableLoadPreSorter::build_merge_param(ObDirectLoadMergeParam& merge_param)
   merge_param.lob_column_idxs_ = &(ctx_->schema_.lob_column_idxs_);
   merge_param.table_data_desc_ = store_ctx_->data_store_table_ctx_->table_data_desc_;
   merge_param.datum_utils_ = &(ctx_->schema_.datum_utils_);
-  merge_param.lob_column_idxs_ = &(ctx_->schema_.lob_column_idxs_);
   merge_param.col_descs_ = &(ctx_->schema_.column_descs_);
   merge_param.lob_id_table_data_desc_ = store_ctx_->data_store_table_ctx_->lob_id_table_data_desc_;
   merge_param.lob_meta_datum_utils_ = &(ctx_->schema_.lob_meta_datum_utils_);
@@ -418,7 +415,13 @@ int ObTableLoadPreSorter::build_merge_param(ObDirectLoadMergeParam& merge_param)
   merge_param.dml_row_handler_ = store_ctx_->data_store_table_ctx_->row_handler_;
   merge_param.file_mgr_ = store_ctx_->tmp_file_mgr_;
   merge_param.trans_param_ = store_ctx_->trans_param_;
-  merge_param.index_table_count_ = ctx_->schema_.index_table_count_;
+  merge_param.merge_with_conflict_check_ =
+    !store_ctx_->data_store_table_ctx_->is_index_table_ &&
+    ObDirectLoadMethod::is_incremental(ctx_->param_.method_) &&
+    (ctx_->param_.insert_mode_ == ObDirectLoadInsertMode::NORMAL ||
+     (ctx_->param_.insert_mode_ == ObDirectLoadInsertMode::INC_REPLACE &&
+      (store_ctx_->data_store_table_ctx_->schema_->lob_column_idxs_.count() > 0 ||
+       store_ctx_->data_store_table_ctx_->schema_->index_table_count_ > 0)));
   return ret;
 }
 

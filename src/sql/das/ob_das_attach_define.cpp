@@ -65,6 +65,11 @@ ObDASScanRtDef *ObDASTableLookupRtDef::get_lookup_scan_rtdef()
   return scan_rtdef;
 }
 
+OB_SERIALIZE_MEMBER((ObDASIndexProjLookupCtDef, ObDASTableLookupCtDef),
+                     index_scan_proj_exprs_);
+
+OB_SERIALIZE_MEMBER((ObDASIndexProjLookupRtDef, ObDASTableLookupRtDef));
+
 OB_SERIALIZE_MEMBER((ObDASSortCtDef, ObDASAttachCtDef),
                     sort_exprs_,
                     sort_collations_,
@@ -95,7 +100,7 @@ const ObDASBaseCtDef *ObDASIndexMergeCtDef::get_right_ctdef() const
   return children_[1];
 }
 
-OB_SERIALIZE_MEMBER((ObDASIndexMergeCtDef, ObDASAttachCtDef), merge_type_, is_left_child_leaf_node_, is_reverse_);
+OB_SERIALIZE_MEMBER((ObDASIndexMergeCtDef, ObDASAttachCtDef), merge_type_, is_reverse_);
 
 OB_SERIALIZE_MEMBER((ObDASIndexMergeRtDef, ObDASAttachRtDef));
 

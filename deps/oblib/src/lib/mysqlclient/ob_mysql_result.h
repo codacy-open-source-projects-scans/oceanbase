@@ -240,6 +240,25 @@
     } \
   }
 
+#define EXTRACT_UINT_FIELD_MYSQL_SKIP_RET(result, column_name, field, type) \
+  if (OB_SUCC(ret)) \
+  { \
+    uint64_t uint_value = 0; \
+    if (OB_SUCCESS == (ret = (result).get_uint(column_name, uint_value))) \
+    { \
+      field = static_cast<type>(uint_value); \
+    } \
+    else if (OB_ERR_NULL_VALUE == ret || OB_ERR_COLUMN_NOT_FOUND == ret) \
+    { \
+      ret = OB_SUCCESS; \
+      field = static_cast<type>(0); \
+    } \
+    else \
+    { \
+      SQL_LOG(WARN, "fail to get column in row. ", K(column_name), K(ret)); \
+    } \
+  }
+
 #define EXTRACT_DATETIME_FIELD_MYSQL_SKIP_RET(result, column_name, field, type) \
   if (OB_SUCC(ret)) \
   { \
@@ -1132,7 +1151,7 @@
         {                                                                                 \
           def_obj.set_type(data_type);                                                    \
           if (is_mysql_mode()) {                                                          \
-            if (OB_FAIL(def_obj.build_not_strict_default_value(column.get_data_precision()))) {    \
+            if (OB_FAIL(def_obj.build_not_strict_default_value(column.get_data_precision(), ObCollationType::CS_TYPE_INVALID /*string_cs_type, no need set for json*/))) {    \
               SQL_LOG(WARN, "failed to build not strict default json value", K(ret));     \
             } else {                                                                      \
               res_obj.set_json_value(data_type,  def_obj.get_string().ptr(),              \
@@ -1275,7 +1294,7 @@
         {                                                                                        \
           def_obj.set_type(data_type);                                                           \
           if (is_mysql_mode()) {                                                                 \
-            if (OB_FAIL(def_obj.build_not_strict_default_value(column.get_data_precision()))) {  \
+            if (OB_FAIL(def_obj.build_not_strict_default_value(column.get_data_precision(), ObCollationType::CS_TYPE_INVALID /*string_cs_type, no need set for json*/))) {  \
               SQL_LOG(WARN, "failed to build not strict default json value", K(ret));            \
             } else {                                                                             \
               res_obj.set_json_value(data_type,  def_obj.get_string().ptr(),                     \
@@ -1602,6 +1621,62 @@
       v = static_cast<int64_t>(0);                                      \
     }                                                                   \
   } while (false)
+
+#define EXTRACT_INT_FIELD_FROM_NUMBER_SKIP_RET(result, column_name, field, type) \
+  if (OB_SUCC(ret)) \
+  { \
+    common::number::ObNumber number_value; \
+    char buffer[common::number::ObNumber::MAX_NUMBER_ALLOC_BUFF_SIZE]; \
+    ObDataBuffer data_buffer(buffer, sizeof(buffer)); \
+    int64_t context_val = -1; \
+    if (OB_SUCCESS == (ret = (result).get_number(column_name, number_value, data_buffer)))  \
+    { \
+      if (!number_value.is_valid_int64(context_val)) { \
+        field = static_cast<type>(0); \
+        SQL_LOG(WARN, "failed to get int64 from number", K(number_value), K(ret)); \
+      } \
+      else \
+      { \
+        field = static_cast<type>(context_val); \
+      }\
+    } \
+    else if (OB_ERR_NULL_VALUE == ret || OB_ERR_COLUMN_NOT_FOUND == ret) \
+    { \
+      ret = OB_SUCCESS; \
+      field = static_cast<type>(0); \
+    } \
+    else { \
+      SQL_LOG(WARN, "fail to get column in row. ", "column_name", column_name, K(ret)); \
+    } \
+  }
+
+#define EXTRACT_UINT_FIELD_FROM_NUMBER_SKIP_RET(result, column_name, field, type) \
+  if (OB_SUCC(ret)) \
+  { \
+    common::number::ObNumber number_value; \
+    char buffer[common::number::ObNumber::MAX_NUMBER_ALLOC_BUFF_SIZE]; \
+    ObDataBuffer data_buffer(buffer, sizeof(buffer)); \
+    uint64_t context_val = -1; \
+    if (OB_SUCCESS == (ret = (result).get_number(column_name, number_value, data_buffer)))  \
+    { \
+      if (!number_value.is_valid_uint64(context_val)) { \
+        field = static_cast<type>(0); \
+        SQL_LOG(WARN, "failed to get int64 from number", K(number_value), K(ret)); \
+      } \
+      else \
+      { \
+        field = static_cast<type>(context_val); \
+      }\
+    } \
+    else if (OB_ERR_NULL_VALUE == ret || OB_ERR_COLUMN_NOT_FOUND == ret) \
+    { \
+      ret = OB_SUCCESS; \
+      field = static_cast<type>(0); \
+    } \
+    else { \
+      SQL_LOG(WARN, "fail to get column in row. ", "column_name", column_name, K(ret)); \
+    } \
+  }
 
 namespace oceanbase
 {

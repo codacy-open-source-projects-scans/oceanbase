@@ -1347,6 +1347,13 @@ int ObTableSqlService::add_columns_for_not_core(ObISQLClient &sql_client,
     stash_desc2->add_row_cnt(table.get_column_count());
     if (OB_FAIL(trans->do_stash_query_batch())) {
       LOG_WARN("do_stash_query fail", K(ret));
+    } else if (table.is_index_table() && is_virtual_table(table.get_data_table_id())
+        && OB_FAIL(trans->do_stash_query())) {
+      // for virtual table index who need to sync schema version, it will try to get data table schema from inner table
+      // the sql to insert into __all_column may not be executed if stash query is enabled, and get table schema will fail
+      LOG_WARN("failed to do stash query for virtual table index", K(ret),
+          "table_name", table.get_table_name(), "table_id", table.get_table_id(),
+          "data_table_id", table.get_data_table_id());
     }
   } else if (OB_FAIL(sql_client.write(exec_tenant_id, column_sql.ptr(), affected_rows))) {
     LOG_WARN("execute sql failed", K(column_sql), K(ret));
@@ -2130,33 +2137,8 @@ int ObTableSqlService::update_table_options(ObISQLClient &sql_client,
   bool is_oracle_mode = false;
   const uint64_t tenant_id = table_schema.get_tenant_id();
   uint64_t table_id = table_schema.get_table_id();
-  ObDMLSqlSplicer dml;
-  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
-  const bool update_object_status_ignore_version = false;
-  if (OB_FAIL(check_ddl_allowed(new_table_schema))) {
-    LOG_WARN("check ddl allowd failed", K(ret), K(new_table_schema));
-  } else if (OB_FAIL(gen_table_options_dml(exec_tenant_id, new_table_schema, update_object_status_ignore_version, dml))) {
-    LOG_WARN("gen table options dml failed", K(ret));
-  } else {
-    int64_t affected_rows = 0;
-    const char *table_name = NULL;
-    if (OB_FAIL(ObSchemaUtils::get_all_table_name(exec_tenant_id, table_name))) {
-      LOG_WARN("fail to get all table name", K(ret), K(exec_tenant_id));
-    } else if (OB_FAIL(exec_update(sql_client, tenant_id, table_id,
-                                   table_name, dml, affected_rows))) {
-      LOG_WARN("exec update failed", K(ret));
-    } else if (affected_rows > 1) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected value", K(ret), K(affected_rows));
-    }
-  }
-
-  // add to __all_table_history table
-  if (OB_SUCC(ret)) {
-    const bool only_history = true;
-    if (OB_FAIL(add_table(sql_client, new_table_schema, update_object_status_ignore_version, only_history))) {
-      LOG_WARN("add_table failed", K(new_table_schema), K(only_history), K(ret));
-    }
+  if (OB_FAIL(inner_update_table_options_(sql_client, new_table_schema))) {
+    LOG_WARN("fail to do inner update table option", KR(ret), KPC(ddl_stmt_str));
   }
 
   if (OB_SUCC(ret)) {
@@ -2460,8 +2442,7 @@ int ObTableSqlService::create_table(ObTableSchema &table,
   int64_t end_usec = 0;
   int64_t cost_usec = 0;
   const uint64_t tenant_id = table.get_tenant_id();
-  if (!table.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
+  if (OB_FAIL(table.check_valid(true/*count by byte*/))) {
     LOG_WARN("invalid create table argument, ", K(table));
   } else if (OB_FAIL(check_ddl_allowed(table))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(table));
@@ -2497,7 +2478,7 @@ int ObTableSqlService::create_table(ObTableSchema &table,
              && table.get_column_count() > 0
              && FALSE_IT(table.set_view_column_filled_flag(ObViewColumnFilledFlag::FILLED))) {
   } else if (OB_FAIL(add_table(sql_client, table, update_object_status_ignore_version, only_history))) {
-    LOG_WARN("insert table schema failed, ", K(ret), "table", to_cstring(table));
+    LOG_WARN("insert table schema failed, ", K(ret), K(table));
   }
   if (OB_FAIL(ret)) {
     //do nothing
@@ -2507,9 +2488,9 @@ int ObTableSqlService::create_table(ObTableSchema &table,
     start_usec = end_usec;
     LOG_INFO("add_table cost: ", K(cost_usec));
     if (OB_FAIL(add_columns(sql_client, table))) {
-      LOG_WARN("insert column schema failed, ", K(ret), "table", to_cstring(table));
+      LOG_WARN("insert column schema failed, ", K(ret), K(table));
     } else if (OB_FAIL(add_constraints(sql_client, table))) {
-      LOG_WARN("insert constraint schema failed, ", K(ret), "table", to_cstring(table));
+      LOG_WARN("insert constraint schema failed, ", K(ret), K(table));
     }
     end_usec = ObTimeUtility::current_time();
     cost_usec = end_usec - start_usec;
@@ -2532,11 +2513,11 @@ int ObTableSqlService::create_table(ObTableSchema &table,
     }
   } else if (table.view_column_filled() //view table
              && OB_FAIL(add_columns(sql_client, table))) {
-    LOG_WARN("insert column schema failed, ", K(ret), "table", to_cstring(table));
+    LOG_WARN("insert column schema failed, ", K(ret), K(table));
   }
 
   if (FAILEDx(add_column_groups(sql_client, table, table.get_schema_version()))) {
-    LOG_WARN("fail to add column groups", KR(ret), "table", to_cstring(table));
+    LOG_WARN("fail to add column groups", KR(ret), K(table));
   }
 
   ObSchemaOperation opt;
@@ -3451,6 +3432,8 @@ int ObTableSqlService::update_table_attribute(ObISQLClient &sql_client,
         "" : new_table_schema.get_table_name_str().ptr();
   const ObPartitionOption &part_option = new_table_schema.get_part_option();
   uint64_t data_version = 0;
+  ObString local_session_var;
+  ObArenaAllocator allocator(ObModIds::OB_SCHEMA_OB_SCHEMA_ARENA);
   if (OB_FAIL(check_ddl_allowed(new_table_schema))) {
     LOG_WARN("check ddl allowd failed", K(ret), K(new_table_schema));
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
@@ -3473,6 +3456,9 @@ int ObTableSqlService::update_table_attribute(ObISQLClient &sql_client,
     LOG_WARN(QUEUING_MODE_NOT_COMPAT_WARN_STR, K(ret), K(new_table_schema));
   } else if (OB_FAIL(check_column_store_valid(new_table_schema, data_version))) {
     LOG_WARN("fail to check column store valid", KR(ret), K(tenant_id), K(new_table_schema));
+  } else if (new_table_schema.is_materialized_view() && data_version >= DATA_VERSION_4_3_3_0
+             && OB_FAIL(new_table_schema.get_local_session_var().gen_local_session_var_str(allocator, local_session_var))) {
+    LOG_WARN("fail to gen local session var str", K(ret));
   } else if (OB_FAIL(dml.add_pk_column("tenant_id", ObSchemaUtils::get_extract_tenant_id(
                                              exec_tenant_id, tenant_id)))
       || OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
@@ -3502,7 +3488,9 @@ int ObTableSqlService::update_table_attribute(ObISQLClient &sql_client,
       || (data_version >= DATA_VERSION_4_1_0_0
           && OB_FAIL(dml.add_column("truncate_version", new_table_schema.get_truncate_version())))
       || (data_version >= DATA_VERSION_4_3_0_0
-          && OB_FAIL(dml.add_column("max_used_column_group_id", new_table_schema.get_max_used_column_group_id())))) {
+          && OB_FAIL(dml.add_column("max_used_column_group_id", new_table_schema.get_max_used_column_group_id())))
+      || (data_version >= DATA_VERSION_4_3_3_0
+          && OB_FAIL(dml.add_column("local_session_vars", ObHexEscapeSqlStr(local_session_var))))) {
             LOG_WARN("add column failed", K(ret));
   } else {
     if (new_table_schema.is_interval_part()) {
@@ -5484,7 +5472,7 @@ int ObTableSqlService::check_table_options(const ObTableSchema &table)
   return ret;
 }
 
-// for now, this interface is just used for parallel_set_comment
+// this interface have been used by parallel set comment
 // since parallel ddl have to allocate schema version previously
 // any modification of this interface should think the times of generate schema version carefully
 int ObTableSqlService::only_update_table_options(ObISQLClient &sql_client,
@@ -6142,6 +6130,38 @@ int ObTableSqlService::update_single_column_group(ObISQLClient &sql_client,
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("affect row not equal to 1", K(ret), K(affect_rows), K(ori_cg_schema), K(new_cg_schema));
     }
+  }
+  return ret;
+}
+
+int ObTableSqlService::update_origin_column_group_with_new_schema(ObISQLClient &sql_client,
+                                                                  const int64_t delete_schema_version,
+                                                                  const int64_t insert_schema_version,
+                                                                  const ObTableSchema &origin_table_schema,
+                                                                  const ObTableSchema &new_table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t data_version = OB_INVALID_VERSION;
+  uint64_t origin_tenant_id = origin_table_schema.get_tenant_id();
+  uint64_t new_tenant_id = new_table_schema.get_tenant_id();
+  if (OB_UNLIKELY(!sql_client.is_active()
+                  || !origin_table_schema.is_valid()
+                  || !new_table_schema.is_valid()
+                  || origin_tenant_id != new_tenant_id)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(origin_table_schema), K(new_table_schema));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(origin_tenant_id, data_version))) {
+    LOG_WARN("fail to get min data version", KR(ret), K(origin_table_schema));
+  } else if (OB_FAIL(check_column_store_valid(origin_table_schema, data_version))) {
+    LOG_WARN("fail to check column store valid for origin table schema", KR(ret), K(origin_table_schema));
+  } else if (OB_FAIL(check_column_store_valid(new_table_schema, data_version))) {
+    LOG_WARN("fail to check column store valid for new table schema", KR(ret), K(new_table_schema));
+  } else if (OB_FAIL(delete_from_column_group(sql_client, origin_table_schema, delete_schema_version, false /*history table*/))) {
+    LOG_WARN("fail to delete __all_column_group for origin table schema", KR(ret), K(origin_table_schema));
+  } else if (OB_FAIL(delete_from_column_group_mapping(sql_client, origin_table_schema, delete_schema_version, false /*history table*/))) {
+    LOG_WARN("fail to delete __all_column_group_mapping for origin table schema", KR(ret), K(origin_table_schema));
+  } else if (OB_FAIL(add_column_groups(sql_client, new_table_schema, insert_schema_version, false/*only_history*/))) {
+    LOG_WARN("fail to add column groups from new table schema", KR(ret), K(new_table_schema), K(insert_schema_version));
   }
   return ret;
 }

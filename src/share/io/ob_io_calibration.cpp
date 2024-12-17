@@ -435,7 +435,7 @@ void ObIOBenchRunner::run1()
       const int64_t block_idx = ObRandom::rand(0, block_count_ - 1);
       io_info.fd_.device_handle_ = &LOCAL_DEVICE_INSTANCE;
       io_info.offset_ = ObRandom::rand(0, OB_DEFAULT_MACRO_BLOCK_SIZE - load_.size_);
-      io_info.timeout_us_ = MAX_IO_WAIT_TIME_MS;
+      io_info.timeout_us_ = MAX_IO_WAIT_TIME_MS * 1000;
 #ifdef OB_BUILD_SHARED_STORAGE
       if (GCTX.is_shared_storage_mode()) {
         io_info.fd_.first_id_ = ObIOFd::NORMAL_FILE_ID; // first_id is not used in shared storage mode;
@@ -485,6 +485,7 @@ ObIOBenchController::~ObIOBenchController()
   if (tg_id_ >= 0) {
     TG_STOP(tg_id_);
     TG_WAIT(tg_id_);
+    TG_DESTROY(tg_id_);
     tg_id_ = -1;
   }
 }
@@ -737,6 +738,7 @@ int ObIOCalibration::get_io_ability(ObIOAbility &io_ability)
 
 void ObIOCalibration::get_iops_scale(const ObIOMode mode, const int64_t size, double &iops_scale, bool &is_io_ability_valid)
 {
+  int ret = OB_SUCCESS;
   is_io_ability_valid = false;
   iops_scale = 1.0 * BASELINE_IO_SIZE / size;
   if (OB_UNLIKELY(!is_inited_)) {
@@ -748,7 +750,6 @@ void ObIOCalibration::get_iops_scale(const ObIOMode mode, const int64_t size, do
     if (!io_ability_.is_valid()) {
     // do nothing
     } else {
-      int ret = OB_SUCCESS;
       double iops = 0;
       if (OB_FAIL(io_ability_.get_iops(mode, size, iops))) {
         LOG_WARN("get iops failed", K(ret), K(mode), K(size));
@@ -859,7 +860,12 @@ int ObIOCalibration::refresh(const bool only_refresh, const ObIArray<ObIOBenchRe
       LOG_WARN("reset io ability failed", K(ret));
     }
   }
-  LOG_INFO("refresh io calibration", K(ret), K(only_refresh), K(items), K(io_ability_));
+  ObIOAbility io_ability;
+  int tmp_ret = OB_SUCCESS;
+  if (OB_SUCCESS != (tmp_ret = ObIOCalibration::get_instance().get_io_ability(io_ability))) {
+    LOG_WARN("get io ability failed", KR(tmp_ret));
+  }
+  LOG_INFO("refresh io calibration", K(ret), K(only_refresh), K(items), K(io_ability));
   return ret;
 }
 

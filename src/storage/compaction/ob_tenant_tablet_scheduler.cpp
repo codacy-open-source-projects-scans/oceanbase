@@ -245,28 +245,24 @@ void ObFastFreezeChecker::try_update_tablet_threshold(
 /*******************************************ObCSReplicaChecksumHelper impl*****************************************/
 int ObCSReplicaChecksumHelper::check_column_type(
     const common::ObTabletID &tablet_id,
-    const int64_t compaction_scn,
+    const share::ObFreezeInfo &freeze_info,
     const common::ObIArray<int64_t> &column_idxs,
-    bool &is_large_text_column)
+    bool &is_all_large_text_column)
 {
   int ret = OB_SUCCESS;
-  share::ObFreezeInfo freeze_info;
   uint64_t table_id = 0;
   schema::ObMultiVersionSchemaService *schema_service = nullptr;
   schema::ObSchemaGetterGuard schema_guard;
   ObSEArray<ObColDesc, 16> column_descs;
-  int64_t save_schema_version = 0;
+  int64_t save_schema_version = freeze_info.schema_version_;
   const ObTableSchema *table_schema = nullptr;
-  is_large_text_column = true;
+  is_all_large_text_column = true;
 
   if (OB_UNLIKELY(!tablet_id.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid arguments", K(ret), K(tablet_id), K(column_idxs));
   } else if (OB_UNLIKELY(column_idxs.empty())) {
     // do nothing
-  } else if (OB_FAIL(MTL(ObTenantFreezeInfoMgr *)->get_freeze_info_by_snapshot_version(compaction_scn, freeze_info))) {
-    LOG_WARN("failed to get major freeze info", K(ret), K(compaction_scn));
-  } else if (FALSE_IT(save_schema_version = freeze_info.schema_version_)) {
   } else if (OB_ISNULL(schema_service = MTL(ObTenantSchemaService *)->get_schema_service())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null schema service", K(ret));
@@ -292,7 +288,7 @@ int ObCSReplicaChecksumHelper::check_column_type(
   } else if (OB_FAIL(table_schema->get_multi_version_column_descs(column_descs))) {
     LOG_WARN("failed to get multi version column descs", K(ret), K(tablet_id), KPC(table_schema));
   } else {
-    for (int64_t idx = 0; is_large_text_column && OB_SUCC(ret) && idx < column_idxs.count(); ++idx) {
+    for (int64_t idx = 0; is_all_large_text_column && OB_SUCC(ret) && idx < column_idxs.count(); ++idx) {
       const int64_t cur_col_idx = column_idxs.at(idx);
       const int64_t column_id = column_descs.at(cur_col_idx).col_id_;
       const ObColumnSchemaV2 *col_schema = table_schema->get_column_schema(column_id);
@@ -300,10 +296,11 @@ int ObCSReplicaChecksumHelper::check_column_type(
       if (OB_ISNULL(col_schema)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get unexpected null col schema", K(ret));
-      } else {
-        is_large_text_column = ob_is_large_text(col_schema->get_data_type());
+      } else if (ob_is_large_text(col_schema->get_data_type())) {
         LOG_DEBUG("check column type for cs replica", K(cur_col_idx), KPC(col_schema),
                   "rowkey_cnt", table_schema->get_rowkey_column_num(), KPC(table_schema));
+      } else {
+        is_all_large_text_column = false;
       }
     }
   }
@@ -712,9 +709,11 @@ int ObTenantTabletScheduler::schedule_merge(const int64_t broadcast_version)
 const char *ObProhibitScheduleMediumMap::ProhibitFlagStr[] = {
   "TRANSFER",
   "MEDIUM",
+  "SPLIT",
 };
 ObProhibitScheduleMediumMap::ObProhibitScheduleMediumMap()
   : transfer_flag_cnt_(0),
+    split_flag_cnt_(0),
     lock_(),
     tablet_id_map_()
 {
@@ -754,7 +753,7 @@ int ObProhibitScheduleMediumMap::add_flag(const ObTabletID &tablet_id, const Pro
         LOG_INFO("flag in conflict", K(ret), K(tablet_id), K(tmp_flag), K(input_flag));
       }
     } else { // tmp_flag == input_flag
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_ENTRY_EXIST;
       LOG_WARN("flag in already exist", K(ret), K(tablet_id), K(tmp_flag), K(input_flag));
     }
   }
@@ -780,15 +779,17 @@ int ObProhibitScheduleMediumMap::batch_add_flags(const ObIArray<ObTabletID> &tab
 {
   int ret = OB_SUCCESS;
   obsys::ObWLockGuard lock_guard(lock_);
-  if (OB_UNLIKELY(ProhibitFlag::TRANSFER != input_flag)) {
+  if (OB_UNLIKELY(ProhibitFlag::TRANSFER != input_flag && ProhibitFlag::SPLIT != input_flag)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument, batch_add_flags only support TRANSFER now", K(ret), K(input_flag));
+    LOG_WARN("invalid argument, batch_add_flags only support TRANSFER or SPLIT now", K(ret), K(input_flag));
   } else if (OB_FAIL(inner_batch_check_tablets_not_prohibited_(tablet_ids))) {
     LOG_WARN("failed to check all tablets not prohibited", K(ret), K(tablet_ids));
   } else if (OB_FAIL(inner_batch_add_tablets_prohibit_flags_(tablet_ids, input_flag))){
     LOG_WARN("failed to add tablets prohibit_flags", K(ret), K(tablet_ids), K(input_flag));
   } else if (ProhibitFlag::TRANSFER == input_flag){
     ++transfer_flag_cnt_;
+  } else if (ProhibitFlag::SPLIT == input_flag) {
+    ++split_flag_cnt_;
   }
   return ret;
 }
@@ -796,9 +797,9 @@ int ObProhibitScheduleMediumMap::batch_add_flags(const ObIArray<ObTabletID> &tab
 int ObProhibitScheduleMediumMap::batch_clear_flags(const ObIArray<ObTabletID> &tablet_ids, const ProhibitFlag &input_flag)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(ProhibitFlag::TRANSFER != input_flag)) {
+  if (OB_UNLIKELY(ProhibitFlag::TRANSFER != input_flag && ProhibitFlag::SPLIT != input_flag)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument, batch_clear_flags only support TRANSFER now", K(ret), K(input_flag));
+    LOG_WARN("invalid argument, batch_clear_flags only support TRANSFER or SPLIT now", K(ret), K(input_flag));
   } else {
     const int64_t tablets_cnt = tablet_ids.count();
     obsys::ObWLockGuard lock_guard(lock_);
@@ -811,6 +812,9 @@ int ObProhibitScheduleMediumMap::batch_clear_flags(const ObIArray<ObTabletID> &t
     if (OB_SUCC(ret) && ProhibitFlag::TRANSFER == input_flag) {
       --transfer_flag_cnt_;
     }
+    if (OB_SUCC(ret) && ProhibitFlag::SPLIT == input_flag) {
+      --split_flag_cnt_;
+    }
   }
   return ret;
 }
@@ -819,6 +823,7 @@ void ObProhibitScheduleMediumMap::destroy()
 {
   obsys::ObWLockGuard lock_guard(lock_);
   transfer_flag_cnt_ = 0;
+  split_flag_cnt_ = 0;
   if (tablet_id_map_.created()) {
     tablet_id_map_.destroy();
   }
@@ -927,6 +932,12 @@ int64_t ObProhibitScheduleMediumMap::get_transfer_flag_cnt() const
   return transfer_flag_cnt_;
 }
 
+int64_t ObProhibitScheduleMediumMap::get_split_flag_cnt() const
+{
+  obsys::ObRLockGuard lock_guard(lock_);
+  return split_flag_cnt_;
+}
+
 int ObTenantTabletScheduler::stop_tablets_schedule_medium(const ObIArray<ObTabletID> &tablet_ids, const ObProhibitScheduleMediumMap::ProhibitFlag &input_flag)
 {
   int ret = OB_SUCCESS;
@@ -950,7 +961,7 @@ int ObTenantTabletScheduler::tablet_start_schedule_medium(const ObTabletID &tabl
     if (OB_EAGAIN == ret) {
       tablet_could_schedule_medium = false;
       ret = OB_SUCCESS;
-    } else {
+    } else if (OB_ENTRY_EXIST != ret) {
       LOG_WARN("failed to add flag for tablet schedule medium", K(ret), K(tablet_id));
     }
   } else {
@@ -1044,12 +1055,14 @@ int ObTenantTabletScheduler::schedule_merge_dag(
     const ObMergeType merge_type,
     const int64_t &merge_snapshot_version,
     const ObExecMode exec_mode,
-    const ObDagId *dag_net_id /*= nullptr*/)
+    const ObDagId *dag_net_id /*= nullptr*/,
+    const ObCOMajorMergePolicy::ObCOMajorMergeType co_major_merge_type /*= ObCOMajorMergePolicy::INVALID_CO_MAJOR_MERGE_TYPE*/)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_ready_for_major_merge(ls_id, tablet, merge_type))) {
     LOG_WARN("failed to check ready for major merge", K(ret), K(ls_id), K(tablet), K(merge_type));
-  } else if (is_major_merge_type(merge_type) && (!tablet.is_row_store() || is_convert_co_major_merge(merge_type))) {
+  } else if (is_major_merge_type(merge_type)
+             && (!tablet.is_row_store() || is_convert_co_major_merge(merge_type) || ObCOMajorMergePolicy::is_use_rs_build_schema_match_merge(co_major_merge_type))) {
     ObCOMergeDagParam param;
     if (OB_FAIL(ObDagParamFunc::fill_param(ls_id, tablet, merge_type, merge_snapshot_version, exec_mode, dag_net_id, param))) {
       LOG_WARN("failed to fill param", KR(ret));
@@ -1226,7 +1239,7 @@ int ObTenantTabletScheduler::fill_minor_compaction_param(
       LOG_WARN("failed to get_protected_memtable_mgr_handle", K(ret), KPC(tablet_handle.get_obj()));
     } else {
       compaction_param.estimate_concurrent_count(MINOR_MERGE);
-      param.need_swap_tablet_flag_ = ObBasicTabletMergeCtx::need_swap_tablet(*protected_handle, row_count, macro_count);
+      param.need_swap_tablet_flag_ = ObBasicTabletMergeCtx::need_swap_tablet(*protected_handle, row_count, macro_count, 0/*cg_count*/);
       param.merge_version_ = result.handle_.get_table(result.handle_.get_count() - 1)->get_end_scn().get_val_for_tx();
     }
   }
@@ -1586,7 +1599,8 @@ int ObTenantTabletScheduler::schedule_all_tablets_medium()
         LOG_WARN("failed to medium loop", K(ret));
       }
     }
-    if (REACH_TENANT_TIME_INTERVAL(PRINT_LOG_INTERVAL) && prohibit_medium_map_.get_transfer_flag_cnt() > 0) {
+    if (REACH_TENANT_TIME_INTERVAL(PRINT_LOG_INTERVAL) &&
+        (prohibit_medium_map_.get_transfer_flag_cnt() > 0 || prohibit_medium_map_.get_split_flag_cnt() > 0)) {
       LOG_INFO("tenant is blocking schedule medium", KR(ret), K_(prohibit_medium_map));
     }
   }

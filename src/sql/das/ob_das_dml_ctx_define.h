@@ -407,6 +407,12 @@ public:
     return buffer_list_.header_.next_ != nullptr ? buffer_list_.header_.next_->cnt_ : 0;
   }
   inline uint64_t get_tenant_id() const { return mem_attr_.tenant_id_; }
+  int add_row(const common::ObIArray<ObExpr*> &exprs,
+              ObEvalCtx *ctx,
+              DmlRow *&stored_row,
+              bool strip_lob_locator);
+  int add_row(const DmlShadowRow &sr, DmlRow **stored_row = nullptr);
+
   int try_add_row(const common::ObIArray<ObExpr*> &exprs,
                   ObEvalCtx *ctx,
                   const int64_t memory_limit,
@@ -439,6 +445,8 @@ private:
   int add_row_to_store(const ObChunkDatumStore::ShadowStoredRow &sr,
                        const int64_t memory_limit,
                        bool &row_added,
+                       ObChunkDatumStore::StoredRow **stored_sr);
+  int add_row_to_store(const ObChunkDatumStore::ShadowStoredRow &sr,
                        ObChunkDatumStore::StoredRow **stored_sr);
   static DmlRow *get_next_dml_row(DmlRow *cur_row);
   int serialize_buffer_list(char *buf, const int64_t buf_len, int64_t &pos) const;
@@ -511,11 +519,13 @@ class ObDASMLogDMLIterator : public blocksstable::ObDatumRowIterator
 public:
   // support get next datum row
   ObDASMLogDMLIterator(
+      const share::ObLSID &ls_id,
       const ObTabletID &tablet_id,
       const storage::ObDMLBaseParam &dml_param,
       ObDatumRowIterator *iter,
       ObDASOpType op_type)
-    : tablet_id_(tablet_id),
+    : ls_id_(ls_id),
+      tablet_id_(tablet_id),
       dml_param_(dml_param),
       row_iter_(iter),
       op_type_(op_type),
@@ -530,6 +540,7 @@ public:
   virtual int get_next_row(blocksstable::ObDatumRow *&datum_row) override;
 
 private:
+  const share::ObLSID &ls_id_;
   const ObTabletID &tablet_id_;
   const storage::ObDMLBaseParam &dml_param_;
   ObDatumRowIterator *row_iter_;

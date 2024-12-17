@@ -31,7 +31,7 @@
 #include "storage/mview/ob_mview_sched_job_utils.h"
 #include "sql/session/ob_basic_session_info.h"
 #define TO_TS(second) (1000000L * second)
-#define IS_SPLIT_TENANT_DATA_VERSION ((GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_4_0))
+#define IS_SPLIT_TENANT_DATA_VERSION ((GET_MIN_CLUSTER_VERSION() > MOCK_CLUSTER_VERSION_4_2_5_0 && GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_0_0) || (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_4_0))
 namespace oceanbase
 {
 using namespace common;
@@ -115,7 +115,6 @@ int64_t ObDBMSSchedJobMaster::calc_next_date(ObDBMSSchedJobInfo &job_info)
 {
   int64_t ret = 0;
   int64_t next_date = 0;
-  const int64_t now = ObTimeUtility::current_time();
   if (job_info.is_date_expression_job_class()
       && !job_info.get_interval().empty()
       && (0 != job_info.get_interval().case_compare("null"))) {
@@ -124,18 +123,13 @@ int64_t ObDBMSSchedJobMaster::calc_next_date(ObDBMSSchedJobInfo &job_info)
     if (OB_FAIL(ObMViewSchedJobUtils::calc_date_expression(job_info, next_date_ts))) {
       LOG_WARN("failed to calc date expression", KR(ret), K(job_info));
       // error code is ignored
-      next_date = 64060560000000000; // 4000-01-01
+      next_date = ObDBMSSchedJobInfo::DEFAULT_MAX_END_DATE;
     } else {
       next_date = next_date_ts;
     }
-  } else if (job_info.get_interval_ts() < 0) {
-    next_date = 64060560000000000;
-    LOG_WARN("job interval is not valid, so regard as once job", K(job_info.get_interval_ts()), K(job_info));
-  } else if (job_info.get_interval_ts() == 0) {
-    next_date = 64060560000000000;
-  } else {
-    int64_t N = (now - job_info.get_start_date()) / job_info.get_interval_ts();
-    next_date = job_info.get_start_date() + (N + 1) * job_info.get_interval_ts();
+  } else if (OB_FAIL(ObDBMSSchedJobUtils::calc_dbms_sched_repeat_expr(job_info, next_date))) {
+    next_date = ObDBMSSchedJobInfo::DEFAULT_MAX_END_DATE;
+    LOG_WARN("failed to calc next date", KR(ret), K(job_info));
   }
   return next_date;
 }
@@ -156,7 +150,7 @@ int64_t ObDBMSSchedJobMaster::run_job(ObDBMSSchedJobInfo &job_info, ObDBMSSchedJ
       job_key->get_job_name(),
       execute_addr,
       self_addr_,
-      job_info.is_olap_async_job_class() ? share::OBCG_OLAP_ASYNC_JOB : 0))) {
+      job_info.is_olap_async_job_class() ? share::OBCG_OLAP_ASYNC_JOB : share::OBCG_DBMS_SCHED_JOB))) {
     LOG_WARN("failed to run dbms sched job", K(ret), K(job_info), KPC(job_key));
     if (is_server_down_error(ret)) {
       int tmp = OB_SUCCESS;
@@ -181,7 +175,7 @@ int ObDBMSSchedJobMaster::scheduler()
       ObDBMSSchedJobKey *job_key = NULL;
       int tmp_ret = OB_SUCCESS;
       if (!IS_SPLIT_TENANT_DATA_VERSION) {
-        ob_usleep(MIN_SCHEDULER_INTERVAL);
+        ob_usleep(MIN_SCHEDULER_INTERVAL, true);
       } else {
         if (is_leader && TC_REACH_TIME_INTERVAL(CHECK_NEW_INTERVAL)) {
           if (OB_SUCCESS != (tmp_ret = check_tenant())) {
@@ -193,23 +187,27 @@ int ObDBMSSchedJobMaster::scheduler()
             LOG_WARN("fail to update server", K(tmp_ret));
           }
         }
-
+        if (is_leader && TC_REACH_TIME_INTERVAL(PURGE_RUN_DETAIL_INTERVAL)) {
+          if (OB_SUCCESS != (tmp_ret = purge_run_detail())) {
+            LOG_WARN("fail to purge run detail", K(tmp_ret));
+          }
+        }
         if (!is_leader) {
           clear_wait_vector();
           alive_jobs_.clear();
         }
 
         if (wait_vector_.count() == 0) {
-          ob_usleep(MIN_SCHEDULER_INTERVAL);
+          ob_usleep(MIN_SCHEDULER_INTERVAL, true);
         } else if (OB_ISNULL(job_key = wait_vector_[0]) || !job_key->is_valid()) {
           ret = OB_ERR_UNEXPECTED;
           LOG_ERROR("unexpected error, invalid job key found in ready queue!", K(ret), KPC(job_key));
         } else {
           int64_t delay = job_key->get_execute_at() - ObTimeUtility::current_time();
           if (delay > MIN_SCHEDULER_INTERVAL) {
-            ob_usleep(MIN_SCHEDULER_INTERVAL);
+            ob_usleep(MIN_SCHEDULER_INTERVAL, true);
           } else {
-            ob_usleep(max(0, delay));
+            ob_usleep(max(0, delay), true);
             common::ObCurTraceId::TraceId job_trace_id;
             job_trace_id.init(GCONF.self_addr_);
             ObTraceIdGuard trace_id_guard(job_trace_id);
@@ -251,9 +249,10 @@ int ObDBMSSchedJobMaster::scheduler_job(ObDBMSSchedJobKey *job_key)
 
     const int64_t now = ObTimeUtility::current_time();
     int64_t next_check_date = now + MIN_SCHEDULER_INTERVAL;
-    if (OB_FAIL(ret) || !job_info.valid() || job_info.is_broken()) {
+    if (OB_FAIL(ret) || !job_info.valid()) {
       free_job_key(job_key);
       job_key = NULL;
+      LOG_INFO("free invalid job", K(job_info));
     } else if (job_info.is_running()) {
       LOG_INFO("job is running now, retry later", K(job_info));
       if (now > job_info.get_this_date() + TO_TS(job_info.get_max_run_duration())) {
@@ -272,9 +271,10 @@ int ObDBMSSchedJobMaster::scheduler_job(ObDBMSSchedJobKey *job_key)
       } else {
         LOG_WARN("update for stop job", K(job_info));
       }
-    } else if (job_info.is_disabled()) {
+    } else if (job_info.is_disabled() || job_info.is_broken()) {
       free_job_key(job_key);
       job_key = NULL;
+      LOG_INFO("free disable/broken job", K(job_info));
     } else if (now > job_info.get_end_date()) {
       int tmp = OB_SUCCESS;
       if (OB_SUCCESS != (tmp = table_operator_.update_for_enddate(job_info))) {
@@ -284,6 +284,7 @@ int ObDBMSSchedJobMaster::scheduler_job(ObDBMSSchedJobKey *job_key)
       }
       free_job_key(job_key);
       job_key = NULL;
+      LOG_INFO("free enddate job", K(job_info));
     } else if (now < job_info.get_next_date()) {
         next_check_date = min(job_info.get_next_date(), now + CHECK_NEW_INTERVAL);
     } else {
@@ -510,10 +511,6 @@ int ObDBMSSchedJobMaster::check_tenant()
       alive_jobs_.clear();
       LOG_INFO("tenant is standby, not check new jobs, and remove exist jobs", K(tenant_id_));
     } else {
-      if (OB_FAIL(table_operator_.purge_olap_async_job_run_detail(tenant_id_))) {
-        LOG_WARN("purge olap async job run detail failed", K(ret), K(tenant_id_));
-        ret = OB_SUCCESS; // not affect subsequent operations
-      }
       OZ (check_new_jobs(tenant_id_, tenant_schema->is_oracle_tenant()));
     }
   }
@@ -618,6 +615,25 @@ int ObDBMSSchedJobMaster::update_tenant_server_cache()
            }
         }
       }
+    }
+  }
+  return ret;
+}
+
+int ObDBMSSchedJobMaster::purge_run_detail()
+{
+  int ret = OB_SUCCESS;
+  uint64_t data_version = 0;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("dbms sched job not init yet", K(ret), K(inited_));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id_, data_version))) {
+    LOG_WARN("fail to get tenant data version", KR(ret), K(data_version));
+  } else if (DATA_VERSION_SUPPORT_JOB_CLASS(data_version)) {
+    if (OB_FAIL(job_rpc_proxy_->purge_run_detail(tenant_id_, self_addr_))) {
+      LOG_WARN("failed to run dbms sched job", K(ret), K(tenant_id_), K(self_addr_));
+    } else {
+      LOG_INFO("send purge run detail rpc finish", K(ret), K(tenant_id_));
     }
   }
   return ret;

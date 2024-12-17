@@ -78,12 +78,17 @@ enum ObVectorIndexDistAlgorithm
 enum ObVectorIndexAlgorithmLib
 {
   VIAL_VSAG = 0,
+  IAL_OB,
   VIAL_MAX
 };
 
 enum ObVectorIndexAlgorithmType
 {
   VIAT_HNSW = 0,
+  VIAT_HNSW_SQ,
+  VIAT_IVF_FLAT,
+  VIAT_IVF_SQ8,
+  VIAT_IVF_PQ,
   VIAT_MAX
 };
 
@@ -96,7 +101,7 @@ struct ObVectorIndexAlgorithmHeader
 struct ObVectorIndexHNSWParam
 {
   ObVectorIndexHNSWParam() :
-    type_(VIAT_MAX), lib_(VIAL_MAX), dim_(0), m_(0), ef_construction_(0), ef_search_(0)
+    type_(VIAT_MAX), lib_(VIAL_MAX), dim_(0), m_(0), ef_construction_(0), ef_search_(0), nlist_(0), sample_per_nlist_(0)
   {}
   void reset() {
     type_ = VIAT_MAX;
@@ -106,6 +111,8 @@ struct ObVectorIndexHNSWParam
     m_ = 0;
     ef_construction_ = 0;
     ef_search_ = 0;
+    nlist_ = 0;
+    sample_per_nlist_ = 0;
   };
   ObVectorIndexAlgorithmType type_;
   ObVectorIndexAlgorithmLib lib_;
@@ -114,9 +121,12 @@ struct ObVectorIndexHNSWParam
   int64_t m_;
   int64_t ef_construction_;
   int64_t ef_search_;
+  int64_t nlist_;
+  int64_t sample_per_nlist_;
   OB_UNIS_VERSION(1);
 public:
-  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search));
+  TO_STRING_KV(K_(type), K_(lib), K_(dist_algorithm), K_(dim), K_(m), K_(ef_construction), K_(ef_search),
+    K_(nlist), K_(sample_per_nlist));
 };
 
 enum ObVectorIndexRecordType
@@ -502,7 +512,8 @@ public:
               K_(data_table_id), K_(rowkey_vid_table_id), K_(vid_rowkey_table_id),
               K_(inc_table_id),  K_(vbitmap_table_id), K_(snapshot_table_id),
               K_(ref_cnt), K_(idle_cnt), KP_(allocator),
-              K_(index_identity), K_(follower_sync_statistics));
+              K_(index_identity), K_(follower_sync_statistics),
+              K_(mem_check_cnt), K_(is_mem_limited));
 
 private:
   void *get_incr_index();
@@ -565,6 +576,7 @@ private:
   int64_t ref_cnt_;
   int64_t idle_cnt_; // not merged cnt
   int64_t mem_check_cnt_;
+  bool is_mem_limited_;
   uint64_t *all_vsag_use_mem_;
   ObIAllocator *allocator_; // allocator for alloc adapter self
   lib::MemoryContext &parent_mem_ctx_;
@@ -580,7 +592,7 @@ private:
   constexpr const static char* const VEC_INDEX_ALGTH[ObVectorIndexDistAlgorithm::VIDA_MAX] = {
     "l2",
     "ip",
-    "cos",
+    "cosine",
   };
 };
 

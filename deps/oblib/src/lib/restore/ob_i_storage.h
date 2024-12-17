@@ -19,6 +19,7 @@
 #include "lib/container/ob_se_array.h"
 #include "common/storage/ob_device_common.h"
 #include "ob_storage_info.h"
+#include "ob_object_storage_base.h"
 
 namespace oceanbase
 {
@@ -71,6 +72,7 @@ int check_files_map_validity(const hash::ObHashMap<ObString, int64_t> &files_to_
 // record all files's idx remained in files_to_delete
 int record_failed_files_idx(const hash::ObHashMap<ObString, int64_t> &files_to_delete,
                             ObIArray<int64_t> &failed_files_idx);
+int ob_set_field(const char *value, char *field, const uint32_t field_length);
 int ob_apr_abort_fn(int retcode);
 
 struct ObStorageObjectMetaBase
@@ -399,30 +401,6 @@ private:
     common::ObObjectStorageGuard object_storage_guard_(       \
         __FILE__, __LINE__, __FUNCTION__,                     \
         ret, storage_info, uri, handled_size)
-
-class ObObjectStorageTenantGuard
-{
-public:
-  ObObjectStorageTenantGuard(const uint64_t tenant_id, const int64_t timeout_us);
-  ~ObObjectStorageTenantGuard();
-
-  static uint64_t get_tenant_id()
-  {
-    return tl_tenant_id_;
-  }
-
-  static int64_t get_timeout_us()
-  {
-    return tl_timeout_us_;
-  }
-
-private:
-  static thread_local uint64_t tl_tenant_id_;
-  uint64_t old_tenant_id_;
-
-  static thread_local int64_t tl_timeout_us_;
-  int64_t old_timeout_us_;
-};
 
 }//common
 }//oceanbase

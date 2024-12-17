@@ -473,6 +473,11 @@ public:
   OB_INLINE ObScale get_scale() const { return static_cast<ObScale>(scale_); }
   OB_INLINE void set_extend_type(uint8_t type) { extend_type_ = type; }
   OB_INLINE uint8_t get_extend_type() const { return is_ext() ? extend_type_ : -1; }
+  OB_INLINE bool is_pl_extend_type() const
+  {
+    return is_ext() && extend_type_ > 0
+                    && extend_type_ < T_EXT_SQL_ARRAY;
+  }
 
   TO_STRING_KV(N_TYPE, inner_obj_type_str(static_cast<ObObjType>(type_)),
                N_COLLATION, ObCharset::collation_name(get_collation_type()),
@@ -1255,6 +1260,7 @@ struct ObObjPrintParams
   ObObjPrintParams (const ObTimeZoneInfo *tz_info, ObCollationType cs_type):
     tz_info_(tz_info),
     cs_type_(cs_type),
+    accuracy_(),
     print_flags_(0),
     exec_ctx_(NULL),
     ob_obj_type_(ObNullType)
@@ -1262,6 +1268,7 @@ struct ObObjPrintParams
   ObObjPrintParams (const ObTimeZoneInfo *tz_info):
     tz_info_(tz_info),
     cs_type_(CS_TYPE_UTF8MB4_GENERAL_CI),
+    accuracy_(),
     print_flags_(0),
     exec_ctx_(NULL),
     ob_obj_type_(ObNullType)
@@ -1269,6 +1276,7 @@ struct ObObjPrintParams
   ObObjPrintParams ():
     tz_info_(NULL),
     cs_type_(CS_TYPE_UTF8MB4_GENERAL_CI),
+    accuracy_(),
     print_flags_(0),
     exec_ctx_(NULL),
     ob_obj_type_(ObNullType)
@@ -1276,6 +1284,7 @@ struct ObObjPrintParams
   TO_STRING_KV(K_(tz_info), K_(cs_type),K_(print_flags), K_(ob_obj_type));
   const ObTimeZoneInfo *tz_info_;
   ObCollationType cs_type_;
+  ObAccuracy accuracy_;
   union {
     uint32_t print_flags_;
     struct {
@@ -1289,7 +1298,9 @@ struct ObObjPrintParams
       uint32_t need_print_converter_:1;
       uint32_t print_const_expr_type_:1;
       uint32_t print_null_string_value_:1;
-      uint32_t reserved_:22;
+      uint32_t refine_range_max_value_:1;
+      uint32_t character_hex_safe_represent_:1;
+      uint32_t reserved_:20;
     };
   };
 
@@ -1360,7 +1371,8 @@ public:
   explicit ObObj(ObObjType type);
   inline void reset();
   //when in not strict sql mode, build default value refer to data type
-  int build_not_strict_default_value(int16_t precision);
+  // @string_cs_type: default value of string type need set collation type, since the space will be trim when compaction, see ObStorageSchema::trim
+  int build_not_strict_default_value(int16_t precision, const ObCollationType string_cs_type);
   static ObObj make_min_obj();
   static ObObj make_max_obj();
   static ObObj make_nop_obj();
@@ -4286,6 +4298,7 @@ public:
   inline ObCharsetType get_charset_type() const { return charset_; }
   inline ObCollationType get_collation_type() const { return meta_.get_collation_type(); }
   inline ObCollationLevel get_collation_level() const { return meta_.get_collation_level(); }
+  inline uint16_t get_subschema_id() { return meta_.get_subschema_id(); }
   inline bool is_binary_collation() const { return is_binary_collation_; }
   inline bool is_zero_fill() const { return is_zero_fill_; }
   inline void set_obj_type(const ObObjType &type) { return meta_.set_type(type); }
@@ -4428,6 +4441,16 @@ public:
           || udt_id == T_OBJ_SDO_ELEMINFO_ARRAY
           || udt_id == T_OBJ_SDO_ORDINATE_ARRAY;
   }
+};
+
+class ObObjCharacterUtil
+{
+  // Utils for safe hex representation of character types.
+  // Only use for the character types that supported as primary key columns.
+public:
+  static int print_safe_hex_represent_oracle(const ObObj &obj, char* buf, const int64_t buf_len, int64_t& pos, const ObAccuracy &accuracy);
+  static int print_safe_hex_represent_mysql(const ObObj &obj, char *buffer, int64_t length, int64_t &pos);
+  static int print_safe_hex_represent(const ObObj &obj, char *buffer, int64_t length, int64_t &pos, const ObAccuracy &accuracy);
 };
 
 }

@@ -108,6 +108,7 @@ int ObLobSplitParam::assign(const ObLobSplitParam &other)
     dest_schema_id_ = other.dest_schema_id_;
     consumer_group_id_ = other.consumer_group_id_;
     split_sstable_type_ = other.split_sstable_type_;
+    min_split_start_scn_ = other.min_split_start_scn_;
     if (OB_FAIL(new_lob_tablet_ids_.assign(other.new_lob_tablet_ids_))) {
       LOG_WARN("failed to assign new_lob_tablet_ids_", K(ret));
     } else if (OB_FAIL(lob_col_idxs_.assign(other.lob_col_idxs_))) {
@@ -154,6 +155,7 @@ int ObLobSplitParam::init(const obrpc::ObDDLBuildSingleReplicaRequestArg &arg)
     split_sstable_type_     = arg.split_sstable_type_;
     parallelism_            = arg.parallel_datum_rowkey_list_.count() - 1;
     compaction_scn_         = arg.compaction_scn_;
+    min_split_start_scn_    = arg.min_split_start_scn_;
     if (OB_FAIL(parallel_datum_rowkey_list_.assign(arg.parallel_datum_rowkey_list_))) { // shallow cpy.
       LOG_WARN("assign failed", K(ret), "parall_info", arg.parallel_datum_rowkey_list_);
     } else if (OB_FAIL(ObTabletSplitUtil::get_split_dest_tablets_info(ls_id_, ori_lob_meta_tablet_id_, new_lob_tablet_ids_, compat_mode_))) {
@@ -184,6 +186,7 @@ int ObLobSplitParam::init(const obrpc::ObTabletSplitArg &arg)
     split_sstable_type_     = arg.split_sstable_type_;
     parallelism_            = arg.parallel_datum_rowkey_list_.count() - 1;
     compaction_scn_         = arg.compaction_scn_;
+    min_split_start_scn_    = arg.min_split_start_scn_;
     ObArray<ObTabletID> unused_tablet_ids;
     if (OB_FAIL(ObTabletSplitUtil::get_split_dest_tablets_info(ls_id_, ori_lob_meta_tablet_id_, unused_tablet_ids, compat_mode_))) {
       LOG_WARN("get split dest tablets failed", K(ret), K(arg));
@@ -214,7 +217,8 @@ int ObLobSplitContext::init(const ObLobSplitParam& param)
                                                lob_meta_tablet_handle_,
                                                ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
     LOG_WARN("get tablet handle failed", K(ret), K(param));
-  } else if (OB_FAIL(ObTabletSplitUtil::check_satisfy_split_condition(param.new_lob_tablet_ids_, param.compaction_scn_, lob_meta_tablet_handle_, ls_handle_))) {
+  } else if (OB_FAIL(ObTabletSplitUtil::check_satisfy_split_condition(
+      ls_handle_, lob_meta_tablet_handle_, param.new_lob_tablet_ids_, param.compaction_scn_, param.min_split_start_scn_))) {
     if (OB_NEED_RETRY == ret) {
       if (REACH_COUNT_INTERVAL(1000L)) {
         LOG_WARN("wait to satisfy the data split condition", K(ret), K(param));
@@ -242,6 +246,7 @@ int ObLobSplitContext::get_dst_lob_tablet_ids(const ObLobSplitParam& param)
   // get new lob tablet ids
   ObTabletBindingMdsUserData ddl_data;
   ObTabletSplitMdsUserData lob_meta_split_data;
+  ObTabletCreateDeleteMdsUserData user_data;
   if (OB_ISNULL(lob_meta_tablet_handle_.get_obj())) {
     ret = OB_ERR_SYS;
     LOG_WARN("tablet handle is null", K(ret), K(param));
@@ -258,13 +263,22 @@ int ObLobSplitContext::get_dst_lob_tablet_ids(const ObLobSplitParam& param)
     LOG_WARN("tablet handle is null", K(ret), K(param));
   } else if (OB_FAIL(main_tablet_handle_.get_obj()->get_all_tables(main_table_store_iterator_))) {
     LOG_WARN("failed to get all sstables", K(ret), K(param));
-  } else if (OB_FAIL(main_tablet_handle_.get_obj()->get_ddl_data(share::SCN::max_scn(), ddl_data))) {
+  } else if (OB_FAIL(main_tablet_handle_.get_obj()->ObITabletMdsInterface::get_ddl_data(share::SCN::max_scn(), ddl_data))) {
     LOG_WARN("fail to get ddl data", K(ret), K(main_tablet_handle_));
   } else if (FALSE_IT(is_lob_piece_ = (param.ori_lob_meta_tablet_id_ == ddl_data.lob_piece_tablet_id_))) {
   } else if (OB_FAIL(lob_meta_tablet_handle_.get_obj()->get_split_data(lob_meta_split_data, ObTabletCommon::DEFAULT_GET_TABLET_DURATION_10_S))) {
     LOG_WARN("failed to get split data", K(ret));
   } else if (OB_FAIL(lob_meta_split_data.get_split_dst_tablet_ids(new_lob_tablet_ids_))) {
     LOG_WARN("failed to get split dst tablet ids", K(ret));
+  } else if (OB_FAIL(lob_meta_tablet_handle_.get_obj()->ObITabletMdsInterface::get_tablet_status(
+          share::SCN::max_scn(), user_data, ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US))) {
+    LOG_WARN("failed to get tablet status", K(ret));
+  } else if (user_data.start_split_commit_version_ <= 0) {
+    ret = OB_EAGAIN;
+    LOG_WARN("failed to fetch the newest mds", K(ret));
+  } else if (OB_FAIL(ObTabletSplitUtil::check_sstables_skip_data_split(ls_handle_, lob_meta_table_store_iterator_,
+      new_lob_tablet_ids_, user_data.start_split_commit_version_/*lob_major_snapshot*/, skipped_split_major_keys_))) {
+    LOG_WARN("check sstables skip data split failed", K(ret));
   } else {
     ObTabletHandle dst_lob_tablet_handle;
     for (int64_t i = 0; i < new_lob_tablet_ids_.count() && OB_SUCC(ret); i++) {
@@ -341,6 +355,7 @@ void ObLobSplitContext::destroy()
   m_allocator_.reset();
   allocator_.reset();
   main_table_ranges_.reset();
+  skipped_split_major_keys_.reset();
   range_allocator_.reset();
 }
 
@@ -615,7 +630,7 @@ int ObTabletLobBuildMapTask::process()
   int ret = OB_SUCCESS;
   ObIDag *tmp_dag = get_dag();
   ObTabletLobSplitDag *dag = nullptr;
-  bool is_all_major_exist = false;
+  bool is_data_split_finished = false;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObTabletLobBuildMapTask has not been inited before", K(ret));
@@ -631,9 +646,9 @@ int ObTabletLobBuildMapTask::process()
     LOG_WARN("build map task has already failed", "ret", ctx_->data_ret_);
   } else if (ctx_->is_lob_piece_) {
     // lob piece has no data, do nothing
-  } else if (OB_FAIL(ObTabletSplitUtil::check_major_sstables_exist(param_->ls_id_, param_->new_lob_tablet_ids_, is_all_major_exist))) {
+  } else if (OB_FAIL(ObTabletSplitUtil::check_data_split_finished(param_->ls_id_, param_->new_lob_tablet_ids_, is_data_split_finished))) {
     LOG_WARN("check all major exist failed", K(ret));
-  } else if (is_all_major_exist) {
+  } else if (is_data_split_finished) {
     LOG_INFO("split task has alreay finished", KPC(param_));
   } else {
     ObArray<ObRowScan*> iters;
@@ -663,6 +678,20 @@ int ObTabletLobBuildMapTask::process()
     } else if (OB_FAIL(build_sorted_map(iters))) {
       LOG_WARN("fail to do build sub map", K(ret));
     } else {
+    #ifdef ERRSIM
+      ret = OB_E(EventTable::EN_BLOCK_LOB_SPLIT_BEFORE_SSTABLES_SPLIT) OB_SUCCESS;
+      if (OB_FAIL(ret)) { // errsim trigger.
+        common::ObZone self_zone;
+        ObString zone1_str("z1");
+        if (OB_FAIL(SVR_TRACER.get_server_zone(GCTX.self_addr(), self_zone))) { // overwrite ret is expected.
+          LOG_WARN("get server zone failed", K(ret));
+        } else if (0 != ObCharset::instr(ObCollationType::CS_TYPE_UTF8MB4_GENERAL_CI, self_zone.str().ptr(), self_zone.str().length(),
+            zone1_str.ptr(), zone1_str.length())) {
+          ret = OB_EAGAIN;
+          LOG_INFO("set eagain for tablet split", K(ret));
+        }
+      }
+    #endif
       LOG_INFO("finish the lob build map task", K(ret), K(task_id_));
     }
     // close row scan iters
@@ -861,7 +890,7 @@ int ObTabletLobMergeMapTask::process()
   const int64_t expire_timestamp = 0;
   const int64_t buf_limit = SORT_MEMORY_LIMIT;
   const uint64_t tenant_id = param_->tenant_id_;
-  bool is_all_major_exist = false;
+  bool is_data_split_finished = false;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObTabletLobBuildMapTask has not been inited before", K(ret));
@@ -870,9 +899,9 @@ int ObTabletLobMergeMapTask::process()
     LOG_WARN("dag is invalid", K(ret), KP(tmp_dag));
   } else if (OB_SUCCESS != (ctx_->data_ret_)) {
     LOG_WARN("build map task has already failed", "ret", ctx_->data_ret_);
-  } else if (OB_FAIL(ObTabletSplitUtil::check_major_sstables_exist(param_->ls_id_, param_->new_lob_tablet_ids_, is_all_major_exist))) {
+  } else if (OB_FAIL(ObTabletSplitUtil::check_data_split_finished(param_->ls_id_, param_->new_lob_tablet_ids_, is_data_split_finished))) {
     LOG_WARN("check all major exist failed", K(ret));
-  } else if (is_all_major_exist) {
+  } else if (is_data_split_finished) {
     LOG_INFO("split task has alreay finished", KPC(param_));
   } else if (ctx_->sub_maps_.count() != param_->parallelism_) {
     ret = OB_ERR_UNEXPECTED;
@@ -978,7 +1007,7 @@ int ObTabletLobWriteDataTask::process()
 {
   int ret = OB_SUCCESS;
   ObIDag *tmp_dag = get_dag();
-  bool is_all_major_exist = false;
+  bool is_data_split_finished = false;
   ObTabletCreateDeleteMdsUserData user_data;
   ObTabletSplitMdsUserData lob_meta_split_data;
   const ObStorageSchema *lob_meta_storage_schema = nullptr;
@@ -990,9 +1019,9 @@ int ObTabletLobWriteDataTask::process()
     LOG_WARN("dag is invalid", K(ret), KP(tmp_dag));
   } else if (OB_SUCCESS != (ctx_->data_ret_)) {
     LOG_WARN("write data task has already failed", "ret", ctx_->data_ret_);
-  } else if (OB_FAIL(ObTabletSplitUtil::check_major_sstables_exist(param_->ls_id_, param_->new_lob_tablet_ids_, is_all_major_exist))) {
+  } else if (OB_FAIL(ObTabletSplitUtil::check_data_split_finished(param_->ls_id_, param_->new_lob_tablet_ids_, is_data_split_finished))) {
     LOG_WARN("check all major exist failed", K(ret));
-  } else if (is_all_major_exist) {
+  } else if (is_data_split_finished) {
     LOG_INFO("split task has alreay finished", KPC(param_));
   } else if (OB_FAIL(ctx_->lob_meta_tablet_handle_.get_obj()->ObITabletMdsInterface::get_tablet_status(
           share::SCN::max_scn(), user_data, ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US))) {
@@ -1013,7 +1042,9 @@ int ObTabletLobWriteDataTask::process()
     ObArrayArray<ObSSTableIndexBuilder*> index_builders;
     if (OB_SUCC(ret) && (share::ObSplitSSTableType::SPLIT_BOTH == param_->split_sstable_type_
           || share::ObSplitSSTableType::SPLIT_MAJOR == param_->split_sstable_type_)) {
-      if (OB_FAIL(ObTabletLobSplitUtil::open_snapshot_scan_iters(param_,
+      if (!ctx_->skipped_split_major_keys_.empty()) {
+        FLOG_INFO("no need to regenerate major sstable", K(ret), K(major_snapshot_version), K(ctx_->skipped_split_major_keys_));
+      } else if (OB_FAIL(ObTabletLobSplitUtil::open_snapshot_scan_iters(param_,
                                                                  ctx_,
                                                                  param_->dest_schema_id_,
                                                                  ctx_->lob_meta_tablet_handle_,
@@ -1476,6 +1507,8 @@ int ObTabletLobWriteDataTask::create_sstables(
   int64_t last_minor_idx = -1;
   ObFixedArray<ObTablesHandleArray, common::ObIAllocator> batch_sstables_handle;
   batch_sstables_handle.set_allocator(&allocator_);
+  const compaction::ObMergeType merge_type = share::ObSplitSSTableType::SPLIT_MINOR == split_sstable_type ?
+        compaction::ObMergeType::MINOR_MERGE : compaction::ObMergeType::MAJOR_MERGE;
   if (OB_FAIL(batch_sstables_handle.prepare_allocate(ctx_->new_lob_tablet_ids_.count()))) {
     LOG_WARN("init failed", K(ret), K(ctx_->new_lob_tablet_ids_));
   }
@@ -1489,16 +1522,16 @@ int ObTabletLobWriteDataTask::create_sstables(
 
   for (int64_t i = 0; i < index_builders.count() && OB_SUCC(ret); i++) {
     for (int64_t j = 0; j < index_builders.count(i) && OB_SUCC(ret); j++) {
-      bool is_major_exist = false;
+      bool is_data_split_finished = false;
       ObTableHandleV2 new_table_handle;
       const ObTabletID &dst_tablet_id = ctx_->new_lob_tablet_ids_.at(j);
       ObTabletLobWriteSSTableCtx &write_sstable_ctx = write_sstable_ctx_array_.at(i);
       ObSEArray<ObTabletID, 1> check_major_exist_tablets;
       if (OB_FAIL(check_major_exist_tablets.push_back(dst_tablet_id))) {
         LOG_WARN("push back failed", K(ret));
-      } else if (OB_FAIL(ObTabletSplitUtil::check_major_sstables_exist(param_->ls_id_, check_major_exist_tablets, is_major_exist))) {
+      } else if (OB_FAIL(ObTabletSplitUtil::check_data_split_finished(param_->ls_id_, check_major_exist_tablets, is_data_split_finished))) {
         LOG_WARN("check major exist failed", K(ret), K(check_major_exist_tablets), KPC(param_));
-      } else if (is_major_exist) {
+      } else if (is_data_split_finished) {
         FLOG_INFO("skip to create sstable", K(ret), K(dst_tablet_id));
       } else if (share::ObSplitSSTableType::SPLIT_MINOR == split_sstable_type
           && !is_minor_merge(write_sstable_ctx.merge_type_)) {
@@ -1542,15 +1575,44 @@ int ObTabletLobWriteDataTask::create_sstables(
 
   // update tablet handle table store
   for (int64_t i = 0; i < ctx_->new_lob_tablet_ids_.count() && OB_SUCC(ret); i++) {
-    if (batch_sstables_handle.at(i).empty()) {
+    if (batch_sstables_handle.at(i).empty() && !is_major_merge_type(merge_type)) {
       FLOG_INFO("already built, skip to update table store", K(ret), "tablet_id", ctx_->new_lob_tablet_ids_.at(i));
     } else if (OB_FAIL(ObTabletSplitMergeTask::update_table_store_with_batch_tables(
                 ctx_->ls_handle_,
                 ctx_->lob_meta_tablet_handle_,
                 ctx_->new_lob_tablet_ids_.at(i),
                 batch_sstables_handle.at(i),
-                split_sstable_type))) {
+                merge_type,
+                false/*can_reuse_macro_block*/,
+                ctx_->skipped_split_major_keys_))) {
       LOG_WARN("update table store with batch tables failed", K(ret), K(batch_sstables_handle.at(i)), K(split_sstable_type));
+    }
+    if (OB_SUCC(ret) && !is_major_merge_type(merge_type)) {
+      // build lost mds sstable into tablet.
+      ObTableHandleV2 mds_table_handle;
+      ObTablesHandleArray mds_sstables_handle;
+      common::ObArenaAllocator build_mds_arena("SplitBuildMds", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+      if (OB_FAIL(ObTabletSplitUtil::build_lost_medium_mds_sstable(
+            build_mds_arena,
+            ctx_->ls_handle_,
+            ctx_->lob_meta_tablet_handle_,
+            ctx_->new_lob_tablet_ids_.at(i),
+            mds_table_handle))) {
+        LOG_WARN("build lost medium mds sstable failed", K(ret), KPC(param_));
+      } else if (OB_UNLIKELY(!mds_table_handle.is_valid())) {
+        LOG_INFO("no need to fill medium mds sstable", K(ret), KPC(param_));
+      } else if (OB_FAIL(mds_sstables_handle.add_table(mds_table_handle))) {
+        LOG_WARN("add table failed", K(ret));
+      } else if (OB_FAIL(ObTabletSplitMergeTask::update_table_store_with_batch_tables(
+            ctx_->ls_handle_,
+            ctx_->lob_meta_tablet_handle_,
+            ctx_->new_lob_tablet_ids_.at(i),
+            mds_sstables_handle,
+            compaction::ObMergeType::MDS_MINI_MERGE,
+            false/*can_reuse_macro_block*/,
+            ctx_->skipped_split_major_keys_))) {
+        LOG_WARN("update table store with batch tables failed", K(ret), K(mds_sstables_handle));
+      }
     }
   }
   return ret;
@@ -1603,6 +1665,9 @@ int ObTabletLobWriteDataTask::create_sstable(ObSSTableIndexBuilder *sstable_inde
     const int64_t uncommitted_tx_id = is_minor_merge(merge_type) ? write_sstable_ctx.dst_uncommitted_tx_id_arr_.at(tablet_idx) : 0;
     create_sstable_param.table_key_ = table_key;
     create_sstable_param.table_key_.tablet_id_ = new_tablet_id;
+    if (is_major_merge(merge_type)) {
+      create_sstable_param.table_key_.version_range_.snapshot_version_ = dst_major_snapshot_version;
+    }
     create_sstable_param.uncommitted_tx_id_ = uncommitted_tx_id;
     create_sstable_param.schema_version_ = param_->schema_version_;
 
@@ -1620,14 +1685,19 @@ int ObTabletLobWriteDataTask::create_sstable(ObSSTableIndexBuilder *sstable_inde
     create_sstable_param.ddl_scn_ = basic_meta.ddl_scn_;
     create_sstable_param.progressive_merge_round_ = basic_meta.progressive_merge_round_;
     create_sstable_param.progressive_merge_step_ = basic_meta.progressive_merge_step_;
+    create_sstable_param.co_base_snapshot_version_ = basic_meta.co_base_snapshot_version_;
 
     create_sstable_param.ddl_scn_.set_min();
+    create_sstable_param.full_column_cnt_ = 0;
+    create_sstable_param.tx_data_recycle_scn_.set_min();
+    create_sstable_param.column_group_cnt_ = 1;
 
     // init from merge_res
     create_sstable_param.column_cnt_ = res.data_column_cnt_;
     create_sstable_param.max_merged_trans_version_ = res.max_merged_trans_version_;
     create_sstable_param.nested_size_ = res.nested_size_;
     create_sstable_param.nested_offset_ = res.nested_offset_;
+    create_sstable_param.root_macro_seq_ = res.root_macro_seq_;
 
     // ObTabletCreateSSTableParam::inner_init_with_merge_res
     ObSSTableMergeRes::fill_addr_and_data(res.root_desc_,
@@ -1838,7 +1908,7 @@ int ObTabletLobSplitUtil::open_uncommitted_scan_iters(ObLobSplitParam *param,
             ret = OB_ALLOCATE_MEMORY_FAILED;
             LOG_WARN("fail to alloc row scan", K(ret));
           } else if (FALSE_IT(new_scanner = new(buff)ObUncommittedRowScan())) {
-          } else if (OB_FAIL(new_scanner->init(scan_param, *sst, major_snapshot_version))) {
+          } else if (OB_FAIL(new_scanner->init(scan_param, *sst, major_snapshot_version, ObLobMetaUtil::LOB_META_COLUMN_CNT))) {
             LOG_WARN("fail to init row scanner", K(ret));
           } else if (OB_FAIL(iters.push_back(ObIStoreRowIteratorPtr(new_scanner)))) {
             LOG_WARN("fail to push back new row scanner", K(ret));
@@ -1974,7 +2044,8 @@ int ObTabletLobSplitUtil::generate_col_param(const ObMergeSchema *schema,
 }
 
 int ObTabletLobSplitUtil::process_write_split_start_log_request(
-    const ObTabletSplitArg &arg)
+    const ObTabletSplitArg &arg,
+    share::SCN &scn)
 {
   int ret = OB_SUCCESS;
   ObLobSplitParam lob_split_param;
@@ -1988,13 +2059,13 @@ int ObTabletLobSplitUtil::process_write_split_start_log_request(
   } else if (is_lob_tablet) {
     if (OB_FAIL(lob_split_param.init(arg))) {
       LOG_WARN("init param failed", K(ret));
-    } else if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, &lob_split_param))) {
+    } else if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, &lob_split_param, scn))) {
       LOG_WARN("write split log failed", K(ret));
     }
   } else {
     if (OB_FAIL(data_split_param.init(arg))) {
       LOG_WARN("init param failed", K(ret));
-    } else if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, &data_split_param))) {
+    } else if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, &data_split_param, scn))) {
       LOG_WARN("write split log failed", K(ret));
     }
   }
@@ -2047,7 +2118,8 @@ int ObTabletLobSplitUtil::process_tablet_split_request(
   }
 
   if (OB_SUCC(ret) && !is_start_request) {
-    if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, dag_param))) {
+    share::SCN unused_finish_scn = SCN::min_scn();
+    if (OB_FAIL(ObTabletLobSplitUtil::write_split_log(is_lob_tablet, is_start_request, ls_id, dag_param, unused_finish_scn))) {
       LOG_WARN("write split log failed", K(ret));
     }
   }
@@ -2102,7 +2174,8 @@ int ObTabletLobSplitUtil::write_split_log(
     const bool is_lob_tablet,
     const bool is_start_request,
     const share::ObLSID &ls_id,
-    const share::ObIDagInitParam *input_param)
+    const share::ObIDagInitParam *input_param,
+    SCN &scn)
 {
   int ret = OB_SUCCESS;
   ObTabletSplitStartLog split_start_log;
@@ -2164,13 +2237,13 @@ int ObTabletLobSplitUtil::write_split_log(
     if (is_start_request) {
       if (OB_FAIL(ObDDLRedoLogWriter::write_auto_split_log(
             ls_id, ObDDLClogType::DDL_TABLET_SPLIT_START_LOG,
-            logservice::ObReplayBarrierType::PRE_BARRIER, split_start_log))) {
+            logservice::ObReplayBarrierType::PRE_BARRIER, split_start_log, scn))) {
         LOG_WARN("write tablet split start log failed", K(ret), K(split_start_log));
       }
     } else {
       if (OB_FAIL(ObDDLRedoLogWriter::write_auto_split_log(
             ls_id, ObDDLClogType::DDL_TABLET_SPLIT_FINISH_LOG,
-            logservice::ObReplayBarrierType::STRICT_BARRIER, split_finish_log))) {
+            logservice::ObReplayBarrierType::STRICT_BARRIER, split_finish_log, scn))) {
         LOG_WARN("write tablet split finish log failed", K(ret), K(split_finish_log));
       }
     }

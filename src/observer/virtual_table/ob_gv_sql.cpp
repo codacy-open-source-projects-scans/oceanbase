@@ -376,10 +376,16 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
         cells[i].set_null();
       } else if (cache_obj->is_sql_crsr()) {
         ObString sp_info_str;
-        if (OB_FAIL(ob_write_string(*allocator_,
-                                    plan->stat_.sp_info_str_,
-                                    sp_info_str))) {
-          SERVER_LOG(ERROR, "copy sp_info_str failed", K(ret));
+        char *buf = nullptr;
+        int64_t buf_len =
+            plan->stat_.sp_info_str_.length() > OB_MAX_COMMAND_LENGTH
+                ? OB_MAX_COMMAND_LENGTH
+                : plan->stat_.sp_info_str_.length();
+        if (buf_len > 0 && OB_ISNULL(buf = static_cast<char *>(allocator_->alloc(buf_len)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          SERVER_LOG(ERROR, "allocate memory failed!", K(ret), K(buf_len));
+        } else if (OB_FALSE_IT(plan->stat_.sp_info_str_.to_string(buf, buf_len))) {
+        } else if (OB_FALSE_IT(sp_info_str.assign(buf, buf_len))) {
         } else {
           cells[i].set_varchar(sp_info_str);
           cells[i].set_collation_type(ObCharset::get_default_collation(
@@ -421,10 +427,16 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
         } else {
           origin_str = pl_object->get_stat().sys_vars_str_;
         }
-        if (OB_FAIL(ob_write_string(*allocator_,
-                                    origin_str,
-                                    sys_vars_str))) {
-          SERVER_LOG(ERROR, "copy sys_vars_str failed", K(ret));
+        char *buf = nullptr;
+        int64_t buf_len =
+            origin_str.length() > OB_MAX_COMMAND_LENGTH
+                ? OB_MAX_COMMAND_LENGTH
+                : origin_str.length();
+        if (buf_len > 0 && OB_ISNULL(buf = static_cast<char *>(allocator_->alloc(buf_len)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          SERVER_LOG(ERROR, "allocate memory failed!", K(ret), K(buf_len));
+        } else if (OB_FALSE_IT(origin_str.to_string(buf, buf_len))) {
+        } else if (OB_FALSE_IT(sys_vars_str.assign(buf, buf_len))) {
         } else {
           cells[i].set_varchar(sys_vars_str);
           cells[i].set_collation_type(ObCharset::get_default_collation(
@@ -440,10 +452,16 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
         cells[i].set_null();
       } else if (cache_obj->is_sql_crsr()) {
         ObString config_str;
-        if (OB_FAIL(ob_write_string(*allocator_,
-                                    plan->stat_.config_str_,
-                                    config_str))) {
-          SERVER_LOG(ERROR, "copy sys_vars_str failed", K(ret));
+        char *buf = nullptr;
+        int64_t buf_len =
+            plan->stat_.config_str_.length() > OB_MAX_COMMAND_LENGTH
+                ? OB_MAX_COMMAND_LENGTH
+                : plan->stat_.config_str_.length();
+        if (buf_len > 0 && OB_ISNULL(buf = static_cast<char *>(allocator_->alloc(buf_len)))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          SERVER_LOG(ERROR, "allocate memory failed!", K(ret), K(buf_len));
+        } else if (OB_FALSE_IT(plan->stat_.config_str_.to_string(buf, buf_len))) {
+        } else if (OB_FALSE_IT(config_str.assign(buf, buf_len))) {
         } else {
           cells[i].set_varchar(config_str);
           cells[i].set_collation_type(ObCharset::get_default_collation(
@@ -483,6 +501,16 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
         cells[i].set_int(plan->stat_.schema_version_);
       } else if (NULL != pl_object) {
         cells[i].set_int(pl_object->get_stat().schema_version_);
+      } else {
+        cells[i].set_int(0);
+      }
+      break;
+    }
+    case share::ALL_VIRTUAL_PLAN_STAT_CDE::PL_EVICT_VERSION: {
+      if (!cache_stat_updated) {
+        cells[i].set_null();
+      } else if (NULL != pl_object) {
+        cells[i].set_int(pl_object->get_stat().pl_evict_version_);
       } else {
         cells[i].set_int(0);
       }
@@ -576,6 +604,10 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
         mem_used = cache_obj->get_mem_size();
       }
       cells[i].set_int(mem_used);
+      break;
+    }
+    case share::ALL_VIRTUAL_PLAN_STAT_CDE::PL_CG_MEM_HOLD: {
+      cells[i].set_int(0);
       break;
     }
     case share::ALL_VIRTUAL_PLAN_STAT_CDE::EXECUTIONS: {
@@ -1025,7 +1057,14 @@ int ObGVSql::fill_cells(const ObILibCacheObject *cache_obj, const ObPlanCache &p
           cache_obj->is_sfc() ||
           cache_obj->is_prcr() ||
           cache_obj->is_pkg()) {
-        pl_schema_id = pl_object->get_stat().pl_schema_id_;
+        uint64_t stat_pl_schema_id = pl_object->get_stat().pl_schema_id_;
+        if (ObTriggerInfo::is_trigger_package_id(stat_pl_schema_id)) {
+          pl_schema_id = ObTriggerInfo::get_package_trigger_id(stat_pl_schema_id);
+        } else if (ObUDTObjectType::is_object_id(stat_pl_schema_id)) {
+          pl_schema_id = ObUDTObjectType::clear_object_id_mask(stat_pl_schema_id);
+        } else {
+          pl_schema_id = stat_pl_schema_id;
+        }
       }
       cells[i].set_uint64(pl_schema_id);
       break;

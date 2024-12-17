@@ -35,6 +35,7 @@
 #include "sql/engine/ob_exec_feedback_info.h"
 #include "sql/engine/expr/ob_expr_sql_udt_utils.h"
 #include "sql/code_generator/ob_static_engine_cg.h"
+#include "sql/monitor/ob_sql_plan.h"
 
 namespace oceanbase
 {
@@ -67,6 +68,7 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     require_local_execution_(false),
     use_px_(false),
     px_dop_(0),
+    px_parallel_rule_(PXParallelRule::USE_PX_DEFAULT),
     next_phy_operator_id_(0),
     next_expr_operator_id_(0),
     regexp_op_count_(0),
@@ -136,6 +138,7 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     is_enable_px_fast_reclaim_(false),
     use_rich_format_(false),
     subschema_ctx_(allocator_),
+    das_dop_(0),
     disable_auto_memory_mgr_(false),
     is_inner_sql_(false),
     is_batch_params_execute_(false),
@@ -150,7 +153,8 @@ ObPhysicalPlan::ObPhysicalPlan(MemoryContext &mem_context /* = CURRENT_CONTEXT *
     need_switch_to_table_lock_worker_(false),
     data_complement_gen_doc_id_(false),
     dml_table_ids_(&allocator_),
-    direct_load_need_sort_(false)
+    direct_load_need_sort_(false),
+    insertup_can_do_gts_opt_(false)
 {
 }
 
@@ -245,7 +249,9 @@ void ObPhysicalPlan::reset()
   logical_plan_.reset();
   is_enable_px_fast_reclaim_ = false;
   subschema_ctx_.reset();
+  das_dop_ = 0;
   all_local_session_vars_.reset();
+  sql_stat_record_value_.reset();
   udf_has_dml_stmt_ = false;
   is_inner_sql_ = false;
   is_batch_params_execute_ = false;
@@ -259,6 +265,7 @@ void ObPhysicalPlan::reset()
   data_complement_gen_doc_id_ = false;
   dml_table_ids_.reset();
   direct_load_need_sort_ = false;
+  insertup_can_do_gts_opt_ = false;
 }
 void ObPhysicalPlan::destroy()
 {
@@ -576,7 +583,9 @@ void ObPhysicalPlan::update_plan_stat(const ObAuditRecordData &record,
     }
   } // long route stat ends
 
-  update_plan_expired_info(record, is_first, table_row_count_list);
+  if (!is_expired() && stat_.enable_plan_expiration_) {
+    update_plan_expired_info(record, is_first, table_row_count_list);
+  }
 }
 
 void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
@@ -586,20 +595,13 @@ void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
   bool bret = false;
   bool is_evolution = ATOMIC_LOAD(&stat_.is_evolution_);
   bool info_inited = ATOMIC_LOAD(&(stat_.first_exec_row_count_)) >= 0;
-  if (is_expired()) {
-    /* do nothing */
-  } else if (!is_evolution && stat_.enable_plan_expiration_
-             && (record.is_timeout() || OB_SESSION_KILLED == record.status_)) {
+  if (!is_evolution && (record.is_timeout() || OB_SESSION_KILLED == record.status_)) {
     set_is_expired(true);
     LOG_INFO("query plan is expired due to execution timeout", K(stat_));
   } else if (is_first) {
-    if (stat_.enable_plan_expiration_) {
-      ATOMIC_STORE(&(stat_.sample_times_), 0);
-      ATOMIC_STORE(&(stat_.first_exec_row_count_), record.exec_record_.get_memstore_read_row_count() + record.exec_record_.get_ssstore_read_row_count());
-      ATOMIC_STORE(&(stat_.first_exec_usec_), record.exec_timestamp_.executor_t_);
-    } else {
-      ATOMIC_STORE(&(stat_.first_exec_row_count_), 0);
-    }
+    ATOMIC_STORE(&(stat_.sample_times_), 0);
+    ATOMIC_STORE(&(stat_.first_exec_row_count_), record.exec_record_.get_memstore_read_row_count() + record.exec_record_.get_ssstore_read_row_count());
+    ATOMIC_STORE(&(stat_.first_exec_usec_), record.exec_timestamp_.executor_t_);
     if (stat_.table_row_count_first_exec_ != NULL && table_row_count_list != NULL) {
       fill_row_count_info(true, stat_.access_table_num_, stat_.table_row_count_first_exec_, *table_row_count_list);
     }
@@ -608,10 +610,8 @@ void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
   } else if (!info_inited && is_evolution) {
     /* in evolution, sampling infos */
     ATOMIC_INC(&(stat_.sample_times_));
-    if (stat_.enable_plan_expiration_) {
-      ATOMIC_AAF(&(stat_.sample_exec_row_count_), record.exec_record_.get_memstore_read_row_count() + record.exec_record_.get_ssstore_read_row_count());
-      ATOMIC_AAF(&(stat_.sample_exec_usec_), record.exec_timestamp_.executor_t_);
-    }
+    ATOMIC_AAF(&(stat_.sample_exec_row_count_), record.exec_record_.get_memstore_read_row_count() + record.exec_record_.get_ssstore_read_row_count());
+    ATOMIC_AAF(&(stat_.sample_exec_usec_), record.exec_timestamp_.executor_t_);
     if (stat_.table_row_count_first_exec_ != NULL && table_row_count_list != NULL) {
       fill_row_count_info(false, stat_.access_table_num_, stat_.table_row_count_first_exec_, *table_row_count_list);
     }
@@ -623,13 +623,11 @@ void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
     } while (first_exec_row_count != ATOMIC_VCAS(&(stat_.first_exec_row_count_), first_exec_row_count, 0));
     if (-1 == first_exec_row_count) {  // only one thread can init first exec infos by get sample_count
       int64_t sample_count = ATOMIC_LOAD(&(stat_.sample_times_));
-      if (stat_.enable_plan_expiration_) {
-        if (sample_count <= 0) {
-          sample_count = 1;
-        }
-        stat_.first_exec_row_count_ = stat_.sample_exec_row_count_ / sample_count;
-        stat_.first_exec_usec_ = stat_.sample_exec_usec_ / sample_count;
+      if (sample_count <= 0) {
+        sample_count = 1;
       }
+      stat_.first_exec_row_count_ = stat_.sample_exec_row_count_ / sample_count;
+      stat_.first_exec_usec_ = stat_.sample_exec_usec_ / sample_count;
       ATOMIC_STORE(&(stat_.sample_exec_row_count_), 0);
       ATOMIC_STORE(&(stat_.sample_exec_usec_), 0);
       ATOMIC_STORE(&(stat_.sample_times_), 0);
@@ -642,15 +640,14 @@ void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
           LOG_DEBUG("init first row stat for spm plan", K(i), K(stat_.table_row_count_first_exec_[i]));
         }
       }
-      LOG_DEBUG("init first exec info for spm plan", K(stat_.enable_plan_expiration_), K(sample_count),
-                                                    K(stat_.first_exec_row_count_), K(stat_.first_exec_usec_));
+      LOG_DEBUG("init first exec info for spm plan", K(sample_count), K(stat_.first_exec_row_count_), K(stat_.first_exec_usec_));
     }
   } else if (stat_.table_row_count_first_exec_ != NULL && table_row_count_list != NULL
              && record.get_elapsed_time() > SLOW_QUERY_TIME_FOR_PLAN_EXPIRE
              && check_if_is_expired(record.get_elapsed_time(), stat_.access_table_num_, stat_.table_row_count_first_exec_, *table_row_count_list)) {
     /* expire plan by range scan row count */
     set_is_expired(true);
-  } else if (stat_.enable_plan_expiration_) {
+  } else {
     /* expire plan by local plan row count and dist plan exec time */
     int64_t sample_count = ATOMIC_AAF(&(stat_.sample_times_), 1);
     int64_t sample_exec_row_count = ATOMIC_AAF(&(stat_.sample_exec_row_count_),
@@ -660,9 +657,15 @@ void ObPhysicalPlan::update_plan_expired_info(const ObAuditRecordData &record,
       ATOMIC_STORE(&(stat_.sample_times_), 0);
       ATOMIC_STORE(&(stat_.sample_exec_row_count_), 0);
       ATOMIC_STORE(&(stat_.sample_exec_usec_), 0);
-      if (stat_.elapsed_time_ > SLOW_QUERY_TIME_FOR_PLAN_EXPIRE * stat_.execute_times_
-          && is_plan_unstable(sample_count, sample_exec_row_count, sample_exec_usec)) {
+      if (is_plan_unstable(sample_count, sample_exec_row_count, sample_exec_usec)) {
         set_is_expired(true);
+        if (stat_.elapsed_time_ > SLOW_QUERY_TIME_FOR_PLAN_EXPIRE * stat_.execute_times_) {
+          LOG_INFO("plan expired for physical plan avg elapsed_time more than 5ms", K(stat_.plan_id_),
+                                      K(stat_.elapsed_time_), K(stat_.execute_times_));
+        } else {
+          LOG_INFO("plan expired for physical plan avg elapsed_time no more than 5ms", K(stat_.plan_id_),
+                                      K(stat_.elapsed_time_), K(stat_.execute_times_));
+        }
       }
     }
   }
@@ -905,7 +908,8 @@ OB_SERIALIZE_MEMBER(ObPhysicalPlan,
                     online_sample_percent_,
                     need_switch_to_table_lock_worker_,
                     data_complement_gen_doc_id_,
-                    direct_load_need_sort_);
+                    direct_load_need_sort_,
+                    px_parallel_rule_);
 
 int ObPhysicalPlan::set_table_locations(const ObTablePartitionInfoArray &infos,
                                         ObSchemaGetterGuard &schema_guard)
@@ -1156,7 +1160,10 @@ int ObPhysicalPlan::alloc_op_spec_for_cg(ObLogicalOperator *op, ObSqlSchemaGuard
     spec->max_batch_size_ = 0;
     spec->use_rich_format_ = false;
   }
-  LOG_TRACE("alloc op spec for cg", K(disable_vectorize), K(spec->max_batch_size_), K(spec->use_rich_format_), K(*spec));
+  if (OB_SUCC(ret)) {
+    LOG_TRACE("alloc op spec for cg", K(disable_vectorize), K(spec->max_batch_size_),
+              K(spec->use_rich_format_), K(*spec));
+  }
   return ret;
 }
 int ObPhysicalPlan::get_encrypt_meta(const uint64_t table_id,
@@ -1434,6 +1441,103 @@ int ObPhysicalPlan::set_logical_plan(ObLogicalPlanRawData &logical_plan)
     logical_plan_ = logical_plan;
     logical_plan_.logical_plan_ = buf;
   }
+  return ret;
+}
+
+int ObPhysicalPlan::get_all_spec_op(ObIArray<const ObOpSpec *> &simple_op_infos, const ObOpSpec &op)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(simple_op_infos.push_back(&op))) {
+    LOG_WARN("fail to push back spec_op", K(ret), K(op.get_id()));
+  }
+  for (int32_t i = 0; OB_SUCC(ret) && i < op.get_child_num(); ++i) {
+    const ObOpSpec *child_op = op.get_child(i);
+    if (OB_ISNULL(child_op)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(SMART_CALL(get_all_spec_op(simple_op_infos, *child_op)))) {
+      LOG_WARN("fail to find child ops",
+               K(ret), K(i), "op_id", op.get_id(), "child_id", child_op->get_id());
+    }
+  }
+  return ret;
+}
+
+int ObPhysicalPlan::print_this_plan_info(ObExecContext &ctx)
+{
+  int ret = OB_SUCCESS;
+  PlanText out_plan_text;
+  ObExplainDisplayOpt option;
+  ObSEArray<common::ObString, 32> plan_strs;
+  option.with_tree_line_ = false;
+  ObSqlPlan sql_plan(ctx.get_allocator());
+  ExplainType type = EXPLAIN_EXTENDED;
+  ObSEArray<ObSqlPlanItem*, 4> plan_items;
+  if (OB_FAIL(logical_plan_.uncompress_logical_plan(ctx.get_allocator(), plan_items))) {
+    LOG_WARN("failed to uncompress logical plan", K(ret));
+  } else if (OB_FAIL(sql_plan.format_sql_plan(plan_items,
+                                              type,
+                                              option,
+                                              out_plan_text))) {
+    LOG_WARN("failed to format sql plan", K(ret));
+  } else if (OB_FAIL(sql_plan.plan_text_to_strings(out_plan_text, plan_strs))) {
+    LOG_WARN("failed to convert plan text to strings", K(ret));
+  } else {
+    LOG_INFO("print plan info:");
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < plan_strs.count(); i++) {
+    _OB_LOG(INFO, "%*s", plan_strs.at(i).length(), plan_strs.at(i).ptr());
+  }
+  return ret;
+}
+
+int ObPhysicalPlan::check_pdml_affected_rows(ObExecContext &ctx)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<const ObOpSpec *, 16> all_ops;
+  ObExecFeedbackInfo &fb_info = ctx.get_feedback_info();
+  const common::ObIArray<ObExecFeedbackNode> &feedback_nodes = fb_info.get_feedback_nodes();
+  if (!is_use_pdml()) {
+    // do nothing
+  } else if (OB_FAIL(get_all_spec_op(all_ops, *root_op_spec_))) {
+    LOG_WARN("fail to get all spec", K(ret));
+  } else if (!fb_info.is_valid()) {
+    // do nothing
+  } else if (all_ops.count() != feedback_nodes.count()) {
+    // do nothing
+  } else {
+    int64_t pdml_write_rows = 0;
+    bool set_pdml_write_rows = false;
+    for (int64_t i = 0; OB_SUCC(ret) && i < all_ops.count(); ++i) {
+      const ObExecFeedbackNode &feedback_node = feedback_nodes.at(i);
+      const ObOpSpec *op = all_ops.at(i);
+      if (OB_ISNULL(op)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null ptr", K(ret));
+      } else if (op->id_ != feedback_node.op_id_) {
+        // do nothing
+      } else if (op->is_pdml_operator()) {
+        if (!set_pdml_write_rows) {
+          set_pdml_write_rows = true;
+          pdml_write_rows = feedback_node.pdml_op_write_rows_;
+        } else if (pdml_write_rows != feedback_node.pdml_op_write_rows_) {
+          ret = OB_ERR_DEFENSIVE_CHECK;
+          ObString func_name = ObString::make_string("check_pdml_affected_row");
+          LOG_USER_ERROR(OB_ERR_DEFENSIVE_CHECK, func_name.length(), func_name.ptr());
+          LOG_DBA_ERROR(OB_ERR_DEFENSIVE_CHECK, "msg", "Fatal Error!!! pdml write affected row is not match with index table", K(ret),
+                    "curr_pdml_op_write_rows", feedback_node.pdml_op_write_rows_,
+                    "pdml_write_rows", pdml_write_rows,
+                    "op_info", feedback_node,
+                    K(feedback_nodes));
+          int tmp_ret = OB_SUCCESS;
+          if (OB_SUCCESS != (tmp_ret = print_this_plan_info(ctx))) {
+            LOG_WARN("failed to uncompress logical plan", K(tmp_ret));
+          }
+        }
+      }
+    }
+  }
+
   return ret;
 }
 

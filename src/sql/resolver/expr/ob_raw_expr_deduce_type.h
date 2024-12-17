@@ -122,6 +122,7 @@ private:
   int set_xmlagg_result_type(ObAggFunRawExpr &expr, ObExprResType& result_type);
 
   int set_agg_xmlagg_result_type(ObAggFunRawExpr &expr, ObExprResType& result_type);
+  int set_array_agg_result_type(ObAggFunRawExpr &expr, ObExprResType& result_type);
 
   // helper functions for add_implicit_cast
   int add_implicit_cast_for_op_row(ObRawExpr *&child_ptr,
@@ -155,6 +156,7 @@ private:
   int try_replace_casts_with_questionmarks_ora(ObRawExpr *row_expr);
 
   int try_replace_cast_with_questionmark_ora(ObRawExpr &parent, ObRawExpr *cast_expr, int param_idx);
+  int build_subschema_for_enum_set_type(ObRawExpr &expr);
 private:
   const sql::ObSQLSessionInfo *my_session_;
   common::ObArenaAllocator alloc_;

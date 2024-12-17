@@ -383,7 +383,8 @@ int ObInfoSchemaColumnsTable::iterate_column_schema_array(
 int ObInfoSchemaColumnsTable::check_database_table_filter()
 {
   int ret = OB_SUCCESS;
-  for (int64_t i = 0; OB_SUCC(ret) && i < key_ranges_.count(); ++i) {
+  is_filter_db_ = key_ranges_.count() > 0;
+  for (int64_t i = 0; OB_SUCC(ret) && i < key_ranges_.count() && is_filter_db_; ++i) {
     const ObRowkey &start_key = key_ranges_.at(i).start_key_;
     const ObRowkey &end_key = key_ranges_.at(i).end_key_;
     const ObObj *start_key_obj_ptr = start_key.get_obj_ptr();
@@ -403,8 +404,9 @@ int ObInfoSchemaColumnsTable::check_database_table_filter()
       // 表示至少指定了db_name
       // 包含过滤条件为db_name + table_name
       // 则无需获取租户下所有的database_schema
-      is_filter_db_ = true;
-      ObString database_name = start_key_obj_ptr[0].get_varchar();
+      ObString database_name = CS_TYPE_BINARY == start_key_obj_ptr[0].get_collation_type()
+                                                 ? start_key_obj_ptr[0].get_varchar()
+                                                   : start_key_obj_ptr[0].get_varchar().trim_end_space_only();
       const ObDatabaseSchema *filter_database_schema = NULL;
       if (database_name.empty()) {
       } else if (OB_FAIL(schema_guard_->get_database_schema(tenant_id_,
@@ -416,7 +418,9 @@ int ObInfoSchemaColumnsTable::check_database_table_filter()
            && start_key_obj_ptr[1] == end_key_obj_ptr[1]) {
         // 指定db_name，同时指定了tbl_name
         const ObTableSchema *filter_table_schema = NULL;
-        ObString table_name = start_key_obj_ptr[1].get_varchar();
+        ObString table_name = CS_TYPE_BINARY == start_key_obj_ptr[1].get_collation_type()
+                                                ? start_key_obj_ptr[1].get_varchar()
+                                                  : start_key_obj_ptr[1].get_varchar().trim_end_space_only();
         if (table_name.empty()) {
         } else if (OB_FAIL(schema_guard_->get_table_schema(tenant_id_,
             filter_database_schema->get_database_id(),
@@ -432,6 +436,8 @@ int ObInfoSchemaColumnsTable::check_database_table_filter()
       } else if (OB_FAIL(add_var_to_array_no_dup(database_schema_array_, filter_database_schema))) {
         SERVER_LOG(WARN, "push_back failed", K(filter_database_schema->get_database_name()));
       }
+    } else {
+      is_filter_db_ = false;
     }
   }
   return ret;
@@ -881,7 +887,15 @@ int ObInfoSchemaColumnsTable::fill_row_cells(const ObString &database_name,
             cells[cell_idx].set_collation_type(ObCharset::get_default_collation(
                                                ObCharset::get_default_charset()));
             break;
-        }
+          }
+        case SRS_ID: {
+            if (!column_schema->is_default_srid()) {
+              cells[cell_idx].set_uint32(column_schema->get_srid());
+            } else {
+              cells[cell_idx].reset();
+            }
+            break;
+          }
         default: {
             ret = OB_ERR_UNEXPECTED;
             SERVER_LOG(WARN, "invalid column id", K(ret), K(cell_idx),
@@ -1260,7 +1274,10 @@ int ObInfoSchemaColumnsTable::fill_row_cells(const common::ObString &database_na
           }
         case GENERATION_EXPRESSION: {
             break;
-        }
+          }
+        case SRS_ID: {
+            break;
+          }
       default: {
           ret = OB_ERR_UNEXPECTED;
           SERVER_LOG(WARN, "invalid column id", K(ret), K(cell_idx),

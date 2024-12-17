@@ -15,6 +15,7 @@
 #include "rootserver/ob_split_partition_helper.h"
 #include "share/tablet/ob_tablet_to_table_history_operator.h"
 #include "src/share/scheduler/ob_partition_auto_split_helper.h"
+#include "storage/compaction/ob_tenant_tablet_scheduler.h"
 
 namespace oceanbase
 {
@@ -94,14 +95,15 @@ int ObSplitPartitionHelper::execute(ObDDLTaskRecord &task_record)
                                 trans_))) {
     LOG_WARN("failed to split wait src end", KR(ret));
   } else if (OB_FAIL(start_dst_(tenant_id_,
+                                tenant_data_version_,
                                 ls_id_,
                                 leader_addr_,
                                 inc_table_schemas_,
                                 dst_tablet_ids_,
-                                start_dst_arg_,
                                 data_end_scn_,
                                 end_autoinc_seqs_,
                                 task_id_,
+                                start_dst_arg_,
                                 tablet_creator_,
                                 trans_))) {
     LOG_WARN("failed to split start dst", KR(ret));
@@ -117,6 +119,8 @@ int ObSplitPartitionHelper::check_allow_split(
   const uint64_t tenant_id = table_schema.get_tenant_id();
   bool is_db_in_recyclebin = false;
   const ObTenantSchema *tenant_schema = nullptr;
+  common::ObArray<const ObSimpleTableSchemaV2 *> table_schemas_in_tg;
+  const uint64_t tablegroup_id = table_schema.get_tablegroup_id();
   ObArray<share::ObZoneReplicaAttrSet> zone_locality;
   if (OB_UNLIKELY(table_schema.is_in_recyclebin())) {
     ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
@@ -149,12 +153,122 @@ int ObSplitPartitionHelper::check_allow_split(
   }
 
   if (OB_FAIL(ret)) {
+  } else if (OB_LIKELY(OB_INVALID_ID == tablegroup_id)) {
+    //do nothing
+  } else if (OB_FAIL(schema_guard.get_table_schemas_in_tablegroup(tenant_id, tablegroup_id, table_schemas_in_tg))) {
+    LOG_WARN("failed to get table schemas in table group", K(ret), K(tablegroup_id));
+  } else if (OB_UNLIKELY(table_schemas_in_tg.count() <= 1)) {
+    //do nothing
+  } else {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("not support spliting of a table in a group with multiple tables", K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "spliting of a table in a group with multiple tables");
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (OB_UNLIKELY(GCTX.is_shared_storage_mode())) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("split in shared storage mode not supported", K(ret));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "split in shared storage mode");
   }
 
+  return ret;
+}
+
+int ObSplitPartitionHelper::freeze_split_src_tablet(const ObFreezeSplitSrcTabletArg &arg,
+                                                    ObFreezeSplitSrcTabletRes &res,
+                                                    const int64_t abs_timeout_us)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!arg.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(ret), K(arg));
+  } else {
+    MTL_SWITCH(arg.tenant_id_) {
+      ObLSService *ls_service = MTL(ObLSService *);
+      logservice::ObLogService *log_service = MTL(logservice::ObLogService*);
+      compaction::ObTenantTabletScheduler *tenant_tablet_scheduler = MTL(compaction::ObTenantTabletScheduler*);
+      ObLSHandle ls_handle;
+      ObLS *ls = nullptr;
+      ObRole role = INVALID_ROLE;
+      int64_t proposal_id = -1;
+      bool has_active_memtable = false;
+      const ObIArray<ObTabletID> &tablet_ids = arg.tablet_ids_;
+      if (OB_ISNULL(ls_service) || OB_ISNULL(log_service) || OB_ISNULL(tenant_tablet_scheduler)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected ls_service or log_service", K(ret));
+      } else if (OB_FAIL(ls_service->get_ls(arg.ls_id_, ls_handle, ObLSGetMod::OBSERVER_MOD))) {
+        LOG_WARN("get ls failed", K(ret), K(arg));
+      } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid ls", K(ret), K(arg.ls_id_));
+      } else if (OB_FAIL(ls->get_ls_role(role))) {
+        LOG_WARN("get role failed", K(ret), K(MTL_ID()), K(arg.ls_id_));
+      } else if (OB_UNLIKELY(ObRole::LEADER != role)) {
+        ret = OB_NOT_MASTER;
+        LOG_WARN("ls not leader", K(ret), K(MTL_ID()), K(arg.ls_id_));
+      } else if (OB_FAIL(ls->tablet_freeze(checkpoint::INVALID_TRACE_ID, tablet_ids, true/*is_sync*/, abs_timeout_us,
+              false/*need_rewrite_meta*/, ObFreezeSourceFlag::TABLET_SPLIT))) {
+        LOG_WARN("batch tablet freeze failed", K(ret), K(arg));
+      } else if (OB_FAIL(ls->check_tablet_no_active_memtable(tablet_ids, has_active_memtable))) {
+        // safer with this check, non-mandatory
+        LOG_WARN("check tablet has active memtable failed", K(ret), K(arg));
+      } else if (has_active_memtable) {
+        ret = OB_EAGAIN;
+        LOG_WARN("tablet has active memtable need retry", K(ret), K(arg));
+      }
+
+      // the followings are workarounds, still INCORRECT in some leader switch corner cases
+      // 1. wait write end for medium
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(tenant_tablet_scheduler->stop_tablets_schedule_medium(tablet_ids, compaction::ObProhibitScheduleMediumMap::ProhibitFlag::SPLIT))) {
+        LOG_WARN("failed to stop tablets schedule medium", K(ret), K(arg));
+      } else if (OB_FAIL(tenant_tablet_scheduler->clear_tablets_prohibit_medium_flag(tablet_ids, compaction::ObProhibitScheduleMediumMap::ProhibitFlag::SPLIT))) {
+        LOG_WARN("failed to clear prohibit schedule medium flag", K(ret), K(arg));
+      }
+      // 2. wait write end for table autoinc seq will be done in batch_get_tablet_autoinc_seq
+
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(ls->get_log_handler()->get_max_scn(res.data_end_scn_))) {
+        LOG_WARN("log_handler get_max_scn failed", K(ret), K(arg));
+      }
+    }
+  }
+  return ret;
+}
+
+// only used for create split dst tablet
+int ObSplitPartitionHelper::get_split_src_tablet_id_if_any(
+    const share::schema::ObTableSchema &table_schema,
+    ObTabletID &split_src_tablet_id)
+{
+  int ret = OB_SUCCESS;
+  const ObCheckPartitionMode mode = CHECK_PARTITION_MODE_NORMAL;
+  bool finish = false;
+  ObPartitionSchemaIter iter(table_schema, mode);
+  ObPartitionSchemaIter::Info info;
+  split_src_tablet_id.reset();
+  while (OB_SUCC(ret) && !finish) {
+    if (OB_FAIL(iter.next_partition_info(info))) {
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;
+        finish = true;
+      } else {
+        LOG_WARN("iter partition failed", KR(ret));
+      }
+    } else if (nullptr != info.partition_) {
+      const ObTabletID &tablet_id = info.partition_->get_split_source_tablet_id();
+      if (tablet_id.is_valid()) {
+        if (split_src_tablet_id.is_valid() && OB_UNLIKELY(tablet_id != split_src_tablet_id)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("all split src tablet id must be same in schema", K(ret), K(split_src_tablet_id), KPC(info.partition_));
+        } else {
+          split_src_tablet_id = tablet_id;
+        }
+      }
+      break;
+    }
+  }
   return ret;
 }
 
@@ -206,6 +320,8 @@ int ObSplitPartitionHelper::prepare_start_args_(
                                                              dst_tablet_ids,
                                                              dst_high_bound_vals))) {
     LOG_WARN("failed to get all tablet ids", KR(ret));
+  } else if (OB_FAIL(ObDDLUtil::batch_check_tablet_checksum(MTL_ID(), 0/*start index of tablet_arr*/, src_tablet_ids.count(), src_tablet_ids))) {
+    LOG_WARN("verify tablet checksum error", K(ret), K(src_tablet_ids), K(tenant_id));
   }
 
   // lock and get ls_id
@@ -336,7 +452,9 @@ int ObSplitPartitionHelper::prepare_dst_tablet_creator_(
     const int64_t split_cnt = dst_tablet_ids.at(0).count();
     const int64_t table_cnt = inc_table_schemas.count();
     bool is_oracle_mode = false;
-    if (OB_UNLIKELY(create_commit_versions.count() != table_cnt || dst_tablet_ids.count() != table_cnt)) {
+    if (OB_FAIL(check_mem_usage_for_split_(tenant_id, split_cnt))) {
+      LOG_WARN("failed to check memory usage", K(ret));
+    } else if (OB_UNLIKELY(create_commit_versions.count() != table_cnt || dst_tablet_ids.count() != table_cnt)) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid arg", K(ret), K(table_cnt), K(create_commit_versions), K(dst_tablet_ids));
     } else if (OB_FAIL(data_table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
@@ -370,7 +488,7 @@ int ObSplitPartitionHelper::prepare_dst_tablet_creator_(
                                     tenant_data_version,
                                     need_create_empty_majors,
                                     create_commit_versions,
-                                    false/*has cs replica*/))) {
+                                    false/*has_cs_replica*/))) {
           LOG_WARN("failed to init", K(ret));
         } else if (OB_FAIL(tablet_creator->add_create_tablet_arg(arg))) {
           LOG_WARN("failed to add create tablet arg", K(ret));
@@ -648,25 +766,6 @@ int ObSplitPartitionHelper::start_src_(
     start_time = finish_time;
   }
 
-  // get data end scn
-  if (OB_SUCC(ret)) {
-    const int64_t timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : GCONF.rpc_timeout;
-    obrpc::ObFreezeSplitSrcTabletArg arg;
-    obrpc::ObFreezeSplitSrcTabletRes res;
-    arg.tenant_id_ = tenant_id;
-    arg.ls_id_ = ls_id;
-    if (OB_FAIL(arg.tablet_ids_.assign(src_tablet_ids))) {
-      LOG_WARN("failed to assign", KR(ret));
-    } else if (OB_FAIL(srv_rpc_proxy->to(leader_addr).timeout(timeout_us).freeze_split_src_tablet(arg, res))) {
-      LOG_WARN("failed to freeze src tablet", KR(ret), K(leader_addr));
-    } else {
-      data_end_scn = res.data_end_scn_;
-    }
-    finish_time = ObTimeUtility::current_time();
-    LOG_INFO("finish get data end scn", KR(ret), "cost_ts", finish_time - start_time, K(data_end_scn));
-    start_time = finish_time;
-  }
-
   // get src tablet's non-empty autoinc_seq that are needed to sync to dst tablet
   if (OB_SUCC(ret)) {
     const int64_t timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : GCONF.rpc_timeout;
@@ -709,19 +808,39 @@ int ObSplitPartitionHelper::start_src_(
     LOG_INFO("finish batch_get_tablet_autoinc_seq", KR(ret), "cost_ts", finish_time - start_time);
     start_time = finish_time;
   }
+
+  // get data end scn finally to guarantee both mds_checkpoint_scn and clog_checkpoint_scn are less than data_end_scn
+  if (OB_SUCC(ret)) {
+    const int64_t timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : GCONF.rpc_timeout;
+    obrpc::ObFreezeSplitSrcTabletArg arg;
+    obrpc::ObFreezeSplitSrcTabletRes res;
+    arg.tenant_id_ = tenant_id;
+    arg.ls_id_ = ls_id;
+    if (OB_FAIL(arg.tablet_ids_.assign(src_tablet_ids))) {
+      LOG_WARN("failed to assign", KR(ret));
+    } else if (OB_FAIL(srv_rpc_proxy->to(leader_addr).timeout(timeout_us).freeze_split_src_tablet(arg, res))) {
+      LOG_WARN("failed to freeze src tablet", KR(ret), K(leader_addr));
+    } else {
+      data_end_scn = res.data_end_scn_;
+    }
+    finish_time = ObTimeUtility::current_time();
+    LOG_INFO("finish get data end scn", KR(ret), "cost_ts", finish_time - start_time, K(data_end_scn));
+    start_time = finish_time;
+  }
   return ret;
 }
 
 int ObSplitPartitionHelper::start_dst_(
     const uint64_t tenant_id,
+    const uint64_t tenant_data_version,
     const share::ObLSID &ls_id,
     const ObAddr &leader_addr,
     const ObIArray<const ObTableSchema *> &inc_table_schemas,
     const ObIArray<ObArray<ObTabletID>> &dst_tablet_ids,
-    const ObTabletSplitMdsArg &start_dst_arg,
     const share::SCN &data_end_scn,
     const ObIArray<std::pair<uint64_t, uint64_t>> &end_autoinc_seqs,
     const int64_t task_id,
+    ObTabletSplitMdsArg &start_dst_arg,
     ObTabletCreator *&tablet_creator,
     ObMySQLTransaction &trans)
 {
@@ -736,7 +855,7 @@ int ObSplitPartitionHelper::start_dst_(
 
   // create dst tablets
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(tablet_creator->modify_batch_args(storage::ObTabletMdsUserDataType::START_SPLIT_DST, data_end_scn, true/*clear_auto_part_size*/))) {
+  } else if (OB_FAIL(tablet_creator->modify_batch_args(storage::ObTabletMdsUserDataType::START_SPLIT_DST, data_end_scn, data_end_scn, true/*clear_auto_part_size*/))) {
     LOG_WARN("failed to set clog checkpoint scn of tablet creator args", KR(ret));
   } else if (OB_FAIL(tablet_creator->execute())) {
     LOG_WARN("execute create partition failed", KR(ret));
@@ -789,26 +908,33 @@ int ObSplitPartitionHelper::start_dst_(
       }
     }
 
-    const int64_t timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : GCONF.rpc_timeout;
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(proxy.call(leader_addr, timeout_us, tenant_id, arg))) {
-      LOG_WARN("send rpc failed", KR(ret), K(arg), K(leader_addr));
-    }
-    int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = proxy.wait())) {
-      LOG_WARN("rpc proxy wait failed", K(tmp_ret));
-      ret = OB_SUCCESS == ret ? tmp_ret : ret;
-    } else if (OB_SUCC(ret)) {
-      const auto &result_array = proxy.get_results();
-      if (OB_UNLIKELY(1 != result_array.count()) || OB_ISNULL(result_array.at(0))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("result count not match", KR(ret), K(result_array.count()));
-      } else {
-        const auto *cur_result = result_array.at(0);
-        for (int64_t j = 0; OB_SUCC(ret) && j < cur_result->autoinc_params_.count(); j++) {
-          const ObMigrateTabletAutoincSeqParam &autoinc_param = cur_result->autoinc_params_.at(j);
-          if (OB_FAIL(autoinc_param.ret_code_)) {
-            LOG_WARN("failed to get autoinc", KR(ret));
+    } else if (DATA_VERSION_4_3_5_0 <= tenant_data_version) {
+      if (OB_FAIL(start_dst_arg.set_autoinc_seq_arg(arg))) {
+        LOG_WARN("failed to set autoinc arg", K(ret), K(arg));
+      }
+    } else {
+      const int64_t timeout_us = THIS_WORKER.is_timeout_ts_valid() ? THIS_WORKER.get_timeout_remain() : GCONF.rpc_timeout;
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(proxy.call(leader_addr, timeout_us, tenant_id, arg))) {
+        LOG_WARN("send rpc failed", KR(ret), K(arg), K(leader_addr));
+      }
+      int tmp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (tmp_ret = proxy.wait())) {
+        LOG_WARN("rpc proxy wait failed", K(tmp_ret));
+        ret = OB_SUCCESS == ret ? tmp_ret : ret;
+      } else if (OB_SUCC(ret)) {
+        const auto &result_array = proxy.get_results();
+        if (OB_UNLIKELY(1 != result_array.count()) || OB_ISNULL(result_array.at(0))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("result count not match", KR(ret), K(result_array.count()));
+        } else {
+          const auto *cur_result = result_array.at(0);
+          for (int64_t j = 0; OB_SUCC(ret) && j < cur_result->autoinc_params_.count(); j++) {
+            const ObMigrateTabletAutoincSeqParam &autoinc_param = cur_result->autoinc_params_.at(j);
+            if (OB_FAIL(autoinc_param.ret_code_)) {
+              LOG_WARN("failed to get autoinc", KR(ret));
+            }
           }
         }
       }
@@ -827,6 +953,62 @@ int ObSplitPartitionHelper::start_dst_(
     finish_time = ObTimeUtility::current_time();
     LOG_INFO("finish set dst tablet mds", KR(ret), "cost_ts", finish_time - start_time);
     start_time = finish_time;
+  }
+  return ret;
+}
+
+int ObSplitPartitionHelper::check_mem_usage_for_split_(
+    const uint64_t tenant_id,
+    const int64_t dst_tablets_number)
+{
+  int ret = OB_SUCCESS;
+  share::ObUnitTableOperator unit_op;
+  common::ObSEArray<share::ObResourcePool, 2> pools;
+  common::ObSEArray<uint64_t, 2> unit_config_ids;
+  common::ObSEArray<ObUnitConfig, 2> unit_configs;
+
+  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id || dst_tablets_number < 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(tenant_id), K(dst_tablets_number));
+  } else if (dst_tablets_number > OB_MAX_SPLIT_PER_ROUND) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("the number of destined split tablets greater than 8192 is not supported", K(ret));
+    LOG_USER_WARN(OB_NOT_SUPPORTED, "the number of destined split tablets greater than 8192 is");
+  } else if (OB_FAIL(unit_op.init(*GCTX.sql_proxy_))) {
+    LOG_WARN("failed to init proxy", K(ret));
+  } else if (OB_FAIL(unit_op.get_resource_pools(tenant_id, pools))) {
+    LOG_WARN("failed to get resource pool", K(ret), K(tenant_id));
+  } else if (pools.empty()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected empty pool", K(ret), K(pools), K(tenant_id));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < pools.count(); ++i) {
+    const share::ObResourcePool &pool = pools.at(i);
+    if OB_FAIL(unit_config_ids.push_back(pool.unit_config_id_)) {
+      LOG_WARN("failed to push back into unit_config_ids");
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(unit_op.get_unit_configs(unit_config_ids, unit_configs))) {
+    LOG_WARN("failed to get unit configs");
+  } else if (unit_configs.empty()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unit_configs should not be empty", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < unit_configs.count(); ++i) {
+    ObUnitConfig & u_config = unit_configs.at(i);
+    const double percent_mem_for_split = 0.2;
+    /*
+       tenant memory | maximum num of dst tablets
+            2GB                    51
+            4GB                    102
+                     ......
+    */
+    if (u_config.memory_size() * percent_mem_for_split < (dst_tablets_number * MEMORY_USAGE_SPLIT_PER_DST)) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("the memory usage of split greater than the memory limit for split", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "the memory usage of split greater than memory limit for split is");
+    }
   }
   return ret;
 }

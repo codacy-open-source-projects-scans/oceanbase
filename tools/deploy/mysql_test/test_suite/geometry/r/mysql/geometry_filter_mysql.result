@@ -133,11 +133,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('POINT(1 1)'));
@@ -195,11 +197,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('LINESTRING(0 0,1 1)'));
@@ -257,11 +261,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'LINESTRING(0 0,1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'));
@@ -269,7 +275,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|7       |868         |
+|0 |TABLE FULL SCAN|t(idx)|7       |879         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -320,11 +326,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('MULTIPOINT((0 0), (1 1))'));
@@ -382,11 +390,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOINT((0 0), (1 1))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'));
@@ -394,7 +404,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|3       |471         |
+|0 |TABLE FULL SCAN|t(idx)|4       |494         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -445,11 +455,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'));
@@ -508,11 +520,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'));
@@ -570,11 +584,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'
   Note:
       Degree of Parallelisim is 1 because of table property
 SET @line = ST_GeomFromText('LINESTRING(3 3,5 5)');
@@ -691,11 +707,14 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
+      :1 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('POINT(0 0)')) and st_intersects(g, ST_GeomFromText('POINT(1 1)'));
@@ -753,11 +772,14 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
+      :1 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 drop table if exists t;
@@ -972,7 +994,7 @@ Query Plan
 ===========================================================
 |ID|OPERATOR       |NAME            |EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------
-|0 |TABLE FULL SCAN|geo_table2(geom)|1       |215         |
+|0 |TABLE FULL SCAN|geo_table2(geom)|1       |218         |
 ===========================================================
 Outputs & filters:
 -------------------------------------
@@ -1024,11 +1046,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[geom, geo_table2]
       pruned_index_name:[geo_table2]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(3.0 3.0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 SELECT k, k_plus_one FROM geo_table2 WHERE ST_Intersects(ST_GeomFromText('POINT(3.0 3.0)'), geom);
@@ -1042,7 +1066,7 @@ Query Plan
 ===========================================================
 |ID|OPERATOR       |NAME            |EST.ROWS|EST.TIME(us)|
 -----------------------------------------------------------
-|0 |TABLE FULL SCAN|geo_table2(geom)|1       |215         |
+|0 |TABLE FULL SCAN|geo_table2(geom)|1       |218         |
 ===========================================================
 Outputs & filters:
 -------------------------------------
@@ -1094,11 +1118,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[geom, geo_table2]
       pruned_index_name:[geo_table2]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(3.0 3.0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 drop table if exists geo_table;
@@ -1180,11 +1206,14 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[geom, geo_table]
       pruned_index_name:[geo_table]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(400003 4000003)'
+      :1 => 26918
   Note:
       Degree of Parallelisim is 1 because of table property
 drop table if exists t;
@@ -1398,11 +1427,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('POINT(1 1)'));
@@ -1460,11 +1491,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('LINESTRING(0 0,1 1)'));
@@ -1522,11 +1555,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'LINESTRING(0 0,1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'));
@@ -1534,7 +1569,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|8       |1017        |
+|0 |TABLE FULL SCAN|t(idx)|8       |1031        |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -1586,11 +1621,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('MULTIPOINT((0 0), (1 1))'));
@@ -1648,11 +1685,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOINT((0 0), (1 1))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'));
@@ -1660,7 +1699,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|7       |836         |
+|0 |TABLE FULL SCAN|t(idx)|7       |853         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -1711,11 +1750,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'));
@@ -1774,11 +1815,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where _st_covers(g, ST_GeomFromText('GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'));
@@ -1836,11 +1879,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'
   Note:
       Degree of Parallelisim is 1 because of table property
 select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('POINT(0 0)'));
@@ -1960,7 +2005,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|2       |299         |
+|0 |TABLE FULL SCAN|t(idx)|2       |305         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2010,11 +2055,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('POINT(1 1)'));
@@ -2022,7 +2069,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|2       |299         |
+|0 |TABLE FULL SCAN|t(idx)|2       |305         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2072,11 +2119,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('LINESTRING(0 0,1 1)'));
@@ -2084,7 +2133,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|2       |299         |
+|0 |TABLE FULL SCAN|t(idx)|2       |305         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2134,11 +2183,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'LINESTRING(0 0,1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'));
@@ -2146,7 +2197,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|13      |1597        |
+|0 |TABLE FULL SCAN|t(idx)|14      |1620        |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2197,11 +2248,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('MULTIPOINT((0 0), (1 1))'));
@@ -2209,7 +2262,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|2       |299         |
+|0 |TABLE FULL SCAN|t(idx)|2       |305         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2259,11 +2312,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOINT((0 0), (1 1))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'));
@@ -2322,11 +2377,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'));
@@ -2385,11 +2442,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Within(g, ST_GeomFromText('GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'));
@@ -2397,7 +2456,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|2       |299         |
+|0 |TABLE FULL SCAN|t(idx)|2       |305         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2447,11 +2506,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('POINT(0 0)'));
@@ -2509,11 +2570,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(0 0)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('POINT(1 1)'));
@@ -2571,11 +2634,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('LINESTRING(0 0,1 1)'));
@@ -2633,11 +2698,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'LINESTRING(0 0,1 1)'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'));
@@ -2645,7 +2712,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|8       |1017        |
+|0 |TABLE FULL SCAN|t(idx)|8       |1031        |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2697,11 +2764,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POLYGON((0 0, 10 0, 10 5, 0 5, 0 0))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('MULTIPOINT((0 0), (1 1))'));
@@ -2759,11 +2828,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOINT((0 0), (1 1))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'));
@@ -2771,7 +2842,7 @@ Query Plan
 =================================================
 |ID|OPERATOR       |NAME  |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |TABLE FULL SCAN|t(idx)|7       |836         |
+|0 |TABLE FULL SCAN|t(idx)|7       |853         |
 =================================================
 Outputs & filters:
 -------------------------------------
@@ -2822,11 +2893,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTILINESTRING((0 0, 1 1), (4 4, 5 5))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'));
@@ -2885,11 +2958,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), ((2.5 2.5, 6 2.5, 6 6, 2.5 6, 2.5 2.5), (3.5 3, 4.5 3, 4.5 4.5, 3.5 4.5, 3.5 3)))'
   Note:
       Degree of Parallelisim is 1 because of table property
 explain EXTENDED_NOADDR select /*+index(t idx)*/ st_astext(g) from t where ST_Contains(g, ST_GeomFromText('GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'));
@@ -2947,11 +3022,13 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'GEOMETRYCOLLECTION(POINT(0 0), LINESTRING(2 2,3 3))'
   Note:
       Degree of Parallelisim is 1 because of table property
 drop table geo_table;
@@ -3031,11 +3108,14 @@ Optimization Info:
       dop_method:Table DOP
       avaiable_index_name:[idx, t]
       pruned_index_name:[t]
-      stats info:[version=0, is_locked=0, is_expired=0]
+      stats info:[version=1970-01-01 08:00:00.000000, is_locked=0, is_expired=0]
       dynamic sampling level:0
       estimation method:[DEFAULT, STORAGE]
   Plan Type:
       LOCAL
+  Parameters:
+      :0 => 'POINT(600000 3000000)'
+      :1 => 3825
   Note:
       Degree of Parallelisim is 1 because of table property
 select /*+index(t idx)*/ st_astext(g) from t where st_intersects(g, ST_GeomFromText('LINESTRING(550000 2600000,600000 3000000)', 3825));
@@ -3173,7 +3253,7 @@ Query Plan
 ========================================================================================
 |ID|OPERATOR       |NAME                                         |EST.ROWS|EST.TIME(us)|
 ----------------------------------------------------------------------------------------
-|0 |TABLE FULL SCAN|spatial_point_in_line(index_spatial_line_geo)|3       |392         |
+|0 |TABLE FULL SCAN|spatial_point_in_line(index_spatial_line_geo)|3       |418         |
 ========================================================================================
 Outputs & filters:
 -------------------------------------

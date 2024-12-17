@@ -85,6 +85,49 @@ lib::Worker::CompatMode get_worker_compat_mode(const ObCompatibilityMode &mode)
   return worker_mode;
 }
 
+int ObIndexSchemaInfo::init(
+    const ObString &index_name,
+    const uint64_t index_id,
+    const int64_t schema_version,
+    const ObIndexType index_type)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(index_name.empty()
+      || OB_INVALID_ID == index_id
+      || schema_version <= 0
+      || index_type <= INDEX_TYPE_IS_NOT)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("index_name, index_id, schema_version invalid", KR(ret), K(index_name),
+                                     K(index_id), K(schema_version), K(index_type));
+  } else {
+    index_name_ = index_name;
+    index_id_ = index_id;
+    schema_version_ = schema_version;
+    index_type_ = index_type;
+  }
+  return ret;
+}
+void ObIndexSchemaInfo::reset()
+{
+  index_name_.reset();
+  index_id_ = OB_INVALID_ID;
+  schema_version_ = OB_INVALID_VERSION;
+  index_type_ = INDEX_TYPE_IS_NOT;
+}
+bool ObIndexSchemaInfo::is_valid() const
+{
+  return !index_name_.empty() && OB_INVALID_ID != index_id_ && schema_version_ > 0 && index_type_ != INDEX_TYPE_IS_NOT;
+}
+int ObIndexSchemaInfo::assign(const ObIndexSchemaInfo &other)
+{
+  int ret = OB_SUCCESS;
+  index_name_ = other.get_index_name();
+  index_id_ = other.get_index_id();
+  schema_version_ = other.get_schema_version();
+  index_type_ = other.get_index_type();
+  return ret;
+}
+
 int ObSchemaIdVersion::init(
     const uint64_t schema_id,
     const int64_t schema_version)
@@ -1230,8 +1273,9 @@ int ObSchema::string_array2str(const common::ObIArray<common::ObString> &string_
     int64_t nwrite = 0;
     int64_t n = 0;
     for (int64_t i = 0; OB_SUCC(ret) && i < string_array.count(); ++i) {
+      ObCStringHelper helper;
       n = snprintf(str + nwrite, static_cast<uint32_t>(buf_size - nwrite),
-          "%s%s", to_cstring(string_array.at(i)), (i != string_array.count() - 1) ? ";" : "");
+          "%s%s", helper.convert(string_array.at(i)), (i != string_array.count() - 1) ? ";" : "");
       if (n <= 0 || n >= buf_size - nwrite) {
         ret = OB_BUF_NOT_ENOUGH;
         LOG_WARN("snprintf failed", K(ret));
@@ -2187,7 +2231,7 @@ OB_DEF_DESERIALIZE(ObTenantSchema)
     // parse and set primary zone array
     if (OB_FAIL(ret)) {
     } else if (primary_zone_.length() > 0 && zone_list_.count() > 0) {
-      ObPrimaryZoneUtil primary_zone_util(primary_zone_);
+      SMART_VAR(ObPrimaryZoneUtil, primary_zone_util, primary_zone_) {
       if (OB_FAIL(primary_zone_util.init())) {
         SHARE_SCHEMA_LOG(WARN, "fail to init primary zone util", K(ret));
       } else if (OB_FAIL(primary_zone_util.check_and_parse_primary_zone())) {
@@ -2195,6 +2239,7 @@ OB_DEF_DESERIALIZE(ObTenantSchema)
       } else if (OB_FAIL(set_primary_zone_array(primary_zone_util.get_zone_array()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to set primary zone array", K(ret));
       } else {} // set primary zone array success
+      } // end smart var
     } else {} // no need to parse primary zone
   }
   return ret;
@@ -2343,8 +2388,9 @@ int ObSysVarSchema::get_value(ObIAllocator *allocator, const ObDataTypeCastParam
     ObObj casted_val;
     const ObObj *res_val = NULL;
     if (OB_FAIL(ObObjCaster::to_type(data_type_, cast_ctx, var_value, casted_val, res_val))) {
+      ObCStringHelper helper;
       _LOG_WARN("failed to cast object, ret=%d cell=%s from_type=%s to_type=%s",
-                 ret, to_cstring(var_value), ob_obj_type_str(var_value.get_type()), ob_obj_type_str(data_type_));
+                 ret, helper.convert(var_value), ob_obj_type_str(var_value.get_type()), ob_obj_type_str(data_type_));
     } else if (OB_ISNULL(res_val)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("casted success, but res_val is NULL", K(ret), K(var_value), K_(data_type));
@@ -3911,12 +3957,16 @@ int ObPartitionSchema::get_tablet_and_object_id_by_index(
 {
   int ret = OB_SUCCESS;
   const ObPartition *partition = NULL;
+  // Data of external table is stored in file outside of observer. It doesn't have
+  // a tablet id. So skip tablet check for external table, and use part id or subpart
+  // id represent tablet id.
+  bool is_external_tbl = is_external_table();
   ObPartitionLevel part_level = get_part_level();
   if (part_level >= PARTITION_LEVEL_MAX
       || PARTITION_LEVEL_ZERO == part_level) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid part level", KR(ret), K(part_level));
-  } else if (!has_tablet()) {
+  } else if (!is_external_tbl && !has_tablet()) {
     ret = OB_OP_NOT_ALLOW;
     LOG_WARN("There are no tablets in virtual table and view", KR(ret));
   } else if (OB_FAIL(get_partition_by_partition_index(
@@ -3926,7 +3976,7 @@ int ObPartitionSchema::get_tablet_and_object_id_by_index(
     ret = OB_ENTRY_NOT_EXIST;
     LOG_WARN("partition not exist", KR(ret), K(part_idx));
   } else {
-    tablet_id = partition->get_tablet_id();
+    tablet_id = is_external_tbl ? static_cast<ObTabletID>(partition->get_part_id()) : partition->get_tablet_id();
     object_id = partition->get_part_id();
     first_level_part_id = OB_INVALID_ID;
     ObSubPartition **subpartition_array = partition->get_subpart_array();
@@ -3942,7 +3992,7 @@ int ObPartitionSchema::get_tablet_and_object_id_by_index(
       LOG_WARN("subpartition not exist", KR(ret), K(part_idx), K(subpart_idx));
     } else {
       const ObSubPartition *subpartition = subpartition_array[subpart_idx];
-      tablet_id = subpartition->get_tablet_id();
+      tablet_id = is_external_tbl ? static_cast<ObTabletID>(subpartition->get_sub_part_id()) : subpartition->get_tablet_id();
       first_level_part_id = object_id;
       object_id = subpartition->get_sub_part_id();
     }
@@ -5086,8 +5136,9 @@ int ObPartitionOption::enable_auto_partition_(const int64_t auto_part_size)
   int ret = OB_SUCCESS;
 
   if (OB_UNLIKELY(auto_part_size < ObPartitionOption::MIN_AUTO_PART_SIZE)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("the auto split tablet size is less than MIN_AUTO_PART_SIZE", KR(ret), K(auto_part_size));
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_WARN(OB_NOT_SUPPORTED, "auto partition size less than 128MB is");
+    LOG_WARN("auto partition size is less than MIN_AUTO_PART_SIZE", K(ret), K(auto_part_size));
   } else {
     auto_part_ = true;
     auto_part_size_ = auto_part_size;
@@ -6172,7 +6223,7 @@ int ObPartitionUtils::check_param_valid_(
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = table_schema.get_tenant_id();
   const uint64_t table_id = table_schema.get_table_id();
-   if (!table_schema.has_tablet()) {
+   if (!table_schema.is_external_table() && !table_schema.has_tablet()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("table schema has no tablet", KR(ret), K(tenant_id), K(table_id),
              "table_type", table_schema.get_table_type(),
@@ -8442,7 +8493,8 @@ ObUserInfo::ObUserInfo(ObIAllocator *allocator)
     proxy_user_info_(NULL),
     proxy_user_info_capacity_(0),
     proxy_user_info_cnt_(0),
-    user_flags_()
+    user_flags_(),
+    trigger_list_()
 {
 }
 
@@ -8550,6 +8602,9 @@ int ObUserInfo::assign(const ObUserInfo &other)
       }
       if (OB_SUCC(ret)) {
         user_flags_ = other.user_flags_;
+      }
+      if (OB_SUCC(ret) && trigger_list_.assign(other.trigger_list_)) {
+        LOG_WARN("assign trigger list failed", K(ret));
       }
     }
     if (OB_FAIL(ret)) {
@@ -8690,6 +8745,7 @@ void ObUserInfo::reset()
   proxy_user_info_cnt_ = 0;
   proxy_user_info_capacity_ = 0;
   user_flags_.reset();
+  trigger_list_.reset();
   ObSchema::reset();
   ObPriv::reset();
 }
@@ -8721,6 +8777,7 @@ int64_t ObUserInfo::get_convert_size() const
       convert_size += proxy_user_info_[i]->get_convert_size();
     }
   }
+  convert_size += trigger_list_.get_data_size();
   return convert_size;
 }
 
@@ -8772,6 +8829,7 @@ OB_DEF_SERIALIZE(ObUserInfo)
 
   if (OB_SUCC(ret)) {
     LST_DO_CODE(OB_UNIS_ENCODE, user_flags_);
+    LST_DO_CODE(OB_UNIS_ENCODE, trigger_list_);
   }
   return ret;
 }
@@ -8869,23 +8927,10 @@ OB_DEF_DESERIALIZE(ObUserInfo)
         LOG_WARN("deserialize proxi info array failed", K(ret));
       }
     }
-
     if (OB_SUCC(ret)) {
       LST_DO_CODE(OB_UNIS_DECODE, user_flags_);
+      LST_DO_CODE(OB_UNIS_DECODE, trigger_list_);
     }
-  }
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(deserialize_proxy_info_array_(proxied_user_info_, proxied_user_info_cnt_, proxied_user_info_capacity_,
-                                              buf, data_len, pos))) {
-      LOG_WARN("deserialize proxi info array failed", K(ret));
-    } else if (OB_FAIL(deserialize_proxy_info_array_(proxy_user_info_, proxy_user_info_cnt_, proxy_user_info_capacity_,
-                                              buf, data_len, pos))) {
-      LOG_WARN("deserialize proxi info array failed", K(ret));
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    LST_DO_CODE(OB_UNIS_DECODE, user_flags_);
   }
 
   return ret;
@@ -8925,6 +8970,7 @@ OB_DEF_SERIALIZE_SIZE(ObUserInfo)
     }
   }
   LST_DO_CODE(OB_UNIS_ADD_LEN, user_flags_);
+  LST_DO_CODE(OB_UNIS_ADD_LEN, trigger_list_);
   return len;
 }
 

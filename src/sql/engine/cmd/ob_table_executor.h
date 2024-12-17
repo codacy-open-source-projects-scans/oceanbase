@@ -89,9 +89,8 @@ private:
                       ObSchemaGetterGuard *schema_guard,
                       const ParamStore *param_store,
                       ObSqlString &ins_sql);
-  int prepare_alter_arg(ObCreateTableStmt &stmt, const ObSQLSessionInfo *my_session, const ObString &create_table_name, bool is_full_direct_insert, obrpc::ObAlterTableArg &alter_table_arg);
+  int prepare_alter_arg(ObCreateTableStmt &stmt, const ObSQLSessionInfo *my_session, const ObString &create_table_name, obrpc::ObAlterTableArg &alter_table_arg);
   int prepare_drop_arg(const ObCreateTableStmt &stmt, const ObSQLSessionInfo *my_session, obrpc::ObTableItem &table_item, obrpc::ObDropTableArg &drop_table_arg);
-  int check_if_ctas_use_full_direct_insert(ObCreateTableStmt &stmt, bool &is_full_direct_insert);
 };
 
 class ObAlterTableStmt;
@@ -199,6 +198,18 @@ private:
 
 private:
   //DISALLOW_COPY_AND_ASSIGN(ObAlterTableExecutor);
+};
+
+class ObCommentExecutor
+{
+public:
+  ObCommentExecutor();
+  virtual ~ObCommentExecutor();
+  int execute(ObExecContext &ctx, ObAlterTableStmt &stmt);
+private:
+  // because of the lack of the assign in alter table schema and alter column schema, this function is implemented for
+  // assigning args needed for parallel comment.
+  int assign_alter_to_comment_(const obrpc::ObAlterTableArg &alter_table_arg, obrpc::ObSetCommentArg &set_comment_arg);
 };
 
 class ObDropTableStmt;

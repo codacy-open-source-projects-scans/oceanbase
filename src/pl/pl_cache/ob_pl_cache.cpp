@@ -110,6 +110,7 @@ int PCVPlSchemaObj::deep_copy_column_infos(const ObTableSchema *schema)
               column_info->meta_type_ = column_schema.get_meta_type();
               column_info->charset_type_ = column_schema.get_charset_type();
               column_info->accuracy_ = column_schema.get_accuracy();
+              column_info->is_invisible_col_ = column_schema.is_invisible_column();
               OZ (column_info->deep_copy_type_info(column_schema.get_extended_type_info()));
 
               if (OB_SUCC(ret)) {
@@ -422,6 +423,7 @@ int ObPLObjectValue::obtain_new_column_infos(share::schema::ObSchemaGetterGuard 
         column_info.meta_type_ = column_schema.get_meta_type();
         column_info.charset_type_ = column_schema.get_charset_type();
         column_info.accuracy_ = column_schema.get_accuracy();
+        column_info.is_invisible_col_ = column_schema.is_invisible_column();
         OZ (column_info.type_info_.assign(column_schema.get_extended_type_info()));
         OX (column_info.column_name_ = column_schema.get_column_name_str());
         OZ (column_infos.push_back(column_info));
@@ -461,11 +463,16 @@ int ObPLObjectValue::check_value_version(share::schema::ObSchemaGetterGuard *sch
           LOG_DEBUG("matched schema objs", K(*schema_obj1), K(schema_obj2), K(i));
           // do nothing
         } else if (schema_obj1->schema_type_ == schema_obj2.schema_type_ &&
-                   TABLE_SCHEMA == schema_obj1->schema_type_ &&
                    schema_obj1->schema_id_ == schema_obj2.schema_id_) {
-          ObSEArray<ObPLTableColumnInfo, 6> column_infos;
-          OZ (obtain_new_column_infos(*schema_guard, schema_obj2, column_infos));
-          OX (is_old_version = !schema_obj1->match_columns(column_infos));
+          if (TABLE_SCHEMA == schema_obj1->schema_type_) {
+            ObSEArray<ObPLTableColumnInfo, 6> column_infos;
+            OZ (obtain_new_column_infos(*schema_guard, schema_obj2, column_infos));
+            OX (is_old_version = !schema_obj1->match_columns(column_infos));
+          } else if (SEQUENCE_SCHEMA == schema_obj1->schema_type_) {
+            // alter sequence should not make pl cache obj expired
+          } else {
+            is_old_version = true;
+          }
         } else {
           is_old_version = true;
         }
@@ -591,6 +598,9 @@ int ObPLObjectValue::get_synonym_schema_version(ObPLCacheCtx &pc_ctx,
       } else {
         new_version = synonym_info->get_schema_version();
       }
+    } else if (OB_ISNULL(synonym_info)) {
+      ret = OB_OLD_SCHEMA_VERSION;
+      LOG_WARN("can not get newer synonym_info", K(ret));
     }
   }
   return ret;
@@ -645,9 +655,12 @@ int ObPLObjectValue::get_all_dep_schema(ObPLCacheCtx &pc_ctx,
           LOG_WARN("failed to get schema version",
                    K(ret), K(tenant_id), K(pcv_schema->schema_type_), K(pcv_schema->schema_id_));
         }
-        if (OB_SUCC(ret)) {
-          tmp_schema_obj.schema_id_ = pcv_schema->schema_id_;
-          tmp_schema_obj.schema_type_ = pcv_schema->schema_type_;
+        if (OB_INVALID_VERSION == new_version) {
+          ret = OB_OLD_SCHEMA_VERSION;
+          LOG_WARN("can not get newer schema version", K(ret));
+        } else if (OB_SUCC(ret)) {
+          tmp_schema_obj.schema_id_ = pcv_schema->schema_id_; // same id
+          tmp_schema_obj.schema_type_ = pcv_schema->schema_type_; // same type
           tmp_schema_obj.schema_version_ = new_version;
           if (OB_FAIL(schema_array.push_back(tmp_schema_obj))) {
             LOG_WARN("failed to push back array", K(ret));

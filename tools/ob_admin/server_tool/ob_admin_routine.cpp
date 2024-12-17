@@ -1055,10 +1055,11 @@ DEF_COMMAND(SERVER, get_ss_phy_block_info, 1, "tenant_id:phy_block_idx")
   } else if (OB_FAIL(client_->get_ss_phy_block_info(arg, result))) {
     COMMON_LOG(ERROR, "send req fail", K(ret));
   } else {
+    ObCStringHelper helper;
     ObSSPhysicalBlock &ss_phy_block_info = result.ss_phy_block_info_;
     fprintf(stdout, "ret=%s\n", ob_error_name(result.ret_));
     fprintf(stdout, "phy_block_id=%ld\n", arg.phy_block_idx_);
-    fprintf(stdout, "%s\n", to_cstring(ss_phy_block_info));
+    fprintf(stdout, "%s\n", helper.convert(ss_phy_block_info));
   }
 
   if (OB_FAIL(ret)) {
@@ -1161,9 +1162,12 @@ DEF_COMMAND(SERVER, get_ss_micro_block_meta, 1, "tenant_id:micro_key_mode:micro_
     } else if (OB_FAIL(client_->get_ss_micro_block_meta(arg, result))) {
       COMMON_LOG(ERROR, "send req fail", K(ret));
     } else {
+      ObCStringHelper helper;
       fprintf(stdout, "ret=%s\n", ob_error_name(result.ret_));
-      fprintf(stdout, "micro_key=%s\n", to_cstring(arg.micro_key_));
-      fprintf(stdout, "micro_meta=%s\n", to_cstring(result.micro_meta_info_));
+      if (OB_SUCC(result.ret_)) {
+        fprintf(stdout, "micro_key=%s\n", helper.convert(arg.micro_key_));
+        fprintf(stdout, "micro_meta=%s\n", helper.convert(result.micro_meta_info_));
+      }
     }
   }
 
@@ -1639,9 +1643,10 @@ DEF_COMMAND(SERVER, get_ss_micro_cache_info, 1, "tenant_id")
   } else if (OB_FAIL(client_->get_ss_micro_cache_info(arg, result))) {
     COMMON_LOG(ERROR, "send req fail", K(ret));
   } else {
-    fprintf(stdout, "micro_cache_stat=%s\n", to_cstring(result.micro_cache_stat_));
-    fprintf(stdout, "super_block=%s\n", to_cstring(result.super_block_));
-    fprintf(stdout, "arc_info=%s\n", to_cstring(result.arc_info_));
+    ObCStringHelper helper;
+    fprintf(stdout, "micro_cache_stat=%s\n", helper.convert(result.micro_cache_stat_));
+    fprintf(stdout, "super_block=%s\n", helper.convert(result.super_block_));
+    fprintf(stdout, "arc_info=%s\n", helper.convert(result.arc_info_));
   }
 
   if (OB_FAIL(ret)) {
@@ -1649,6 +1654,54 @@ DEF_COMMAND(SERVER, get_ss_micro_cache_info, 1, "tenant_id")
   }
 
   COMMON_LOG(INFO, "get ss_micro_cache_info", K(arg));
+  return ret;
+}
+
+DEF_COMMAND(SERVER, set_ss_ckpt_compressor, 1, "tenant_id:ckpt_type:compressor_name")
+{
+  int ret = OB_SUCCESS;
+  string arg_str;
+  ObSetSSCkptCompressorArg arg;
+  if (cmd_ == action_name_) {
+    ret = OB_INVALID_ARGUMENT;
+    ADMIN_WARN("should provide tenant_id");
+  } else {
+    arg_str = cmd_.substr(action_name_.length() + 1);
+  }
+
+  char ckpt_type_name[64] = {0};
+  char compressor_name[64] = {0};
+  if (OB_FAIL(ret)) {
+  } else if (3 != sscanf(arg_str.c_str(), "%ld:%[^:]:%s", &arg.tenant_id_, ckpt_type_name, compressor_name)) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid arg", K(ret), K(arg_str.c_str()));
+  } else {
+    if (0 == strncmp(ckpt_type_name, "micro", 5)) {
+      arg.block_type_ = ObSSPhyBlockType::SS_MICRO_META_CKPT_BLK;
+    } else if (0 == strncmp(ckpt_type_name, "blk", 3)) {
+      arg.block_type_ = ObSSPhyBlockType::SS_PHY_BLOCK_CKPT_BLK;
+    } else {
+      ret = OB_INVALID_ARGUMENT;
+      COMMON_LOG(WARN, "ckpt_type is invalid", K(ret), K(ckpt_type_name));
+    }
+
+    if (FAILEDx(ObCompressorPool::get_instance().get_compressor_type(compressor_name, arg.compressor_type_))) {
+      COMMON_LOG(WARN, "fail to get compressor_type", K(ret), K(compressor_name));
+    } else if (!arg.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      COMMON_LOG(WARN, "argument is invalid", K(ret), K(arg));
+    } else if (OB_FAIL(client_->set_ss_ckpt_compressor(arg))) {
+      COMMON_LOG(ERROR, "send req fail", K(ret));
+    } else {
+      fprintf(stdout, "Successfully set_ss_ckpt_compressor [tenant_id:%ld, ckpt_type:%s, compressor_type:%s]",
+          arg.tenant_id_, ckpt_type_name, compressor_name);
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+    fprintf(stderr, "fail to set_ss_ckpt_compressor, ret=%s\n", ob_error_name(ret));
+  }
+  COMMON_LOG(INFO, "set_ss_ckpt_compressor", K(arg));
   return ret;
 }
 #endif

@@ -34,6 +34,7 @@
 #include "observer/table_load/ob_table_load_index_long_wait.h"
 #include "observer/omt/ob_tenant.h"
 #include "storage/direct_load/ob_direct_load_mem_define.h"
+#include "observer/table_load/ob_table_load_empty_insert_tablet_ctx_manager.h"
 
 namespace oceanbase
 {
@@ -82,13 +83,14 @@ bool ObTableLoadCoordinator::is_ctx_inited(ObTableLoadTableCtx *ctx)
 
 int ObTableLoadCoordinator::init_ctx(ObTableLoadTableCtx *ctx,
                                      const ObIArray<uint64_t> &column_ids,
+                                     const ObIArray<ObTabletID> &tablet_ids,
                                      ObTableLoadExecCtx *exec_ctx)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(ctx)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid agrs", KR(ret));
-  } else if (OB_FAIL(ctx->init_coordinator_ctx(column_ids, exec_ctx))) {
+  } else if (OB_FAIL(ctx->init_coordinator_ctx(column_ids, tablet_ids, exec_ctx))) {
     LOG_WARN("fail to init coordinator ctx", KR(ret));
   }
   return ret;
@@ -252,6 +254,30 @@ int ObTableLoadCoordinator::init()
 /**
  * begin
  */
+int ObTableLoadCoordinator::check_need_sort_for_lob_or_index(bool &need_sort) const
+{
+  int ret = OB_SUCCESS;
+  need_sort = false;
+  if (ObDirectLoadMethod::is_incremental(ctx_->param_.method_)) {
+    need_sort = ctx_->schema_.lob_column_idxs_.count() > 0;
+    if (!need_sort) {
+      ObSchemaGetterGuard schema_guard;
+      const share::schema::ObTableSchema *data_table_schema = nullptr;
+      if (OB_FAIL(ObTableLoadSchema::get_schema_guard(ctx_->param_.tenant_id_, schema_guard))) {
+        LOG_WARN("fail to get schema guard", KR(ret));
+      } else if (OB_FAIL(ObTableLoadSchema::get_table_schema(schema_guard, ctx_->param_.tenant_id_, ctx_->param_.table_id_, data_table_schema))) {
+        LOG_WARN("fail to get table shema of main table", KR(ret));
+      } else if (OB_ISNULL(data_table_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("data table schema is null", KR(ret));
+      } else {
+        need_sort = data_table_schema->get_simple_index_infos().count() > 0;
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_arg)
 {
   int ret = OB_SUCCESS;
@@ -264,8 +290,11 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
   } else if (cluster_version < CLUSTER_VERSION_4_2_2_0 ||
              (cluster_version >= CLUSTER_VERSION_4_3_0_0 && cluster_version < CLUSTER_VERSION_4_3_1_0)) {
     // not support resource manage
-    if (OB_FAIL(coordinator_ctx_->init_partition_location())) {
-      LOG_WARN("fail to init partition location", KR(ret));
+    if (OB_FAIL(ObTableLoadPartitionLocation::init_partition_location(coordinator_ctx_->partition_ids_,
+                                                                      coordinator_ctx_->target_partition_ids_,
+                                                                      coordinator_ctx_->partition_location_,
+                                                                      coordinator_ctx_->target_partition_location_))) {
+      LOG_WARN("fail to inner init partition location", KR(ret));
     } else {
       ctx_->param_.session_count_ = MAX(MIN(ctx_->param_.parallel_, (int64_t)tenant->unit_max_cpu() * 2), MIN_THREAD_COUNT);
       ctx_->param_.write_session_count_ = ctx_->param_.session_count_;
@@ -286,16 +315,19 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
         LOG_WARN("fail to check status", KR(ret));
       } else if (OB_FAIL(coordinator_ctx_->exec_ctx_->check_status())) {
         LOG_WARN("fail to check status", KR(ret));
-      } else if (OB_FAIL(coordinator_ctx_->init_partition_location())) {
-        LOG_WARN("fail to init partition location", KR(ret));
+      } else if (OB_FAIL(ObTableLoadPartitionLocation::init_partition_location(coordinator_ctx_->partition_ids_,
+                                                                               coordinator_ctx_->target_partition_ids_,
+                                                                               coordinator_ctx_->partition_location_,
+                                                                               coordinator_ctx_->target_partition_location_))) {
+        LOG_WARN("fail to inner init partition location", KR(ret));
       } else if (OB_FAIL(coordinator_ctx_->partition_location_.get_all_leader_info(all_leader_info_array))) {
         LOG_WARN("fail to get all leader info", KR(ret));
       } else if (OB_FAIL(ObTableLoadService::get_memory_limit(memory_limit))) {
         LOG_WARN("fail to get memory_limit", K(ret));
       } else {
         bool include_cur_addr = false;
-        bool need_sort = ctx_->param_.need_sort_;
-        bool main_need_sort = ctx_->param_.need_sort_;
+        bool task_need_sort = false;  // 表示整个导入任务是否会走排序的流程
+        bool main_need_sort = false;  // 表示主表是否会走排序
         int64_t total_partitions = 0;
         ObArray<int64_t> partitions;
         int64_t store_server_count = all_leader_info_array.count();
@@ -306,19 +338,16 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
         int64_t total_session_count = MIN(ctx_->param_.parallel_, max_session_count * store_server_count);
         int64_t remain_session_count = total_session_count;
         partitions.set_tenant_id(MTL_ID());
+
+        // 判断coordinator节点是否也作为store节点
         for (int64_t i = 0; i < store_server_count; i++) {
           total_partitions += all_leader_info_array[i].partition_id_array_.count();
           if (coordinator_addr == all_leader_info_array[i].addr_) {
             include_cur_addr = true;
           }
         }
-        // is_heap_table==true，we prioritize non multiple modes that do not require sorting
-        //     FAST_HEAP_TABLE: macroblock_buffer * partition_count * parallel
-	      // is_heap_table==false，we prioritize non multiple modes that do not require sorting
-	      // 		 GENERAL_TABLE_COMPACT：max(sstable_buffer * partition_count * parallel，macroblock_buffer * parallel)
-	      // param_.need_sort_==true，we apply for the minimum required memory(MIN_SORT_MEMORY_PER_TASK)
-        //     MULTIPLE_HEAP_TABLE_COMPACT
-	      // 		 MEM_COMPACT
+
+        // 资源控制先确定线程，第一次遍历先按分区等比例分配线程
         for (int64_t i = 0; OB_SUCC(ret) && i < store_server_count; i++) {
           ObDirectLoadResourceUnit unit;
           unit.addr_ = all_leader_info_array[i].addr_;
@@ -333,18 +362,8 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
             }
           }
         }
-        // 协调节点不存在数据分区时，需要申请线程资源，但不需要申请内存，为零
-        if (OB_SUCC(ret) && !include_cur_addr) {
-          ObDirectLoadResourceUnit unit;
-          unit.addr_ = coordinator_addr;
-          unit.thread_count_ = MAX(total_session_count / store_server_count, MIN_THREAD_COUNT);
-          unit.memory_size_ = 0;
-          coordinator_session_count = unit.thread_count_;
-          min_session_count = MIN(min_session_count, unit.thread_count_);
-          if (OB_FAIL(apply_arg.apply_array_.push_back(unit))) {
-            LOG_WARN("fail to push back", KR(ret));
-          }
-        }
+
+        // 第一次遍历如果不能分配完所有的线程，继续给每个节点平均分配剩余的线程，直到所有的线程都被分配完
         if (OB_SUCC(ret)) {
           while (remain_session_count > 0) {
             for (int64_t i = 0; remain_session_count > 0 && i < store_server_count; i++) {
@@ -355,80 +374,119 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
               }
             }
           }
-          for (int64_t i = 0; i < store_server_count; i++) {
+        }
+
+        /*
+        协调节点不存在数据分区时，需要申请线程资源，但不需要申请内存，放在申请资源数组的最后一个位置
+        coordinator_session_count表示coordinator节点可用线程数，min_session_count表示所有节点可用线程数的最小值
+        */
+        if (OB_SUCC(ret)) {
+          if (!include_cur_addr) {
+            ObDirectLoadResourceUnit unit;
+            unit.addr_ = coordinator_addr;
+            unit.thread_count_ = MAX(MIN(max_session_count, total_session_count / store_server_count), MIN_THREAD_COUNT);
+            unit.memory_size_ = 0;
+            coordinator_session_count = unit.thread_count_;
+            min_session_count = MIN(min_session_count, unit.thread_count_);
+            if (OB_FAIL(apply_arg.apply_array_.push_back(unit))) {
+              LOG_WARN("fail to push back", KR(ret));
+            }
+          }
+          for (int64_t i = 0; OB_SUCC(ret) && i < store_server_count; i++) {
             ObDirectLoadResourceUnit &unit = apply_arg.apply_array_[i];
             if (all_leader_info_array[i].addr_ == coordinator_addr) {
               coordinator_session_count = unit.thread_count_;
             }
             min_session_count = MIN(min_session_count, unit.thread_count_);
           }
+        }
+
+        /*
+        确定write_session_count，表示发送数据阶段store节点可用的线程数
+        对于load data模式，如果 协调节点和数据节点都在同一个节点上，就分出一半的线程用于解析数据，一半的线程用于存储数据
+        */
+        if (OB_SUCC(ret)) {
           if (include_cur_addr && ctx_->param_.load_mode_ == ObDirectLoadMode::LOAD_DATA) {
-            // 协调节点和数据节点都在同一个节点上，对于load data模式，分出一半的线程用于解析数据，一半的线程用于存储数据
             write_session_count = MIN(min_session_count, (coordinator_session_count + 1) / 2);
           } else {
             write_session_count = min_session_count;
           }
-          for (int64_t i = 0; i < store_server_count; i++) {
+        }
+
+        /*
+        先确定主表是否要走排序，对于堆表，sql指定need_sort=true时，如果内存满足不排序，就走不排序流程，只要有一个节点内存不足，整体都要走排序
+        如果主表要走排序，则整个任务按排序方式分配内存，否则再确定是否要做lob_id排序和索引排序，需要的话就按照MAX(主表不排序内存，索引排序内存)来分配内存，否则分配主表不排序需要的内存
+        */
+        if (OB_SUCC(ret)) {
+          for (int64_t i = 0; !main_need_sort && i < store_server_count; i++) {
             ObDirectLoadResourceUnit &unit = apply_arg.apply_array_[i];
+            int64_t min_sort_memory = unit.thread_count_ * ObDirectLoadExternalMultiPartitionRowChunk::MIN_MEMORY_LIMIT * 4;
             int64_t min_unsort_memory = 0;
             if (ctx_->schema_.is_heap_table_) {
               // 直接写宏块需要的内存，对于非排序模式，每个分区各自写宏块，所以要乘分区数
               min_unsort_memory = MACROBLOCK_BUFFER_SIZE * partitions[i] * write_session_count;
-              if (min_unsort_memory <= memory_limit) {
-                main_need_sort = false;
-                unit.memory_size_ = min_unsort_memory;
+              if (!ctx_->param_.need_sort_) {
+                // sql指定need_sort=false，强制不排序
               } else {
-                main_need_sort = ctx_->param_.need_sort_; // allow forced non-sorting
-                unit.memory_size_ = MIN(ObTableLoadAssignedMemoryManager::MIN_SORT_MEMORY_PER_TASK, memory_limit);
+                if (min_unsort_memory > memory_limit) {
+                  main_need_sort = true;
+                }
               }
             } else {
               // 取写宏块或写临时文件需要内存的最小值，对于非排序模式，每个分区各自写临时文件，所以要乘分区数
               min_unsort_memory = SSTABLE_BUFFER_SIZE * partitions[i] * unit.thread_count_;
-              if (main_need_sort) {
-                unit.memory_size_ = MIN(unit.thread_count_ * ObDirectLoadExternalMultiPartitionRowChunk::MIN_MEMORY_LIMIT * 4, memory_limit);
+              if (ctx_->param_.need_sort_) {
+                // sql指定need_sort=true，强制走排序
+                main_need_sort = true;
               } else {
-                // hint指定不排序，如果不排序内存大于内存上限，要改成走排序模式，一般是分区数较大的场景
-                if (min_unsort_memory < memory_limit) {
-                  unit.memory_size_ = MAX(min_unsort_memory, MACROBLOCK_BUFFER_SIZE * write_session_count);
-                } else {
+                if (min_unsort_memory > memory_limit) {
                   main_need_sort = true;
-                  unit.memory_size_ = MIN(unit.thread_count_ * ObDirectLoadExternalMultiPartitionRowChunk::MIN_MEMORY_LIMIT * 4, memory_limit);
                 }
               }
             }
+          }
 
-            if (main_need_sort) {
-              break;
+          task_need_sort = main_need_sort;
+          if (!task_need_sort) {
+            if (OB_FAIL(check_need_sort_for_lob_or_index(task_need_sort))) {
+              LOG_WARN("fail to check need sort for lob or index", KR(ret));
             }
           }
-          ObSchemaGetterGuard schema_guard;
-          const ObTableSchema *table_schema = nullptr;
-          if (OB_FAIL(ObTableLoadSchema::get_table_schema(tenant_id, ctx_->ddl_param_.dest_table_id_, schema_guard, table_schema))) {
-              LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(ctx_->ddl_param_.dest_table_id_));
-          } else if (main_need_sort || (ObDirectLoadMethod::is_incremental(ctx_->param_.method_) &&
-                                        table_schema->get_simple_index_infos().count() > 0)) {
-            need_sort = true;
-            for (int64_t i = 0; i < store_server_count; i++) {
-              ObDirectLoadResourceUnit &unit = apply_arg.apply_array_[i];
-              unit.memory_size_ = MIN(unit.thread_count_ * ObDirectLoadExternalMultiPartitionRowChunk::MIN_MEMORY_LIMIT * 4, memory_limit);
+          for (int64_t i = 0; OB_SUCC(ret) && i < store_server_count; i++) {
+            ObDirectLoadResourceUnit &unit = apply_arg.apply_array_[i];
+            int64_t min_sort_memory = MIN(unit.thread_count_ * ObDirectLoadExternalMultiPartitionRowChunk::MIN_MEMORY_LIMIT * 4, memory_limit);
+            int64_t min_unsort_memory = 0;
+            if (ctx_->schema_.is_heap_table_) {
+              min_unsort_memory = MIN(MACROBLOCK_BUFFER_SIZE * partitions[i] * write_session_count, memory_limit);
+            } else {
+              min_unsort_memory = MIN(MAX(SSTABLE_BUFFER_SIZE * partitions[i] * unit.thread_count_, MACROBLOCK_BUFFER_SIZE * unit.thread_count_), memory_limit);
             }
-          } else {
-            need_sort = false;
+            if (task_need_sort) {
+              if (main_need_sort) {
+                unit.memory_size_ = min_sort_memory;
+              } else {
+                unit.memory_size_ = MAX(min_unsort_memory, min_sort_memory);
+              }
+            } else {
+              unit.memory_size_ = min_unsort_memory;
+            }
           }
         }
+
         if (OB_SUCC(ret)) {
           ObDirectLoadResourceOpRes apply_res;
           if (OB_FAIL(ObTableLoadResourceService::apply_resource(apply_arg, apply_res))) {
             if (retry_count % 100 == 0) {
-              LOG_WARN("fail to apply resource", KR(ret), K(apply_res.error_code_), K(retry_count));
+              LOG_WARN("fail to apply resource", KR(ret), K(apply_res.error_code_), K(retry_count), K(param_.exe_mode_), K(main_need_sort), K(task_need_sort), K(partitions), K(coordinator_addr), K(apply_arg));
             }
             if (ret == OB_EAGAIN) {
               retry_count++;
               ret = OB_SUCCESS;
-              usleep(RESOURCE_OP_WAIT_INTERVAL_US);
+              ob_usleep(RESOURCE_OP_WAIT_INTERVAL_US);
             }
           } else {
-            ctx_->param_.need_sort_ = need_sort;
+            ctx_->param_.need_sort_ = main_need_sort;
+            ctx_->param_.task_need_sort_ = task_need_sort;
             ctx_->param_.session_count_ = coordinator_session_count;
             ctx_->param_.write_session_count_ = write_session_count;
             ctx_->param_.exe_mode_ = (ctx_->schema_.is_heap_table_ ?
@@ -439,7 +497,7 @@ int ObTableLoadCoordinator::gen_apply_arg(ObDirectLoadResourceApplyArg &apply_ar
               LOG_WARN("fail to add_assigned_task", KR(ret));
             } else {
               ctx_->set_assigned_resource();
-              LOG_INFO("Coordinator::gen_apply_arg", K(retry_count), K(param_.exe_mode_), K(partitions), K(coordinator_addr), K(apply_arg));
+              LOG_INFO("Coordinator::gen_apply_arg", K(retry_count), K(param_.exe_mode_), K(main_need_sort), K(task_need_sort), K(partitions), K(coordinator_addr), K(apply_arg));
               break;
             }
           }
@@ -473,6 +531,7 @@ int ObTableLoadCoordinator::pre_begin_peers(ObDirectLoadResourceApplyArg &apply_
     arg.config_.max_error_row_count_ = param_.max_error_row_count_;
     arg.config_.batch_size_ = param_.batch_size_;
     arg.config_.is_need_sort_ = param_.need_sort_;
+    arg.config_.is_task_need_sort_ = param_.task_need_sort_;
     arg.column_count_ = param_.column_count_;
     arg.dup_action_ = param_.dup_action_;
     arg.px_mode_ = param_.px_mode_;
@@ -486,10 +545,10 @@ int ObTableLoadCoordinator::pre_begin_peers(ObDirectLoadResourceApplyArg &apply_
     arg.load_mode_ = param_.load_mode_;
     arg.compressor_type_ = param_.compressor_type_;
     arg.online_sample_percent_ = param_.online_sample_percent_;
-    const ObExecContext *exec_ctx = arg.session_info_->get_cur_exec_ctx();
-    if (exec_ctx == nullptr) {
-      //do nothing
-    } else if (OB_FAIL(arg.set_exec_ctx_serialized_str(*exec_ctx))) {
+    if (ctx_->exec_ctx_ == nullptr) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("exec ctx must not be nullptr", KR(ret));
+    } else if (OB_FAIL(arg.set_exec_ctx_serialized_str(*(ctx_->exec_ctx_)))) {
       LOG_WARN("fail to set exec ctx", KR(ret));
     }
 
@@ -530,6 +589,118 @@ int ObTableLoadCoordinator::pre_begin_peers(ObDirectLoadResourceApplyArg &apply_
   }
   return ret;
 }
+
+int ObTableLoadCoordinator::init_empty_tablets()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(coordinator_ctx_->empty_insert_tablet_ctx_manager_
+                              ->set_thread_count(param_.write_session_count_))) {
+    LOG_WARN("fail to set thread count", KR(ret), K(param_.write_session_count_));
+  }
+  for(int64_t i = 0; OB_SUCC(ret) && i < param_.write_session_count_; ++i) {
+    ObTableLoadTask *task = nullptr;
+    if (OB_FAIL(ctx_->alloc_task(task))) {
+      LOG_WARN("fail to alloc task", KR(ret));
+    } else if (OB_FAIL(task->set_processor<InitEmptyTabletTaskProcessor>(ctx_))) {
+      LOG_WARN("fail to set check begin result task processor", KR(ret));
+    } else if (OB_FAIL(task->set_callback<InitEmptyTabletTaskCallback>(ctx_))) {
+      LOG_WARN("fail to set check begin result task callback", KR(ret));
+    } else if (OB_FAIL(coordinator_ctx_->task_scheduler_->add_task(i, task))) {
+      LOG_WARN("fail to add task", KR(ret), KPC(task));
+    }
+    if (OB_FAIL(ret)) {
+      if (nullptr != task) {
+        ctx_->free_task(task);
+      }
+    }
+  }
+  return ret;
+}
+
+class ObTableLoadCoordinator::InitEmptyTabletTaskProcessor : public ObITableLoadTaskProcessor
+{
+public:
+  InitEmptyTabletTaskProcessor(ObTableLoadTask &task,
+                               ObTableLoadTableCtx *ctx)
+    : ObITableLoadTaskProcessor(task),
+      ctx_(ctx),
+      empty_tablet_manager_(ctx->coordinator_ctx_->empty_insert_tablet_ctx_manager_)
+  {
+    ctx_->inc_ref_count();
+  }
+  virtual ~InitEmptyTabletTaskProcessor()
+  {
+    ObTableLoadService::put_ctx(ctx_);
+  }
+  int process() override {
+    int ret = OB_SUCCESS;
+    bool is_finish = false;
+    if (OB_ISNULL(ctx_) || OB_ISNULL(empty_tablet_manager_)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("ctx or empty_tablet_manager is nullptr", KR(ret));
+    }
+    while (OB_SUCC(ret)) {
+      ObDirectLoadControlInitEmptyTabletsArg arg;
+      arg.table_id_ = ctx_->param_.table_id_;
+      arg.ddl_param_ = ctx_->ddl_param_;
+      ObAddr addr;
+      if (OB_FAIL(ctx_->coordinator_ctx_->check_status(ObTableLoadStatusType::INITED))) {
+        LOG_WARN("fail to check status", KR(ret));
+      } else if (OB_FAIL(empty_tablet_manager_->get_next_task(addr,
+                                                       arg.partition_id_array_,
+                                                       arg.target_partition_id_array_))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          LOG_WARN("fail to get next init empty partition task", KR(ret));
+        }
+      } else {
+        TABLE_LOAD_CONTROL_RPC_CALL(init_empty_tablets, addr, arg);
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(empty_tablet_manager_->handle_thread_finish(is_finish))) {
+        LOG_WARN("fail to handle thread finish", KR(ret));
+      } else if (is_finish) {
+        ObTableLoadCoordinator coordinator(ctx_);
+        if (OB_FAIL(coordinator.init())) {
+          LOG_WARN("fail to init coordinator", KR(ret));
+        } else if (OB_FAIL(coordinator.add_check_begin_result_task())) {
+          LOG_WARN("fail to add check begin result task", KR(ret));
+        }
+      }
+    }
+    return ret;
+  }
+private:
+  ObTableLoadTableCtx * const ctx_;
+  ObTableLoadEmptyInsertTabletCtxManager * const empty_tablet_manager_;
+};
+
+class ObTableLoadCoordinator::InitEmptyTabletTaskCallback : public ObITableLoadTaskCallback
+{
+public:
+  InitEmptyTabletTaskCallback(ObTableLoadTableCtx *ctx)
+    : ctx_(ctx)
+  {
+    ctx_->inc_ref_count();
+  }
+  virtual ~InitEmptyTabletTaskCallback()
+  {
+    ObTableLoadService::put_ctx(ctx_);
+  }
+  void callback(int ret_code, ObTableLoadTask *task) override
+  {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(ret_code)) {
+      ctx_->coordinator_ctx_->set_status_error(ret);
+    }
+    ctx_->free_task(task);
+  }
+private:
+  ObTableLoadTableCtx * const ctx_;
+};
 
 int ObTableLoadCoordinator::confirm_begin_peers()
 {
@@ -581,8 +752,14 @@ int ObTableLoadCoordinator::begin()
       LOG_WARN("fail to confirm begin peers", KR(ret));
     } else {
       coordinator_ctx_->set_enable_heart_beat(true);
-      if (OB_FAIL(add_check_begin_result_task())) {
-        LOG_WARN("fail to add check begin result task", KR(ret));
+      if (OB_NOT_NULL(coordinator_ctx_->empty_insert_tablet_ctx_manager_)) {
+        if (OB_FAIL(init_empty_tablets())) {
+          LOG_WARN("fail to init empty partition", KR(ret));
+        }
+      } else {
+        if (OB_FAIL(add_check_begin_result_task())) {
+          LOG_WARN("fail to add check begin result task", KR(ret));
+        }
       }
     }
   }

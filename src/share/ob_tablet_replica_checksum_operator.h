@@ -85,6 +85,7 @@ public:
   bool is_same_tablet(const ObTabletReplicaChecksumItem &other) const;
   int verify_checksum(const ObTabletReplicaChecksumItem &other) const;
   int verify_column_checksum(const ObTabletReplicaChecksumItem &other) const;
+  int verify_column_checksum_between_diffrent_replica(const ObTabletReplicaChecksumItem &other) const;
   int assign_key(const ObTabletReplicaChecksumItem &other);
   int assign(const ObTabletReplicaChecksumItem &other);
   int set_tenant_id(const uint64_t tenant_id);
@@ -350,11 +351,11 @@ public:
   ObTabletDataChecksumChecker();
   ~ObTabletDataChecksumChecker();
   void reset();
+  int set_data_checksum(const ObTabletReplicaChecksumItem& curr_item);
   int check_data_checksum(const ObTabletReplicaChecksumItem& curr_item);
-  TO_STRING_KV(KPC_(normal_ckm_item), KPC_(cs_replica_ckm_item));
+  TO_STRING_KV(KPC_(normal_ckm_item));
 private:
   const ObTabletReplicaChecksumItem *normal_ckm_item_;
-  const ObTabletReplicaChecksumItem *cs_replica_ckm_item_;
 };
 
 } // share

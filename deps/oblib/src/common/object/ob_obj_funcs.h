@@ -1189,6 +1189,9 @@ inline int obj_print_plain_str<ObHexStringType>(const ObObj &obj, char *buffer,
     ObCharsetType dst_type = ObCharset::charset_type_by_coll(params.cs_type_);              \
     if (CHARSET_BINARY == src_type && lib::is_mysql_mode()) {               \
       ret = obj_print_sql<ObHexStringType>(obj, buffer, length, pos, params);      \
+    } else if (params.character_hex_safe_represent_                                       \
+      && ob_is_character_type(obj.get_type(), obj.get_collation_type())) {                 \
+         ret = ObObjCharacterUtil::print_safe_hex_represent(obj, buffer, length, pos, params.accuracy_); \
     } else if (OB_FAIL(databuff_printf(buffer, length, pos, "'"))) {                        \
     } else if (src_type == dst_type || src_type == CHARSET_INVALID) { \
       ObHexEscapeSqlStr sql_str(obj.get_string(), params.skip_escape_);                     \
@@ -1271,6 +1274,11 @@ inline int obj_print_plain_str<ObHexStringType>(const ObObj &obj, char *buffer,
         ret = databuff_memcpy(buffer, length, pos, obj.get_string_len(), obj.get_string_ptr());         \
       } else {                                                                              \
         ret = databuff_printf(buffer, length, pos, "%.*s", obj.get_string_len(), obj.get_string_ptr()); \
+      }                                                                                     \
+      if (OB_SUCC(ret) && params.refine_range_max_value_) {                                 \
+        int64_t tails = 0;                                                                  \
+        while (pos > 0 && (char)(0xff) == buffer[pos-1]) { pos--; tails++; }                \
+        if (tails > 0) { ret = databuff_printf(buffer, length, pos, "<FF><repeat %ld times>", tails); } \
       }                                                                                     \
     } else {                                                                                \
       uint32_t result_len = 0;                                                              \
@@ -1776,7 +1784,7 @@ inline int obj_print_sql<ObJsonType>(const ObObj &obj, char *buffer, int64_t len
   } else if (str.empty()) { // nothing to print;
   } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&tmp_allocator, str, in_type, in_type, j_base, parse_flag))) {
     COMMON_LOG(WARN, "fail to get json base", K(ret), K(in_type));
-  } else if (OB_FAIL(j_base->print(jbuf, false))) { // json binary to string
+  } else if (OB_FAIL(j_base->print(jbuf, false, str.length()))) { // json binary to string
     COMMON_LOG(WARN, "fail to convert json to string", K(ret), K(obj));
   } else if (OB_FAIL(databuff_printf(buffer, length, pos, "'"))) {
     COMMON_LOG(WARN, "fail to print \"'\"", K(ret), K(length), K(pos));
@@ -1813,7 +1821,7 @@ inline int obj_print_plain_str<ObJsonType>(const ObObj &obj, char *buffer, int64
   } else if (str.empty()) { // nothing to print;
   } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&tmp_allocator, str, in_type, in_type, j_base, parse_flag))) {
     COMMON_LOG(WARN, "fail to get json base", K(ret), K(in_type));
-  } else if (OB_FAIL(j_base->print(jbuf, false))) { // json binary to string
+  } else if (OB_FAIL(j_base->print(jbuf, false, str.length()))) { // json binary to string
     COMMON_LOG(WARN, "fail to convert json to string", K(ret), K(obj));
   } else if (params.use_memcpy_) {
     ret = databuff_memcpy(buffer, length, pos, jbuf.length(), jbuf.ptr());
@@ -1841,7 +1849,7 @@ inline int obj_print_json<ObJsonType>(const ObObj &obj, char *buf, int64_t buf_l
   } else if (str.empty()) { // nothing to print;
   } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&tmp_allocator, str, in_type, in_type, j_base, parse_flag))) {
     COMMON_LOG(WARN, "fail to get json base", K(ret), K(in_type));
-  } else if (OB_FAIL(j_base->print(jbuf, false))) { // json binary to string
+  } else if (OB_FAIL(j_base->print(jbuf, false, str.length()))) { // json binary to string
     COMMON_LOG(WARN, "fail to convert json to string", K(ret), K(obj));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%.*s",
                                      static_cast<int>(MIN(jbuf.length(), buf_len - pos)),
@@ -2719,7 +2727,10 @@ template <>
     ObCharsetType src_type = ObCharset::charset_type_by_coll(obj.get_collation_type());     \
     ObCharsetType dst_type = ObCharset::charset_type_by_coll(params.cs_type_);              \
     int ret = OB_SUCCESS;                                                            \
-    if (OB_FAIL(databuff_printf(buffer, length, pos, "n'"))) {                              \
+    if (params.character_hex_safe_represent_                                                \
+      && ob_is_character_type(obj.get_type(), obj.get_collation_type())) {                  \
+         ret = ObObjCharacterUtil::print_safe_hex_represent(obj, buffer, length, pos, params.accuracy_); \
+    } else if (OB_FAIL(databuff_printf(buffer, length, pos, "n'"))) {                              \
     } else if (src_type == dst_type) {                                                      \
       ObHexEscapeSqlStr sql_str(obj.get_string(), params.skip_escape_);                     \
       pos += sql_str.to_string(buffer + pos, length - pos);                                 \

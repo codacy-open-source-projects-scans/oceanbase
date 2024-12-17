@@ -165,6 +165,10 @@ STAT_EVENT_ADD_DEF(SQL_PS_PREPARE_TIME, "ps prepare time", ObStatClassIds::SQL, 
 STAT_EVENT_ADD_DEF(SQL_PS_EXECUTE_COUNT, "ps execute count", ObStatClassIds::SQL, 40022, false, true, true)
 STAT_EVENT_ADD_DEF(SQL_PS_CLOSE_COUNT, "ps close count", ObStatClassIds::SQL, 40023, false, true, true)
 STAT_EVENT_ADD_DEF(SQL_PS_CLOSE_TIME, "ps close time", ObStatClassIds::SQL, 40024, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_COMMIT_COUNT, "sql commit count", ObStatClassIds::SQL, 40025, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_COMMIT_TIME, "sql commit time", ObStatClassIds::SQL, 40026, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_ROLLBACK_COUNT, "sql rollback count", ObStatClassIds::SQL, 40027, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_ROLLBACK_TIME, "sql rollback time", ObStatClassIds::SQL, 40028, false, true, true)
 
 STAT_EVENT_ADD_DEF(SQL_OPEN_CURSORS_CURRENT, "opened cursors current", ObStatClassIds::SQL, 40030, true, true, true)
 STAT_EVENT_ADD_DEF(SQL_OPEN_CURSORS_CUMULATIVE, "opened cursors cumulative", ObStatClassIds::SQL, 40031, true, true, true)
@@ -197,6 +201,12 @@ STAT_EVENT_ADD_DEF(SQL_LOCAL_TIME, "sql local execute time", ObStatClassIds::SQL
 STAT_EVENT_ADD_DEF(SQL_REMOTE_TIME, "sql remote execute time", ObStatClassIds::SQL, 40117, false, true, true)
 STAT_EVENT_ADD_DEF(SQL_DISTRIBUTED_TIME, "sql distributed execute time", ObStatClassIds::SQL, 40118, false, true, true)
 STAT_EVENT_ADD_DEF(SQL_FAIL_COUNT, "sql fail count", ObStatClassIds::SQL, 40119, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_INNER_LOCAL_COUNT, "inner sql local count", ObStatClassIds::SQL, 40120, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_INNER_REMOTE_COUNT, "inner sql remote count", ObStatClassIds::SQL, 40121, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_INNER_DISTRIBUTED_COUNT, "inner sql distributed count", ObStatClassIds::SQL, 40122, false, true, true)
+STAT_EVENT_ADD_DEF(SQL_INNER_LOCAL_TIME, "inner sql local execute time", ObStatClassIds::SQL, 40123, false, true, false)
+STAT_EVENT_ADD_DEF(SQL_INNER_REMOTE_TIME, "inner sql remote execute time", ObStatClassIds::SQL, 40124, false, true, false)
+STAT_EVENT_ADD_DEF(SQL_INNER_DISTRIBUTED_TIME, "inner sql distributed execute time", ObStatClassIds::SQL, 40125, false, true, false)
 
 // CACHE
 STAT_EVENT_ADD_DEF(ROW_CACHE_HIT, "row cache hit", ObStatClassIds::CACHE, 50000, true, true, true)
@@ -274,6 +284,8 @@ STAT_EVENT_ADD_DEF(MULTI_VERSION_FUSE_ROW_CACHE_HIT, "multi version fuse row cac
 STAT_EVENT_ADD_DEF(MULTI_VERSION_FUSE_ROW_CACHE_MISS, "multi version fuse row cache miss", ObStatClassIds::CACHE, 50070, true, true, true)
 STAT_EVENT_ADD_DEF(BACKUP_INDEX_CACHE_HIT, "backup index cache hit", ObStatClassIds::CACHE, 50071, true, true, true)
 STAT_EVENT_ADD_DEF(BACKUP_INDEX_CACHE_MISS, "backup index cache miss", ObStatClassIds::CACHE, 50072, true, true, true)
+STAT_EVENT_ADD_DEF(BACKUP_META_CACHE_HIT, "backup meta cache hit", ObStatClassIds::CACHE, 50073, true, true, true)
+STAT_EVENT_ADD_DEF(BACKUP_META_CACHE_MISS, "backup meta cache miss", ObStatClassIds::CACHE, 50074, true, true, true)
 
 // STORAGE
 STAT_EVENT_ADD_DEF(MEMSTORE_LOGICAL_READS, "MEMSTORE_LOGICAL_READS", STORAGE, "MEMSTORE_LOGICAL_READS", true, true, false)
@@ -721,13 +733,13 @@ STAT_EVENT_ADD_DEF(REDISAPI_PERSIST_TIME, "redis persist time", ObStatClassIds::
 // sys_time_model related (20xxxx)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_TIME, "DB time", ObStatClassIds::SYS, 200001, false, true, true)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_CPU, "DB CPU", ObStatClassIds::SYS, 200002, false, true, true)
-STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_INNER_TIME, "DB inner sql time", ObStatClassIds::SYS, 200003, false, true, true)
-STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_INNER_CPU, "DB inner sql CPU", ObStatClassIds::SYS, 200004, false, true, true)
+STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_INNER_TIME, "DB inner sql time", ObStatClassIds::SYS, 200003, false, true, false)
+STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_DB_INNER_CPU, "DB inner sql CPU", ObStatClassIds::SYS, 200004, false, true, false)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_BKGD_TIME, "background elapsed time", ObStatClassIds::SYS, 200005, false, true, true)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_BKGD_CPU, "background cpu time", ObStatClassIds::SYS, 200006, false, true, true)
-STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_BACKUP_CPU, "(backup/restore) cpu time", ObStatClassIds::SYS, 200007, false, true, true)
-STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_ENCRYPT_TIME, "Tablespace encryption elapsed time", ObStatClassIds::SYS, 200008, false, true, true)
-STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_ENCRYPT_CPU, "Tablespace encryption cpu time", ObStatClassIds::SYS, 200009, false, true, true)
+STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_BACKUP_CPU, "(backup/restore) cpu time", ObStatClassIds::SYS, 200007, false, true, false)
+STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_ENCRYPT_TIME, "Tablespace encryption elapsed time", ObStatClassIds::SYS, 200008, false, true, false)
+STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_ENCRYPT_CPU, "Tablespace encryption cpu time", ObStatClassIds::SYS, 200009, false, true, false)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_NON_IDLE_WAIT_TIME, "non idle wait time", ObStatClassIds::SYS, 200010, true, true, true)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_IDLE_WAIT_TIME, "idle wait time", ObStatClassIds::SYS, 200011, true, true, true)
 STAT_EVENT_ADD_DEF(SYS_TIME_MODEL_BKGD_DB_TIME, "background database time", ObStatClassIds::SYS, 200012, false, true, true)
@@ -801,12 +813,12 @@ STAT_EVENT_SET_DEF(STANDBY_FETCH_LOG_BANDWIDTH_LIMIT, "standby fetch log bandwid
 // SQL
 
 // CACHE
-STAT_EVENT_SET_DEF(LOCATION_CACHE_SIZE, "location cache size", ObStatClassIds::CACHE, 120000, false, true, true)
+STAT_EVENT_SET_DEF(LOCATION_CACHE_SIZE, "location cache size", ObStatClassIds::CACHE, 120000, false, true, false)
 STAT_EVENT_SET_DEF(TABLET_LS_CACHE_SIZE, "tablet ls cache size", ObStatClassIds::CACHE, 120001, false, true, true)
 STAT_EVENT_SET_DEF(OPT_TAB_STAT_CACHE_SIZE, "table stat cache size", ObStatClassIds::CACHE, 120002, false, true, true)
 STAT_EVENT_SET_DEF(OPT_TAB_COL_STAT_CACHE_SIZE, "table col stat cache size", ObStatClassIds::CACHE, 120003, false, true, true)
 STAT_EVENT_SET_DEF(INDEX_BLOCK_CACHE_SIZE, "index block cache size", ObStatClassIds::CACHE, 120004, false, true, true)
-STAT_EVENT_SET_DEF(SYS_BLOCK_CACHE_SIZE, "sys block cache size", ObStatClassIds::CACHE, 120005, false, true, true)
+STAT_EVENT_SET_DEF(SYS_BLOCK_CACHE_SIZE, "sys block cache size", ObStatClassIds::CACHE, 120005, false, true, false)
 STAT_EVENT_SET_DEF(USER_BLOCK_CACHE_SIZE, "user block cache size", ObStatClassIds::CACHE, 120006, false, true, true)
 STAT_EVENT_SET_DEF(USER_ROW_CACHE_SIZE, "user row cache size", ObStatClassIds::CACHE, 120008, false, true, true)
 STAT_EVENT_SET_DEF(BLOOM_FILTER_CACHE_SIZE, "bloom filter cache size", ObStatClassIds::CACHE, 120009, false, true, true)
@@ -840,7 +852,7 @@ STAT_EVENT_SET_DEF(SYSTEM_MEMORY, "effective system memory", ObStatClassIds::RES
 STAT_EVENT_SET_DEF(HIDDEN_SYS_MEMORY, "effective hidden sys memory", ObStatClassIds::RESOURCE, 140016, false, true, true)
 STAT_EVENT_SET_DEF(MAX_SESSION_NUM, "max session num", ObStatClassIds::RESOURCE, 140017, false, true, true)
 STAT_EVENT_SET_DEF(KV_CACHE_HOLD, "kvcache hold", ObStatClassIds::RESOURCE, 140018, false, true, true)
-STAT_EVENT_SET_DEF(DIVISIVE_MEMORY_USED, "divisive memory used", ObStatClassIds::RESOURCE, 140019, false, true, true)
+STAT_EVENT_SET_DEF(UNMANAGED_MEMORY_SIZE, "unmanaged memory size", ObStatClassIds::RESOURCE, 140019, false, true, true)
 
 //CLOG
 
@@ -877,7 +889,7 @@ STAT_EVENT_SET_DEF(OBSERVER_PARTITION_TABLE_UPATER_SYS_QUEUE_SIZE, "observer par
 STAT_EVENT_SET_DEF(OBSERVER_PARTITION_TABLE_UPATER_CORE_QUEUE_SIZE, "observer partition table updater core table queue size", ObStatClassIds::OBSERVER, 170003, false, true, true)
 
 // rootservice
-STAT_EVENT_SET_DEF(RS_START_SERVICE_TIME, "rootservice start time", ObStatClassIds::RS, 180001, false, true, true)
+STAT_EVENT_SET_DEF(RS_START_SERVICE_TIME, "rootservice start time", ObStatClassIds::RS, 180001, false, true, false)
 
 // das
 STAT_EVENT_SET_DEF(DAS_PARALLEL_TENANT_MEMORY_USAGE, "the memory use of all DAS parallel task", ObStatClassIds::SQL, 230001, false, true, true)
@@ -941,6 +953,7 @@ struct ObStatEventAddStat
   ObStatEventAddStat();
   int add(const ObStatEventAddStat &other);
   int add(int64_t value);
+  int atomic_add(int64_t value);
   int64_t get_stat_value();
   void reset();
   inline bool is_valid() const { return true; }
@@ -955,7 +968,6 @@ struct ObStatEventSetStat
 {
   //value for a stat
   int64_t stat_value_;
-  int64_t set_time_;
   ObStatEventSetStat();
   int add(const ObStatEventSetStat &other);
   void set(int64_t value);
@@ -972,7 +984,6 @@ inline int64_t ObStatEventSetStat::get_stat_value()
 inline void ObStatEventSetStat::set(int64_t value)
 {
   stat_value_ = value;
-  set_time_ = ObTimeUtility::current_time();
 }
 
 struct ObStatEvent

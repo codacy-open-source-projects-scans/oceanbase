@@ -44,8 +44,6 @@ void ObTableQueryAsyncSession::set_result_iterator(ObTableQueryResultIterator *q
   }
 }
 
-
-
 int ObTableQueryAsyncSession::init()
 {
   int ret = OB_SUCCESS;
@@ -97,14 +95,14 @@ int ObTableQueryAsyncSession::deep_copy_select_columns(const common::ObIArray<co
  * ----------------------------------- ObTableHbaseRowKeyDefaultCompare -------------------------------------
  */
 
-int ObTableHbaseRowKeyDefaultCompare::compare(const common::ObNewRow &lhs, const common::ObNewRow &rhs, int &cmp_ret)
+int ObTableHbaseRowKeyDefaultCompare::compare(const common::ObNewRow &lhs, const common::ObNewRow &rhs, int &cmp_ret) const
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!lhs.is_valid() || !rhs.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), K(lhs), K(rhs));
+    LOG_WARN("invalid args", K(lhs), K(rhs), K(ret));
   } else {
-    int cmp_ret = 0;
+    cmp_ret = 0;
     for (int i = 0; i < ObHTableConstants::COL_IDX_T && cmp_ret == 0; ++i) {
       cmp_ret = lhs.get_cell(i).get_string().compare(rhs.get_cell(i).get_string());
     }
@@ -112,19 +110,34 @@ int ObTableHbaseRowKeyDefaultCompare::compare(const common::ObNewRow &lhs, const
   return ret;
 }
 
-bool ObTableHbaseRowKeyDefaultCompare::operator()(const common::ObNewRow &lhs, const common::ObNewRow &rhs) {
+bool ObTableHbaseRowKeyDefaultCompare::operator()(const common::ObNewRow &lhs, const common::ObNewRow &rhs)
+{
   int cmp_ret = 0;
+  result_code_ = compare(lhs, rhs, cmp_ret);
+  return cmp_ret < 0;
+}
+
+
+int ObTableHbaseRowKeyReverseCompare::compare(const common::ObNewRow &lhs, const common::ObNewRow &rhs, int &cmp_ret) const
+{
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!lhs.is_valid() || !rhs.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid args", K(ret), K(lhs), K(rhs));
+    LOG_WARN("invalid args", K(lhs), K(rhs), K(ret));
   } else {
-    for (int i = 0; i < ObHTableConstants::COL_IDX_T && cmp_ret == 0; ++i) {
-      cmp_ret = lhs.get_cell(i).get_string().compare(rhs.get_cell(i).get_string());
+    cmp_ret = lhs.get_cell(ObHTableConstants::COL_IDX_K).get_string().compare(rhs.get_cell(ObHTableConstants::COL_IDX_K).get_string());
+    if (cmp_ret == 0) {
+      cmp_ret = rhs.get_cell(ObHTableConstants::COL_IDX_Q).get_string().compare(lhs.get_cell(ObHTableConstants::COL_IDX_Q).get_string());
     }
   }
-  result_code_ = ret;
-  return cmp_ret < 0;
+  return ret;
+}
+
+bool ObTableHbaseRowKeyReverseCompare::operator()(const common::ObNewRow &lhs, const common::ObNewRow &rhs)
+{
+  int cmp_ret = 0;
+  result_code_ = compare(lhs, rhs, cmp_ret);
+  return cmp_ret > 0;
 }
 
 /**
@@ -503,7 +516,9 @@ int ObTableQueryAsyncP::get_query_session(uint64_t sessid, ObTableQueryAsyncSess
       LOG_WARN("fail to insert session to query map", K(ret), K(sessid));
       MTL(ObTableQueryASyncMgr*)->free_query_session(query_session);
     } else {}
-  } else if (ObQueryOperationType::QUERY_NEXT == arg_.query_type_ || ObQueryOperationType::QUERY_END == arg_.query_type_) {
+  } else if (ObQueryOperationType::QUERY_NEXT == arg_.query_type_ ||
+             ObQueryOperationType::QUERY_END == arg_.query_type_ ||
+             ObQueryOperationType::QUERY_RENEW == arg_.query_type_) {
     if (OB_FAIL(MTL(ObTableQueryASyncMgr*)->get_query_session(sessid, query_session))) {
       LOG_WARN("fail to get query session from query sync mgr", K(ret), K(sessid));
     } else if (OB_ISNULL(query_session)) {
@@ -555,7 +570,7 @@ int ObTableQueryAsyncP::init_tb_ctx(ObTableCtx& ctx, ObTableSingleQueryInfo& que
     ObObjectID tmp_object_id = OB_INVALID_ID;
     ObObjectID tmp_first_level_part_id = OB_INVALID_ID;
     ObTabletID real_tablet_id;
-    if (query_ctx.part_idx_ == OB_INVALID_ID && query_ctx.subpart_idx_ == OB_INVALID_ID) { // 非分区表
+    if (query_ctx.part_idx_ == OB_INVALID_INDEX && query_ctx.subpart_idx_ == OB_INVALID_INDEX) { // 非分区表
       real_tablet_id = query_info.simple_schema_->get_tablet_id();
     } else if (OB_FAIL(query_info.simple_schema_->get_part_id_and_tablet_id_by_idx(query_ctx.part_idx_,
                                                                                     query_ctx.subpart_idx_,
@@ -643,25 +658,37 @@ int ObTableQueryAsyncP::init_tb_ctx(ObTableCtx &ctx)
   return ret;
 }
 
-int ObTableQueryAsyncP::generate_merge_result_iterator(const ObArray<ObTableQueryResultIterator*>& array_result) {
+int ObTableQueryAsyncP::generate_merge_result_iterator()
+{
   int ret = OB_SUCCESS;
   // Merge Iterator: Holds multiple underlying iterators, stored in its own heap
   ResultMergeIterator *merge_result_iter = nullptr;
-  ObTableHbaseRowKeyDefaultCompare *compare = nullptr;
+  ObTableMergeFilterCompare *compare = nullptr;
+  ObQueryFlag::ScanOrder scan_order = query_session_->get_query().get_scan_order();
   if (OB_ISNULL(merge_result_iter = OB_NEWx(ResultMergeIterator,
                                               &allocator_,
-                                              &allocator_,
+                                              allocator_,
                                               query_session_->get_query(),
                                               result_ /* Response serlize row*/))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("fail to create merge_result_iter", K(ret));
-  } else if (OB_ISNULL(compare = OB_NEWx(ObTableHbaseRowKeyDefaultCompare, &allocator_))) {
+  } else if (OB_FAIL(generate_multi_result_iterator(merge_result_iter->get_inner_result_iterators()))) {
+    LOG_WARN("fail to generate multi result inner iterator", K(ret));
+  } else if (scan_order == ObQueryFlag::Reverse && OB_ISNULL(compare = OB_NEWx(ObTableHbaseRowKeyReverseCompare, &allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to create compare, alloc memory fail", K(ret));
-  } else if (OB_FAIL(merge_result_iter->init(array_result, compare))) {
+  } else if (scan_order == ObQueryFlag::Forward && OB_ISNULL(compare = OB_NEWx(ObTableHbaseRowKeyDefaultCompare, &allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to create compare, alloc memory fail", K(ret));
+  } else if (OB_FAIL(merge_result_iter->init(compare))) {
     LOG_WARN("fail to build merge_result_iter", K(ret));
   } else {
     query_session_->set_result_iterator(merge_result_iter);
+  }
+
+  if (OB_FAIL(ret) && OB_NOT_NULL(merge_result_iter)) {
+    merge_result_iter->~ResultMergeIterator();
+    allocator_.free(merge_result_iter);
   }
   return ret;
 }
@@ -675,33 +702,33 @@ int ObTableQueryAsyncP::process_columns(const ObIArray<ObString>& columns,
     ObString real_column = column.after('.');
     ObString family = column.split_on('.');
 
-    if (!real_column.empty()) {
-      if (OB_FAIL(real_columns.push_back(real_column))) {
-        LOG_WARN("fail to push column name", K(ret));
-      } else if (OB_FAIL(family_addfamily_flag_pairs.push_back(std::make_pair(family, false)))) {
-        LOG_WARN("fail to push family name and addfamily flag", K(ret));
-      }
-    } else {
-      if (OB_FAIL(family_addfamily_flag_pairs.push_back(std::make_pair(family, true)))) {
-        LOG_WARN("fail to push family name and addfamily flag", K(ret));
-      }
+    if (OB_FAIL(real_columns.push_back(real_column))) {
+      LOG_WARN("fail to push column name", K(ret));
+    } else if (OB_FAIL(family_addfamily_flag_pairs.push_back(std::make_pair(family, real_column.empty())))) {
+      LOG_WARN("fail to push family name and addfamily flag", K(ret));
     }
   }
   return ret;
 }
 
 int ObTableQueryAsyncP::update_table_info_columns(ObTableSingleQueryInfo* table_info,
-                                                  const ObArray<ObString>& real_columns) {
+                                            const ObArray<std::pair<ObString, bool>>& family_addfamily_flag_pairs,
+                                            const ObArray<ObString>& real_columns,
+                                            const std::pair<ObString, bool>& family_addfamily_flag) {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(table_info)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table info is NULL", K(ret));
   } else {
+    ObString family_name = family_addfamily_flag.first;
     table_info->query_.htable_filter().clear_columns();
-    for (int i = 0; OB_SUCC(ret) && i < real_columns.count(); ++i) {
-      ObString real_column = real_columns.at(i);
-      if (OB_FAIL(table_info->query_.htable_filter().add_column(real_column))) {
-        LOG_WARN("fail to add column to htable_filter", K(ret));
+    for (int i = 0; OB_SUCC(ret) && i < family_addfamily_flag_pairs.count(); ++i) {
+      ObString curr_family = family_addfamily_flag_pairs.at(i).first;
+      if (curr_family == family_name) {
+        ObString real_column = real_columns.at(i);
+        if (OB_FAIL(table_info->query_.htable_filter().add_column(real_column))) {
+          LOG_WARN("fail to add column to htable_filter", K(ret));
+        }
       }
     }
   }
@@ -742,14 +769,14 @@ int ObTableQueryAsyncP::process_table_info(ObTableSingleQueryInfo* table_info,
   } else {
     if (family_addfamily_flag.second) {
       table_info->query_.htable_filter().clear_columns();
-    } else if (OB_FAIL(update_table_info_columns(table_info, real_columns))) {
+    } else if (OB_FAIL(update_table_info_columns(table_info, family_addfamily_flag_pairs, real_columns, family_addfamily_flag))) {
       LOG_WARN("fail to update table info columns", K(ret));
     }
   }
   return ret;
 }
 
-int ObTableQueryAsyncP::generate_multi_result_iterator(ObArray<ObTableQueryResultIterator*>& inner_result_iterator_list) {
+int ObTableQueryAsyncP::generate_multi_result_iterator(ObIArray<ObTableQueryResultIterator*>& inner_result_iterator_list) {
   int ret = OB_SUCCESS;
   ObIAllocator *allocator = query_session_->get_allocator();
   ObTableQueryAsyncCtx &query_ctx = query_session_->get_query_ctx();
@@ -816,6 +843,10 @@ int ObTableQueryAsyncP::generate_multi_result_iterator(ObArray<ObTableQueryResul
         if (OB_FAIL(inner_result_iterator_list.push_back(result_iter))) {
           LOG_WARN(" fail to push back result_iter to array_result", K(ret));
         }
+      }
+
+      if (OB_FAIL(ret) && OB_NOT_NULL(result_iter)) {
+        ObTableQueryUtils::destroy_result_iterator(result_iter);
       }
     }
   }
@@ -1056,7 +1087,7 @@ int ObTableQueryAsyncP::query_scan_without_init(ObTableCtx &tb_ctx)
 int ObTableQueryAsyncP::init_multi_cf_query_ctx(const ObString &arg_tablegroup_name) {
   int ret = OB_SUCCESS;
   ObTableQueryAsyncCtx *query_ctx = nullptr;
-  ObSEArray<const schema::ObSimpleTableSchemaV2*, 8> table_schemas;
+  ObSEArray<const schema::ObSimpleTableSchemaV2*, 8> sort_table_schemas;
   uint64_t tablegroup_id = OB_INVALID_ID;
   if (schema_cache_guard_.is_inited()) {
     // skip
@@ -1072,12 +1103,25 @@ int ObTableQueryAsyncP::init_multi_cf_query_ctx(const ObString &arg_tablegroup_n
   } else if (OB_FAIL(schema_guard_.get_tablegroup_id(credential_.tenant_id_, arg_tablegroup_name, tablegroup_id))) {
     LOG_WARN("fail to get table schema from table group name", K(ret), K(credential_.tenant_id_),
           K(credential_.database_id_), K(arg_tablegroup_name));
-  } else if (OB_FAIL(schema_guard_.get_table_schemas_in_tablegroup(credential_.tenant_id_, tablegroup_id, table_schemas))) {
+  } else if (OB_FAIL(schema_guard_.get_table_schemas_in_tablegroup(credential_.tenant_id_, tablegroup_id, sort_table_schemas))) {
     LOG_WARN("fail to get table schema from table group", K(ret), K(credential_.tenant_id_),
           K(credential_.database_id_), K(arg_tablegroup_name), K(tablegroup_id));
   } else {
-    for (int i = 0; OB_SUCC(ret) && i < table_schemas.count(); ++i) {
-      const schema::ObSimpleTableSchemaV2* table_schema = table_schemas.at(i);
+    if (OB_SUCC(ret)) {
+      if (query_session_->get_query().get_scan_order() == ObQueryFlag::Reverse) {
+        lib::ob_sort(sort_table_schemas.begin(), sort_table_schemas.end(), [](const schema::ObSimpleTableSchemaV2* lhs,
+                                                                              const schema::ObSimpleTableSchemaV2* rhs) {
+          return lhs->get_table_name() > rhs->get_table_name();
+        });
+      } else {
+        lib::ob_sort(sort_table_schemas.begin(), sort_table_schemas.end(), [](const schema::ObSimpleTableSchemaV2* lhs,
+                                                                              const schema::ObSimpleTableSchemaV2* rhs) {
+          return lhs->get_table_name() < rhs->get_table_name();
+        });
+      }
+    }
+    for (int i = 0; OB_SUCC(ret) && i < sort_table_schemas.count(); ++i) {
+      const schema::ObSimpleTableSchemaV2* table_schema = sort_table_schemas.at(i);
       ObTableSingleQueryInfo* query_info = nullptr;
       if (OB_ISNULL(table_schema)) {
         ret = OB_ERR_UNEXPECTED;
@@ -1167,6 +1211,11 @@ int ObTableQueryAsyncP::init_query_ctx(const ObString &arg_table_name) {
   } else if (OB_ISNULL(simple_table_schema_) || simple_table_schema_->get_table_id() == OB_INVALID_ID) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("fail to get simple table schema", K(ret), K(arg_table_name), KP(simple_table_schema_));
+  } else if (simple_table_schema_->is_in_recyclebin()) {
+    ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
+    LOG_USER_ERROR(OB_ERR_OPERATION_ON_RECYCLE_OBJECT);
+    LOG_WARN("table is in recycle bin, not allow to do operation", K(ret), K(credential_.tenant_id_),
+                K(credential_.database_id_), K(arg_table_name));
   } else if (is_tablegroup_req_ && arg_.table_id_ != simple_table_schema_->get_table_id()) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table id not correct in table group", K(ret));
@@ -1211,7 +1260,6 @@ int ObTableQueryAsyncP::query_scan_multi_cf_with_init() {
         }
       }
     }
-    ObArray<ObTableQueryResultIterator*> inner_result_iterator_list;
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(query_session_->deep_copy_select_columns(query.get_select_columns(), query_infos.at(0)->tb_ctx_.get_query_col_names()))) {
       LOG_WARN("fail to deep copy select columns from table ctx", K(ret));
@@ -1222,9 +1270,7 @@ int ObTableQueryAsyncP::query_scan_multi_cf_with_init() {
                                     query_infos.at(0)->tb_ctx_.need_dist_das(),
                                     query_session_->get_trans_state()))) {
       LOG_WARN("fail to start readonly transaction", K(ret), K(query_infos.at(0)->tb_ctx_));
-    } else if (OB_FAIL(generate_multi_result_iterator(inner_result_iterator_list))) {
-      LOG_WARN("fail to generate_multi_result_iterator", K(ret));
-    } else if (OB_FAIL(generate_merge_result_iterator(inner_result_iterator_list))) {
+    } else if (OB_FAIL(generate_merge_result_iterator())) {
       LOG_WARN("fail to generate_merge_result_iterator", K(ret));
     } else if (OB_FAIL(execute_multi_cf_query())) {
       LOG_WARN("fail to execute query", K(ret));
@@ -1367,6 +1413,7 @@ int ObTableQueryAsyncP::try_process()
   int ret = OB_SUCCESS;
   table_id_ = arg_.table_id_; // init move response need
   tablet_id_ = arg_.tablet_id_;
+  observer::ObReqTimeGuard req_timeinfo_guard; // 引用cache资源必须加ObReqTimeGuard
   if (OB_FAIL(check_query_type())) {
     LOG_WARN("query type is invalid", K(ret), K(arg_.query_type_));
   } else if (OB_FAIL(get_session_id(query_session_id_, arg_.query_session_id_))) {
@@ -1389,6 +1436,8 @@ int ObTableQueryAsyncP::try_process()
         } else {
           ret = process_query_next();
         }
+      } else if (ObQueryOperationType::QUERY_RENEW == arg_.query_type_) {
+        result_.query_session_id_ = query_session_id_;
       } else if (ObQueryOperationType::QUERY_END == arg_.query_type_) {
         ret = process_query_end();
       }

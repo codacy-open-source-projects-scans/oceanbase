@@ -19,7 +19,6 @@
 #include "storage/direct_load/ob_direct_load_struct.h"
 #include "storage/direct_load/ob_direct_load_table_data_desc.h"
 #include "storage/direct_load/ob_direct_load_trans_param.h"
-#include "storage/direct_load/ob_direct_load_fast_heap_table.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 
 namespace oceanbase
@@ -72,7 +71,7 @@ public:
                KP_(dml_row_handler),
                KP_(file_mgr),
                K_(trans_param),
-               K_(index_table_count));
+               K_(merge_with_conflict_check));
 public:
   uint64_t table_id_;
   uint64_t lob_meta_table_id_;
@@ -96,7 +95,7 @@ public:
   ObDirectLoadDMLRowHandler *dml_row_handler_;
   ObDirectLoadTmpFileManager *file_mgr_;
   ObDirectLoadTransParam trans_param_;
-  int index_table_count_;
+  bool merge_with_conflict_check_;
 };
 
 class ObDirectLoadMergeCtx
@@ -162,9 +161,7 @@ public:
   }
   bool merge_with_conflict_check()
   {
-    return param_.is_incremental_ &&
-           (param_.insert_mode_ == ObDirectLoadInsertMode::NORMAL ||
-           (param_.insert_mode_ == ObDirectLoadInsertMode::INC_REPLACE && (param_.lob_column_idxs_->count() > 0 || param_.index_table_count_ > 0)));
+    return param_.merge_with_conflict_check_;
   }
 
   const ObDirectLoadMergeParam &get_param() const { return param_; }
@@ -188,6 +185,7 @@ private:
     const common::ObIArray<ObIDirectLoadPartitionTable *> &table_array);
   int init_multiple_heap_table_array(
     const common::ObIArray<ObIDirectLoadPartitionTable *> &table_array);
+  int build_empty_merge_task();
   int build_empty_data_merge_task(const common::ObIArray<share::schema::ObColDesc> &col_descs,
                                   int64_t max_parallel_degree);
   int build_pk_table_merge_task(

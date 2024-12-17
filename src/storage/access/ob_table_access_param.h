@@ -99,10 +99,6 @@ public:
   {
     return (read_info_ != nullptr) ? &read_info_->get_columns_desc() : nullptr;
   }
-  OB_INLINE const ObColDescIArray *get_rowkey_col_descs() const
-  {
-    return (rowkey_read_info_ != nullptr) ? &rowkey_read_info_->get_columns_desc() : nullptr;
-  }
   OB_INLINE bool read_with_same_schema() const
   {
     return is_same_schema_column_;
@@ -228,6 +224,7 @@ public:
   sql::ExprFixedArray *auto_split_params_;
   bool is_tablet_spliting_;
   bool is_column_replica_table_;
+  const bool *need_update_tablet_param_;
 };
 
 struct ObTableAccessParam

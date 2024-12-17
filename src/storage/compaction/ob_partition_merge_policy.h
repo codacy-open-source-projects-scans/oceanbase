@@ -311,6 +311,7 @@ public:
   1) ALL+EACH
   ALL+EACH --(BUILD_ROW_STORE_MERGE)--> ALL --(USE_RS_BUILD_SCHEMA_MATCH_MERGE)--> ALL+EACH
   ALL+EACH --(BUILD_COLUMN_STORE_MERGE)--> ALL+EACH
+  EACH --(BUILD_REDUNDANT_ROW_STORE_MERGE)--> ALL+EACH
   2) EACH
   EACH --(BUILD_ROW_STORE_MERGE)--> ALL --(USE_RS_BUILD_SCHEMA_MATCH_MERGE)--> EACH
   EACH --(BUILD_COLUMN_STORE_MERGE)--> EACH
@@ -329,7 +330,8 @@ public:
     BUILD_COLUMN_STORE_MERGE = 1,
     BUILD_ROW_STORE_MERGE = 2,
     USE_RS_BUILD_SCHEMA_MATCH_MERGE = 3,
-    MAX_CO_MAJOR_MERGE_TYPE = 4
+    BUILD_REDUNDANT_ROW_STORE_MERGE = 4,
+    MAX_CO_MAJOR_MERGE_TYPE = 5
   };
   static const char *co_major_merge_type_to_str(const ObCOMajorMergeType co_merge_type);
   static inline bool is_valid_major_merge_type(const ObCOMajorMergeType &major_merge_type)
@@ -347,6 +349,10 @@ public:
   static inline bool is_use_rs_build_schema_match_merge(const ObCOMajorMergeType &major_merge_type)
   {
     return USE_RS_BUILD_SCHEMA_MATCH_MERGE == major_merge_type;
+  }
+  static inline bool is_build_redundent_row_store_merge(const ObCOMajorMergeType &major_merge_type)
+  {
+    return BUILD_REDUNDANT_ROW_STORE_MERGE == major_merge_type;
   }
   static int decide_co_major_sstable_status(
       const ObCOSSTableV2 &co_sstable,

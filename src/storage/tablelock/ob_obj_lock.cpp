@@ -1086,11 +1086,15 @@ int ObOBJLock::check_allow_lock_(
     // get all the conflict tx id that lock mode conflict with me
     // but not myself
     int tmp_ret = OB_SUCCESS;
-    if (OB_SUCCESS != (tmp_ret = get_tx_id_set_(lock_op.create_trans_id_,
-                                                conflict_modes,
-                                                include_finish_tx,
-                                                conflict_tx_set))) {
+    if (OB_TMP_FAIL(get_tx_id_set_(lock_op.create_trans_id_,
+                                   conflict_modes,
+                                   include_finish_tx,
+                                   conflict_tx_set))) {
       LOG_WARN("get conflict tx failed", K(tmp_ret), K(lock_op));
+    }
+    if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+      LOG_WARN("obj_lock conflict with others", K(ret), KNN(curr_lock, lock_op), KNN(conflict_tx, conflict_tx_set),
+               K(conflict_modes));
     }
   }
   // for pre check
@@ -1175,7 +1179,10 @@ int ObOBJLock::get_exist_lock_mode_without_curr_trans(const uint64_t lock_mode_c
       // in the replace situation, 1 is lock_op which is completed, and the
       // other is unlock_op which is still doing. It means this lock_mode has
       // no locks on it now.
-      if (lock_mode_cnt[i] >= 2) {
+      // NOTICE: we can only replace OUT_TRANS_LOCK, so the lock_op which is completed and the
+      // unlock_op which is doing should be both in the map. If there're less than 2 lock_ops
+      // in the map, we don't need to check allow replace, too.
+      if (lock_mode_cnt[i] >= 2 && OB_NOT_NULL(map_[i]) && map_[i]->get_size() >= 2) {
         bool allow_replace = false;
         if (OB_FAIL(check_allow_replace_from_list_(map_[i], trans_id, allow_replace))) {
           LOG_WARN("check allow replace failed", K(i));
@@ -1650,6 +1657,12 @@ int ObOBJLock::check_op_allow_lock_from_list_(
             // can not lock with the same lock mode twice.
             ret = OB_TRY_LOCK_ROW_CONFLICT;
             need_break = true;
+            if (OB_TRY_LOCK_ROW_CONFLICT == ret) {
+              if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+                LOG_WARN("obj_lock conflict with itself", K(ret), KNN(curr_lock, lock_op),
+                         KNN(older_lock, curr->lock_op_));
+              }
+            }
           } else if (curr->lock_op_.lock_op_status_ == LOCK_OP_COMPLETE) {
             // need continue to check unlock op
             ret = OB_OBJ_LOCK_EXIST;
@@ -1663,6 +1676,12 @@ int ObOBJLock::check_op_allow_lock_from_list_(
           ret = OB_TRY_LOCK_ROW_CONFLICT;
           has_unlock_op = true;
           need_break = true;
+          if (OB_TRY_LOCK_ROW_CONFLICT == ret) {
+            if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+              LOG_WARN("obj_lock conflict with itself", K(ret), KNN(curr_lock, lock_op),
+                       KNN(older_lock, curr->lock_op_));
+            }
+          }
         } else if (curr->lock_op_.op_type_ == IN_TRANS_COMMON_LOCK &&
                    curr->lock_op_.create_trans_id_ == lock_op.create_trans_id_) {
           // continue

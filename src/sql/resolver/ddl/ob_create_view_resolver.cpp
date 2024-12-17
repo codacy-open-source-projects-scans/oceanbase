@@ -227,6 +227,7 @@ int ObCreateViewResolver::resolve(const ParseNode &parse_tree)
       view_table_resolver.set_materialized(parse_tree.children_[MATERIALIZED_NODE] ? true : false);
       select_stmt_node = parse_tree.children_[SELECT_STMT_NODE];
       ParseNode *view_columns_node = parse_tree.children_[VIEW_COLUMNS_NODE];
+      bool has_column = (NULL != view_columns_node) && (view_columns_node->num_child_ > 0);
       ObString sql_str(select_stmt_node->str_len_, select_stmt_node->str_value_);
       view_define = sql_str;
       view_definition_start_pos = select_stmt_node->stmt_loc_.first_column_;
@@ -260,7 +261,7 @@ int ObCreateViewResolver::resolve(const ParseNode &parse_tree)
         } else {
           LOG_WARN("resolve select in create view failed", K(select_stmt_node), K(ret));
         }
-      } else if (OB_FAIL(view_table_resolver.check_auto_gen_column_names())) {
+      } else if (!has_column && OB_FAIL(view_table_resolver.check_auto_gen_column_names())) {
         LOG_WARN("fail to check auto gen column names", K(ret));
       } else if (OB_FAIL(params_.query_ctx_->query_hint_.init_query_hint(params_.allocator_,
                                                                           params_.session_info_,
@@ -574,10 +575,6 @@ int ObCreateViewResolver::resolve_primary_key_node(ParseNode &pk_node,
                                                                          table_schema, i,
                                                                          pk_data_length, col))) {
         LOG_WARN("failed to add primary key part", K(ret), K(i));
-      } else if (!is_oracle_mode() && ob_is_collection_sql_type(col->get_data_type())) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("not support primary key is vector column yet", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "create primary key on vector column is");
       }
     }
     if (OB_FAIL(ret) || is_oracle_mode()) {
@@ -1030,8 +1027,9 @@ int ObCreateViewResolver::check_privilege_needed(ObCreateTableStmt &stmt,
             stmt.get_database_name());
         if (OB_SUCC(ret) && !accessible) {
           ret = OB_TABLE_NOT_EXIST;
-          LOG_USER_ERROR(OB_TABLE_NOT_EXIST, to_cstring(table_item->database_name_),
-                                             to_cstring(table_item->table_name_));
+          ObCStringHelper helper;
+          LOG_USER_ERROR(OB_TABLE_NOT_EXIST, helper.convert(table_item->database_name_),
+                                             helper.convert(table_item->table_name_));
         }
       }
       if (OB_SUCC(ret)) {
@@ -1745,6 +1743,7 @@ int ObCreateViewResolver::add_column_infos(const uint64_t tenant_id,
       } else if (OB_FAIL(fill_column_meta_infos(*expr,
                                                 table_schema.get_charset_type(),
                                                 table_schema.get_table_id(),
+                                                session_info,
                                                 column,
                                                 is_from_create_mview))) {
         LOG_WARN("failed to fill column meta infos", K(ret), K(column));
@@ -1765,6 +1764,7 @@ int ObCreateViewResolver::add_column_infos(const uint64_t tenant_id,
 int ObCreateViewResolver::fill_column_meta_infos(const ObRawExpr &expr,
                                                  const ObCharsetType charset_type,
                                                  const uint64_t table_id,
+                                                 sql::ObSQLSessionInfo &session_info,
                                                  ObColumnSchemaV2 &column,
                                                  bool is_from_create_mview /* =false */)
 {
@@ -1789,9 +1789,11 @@ int ObCreateViewResolver::fill_column_meta_infos(const ObRawExpr &expr,
     column.set_nullable(expr.get_result_type().is_not_null_for_read() ? false : true);
   }
   if (OB_FAIL(ret)) {
-  } else if ((column.is_enum_or_set() || column.is_collection())
+  } else if (column.is_collection()
              && OB_FAIL(column.set_extended_type_info(expr.get_enum_set_values()))) {
     LOG_WARN("set enum or set info failed", K(ret), K(expr));
+  } else if (OB_FAIL(adjust_enum_set_column_meta_info(expr, session_info, column))) {
+    LOG_WARN("fail to adjust enum set colum meta info", K(ret), K(expr));
   } else if (OB_FAIL(adjust_string_column_length_within_max(column, lib::is_oracle_mode()))) {
     LOG_WARN("failed to adjust string column length within max", K(ret), K(expr));
   } else if (OB_FAIL(adjust_number_decimal_column_accuracy_within_max(column, lib::is_oracle_mode()))) {

@@ -377,6 +377,10 @@ public:
       const bool is_oracle_mode);
   static int adjust_number_decimal_column_accuracy_within_max(share::schema::ObColumnSchemaV2 &column,
                                                               const bool is_oracle_mode);
+  static int adjust_enum_set_column_meta_info(const ObRawExpr &expr,
+                                              sql::ObSQLSessionInfo &session_info,
+                                              share::schema::ObColumnSchemaV2 &column);
+
   // { used for enum and set
   int fill_extended_type_info(
       const ParseNode &str_list_node,
@@ -561,7 +565,10 @@ protected:
       const uint64_t cg_id,
       share::schema::ObColumnGroupSchema &column_group);
   int parse_cg_node(const ParseNode &cg_node, obrpc::ObCreateIndexArg &create_index_arg) const;
-  int parse_column_group(const ParseNode *cg_node,const share::schema::ObTableSchema &table_schema, share::schema::ObTableSchema &dst_table_schema);
+  int parse_column_group(const ParseNode *cg_node,
+                         const share::schema::ObTableSchema &table_schema,
+                         share::schema::ObTableSchema &dst_table_schema,
+                         const bool is_alter_column_group_delayed = false);
   int resolve_index_column_group(const ParseNode *node, obrpc::ObCreateIndexArg &create_index_arg);
   bool need_column_group(const ObTableSchema &table_schema);
   int resolve_hints(const ParseNode *parse_node, ObDDLStmt &stmt, const ObTableSchema &table_schema);
@@ -688,7 +695,8 @@ protected:
   int resolve_auto_partition(ObPartitionedStmt *stmt, ParseNode *node,
                              ObTableSchema &table_schema);
   int resolve_presetting_partition_key(ParseNode *node, share::schema::ObTableSchema &table_schema);
-  int try_set_auto_partition_by_config(common::ObIArray<obrpc::ObCreateIndexArg> &index_arg_list,
+  int try_set_auto_partition_by_config(const ParseNode *node,
+                                       common::ObIArray<obrpc::ObCreateIndexArg> &index_arg_list,
                                        ObTableSchema &table_schema);
   int check_only_modify_auto_partition_attr(ObPartitionedStmt *stmt, ParseNode *node,
                                             ObTableSchema &table_schema, bool &is_only_modify_auto_part_attr);
@@ -993,7 +1001,6 @@ protected:
   int check_and_set_individual_subpartition_names(ObPartitionedStmt *stmt,
                                                   share::schema::ObTableSchema &table_schema);
 
-  int resolve_file_format(const ParseNode *node, ObExternalFileFormat &format);
   int mask_properties_sensitive_info(const ParseNode *node, ObString &ddl_sql, ObString &masked_sql);
 
   int check_format_valid(const ObExternalFileFormat &format, bool &is_valid);
@@ -1068,7 +1075,7 @@ protected:
   common::hash::ObPlacementHashSet<share::schema::ObColumnNameHashWrapper,
                                    common::OB_MAX_COLUMN_NUMBER> storing_column_set_;
   common::hash::ObPlacementHashSet<share::schema::ObForeignKeyNameHashWrapper,
-                                   common::OB_MAX_INDEX_PER_TABLE> current_foreign_key_name_set_;
+                                   OB_MAX_AUX_TABLE_PER_MAIN_TABLE> current_foreign_key_name_set_;
   common::ObBitSet<> alter_table_bitset_;
   bool has_index_using_type_;
   share::schema::ObIndexUsingType index_using_type_;

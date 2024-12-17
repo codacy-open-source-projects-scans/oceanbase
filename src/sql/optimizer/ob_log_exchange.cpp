@@ -937,7 +937,7 @@ int ObLogExchange::find_need_drop_expr_idxs(ObLogicalOperator *op,
   if (OB_ISNULL(op->get_child(0))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null op", K(ret));
-  } else if (OB_FAIL(op->get_child(0)->check_has_exchange_below(left_has_exchange))) {
+  } else if (OB_FAIL(op->get_child(0)->check_has_op_below(LOG_EXCHANGE, left_has_exchange))) {
     LOG_WARN("fail to check has exchange below");
   } else if (!left_has_exchange) {
     if (type == log_op_def::LOG_SUBPLAN_FILTER) {
@@ -1065,10 +1065,7 @@ int ObLogExchange::is_my_fixed_expr(const ObRawExpr *expr, bool &is_fixed)
 }
 
 bool ObLogExchange::support_rich_format_vectorize() const {
-  bool res = !(dist_method_ == ObPQDistributeMethod::SM_BROADCAST ||
-          dist_method_ == ObPQDistributeMethod::PARTITION_RANDOM ||
-          dist_method_ == ObPQDistributeMethod::PARTITION_RANGE ||
-          dist_method_ == ObPQDistributeMethod::PARTITION_HASH);
+  bool res = !(dist_method_ == ObPQDistributeMethod::SM_BROADCAST);
   int tmp_ret = abs(OB_E(EventTable::EN_OFS_IO_SUBMIT) OB_SUCCESS);
   if (tmp_ret & (1 << dist_method_)) {
     res = false;

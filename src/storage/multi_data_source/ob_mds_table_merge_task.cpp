@@ -36,6 +36,7 @@ namespace storage
 {
 namespace mds
 {
+ERRSIM_POINT_DEF(EN_SKIP_MDS_MINI_MERGE);
 
 ObMdsTableMergeTask::ObMdsTableMergeTask()
   : ObITask(ObITaskType::TASK_TYPE_MDS_MINI_MERGE),
@@ -78,6 +79,14 @@ int ObMdsTableMergeTask::process()
   ObTabletMergeCtx *ctx_ptr = nullptr;
   DEBUG_SYNC(AFTER_EMPTY_SHELL_TABLET_CREATE);
   bool need_schedule_mds_minor = true;
+
+#ifdef ERRSIM
+  if (OB_SUCCESS != EN_SKIP_MDS_MINI_MERGE) {
+    ret = OB_NO_NEED_MERGE;
+    LOG_INFO("[ERRSIM] mds mini merge, skip", KR(ret), KPC_(mds_merge_dag));
+    return ret;
+  }
+#endif
 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
@@ -125,7 +134,11 @@ int ObMdsTableMergeTask::process()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tablet is null", K(ret), K(ls_id), K(tablet_id));
     } else if (CLICK_FAIL(tablet->get_mds_table_for_dump(mds_table))) {
-      LOG_WARN("fail to get mds table", K(ret), K(ls_id), K(tablet_id));
+      if (OB_EMPTY_RESULT != ret) {
+        LOG_WARN("fail to get mds table", K(ret), K(ls_id), K(tablet_id));
+      } else {
+        ret = OB_NO_NEED_MERGE;
+      }
     } else if (OB_UNLIKELY(!mds_table.get_mds_table_ptr()->is_construct_sequence_matched(mds_construct_sequence))) {
       ret = OB_NO_NEED_MERGE;
       LOG_WARN("construct sequence does not match current mds table, no need to merge", K(ret), K(ls_id), K(tablet_id), K(mds_construct_sequence));
@@ -140,15 +153,37 @@ int ObMdsTableMergeTask::process()
     } else if (FALSE_IT(ctx.static_param_.scn_range_.start_scn_ = tablet->get_mds_checkpoint_scn())) {
     } else if (FALSE_IT(ctx.static_desc_.tablet_transfer_seq_ = tablet->get_transfer_seq())) {
     } else if (MDS_FAIL(build_mds_sstable(ctx, mds_construct_sequence, table_handle))) {
-      LOG_WARN("fail to build mds sstable", K(ret), K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
+      if (OB_EMPTY_RESULT != ret) {
+        LOG_WARN("fail to build mds sstable", K(ret), K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
+      } else {
+        // abort transaction may trigger an empty mds table dump to relase mem and clog scn
+        // however, an uncommitted tablet for example create/transfer in/split dest, need to
+        // transform to empty shell accoring to the mds table rec scn (See
+        // ObTabletEmptyShellHandler::check_tablet_from_aborted_tx_).
+        // So here double check tablet status that only flush those committed tablet status.
+        ret = OB_SUCCESS;
+        if (OB_FAIL(check_tablet_status_for_empty_mds_table_(*tablet))) {
+          if (OB_NO_NEED_MERGE != ret) {
+            LOG_WARN("fail to check tablet status", K(ret), K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
+          } else  {
+            FLOG_INFO("skip uncommitted creation tablet", K(ls_id), K(tablet_id));
+          }
+        } else {
+          need_schedule_mds_minor = false;
+          FLOG_INFO("trigger empty mds table flush", K(ls_id), K(tablet_id));
+        }
+      }
     } else if (CLICK_FAIL(ls->build_new_tablet_from_mds_table(
         ctx,
         tablet_id,
         table_handle,
         flush_scn,
         new_tablet_handle))) {
-      LOG_WARN("failed to build new tablet from mds table", K(ret), K(ctx), K(ls_id), K(tablet_id), K(flush_scn), KPC(mds_merge_dag_));
-    } else {
+      LOG_WARN("failed to build new tablet from mds table", K(ret), K(ctx), K(ls_id), K(tablet_id),
+              K(flush_scn), KPC(mds_merge_dag_));
+    }
+
+    if (OB_SUCC(ret)) {
       ctx.time_guard_click(ObStorageCompactionTimeGuard::EXECUTE);
       share::dag_yield();
     }
@@ -197,10 +232,19 @@ void ObMdsTableMergeTask::try_schedule_compaction_after_mds_mini(compaction::ObT
   }
 }
 
-void ObMdsTableMergeTask::set_merge_finish_time(compaction::ObTabletMergeCtx &ctx)
+int ObMdsTableMergeTask::check_tablet_status_for_empty_mds_table_(const ObTablet& tablet) const
 {
-  ObSSTableMergeHistory &merge_history = ctx.get_merge_info().get_merge_history();
-  merge_history.running_info_.merge_finish_time_ = ObTimeUtility::fast_current_time();
+  int ret = OB_SUCCESS;
+  ObTabletCreateDeleteMdsUserData user_data;
+  if (OB_FAIL(tablet.get_latest_committed(user_data))) {
+    if (OB_EMPTY_RESULT != ret) {
+      LOG_WARN("failed to get tx data", K(ret), K(tablet));
+    } else {
+      // rewrite ret to skip mds table on_flush
+      ret = OB_NO_NEED_MERGE;
+    }
+  }
+  return ret;
 }
 
 int ObMdsTableMergeTask::build_mds_sstable(

@@ -20,7 +20,6 @@
 #include "lib/time/ob_time_utility.h"
 #include "lib/resource/ob_resource_mgr.h"
 #include "lib/allocator/ob_tc_malloc.h"
-#include "lib/utility/ob_sort.h"
 #include <signal.h>
 
 namespace oceanbase
@@ -32,6 +31,12 @@ struct LabelItem;
 }
 namespace lib
 {
+class IObjectMgr
+{
+public:
+  virtual AObject *realloc_object(AObject *obj,  const uint64_t size, const ObMemAttr &attr) = 0;
+  virtual void free_object(AObject *obj) = 0;
+};
 class ObTenantCtxAllocator
     : public common::ObIAllocator,
       private common::ObLink
@@ -299,16 +304,22 @@ private:
     }
     return ret;
   }
+public:
+  static void* common_realloc(const void *ptr, const int64_t size,
+      const ObMemAttr &attr, ObTenantCtxAllocator& ta,
+      IObjectMgr &mgr)
+  {
+    return inner_common_realloc(ptr, size, attr, ta, mgr);
+  }
+  static void common_free(void *ptr);
 private:
   static void on_alloc(AObject& obj, const ObMemAttr& attr);
   static void on_free(AObject& obj);
-public:
   template <typename T>
-  static void* common_realloc(const void *ptr, const int64_t size,
+  static void* inner_common_realloc(const void *ptr, const int64_t size,
                               const ObMemAttr &attr, ObTenantCtxAllocator& ta,
                               T &allocator);
 
-  static void common_free(void *ptr);
 
 private:
   ObTenantResourceMgrHandle resource_handle_;

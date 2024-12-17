@@ -28,7 +28,9 @@ struct ObLobDataInsertTask
     cur_data_locator_(),
     col_idx_(0),
     row_idx_(0)
-  {}
+  {
+    lob_meta_list_.set_attr(ObMemAttr(MTL_ID(), "LobDml"));
+  }
 
   ObLobLocatorV2 src_data_locator_;
   ObLobLocatorV2 cur_data_locator_;
@@ -43,7 +45,9 @@ struct ObLobTabletDmlCtx
 {
   ObLobTabletDmlCtx():
     insert_data_info_()
-  {}
+  {
+    insert_data_info_.set_attr(ObMemAttr(MTL_ID(), "LobDml"));
+  }
 
   ~ObLobTabletDmlCtx();
 
@@ -110,14 +114,16 @@ public:
       blocksstable::ObStorageDatum &datum,
       ObLobAccessParam *del_param,
       ObString &disk_locator_data,
-      ObArray<ObLobMetaInfo> *lob_meta_list = nullptr);
+      ObArray<ObLobMetaInfo> *lob_meta_list = nullptr,
+      const bool try_flush_redo = false);
   static int delete_lob_col(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
       const ObColDesc &column,
       blocksstable::ObStorageDatum &datum,
       ObLobCommon *&lob_common,
-      ObLobAccessParam &lob_param);
+      ObLobAccessParam &lob_param,
+      const bool try_flush_redo = false);
   static int update_lob_col(
       ObDMLRunningCtx &run_ctx,
       blocksstable::ObDatumRow &old_row,

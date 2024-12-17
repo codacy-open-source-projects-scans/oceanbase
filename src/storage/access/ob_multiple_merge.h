@@ -131,6 +131,7 @@ private:
   void report_tablet_stat();
   int update_and_report_tablet_stat();
   void inner_reset();
+  int refresh_filter_params_on_demand(const bool is_open);
   OB_INLINE bool can_use_vec2(); // need to remove after statistical info pushdown support vec 2.0
 
 protected:
@@ -167,6 +168,7 @@ private:
     NONE,
     SINGLE_ROW,
     BATCH,
+    DI_BASE,
   };
   ScanState scan_state_;
   // disallow copy

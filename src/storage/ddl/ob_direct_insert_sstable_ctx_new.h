@@ -266,7 +266,9 @@ public:
   }
   void reset_slice_ctx_on_demand();
   void cleanup_slice_writer(const int64_t context_id);
-  TO_STRING_KV(K_(build_param), K_(is_task_end), K_(task_finish_count), K_(task_total_cnt), K_(sorted_slices_idx), K_(commit_scn), KPC(storage_schema_));
+  share::SCN get_commit_scn() { return commit_scn_.atomic_load(); }
+  TO_STRING_KV(K_(build_param), K_(is_task_end), K_(task_finish_count), K_(task_total_cnt), K_(sorted_slices_idx), K_(commit_scn),
+      KP_(index_builder), KPC(storage_schema_));
   struct AggregatedCGInfo final {
   public:
     AggregatedCGInfo()
@@ -306,7 +308,7 @@ public:
   common::ObArray<ObDirectLoadSliceWriter *> sorted_slice_writers_;
   common::ObArray<AggregatedCGInfo> sorted_slices_idx_; //for cg_aggregation
   common::ObArray<ObSSTableIndexItem> cg_index_builders_;
-  bool is_task_end_; // to avoid write commit log/freeze in memory index sstable again.
+  bool is_task_end_; // to avoid write commit log/freeze in memory index sstable again
   int64_t task_finish_count_; // reach the parallel slice cnt, means the tablet data finished.
   int64_t task_total_cnt_; // parallelism of the PX.
   int64_t fill_column_group_finish_count_;
@@ -338,12 +340,23 @@ public:
       ObIStoreRowIterator *iter,
       int64_t &affected_rows,
       ObInsertMonitor *insert_monitor = NULL);
+  virtual int fill_sstable_slice(
+      const ObDirectLoadSliceInfo &slice_info,
+      const share::SCN &start_scn,
+      const blocksstable::ObBatchDatumRows &datum_rows,
+      ObInsertMonitor *insert_monitor = NULL);
   virtual int fill_lob_sstable_slice(
       ObIAllocator &allocator,
       const ObDirectLoadSliceInfo &slice_info /*contains data_tablet_id, lob_slice_id, start_seq*/,
       const share::SCN &start_scn,
       share::ObTabletCacheInterval &pk_interval,
       blocksstable::ObDatumRow &datum_row);
+  virtual int fill_lob_sstable_slice(
+      ObIAllocator &allocator,
+      const ObDirectLoadSliceInfo &slice_info /*contains data_tablet_id, lob_slice_id, start_seq*/,
+      const share::SCN &start_scn,
+      share::ObTabletCacheInterval &pk_interval,
+      blocksstable::ObBatchDatumRows &datum_rows);
   // for delete lob in incremental direct load only
   virtual int fill_lob_meta_sstable_slice(
       const ObDirectLoadSliceInfo &slice_info /*contains data_tablet_id, lob_slice_id, start_seq*/,
@@ -413,9 +426,10 @@ public:
    */
   bool is_originally_column_store_data_direct_load() const { return is_data_direct_load(direct_load_type_) && !need_process_cs_replica_; }
 
+  bool get_is_no_logging() {return is_no_logging_;}
   VIRTUAL_TO_STRING_KV(K_(is_inited), K_(is_schema_item_ready), K_(ls_id), K_(tablet_id), K_(table_key), K_(data_format_version), K_(ref_cnt),
                K_(direct_load_type), K_(need_process_cs_replica), K_(need_fill_column_group),K_(sqc_build_ctx), KPC(lob_mgr_handle_.get_obj()), K_(schema_item), K_(column_items), K_(lob_column_idxs),
-               K_(task_cnt), K_(cg_cnt), K_(micro_index_clustered), K_(tablet_transfer_seq));
+               K_(task_cnt), K_(cg_cnt), K_(micro_index_clustered), K_(tablet_transfer_seq), K_(is_no_logging));
 
 protected:
   int prepare_schema_item_on_demand(const uint64_t table_id,
@@ -440,7 +454,7 @@ protected:
   // int collect_obj(const blocksstable::ObDatumRow &datum_row);
   /* +++++ -------------------------- +++++ */
 public:
-  static const int64_t TRY_LOCK_TIMEOUT = 1 * 1000000; // 1s
+  static const int64_t TRY_LOCK_TIMEOUT = 10 * 1000000; // 10s
   static const int64_t EACH_MACRO_MIN_ROW_CNT = 1000000; // 100w
 protected:
   bool is_inited_;
@@ -472,6 +486,7 @@ protected:
   int64_t cg_cnt_;
   bool micro_index_clustered_;
   int64_t tablet_transfer_seq_;
+  bool is_no_logging_;
 };
 
 class ObTabletFullDirectLoadMgr final : public ObTabletDirectLoadMgr
@@ -563,7 +578,7 @@ public:
   int open(const int64_t current_execution_id, share::SCN &start_scn) override final;
   int close(const int64_t current_execution_id, const share::SCN &start_scn) override final;
 
-  share::SCN get_start_scn() override { return start_scn_; }
+  share::SCN get_start_scn() override { return start_scn_.atomic_load(); }
   // unused, for full direct load only
   share::SCN get_commit_scn(const ObTabletMeta &tablet_meta) override
   {

@@ -2018,7 +2018,7 @@ int ObSortOpImpl::sort_inmem_data()
           prev = &rows_->at(i);
         }
         if (OB_FAIL(ret)) {
-        } else if (pd_topn_filter_.enabled()
+        } else if (pd_topn_filter_.need_update()
                    && OB_FAIL(pd_topn_filter_.update_filter_data(*imms_heap_->top()))) {
           LOG_WARN("failed to update filter data", K(ret));
         }
@@ -3352,6 +3352,11 @@ int ObPrefixSortImpl::get_next_batch(const common::ObIArray<ObExpr*> &exprs,
     }
   }
   return ret;
+}
+
+void ObPrefixSortImpl::reuse()
+{
+  ObSortOpImpl::reuse();
 }
 
 /*********************************** end ObPrefixSortImpl *****************************/

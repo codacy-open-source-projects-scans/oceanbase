@@ -63,7 +63,7 @@ DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_MDS_MINI_MERGE, ObDagPrio::DAG_PRIO_COMPACTI
     false, 3, {"ls_id", "tablet_id", "flush_scn"})
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_VERIFY_CKM, ObDagPrio::DAG_PRIO_COMPACTION_LOW, ObSysTaskType::SSTABLE_MAJOR_MERGE_TASK, "VERIFY_CKM", "COMPACTION",
     false, 2, {"ls_id", "tablet_count"})
-DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BATCH_FREEZE_TABLETS, ObDagPrio::DAG_PRIO_COMPACTION_HIGH, ObSysTaskType::BATCH_FREEZE_TABLET_TASK, "BATCH_FREEZE", "COMPACTION",
+DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BATCH_FREEZE_TABLETS, ObDagPrio::DAG_PRIO_COMPACTION_LOW, ObSysTaskType::BATCH_FREEZE_TABLET_TASK, "BATCH_FREEZE", "COMPACTION",
     false, 2, {"ls_id", "tablet_count"})
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_UPDATE_SKIP_MAJOR, ObDagPrio::DAG_PRIO_COMPACTION_LOW, ObSysTaskType::SSTABLE_MAJOR_MERGE_TASK, "UPDATE_SKIP_MAJOR", "COMPACTION",
     false, 2, {"ls_id", "tablet_count"})
@@ -146,7 +146,11 @@ DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_PREFETCH_BACKUP_INFO, ObDagPrio::DAG_PRIO_HA
     false, 7, {"tenant_id", "backup_set_id", "backup_data_type", "ls_id", "turn_id", "retry_id", "task_id"})
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BACKUP_INDEX_REBUILD, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "BACKUP_INDEX_REBUILD", "BACKUP",
     false, 6, {"tenant_id", "backup_set_id", "backup_data_type", "ls_id", "turn_id", "retry_id"})
-DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BACKUP_COMPLEMENT_LOG, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "BACKUP_COMPLEMENT_LOG", "BACKUP",
+DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BACKUP_LS_LOG_GROUP, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "BACKUP_COMPLEMENT_LOG_LS_GROUP", "BACKUP",
+    false, 3, {"tenant_id", "backup_set_id", "ls_id"})
+DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BACKUP_LS_LOG_GROUP_FINISH, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "BACKUP_COMPLEMENT_LOG_LS_GROUP", "BACKUP",
+    false, 3, {"tenant_id", "backup_set_id", "ls_id"})
+DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_BACKUP_LS_LOG, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "BACKUP_COMPLEMENT_LOG_LS", "BACKUP",
     false, 3, {"tenant_id", "backup_set_id", "ls_id"})
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_INITIAL_BACKUP_FUSE, ObDagPrio::DAG_PRIO_HA_LOW, ObSysTaskType::BACKUP_TASK, "INITIAL_BACKUP_FUSE", "BACKUP",
     false, 0, {})
@@ -196,6 +200,8 @@ DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_TRANSFER_BACKFILL_TX, ObDagPrio::DAG_PRIO_HA
     true, 3, {"tenant_id", "src_ls_id", "start_scn"})
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_TRANSFER_REPLACE_TABLE, ObDagPrio::DAG_PRIO_HA_HIGH, ObSysTaskType::TRANSFER_TASK, "TRANSFER_REPLACE_TABLE", "TRANSFER",
     true, 2, {"tenant_id", "desc_ls_id"})
+DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_TRANSFER_BUILD_TABLET_INFO, ObDagPrio::DAG_PRIO_HA_HIGH, ObSysTaskType::TRANSFER_TASK, "TRANSFER_BUILD_TABLET_INFO", "TRANSFER",
+    false, 0, {})
 // DAG_TYPE_TRANSFER END
 DAG_SCHEDULER_DAG_TYPE_DEF(DAG_TYPE_TTL, ObDagPrio::DAG_PRIO_TTL, ObSysTaskType::TABLE_API_TTL_TASK, "TTL_DELTE_DAG", "TTL",
     false, 4, {"tenant_id", "ls_id", "table_id", "tablet_id"})
@@ -332,6 +338,12 @@ inline bool is_diagnose_dag(ObDagType::ObDagTypeEnum dag_type)
 {
   return is_compaction_dag(dag_type)
       || is_batch_exec_dag(dag_type);
+}
+
+inline bool is_valid_dag_priority(ObDagPrio::ObDagPrioEnum priority)
+{
+  return priority < ObDagPrio::DAG_PRIO_MAX &&
+         priority >= ObDagPrio::DAG_PRIO_COMPACTION_HIGH;
 }
 
 } // namespace share

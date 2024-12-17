@@ -31,7 +31,6 @@
 #include "lib/compress/ob_compressor_pool.h"
 #include "ob_i_storage.h"
 #include "common/storage/ob_device_common.h"
-#include "cos/ob_singleton.h"
 #include "lib/container/ob_se_array.h"
 
 namespace oceanbase
@@ -69,7 +68,7 @@ int ob_oss_str_assign(aos_string_t &dst, const int64_t len, const char *src);
 class ObStorageOSSRetryStrategy : public ObStorageIORetryStrategy<aos_status_t *>
 {
 public:
-  ObStorageOSSRetryStrategy(const int64_t timeout_us = OB_STORAGE_MAX_IO_TIMEOUT_US);
+  ObStorageOSSRetryStrategy(const int64_t timeout_us = ObObjectStorageTenantGuard::get_timeout_us());
   virtual ~ObStorageOSSRetryStrategy();
 
   int set_retry_headers(apr_pool_t *p, apr_table_t *&headers);
@@ -130,9 +129,10 @@ public:
   ObOssAccount();
   virtual ~ObOssAccount();
   int parse_oss_arg(const common::ObString &storage_info);
-  static int set_oss_field(const char *info, char *field, const int64_t length);
   void reset_account();
   int set_delete_mode(const char *parameter);
+  TO_STRING_KV(K_(oss_domain), K_(delete_mode), K_(oss_id), KP_(oss_key), K_(is_inited), K_(sts_token));
+
   char oss_domain_[MAX_OSS_ENDPOINT_LENGTH];
   char oss_id_[MAX_OSS_ID_LENGTH];
   char oss_key_[MAX_OSS_KEY_LENGTH];
@@ -142,8 +142,7 @@ public:
   common::ObArenaAllocator allocator_;
   ObStorageDeleteMode delete_mode_;
   bool is_inited_;
-
-  TO_STRING_KV(K_(is_inited), K_(delete_mode), K_(oss_domain), K_(oss_id));
+  ObSTSToken sts_token_;
 };
 
 class ObStorageOssBase
