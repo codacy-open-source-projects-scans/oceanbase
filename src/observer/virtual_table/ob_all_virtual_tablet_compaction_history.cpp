@@ -11,7 +11,6 @@
  */
 
 #include "ob_all_virtual_tablet_compaction_history.h"
-#include "storage/compaction/ob_sstable_merge_history.h"
 
 namespace oceanbase
 {
@@ -30,7 +29,8 @@ ObAllVirtualTabletCompactionHistory::ObAllVirtualTabletCompactionHistory()
       comment_(),
       merge_history_(),
       major_merge_info_iter_(),
-      minor_merge_info_iter_()
+      minor_merge_info_iter_(),
+      mds_merge_info_iter_()
 {
 }
 
@@ -66,8 +66,9 @@ int ObAllVirtualTabletCompactionHistory::process_curr_tenant(ObNewRow *&row)
   ObObj *cells = cur_row_.cells_;
   int64_t compression_ratio = 0;
   int n = 0;
-  if (!major_merge_info_iter_.is_opened() && !minor_merge_info_iter_.is_opened()) {
-    if (OB_FAIL(MTL(ObTenantSSTableMergeInfoMgr *)->open_iter(major_merge_info_iter_, minor_merge_info_iter_))) {
+  if (!major_merge_info_iter_.is_opened() && !minor_merge_info_iter_.is_opened() && !mds_merge_info_iter_.is_opened()) {
+    if (OB_FAIL(MTL(ObTenantSSTableMergeInfoMgr *)
+                    ->open_iter(major_merge_info_iter_, minor_merge_info_iter_, mds_merge_info_iter_))) {
       STORAGE_LOG(WARN, "fail to open ObTenantSSTableMergeInfoMgr::Iterator", K(ret));
     }
   }
@@ -76,8 +77,11 @@ int ObAllVirtualTabletCompactionHistory::process_curr_tenant(ObNewRow *&row)
     if (FALSE_IT(MEMSET(comment_, '\0', sizeof(comment_)))) {
     } else if (FALSE_IT(MEMSET(other_info_, '\0', sizeof(other_info_)))) {
     } else if (OB_FAIL(ObTenantSSTableMergeInfoMgr::get_next_info(major_merge_info_iter_,
-                minor_merge_info_iter_,
-                merge_history_, other_info_, sizeof(other_info_)))) {
+                                                                  minor_merge_info_iter_,
+                                                                  mds_merge_info_iter_,
+                                                                  merge_history_,
+                                                                  other_info_,
+                                                                  sizeof(other_info_)))) {
       if (OB_ITER_END != ret) {
         STORAGE_LOG(WARN, "fail to get next sstable merge info", K(ret));
       }
@@ -276,8 +280,11 @@ int ObAllVirtualTabletCompactionHistory::process_curr_tenant(ObNewRow *&row)
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
       break;
     case MDS_FILTER_INFO:
-      cells[i].set_varchar("");
+      cells[i].set_varchar(static_info.mds_filter_info_str_);
       cells[i].set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+      break;
+    case EXECUTE_TIME:
+      cells[i].set_int(running_info.execute_time_);
       break;
     default:
       ret = OB_ERR_UNEXPECTED;

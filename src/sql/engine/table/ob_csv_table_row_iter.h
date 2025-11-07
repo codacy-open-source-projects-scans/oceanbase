@@ -20,9 +20,11 @@
 #include "common/storage/ob_io_device.h"
 #include "share/backup/ob_backup_struct.h"
 #include "sql/engine/table/ob_external_table_access_service.h"
+#include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase {
 namespace sql {
+
 
 class ObCSVIteratorState : public ObExternalIteratorState
 {
@@ -41,7 +43,10 @@ public:
     line_count_limit_(INT64_MAX),
     ip_port_buf_(NULL),
     ip_port_len_(0),
-    need_expand_buf_(false) {}
+    need_expand_buf_(false),
+    duration_(0),
+    cur_file_size_(0),
+    has_escape_(true) {}
 
   virtual void reuse() override
   {
@@ -55,6 +60,9 @@ public:
     line_count_limit_ = INT64_MAX;
     ip_port_len_ = 0;
     need_expand_buf_ = false;
+    duration_ = 0;
+    cur_file_size_ = 0;
+    has_escape_ = true;
   }
   DECLARE_VIRTUAL_TO_STRING;
   char *buf_;
@@ -69,6 +77,9 @@ public:
   char *ip_port_buf_;
   int ip_port_len_;
   bool need_expand_buf_;
+  int64_t duration_;
+  int64_t cur_file_size_;
+  bool has_escape_;
 };
 
 class ObCSVTableRowIterator : public ObExternalTableRowIterator {
@@ -76,7 +87,7 @@ public:
   static const int64_t MIN_EXTERNAL_TABLE_FILE_ID = 1;
   static const int64_t MIN_EXTERNAL_TABLE_LINE_NUMBER = 1;
   static const int max_ipv6_port_length = 100;
-  ObCSVTableRowIterator() : bit_vector_cache_(NULL) {}
+  ObCSVTableRowIterator() : bit_vector_cache_(NULL), is_bad_file_enabled_(false) {}
   virtual ~ObCSVTableRowIterator();
   virtual int init(const storage::ObTableScanParam *scan_param) override;
   int get_next_row() override;
@@ -88,6 +99,9 @@ public:
   }
 
   virtual void reset() override;
+  virtual bool is_diagnosis_supported() const override { return true; }
+  virtual int64_t get_cur_line_num() const override { return state_.batch_first_row_line_num_; }
+  virtual ObString get_cur_file_url() const override { return state_.cur_file_name_; }
 
 private:
   int expand_buf();
@@ -102,6 +116,10 @@ private:
   int skip_lines();
   void release_buf();
   void dump_error_log(common::ObIArray<ObCSVGeneralParser::LineErrRec> &error_msgs);
+  int handle_error_msgs(common::ObIArray<ObCSVGeneralParser::LineErrRec> &error_msgs);
+  static int handle_bad_file_line(ObCSVTableRowIterator *csv_iter,
+                                  ObEvalCtx &eval_ctx,
+                                  ObCSVGeneralParser::HandleOneLineParam &param);
 private:
   ObCSVIteratorState state_;
   ObBitVector *bit_vector_cache_;
@@ -111,6 +129,8 @@ private:
   ObExternalStreamFileReader file_reader_;
   ObSqlString url_;
   ObExpr *file_name_expr_;
+  bool is_bad_file_enabled_;
+  bool use_handle_batch_lines_ = false;
 };
 
 

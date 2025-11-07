@@ -12,19 +12,6 @@
 
 #define USING_LOG_PREFIX SQL_REWRITE
 #include "ob_transform_min_max.h"
-#include "ob_transformer_impl.h"
-#include "lib/allocator/ob_allocator.h"
-#include "lib/oblog/ob_log_module.h"
-#include "common/ob_common_utility.h"
-#include "common/ob_smart_call.h"
-#include "share/schema/ob_column_schema.h"
-#include "share/schema/ob_table_schema.h"
-#include "sql/resolver/ob_resolver_utils.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
-#include "sql/ob_sql_context.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 using namespace oceanbase::common;
@@ -253,7 +240,7 @@ int ObTransformMinMax::do_multi_minmax_transform(ObSelectStmt *select_stmt)
       select_stmt->get_column_items().reset();
       if (OB_FAIL(select_stmt->adjust_subquery_list())) {
         LOG_WARN("failed to adjust subquery list", K(ret));
-      } else if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_))) {
+      } else if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_, false))) {
         LOG_WARN("failed to formalize stmt", K(ret));
       } else {
         LOG_TRACE("succeed to do transform min max", KPC(select_stmt));
@@ -330,7 +317,7 @@ int ObTransformMinMax::deep_copy_subquery_for_aggr(const ObSelectStmt &copied_st
     LOG_WARN("failed to rebuild table hash", K(ret));
   } else if (OB_FAIL(child_stmt->update_column_item_rel_id())) {
     LOG_WARN("failed to update column item by id", K(ret));
-  } else if (OB_FAIL(child_stmt->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(child_stmt->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt", K(ret));
   }
   return ret;

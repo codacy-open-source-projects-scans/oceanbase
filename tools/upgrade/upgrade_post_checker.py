@@ -10,6 +10,7 @@ from mysql.connector import errorcode
 import logging
 import time
 import actions
+from my_utils import SetSessionTimeout
 
 #### START
 # 1 检查版本号
@@ -44,45 +45,43 @@ def check_data_version(cur, query_cur, timeout):
   current_data_version = actions.get_current_data_version()
 
   query_timeout = actions.set_default_timeout_by_tenant(cur, timeout, 2, 60)
-  actions.set_session_timeout(cur, query_timeout)
+  with SetSessionTimeout(cur, query_timeout):
 
-  sql = """select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_info where name = 'compatible' and value = '{0}' and tenant_id in ({1})""".format(current_data_version, tenant_ids_str)
+    sql = """select count(*) as cnt from oceanbase.__all_virtual_tenant_parameter_info where name = 'compatible' and value = '{0}' and tenant_id in ({1})""".format(current_data_version, tenant_ids_str)
 
-  wait_timeout = actions.set_default_timeout_by_tenant(cur, timeout, 10, 60)
-  times = wait_timeout / 5
-  while times >= 0:
-    logging.info(sql)
-    cur.execute(sql)
-    result = cur.fetchall()
-    if len(result) != 1 or len(result[0]) != 1:
-      logging.exception('result cnt not match')
-      raise MyError('result cnt not match')
-    elif result[0][0] == parameter_count:
-      logging.info("""'compatible' is sync, value is {0}""".format(current_data_version))
-      break
-    else:
-      logging.info("""'compatible' is not sync, value should be {0}, expected_cnt should be {1}, current_cnt is {2}""".format(current_data_version, parameter_count, result[0][0]))
+    wait_timeout = actions.set_default_timeout_by_tenant(cur, timeout, 10, 60)
+    times = wait_timeout / 5
+    while times >= 0:
+      logging.info(sql)
+      cur.execute(sql)
+      result = cur.fetchall()
+      if len(result) != 1 or len(result[0]) != 1:
+        logging.exception('result cnt not match')
+        raise MyError('result cnt not match')
+      elif result[0][0] == parameter_count:
+        logging.info("""'compatible' is sync, value is {0}""".format(current_data_version))
+        break
+      else:
+        logging.info("""'compatible' is not sync, value should be {0}, expected_cnt should be {1}, current_cnt is {2}""".format(current_data_version, parameter_count, result[0][0]))
 
-    times -= 1
-    if times == -1:
-      logging.exception("""check compatible:{0} sync timeout""".format(current_data_version))
-      raise MyError("""check compatible:{0} sync timeout""".format(current_data_version))
-    time.sleep(5)
+      times -= 1
+      if times == -1:
+        logging.exception("""check compatible:{0} sync timeout""".format(current_data_version))
+        raise MyError("""check compatible:{0} sync timeout""".format(current_data_version))
+      time.sleep(5)
 
-  actions.set_session_timeout(cur, 10)
-
-  # check target_data_version/current_data_version from __all_core_table
+  # check target_data_version/current_data_version/upgrade_begin_data_version from __all_core_table
   int_current_data_version = actions.get_version(current_data_version)
-  sql = "select count(*) from __all_virtual_core_table where column_name in ('target_data_version', 'current_data_version') and column_value = {0} and tenant_id in ({1})".format(int_current_data_version, tenant_ids_str)
+  sql = "select count(*) from __all_virtual_core_table where column_name in ('target_data_version', 'current_data_version', 'upgrade_begin_data_version') and column_value = {0} and tenant_id in ({1})".format(int_current_data_version, tenant_ids_str)
   (desc, results) = query_cur.exec_query(sql)
   if len(results) != 1 or len(results[0]) != 1:
     logging.warn('result cnt not match')
     raise MyError('result cnt not match')
-  elif 2 * tenant_count != results[0][0]:
-    logging.warn('target_data_version/current_data_version not match with {0}, tenant_cnt:{1}, result_cnt:{2}'.format(current_data_version, tenant_count, results[0][0]))
-    raise MyError('target_data_version/current_data_version not match with {0}, tenant_cnt:{1}, result_cnt:{2}'.format(current_data_version, tenant_count, results[0][0]))
+  elif 3 * tenant_count != results[0][0]:
+    logging.warn('target_data_version/current_data_version/upgrade_begin_data_version not match with {0}, tenant_cnt:{1}, result_cnt:{2}'.format(current_data_version, tenant_count, results[0][0]))
+    raise MyError('target_data_version/current_data_version/upgrade_begin_data_version not match with {0}, tenant_cnt:{1}, result_cnt:{2}'.format(current_data_version, tenant_count, results[0][0]))
   else:
-    logging.info("all tenant's target_data_version/current_data_version are match with {0}".format(current_data_version))
+    logging.info("all tenant's target_data_version/current_data_version/upgrade_begin_data_version are match with {0}".format(current_data_version))
 
 # 3 检查内部表自检是否成功
 def check_root_inspection(cur, query_cur, timeout):

@@ -14,13 +14,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_is_json.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
-#include "sql/engine/expr/ob_expr_util.h"
-#include "share/object/ob_obj_cast.h"
-#include "sql/engine/expr/ob_datum_cast.h"
-#include "objit/common/ob_item_type.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "lib/json_type/ob_json_tree.h"
-#include "lib/hash/ob_hashset.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -101,7 +94,7 @@ int ObExprIsJson::check_is_json(const ObExpr &expr, ObEvalCtx &ctx,
       LOG_WARN("fail to get real data.", K(ret), K(j_str));
     } else if (is_null) {
     } else if (OB_UNLIKELY(j_str == "")) {
-      if (type == ObJsonType) {
+      if (ob_is_json(type) || ob_is_string_type(type)) {
         is_null = true;
       } else {
         is_invalid = true;
@@ -277,7 +270,6 @@ int ObExprIsJson::eval_is_json(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res)
     ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
     uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
     MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "JSONModule"));
     if (OB_FAIL(check_is_json(expr, ctx, *json_datum,
                               json_arg->datum_meta_.type_,
                               cs_type, temp_allocator,

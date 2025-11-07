@@ -10,13 +10,28 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "storage/memtable/mvcc/ob_mvcc_acc_ctx.h"
+#include "ob_mvcc_acc_ctx.h"
 #include "storage/memtable/ob_memtable_context.h"
 namespace oceanbase
 {
+using namespace transaction;
 namespace memtable
 {
-int ObMvccAccessCtx::get_write_seq(transaction::ObTxSEQ &seq) const
+
+int ObMvccMdsFilter::init(ObMvccMdsFilter &mds_filter)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!mds_filter.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid argument", KR(ret), K(mds_filter));
+  } else {
+    truncate_part_filter_ = mds_filter.truncate_part_filter_;
+    read_info_ = mds_filter.read_info_;
+  }
+  return ret;
+}
+
+int ObMvccAccessCtx::get_write_seq(ObTxSEQ &seq) const
 {
   int ret = OB_SUCCESS;
   // for update uk or pk, set branch part to 0, in orer to let tx-callback fall into single list

@@ -14,8 +14,6 @@
 
 #include "storage/memtable/ob_lock_wait_mgr.h"
 #include "observer/ob_server_utils.h"
-#include "observer/ob_server_struct.h"
-#include "observer/omt/ob_multi_tenant.h"
 
 using namespace oceanbase::rpc;
 using namespace oceanbase::common;
@@ -175,8 +173,13 @@ int ObAllVirtualLockWaitStat::process_curr_tenant(ObNewRow *&row)
             break;
           }
         case SESSION_ID:
-          cur_row_.cells_[i].set_int(node_iter_->sessid_);
-          break;
+          {
+            cur_row_.cells_[i].set_int(sql::ObSQLSessionInfo::INVALID_SESSID ==
+                                               node_iter_->client_sid_
+                                           ? node_iter_->sessid_
+                                           : node_iter_->client_sid_);
+            break;
+          }
         case BLOCK_SESSION_ID:
           cur_row_.cells_[i].set_int(node_iter_->block_sessid_);
           break;

@@ -11,16 +11,13 @@
  */
 #define USING_LOG_PREFIX STORAGETEST
 
-#include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <sys/vfs.h>
-#include <sys/types.h>
 #include <gmock/gmock.h>
 #define protected public
 #define private public
 #include "mittest/mtlenv/mock_tenant_module_env.h"
 #include "mittest/shared_storage/clean_residual_data.h"
 #include "storage/shared_storage/ob_ss_reader_writer.h"
+#include "mittest/shared_storage/test_ss_macro_cache_mgr_util.h"
 #undef private
 #undef protected
 
@@ -68,14 +65,14 @@ public:
       macro_id.set_id_mode((uint64_t)ObMacroBlockIdMode::ID_MODE_SHARE);
       macro_id.set_storage_object_type((uint64_t)ObStorageObjectType::PRIVATE_DATA_MACRO);
       macro_id.set_second_id(tablet_id_); // tablet_id
-      macro_id.set_macro_transfer_seq(0); // transfer_seq
+      macro_id.set_macro_transfer_epoch(0); // transfer_seq
       macro_id.set_tenant_seq(server_id_); // server_id
 
       for (int64_t i = 0; i < read_times_; ++i) {
         read_info.offset_ = std::rand() % (file_size_ - read_size_);
         logic_micro_id.offset_ = read_info.offset_;
         macro_id.set_third_id(idx * file_num_per_thread_ + 1 + (i % file_num_per_thread_)); // seq_id
-        read_info.logic_micro_id_ = logic_micro_id;
+        read_info.set_logic_micro_id(logic_micro_id);
         read_info.macro_block_id_ = macro_id;
 
         ObSSPrivateMacroReader private_macro_reader;
@@ -112,6 +109,7 @@ void TestSSFdCache::SetUpTestCase()
 {
   GCTX.startup_mode_ = observer::ObServerMode::SHARED_STORAGE_MODE;
   EXPECT_EQ(OB_SUCCESS, MockTenantModuleEnv::get_instance().init());
+  ASSERT_EQ(OB_SUCCESS, TestSSMacroCacheMgrUtil::wait_macro_cache_ckpt_replay());
 }
 
 void TestSSFdCache::TearDownTestCase()
@@ -150,7 +148,7 @@ void TestSSFdCache::prepare()
     macro_id.set_storage_object_type((uint64_t)ObStorageObjectType::PRIVATE_DATA_MACRO);
     macro_id.set_second_id(tablet_id_); // tablet_id
     macro_id.set_third_id(i + 1); // seq_id
-    macro_id.set_macro_transfer_seq(0); // transfer_seq
+    macro_id.set_macro_transfer_epoch(0); // transfer_seq
     macro_id.set_tenant_seq(server_id_); // server_id
     ASSERT_TRUE(macro_id.is_valid());
     ObStorageObjectHandle write_object_handle;
@@ -165,9 +163,10 @@ void TestSSFdCache::prepare()
 TEST_F(TestSSFdCache, cost_time)
 {
   // adjust tenant disk space to ensure private data macro write local. incremental space: 20GB * 0.4 = 8GB
-  ObTenantDiskSpaceManager* tenant_disk_space_mgr = MTL(ObTenantDiskSpaceManager*);
-  int64_t total_disk_size = 20L * 1024L * 1024L * 1024L; // 20GB
-  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size));
+  ObTenantDiskSpaceManager *tenant_disk_space_mgr = MTL(ObTenantDiskSpaceManager *);
+  int64_t total_disk_size = 20L * 1024L * 1024L * 1024L - ObDiskSpaceManager::DEFAULT_SERVER_TENANT_ID_DISK_SIZE; // 20GB
+  bool succ_resize = false;
+  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size, succ_resize));
   ASSERT_EQ(total_disk_size, tenant_disk_space_mgr->get_total_disk_size());
 
   // prepare file

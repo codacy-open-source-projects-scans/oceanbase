@@ -27,8 +27,7 @@ class ObAllVirtualTabletCompactionHistory : public common::ObVirtualTableScanner
                                             public omt::ObMultiTenantOperator
 {
 public:
-  enum COLUMN_ID_LIST
-  {
+  enum COLUMN_ID_LIST { // FARM COMPAT WHITELIST
     SVR_IP  = common::OB_APP_MIN_COLUMN_ID,
     SVR_PORT,
     TENANT_ID,
@@ -65,7 +64,8 @@ public:
     MERGE_REASON,
     BASE_MAJOR_STATUS,
     CO_MERGE_TYPE,
-    MDS_FILTER_INFO
+    MDS_FILTER_INFO,
+    EXECUTE_TIME
   };
   ObAllVirtualTabletCompactionHistory();
   virtual ~ObAllVirtualTabletCompactionHistory();
@@ -80,6 +80,7 @@ private:
   {
     major_merge_info_iter_.reset();
     minor_merge_info_iter_.reset();
+    mds_merge_info_iter_.reset();
   }
 private:
   char ip_buf_[common::OB_IP_STR_BUFF];
@@ -93,6 +94,7 @@ private:
   compaction::ObSSTableMergeHistory merge_history_;
   compaction::ObIDiagnoseInfoMgr::Iterator major_merge_info_iter_;
   compaction::ObIDiagnoseInfoMgr::Iterator minor_merge_info_iter_;
+  compaction::ObIDiagnoseInfoMgr::Iterator mds_merge_info_iter_;
   DISALLOW_COPY_AND_ASSIGN(ObAllVirtualTabletCompactionHistory);
 };
 

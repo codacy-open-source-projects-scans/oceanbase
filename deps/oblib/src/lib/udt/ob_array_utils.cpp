@@ -16,13 +16,22 @@
 namespace oceanbase {
 namespace common {
 
-int ObArrayUtil::get_type_name(const ObDataType &elem_type, char *buf, int buf_len, uint32_t depth)
+int ObArrayUtil::get_type_name(ObNestedType coll_type, const ObDataType &elem_type, char *buf, int buf_len, uint32_t depth)
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;
   for (uint32_t i = 0; OB_SUCC(ret) && i < depth; i++) {
-    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "ARRAY("))) {
-      LOG_WARN("failed to convert len to string", K(ret));
+    if (coll_type == ObNestedType::OB_ARRAY_TYPE) {
+      if (OB_FAIL(databuff_printf(buf, buf_len, pos, "ARRAY("))) {
+        LOG_WARN("failed to convert len to string", K(ret));
+      }
+    } else if (coll_type == ObNestedType::OB_VECTOR_TYPE) {
+      if (OB_FAIL(databuff_printf(buf, buf_len, pos, "VECTOR("))) {
+        LOG_WARN("failed to convert len to string", K(ret));
+      }
+    } else {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid collection type", K(ret), K(coll_type));
     }
   }
   if (OB_FAIL(ret)) {
@@ -101,50 +110,53 @@ int ObArrayUtil::push_back_decimal_int(const ObPrecision prec, const ObDecimalIn
 // convert collection bin to string (for liboblog)
 int ObArrayUtil::convert_collection_bin_to_string(const ObString &collection_bin,
                                                   const common::ObIArray<common::ObString> &extended_type_info,
+                                                  const ObCollectionTypeBase *collection_meta,
                                                   common::ObIAllocator &allocator,
                                                   ObString &res_str)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(extended_type_info.count() != 1)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid extended type info for collection type", K(ret), K(extended_type_info.count()));
-  } else {
-    ObSqlCollectionInfo type_info_parse(allocator);
-    ObString collection_type_name = extended_type_info.at(0);
-    type_info_parse.set_name(collection_type_name);
-    if (OB_FAIL(type_info_parse.parse_type_info())) {
-      LOG_WARN("fail to parse type info", K(ret), K(collection_type_name));
-    } else if (OB_ISNULL(type_info_parse.collection_meta_)) {
+  ObIArrayType *coll_obj = nullptr;
+  const ObCollectionTypeBase *tmp_collection_meta = nullptr;
+  ObStringBuffer buf(&allocator);
+
+  if (OB_ISNULL(collection_meta)) {
+    if (OB_UNLIKELY(extended_type_info.count() != 1)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("collection meta is null", K(ret), K(collection_type_name));
+      LOG_WARN("invalid extended type info for collection type", K(ret), K(extended_type_info.count()));
     } else {
-      ObCollectionArrayType *arr_type = nullptr;
-      ObIArrayType *arr_obj = nullptr;
-      ObStringBuffer buf(&allocator);
-      if (OB_ISNULL(arr_type = static_cast<ObCollectionArrayType *>(type_info_parse.collection_meta_))) {
+      ObSqlCollectionInfo type_info_parse(allocator);
+      ObString collection_type_name = extended_type_info.at(0);
+      type_info_parse.set_name(collection_type_name);
+      if (OB_FAIL(type_info_parse.parse_type_info())) {
+        LOG_WARN("fail to parse type info", K(ret), K(collection_type_name));
+      } else if (OB_ISNULL(tmp_collection_meta = type_info_parse.collection_meta_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("collection meta is null", K(ret), K(collection_type_name));
-      } else if (OB_FAIL(ObArrayTypeObjFactory::construct(allocator, *arr_type, arr_obj, true))) {
-        LOG_WARN("construct array obj failed", K(ret),  K(type_info_parse));
-      } else if (OB_ISNULL(arr_obj)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("arr_obj is null", K(ret), K(collection_type_name));
-      } else {
-        ObString raw_binary = collection_bin;
-        if (OB_FAIL(arr_obj->init(raw_binary))) {
-          LOG_WARN("failed to init array", K(ret));
-        } else if (OB_FAIL(arr_obj->print(arr_type->element_type_, buf))) {
-          LOG_WARN("failed to format array", K(ret));
-        } else {
-          res_str.assign_ptr(buf.ptr(), buf.length());
-        }
       }
     }
+  } else {
+    tmp_collection_meta = collection_meta;
   }
+  if (FAILEDx(ObArrayTypeObjFactory::construct(allocator, *tmp_collection_meta, coll_obj, true))) {
+    LOG_WARN("construct array obj failed", K(ret),  K(tmp_collection_meta));
+  } else if (OB_ISNULL(coll_obj)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("arr_obj is null", K(ret), K(extended_type_info));
+  } else {
+    ObString raw_binary = collection_bin;
+    if (OB_FAIL(coll_obj->init(raw_binary))) {
+      LOG_WARN("failed to init array", K(ret));
+    } else if (OB_FAIL(coll_obj->print(buf))) {
+      LOG_WARN("failed to format array", K(ret));
+    } else {
+      res_str.assign_ptr(buf.ptr(), buf.length());
+    }
+  }
+
   return ret;
 }
 
-// determine a collection type is vector or array
+// determine a collection type is vector, array or map
 int ObArrayUtil::get_mysql_type(const common::ObIArray<common::ObString> &extended_type_info,
                                 obmysql::EMySQLFieldType &type)
 {
@@ -169,6 +181,10 @@ int ObArrayUtil::get_mysql_type(const common::ObIArray<common::ObString> &extend
         type = obmysql::MYSQL_TYPE_OB_ARRAY;
       } else if (detail_type == OB_VECTOR_TYPE) {
         type = obmysql::MYSQL_TYPE_OB_VECTOR;
+      } else if (detail_type == OB_MAP_TYPE) {
+        type = obmysql::MYSQL_TYPE_OB_MAP;
+      } else if (detail_type == OB_SPARSE_VECTOR_TYPE) {
+        type = obmysql::MYSQL_TYPE_OB_SPARSE_VECTOR;
       } else {
         ret = OB_ERR_UNEXPECTED;
         OB_LOG(WARN, "unexpected collection type", K(ret), K(detail_type));
@@ -252,23 +268,6 @@ int ObArrayUtil::append(ObIArrayType &array, const ObObjType elem_type, const Ob
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("unsupported element type", K(ret), K(elem_type));
     }
-  }
-  return ret;
-}
-
-int ObArrayUtil::append_array(ObIArrayType &array, ObIArrayType &elem_arr, bool is_null)
-{
-  int ret = OB_SUCCESS;
-  ObArrayNested *array_obj = dynamic_cast<ObArrayNested *>(&array);
-  if (OB_ISNULL(array_obj)) {
-    ret = OB_ERR_ARRAY_TYPE_MISMATCH;
-    LOG_WARN("invalid array type", K(ret), K(array.get_format()));
-  } else if (is_null) {
-    if (OB_FAIL(array_obj->push_null())) {
-      LOG_WARN("failed to push null", K(ret));
-    }
-  } else if (OB_FAIL(array_obj->push_back(elem_arr))) {
-    LOG_WARN("failed to push back value", K(ret));
   }
   return ret;
 }

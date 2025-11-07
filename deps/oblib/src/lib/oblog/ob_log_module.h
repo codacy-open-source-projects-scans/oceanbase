@@ -19,6 +19,7 @@
 #include "ob_log_print_kv.h"
 #include "lib/hash/fnv_hash.h"
 #include "ob_log_time_fmt.h"
+#include "share/ob_errno.h"
 
 namespace oceanbase
 {
@@ -50,7 +51,7 @@ DEFINE_LOG_SUB_MOD(LIB)                  // lib
 DEFINE_LOG_SUB_MOD(OFS)                  // OFS
 DEFINE_LOG_SUB_MOD(RPC)                  // rpc
 DEFINE_LOG_SUB_MOD(RS)                   // rootserver
-DEFINE_LOG_SUB_MOD(BOOTSTRAP)                   // rootserver
+DEFINE_LOG_SUB_MOD(BOOTSTRAP)            // rootserver
 DEFINE_LOG_SUB_MOD(SERVER)               // rpc, common/server_framework
 DEFINE_LOG_SUB_MOD(SHARE)                // share
 DEFINE_LOG_SUB_MOD(SQL)                  // sql
@@ -68,14 +69,15 @@ DEFINE_LOG_SUB_MOD(DETECT)               // dead lock
 DEFINE_LOG_SUB_MOD(PALF)                 // palf
 DEFINE_LOG_SUB_MOD(STANDBY)              // primary and standby cluster
 DEFINE_LOG_SUB_MOD(COORDINATOR)          // leader coordinator
-DEFINE_LOG_SUB_MOD(FLT)                // trace
-DEFINE_LOG_SUB_MOD(OBTRACE)                // trace
+DEFINE_LOG_SUB_MOD(FLT)                  // trace
+DEFINE_LOG_SUB_MOD(OBTRACE)              // trace
 DEFINE_LOG_SUB_MOD(BALANCE)              // balance module
 DEFINE_LOG_SUB_MOD(MDS)                  // multi data source
 DEFINE_LOG_SUB_MOD(DATA_DICT)            // data_dictionary module
 DEFINE_LOG_SUB_MOD(MVCC)                 // concurrency_control
-DEFINE_LOG_SUB_MOD(WR)                 // workload repository
+DEFINE_LOG_SUB_MOD(WR)                   // workload repository
 DEFINE_LOG_SUB_MOD(LOGMINER)             // logminer
+DEFINE_LOG_SUB_MOD(SSLOG)                // sslog
 LOG_MOD_END(ROOT)
 
 //statement of WRS's sub_modules
@@ -244,6 +246,8 @@ DEFINE_LOG_SUB_MOD(TYPE)               // type
 DEFINE_LOG_SUB_MOD(DEBUG)              // debug
 DEFINE_LOG_SUB_MOD(CACHE)              // cache
 DEFINE_LOG_SUB_MOD(STORAGEROUTINE)     // storage routine
+DEFINE_LOG_SUB_MOD(DEPENDENCY)     // collect dependency info
+DEFINE_LOG_SUB_MOD(UDFRESULTCACHE) // udf result cache
 LOG_MOD_END(PL)
 
 } //namespace common
@@ -252,7 +256,7 @@ LOG_MOD_END(PL)
 #define STRINGIZE_(x) #x
 #define STRINGIZE(x) STRINGIZE_(x)
 #define OB_LOG_LOCATION_HASH_VAL \
-  ({constexpr uint64_t hash_val= oceanbase::common::hash::fnv_hash_for_logger(__FILE__":"STRINGIZE(__LINE__)); hash_val;})
+  ({constexpr uint64_t hash_val= oceanbase::common::hash::fnv_hash_for_logger(__FILE__ ":" STRINGIZE(__LINE__)); hash_val;})
 #define OB_LOG_LEVEL(level) \
   OB_LOG_LEVEL_##level, __FILE__, __LINE__, _fun_name_, OB_LOG_LOCATION_HASH_VAL, GET_LOG_ERRCODE(level)
 #define OB_LOG_LEVEL_DIRECT(level) \
@@ -463,14 +467,16 @@ LOG_MOD_END(PL)
 #define _BALANCE_LOG(level, _fmt_, args...) _OB_MOD_LOG(BALANCE, level, _fmt_, ##args)
 #define MDS_LOG(level, info_string, args...) OB_MOD_LOG(MDS, level, info_string, ##args)
 #define _MDS_LOG(level, _fmt_, args...) _OB_MOD_LOG(MDS, level, _fmt_, ##args)
-#define DDLOG(level, info_string, args...) OB_MOD_LOG(DATA_DICT, level, info_string, ##args)
-#define _DDLOG(level, _fmt_, args...) _OB_MOD_LOG(DATA_DICT, level, _fmt_, ##args)
+#define DATA_DICT_LOG(level, info_string, args...) OB_MOD_LOG(DATA_DICT, level, info_string, ##args)
+#define _DATA_DICT_LOG(level, _fmt_, args...) _OB_MOD_LOG(DATA_DICT, level, _fmt_, ##args)
 #define MVCC_LOG(level, info_string, args...) OB_MOD_LOG(MVCC, level, info_string, ##args)
 #define _MVCC_LOG(level, _fmt_, args...) _OB_MOD_LOG(MVCC, level, _fmt_, ##args)
 #define WR_LOG(level, info_string, args...) OB_MOD_LOG(WR, level, info_string, ##args)
 #define _WR_LOG(level, _fmt_, args...) _OB_MOD_LOG(WR, level, _fmt_, ##args)
 #define LOGMNR_LOG(level, info_string, args...) OB_MOD_LOG(LOGMINER, level, info_string, ##args)
 #define _LOGMNR_LOG(level, _fmt_, args...) _OB_MOD_LOG(LOGMINER, level, _fmt_, ##args)
+#define SSLOG_LOG(level, info_string, args...) OB_MOD_LOG(SSLOG, level, info_string, ##args)
+#define _SSLOG_LOG(level, _fmt_, args...) _OB_MOD_LOG(SSLOG, level, _fmt_, ##args)
 
 //dfine ParMod_SubMod_LOG
 #define WRS_CLUSTER_LOG(level, info_string, args...) OB_SUB_MOD_LOG(WRS, CLUSTER, level,        \
@@ -646,7 +652,14 @@ LOG_MOD_END(PL)
                                                                     info_string, ##args)
 #define _PL_STORAGEROUTINE_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(PL, STORAGEROUTINE, level,                     \
                                                                 _fmt_, ##args)
-
+#define PL_DEPENDENCY_LOG(level, info_string, args...) OB_SUB_MOD_LOG(PL, DEPENDENCY, level,                 \
+                                                                    info_string, ##args)
+#define _PL_DEPENDENCY_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(PL, DEPENDENCY, level,                     \
+                                                                _fmt_, ##args)
+#define PL_UDF_RESULT_CACHE_LOG(level, info_string, args...) OB_SUB_MOD_LOG(PL, UDFRESULTCACHE, level,                 \
+                                                                    info_string, ##args)
+#define _PL_UDF_RESULT_CACHE_LOG(level, _fmt_, args...) _OB_SUB_MOD_LOG(PL, UDFRESULTCACHE, level,                     \
+                                                                _fmt_, ##args)
 #define RPC_FRAME_LOG(level, _fmt_, args...)    \
   OB_SUB_MOD_LOG(RPC, FRAME, level, _fmt_, ##args)
 
@@ -1169,8 +1182,8 @@ LOG_MOD_END(PL)
 #define _LOGMNR_LOG_RET(level, errcode, args...) { int ret = errcode; _LOGMNR_LOG(level, ##args); }
 #define MDS_LOG_RET(level, errcode, args...) { int ret = errcode; MDS_LOG(level, ##args); }
 #define _MDS_LOG_RET(level, errcode, args...) { int ret = errcode; _MDS_LOG(level, ##args); }
-#define DDLOG_RET(level, errcode, args...){ int ret = errcode; DDLOG(level, ##args); }
-#define _DDLOG_RET(level, errcode, args...){ int ret = errcode; _DDLOG(level, ##args); }
+#define DATA_DICT_LOG_RET(level, errcode, args...){ int ret = errcode; DATA_DICT_LOG(level, ##args); }
+#define _DATA_DICT_LOG_RET(level, errcode, args...){ int ret = errcode; _DATA_DICT_LOG(level, ##args); }
 
 // END XXX_LOG_RET MACRO DEFINE
 
@@ -1461,6 +1474,9 @@ extern const char *ob_strerror(const int oberr);
 
 #define ERRNOMSG(num) ::oceanbase::common::ObLogPrintErrNoMsg(num)
 #define KERRNOMSG(num) "errmsg", ::oceanbase::common::ObLogPrintErrNoMsg(num)
+
+// Used to print a string containing sensitive information (object storage secret key) that will be hidden when printed
+#define KS(x) #x, ::oceanbase::common::ObSensitiveString(x)
 
 
 #endif

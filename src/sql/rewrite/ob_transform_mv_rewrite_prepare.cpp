@@ -12,6 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_REWRITE
 #include "sql/rewrite/ob_transform_mv_rewrite_prepare.h"
+#include "sql/resolver/mv/ob_mv_provider.h"
+#include "sql/rewrite/ob_transform_pre_process.h"
 
 namespace oceanbase
 {
@@ -433,7 +435,7 @@ int ObTransformMVRewritePrepare::resolve_temp_stmt(const ObString &sql_string,
                                                    ObSelectStmt *&output_stmt)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(ctx) || OB_ISNULL(query_ctx)) {
+  if (OB_ISNULL(ctx) || OB_ISNULL(query_ctx) || OB_ISNULL(ctx->expr_factory_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(ctx), K(query_ctx));
   } else {
@@ -444,6 +446,7 @@ int ObTransformMVRewritePrepare::resolve_temp_stmt(const ObString &sql_string,
       ObDMLStmt *dml_stmt = NULL;
       uint64_t dummy_value = 0;
       ObIAllocator &alloc = *ctx->allocator_;
+      ObQueryCtx *old_query_ctx = ctx->expr_factory_->get_query_ctx();
       resolver_ctx.allocator_ = ctx->allocator_;
       resolver_ctx.schema_checker_ = ctx->schema_checker_;
       resolver_ctx.session_info_ = ctx->session_info_;
@@ -452,6 +455,7 @@ int ObTransformMVRewritePrepare::resolve_temp_stmt(const ObString &sql_string,
       resolver_ctx.sql_proxy_ = GCTX.sql_proxy_;
       resolver_ctx.query_ctx_ = query_ctx;
       resolver_ctx.is_for_rt_mv_ = true;
+      resolver_ctx.expr_factory_->set_query_ctx(resolver_ctx.query_ctx_);
       trans_ctx = *ctx;
       trans_ctx.reset();
       ObSelectResolver select_resolver(resolver_ctx);
@@ -472,10 +476,10 @@ int ObTransformMVRewritePrepare::resolve_temp_stmt(const ObString &sql_string,
         LOG_WARN("invalid mv stmt", K(ret), K(dml_stmt));
       } else if (OB_FAIL(resolver_ctx.query_ctx_->query_hint_.init_query_hint(resolver_ctx.allocator_,
                                                                               resolver_ctx.session_info_,
+                                                                              resolver_ctx.global_hint_,
                                                                               dml_stmt))) {
         LOG_WARN("failed to init query hint.", K(ret));
-      } else if (OB_FAIL(resolver_ctx.query_ctx_->query_hint_.check_and_set_params_from_hint(resolver_ctx,
-                                                                                             *dml_stmt))) {
+      } else if (OB_FAIL(resolver_ctx.query_ctx_->query_hint_.set_params_from_hint(resolver_ctx))) {
         LOG_WARN("failed to check and set params from hint", K(ret));
       } else if (OB_FAIL(transform_pre_process.transform(dml_stmt, dummy_value))) {
         LOG_WARN("failed to do transform pre process", K(ret), KPC(dml_stmt));
@@ -483,6 +487,7 @@ int ObTransformMVRewritePrepare::resolve_temp_stmt(const ObString &sql_string,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid mv stmt", K(ret), K(dml_stmt));
       }
+      resolver_ctx.expr_factory_->set_query_ctx(old_query_ctx);
       RESUME_OPT_TRACE;
     }
   }

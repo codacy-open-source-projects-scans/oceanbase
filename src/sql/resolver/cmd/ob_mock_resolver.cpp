@@ -12,7 +12,6 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/cmd/ob_mock_resolver.h"
 #include "sql/resolver/cmd/ob_mock_stmt.h"
-#include "sql/resolver/ob_resolver_utils.h"
 
 namespace oceanbase
 {
@@ -27,6 +26,7 @@ int ObMockResolver::resolve(const ParseNode& parse_tree)
     case T_INSTALL_PLUGIN:
     case T_UNINSTALL_PLUGIN:
     case T_FLUSH_MOCK:
+    case T_FLUSH_TABLE_MOCK:
     case T_HANDLER_MOCK:
     case T_SHOW_PLUGINS:
     case T_REPAIR_TABLE:
@@ -39,6 +39,8 @@ int ObMockResolver::resolve(const ParseNode& parse_tree)
     case T_CREATE_LOGFILE_GROUP:
     case T_ALTER_LOGFILE_GROUP:
     case T_DROP_LOGFILE_GROUP:
+    case T_GRANT_PROXY:
+    case T_REVOKE_PROXY:
     {
       ObMockStmt *mock_stmt = NULL;
       if (OB_UNLIKELY(NULL == (mock_stmt = create_stmt<ObMockStmt>()))) {

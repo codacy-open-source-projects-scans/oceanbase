@@ -40,7 +40,7 @@
 #include "sql/engine/expr/ob_expr_extra_info_factory.h"
 #include "sql/engine/expr/ob_i_expr_extra_info.h"
 #include "lib/hash/ob_hashset.h"
-#include "lib/udt/ob_array_type.h"
+#include "lib/udt/ob_array_utils.h"
 #include "sql/session/ob_local_session_var.h"
 
 
@@ -291,13 +291,11 @@ protected:
 
 #define DECLARE_SET_LOCAL_SESSION_VARS \
   virtual int set_local_session_vars(ObRawExpr *raw_expr, \
-                                    const ObLocalSessionVar *local_session_vars, \
                                     const ObBasicSessionInfo *session, \
                                     ObLocalSessionVar &local_vars)
 
 #define DEF_SET_LOCAL_SESSION_VARS(TypeName, raw_expr) \
   int TypeName::set_local_session_vars(ObRawExpr *raw_expr, \
-                                      const ObLocalSessionVar *local_session_vars, \
                                       const ObBasicSessionInfo *session, \
                                       ObLocalSessionVar &local_vars)
 
@@ -383,7 +381,6 @@ public:
   inline const ObExprResType &get_result_type() const {return result_type_;}
   inline ObExprResType &get_result_type() { return result_type_; }
   inline const common::ObIArray<ObFuncInputType> &get_input_types() const {return input_types_;}
-  int set_input_types(const ObIExprResTypes &input_types); // convert ExprResTyp=>FuncInputType
   inline void set_result_type(const ObExprResType &type) { result_type_ = type; }
   inline void set_result_type(const common::ObObjType &type) { result_type_.set_type(type); }
   inline void set_row_dimension(const int32_t row_dimension) { row_dimension_ = row_dimension; }
@@ -691,7 +688,7 @@ public:
   static int check_first_param_not_time(const common::ObIArray<ObRawExpr *> &exprs, bool &not_time);
   //Extract the info of sys vars which need to be used in resolving or excuting into local_sys_vars.
   DECLARE_SET_LOCAL_SESSION_VARS;
-  static int add_local_var_to_expr(share::ObSysVarClassType var_type, const ObLocalSessionVar *local_session_var, const ObBasicSessionInfo *session, ObLocalSessionVar &local_vars);
+  static int add_local_var_to_expr(share::ObSysVarClassType var_type, const ObBasicSessionInfo *session, ObLocalSessionVar &local_vars);
 protected:
   ObExpr *get_rt_expr(const ObRawExpr &raw_expr) const;
 
@@ -820,7 +817,7 @@ inline ObExprOperator::ObExprOperator(common::ObIAllocator &alloc,
       real_param_num_(param_num),
       operand_auto_cast_(true),
       param_lazy_eval_(false),
-      result_type_(alloc),
+      result_type_(),
       input_types_(alloc),
       need_charset_convert_(true),
       raw_expr_(NULL),
@@ -1252,12 +1249,6 @@ public:
                            const common::ObObj &obj2,
                            common::ObExprCtx &expr_ctx, bool is_null_safe,
                            common::ObCmpOp cmp_op) const;
-  virtual int calc_resultN(common::ObObj &result,
-                           const common::ObObj *objs_array,
-                           int64_t param_num,
-                           common::ObExprCtx &expr_ctx,
-                           bool is_null_safe,
-                           common::ObCmpOp cmp_op) const;
 
   static int is_equal_transitive(const common::ObObjMeta &meta1,
                                  const common::ObObjMeta &meta2,
@@ -1274,11 +1265,9 @@ public:
 
    static int cg_row_cmp_expr(const int row_dim, common::ObIAllocator &allocator,
                               const ObRawExpr &raw_expr,
-                              const ObExprOperatorInputTypeArray &input_types,
                               ObExpr &rt_expr);
    static int cg_datum_cmp_expr(common::ObIAllocator &allocator,
                                 const ObRawExpr &raw_expr,
-                                const ObExprOperatorInputTypeArray &input_types,
                                 ObExpr &rt_expr);
 
    static int is_row_cmp(const ObRawExpr&, int &row_dim);
@@ -1390,6 +1379,12 @@ public:
     return get_const_cast_mode(cmp_op, right_const_param);
   }
 
+  static int eval_compare_composite(CollectionPredRes &cmp_result,
+                                    const common::ObObj &obj1,
+                                    const common::ObObj &obj2,
+                                    ObExecContext &exec_ctx,
+                                    const ObCmpOp cmp_op);
+
   OB_INLINE static common::ObCmpOp get_cmp_op(const ObExprOperatorType type) {
     /*
      * maybe we can use associative array(table lookup) to get a better
@@ -1454,9 +1449,6 @@ public:
                                              const ObExprOperatorType expr_type,
                                              ObExprResType &type1, ObExprResType &type2);
 protected:
-  static bool is_int_cmp_const_str(const ObExprResType *type1,
-                                   const ObExprResType *type2,
-                                   common::ObObjType &cmp_type);
   OB_INLINE static bool is_expected_cmp_ret(const common::ObCmpOp cmp_op,
                                             const int cmp_ret)
   {
@@ -2211,9 +2203,20 @@ public:
   common::ObFixedBitSet<common::OB_DEFAULT_BITSET_SIZE_FOR_DFM> &get_elem_flags() { return elem_flags_; }
   TO_STRING_KV(K(dfm_elems_), K(elem_flags_));
 
-private:
+protected:
   common::ObFixedArray<common::ObDFMElem, common::ObIAllocator> dfm_elems_;
   common::ObFixedBitSet<common::OB_DEFAULT_BITSET_SIZE_FOR_DFM> elem_flags_;
+};
+
+class ObExprDateTimeStringConvertCtx : public ObExprDFMConvertCtx
+{
+public:
+  void set_format_string(ObString format) { format_ = format; }
+  ObString &get_format_string() { return format_; }
+  TO_STRING_KV(K(dfm_elems_), K(elem_flags_), K(format_));
+
+private:
+  ObString format_;
 };
 
 class ObExprFindIntCachedValue : public ObExprOperatorCtx
@@ -2270,10 +2273,14 @@ public:
   static int init();
   static int calc_hash(const char *p, int64_t len, uint64_t &hash);
   static int trunc_new_obtime(common::ObTime &ob_time,
-                              const common::ObString &fmt);
+                              const common::ObString &fmt,
+                              bool is_mysql_compat_dates);
   static int round_new_obtime(common::ObTime &ob_time,
                               const common::ObString &fmt);
   static int trunc_new_obtime_by_fmt_id(common::ObTime &ob_time,
+                                        int64_t fmt_id,
+                                        bool is_mysql_compat_dates);
+  static int trunc_obtime_by_fmt_id_for_mdatetime(ObTime &ob_time,
                                         int64_t fmt_id);
   static int round_new_obtime_by_fmt_id(common::ObTime &ob_time,
                                         int64_t fmt_id);
@@ -2466,7 +2473,7 @@ if (OB_SUCC(ret)) { \
 
 #define EXPR_ADD_LOCAL_SYSVAR(var_type) \
 if (OB_SUCC(ret)) { \
-  if (OB_FAIL(add_local_var_to_expr(var_type, local_session_vars, session, local_vars))) { \
+  if (OB_FAIL(add_local_var_to_expr(var_type, session, local_vars))) { \
     LOG_WARN("fail to add local sys var", K(ret), K(var_type)); \
   } \
 }

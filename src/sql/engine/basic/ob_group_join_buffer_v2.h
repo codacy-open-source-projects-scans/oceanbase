@@ -35,7 +35,6 @@ public:
 
   void bind_group_params_to_das_ctx(GroupParamBackupGuard &guard);
   int get_next_left_batch(int64_t max_rows, const ObBatchRows *&batch_rows);
-  void incre_group_id() { cur_group_idx_++; }
   int get_cur_group_id() const { return cur_group_idx_; }
   int get_group_rescan_cnt() const { return group_rescan_cnt_; }
 
@@ -106,14 +105,26 @@ public:
   void bind_group_params_to_das_ctx(GroupParamBackupGuard &guard);
   int fill_cur_row_group_param();
   int get_next_left_batch(int64_t max_rows, const ObBatchRows *&batch_rows);
+  int save_right_batch(const common::ObIArray<ObExpr *> &exprs);
+  int right_rows_extend(int64_t rows_cnt, int64_t &times);
+  void set_real_ouptut_right_batch_times(int64_t times)
+  {
+    right_extended_times_ = times;
+  }
   int drive_row_extend(int size);
+  int extend_left_next_batch_rows(int64_t &expect_rows_cnt, int64_t times);
   int restore_drive_row(int from_idx, int to_idx);
-  int extend_save_drive_rows(int64_t size) { return left_batch_.extend_save(size); }
-  int get_left_batch_idx() { return l_idx_; }
+  int64_t get_left_batch_idx() { return l_idx_; }
+  int64_t get_left_valid_rows_cnt()
+  {
+    return left_brs_ == nullptr
+               ? 0
+               : left_brs_->size_ - left_brs_->skip_->accumulate_bit_cnt(left_brs_->size_);
+  }
 
   int get_cur_group_id() const { return join_buffer_.get_cur_group_id(); }
   int get_group_rescan_cnt() const { return join_buffer_.get_group_rescan_cnt(); }
-  int get_left_batch_size() { return left_brs_ == nullptr ? 0 : left_brs_->size_; }
+  int64_t get_left_batch_size() { return left_brs_ == nullptr ? 0 : left_brs_->size_; }
 
   int init(ObOperator *op, const int64_t op_group_scan_size,
           const common::ObIArray<ObDynamicParamSetter> *rescan_params,
@@ -129,11 +140,13 @@ private:
 private:
   // NOTE: alloc a new batchrows here
   const ObBatchRows *left_brs_;
-  int l_idx_;
+  int64_t l_idx_;
   ObOperator *op_;
   ObOperator *left_;
   ObDriverRowBuffer join_buffer_;
   ObVectorsResultHolder left_batch_;
+  ObVectorsResultHolder right_batch_;
+  int64_t right_extended_times_;
   const common::ObIArray<ObDynamicParamSetter> *rescan_params_;
   bool is_group_rescan_;
   ObEvalCtx *eval_ctx_;
@@ -141,9 +154,6 @@ private:
   // for nlj, the left batches will be extended by a single row, so we need backup it
   bool need_backup_left_;
   int left_expr_extend_size_;
-  ObBitVector *left_matched_;
-  // used to alloc memory for left_matched_ and left_batch_
-  lib::MemoryContext batch_mem_ctx_;
   ObExecContext *ctx_;
 };
 

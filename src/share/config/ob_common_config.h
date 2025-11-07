@@ -96,6 +96,7 @@ public:
   virtual ObServerRole get_server_type() const = 0;
   virtual bool is_debug_sync_enabled() const { return false; }
   virtual uint64_t get_tenant_id() const { return common::OB_INVALID_TENANT_ID; }
+  int to_json_array(ObIAllocator &allocator, ObJsonArray &j_arr) const;
 
   OB_UNIS_VERSION_V(1);
 
@@ -104,7 +105,6 @@ protected:
   virtual int add_extra_config_unsafe(const char *config_str,
                                const int64_t version,
                                const bool check_config);
-  static const int64_t MIN_LENGTH = 20;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObCommonConfig);

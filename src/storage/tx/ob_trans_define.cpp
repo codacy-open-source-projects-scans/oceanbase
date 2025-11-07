@@ -13,19 +13,7 @@
 #define USING_LOG_PREFIX TRANS
 
 #include "ob_trans_define.h"
-#include "lib/container/ob_array_iterator.h"
-#include "lib/container/ob_se_array_iterator.h"
-#include "lib/objectpool/ob_concurrency_objpool.h"
-#include "ob_trans_part_ctx.h"
-#include "storage/memtable/ob_memtable_interface.h"
-#include "storage/memtable/ob_lock_wait_mgr.h"
-#include "ob_trans_service.h"
 #include "observer/ob_server.h"
-#include "lib/profile/ob_trace_id.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "share/ob_define.h"
-#include "ob_tx_log.h"
 
 namespace oceanbase
 {
@@ -361,7 +349,7 @@ bool ObTransTask::ready_to_handle()
       ob_usleep(RETRY_SLEEP_TIME_US);
       boot_ret = false;
     } else {
-      ob_usleep(left_time);
+      ob_usleep(static_cast<uint32_t>(left_time));
       boot_ret = true;
       next_handle_ts_ += retry_interval_us_;
     }

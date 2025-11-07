@@ -11,10 +11,8 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include <string.h>
 #include "sql/engine/expr/ob_expr_inet.h"
 #include "sql/engine/ob_exec_context.h"
-#include "sql/engine/expr/ob_expr_util.h"
 
 using namespace oceanbase::common;
 
@@ -488,7 +486,8 @@ int ObExprInet6Ntoa::calc_inet6_ntoa(const ObExpr& expr, ObEvalCtx& ctx, ObDatum
         bool is_ip_format_invalid = false;
         ObString num_val = text.get_string();
         ObString ip_str(MAX_IP_ADDR_LENGTH, 0, buf);
-        if (!ob_is_varbinary_type(expr.args_[0]->datum_meta_.type_,expr.args_[0]->datum_meta_.cs_type_)) {
+        if (!ob_is_varbinary_type(expr.args_[0]->datum_meta_.type_,expr.args_[0]->datum_meta_.cs_type_) ||
+            num_val.length() == 0) {
           is_ip_format_invalid = true;
           LOG_WARN("ip format invalid", K(ret), K(text));
         } else if (OB_FAIL(ObExprInetCommon::ip_to_str(num_val, is_ip_format_invalid, ip_str))) {

@@ -13,14 +13,6 @@
 #define USING_LOG_PREFIX SHARE
 #include "share/object_storage/ob_zone_storage_table_operation.h"
 #include "observer/ob_server.h"
-#include "rootserver/ob_rs_event_history_table_operator.h"
-#include "share/ob_encryption_util.h"
-#include "share/ob_max_id_fetcher.h"
-#include "share/ob_rpc_struct.h"
-#include "share/ob_srv_rpc_proxy.h"
-#include "share/object_storage/ob_object_storage_struct.h"
-#include "share/backup/ob_backup_struct.h"
-#include "share/schema/ob_multi_version_schema_service.h"
 
 using namespace oceanbase;
 using namespace share;
@@ -325,7 +317,7 @@ int ObStorageInfoOperator::parse_storage_path(const char *storage_path, char *ro
     LOG_WARN("invalid args", KR(ret), KP(storage_path));
   } else if (OB_FAIL(get_storage_type_from_path(storage_path_str, type))) {
     LOG_WARN("failed to get storage type", KR(ret));
-  } else if (OB_STORAGE_OSS != type && OB_STORAGE_S3 != type && OB_STORAGE_COS != type) {
+  } else if (OB_STORAGE_OSS != type && OB_STORAGE_S3 != type && OB_STORAGE_AZBLOB != type) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("cannot support this storage type", KR(ret), K(type));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "cannot support this storage type, it is");
@@ -379,6 +371,256 @@ int ObStorageInfoOperator::select_for_update(common::ObMySQLTransaction &trans,
         } else {
           LOG_WARN("fail to get next row", KR(ret));
         }
+      }
+    }
+  }
+  return ret;
+}
+
+
+int ObStorageInfoOperator::get_total_shared_data_size(int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  double total_shared_size = 0;
+  if (OB_FAIL(sql.assign_fmt(
+              "SELECT CAST(SUM(USAGE_BYTES) as double) as total_size FROM %s WHERE SPACE_TYPE = '%s'",
+              OB_CDB_OB_SPACE_USAGE_TNAME, OB_STR_STORAGE_SHARED_DATA))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_DOUBLE_FIELD_MYSQL(*result, "total_size", total_shared_size, double);
+        total_size = static_cast<int64_t>(total_shared_size);
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_total_disk_size(int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  double total_disk_size = 0;
+  if (OB_FAIL(sql.assign_fmt(
+              "SELECT CAST(SUM(data_disk_capacity) as double) as total_size FROM %s",
+              OB_ALL_VIRTUAL_SERVER_TNAME))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_DOUBLE_FIELD_MYSQL(*result, "total_size", total_disk_size, double);
+        total_size = static_cast<int64_t>(total_disk_size);
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_ls_total_disk_size(const uint64_t tenant_id, const int64_t ls_id, const ObAddr &server, int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  double total_disk_size = 0;
+  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
+  total_size = 0;
+  if (OB_UNLIKELY(!server.ip_to_string(ip, sizeof(ip)))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("convert server ip to string failed", KR(ret), K(server));
+  } else if (OB_FAIL(sql.assign_fmt(
+              "SELECT CAST(SUM(occupy_size) as double) as total_size FROM %s WHERE tenant_id = %lu AND ls_id = %ld AND svr_ip = '%s' AND svr_port = %d",
+              OB_ALL_VIRTUAL_TABLET_POINTER_STATUS_TNAME, tenant_id, ls_id, ip, server.get_port()))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_DOUBLE_FIELD_MYSQL(*result, "total_size", total_disk_size, double);
+        total_size = static_cast<int64_t>(total_disk_size);
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_unit_data_disk_size(const uint64_t tenant_id, const ObAddr &server, int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
+  total_size = 0;
+  if (OB_UNLIKELY(!server.ip_to_string(ip, sizeof(ip)))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("convert server ip to string failed", KR(ret), K(server));
+  } else if (OB_FAIL(sql.assign_fmt(
+              "SELECT data_disk_size FROM %s WHERE tenant_id = %lu AND svr_ip = '%s' AND svr_port = %d",
+              OB_ALL_VIRTUAL_UNIT_TNAME, tenant_id, ip, server.get_port()))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_INT_FIELD_MYSQL(*result, "data_disk_size", total_size, int64_t);
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_table_total_data_size(const uint64_t tenant_id, const ObAddr &server, int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  double total_data_size = 0;
+  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
+  total_size = 0;
+  if (OB_UNLIKELY(!server.ip_to_string(ip, sizeof(ip)))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("convert server ip to string failed", KR(ret), K(server));
+  } else if (OB_FAIL(sql.assign_fmt(
+              "SELECT CAST(DATA_BYTES as double) as total_size FROM %s WHERE tenant_id = %lu AND server_ip = '%s' AND server_port = %d AND SPACE_TYPE = '%s'",
+              OB_CDB_OB_SERVER_SPACE_USAGE_TNAME, tenant_id, ip, server.get_port(), OB_STR_STORAGE_TABLE_DATA))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_DOUBLE_FIELD_MYSQL(*result, "total_size", total_data_size, double);
+        total_size = static_cast<int64_t>(total_data_size);
+      } else if (OB_ITER_END == ret) {
+        // table data maybe is empty
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_tmp_file_data_size(const uint64_t tenant_id, const common::ObAddr &server, int64_t &total_size)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  double total_data_size = 0;
+  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
+  total_size = 0;
+  if (OB_UNLIKELY(!server.ip_to_string(ip, sizeof(ip)))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("convert server ip to string failed", KR(ret), K(server));
+  } else if (OB_FAIL(sql.assign_fmt(
+              "SELECT CAST(DATA_BYTES as double) as total_size FROM %s WHERE tenant_id = %lu AND server_ip = '%s' AND server_port = %d AND SPACE_TYPE = '%s'",
+              OB_CDB_OB_SERVER_SPACE_USAGE_TNAME, tenant_id, ip, server.get_port(), OB_STR_STORAGE_TMP_DATA))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_DOUBLE_FIELD_MYSQL(*result, "total_size", total_data_size, double);
+        total_size = static_cast<int64_t>(total_data_size);
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::get_ls_leader_addr(const uint64_t tenant_id, const int64_t ls_id, ObAddr &server)
+{
+  int ret = OB_SUCCESS;
+  int64_t tmp_real_str_len = 0;
+  char svr_ip[OB_IP_STR_BUFF] = "";
+  int64_t svr_port = 0;
+  ObSqlString sql;
+  char ip[OB_MAX_SERVER_ADDR_SIZE] = "";
+  if (OB_FAIL(sql.assign_fmt(
+             "SELECT svr_ip, svr_port FROM %s WHERE tenant_id = %lu AND ls_id = %ld AND ls_state = 'LEADER'",
+             OB_ALL_VIRTUAL_LS_INFO_TNAME, tenant_id, ls_id))) {
+    LOG_WARN("fail to assign sql", KR(ret));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res)
+    {
+      sqlclient::ObMySQLResult *result = NULL;
+      if (OB_FAIL(OBSERVER.get_mysql_proxy().read(res, sql.ptr()))) {
+        LOG_WARN("fail to execute sql", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("error unexpected, query result must not be NULL", KR(ret));
+      } else if (OB_SUCC(result->next())) {
+        EXTRACT_STRBUF_FIELD_MYSQL(*result, "svr_ip", svr_ip, OB_IP_STR_BUFF, tmp_real_str_len);
+        EXTRACT_INT_FIELD_MYSQL(*result, "svr_port", svr_port, int64_t);
+        if (OB_UNLIKELY(!server.set_ip_addr(svr_ip, static_cast<int32_t>(svr_port)))) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("fail to set ip addr", KR(ret), K(svr_ip), K(svr_port));
+        }
+      } else if (OB_ITER_END == ret) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("no exist row", KR(ret), K(sql));
+      } else {
+        LOG_WARN("fail to get next row", KR(ret), K(sql));
       }
     }
   }
@@ -687,6 +929,39 @@ int ObStorageInfoOperator::update_storage_bandwidth(common::ObISQLClient &proxy,
     LOG_WARN("error unexpected, invalid affected rows", KR(ret), K(affected_rows));
   } else {
     LOG_INFO("update storage max_bandwidth in zone storage table", K(sql), K(max_bandwidth));
+  }
+  return ret;
+}
+
+int ObStorageInfoOperator::update_storage_extension(common::ObISQLClient &proxy,
+                                                    const common::ObZone &zone,
+                                                    const share::ObBackupDest &storage_dest,
+                                                    const uint64_t op_id,
+                                                    const ObStorageUsedType::TYPE used_for,
+                                                    const char *extension)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString sql;
+  int64_t affected_rows = 0;
+  if (OB_UNLIKELY(!storage_dest.is_valid() || !ObStorageUsedType::is_valid(used_for) || OB_INVALID_ID == op_id) || OB_ISNULL(extension)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arguments", KR(ret), K(storage_dest), K(extension), K(op_id), K(used_for));
+  } else if (OB_FAIL(sql.assign_fmt(
+               "UPDATE %s SET %s = '%s' WHERE %s = '%s' AND %s = '%s' AND "
+               "%s = '%s' AND %s = '%s' AND %s = %lu",
+               OB_ALL_ZONE_STORAGE_TNAME, OB_STR_STORAGE_EXTENSION, extension,
+               OB_STR_STORAGE_ZONE, zone.ptr(), OB_STR_STORAGE_DEST_PATH,
+               storage_dest.get_root_path().ptr(), OB_STR_STORAGE_USEDFOR,
+               ObStorageUsedType::get_str(used_for), OB_STR_STORAGE_DEST_ENDPOINT,
+               storage_dest.get_storage_info()->endpoint_, OB_STR_STORAGE_OP_ID, op_id))) {
+    LOG_WARN("assign sql string failed", KR(ret), K(zone), K(used_for), K(storage_dest));
+  } else if (OB_FAIL(proxy.write(sql.ptr(), affected_rows))) {
+    LOG_WARN("fail to execute sql", KR(ret), K(sql));
+  } else if (OB_UNLIKELY(!(is_single_row(affected_rows) || is_zero_row(affected_rows)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("error unexpected, invalid affected rows", KR(ret), K(affected_rows));
+  } else {
+    LOG_INFO("update storage extension in zone storage table", K(sql), K(extension));
   }
   return ret;
 }

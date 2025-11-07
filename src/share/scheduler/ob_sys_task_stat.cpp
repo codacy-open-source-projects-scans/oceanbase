@@ -44,7 +44,12 @@ const static char *ObSysTaskTypeStr[] = {
     "BATCH_FREEZE_TABLET_TASK",
     "VECTOR_INDEX_TASK",
     "DDL_TABLET_SPLIT",
-    "SSTABLE_MICRO_MINI_MERGE"
+    "SSTABLE_MICRO_MINI_MERGE",
+    "REBUILD_TABLET_TASK",
+    "VECTOR_INDEX_ASYNC_TASK",
+    "INC_SSTABLE_UPLOAD_TASK",
+    "ATTACH_SHARED_SSTABLE_TASK",
+    "UPDATE_SS_INC_MAJOR_TASK"
 };
 
 const char *sys_task_type_to_str(const ObSysTaskType &type)

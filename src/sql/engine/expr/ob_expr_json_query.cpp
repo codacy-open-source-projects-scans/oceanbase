@@ -14,21 +14,9 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_expr_json_query.h"
-#include "sql/engine/expr/ob_expr_util.h"
-#include "share/object/ob_obj_cast.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "share/object/ob_obj_cast_util.h"
-#include "share/object/ob_obj_cast.h"
-#include "share/ob_json_access_utils.h"
-#include "sql/engine/expr/ob_expr_cast.h"
-#include "sql/engine/expr/ob_datum_cast.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "lib/oblog/ob_log_module.h"
-#include "ob_expr_json_func_helper.h"
+#include "src/sql/resolver/ob_resolver_utils.h"
 #include "ob_expr_json_value.h"
 #include "lib/xml/ob_binary_aggregate.h"
-#include "ob_expr_json_utils.h"
-#include "common/object/ob_obj_compare.h"
 #include "sql/engine/expr/ob_expr_xml_func_helper.h"
 
 // from sql_parser_base.h
@@ -223,7 +211,6 @@ int ObExprJsonQuery::eval_json_query(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
   ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
   uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
   MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "JSONModule"));
   ObJsonBin st_json(&temp_allocator);
   ObIJsonBase *j_base = &st_json;
   ObIJsonBase *jb_empty = NULL;
@@ -254,6 +241,11 @@ int ObExprJsonQuery::eval_json_query(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
                                               is_cover_by_error))) {
                        // get clause param value, set into param_ctx
     LOG_WARN("fail to parse clause value", K(ret));
+  } else if (OB_ISNULL(param_ctx->json_param_.json_path_) && param_ctx->json_param_.is_asis_) {
+    is_null_result = false;
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObJsonUtil::get_json_doc(expr.args_[JSN_QUE_DOC], ctx, temp_allocator,
                                               j_base, is_null_result,
                                               is_cover_by_error,  true))) { // parse json doc

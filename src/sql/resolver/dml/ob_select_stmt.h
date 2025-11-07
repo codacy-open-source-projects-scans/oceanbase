@@ -46,7 +46,6 @@ struct SelectItem
       esc_str_flag_(false),
       need_check_dup_name_(false),
       implicit_filled_(false),
-      is_unpivot_mocked_column_(false),
       is_implicit_added_(false),
       is_hidden_rowid_(false)
   {
@@ -64,7 +63,6 @@ struct SelectItem
     esc_str_flag_ = false;
     need_check_dup_name_ = false;
     implicit_filled_ = false;
-    is_unpivot_mocked_column_ = false;
     is_implicit_added_ = false;
     is_hidden_rowid_ = false;
   }
@@ -89,7 +87,6 @@ struct SelectItem
                K_(esc_str_flag),
                K_(need_check_dup_name),
                K_(implicit_filled),
-               K_(is_unpivot_mocked_column),
                K_(is_hidden_rowid));
 
   ObRawExpr *expr_;
@@ -107,7 +104,6 @@ struct SelectItem
   bool need_check_dup_name_;
   // select item is implicit filled in updatable view, to pass base table's column to top view.
   bool implicit_filled_;
-  bool is_unpivot_mocked_column_; //used for unpivot
   bool is_implicit_added_; //used for temporary table and label security at insert resolver
 
   bool is_hidden_rowid_;
@@ -247,16 +243,22 @@ struct ObGroupingSetsItem
   ObGroupingSetsItem()
   : grouping_sets_exprs_(),
     rollup_items_(),
-    cube_items_()
+    cube_items_(),
+    pruned_grouping_set_ids_()
   {
   }
   int assign(const ObGroupingSetsItem& other);
   int deep_copy(ObIRawExprCopier &expr_copier,
                 const ObGroupingSetsItem &other);
-  TO_STRING_KV("grouping sets exprs", grouping_sets_exprs_, K_(rollup_items), K_(cube_items));
+  TO_STRING_KV("grouping sets exprs", grouping_sets_exprs_, K_(rollup_items), K_(cube_items),
+               K_(pruned_grouping_set_ids));
   common::ObSEArray<ObGroupbyExpr, 2, common::ModulePageAllocator, true> grouping_sets_exprs_;
   common::ObSEArray<ObRollupItem, 2, common::ModulePageAllocator, true> rollup_items_;
   common::ObSEArray<ObCubeItem, 2, common::ModulePageAllocator, true> cube_items_;
+  // select sum(a) from t group by grouping sets(b, c) having b > 1
+  // `grouping_sets_exprs_` will contain '[b], [c]'
+  // `pruned_grouping_sets_exprs_` will contain `[1]`
+  common::ObSEArray<int64_t, 2, common::ModulePageAllocator, true> pruned_grouping_set_ids_;
 };
 
 struct ForUpdateDMLInfo
@@ -516,8 +518,8 @@ public:
   SelectItem &get_select_item(int64_t index) { return select_items_[index]; }
   common::ObIArray<SelectItem> &get_select_items() { return select_items_; }
   const common::ObIArray<SelectItem> &get_select_items() const { return select_items_; }
-  int get_select_exprs(ObIArray<ObRawExpr*> &select_exprs, const bool is_for_outout = false);
-  int get_select_exprs(ObIArray<ObRawExpr*> &select_exprs, const bool is_for_outout = false) const;
+  int get_select_exprs(ObIArray<ObRawExpr*> &select_exprs);
+  int get_select_exprs(ObIArray<ObRawExpr*> &select_exprs) const;
   int get_select_exprs_without_lob(ObIArray<ObRawExpr*> &select_exprs) const;
   const common::ObIArray<ObAggFunRawExpr*> &get_aggr_items() const { return agg_items_; }
   common::ObIArray<ObAggFunRawExpr*> &get_aggr_items() { return agg_items_; }
@@ -663,6 +665,7 @@ public:
   //  count(distinct c1)
   //  group_concat(c1 order by c2))
   bool has_distinct_or_concat_agg() const;
+  bool has_concat_agg() const;
   virtual int get_equal_set_conditions(ObIArray<ObRawExpr *> &conditions,
                                        const bool is_strict,
                                        const bool check_having = false) const override;
@@ -707,6 +710,14 @@ public:
   inline void set_implicit_distinct(bool v) { is_implicit_distinct_ = v; }
   inline void reset_implicit_distinct() { is_implicit_distinct_ = false; }
   int is_query_deterministic(bool &is_deterministic) const;
+  inline bool is_oracle_compat_groupby() const {return is_oracle_compat_groupby_; }
+  inline void set_is_oracle_compat_groupby(bool v) { is_oracle_compat_groupby_ = v; }
+  inline bool is_recursive_union_branch() const { return is_recursive_union_branch_; }
+  inline void set_is_recursive_union_branch(bool v) { is_recursive_union_branch_ = v; }
+  inline void set_for_update_cursor_table_id(uint64_t table_id) {
+    for_update_cursor_table_id_ = table_id;
+  }
+  uint64_t get_for_update_table_id() const { return for_update_cursor_table_id_; }
 
 private:
   SetOperator set_op_;
@@ -774,6 +785,9 @@ private:
   // denote if the duplicate value of this stmt will not change the query result
   // optimizer can assign or remove DISTINCT for this stmt
   bool is_implicit_distinct_;
+  bool is_oracle_compat_groupby_; // true if has rollup/cube/grouping sets in mysql mode
+  bool is_recursive_union_branch_; // true if the stmt is a branch of a recursive union
+  uint64_t for_update_cursor_table_id_;
 };
 }
 }

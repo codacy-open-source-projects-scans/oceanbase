@@ -227,6 +227,7 @@ public:
   const static int8_t SKEW_HEAP_SIZE = 15;
   const static int8_t SKEW_ITEM_CNT_TOLERANCE = 64;
   const static int8_t INIT_BUCKET_COUNT_FOR_POPULAR = 32;
+  static const int64_t ADAPTIVE_GBY_MEM_ESTIMATE_SIZE = 2 << 20; // 2MB
 
 public:
   ObHashGroupByOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOpInput *input)
@@ -254,7 +255,7 @@ public:
       selector_array_(NULL),
       dup_groupby_exprs_(),
       is_dumped_(nullptr),
-      no_non_distinct_aggr_(false),
+      can_skip_last_group_(false),
       start_calc_hash_idx_(0),
       base_hash_vals_(nullptr),
       has_calc_base_hash_(false),
@@ -338,8 +339,8 @@ public:
   { return get_aggr_used_size() + sql_mem_processor_.get_data_size(); }
   OB_INLINE int64_t get_mem_used_size() const
   {
-    // Hash table used is double counted here to reserve memory for hash table extension
-    return get_aggr_used_size() + get_extra_size() + get_hash_table_used_size();
+    // Hash table used is 3 times counted here to reserve memory for hash table extension
+    return get_aggr_used_size() + get_extra_size() + 2 * get_hash_table_used_size();
   }
   OB_INLINE int64_t get_actual_mem_used_size() const
   {
@@ -602,7 +603,7 @@ private:
   ObSEArray<ObExpr*, 4> dup_groupby_exprs_;
   ObSEArray<ObExpr*, 4> all_groupby_exprs_;
   bool *is_dumped_;
-  bool no_non_distinct_aggr_;
+  bool can_skip_last_group_;
   int64_t start_calc_hash_idx_;
   uint64_t *base_hash_vals_;
   bool has_calc_base_hash_;

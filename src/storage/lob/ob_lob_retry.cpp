@@ -13,7 +13,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_lob_retry.h"
-
+#include "share/interrupt/ob_global_interrupt_call.h"
+#include "storage/lob/ob_lob_location.h"
 
 namespace oceanbase
 {
@@ -23,7 +24,7 @@ namespace storage
 int ObLobRetryUtil::check_need_retry(ObLobAccessParam &param, const int error_code, const int retry_cnt, bool &need_retry)
 {
   int ret = OB_SUCCESS;
-  if (param.from_rpc_) {
+  if (param.from_rpc_ && ! param.enable_remote_retry_) {
     need_retry = false;
     LOG_WARN("can not retry because from rpc", K(ret), KR(ret), K(error_code), KR(error_code), K(retry_cnt), K(need_retry), K(param));
   } else if (! is_remote_ret_can_retry(error_code)) {
@@ -46,7 +47,7 @@ int ObLobRetryUtil::check_need_retry(ObLobAccessParam &param, const int error_co
       case  OB_LS_NOT_EXIST: { // check if tenant has been dropped when ls not exist
         int tmp_ret = OB_SUCCESS;
         bool is_dropped = false;
-        schema::ObMultiVersionSchemaService *schema_service = GCTX.schema_service_;
+        share::schema::ObMultiVersionSchemaService *schema_service = GCTX.schema_service_;
         if (OB_ISNULL(schema_service)) {
           tmp_ret = OB_ERR_UNEXPECTED;
           LOG_WARN("schema_service is nullptr", "tmp_ret", tmp_ret);

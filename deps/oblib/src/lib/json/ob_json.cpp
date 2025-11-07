@@ -14,8 +14,6 @@
 #include "lib/utility/ob_hang_fatal_error.h"
 #include "common/ob_smart_call.h"
 #include "lib/json/ob_json.h"
-#include "lib/utility/ob_print_utils.h"
-#include "lib/utility/utility.h"
 using namespace oceanbase::common;
 
 namespace oceanbase
@@ -362,8 +360,9 @@ int Parser::parse_object(const char *&begin, const char *end, Value *&obj)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("succ to alloc value, but value is NULL", K(ret));
   } else if (OB_FAIL(SMART_CALL(parse_pair(begin, end, pair)))) {
-    if ('}' == cur_token_.type_) {
-      // empty object
+    if (OB_ISNULL(pair) && '}' == cur_token_.type_) {
+      // if the key of the pair is not empty, the format of the json is illegal
+      // otherwise empty object
       ret = OB_SUCCESS;
     } else {
       LOG_WARN("invalid object", K_(cur_token_.type), K(ret));

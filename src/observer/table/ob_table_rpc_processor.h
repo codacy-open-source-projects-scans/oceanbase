@@ -24,8 +24,9 @@
 #include "ob_htable_lock_mgr.h"
 #include "ob_table_schema_cache.h"
 #include "observer/ob_req_time_service.h"
-#include "ob_table_trans_utils.h"
+#include "utils/ob_table_trans_utils.h"
 #include "ob_table_audit.h"
+#include "observer/table/common/ob_table_common_struct.h"
 
 namespace oceanbase
 {
@@ -51,10 +52,13 @@ public:
   virtual int process() override;
 private:
   int get_ids();
+  void sync_capacity(uint8_t client_type, bool allow_distribute_capability);
   int verify_password(const ObString &tenant, const ObString &user, const ObString &pass_secret,
                       const ObString &pass_scramble, const ObString &database, uint64_t &user_token);
   int generate_credential(uint64_t tenant_id, uint64_t user_id, uint64_t database,
                           int64_t ttl_us, uint64_t user_token, ObString &credential);
+  bool can_use_redis_v2();
+  int check_client_type(uint8_t client_type);
 private:
   const ObGlobalContext &gctx_;
   table::ObTableApiCredential credential_;
@@ -68,18 +72,22 @@ public:
   : allow_retry_(true),
     allow_rpc_retry_(true),
     local_retry_interval_us_(10),
-    max_local_retry_count_(5)
+    max_local_retry_count_(5),
+    allow_route_retry_(false)
   {}
   virtual ~ObTableRetryPolicy() {}
   bool allow_retry() const { return allow_retry_; }
   // rpc retry will receate the processor,
   // so there is no retry count limit for now.
   bool allow_rpc_retry() const { return allow_retry_ && allow_rpc_retry_; }
+  // allow route retry means can retry routing errors
+  bool allow_route_retry() const { return allow_retry_ && allow_route_retry_; }
 public:
   bool allow_retry_;
   bool allow_rpc_retry_;
   int64_t local_retry_interval_us_;
   int64_t max_local_retry_count_;
+  bool allow_route_retry_;
 };
 
 class ObTableApiUtils
@@ -114,7 +122,7 @@ public:
 public:
   static int init_session();
   int check_user_access(const ObString &credential_str);
-  int check_mode(const sql::ObSQLSessionInfo &sess_info);
+  int check_mode();
   // transaction control
   int start_trans(bool is_readonly,
                   const table::ObTableConsistencyLevel consistency_level,
@@ -125,6 +133,10 @@ public:
                 rpc::ObRequest *req,
                 table::ObTableCreateCbFunctor *functor,
                 bool use_sync = false);
+  int init_read_trans(const ObTableConsistencyLevel consistency_level,
+                      const ObLSID &ls_id,
+                      int64_t timeout_ts,
+                      bool need_global_snapshot);
 
   // for get
   inline transaction::ObTxDesc *get_trans_desc() { return trans_param_.trans_desc_; }
@@ -137,6 +149,7 @@ public:
   int get_table_id(const ObString &table_name, const uint64_t arg_table_id, uint64_t &real_table_id) const;
 protected:
   virtual int check_arg() = 0;
+  virtual int check_mode_type(table::ObKvSchemaCacheGuard& schema_cache_guard);
   virtual int try_process() = 0;
   virtual table::ObTableAPITransCb *new_callback(rpc::ObRequest *req) { return nullptr; }
   virtual void set_req_has_wokenup() = 0;
@@ -145,18 +158,28 @@ protected:
   virtual table::ObTableEntityType get_entity_type() = 0;
   virtual bool is_kv_processor() = 0;
   int process_with_retry(const ObString &credential, const int64_t timeout_ts);
-  // init schema guard for tablegroup
-  int init_tablegroup_schema(const ObString &arg_tablegroup_name);
-  // init schema guard
+  // init schema_guard and simple_table_schema_
   virtual int init_schema_info(const ObString &arg_table_name, uint64_t arg_table_id);
-  virtual int init_schema_info(uint64_t table_id, const ObString &arg_table_name);
+  virtual int init_schema_info(uint64_t table_id, const ObString &arg_table_name, bool check_match = true);
   virtual int init_schema_info(const ObString &arg_table_name);
+  // init schema_guard and table_schema_
+  virtual int init_table_schema_info(const ObString &arg_table_name, uint64_t arg_table_id);
+  virtual int init_table_schema_info(uint64_t table_id, const ObString &arg_table_name, bool check_match = true);
+  virtual int init_table_schema_info(const ObString &arg_table_name);
   int check_table_has_global_index(bool &exists, table::ObKvSchemaCacheGuard& schema_cache_guard);
   int get_tablet_id(const share::schema::ObSimpleTableSchemaV2 * simple_table_schema,
                     const ObTabletID &arg_tablet_id,
                     const uint64_t table_id,
                     ObTabletID &tablet_id);
+  int check_local_execute(const ObTabletID &tablet_id);
+  ObTableProccessType get_stat_process_type(bool is_readonly,
+                                            bool is_same_type,
+                                            bool is_same_properties_names,
+                                            table::ObTableOperationType::Type op_type);
+  bool can_retry(const int retcode, bool &did_local_retry);
+  virtual bool is_new_try_process() { return false; };
 protected:
+  common::ObArenaAllocator allocator_;
   const ObGlobalContext &gctx_;
   ObTableService *table_service_;
   storage::ObAccessService *access_service_;
@@ -165,14 +188,17 @@ protected:
   table::ObTableApiSessGuard sess_guard_;
   share::schema::ObSchemaGetterGuard schema_guard_;
   const share::schema::ObSimpleTableSchemaV2 *simple_table_schema_;
+  const share::schema::ObTableSchema *table_schema_;
   observer::ObReqTimeGuard req_timeinfo_guard_; // 引用cache资源必须加ObReqTimeGuard
   table::ObKvSchemaCacheGuard schema_cache_guard_;
-  int32_t stat_event_type_;
+  int32_t stat_process_type_;
   bool enable_query_response_time_stats_;
   int64_t stat_row_count_;
   ObTableRetryPolicy retry_policy_;
   bool need_retry_in_queue_;
   bool is_tablegroup_req_; // is table name a tablegroup name
+  bool require_rerouting_;
+  bool kv_route_meta_error_;
   int32_t retry_count_;
   uint64_t table_id_;
   ObTabletID tablet_id_;
@@ -180,8 +206,9 @@ protected:
   // trans control
   table::ObTableTransParam trans_param_;
   transaction::ObTxReadSnapshot tx_snapshot_;
-  ObAddr user_client_addr_;
+  common::ObAddr user_client_addr_;
   table::ObTableAuditCtx audit_ctx_;
+  table::ObTableExecCtx exec_ctx_;
 };
 
 template<class T>
@@ -199,7 +226,10 @@ public:
   virtual int after_process(int error_code) override;
 
 protected:
-  virtual void set_req_has_wokenup() override;
+  virtual void set_req_has_wokenup() override
+  {
+    RpcProcessor::req_ = NULL;
+  }
   int64_t get_timeout_ts() const;
   int64_t get_timeout() const;
   virtual uint64_t get_request_checksum() = 0;
@@ -224,26 +254,6 @@ int64_t ObTableRpcProcessor<T>::get_timeout() const
   }
   return timeout;
 }
-
-struct ObTableInfoBase {
-  explicit ObTableInfoBase()
-                          :table_id_(OB_INVALID_ID),
-                          simple_schema_(nullptr),
-                          schema_cache_guard_(),
-                          schema_version_(OB_INVALID_VERSION){}
-
-  virtual ~ObTableInfoBase() {}
-
-  TO_STRING_KV(K(table_id_),
-              KP(simple_schema_),
-              K(schema_cache_guard_),
-              K(schema_version_));
-  int64_t table_id_;
-  ObString real_table_name_;
-  const share::schema::ObSimpleTableSchemaV2* simple_schema_;
-  table::ObKvSchemaCacheGuard schema_cache_guard_;
-  int64_t schema_version_;
-};
 
 } // end namespace observer
 } // end namespace oceanbase

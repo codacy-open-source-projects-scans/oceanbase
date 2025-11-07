@@ -10,23 +10,16 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <sys/types.h>
 #include <algorithm>
 #include <bitset>
-#include <iterator>
 #include <map>
-#include <utility>
-#include "lib/charset/ob_ctype.h"
 #include "lib/charset/mb_wc.h"
-#include "lib/charset/str_uca_type.h"
 #include "lib/charset/uca900_data.h"
 #include "lib/charset/uca900_zh_data.h"
 #include "lib/charset/uca900_ja_data.h"
-#include "lib/charset/ob_template_helper.h"
 #include "lib/charset/ob_ctype_uca_tab.h"
 #include "lib/charset/ob_byteorder.h"
+#include "deps/oblib/src/lib/charset/mb_wc.h"
 #define OB_UCA_NPAGES 256
 #define OB_UCA_NCHARS 256
 #define OB_UCA_CMASK  255
@@ -5357,7 +5350,8 @@ ObCharsetInfo *uca900_collations[] = {
     &ob_charset_utf8mb4_gl_0900_ai_ci,
     &ob_charset_utf8mb4_gl_0900_as_cs,
     &ob_charset_utf8mb4_mn_cyrl_0900_ai_ci,
-    &ob_charset_utf8mb4_mn_cyrl_0900_as_cs
+    &ob_charset_utf8mb4_mn_cyrl_0900_as_cs,
+    nullptr   // do not delete the nullptr to prevent to count array overflow
 };
 
 
@@ -7116,5 +7110,6 @@ ObCharsetInfo *euro_collations[] = {
   &ob_charset_utf16_german2_uca_ci   ,
   &ob_charset_utf16_croatian_uca_ci  ,
   &ob_charset_utf16_unicode_520_ci   ,
-  &ob_charset_utf16_vietnamese_ci
+  &ob_charset_utf16_vietnamese_ci    ,
+  nullptr     // do not delete the nullptr to prevent to count array overflow
 };

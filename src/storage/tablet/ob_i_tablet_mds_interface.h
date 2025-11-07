@@ -18,8 +18,9 @@
 #include "common/meta_programming/ob_meta_copy.h"
 #include "storage/multi_data_source/mds_table_handle.h"
 #include "storage/meta_mem/ob_tablet_pointer.h"
-#include "storage/tablet/ob_mds_range_query_iterator.h"
+#include "storage/tablet/ob_mds_row_iterator.h"
 #include "storage/tablet/ob_tablet_mds_data.h"
+#include "storage/tablet/ob_tablet_mds_node_filter.h"
 #include "storage/tablet/ob_tablet_member_wrapper.h"
 #include "storage/tablet/ob_tablet_obj_load_helper.h"
 #include "storage/ls/ob_ls_switch_checker.h"
@@ -30,6 +31,8 @@ namespace storage
 {
 class ObTabletCreateDeleteHelper;
 class ObMdsRowIterator;
+template <typename K, typename T>
+class ObMdsRangeQueryIterator;
 
 template <typename T>
 struct MdsDefaultDeepCopyOperation {
@@ -90,15 +93,40 @@ public:
                       share::ObTabletAutoincSeq &data,
                       const int64_t timeout = ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US) const;
 
+
+  int get_split_data(ObTabletSplitMdsUserData &data,
+                     const int64_t timeout) const;
+  int split_partkey_compare(const blocksstable::ObDatumRowkey &rowkey,
+                            const ObITableReadInfo &rowkey_read_info,
+                            const ObIArray<uint64_t> &partkey_projector,
+                            int &cmp_ret,
+                            const int64_t timeout) const;
+  int fill_virtual_info(ObIArray<mds::MdsNodeInfoForVirtualTable> &mds_node_info_array) const;
+  int get_direct_load_auto_inc_seq(ObDirectLoadAutoIncSeqData &data) const;
+  TO_STRING_KV(KP(this), "is_inited", check_is_inited_(), "ls_id", get_tablet_meta_().ls_id_,
+               "tablet_id", get_tablet_id_(), KP(get_tablet_pointer_()));
+  int get_mds_table_rec_scn(share::SCN &rec_scn);
+  int mds_table_flush(const share::SCN &recycle_scn);
+  // get tablet status from MDS, and check whether state is TRANSFER_IN and redo scn is valid.
+  // @param [in] written : if current tablet status is TRANSFER_IN, set true if redo_scn is valid, otherwise set fasle
+  // @return OB_STATE_NOT_MATCH : tablet status is not TRANSFER_IN.
+  //         OB_EMPTY_RESULT : never has tablet status written.
+  //         OB_LS_OFFLINE : read meet ls offline
+  //         other error...
+  // CAUTIONS: this interface is only for transfer! anyone else shouldn't call this!
+  int check_transfer_in_redo_written(bool &written);
+  template <typename T>
+  int get_latest_committed_data(T &value, ObIAllocator *alloc = nullptr);
+protected:// implemented by ObTablet
   // if trans_stat < BEFORE_PREPARE, trans_version is explained as prepare_version(which is MAX).
   // else if trans_stat < ON_PREAPRE, trans_version is explained as prepare_version(which is MIN).
   // else if trans_stat < ON_COMMIT, trans_version is explained as prepare_version(which is a valid data).
   // else if trans_stat == ON_COMMIT, trans_version is explained as commit_version(which is a valid data).
   template <typename T, typename T2 = T, ENABLE_IF_NOT_LIKE_FUNCTION(T2, int(const T &))>
   int get_latest(T &value,
-                 mds::MdsWriter &writer,// FIXME(xuwang.txw): should not exposed, will be removed later
-                 mds::TwoPhaseCommitState &trans_stat,// FIXME(xuwang.txw): should not exposed, will be removed later
-                 share::SCN &trans_version,// FIXME(xuwang.txw): should not exposed, will be removed later
+                 mds::MdsWriter &writer,// FIXME(zk250686): should not exposed, will be removed later
+                 mds::TwoPhaseCommitState &trans_stat,// FIXME(zk250686): should not exposed, will be removed later
+                 share::SCN &trans_version,// FIXME(zk250686): should not exposed, will be removed later
                  ObIAllocator *alloc = nullptr,
                  const int64_t read_seq = 0) const {
     MdsDefaultDeepCopyOperation<T> default_get_op(value, alloc);
@@ -121,9 +149,9 @@ public:
   // belows are general get interfaces, which could be customized for complicated data structure
   template <typename T, typename OP, ENABLE_IF_LIKE_FUNCTION(OP, int(const T &))>
   int get_latest(OP &&read_op,
-                 mds::MdsWriter &writer,// FIXME(xuwang.txw): should not exposed, will be removed later
-                 mds::TwoPhaseCommitState &trans_stat,// FIXME(xuwang.txw): should not exposed, will be removed later
-                 share::SCN &trans_version,// FIXME(xuwang.txw): should not exposed, will be removed later
+                 mds::MdsWriter &writer,// FIXME(zk250686): should not exposed, will be removed later
+                 mds::TwoPhaseCommitState &trans_stat,// FIXME(zk250686): should not exposed, will be removed later
+                 share::SCN &trans_version,// FIXME(zk250686): should not exposed, will be removed later
                  const int64_t read_seq = 0) const;
   template <typename T, typename OP, ENABLE_IF_LIKE_FUNCTION(OP, int(const T &))>
   int get_latest_committed(OP &&read_op) const;
@@ -136,35 +164,12 @@ public:
                    OP &&read_op,
                    const share::SCN snapshot,
                    const int64_t timeout_us) const;
-  int get_split_data(ObTabletSplitMdsUserData &data,
-                     const int64_t timeout) const;
-  int split_partkey_compare(const blocksstable::ObDatumRowkey &rowkey,
-                            const ObITableReadInfo &rowkey_read_info,
-                            const ObIArray<uint64_t> &partkey_projector,
-                            int &cmp_ret,
-                            const int64_t timeout) const;
-  int fill_virtual_info(ObIArray<mds::MdsNodeInfoForVirtualTable> &mds_node_info_array) const;
-  TO_STRING_KV(KP(this), "is_inited", check_is_inited_(), "ls_id", get_tablet_meta_().ls_id_,
-               "tablet_id", get_tablet_id_(), KP(get_tablet_pointer_()));
-  int get_mds_table_rec_scn(share::SCN &rec_scn);
-  int mds_table_flush(const share::SCN &recycle_scn);
-  // get tablet status from MDS, and check whether state is TRANSFER_IN and redo scn is valid.
-  // @param [in] written : if current tablet status is TRANSFER_IN, set true if redo_scn is valid, otherwise set fasle
-  // @return OB_STATE_NOT_MATCH : tablet status is not TRANSFER_IN.
-  //         OB_EMPTY_RESULT : never has tablet status written.
-  //         OB_LS_OFFLINE : read meet ls offline
-  //         other error...
-  // CAUTIONS: this interface is only for transfer! anyone else shouldn't call this!
-  int check_transfer_in_redo_written(bool &written);
-  template <typename T>
-  int get_latest_committed_data(T &value, ObIAllocator *alloc = nullptr);
-protected:// implemented by ObTablet
   // TODO(@gaishun.gs): remove these virtual functions later
   virtual bool check_is_inited_() const = 0;
   virtual const ObTabletMeta &get_tablet_meta_() const = 0;
   virtual int get_mds_table_handle_(mds::MdsTableHandle &handle,
                                     const bool create_if_not_exist) const = 0;
-  virtual ObTabletPointer *get_tablet_pointer_() const = 0;
+  virtual ObTabletBasePointer *get_tablet_pointer_() const = 0;
   template <typename K, typename V>
   int read_data_from_tablet_cache(const K &key,
                                   const common::ObFunction<int(const V&)> &read_op,
@@ -198,33 +203,32 @@ protected:// implemented by ObTablet
       ObTableScanParam &scan_param,
       ObStoreCtx &store_ctx,
       ObMdsRowIterator &iter) const;
+  int get_tablet_handle_from_this(
+    ObTabletHandle &tablet_handle) const;
   template <typename K, typename T>
   int mds_range_query(
       ObTableScanParam &scan_param,
-      ObStoreCtx &store_ctx,
       ObMdsRangeQueryIterator<K, T> &iter) const;
 
   template <typename T>
   int replay(T &&mds,
              mds::MdsCtx &ctx,
              const share::SCN &scn);
-  static int get_tablet_handle_and_base_ptr(const share::ObLSID &ls_id,
-                                          const common::ObTabletID &tablet_id,
-                                          ObTabletHandle &tablet_handle,
-                                          ObITabletMdsInterface *&base_ptr);
+  int get_src_tablet_handle_and_base_ptr_(ObTabletHandle &tablet_handle,
+                                          ObITabletMdsInterface *&base_ptr) const;
   template <typename T, typename OP>
   int cross_ls_get_latest(const ObITabletMdsInterface *another,
                           OP &&read_op,
-                          mds::MdsWriter &writer,// FIXME(xuwang.txw): should not exposed, will be removed later
-                          mds::TwoPhaseCommitState &trans_stat,// FIXME(xuwang.txw): should not exposed, will be removed later
-                          share::SCN &trans_version,// FIXME(xuwang.txw): should not exposed, will be removed later
+                          mds::MdsWriter &writer,// FIXME(zk250686): should not exposed, will be removed later
+                          mds::TwoPhaseCommitState &trans_stat,// FIXME(zk250686): should not exposed, will be removed later
+                          share::SCN &trans_version,// FIXME(zk250686): should not exposed, will be removed later
                           const int64_t read_seq = 0) const;
-private:
   template <typename Key, typename Value>
   int replay(const Key &key,
              Value &&mds,
              mds::MdsCtx &ctx,
              const share::SCN &scn);
+private:
   template <typename Key, typename Value>
   int replay_remove(const Key &key,
                     mds::MdsCtx &ctx,
@@ -244,7 +248,7 @@ private:
   int obj_to_string_holder_(const T &obj, ObStringHolder &holder) const;
   template <typename T>
   int fill_virtual_info_by_obj_(const T &obj, const mds::NodePosition position, ObIArray<mds::MdsNodeInfoForVirtualTable> &mds_node_info_array) const;
-  template <typename T>
+  template <typename K, typename T>
   int fill_virtual_info_from_mds_sstable(ObIArray<mds::MdsNodeInfoForVirtualTable> &mds_node_info_array) const;
   template <class T, ENABLE_IF_IS_SAME_CLASS(T, ObTabletCreateDeleteMdsUserData)>
   int check_mds_data_complete_(bool &is_complete) const  { is_complete = true; return OB_SUCCESS; } // Only for tablet_Status, which doesn't need data integrity check.
@@ -338,11 +342,18 @@ struct ReadSplitDataPartkeyCompareOp
   int &cmp_ret_;
 };
 
-template <>
-int ObITabletMdsInterface::mds_range_query<compaction::ObMediumCompactionInfoKey, compaction::ObMediumCompactionInfo>(
-    ObTableScanParam &scan_param,
-    ObStoreCtx &store_ctx,
-    ObMdsRangeQueryIterator<compaction::ObMediumCompactionInfoKey, compaction::ObMediumCompactionInfo> &iter) const;
+struct ReadDirectLoadAutoIncSeqOp
+{
+  ReadDirectLoadAutoIncSeqOp(ObDirectLoadAutoIncSeqData &inc_seq)
+   : inc_seq_(inc_seq) {}
+  ~ReadDirectLoadAutoIncSeqOp() = default;
+  int operator()(const ObDirectLoadAutoIncSeqData &data)
+  {
+    return inc_seq_.set_seq_val(data.get_seq_val());
+  }
+  ObDirectLoadAutoIncSeqData &inc_seq_;
+};
+
 }
 }
 

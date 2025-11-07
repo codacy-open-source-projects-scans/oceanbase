@@ -46,7 +46,6 @@ namespace sql
 {
 class ObPlanCacheValue;
 class ObPlanCacheAtomicOp;
-class ObPsPCVSetAtomicOp;
 class ObTaskExecutorCtx;
 struct ObSqlCtx;
 class ObExecContext;
@@ -152,7 +151,7 @@ protected:
   int64_t safe_timestamp_;
 };
 
-enum DumpType { DUMP_SQL, DUMP_PL, DUMP_ALL };
+enum DumpType { DUMP_SQL, DUMP_PL, DUMP_ALL, DUMP_RESULT };
 struct ObDumpAllCacheObjByTypeOp : ObDumpAllCacheObjOp
 {
   explicit ObDumpAllCacheObjByTypeOp(common::ObIArray<AllocCacheObjInfo> *key_array,
@@ -176,6 +175,8 @@ struct ObDumpAllCacheObjByTypeOp : ObDumpAllCacheObjOp
                   || ObLibCacheNameSpace::NS_SFC == ns
                   || ObLibCacheNameSpace::NS_PKG == ns
                   || ObLibCacheNameSpace::NS_ANON == ns);
+      } else if (DUMP_RESULT == dump_type_) {
+        ret_bool = (ObLibCacheNameSpace::NS_UDF_RESULT_CACHE == ns);
       }
     }
     return ret_bool;
@@ -266,12 +267,15 @@ public:
    */
   int add_plan(ObPhysicalPlan *plan, ObPlanCacheCtx &pc_ctx);
 
+  static bool is_contains_external_object(const DependenyTableStore &dep_schema_objs);
   /**
    * Add new ps plan to PlanCache
    */
   template<class T>
   int add_ps_plan(T *plan,
                   ObPlanCacheCtx &pc_ctx);
+  int try_get_plan(common::ObIAllocator &allocator, ObPlanCacheCtx &pc_ctx, ObCacheObjGuard &guard);
+  int try_get_ps_plan(ObCacheObjGuard &guard, const ObPsStmtId stmt_id, ObPlanCacheCtx &pc_ctx);
 
   // cache object access functions
   /* 根据ObPlanCacheKey以及参数在plan cache中查询符合要求的执行计划 */
@@ -282,11 +286,7 @@ public:
   int ref_plan(const ObCacheObjID obj_id, ObCacheObjGuard& guard);
   int add_cache_obj(ObILibCacheCtx &ctx, ObILibCacheKey *key, ObILibCacheObject *cache_obj);
   int get_cache_obj(ObILibCacheCtx &ctx, ObILibCacheKey *key, ObCacheObjGuard &guard);
-  int cache_node_exists(ObILibCacheKey* key, bool& is_exists);
-  int add_exists_cache_obj_by_stmt_id(ObILibCacheCtx &ctx,
-                                      ObILibCacheObject *cache_obj);
-  int add_exists_cache_obj_by_sql(ObILibCacheCtx &ctx,
-                                  ObILibCacheObject *cache_obj);
+  int cache_node_exists(ObILibCacheCtx &ctx, ObILibCacheKey* key, bool& is_exists);
   int evict_plan(uint64_t table_id);
   int evict_plan_by_table_name(uint64_t database_id, ObString tab_name);
 
@@ -370,7 +370,6 @@ public:
                                const PlanIdArray &plan_ids,
                                int64_t &pos,
                                uint64_t &load_count);
-  int check_baseline_finish();
 #endif
   void destroy();
   common::ObAddr &get_host() { return host_; }
@@ -410,6 +409,8 @@ public:
   template<typename _callback>
   int foreach_alloc_cache_obj(_callback &callback) const;
 
+  const CacheKeyNodeMap& get_cache_key_node_map() { return cache_key_node_map_; }
+
   common::ObMemAttr get_mem_attr() {
     common::ObMemAttr attr;
     attr.label_ = ObNewModIds::OB_SQL_PLAN_CACHE;
@@ -434,6 +435,9 @@ public:
   int flush_lib_cache();
   int flush_lib_cache_by_ns(const ObLibCacheNameSpace ns);
   int flush_pl_cache();
+  int flush_result_cache();
+
+  int batch_remove_cache_node(const LCKeyValueArray &to_evict);
 
 protected:
   int ref_alloc_obj(const ObCacheObjID obj_id, ObCacheObjGuard& guard);
@@ -452,7 +456,6 @@ private:
                          ObILibCacheObject *cache_obj);
   bool calc_evict_num(int64_t &plan_cache_evict_num);
 
-  int batch_remove_cache_node(const LCKeyValueArray &to_evict);
   bool is_reach_memory_limit() { return get_mem_hold() > get_mem_limit(); }
   int construct_plan_cache_key(ObPlanCacheCtx &plan_ctx, ObLibCacheNameSpace ns);
   static int construct_plan_cache_key(ObSQLSessionInfo &session,
@@ -469,9 +472,6 @@ private:
                                     ObILibCacheCtx &ctx,
                                     ObILibCacheObject *cache_obj,
                                     ObILibCacheNode *&node);
-  int deal_add_ps_plan_result(int add_plan_ret,
-                              ObPlanCacheCtx &pc_ctx,
-                              const ObILibCacheObject &cache_object);
   int check_after_get_plan(int tmp_ret, ObILibCacheCtx &ctx, ObILibCacheObject *cache_obj);
   int get_normalized_pattern_digest(const ObPlanCacheCtx &pc_ctx, uint64_t &pattern_digest);
 private:

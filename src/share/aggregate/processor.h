@@ -16,6 +16,7 @@
 #include "share/aggregate/agg_ctx.h"
 #include "sql/resolver/expr/ob_raw_expr.h"
 #include "sql/engine/basic/ob_compact_row.h"
+#include "agg_reuse_cell.h"
 
 namespace oceanbase
 {
@@ -37,8 +38,11 @@ public:
     aggregates_(allocator_, aggr_infos.count()),
     fast_single_row_aggregates_(allocator_, aggr_infos.count()), extra_rt_info_buf_(nullptr),
     cur_extra_rt_info_idx_(0), add_one_row_fns_(allocator_, aggr_infos.count()),
-    row_selector_(nullptr), cur_batch_group_idx_(0), cur_batch_group_buf_(nullptr)
-  {}
+    cur_batch_group_idx_(0), cur_batch_group_buf_(nullptr),
+    reuse_aggrow_mgr_(allocator_, aggr_infos.count())
+  {
+    agg_ctx_.op_monitor_info_ = &monitor_info;
+  }
   ~Processor() { destroy(); }
   int init();
   void destroy();
@@ -56,22 +60,12 @@ public:
   int finish_adding_one_row();
 
   inline int add_one_row(const int32_t start_agg_id, const int32_t end_agg_id, AggrRowPtr row,
-                  const int64_t batch_idx, const int64_t batch_size, ObIVector **aggr_vectors,
-                  ObFixedArray<int64_t, common::ObIAllocator> implicit_aggr_in_3stage_indexes)
+                  const int64_t batch_idx, const int64_t batch_size, ObIVector **aggr_vectors)
   {
     int ret = OB_SUCCESS;
     ObIVector *data_vec = nullptr;
     ObEvalCtx &ctx = agg_ctx_.eval_ctx_;
     for (int col_id = start_agg_id; OB_SUCC(ret) && col_id < end_agg_id; col_id++) {
-      add_one_row_fn fn = add_one_row_fns_.at(col_id);
-      if (OB_FAIL(
-            fn(aggregates_.at(col_id), agg_ctx_, col_id, row, aggr_vectors[col_id], batch_idx, batch_size))) {
-        SQL_LOG(WARN, "add one row failed", K(ret));
-      }
-    }
-
-    for (int i = 0; OB_SUCC(ret) && i < implicit_aggr_in_3stage_indexes.count(); i++) {
-      int col_id = implicit_aggr_in_3stage_indexes.at(i);
       add_one_row_fn fn = add_one_row_fns_.at(col_id);
       if (OB_FAIL(
             fn(aggregates_.at(col_id), agg_ctx_, col_id, row, aggr_vectors[col_id], batch_idx, batch_size))) {
@@ -181,13 +175,19 @@ public:
 
   // FIXME: support all aggregate functions
   inline static bool all_supported_aggregate_functions(const ObIArray<sql::ObRawExpr *> &aggr_exprs,
-                                                       bool use_hash_rollup = false)
+                                                       bool use_hash_rollup = false,
+                                                       bool has_rollup = false)
   {
     bool supported = true;
     for (int i = 0; supported && i < aggr_exprs.count(); i++) {
       ObAggFunRawExpr *agg_expr = static_cast<ObAggFunRawExpr *>(aggr_exprs.at(i));
       OB_ASSERT(agg_expr != NULL);
-      supported = aggregate::supported_aggregate_function(agg_expr->get_expr_type(), use_hash_rollup);
+      if (agg_expr->is_param_distinct() && (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_3_0)) {
+        supported = false;
+      } else {
+        supported = aggregate::supported_aggregate_function(agg_expr->get_expr_type(),
+							    use_hash_rollup, has_rollup);
+      }
     }
     return supported;
   }
@@ -223,10 +223,12 @@ public:
                         const int64_t group_id = 0);
   int reuse_group(const int64_t group_id);
 
+  static int reuse_agg_row(AggrRowPtr agg_row, RuntimeContext &agg_ctx, ReuseAggCellMgr &reuse_mgr);
+
   int init_fast_single_row_aggs();
   bool has_extra() const { return agg_ctx_.has_extra_; }
   bool get_need_advance_collect() const { return agg_ctx_.need_advance_collect_; }
-  void set_in_window_func(bool v) { agg_ctx_.in_window_func_ = v; }
+  void set_in_window_func(bool v = true) { agg_ctx_.in_window_func_ = v; }
   bool is_in_window_func() const { return agg_ctx_.in_window_func_; }
   void set_hp_infras_mgr(ObHashPartInfrasVecMgr *hp_infras_mgr)
   {
@@ -262,8 +264,12 @@ public:
 
   RuntimeContext *get_rt_ctx() { return &agg_ctx_; }
 
-  static VecExtraResult *&get_extra(const int64_t agg_col_id, RuntimeContext &agg_ctx,
-                                    char *extra_array_buf);
+  static ExtraStores *&get_extra_stores(const int64_t agg_col_id, RuntimeContext &agg_ctx,
+                                         char *extra_array_buf);
+  HashBasedDistinctVecExtraResult *&
+  get_distinct_store(const int64_t agg_col_id, RuntimeContext &agg_ctx, char *extra_array_buf);
+  DataStoreVecExtraResult *&get_extra_data_store(const int64_t agg_col_id,
+                                                   RuntimeContext &agg_ctx, char *extra_array_buf);
   static int setup_rt_info(AggrRowPtr data, RuntimeContext &agg_ctx,
                            ObIAllocator *extra_allocator = nullptr, const int64_t group_id = 0);
 
@@ -301,9 +307,9 @@ private:
   char *extra_rt_info_buf_;
   int32_t cur_extra_rt_info_idx_;
   ObFixedArray<add_one_row_fn, ObIAllocator> add_one_row_fns_;
-  uint16_t *row_selector_;
   int64_t cur_batch_group_idx_;
   char *cur_batch_group_buf_;
+  ReuseAggCellMgr reuse_aggrow_mgr_;
   // ObFixedArray<typename T>
 };
 } // end aggregate

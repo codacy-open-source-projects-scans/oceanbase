@@ -13,15 +13,8 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_pl_expr_subquery.h"
-#include "observer/ob_server.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/ob_spi.h"
-#include "observer/ob_inner_sql_result.h"
-#include "pl/ob_pl.h"
-#include "pl/ob_pl_user_type.h"
 #include "pl/ob_pl_resolver.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "sql/resolver/expr/ob_raw_expr_util.h"
 
 namespace oceanbase
 {
@@ -129,7 +122,7 @@ int ObExprOpSubQueryInPl::cg_expr(ObExprCGCtx &op_cg_ctx,
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("allocate memory failed", K(ret));
   } else {
-    OZ(info->from_raw_expr(fun_sys, alloc));
+    OZ(info->from_raw_expr(fun_sys, op_cg_ctx.session_, alloc));
     rt_expr.extra_info_ = info;
     rt_expr.eval_func_ = eval_subquery;
   }
@@ -147,7 +140,8 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
   ObSQLSessionInfo *session = nullptr;
   ObObj result;
 
-  ObIAllocator &alloc = ctx.exec_ctx_.get_allocator();
+  ObEvalCtx::TempAllocGuard memory_guard(ctx);
+  ObArenaAllocator &alloc = memory_guard.get_allocator();
   const ObExprPlSubQueryInfo *info = static_cast<ObExprPlSubQueryInfo *>(expr.extra_info_);
   ObObj *objs = nullptr;
   CK(0 == expr.arg_cnt_ ||
@@ -249,26 +243,27 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
         session->set_query_start_time(old_query_start_time);
       }
       spi_result.end_nested_stmt_if_need(&pl_exec_ctx, ret);
-    }
-  }
 
-  if (OB_FAIL(ret)) {
-    LOG_WARN("get result obj failed", K(ret));
-  } else {
-    if (!info->result_type_.is_ext()
-        && (info->result_type_.get_obj_meta() != result.get_meta())) {
-      ObObj conv_res;
-      OZ (sql::ObSPIService::spi_convert(*session,
-                                         alloc,
-                                         result,
-                                         info->result_type_,
-                                         conv_res,
-                                         info->is_ignore_fail_,
-                                         &info->type_info_));
       if (OB_FAIL(ret)) {
-        LOG_WARN("convert type error", K(ret));
-      } else {
-        result = conv_res;
+        LOG_WARN("get result obj failed", K(ret));
+      } else if (!info->result_type_.is_ext()) {
+        const ColumnsFieldIArray *fields = nullptr;
+        CK (OB_NOT_NULL(spi_result.get_result_set()));
+        CK (OB_NOT_NULL(fields = spi_result.get_result_set()->get_field_columns()));
+        CK (fields->count() > 0);
+        if (OB_FAIL(ret)) {
+        } else if (info->result_type_.get_obj_meta() != result.get_meta()
+                   || info->result_type_.get_accuracy() != fields->at(0).accuracy_) {
+          ObObj conv_res;
+          OZ (sql::ObSPIService::spi_convert(*session,
+                                             alloc,
+                                             result,
+                                             info->result_type_,
+                                             conv_res,
+                                             info->is_ignore_fail_,
+                                             &info->type_info_));
+          OX (result = conv_res);
+        }
       }
     }
   }
@@ -426,11 +421,12 @@ int ObExprPlSubQueryInfo::deep_copy(common::ObIAllocator &allocator,
 }
 
 template <typename RE>
-int ObExprPlSubQueryInfo::from_raw_expr(RE &raw_expr, ObIAllocator &alloc)
+int ObExprPlSubQueryInfo::from_raw_expr(RE &raw_expr, const ObSQLSessionInfo *session, ObIAllocator &alloc)
 {
   int ret = OB_SUCCESS;
   ObPlQueryRefRawExpr &subquery_expr =
     const_cast<ObPlQueryRefRawExpr &> (static_cast<const ObPlQueryRefRawExpr&>(raw_expr));
+  const ObEnumSetMeta *enum_set_meta = NULL;
   
   id_ = common::OB_INVALID_ID;
   type_ = subquery_expr.get_stmt_type();
@@ -439,7 +435,12 @@ int ObExprPlSubQueryInfo::from_raw_expr(RE &raw_expr, ObIAllocator &alloc)
 
   OZ(ob_write_string(alloc, subquery_expr.get_route_sql(), route_sql_, true));
   OZ(ob_write_string(alloc, subquery_expr.get_route_sql(), ps_sql_, true));
-  OZ(ObExprOpSubQueryInPl::deep_copy_type_info(type_info_, alloc, subquery_expr.get_enum_set_values()));
+  if (OB_SUCC(ret) && raw_expr.get_result_type().is_enum_or_set()) {
+    OZ (ObRawExprUtils::extract_enum_set_meta(raw_expr.get_result_type(), session, enum_set_meta));
+    CK (OB_NOT_NULL(enum_set_meta));
+    CK (OB_NOT_NULL(enum_set_meta->get_str_values()));
+    OZ(ObExprOpSubQueryInPl::deep_copy_type_info(type_info_, alloc, *enum_set_meta->get_str_values()));
+  }
   return ret;
 }
 

@@ -10,12 +10,9 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "observer/ob_server.h"
 #include "observer/virtual_table/ob_all_virtual_tablet_info.h"
 #include "storage/multi_data_source/runtime_utility/common_define.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "share/scn.h"
-#include "storage/tablet/ob_tablet.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
@@ -155,7 +152,7 @@ int ObAllVirtualTabletInfo::process_curr_tenant(ObNewRow *&row)
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     SERVER_LOG(WARN, "tablet should not null", K(ret), K(tablet_handle));
-  } else if (OB_FAIL(tablet->get_latest(latest_user_data,
+  } else if (OB_FAIL(tablet->get_latest_tablet_status(latest_user_data,
       writer, trans_stat, trans_version))) {
     if (OB_EMPTY_RESULT == ret || OB_ERR_SHARED_LOCK_CONFLICT == ret) {
       trans_stat = mds::TwoPhaseCommitState::STATE_END;

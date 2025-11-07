@@ -20,13 +20,6 @@
 #define protected public
 
 #include "mittest/mtlenv/storage/blocksstable/ob_index_block_data_prepare.h"
-#include "storage/ob_partition_range_spliter.h"
-#include "storage/blocksstable/index_block/ob_clustered_index_block_writer.h"
-#include "storage/blocksstable/index_block/ob_sstable_sec_meta_iterator.h"
-#include "storage/blocksstable/index_block/ob_index_block_macro_iterator.h"
-#include "storage/blocksstable/index_block/ob_index_block_dual_meta_iterator.h"
-#include "storage/blocksstable/ob_sstable_private_object_cleaner.h"
-#include "storage/compaction/ob_partition_merge_iter.h"
 
 bool mock_micro_index_clustered_result = true;
 
@@ -88,11 +81,12 @@ void TestClusteredIndexWriter::prepare_data_store_desc(
     ObWholeDataStoreDesc &data_desc, ObSSTableIndexBuilder *sstable_index_builder)
 {
   int ret = OB_SUCCESS;
+  const SCN reorganization_scn(SCN::min_scn());
   ret = data_desc.init(false/*is_ddl*/, table_schema_, ObLSID(ls_id_), ObTabletID(tablet_id_), MAJOR_MERGE,
                        ObTimeUtility::fast_current_time() /*snapshot_version*/,
                        DATA_CURRENT_VERSION,
                        table_schema_.get_micro_index_clustered(),
-                       0 /*transfer_seq*/);
+                       0 /*transfer_seq*/, 0/*concurrent_cnt*/, reorganization_scn);
   data_desc.get_desc().sstable_index_builder_ = sstable_index_builder;
   ASSERT_EQ(OB_SUCCESS, ret);
 }

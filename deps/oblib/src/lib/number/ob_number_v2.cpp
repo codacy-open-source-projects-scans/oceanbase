@@ -12,15 +12,7 @@
 
 #define USING_LOG_PREFIX LIB
 #include "lib/number/ob_number_v2.h"
-#include "lib/ob_define.h"
-#include "lib/utility/utility.h"
-#include "lib/utility/serialization.h"
-#include "lib/worker.h"
-#include <assert.h>
-#include <type_traits>
 #include "lib/charset/ob_dtoa.h"
-#include <algorithm>
-#include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_fast_convert.h"
 #include "lib/utility/ob_hang_fatal_error.h"
 
@@ -281,7 +273,7 @@ int ObNumber::from_(const char *str, IAllocator &allocator, int16_t *precision, 
  * This function converts a scientific notation string into the internal number format
  * It's more efficient to call from_ if the string is a normal numeric string */
 int ObNumber::from_sci_(const char *str, const int64_t length, IAllocator &allocator, int &warning,
-     int16_t *precision, int16_t *scale, const bool do_rounding)
+     int16_t *precision, int16_t *scale, const bool do_rounding, const bool catch_trunc_err)
 {
   int ret = OB_SUCCESS;
   char full_str[MAX_PRINTABLE_SIZE] = {0};
@@ -422,6 +414,9 @@ int ObNumber::from_sci_(const char *str, const int64_t length, IAllocator &alloc
       }
       if ((valid_len >= 0 && (e_value + valid_len <= MIN_SCI_SIZE))
           ||(valid_len < 0 && (e_value - dec_n_zero <= MIN_SCI_SIZE))) {
+        if (catch_trunc_err) {
+          warning = OB_ERR_DATA_TRUNCATED;
+        }
         as_zero = true;
       } else if (e_value + valid_len > MAX_SCI_SIZE) {
         ret = OB_NUMERIC_OVERFLOW;
@@ -813,6 +808,12 @@ int ObNumber::from_v3_(const char *str, const int64_t length, IAllocator &alloca
         if (OB_DECIMAL_PRECISION_OVERFLOW == ret) {
           set_zero();
           ret = OB_SUCCESS;
+        } else if (OB_INTEGER_PRECISION_OVERFLOW == ret && is_mysql_mode()) {
+          ret = OB_SUCCESS;
+          d_.exp_ = (is_negative() ? 2 - MAX_INTEGER_EXP : MAX_INTEGER_EXP - 2) + EXP_ZERO;
+          for (int i = 0; i < d.len_; i++) {
+            digits_[i] = BASE - 1;
+          }
         }
       }
     }
@@ -2011,6 +2012,9 @@ int ObNumber::round_scale_v3_(const int64_t scale, const bool using_floating_sca
         // 因此在number to char转换出现前缀0时（decimal_prefix_zero_count > 0），保持与修改前一致
         valid_precision = OB_MAX_NUMBER_PRECISION_INNER - is_negative()
                            - (has_decimal() ? (decimal_prefix_zero_count > 0 ? 2 : 1) : 0);
+        if (decimal_prefix_zero_count >=2 && decimal_prefix_zero_count <= 4) {
+          valid_precision -= (decimal_prefix_zero_count - 1);
+        }
       } else {
         valid_precision = (OB_MAX_NUMBER_PRECISION_INNER - ((0 == integer_count ? decimal_prefix_zero_count : integer_count) % 2));
       }

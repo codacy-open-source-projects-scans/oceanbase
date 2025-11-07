@@ -11,20 +11,12 @@
  */
 
 #include "storage/multi_data_source/ob_mds_table_merge_task.h"
-#include "lib/ob_errno.h"
-#include "common/ob_smart_var.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/ls/ob_ls_get_mod.h"
-#include "storage/tablet/ob_tablet_common.h"
-#include "storage/tablet/ob_tablet.h"
 #include "storage/tablet/ob_tablet_mds_table_mini_merger.h"
-#include "storage/compaction/ob_tablet_merge_ctx.h"
-#include "storage/compaction/ob_tablet_merge_task.h"
 #include "storage/multi_data_source/ob_mds_table_merge_dag.h"
-#include "storage/multi_data_source/ob_mds_table_merge_dag_param.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
-
+#ifdef OB_BUILD_SHARED_STORAGE
+#include "storage/incremental/ob_ls_inc_sstable_uploader.h"
+#endif
 #define USING_LOG_PREFIX MDS
 
 using namespace oceanbase::common;
@@ -58,7 +50,7 @@ int ObMdsTableMergeTask::init()
     ret = OB_ERR_SYS;
     LOG_ERROR("dag type not match", K(ret), KPC_(dag));
   } else {
-    ObMdsTableMergeDag *mds_merge_dag = static_cast<ObMdsTableMergeDag *>(dag_);
+    ObTabletMdsMiniMergeDag *mds_merge_dag = static_cast<ObTabletMdsMiniMergeDag *>(dag_);
     const ObTabletMergeDagParam &merge_dag_param = mds_merge_dag->get_param();
     if (OB_UNLIKELY(!merge_dag_param.is_valid())) {
       ret = OB_ERR_SYS;
@@ -114,12 +106,17 @@ int ObMdsTableMergeTask::process()
 #endif
     const share::SCN &flush_scn = mds_merge_dag_->get_flush_scn();
     ctx.static_param_.scn_range_.end_scn_ = flush_scn;
+    ctx.static_param_.merge_scn_ = flush_scn;
     ctx.static_param_.version_range_.snapshot_version_ = flush_scn.get_val_for_tx();
     ctx.static_param_.pre_warm_param_.type_ = ObPreWarmerType::MEM_PRE_WARM;
+    ctx.parallel_merge_ctx_.init_serial_merge(); // only use concurrent_cnt for small sstable temp space optimization
     ObTabletHandle new_tablet_handle;
     mds::MdsTableHandle mds_table;
     const int64_t mds_construct_sequence = mds_merge_dag_->get_mds_construct_sequence();
-    ObTableHandleV2 table_handle;
+    ObTableHandleV2 &table_handle = ctx.merged_table_handle_;
+#ifdef OB_BUILD_SHARED_STORAGE
+    ObSSTableUploadRegHandle upload_reg_handle;
+#endif
     if (OB_FAIL(ctx.get_ls_and_tablet())) {
       LOG_WARN("failed to get ls and tablet", KR(ret), K(ctx), KPC(mds_merge_dag_));
     } else if (OB_ISNULL(ls = ctx.get_ls())) {
@@ -150,8 +147,15 @@ int ObMdsTableMergeTask::process()
           KPC(mds_merge_dag_));
       ctx.time_guard_click(ObStorageCompactionTimeGuard::EXECUTE);
       share::dag_yield();
+#ifdef OB_BUILD_SHARED_STORAGE
+      // prepare for register mini sstable upload
+    } else if (GCTX.is_shared_storage_mode() && OB_FAIL(ls->prepare_register_sstable_upload(upload_reg_handle))) {
+      LOG_WARN("prepare mini sstable upload register fail", K(ret));
+#endif
     } else if (FALSE_IT(ctx.static_param_.scn_range_.start_scn_ = tablet->get_mds_checkpoint_scn())) {
-    } else if (FALSE_IT(ctx.static_desc_.tablet_transfer_seq_ = tablet->get_transfer_seq())) {
+    } else if (OB_FAIL(tablet->get_private_transfer_epoch(ctx.static_desc_.private_transfer_epoch_))) {
+      LOG_WARN("fail to get transfer epoch", K(ret), "tablet_meta", tablet->get_tablet_meta());
+    } else if (FALSE_IT(ctx.static_param_.rec_scn_ = mds_table.get_mds_table_ptr()->get_rec_scn())) {
     } else if (MDS_FAIL(build_mds_sstable(ctx, mds_construct_sequence, table_handle))) {
       if (OB_EMPTY_RESULT != ret) {
         LOG_WARN("fail to build mds sstable", K(ret), K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
@@ -183,6 +187,23 @@ int ObMdsTableMergeTask::process()
               K(flush_scn), KPC(mds_merge_dag_));
     }
 
+#ifdef OB_BUILD_SHARED_STORAGE
+    // scheduler mds mini upload for shared-storage
+    if (OB_SUCC(ret) && GCTX.is_shared_storage_mode()) {
+      ObSSTable *sstable = NULL;
+      if (!table_handle.is_valid()) {
+        FLOG_INFO("no mds sstable need upload. skip register", K(ls_id), K(tablet_id));
+      } else if (OB_FAIL(table_handle.get_sstable(sstable))) {
+        LOG_WARN("get sstable fail", K(ret));
+      } else {
+        ASYNC_UPLOAD_INC_SSTABLE(SSIncSSTableType::MDS_SSTABLE,
+                                 upload_reg_handle,
+                                 sstable->get_key(),
+                                 SCN::min_scn() /* mds_sstable no need snapstho_version */);
+      }
+    }
+#endif
+
     if (OB_SUCC(ret)) {
       ctx.time_guard_click(ObStorageCompactionTimeGuard::EXECUTE);
       share::dag_yield();
@@ -192,7 +213,14 @@ int ObMdsTableMergeTask::process()
     if (mds_table.is_valid() && OB_NO_NEED_MERGE != ret) {
       mds_table.on_flush(flush_scn, ret);
     }
-    ctx.time_guard_click(ObStorageCompactionTimeGuard::DAG_FINISH);
+    // update merge info.
+    {
+      int tmp_ret = OB_SUCCESS;
+      (void) ctx.update_and_analyze_progress();
+      if (OB_TMP_FAIL(ctx.collect_running_info())) {
+        LOG_WARN("fail to collect running info", K(tmp_ret), K(ctx.merge_info_));
+      }
+    }
     // ATTENTION! Critical diagnostic log, DO NOT CHANGE!!!
     FLOG_INFO("sstable merge finish", K(ret), "merge_info", ctx_ptr->get_merge_info(),
         "time_guard", ctx_ptr->info_collector_.time_guard_, KPC(mds_merge_dag_));
@@ -212,7 +240,9 @@ void ObMdsTableMergeTask::try_schedule_compaction_after_mds_mini(compaction::ObT
   const share::ObLSID &ls_id = ctx.get_ls_id();
   const common::ObTabletID &tablet_id = ctx.get_tablet_id();
   bool during_restore = false;
-  if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || !tablet_handle.is_valid())) {
+  if (GCTX.is_shared_storage_mode()) {
+    // minor disabled in shared storage mode
+  } else if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_id.is_valid() || !tablet_handle.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), K(ls_id), K(tablet_id), K(tablet_handle), KPC(mds_merge_dag_));
   // when restoring, some log stream may be not ready,
@@ -220,14 +250,14 @@ void ObMdsTableMergeTask::try_schedule_compaction_after_mds_mini(compaction::ObT
   } else if (OB_SUCCESS == ObBasicMergeScheduler::get_merge_scheduler()->during_restore(during_restore) && !during_restore) {
     if (0 == ctx.get_merge_info().get_merge_history().block_info_.macro_block_count_) {
       // no need to schedule mds minor merge
-    } else if (OB_FAIL(ObTenantTabletScheduler::schedule_tablet_minor_merge<ObTabletMergeExecuteDag>(
+    } else if (OB_FAIL(ObTenantTabletScheduler::schedule_tablet_minor_merge<ObTabletMdsMinorMergeDag>(
         compaction::MDS_MINOR_MERGE, ctx.static_param_.ls_handle_, tablet_handle))) {
       if (OB_SIZE_OVERFLOW != ret) {
         LOG_WARN("failed to schedule special tablet minor merge which triggle mds",
             K(ret), K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
       }
     } else {
-      LOG_INFO("succeed to try schedule mds minor after mds", K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
+      LOG_TRACE("succeed to try schedule mds minor after mds", K(ls_id), K(tablet_id), KPC(mds_merge_dag_));
     }
   }
 }
@@ -236,7 +266,7 @@ int ObMdsTableMergeTask::check_tablet_status_for_empty_mds_table_(const ObTablet
 {
   int ret = OB_SUCCESS;
   ObTabletCreateDeleteMdsUserData user_data;
-  if (OB_FAIL(tablet.get_latest_committed(user_data))) {
+  if (OB_FAIL(tablet.get_latest_committed_tablet_status(user_data))) {
     if (OB_EMPTY_RESULT != ret) {
       LOG_WARN("failed to get tx data", K(ret), K(tablet));
     } else {
@@ -257,7 +287,10 @@ int ObMdsTableMergeTask::build_mds_sstable(
   const common::ObTabletID &tablet_id = ctx.get_tablet_id();
 
   SMART_VARS_2((ObMdsTableMiniMerger, mds_mini_merger), (ObTabletDumpMds2MiniOperator, op)) {
-    if (OB_FAIL(mds_mini_merger.init(ctx, op))) {
+    ObMacroSeqParam macro_seq_param;
+    if (OB_FAIL(ObMdsTableMiniMerger::prepare_macro_seq_param(ctx, macro_seq_param))) {
+      LOG_WARN("prepare macro seq param failed", K(ret), K(macro_seq_param));
+    } else if (OB_FAIL(mds_mini_merger.init(macro_seq_param, ctx, op))) {
       LOG_WARN("fail to init mds mini merger", K(ret), K(ctx), K(ls_id), K(tablet_id));
     } else if (OB_FAIL(ctx.get_tablet()->scan_mds_table_with_op(mds_construct_sequence, op))) {
       LOG_WARN("fail to scan mds table with op", K(ret), K(ctx), K(ls_id), K(tablet_id));

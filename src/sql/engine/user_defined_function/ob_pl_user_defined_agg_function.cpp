@@ -12,9 +12,6 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_pl_user_defined_agg_function.h"
-#include "sql/ob_spi.h"
-#include "pl/ob_pl.h"
-#include "pl/ob_pl_stmt.h"
 #include "pl/ob_pl_resolver.h"
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/engine/expr/ob_datum_cast.h"
@@ -142,7 +139,10 @@ int ObPlAggUdfFunction::call_pl_engine_exectue_udf(ParamStore& udf_params,
   pl::ObPL *pl_engine = NULL;
   ObSEArray<int64_t, 8> empty_subprogram_path;
   ObSEArray<int64_t, 8> empty_nocopy_params;
+  pl::ObPLExecuteArg pl_execute_arg;
   uint64_t loc = 0;
+  int64_t obj_id = OB_INVALID_ID;
+  int64_t sub_udf_id = OB_INVALID_ID;
   if (OB_ISNULL(routine_info) || OB_ISNULL(session_info_) ||
       OB_ISNULL(pl_engine = session_info_->get_pl_engine()) || OB_ISNULL(allocator_) ||
       OB_ISNULL(exec_ctx_)) {
@@ -153,15 +153,23 @@ int ObPlAggUdfFunction::call_pl_engine_exectue_udf(ParamStore& udf_params,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("udf parameter number is not equal to params desc count",
                                  K(ret), K(udf_params.count()), K(routine_info->get_param_count()));
+  } else if (FALSE_IT(obj_id = share::schema::ObUDTObjectType::mask_object_id(routine_info->get_package_id()))){
+  } else if (FALSE_IT(sub_udf_id = (OB_INVALID_ID != routine_info->get_package_id()) ? routine_info->get_subprogram_id()
+                                                                                     : routine_info->get_routine_id())) {
+  } else if (OB_FAIL(pl_execute_arg.obtain_routine(*exec_ctx_,
+                                                   obj_id,
+                                                   sub_udf_id,
+                                                   empty_subprogram_path))) {
+    LOG_WARN("failed to obtain routine", K(ret), K(routine_info->get_package_id()), K(routine_info->get_subprogram_id()), K(empty_subprogram_path));
   } else if (OB_FAIL(pl_engine->execute(*exec_ctx_,
                                         exec_ctx_->get_allocator(),
-                                        share::schema::ObUDTObjectType::mask_object_id(routine_info->get_package_id()),
-                                        OB_INVALID_ID != routine_info->get_package_id() ? routine_info->get_subprogram_id()
-                                                                                        : routine_info->get_routine_id(),
+                                        obj_id,
+                                        sub_udf_id,
                                         empty_subprogram_path,
                                         udf_params,
                                         empty_nocopy_params,
                                         result,
+                                        pl_execute_arg,
                                         NULL,
                                         false,
                                         true,
@@ -220,6 +228,7 @@ int ObPlAggUdfFunction::build_in_params_store(ObObjParam &pl_obj,
     udf_params = new(param_store_buf)ParamStore(ObWrapperAllocator(*allocator_));
     ObObjParam param;
     param.reset();
+    param = pl_obj;
     if (is_out_param) {
       param.set_extend(pl_obj.get_ext(),
                        pl_obj.get_meta().get_extend_type(), pl_obj.get_val_len());
@@ -272,8 +281,7 @@ int ObPlAggUdfFunction::process_init_pl_agg_udf(ObObjParam &pl_obj)
       //for pl agg udf, type member ODCIAggregateInitialize() must only have one param, and the
       //param is self. So, we can stable type(ObExtendType) and position(0, true) ==> IN OUT
       //see url:https://docs.oracle.com/cd/B28359_01/appdev.111/b28425/ext_agg_ref.htm#CACBJHHI
-      common::ObArenaAllocator alloc;
-      ObExprResType param_type(alloc);
+      ObExprResType param_type;
       param_type.set_ext();
       param_type.set_udt_id(type_id_);
       if (OB_FAIL(params_type.push_back(param_type))) {
@@ -325,8 +333,7 @@ int ObPlAggUdfFunction::process_calc_pl_agg_udf(ObObjParam &pl_obj,
     //for pl agg udf, type member ODCIAggregateIterate() the first param must be self and is IN OUT,
     //the other param is IN, so we need rebuild relation infos.
     //see oracle url:https://docs.oracle.com/cd/B28359_01/appdev.111/b28425/ext_agg_ref.htm#CACBJHHI
-    common::ObArenaAllocator alloc;
-    ObExprResType param_type(alloc);
+    ObExprResType param_type;
     param_type.set_ext();
     param_type.set_udt_id(type_id_);
     if (OB_FAIL(all_params_type.push_back(param_type))) {
@@ -409,8 +416,7 @@ int ObPlAggUdfFunction::process_merge_pl_agg_udf(ObObjParam &pl_obj,
   ObSEArray<ObUDFParamDesc, 4> params_desc;
   ObSEArray<ObUDFParamDesc, 4> all_params_desc;
   ObSEArray<ObExprResType, 4> all_params_type;
-  common::ObArenaAllocator alloc;
-  ObExprResType param_type(alloc);
+  ObExprResType param_type;
   param_type.set_ext();
   param_type.set_udt_id(type_id_);
   if (OB_FAIL(params_type.push_back(param_type))) {
@@ -477,9 +483,8 @@ int ObPlAggUdfFunction::process_get_pl_agg_udf_result(ObObjParam &pl_obj,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
   } else {
-    common::ObArenaAllocator alloc;
-    ObExprResType param_type(alloc);
-    ObExprResType flags_type(alloc);
+    ObExprResType param_type;
+    ObExprResType flags_type;
     param_type.set_ext();
     param_type.set_udt_id(type_id_);
     flags_type.set_number();

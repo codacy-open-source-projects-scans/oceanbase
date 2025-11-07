@@ -11,7 +11,6 @@
  */
 
 #include "ob_dynamic_thread_pool.h"
-#include "lib/thread/ob_thread_name.h"
 #include "lib/thread/thread_mgr.h"
 #include "lib/allocator/ob_sql_mem_leak_checker.h"
 
@@ -150,6 +149,7 @@ void ObDynamicThreadPool::run1()
 {
   int tmp_ret = OB_SUCCESS;
   const uint64_t idx = get_thread_idx();
+  ObDIActionGuard ag("DynamicThreadPool", thread_name_, "detect task");
   if (OB_NOT_NULL(thread_name_)) {
     lib::set_thread_name(thread_name_, idx);
   }
@@ -340,8 +340,11 @@ void *ObDynamicThreadPool::task_thread_func(void *data)
           } else {
             COMMON_LOG_RET(WARN, tmp_ret, "failed to pop task", K(tmp_ret));
           }
-        } else if (OB_SUCCESS != (tmp_ret = task->process(thread_info->is_stop_))) {
-          COMMON_LOG_RET(WARN, tmp_ret, "failed to process task", K(tmp_ret), K(*thread_info));
+        } else {
+          common::ObDIActionGuard ag(typeid(*task));
+          if (OB_SUCCESS != (tmp_ret = task->process(thread_info->is_stop_))) {
+            COMMON_LOG_RET(WARN, tmp_ret, "failed to process task", K(tmp_ret), K(*thread_info));
+          }
         }
       }
     }
@@ -364,6 +367,12 @@ int ObSimpleDynamicThreadPool::init(const int64_t thread_num, const char* name, 
   return ret;
 }
 
+void ObSimpleDynamicThreadPool::stop()
+{
+  IGNORE_RETURN ObSimpleThreadPoolDynamicMgr::get_instance().unbind(this);
+  lib::ThreadPool::stop();
+}
+
 void ObSimpleDynamicThreadPool::destroy()
 {
   if (min_thread_cnt_ < max_thread_cnt_) {
@@ -372,11 +381,23 @@ void ObSimpleDynamicThreadPool::destroy()
   int64_t ref_cnt = 0;
   while ((ref_cnt = get_ref_cnt()) > 0) {
     if (REACH_TIME_INTERVAL(1000L * 1000L)) {
-      COMMON_LOG(INFO, "wait tenant io manager quit", K(*this), K(ref_cnt));
+      COMMON_LOG(INFO, "wait ObSimpleDynamicThreadPool ref cnt", K(*this), K(ref_cnt));
     }
     ob_usleep((useconds_t)10L * 1000L);
   }
   lib::ThreadPool::stop();
+  lib::ThreadPool::wait();
+}
+
+void ObSimpleDynamicThreadPool::wait()
+{
+  int64_t ref_cnt = 0;
+  while ((ref_cnt = get_ref_cnt()) > 0) {
+    if (REACH_TIME_INTERVAL(1000L * 1000L)) {
+      COMMON_LOG(INFO, "wait ObSimpleDynamicThreadPool ref cnt", K(*this), K(ref_cnt));
+    }
+    ob_usleep((useconds_t)10L * 1000L);
+  }
   lib::ThreadPool::wait();
 }
 
@@ -406,7 +427,7 @@ int ObSimpleDynamicThreadPool::set_adaptive_thread(int64_t min_thread_num, int64
 int ObSimpleDynamicThreadPool::set_max_thread_count(int64_t max_thread_cnt)
 {
   int ret = OB_SUCCESS;
-  if (max_thread_cnt > MAX_THREAD_NUM || max_thread_cnt <= 0) {
+  if (max_thread_cnt < 0 || max_thread_cnt < min_thread_cnt_) {
     ret = OB_INVALID_ARGUMENT;
     COMMON_LOG(WARN, "set_adaptive_thread failed", KP(this), K(max_thread_cnt));
   } else {
@@ -437,7 +458,7 @@ int ObSimpleDynamicThreadPool::set_max_thread_count(int64_t max_thread_cnt)
 int ObSimpleDynamicThreadPool::set_thread_count_and_try_recycle(int64_t cnt)
 {
   int ret = OB_SUCCESS;
-  ret = Threads::set_thread_count(cnt);
+  ret = Threads::do_set_thread_count(cnt, true/*async_recycle*/);
   if (OB_SUCC(ret)) {
     ret = Threads::try_thread_recycle();
   }
@@ -455,29 +476,30 @@ void ObSimpleDynamicThreadPool::try_expand_thread_count()
     // unneed to expand thread count
   } else if (OB_SUCC(update_threads_lock_.trylock())) {
     int64_t cur_thread_count = get_thread_count();
-    int inc_cnt = 0;
-    if (cur_thread_count > 0) {
-      inc_cnt = queue_size / cur_thread_count;
-    } else {
-      inc_cnt = queue_size;
-    }
+    int inc_cnt = queue_size;
     inc_cnt = min(inc_cnt, max_thread_cnt_ - cur_thread_count);
     if (inc_cnt > 0) {
       DISABLE_SQL_MEMLEAK_GUARD;
       COMMON_LOG(INFO, "expand thread count", KP(this), K_(max_thread_cnt), K(cur_thread_count), K(inc_cnt), K(queue_size));
-      if (is_server_tenant(tenant_id_)) {
-        // temporarily reset ob_get_tenant_id() and run_wrapper
-        // avoid the newly created thread to use the memory or run_wrapper of user tenant
-        lib::IRunWrapper *run_wrapper = lib::Threads::get_expect_run_wrapper();
-        lib::Threads::get_expect_run_wrapper() = NULL;
-        DEFER(lib::Threads::get_expect_run_wrapper() = run_wrapper);
-        ObResetThreadTenantIdGuard guard;
-        ret = set_thread_count_and_try_recycle(cur_thread_count + inc_cnt);
-      } else {
-        ret = set_thread_count_and_try_recycle(cur_thread_count + inc_cnt);
+      int64_t old_thread_count = cur_thread_count;
+      for (int i = 1; OB_SUCC(ret) && i <= inc_cnt; ++i) {
+        // we need to make sure only one thread is created when executing set_thread_count_and_try_recycle,
+        // to avoid calling pthread_join when creating multiple threads fails, which could trigger a deadlock
+        cur_thread_count = get_thread_count();
+        if (is_server_tenant(tenant_id_)) {
+          // temporarily reset ob_get_tenant_id() and run_wrapper
+          // avoid the newly created thread to use the memory or run_wrapper of user tenant
+          lib::IRunWrapper *run_wrapper = lib::Threads::get_expect_run_wrapper();
+          lib::Threads::get_expect_run_wrapper() = NULL;
+          DEFER(lib::Threads::get_expect_run_wrapper() = run_wrapper);
+          ObResetThreadTenantIdGuard guard;
+          ret = set_thread_count_and_try_recycle(cur_thread_count + 1);
+        } else {
+          ret = set_thread_count_and_try_recycle(cur_thread_count + 1);
+        }
       }
       if (OB_FAIL(ret)) {
-        COMMON_LOG(ERROR, "set thread count failed", KP(this), K(cur_thread_count), K(inc_cnt));
+        COMMON_LOG(ERROR, "set thread count failed", KP(this), K(old_thread_count), "cur_thread_count", get_thread_count(), K(inc_cnt));
       }
     }
     update_threads_lock_.unlock();
@@ -563,6 +585,7 @@ ObSimpleThreadPoolDynamicMgr::~ObSimpleThreadPoolDynamicMgr()
 
 void ObSimpleThreadPoolDynamicMgr::run1()
 {
+  ObDIActionGuard ag("DynamicThreadPool", "DynamicMgrCheck", "detect task");
   lib::set_thread_name("qth_mgr");
   int64_t last_access_ts = 0;
   int64_t last_idle_ts = 0;
@@ -575,6 +598,7 @@ void ObSimpleThreadPoolDynamicMgr::run1()
       for (int i = 0; i < simple_thread_pool_list_.count(); i++) {
         ObSimpleThreadPoolStat &pool_stat = simple_thread_pool_list_.at(i);
         ObSimpleDynamicThreadPool *pool = pool_stat.pool_;
+        ObDIActionGuard ag1(pool->name_);
         int64_t current_time = ObTimeUtility::current_time();
         if (OB_LIKELY(pool_stat.is_valid())) {
           int64_t interval = current_time - pool_stat.last_check_time_;
@@ -610,7 +634,7 @@ void ObSimpleThreadPoolDynamicMgr::run1()
       dec_pools[i]->dec_ref();
     }
     ++loop_cnt;
-    ob_usleep(CHECK_INTERVAL_US);
+    ob_usleep(CHECK_INTERVAL_US, true);
   }
 }
 
@@ -623,6 +647,7 @@ int ObSimpleThreadPoolDynamicMgr::bind(ObSimpleDynamicThreadPool *pool)
   if (OB_FAIL(simple_thread_pool_list_.push_back(pool_stat))) {
     COMMON_LOG(WARN, "bind simple thread pool faild", KP(pool));
   } else {
+    pool->has_bind_ = true;
     COMMON_LOG(INFO, "bind simple thread pool success", K(*pool));
   }
   return ret;
@@ -634,6 +659,8 @@ int ObSimpleThreadPoolDynamicMgr::unbind(ObSimpleDynamicThreadPool *pool)
   if (OB_UNLIKELY(NULL == pool)) {
     ret = OB_INVALID_ARGUMENT;
      COMMON_LOG(WARN, "unbind pool failed");
+  } else if (!pool->has_bind_) {
+    // do-nothing
   } else {
     SpinWLockGuard guard(simple_thread_pool_list_lock_);
     int64_t idx = -1;
@@ -646,6 +673,7 @@ int ObSimpleThreadPoolDynamicMgr::unbind(ObSimpleDynamicThreadPool *pool)
     if ((-1 != idx) && OB_FAIL(simple_thread_pool_list_.remove(idx))) {
       COMMON_LOG(WARN, "failed to remove simple_thread_pool", K(ret), K(idx), KP(pool));
     } else {
+      pool->has_bind_ = false;
       COMMON_LOG(INFO, "try to unbind simple thread pool", K(*pool), K(idx));
     }
   }

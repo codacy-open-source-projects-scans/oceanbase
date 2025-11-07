@@ -16,7 +16,6 @@
 #include "sql/engine/px/p2p_datahub/ob_runtime_filter_msg.h"
 #include "sql/engine/px/p2p_datahub/ob_runtime_filter_vec_msg.h"
 #include "sql/engine/px/p2p_datahub/ob_pushdown_topn_filter_msg.h"
-#include "lib/rc/context.h"
 #include "sql/engine/px/ob_px_sqc_proxy.h"
 #include "share/ob_rpc_share.h"
 #include "share/detect/ob_detect_manager_utils.h"
@@ -282,7 +281,7 @@ int ObP2PDatahubManager::send_p2p_msg(
       LOG_WARN("fail to copy msg", K(ret));
     } else if (OB_ISNULL(new_msg)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpeceted new msg", K(ret));
+      LOG_WARN("unexpected new msg", K(ret));
     }
     if (OB_SUCC(ret)) {
       ObP2PDatahubMsgGuard guard(new_msg);

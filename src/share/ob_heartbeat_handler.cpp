@@ -10,11 +10,9 @@
  * See the Mulan PubL v2 for more details.
  */
 #define USING_LOG_PREFIX SERVER
-#include "ob_heartbeat_handler.h"
 
+#include "ob_heartbeat_handler.h"
 #include "observer/ob_server.h"
-#include "share/ob_version.h"
-#include "observer/ob_service.h"
 
 namespace oceanbase
 {
@@ -84,6 +82,10 @@ int64_t ObHeartbeatHandler::rs_epoch_id_ = palf::INVALID_PROPOSAL_ID;
 bool ObHeartbeatHandler::is_rs_epoch_id_valid()
 {
   return palf::INVALID_PROPOSAL_ID != ATOMIC_LOAD(&rs_epoch_id_);
+}
+int64_t ObHeartbeatHandler::get_rs_epoch_id()
+{
+  return ATOMIC_LOAD(&rs_epoch_id_);
 }
 int ObHeartbeatHandler::handle_heartbeat(
     const share::ObHBRequest &hb_request,

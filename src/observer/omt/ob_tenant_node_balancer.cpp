@@ -12,28 +12,14 @@
 
 #define USING_LOG_PREFIX SERVER_OMT
 #include "ob_tenant_node_balancer.h"
-#include "lib/time/ob_time_utility.h"
-#include "lib/oblog/ob_log.h"
-#include "lib/alloc/ob_malloc_allocator.h"
-#include "lib/container/ob_se_array_iterator.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "share/ob_tenant_mgr.h"
-#include "share/ob_debug_sync.h"
-#include "share/system_variable/ob_sys_var_class_type.h"
-#include "observer/ob_inner_sql_result.h"
 #include "ob_tenant.h"
-#include "ob_multi_tenant.h"
-#include "share/allocator/ob_tenant_mutil_allocator.h"
 #include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
-#include "share/config/ob_server_config.h"
-#include "observer/ob_server_struct.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "storage/blocksstable/ob_block_manager.h"
-#include "logservice/palf/palf_options.h"
 #include "logservice/ob_server_log_block_mgr.h"
-#include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
+#include "storage/tenant_snapshot/ob_tenant_snapshot_service.h"
+#include "share/resource_manager/ob_resource_manager.h"
+#include "share/resource_manager/ob_resource_mapping_rule_manager.h"
+#include "share/resource_manager/ob_resource_col_mapping_rule_manager.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_disk_space_manager.h"
 #endif
@@ -137,7 +123,11 @@ void ObTenantNodeBalancer::run1()
 
     {
       common::ObBKGDSessInActiveGuard inactive_guard;
-      USLEEP(refresh_interval_);  // sleep 10s
+      if (GCTX.in_bootstrap_) {
+        USLEEP(1_s);  // sleep 1s
+      } else {
+        USLEEP(refresh_interval_);  // sleep 10s
+      }
     }
   }
 }
@@ -205,6 +195,12 @@ int ObTenantNodeBalancer::notify_create_tenant(const obrpc::TenantServerUnitConf
     if (create_tenant_timeout_ts < create_timestamp) {
       ret = OB_TIMEOUT;
       LOG_WARN("notify_create_tenant has timeout", K(ret), K(create_timestamp), K(create_tenant_timeout_ts));
+    } else if (0 != unit.data_version_
+        && OB_FAIL(ODV_MGR.set(unit.tenant_id_, unit.data_version_))) {
+      LOG_WARN("fail to set tenant data version", KR(ret), K(unit));
+    } else if (0 != unit.meta_tenant_data_version_
+        && OB_FAIL(ODV_MGR.set(gen_meta_tenant_id(unit.tenant_id_), unit.meta_tenant_data_version_))) {
+      LOG_WARN("fail to set meta tenant data version", KR(ret), K(unit));
     } else if (OB_FAIL(basic_tenant_unit.init(tenant_id,
                                        unit.unit_id_,
                                        ObUnitInfoGetter::ObUnitStatus::UNIT_NORMAL,
@@ -213,7 +209,9 @@ int ObTenantNodeBalancer::notify_create_tenant(const obrpc::TenantServerUnitConf
                                        create_timestamp,
                                        has_memstore,
                                        false /*is_removed*/,
-                                       hidden_sys_data_disk_config_size))) {
+                                       hidden_sys_data_disk_config_size,
+                                       basic_tenant_unit.gen_init_actual_data_disk_size(unit.unit_config_),
+                                       unit.replica_type_))) {
       LOG_WARN("fail to init user tenant config", KR(ret), K(unit));
     } else if (is_user_tenant(tenant_id)
         && OB_FAIL(basic_tenant_unit.divide_meta_tenant(meta_tenant_unit))) {
@@ -235,8 +233,26 @@ int ObTenantNodeBalancer::notify_create_tenant(const obrpc::TenantServerUnitConf
       } else {
         const obrpc::ObRootKeyResult &root_key = unit.root_key_;
         if (obrpc::RootKeyType::INVALID == root_key.key_type_) {
+#ifdef OB_BUILD_SHARED_STORAGE
+          if (!GCTX.is_shared_storage_mode()) {
+            // do nothing
+            LOG_INFO("root_key got from RS is INVALID, won't set now");
+          } else if (is_sys_tenant(tenant_id)) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_WARN("sys tenant root_key should not be INVALID", KR(ret));
+          } else {
+            MTL_SWITCH(tenant_id) {
+              if (OB_FAIL(ObMasterKeyUtil::ss_get_root_key(tenant_id))) {
+                LOG_WARN("failed to get root_key from ss", K(ret), K(tenant_id));
+              } else {
+                LOG_INFO("got root_key from ss", K(tenant_id));
+              }
+            }
+          }
+#else
           // do nothing
-          LOG_INFO("root_key got from RS is INVALID, won't set now", KR(ret));
+          LOG_INFO("root_key got from RS is INVALID, won't set now");
+#endif
         } else if (OB_FAIL(ObMasterKeyGetter::instance().set_root_key(
                             tenant_id, root_key.key_type_, root_key.root_key_))) {
           LOG_WARN("failed to set root_key", KR(ret));
@@ -308,7 +324,7 @@ int ObTenantNodeBalancer::get_server_allocated_resource(ServerResource &server_r
       server_resource.memory_size_ += max(ObMallocAllocator::get_instance()->get_tenant_limit(tenant_units.at(i).tenant_id_) - extra_memory,
                                           tenant_units.at(i).config_.memory_size());
       server_resource.log_disk_size_ += tenant_units.at(i).config_.log_disk_size();
-      server_resource.data_disk_size_ += tenant_units.at(i).config_.data_disk_size();
+      server_resource.data_disk_size_ += tenant_units.at(i).get_effective_actual_data_disk_size();
     }
   }
   return ret;
@@ -438,7 +454,9 @@ int ObTenantNodeBalancer::check_new_tenant(
     }
 #ifdef OB_BUILD_SHARED_STORAGE
     if (OB_FAIL(ret)) {
-    } else if (GCTX.is_shared_storage_mode()) {
+    } else if (!GCTX.is_shared_storage_mode() || unit.config_.data_disk_size() == 0) {
+      // do nothing
+    } else {
       int64_t data_disk_size = unit.config_.data_disk_size();
       if (is_sys_tenant(tenant_id)) { // real_sys_tenant's data_disk_size = sys_unit_config + hidden_sys_data_disk_size
         data_disk_size += OB_SERVER_DISK_SPACE_MGR.get_hidden_sys_data_disk_config_size();
@@ -544,6 +562,7 @@ int ObTenantNodeBalancer::fetch_effective_tenants(const TenantUnits &old_tenants
       if (tenant_config.tenant_id_ == new_tenants.at(j).tenant_id_) {
         new_tenants.at(j).create_timestamp_ = tenant_config.create_timestamp_;
         new_tenants.at(j).is_removed_ = tenant_config.is_removed_;
+        new_tenants.at(j).actual_data_disk_size_ = tenant_config.actual_data_disk_size_;
         found = true;
         break;
       }

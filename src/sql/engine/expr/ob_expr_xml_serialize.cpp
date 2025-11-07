@@ -14,9 +14,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_xml_serialize.h"
 #include "sql/engine/expr/ob_expr_xml_func_helper.h"
-#include "lib/xml/ob_xml_parser.h"
-#include "lib/xml/ob_xml_util.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 
 using namespace oceanbase::common;
@@ -133,7 +130,6 @@ int ObExprXmlSerialize::eval_xml_serialize(const ObExpr &expr, ObEvalCtx &ctx, O
   ObMulModeMemCtx* mem_ctx = nullptr;
   uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
   MultimodeAlloctor allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
 
   if (OB_ISNULL(ctx.exec_ctx_.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
@@ -171,6 +167,7 @@ int ObExprXmlSerialize::eval_xml_serialize(const ObExpr &expr, ObEvalCtx &ctx, O
   } else if (xml_datum->is_null()) {
     res.set_null();
   } else {
+    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
     ObIMulModeBase *xml_node = NULL;
     bool is_xml_doc = xml_doc_type == OB_XML_DOCUMENT;
     bool with_encoding = opt_encoding_type == 1;

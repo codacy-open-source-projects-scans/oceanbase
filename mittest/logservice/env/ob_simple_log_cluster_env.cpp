@@ -10,35 +10,9 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <cstdio>
-#include <gtest/gtest.h>
-#include <signal.h>
-#include <thread>
 #define private public
 #include "ob_simple_log_cluster_env.h"
-#include "ob_simple_log_server.h"
-#include "common/ob_member_list.h"
-#include "common/ob_role.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "logservice/ob_log_handler.h"
-#include "logservice/palf/lsn.h"
-#include "share/scn.h"
-#include "logservice/palf/log_define.h"
-#include "logservice/palf/palf_handle.h"
-#include "logservice/palf/palf_base_info.h"
-#include "logservice/palf/palf_handle_impl_guard.h"
-#include "logservice/palf/palf_iterator.h"
-#include "logservice/palf/palf_options.h"
-#include "logservice/palf_handle_guard.h"
-#include "logservice/ob_log_base_header.h"
-#include "logservice/ob_log_service.h"
 #include "share/backup/ob_backup_io_adapter.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "log/ob_shared_log_utils.h"
-#endif
 #undef private
 
 namespace oceanbase
@@ -284,11 +258,6 @@ int ObSimpleLogClusterTestEnv::create_paxos_group(const int64_t id,
       } else if (OB_FAIL(svr->create_ls(id, palf::AccessMode::APPEND, palf_base_info, handle))) {
         CLOG_LOG(WARN, "create ls failed", K(ret), K(id), KPC(svr));
         break;
-      #ifdef OB_BUILD_SHARED_STORAGE
-      } else if (GCTX.is_shared_storage_mode() && OB_FAIL(server->log_service_.shared_log_service_.add_ls(ObLSID(id)))) {
-        CLOG_LOG(WARN, "failed to add_ls to shared_log_service", K(ret), K(id), KPC(svr));
-        break;
-      #endif
       } else {
         if (with_mock_election) {
           if (OB_FAIL(svr->create_mock_election(id, mock_election))) {
@@ -630,14 +599,14 @@ int ObSimpleLogClusterTestEnv::get_leader(const int64_t id, PalfHandleImplGuard 
         PALF_LOG(WARN, "get_role failed", K(ret));
       } else if (role == LEADER
           && false == is_pending_state) {
-      leader_idx = i;
-      leader.palf_handle_impl_ = dynamic_cast<PalfHandleImpl *>(ipalf_handle_impl);
-      leader.palf_id_ = id;
-      leader.palf_env_impl_ = dynamic_cast<PalfEnvImpl*>(svr->get_palf_env());
-      PALF_LOG(INFO, "get_leader is", K(svr->get_addr()), K(leader_idx), K(epoch));
-      ObTenantEnv::set_tenant(cluster[leader_idx]->get_tenant_base());
-      break;
-    }
+        leader_idx = i;
+        leader.palf_handle_impl_ = dynamic_cast<PalfHandleImpl *>(ipalf_handle_impl);
+        leader.palf_id_ = id;
+        leader.palf_env_impl_ = dynamic_cast<PalfEnvImpl*>(svr->get_palf_env());
+        PALF_LOG(INFO, "get_leader is", K(svr->get_addr()), K(leader_idx), K(epoch));
+        ObTenantEnv::set_tenant(cluster[leader_idx]->get_tenant_base());
+        break;
+      }
       svr->get_palf_env()->revert_palf_handle_impl(ipalf_handle_impl);
     }
     if (NULL== leader.palf_handle_impl_) {
@@ -753,7 +722,7 @@ int ObSimpleLogClusterTestEnv::switch_leader(const int64_t id, const int64_t new
     EXPECT_EQ(OB_SUCCESS, get_palf_handle_guard(palf_list, leader_addr, new_leader));
     while (old_leader.palf_handle_impl_->config_mgr_.log_ms_meta_.curr_.config_.config_version_ >
       new_leader.palf_handle_impl_->config_mgr_.log_ms_meta_.curr_.config_.config_version_) {
-      ::usleep(500);
+      ob_usleep(500);
     }
     new_leader.reset();
     EXPECT_EQ(OB_SUCCESS, revert_cluster_palf_handle_guard(palf_list));
@@ -802,10 +771,10 @@ int ObSimpleLogClusterTestEnv::check_replica_sync(const int64_t id, PalfHandleIm
         ret = OB_ERR_UNEXPECTED;
         SERVER_LOG(ERROR, "end_lsn_1 is invalid", K(addr1), K(addr2), K(max_lsn_1), K(end_lsn_1), K(end_lsn_2));
       } else if (end_lsn_1 < max_lsn_1) {
-        usleep(1 * 1000);
+        ob_usleep(1 * 1000);
       } else if (max_lsn_2 < end_lsn_1) {
         // 目前用max_lsn与leader的end_lsn比较
-        usleep(1 * 1000);
+        ob_usleep(1 * 1000);
       } else if (max_lsn_2 > end_lsn_1) {
         ret = OB_ERR_UNEXPECTED;
         SERVER_LOG(ERROR, "max_lsn is larger than leader's end_lsn", K(addr1), K(addr2), K(max_lsn_1), K(max_lsn_2), K(end_lsn_1), K(end_lsn_2));
@@ -1016,14 +985,14 @@ int ObSimpleLogClusterTestEnv::submit_log_impl(PalfHandleImplGuard &leader,
   } else {
     for (int i  = 0; i < count && OB_SUCC(ret); i++) {
       do {
-        usleep(10);
+        ob_usleep(10);
         LSN lsn;
         share::SCN scn;
         ret = leader.palf_handle_impl_->submit_log(opts, buf, real_log_data_size, ref_scn, lsn, scn);
         if (OB_SUCC(ret) && lsn.is_valid()) {
           lsn_array.push_back(lsn);
           scn_array.push_back(scn);
-          usleep(200);
+          ob_usleep(200);
           PALF_LOG(INFO, "submit_log success", KR(ret), K(id), K(lsn), K(scn));
         } else {
           if (REACH_TIME_INTERVAL(100 * 1000)) {
@@ -1056,7 +1025,7 @@ int ObSimpleLogClusterTestEnv::raw_write(PalfHandleImplGuard &leader,
     PALF_LOG(WARN, "get_fole failed");
   } else {
     do {
-      usleep(10);
+      ob_usleep(10);
       ret = (leader.palf_handle_impl_)->submit_group_log(opts, lsn, buf, buf_len);
       if (OB_SUCC(ret) || OB_ERR_OUT_OF_LOWER_BOUND == ret) {
         PALF_LOG(INFO, "raw_write success", KR(ret), K(lsn));
@@ -1252,7 +1221,7 @@ int ObSimpleLogClusterTestEnv::read_log_from_memory(PalfHandleImplGuard &leader)
     auto func = [&leader](){return leader.palf_handle_impl_->get_end_lsn();};
     if (OB_FAIL(ping_buf(min_block_id, max_block_id, buf, log_engine))) {
       PALF_LOG(ERROR, "ping_buf failed", K(ret));
-    } else if (OB_FAIL(mem_storage.init(LSN(min_block_id * PALF_BLOCK_SIZE)))) {
+    } else if (OB_FAIL(mem_storage.init(LSN(min_block_id * PALF_BLOCK_SIZE), GCONF.enable_logservice))) {
       PALF_LOG(ERROR, "mem_storage init failed", K(ret));
     } else if (OB_FAIL(mem_storage.append(buf, PALF_BLOCK_SIZE))) {
       PALF_LOG(ERROR, "append failed", K(ret), KP(buf), K(max_block_id), K(min_block_id));
@@ -1323,7 +1292,7 @@ int ObSimpleLogClusterTestEnv::wait_until_has_committed(PalfHandleImplGuard &lea
     auto &sw = leader.palf_handle_impl_->sw_;
     CLOG_LOG(INFO, "runlin trace wait_until_has_committed", K(end_lsn), K(lsn), K(end_scn), K(sw));
     if (end_lsn < lsn) {
-      usleep(1000);
+      ob_usleep(1000);
     } else {
       break;
     }
@@ -1338,7 +1307,7 @@ int ObSimpleLogClusterTestEnv::wait_lsn_until_slide(const LSN &lsn, PalfHandleIm
   int64_t print_log_time = OB_INVALID_TIMESTAMP;
   LSN last_slide_end_lsn = guard.palf_handle_impl_->sw_.last_slide_end_lsn_;
   while (lsn > last_slide_end_lsn) {
-    usleep(1*1000);
+    ob_usleep(1*1000);
     if (palf_reach_time_interval(1*1000*1000, print_log_time)) {
       PALF_LOG(WARN, "wait_lsn_until_slide", K(last_slide_end_lsn), K(lsn));
     }
@@ -1354,7 +1323,7 @@ int ObSimpleLogClusterTestEnv::wait_lsn_until_flushed(const LSN &lsn, PalfHandle
   int64_t print_log_time = OB_INVALID_TIMESTAMP;
   LSN max_flushed_end_lsn = guard.palf_handle_impl_->sw_.max_flushed_end_lsn_;
   while (lsn > max_flushed_end_lsn) {
-    usleep(5*1000);
+    ob_usleep(5*1000);
     if (palf_reach_time_interval(1*1000*1000, print_log_time)) {
       PALF_LOG(WARN, "wait_lsn_until_flushed", K(ret), K(max_flushed_end_lsn), K(lsn));
     }
@@ -1370,7 +1339,7 @@ int ObSimpleLogClusterTestEnv::wait_lsn_until_submitted(const LSN &lsn, PalfHand
   int64_t print_log_time = OB_INVALID_TIMESTAMP;
   LSN max_submit_end_lsn = guard.palf_handle_impl_->sw_.last_submit_end_lsn_;
   while (lsn > max_submit_end_lsn) {
-    usleep(5 * 1000L);
+    ob_usleep(5 * 1000L);
     if (palf_reach_time_interval(1 * 1000 * 1000L, print_log_time)) {
       PALF_LOG(WARN, "wait_lsn_until_submitted", K(ret), K(max_submit_end_lsn), K(lsn));
     }
@@ -1398,7 +1367,7 @@ void ObSimpleLogClusterTestEnv::wait_all_replcias_log_sync(const int64_t palf_id
         break;
       }
     }
-    ::usleep(1000);
+    ob_usleep(1000);
   }
   revert_cluster_palf_handle_guard(palf_list);
 }
@@ -1439,7 +1408,7 @@ void ObSimpleLogClusterTestEnv::switch_append_to_raw_write(PalfHandleImplGuard &
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->get_access_mode(mode_version, access_mode));
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->change_access_mode(proposal_id, mode_version, AccessMode::RAW_WRITE, SCN::min_scn()));
   do {
-    usleep(50);
+    ob_usleep(50);
     leader.palf_handle_impl_->get_access_mode(mode_version, access_mode);
   } while(access_mode != AccessMode::RAW_WRITE);
 }
@@ -1454,13 +1423,13 @@ void ObSimpleLogClusterTestEnv::switch_append_to_flashback(PalfHandleImplGuard &
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->get_access_mode(mode_version, access_mode));
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->change_access_mode(proposal_id, mode_version, AccessMode::RAW_WRITE, SCN::min_scn()));
   do {
-    usleep(50);
+    ob_usleep(50);
     leader.palf_handle_impl_->get_access_mode(mode_version, access_mode);
   } while(access_mode != AccessMode::RAW_WRITE);
   leader.palf_handle_impl_->get_role(unused_role, proposal_id, state);
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->change_access_mode(proposal_id, mode_version, AccessMode::FLASHBACK, SCN::min_scn()));
   do {
-    usleep(50);
+    ob_usleep(50);
     leader.palf_handle_impl_->get_access_mode(mode_version, access_mode);
   } while(access_mode != AccessMode::FLASHBACK);
 }
@@ -1475,7 +1444,7 @@ void ObSimpleLogClusterTestEnv::switch_flashback_to_append(PalfHandleImplGuard &
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->get_access_mode(mode_version, access_mode));
   EXPECT_EQ(OB_SUCCESS, leader.palf_handle_impl_->change_access_mode(proposal_id, mode_version, AccessMode::APPEND, SCN::min_scn()));
   do {
-    usleep(50);
+    ob_usleep(50);
     leader.palf_handle_impl_->get_access_mode(mode_version, access_mode);
   } while(access_mode != AccessMode::APPEND);
 }
@@ -1544,7 +1513,7 @@ int ObSimpleLogClusterTestEnv::wait_until_disk_space_to(const int64_t server_id,
         if (OB_FAIL(palf_env_impl->get_disk_usage(used_log_disk_space, total_log_disk_space))) {
           PALF_LOG(WARN, "get_disk_usage failed", K(used_log_disk_space), K(total_log_disk_space));
         } else {
-          usleep(10*1000);
+          ob_usleep(10*1000);
           PALF_LOG(INFO, "disk_space is not enough", K(used_log_disk_space), K(expect_log_disk_space));
         }
       }
@@ -1567,52 +1536,54 @@ int ObSimpleLogClusterTestEnv::update_server_log_disk(const int64_t log_disk_siz
 int ObSimpleLogClusterTestEnv::create_ls_shared_storage(int64_t id)
 {
   int ret = OB_SUCCESS;
-  ObBackupDest dest;
-  common::ObBackupIoAdapter adapter;
-  char uri[OB_MAX_URI_LENGTH] = {'\0'};
-  uint64_t storage_id = OB_INVALID_ID;
-  if (!need_shared_storage_) {
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_storage_dest_and_id_(dest, storage_id))) {
-    PALF_LOG(WARN, "get_storage_dest_ failed");
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.construct_ls_str_(dest, tenant_id_, ObLSID(id), uri, OB_MAX_URI_LENGTH))) {
-    PALF_LOG(WARN, "construct_ls_str_ failed", K(tenant_id_), K(id));
-  } else if (OB_FAIL(adapter.mkdir(uri, dest.get_storage_info()))) {
-    PALF_LOG(WARN, "mkdir failed", K(tenant_id_), K(id), K(uri));
-  } else {
-    PALF_LOG(INFO, "mkdir success", K(tenant_id_), K(id), K(uri));
-  }
+  UNUSED(id);
+//  ObBackupDest dest;
+//  common::ObBackupIoAdapter adapter;
+//  char uri[OB_MAX_URI_LENGTH] = {'\0'};
+//  uint64_t storage_id = OB_INVALID_ID;
+//  if (!need_shared_storage_) {
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_storage_dest_and_id_(dest, storage_id))) {
+//    PALF_LOG(WARN, "get_storage_dest_ failed");
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.construct_ls_str_(dest, tenant_id_, ObLSID(id), uri, OB_MAX_URI_LENGTH))) {
+//    PALF_LOG(WARN, "construct_ls_str_ failed", K(tenant_id_), K(id));
+//  } else if (OB_FAIL(adapter.mkdir(uri, dest.get_storage_info()))) {
+//    PALF_LOG(WARN, "mkdir failed", K(tenant_id_), K(id), K(uri));
+//  } else {
+//    PALF_LOG(INFO, "mkdir success", K(tenant_id_), K(id), K(uri));
+//  }
   return ret;
 }
 
 int ObSimpleLogClusterTestEnv::remove_ls_shared_storage(int64_t id)
 {
   int ret = OB_SUCCESS;
-  ObBackupDest dest;
-  uint64_t storage_id = OB_INVALID_ID;
-  common::ObBackupIoAdapter adapter;
-  char uri[OB_MAX_URI_LENGTH] = {'\0'};
-  block_id_t min_block_id = 0;
-  block_id_t max_block_id = 0;
-  if (!need_shared_storage_) {
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_storage_dest_and_id_(dest, storage_id))) {
-    PALF_LOG(WARN, "get_storage_dest_ failed");
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.construct_ls_str_(dest, tenant_id_, ObLSID(id), uri, OB_MAX_URI_LENGTH))) {
-    PALF_LOG(WARN, "construct_ls_str_ failed", K(tenant_id_), K(id));
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_oldest_block(tenant_id_, ObLSID(id), min_block_id))
-             && OB_ENTRY_NOT_EXIST != ret) {
-    PALF_LOG(WARN, "get_oldest_block failed", K(tenant_id_), K(id));
-  } else if (OB_ENTRY_NOT_EXIST == ret && FALSE_IT(min_block_id = 0)) {
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_newest_block(tenant_id_, ObLSID(id), min_block_id, max_block_id))
-             && OB_ENTRY_NOT_EXIST != ret) {
-    PALF_LOG(WARN, "get_newest_block failed", K(tenant_id_), K(id));
-  } else if (OB_ENTRY_NOT_EXIST == ret && FALSE_IT(max_block_id = 0)) {
-  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.delete_blocks(tenant_id_, ObLSID(id), min_block_id, max_block_id + 1))) {
-    PALF_LOG(WARN, "delete_blocks failed", K(tenant_id_), K(id), K(min_block_id), K(max_block_id));
-  } else if (OB_FAIL(adapter.del_dir(uri, dest.get_storage_info()))) {
-    PALF_LOG(WARN, "mkdir failed", K(tenant_id_), K(id), K(uri));
-  } else {
-    PALF_LOG(INFO, "removedir success", K(tenant_id_), K(id), K(uri));
-  }
+  UNUSED(id);
+//  ObBackupDest dest;
+//  uint64_t storage_id = OB_INVALID_ID;
+//  common::ObBackupIoAdapter adapter;
+//  char uri[OB_MAX_URI_LENGTH] = {'\0'};
+//  block_id_t min_block_id = 0;
+//  block_id_t max_block_id = 0;
+//  if (!need_shared_storage_) {
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_storage_dest_and_id_(dest, storage_id))) {
+//    PALF_LOG(WARN, "get_storage_dest_ failed");
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.construct_ls_str_(dest, tenant_id_, ObLSID(id), uri, OB_MAX_URI_LENGTH))) {
+//    PALF_LOG(WARN, "construct_ls_str_ failed", K(tenant_id_), K(id));
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_oldest_block(tenant_id_, ObLSID(id), min_block_id))
+//             && OB_ENTRY_NOT_EXIST != ret) {
+//    PALF_LOG(WARN, "get_oldest_block failed", K(tenant_id_), K(id));
+//  } else if (OB_ENTRY_NOT_EXIST == ret && FALSE_IT(min_block_id = 0)) {
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.get_newest_block(tenant_id_, ObLSID(id), min_block_id, max_block_id))
+//             && OB_ENTRY_NOT_EXIST != ret) {
+//    PALF_LOG(WARN, "get_newest_block failed", K(tenant_id_), K(id));
+//  } else if (OB_ENTRY_NOT_EXIST == ret && FALSE_IT(max_block_id = 0)) {
+//  } else if (OB_FAIL(SHARED_LOG_GLOBAL_UTILS.delete_blocks(tenant_id_, ObLSID(id), min_block_id, max_block_id + 1))) {
+//    PALF_LOG(WARN, "delete_blocks failed", K(tenant_id_), K(id), K(min_block_id), K(max_block_id));
+//  } else if (OB_FAIL(adapter.del_dir(uri, dest.get_storage_info()))) {
+//    PALF_LOG(WARN, "mkdir failed", K(tenant_id_), K(id), K(uri));
+//  } else {
+//    PALF_LOG(INFO, "removedir success", K(tenant_id_), K(id), K(uri));
+//  }
   return ret;
 }
 

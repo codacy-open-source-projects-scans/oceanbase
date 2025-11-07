@@ -12,15 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/compaction/ob_medium_compaction_mgr.h"
-#include "storage/tablet/ob_tablet_meta.h"
-#include "storage/tablet/ob_tablet.h"
-#include "logservice/ob_log_base_header.h"
-#include "storage/multi_data_source/mds_ctx.h"
-#include "storage/multi_data_source/mds_writer.h"
-#include "storage/tx/ob_trans_define.h"
-#include "storage/tablet/ob_tablet_obj_load_helper.h"
-#include "storage/tablet/ob_tablet_service_clog_replay_executor.h"
+#include "ob_medium_compaction_mgr.h"
+#include "src/logservice/replayservice/ob_tablet_replay_executor.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
 
 namespace oceanbase
@@ -30,6 +23,8 @@ using namespace common;
 
 namespace compaction
 {
+ERRSIM_POINT_DEF(ERRSIM_MDS_CTX_RESET);
+
 class ObTabletMediumClogReplayExecutor final : public logservice::ObTabletReplayExecutor
 {
 public:
@@ -103,10 +98,11 @@ ObTabletMediumCompactionInfoRecorder::ObTabletMediumCompactionInfoRecorder()
     tablet_handle_ptr_(nullptr),
     medium_info_(nullptr),
     allocator_(nullptr),
-    mds_ctx_(nullptr)
+    mds_ctx_(nullptr),
+    retry_times_(0)
 {
 #if defined(__x86_64__)
-  STATIC_ASSERT(sizeof(ObTabletMediumCompactionInfoRecorder) <= 104, "size of medium recorder is oversize");
+  STATIC_ASSERT(sizeof(ObTabletMediumCompactionInfoRecorder) <= 112, "size of medium recorder is oversize");
 #endif
 }
 
@@ -123,12 +119,14 @@ void ObTabletMediumCompactionInfoRecorder::destroy()
   free_allocated_info();
   ls_id_.reset();
   tablet_id_.reset();
+  retry_times_ = 0;
 }
 
 void ObTabletMediumCompactionInfoRecorder::reset()
 {
   if (is_inited_) {
     ObIStorageClogRecorder::reset();
+    retry_times_ = 0;
   }
 }
 
@@ -180,6 +178,38 @@ int ObTabletMediumCompactionInfoRecorder::submit_medium_compaction_info(
   medium_info_ = nullptr;
   if (OB_ALLOCATE_MEMORY_FAILED == ret || OB_BLOCK_FROZEN == ret) {
     ret = OB_EAGAIN;
+  }
+  return ret;
+}
+
+int ObTabletMediumCompactionInfoRecorder::reset_for_retry_in_lock()
+{
+  int ret = OB_SUCCESS;
+#ifdef ERRSIM
+  int tmp_ret = OB_SUCCESS;
+  bool force_reset = false;
+  if (OB_TMP_FAIL(ERRSIM_MDS_CTX_RESET)) {
+    force_reset = true;
+    LOG_INFO("ERRSIM ERRSIM_MDS_CTX_RESET force reset mds ctx", K(ret));
+  }
+#endif
+  if (OB_ISNULL(mds_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid mds ctx", K(ret), K_(tablet_id));
+#ifdef ERRSIM
+  } else if (force_reset && retry_times_ <= 1) {
+#else
+  } else if (OB_UNLIKELY(!mds_ctx_->can_write())) {
+#endif
+    retry_times_++;
+    if (retry_times_ >= MAX_RETRY_TIMES) {
+      ret = OB_EAGAIN;
+      LOG_WARN("reach max retry times", K(ret), K_(tablet_id), K_(mds_ctx));
+    } else {
+      mds_ctx_->~MdsCtx();
+      mds_ctx_ = new(mds_ctx_) mds::MdsCtx(mds::MdsWriter(mds::WriterType::MEDIUM_INFO));
+      LOG_INFO("reset mds ctx when update medium info", K(ret), KPC_(mds_ctx));
+    }
   }
   return ret;
 }
@@ -733,10 +763,11 @@ bool ObMediumCompactionInfoList::need_check_finish() const
 int ObMediumCompactionInfoList::get_next_schedule_info(
     const int64_t last_major_snapshot,
     const int64_t major_frozen_snapshot,
-    const bool is_mv_refresh_tablet,
+    const bool is_mv_refresh_or_restore_remote_tablet,
     ObMediumCompactionInfo::ObCompactionType &compaction_type,
     int64_t &schedule_scn,
-    ObCOMajorMergePolicy::ObCOMajorMergeType &co_major_merge_type) const
+    ObCOMajorMergePolicy::ObCOMajorMergeType &co_major_merge_type,
+    ObAdaptiveMergePolicy::AdaptiveMergeReason &merge_reason) const
 {
   int ret = OB_SUCCESS;
   DLIST_FOREACH_X(info, get_list(), OB_SUCC(ret)) {
@@ -745,10 +776,11 @@ int ObMediumCompactionInfoList::get_next_schedule_info(
     } else {
       if (info->is_medium_compaction()
           || info->medium_snapshot_ <= major_frozen_snapshot
-          || is_mv_refresh_tablet) {
+          || is_mv_refresh_or_restore_remote_tablet) {
         schedule_scn = info->medium_snapshot_;
         compaction_type = (ObMediumCompactionInfo::ObCompactionType)info->compaction_type_;
         co_major_merge_type = static_cast<ObCOMajorMergePolicy::ObCOMajorMergeType>(info->co_major_merge_type_);
+        merge_reason = (ObAdaptiveMergePolicy::AdaptiveMergeReason)info->medium_merge_reason_;
       }
       break; // found one unfinish medium info, loop end
     }

@@ -16,6 +16,7 @@
 #include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "share/ob_dml_sql_splicer.h"
 #include "share/schema/ob_schema_utils.h"
+#include "share/schema/ob_table_schema.h"
 
 namespace oceanbase
 {
@@ -354,7 +355,7 @@ int ObMLogInfo::fetch_mlog_info(ObISQLClient &sql_client, uint64_t tenant_id, ui
   }
   SMART_VAR(ObMySQLProxy::MySQLResult, res)
   {
-    ObMySQLResult *result = nullptr;
+    common::sqlclient::ObMySQLResult *result = nullptr;
     ObSqlString sql;
     if (OB_FAIL(sql.assign_fmt("SELECT * FROM %s WHERE tenant_id = 0 AND mlog_id = %ld",
                                OB_ALL_MLOG_TNAME, mlog_id))) {
@@ -405,7 +406,7 @@ int ObMLogInfo::batch_fetch_mlog_ids(ObISQLClient &sql_client, uint64_t tenant_i
   const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id);
   SMART_VAR(ObMySQLProxy::MySQLResult, res)
   {
-    ObMySQLResult *result = nullptr;
+    common::sqlclient::ObMySQLResult *result = nullptr;
     ObSqlString sql;
     uint64_t mlog_id = OB_INVALID_ID;
     if (OB_FAIL(sql.assign_fmt("SELECT mlog_id FROM %s WHERE tenant_id = 0", OB_ALL_MLOG_TNAME))) {
@@ -436,6 +437,38 @@ int ObMLogInfo::batch_fetch_mlog_ids(ObISQLClient &sql_client, uint64_t tenant_i
       OZ(mlog_ids.push_back(mlog_id));
     }
   }
+  return ret;
+}
+
+
+int ObMLogInfo::insert_mlog_info_for_rebuild_mlog(
+                ObISQLClient &sql_client,
+                const uint64_t tenant_id,
+                const uint64_t orig_mlog_id,
+                const ObTableSchema &new_mlog_schema)
+{
+  int ret = OB_SUCCESS;
+  ObMLogInfo mlog_info;
+  uint64_t new_mlog_tid = new_mlog_schema.get_table_id();
+  if (tenant_id == OB_INVALID_ID || orig_mlog_id == OB_INVALID_ID) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(tenant_id), K(orig_mlog_id));
+  } else if (OB_FAIL(ObMLogInfo::fetch_mlog_info(sql_client,
+              tenant_id, orig_mlog_id, mlog_info, false/*for_update*/))) {
+    LOG_WARN("failed to fetch mlog info", KR(ret), K(tenant_id), K(orig_mlog_id));
+  } else if (!mlog_info.is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("fetch invalid mlog info", K(ret), K(mlog_info));
+  } else if (OB_FALSE_IT(mlog_info.set_mlog_id(new_mlog_tid))) {
+  } else if (new_mlog_schema.get_schema_version() <= mlog_info.get_schema_version()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("new mlog's schema version small than old mlog", K(ret),
+             K(mlog_info), K(new_mlog_schema.get_schema_version()));
+  } else if (OB_FALSE_IT(mlog_info.set_schema_version(new_mlog_schema.get_schema_version()))) {
+  } else if (OB_FAIL(ObMLogInfo::insert_mlog_info(sql_client, mlog_info))) {
+    LOG_WARN("fail to insert mlog info", KR(ret), K(mlog_info));
+  }
+  LOG_INFO("insert mlog info when rebuild mlog", K(ret), K(mlog_info));
   return ret;
 }
 

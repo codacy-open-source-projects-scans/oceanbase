@@ -10,10 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "lib/wide_integer/ob_wide_integer.h"
 
-#include "lib/ob_errno.h"
-#include "lib/charset/ob_dtoa.h"
+#include "ob_wide_integer.h"
 #include "common/object/ob_object.h"
 
 namespace oceanbase
@@ -318,7 +316,10 @@ int to_number(const int64_t v, int16_t scale, uint32_t *digits, int32_t digit_le
   }
   if (integer > 0) {
     exp = 0;
-    digits[--idx] = static_cast<uint32_t>(integer % number::ObNumber::BASE);
+    uint32_t remain = static_cast<uint32_t>(integer % number::ObNumber::BASE);
+    if (remain > 0) {
+      digits[--idx] = remain;
+    }
     integer = integer / number::ObNumber::BASE;
     if (integer > 0) {
       exp++;

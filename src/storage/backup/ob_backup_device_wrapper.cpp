@@ -12,12 +12,9 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/backup/ob_backup_device_wrapper.h"
-#include "storage/backup/ob_backup_data_struct.h"
+#include "ob_backup_device_wrapper.h"
 #include "storage/backup/ob_backup_factory.h"
-#include "lib/restore/ob_object_device.h"
 #include "storage/restore/ob_tenant_restore_info_mgr.h"
-#include "share/backup/ob_backup_path.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -133,6 +130,9 @@ int ObBackupWrapperIODevice::open(
 {
   int ret = OB_SUCCESS;
   ObMutexGuard guard(mutex_);
+  const uint64_t io_tenant_id = MTL_ID();
+  ObObjectStorageTenantGuard object_storage_tenant_guard(
+    io_tenant_id, OB_IO_MANAGER.get_object_storage_io_timeout_ms(io_tenant_id) * 1000LL);
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("backup wrapper io device", K(ret));
@@ -292,10 +292,10 @@ int ObBackupWrapperIODevice::parse_storage_device_type_(
     device_type = OB_STORAGE_FILE;
   } else if (storage_type_prefix.prefix_match(OB_OSS_PREFIX)) {
     device_type = OB_STORAGE_OSS;
-  } else if (storage_type_prefix.prefix_match(OB_COS_PREFIX)) {
-    device_type = OB_STORAGE_COS;
   } else if (storage_type_prefix.prefix_match(OB_S3_PREFIX)) {
     device_type = OB_STORAGE_S3;
+  } else if (storage_type_prefix.prefix_match(OB_AZBLOB_PREFIX)) {
+    device_type = OB_STORAGE_AZBLOB;
   } else {
     ret = OB_INVALID_BACKUP_DEST;
     LOG_WARN("invaild device name info!", K(storage_type_prefix));

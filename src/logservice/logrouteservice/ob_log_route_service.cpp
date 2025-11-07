@@ -13,11 +13,7 @@
 #define USING_LOG_PREFIX OBLOG
 #include "ob_log_route_service.h"
 #include "lib/thread/thread_mgr.h"  // MTL
-#include "share/ob_thread_pool.h"
-#include "share/rc/ob_tenant_base.h"
 #include "share/ob_thread_mgr.h"    // TG*
-#include "ob_ls_log_stat_info.h"    // LogStatRecordArray
-#include "lib/utility/ob_tracepoint.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -51,7 +47,8 @@ ObLogRouteService::ObLogRouteService() :
     blacklist_survival_time_penalty_period_min_(0),
     blacklist_history_overdue_time_min_(0),
     blacklist_history_clear_interval_min_(0),
-    ls_svr_list_last_update_time_(OB_INVALID_TIMESTAMP)
+    ls_svr_list_last_update_time_(OB_INVALID_TIMESTAMP),
+    logservice_model_info_()
 {
 }
 
@@ -118,8 +115,8 @@ int ObLogRouteService::init(ObISQLClient *proxy,
   } else if (OB_FAIL(LOG_ROUTE_TIMER_INIT_FAIL)) {
     LOG_ERROR("ERRSIM: LOG_ROUTE_TIMER_INIT_FAIL");
 #endif
-  } else if (OB_FAIL(timer_.set_run_wrapper(MTL_CTX()))) {
-    LOG_WARN("timer set run wrapper failed", K(ret));
+  } else if (OB_FAIL(timer_.set_run_wrapper_with_ret(MTL_CTX()))) {
+    LOG_ERROR("timer set run wrapper failed", K(ret));
   } else if (OB_FAIL(timer_.init("LogRouter"))) {
     LOG_ERROR("fail to init itable gc timer", K(ret));
 #ifdef ERRSIM
@@ -134,6 +131,8 @@ int ObLogRouteService::init(ObISQLClient *proxy,
 #endif
   } else if (OB_FAIL(TG_SET_HANDLER_AND_START(tg_id_, *this))) {
     LOG_WARN("TG_SET_HANDLER_AND_START failed", KR(ret), K(tg_id_));
+  } else if (OB_FAIL(systable_queryer_.get_logservice_model_info(source_tenant_id, logservice_model_info_))) {
+    LOG_WARN("failed to get logservice model info", KR(ret), K(source_tenant_id));
   } else {
     cluster_id_ = cluster_id;
     source_tenant_id_ = source_tenant_id;
@@ -242,6 +241,7 @@ void ObLogRouteService::destroy()
   blacklist_history_overdue_time_min_ = 0;
   blacklist_history_clear_interval_min_ = 0;
   ls_svr_list_last_update_time_ = OB_INVALID_TIMESTAMP;
+  logservice_model_info_.reset(false);
 
   is_tenant_mode_ = false;
   is_inited_ = false;
@@ -802,6 +802,21 @@ int ObLogRouteService::async_server_query_req(
       LOG_WARN("registered task failed", KR(ret), K(cluster_id_), K(tenant_id), K(ls_id));
     }
   } else {}
+
+  return ret;
+}
+
+int ObLogRouteService::get_logservice_model_info(
+  ObLogserviceModelInfo &logservice_model_info)
+{
+  int ret = OB_SUCCESS;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_ERROR("ObLogRouteService has not been inited", KR(ret));
+  } else {
+    logservice_model_info = logservice_model_info_;
+  }
 
   return ret;
 }

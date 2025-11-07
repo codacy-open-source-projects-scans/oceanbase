@@ -356,6 +356,14 @@ REGISTER_OPERATOR(ObLogTableScan, PHY_BLOCK_SAMPLE_SCAN,
                   ObBlockSampleScanSpec, ObBlockSampleScanOp, ObBlockSampleScanOpInput,
                   VECTORIZED_OP);
 
+class ObLogTableScan;
+class ObDDLBlockSampleScanOpInput;
+class ObDDLBlockSampleScanSpec;
+class ObDDLBlockSampleScanOp;
+REGISTER_OPERATOR(ObLogTableScan, PHY_DDL_BLOCK_SAMPLE_SCAN,
+                  ObDDLBlockSampleScanSpec, ObDDLBlockSampleScanOp, ObDDLBlockSampleScanOpInput,
+                  VECTORIZED_OP);
+
 class ObLogMerge;
 class ObTableMergeSpec;
 class ObTableMergeOp;
@@ -396,6 +404,11 @@ class ObPxMultiPartSSTableInsertSpec;
 class ObPxMultiPartSSTableInsertOp;
 class ObPxMultiPartSSTableInsertOpInput;
 REGISTER_OPERATOR(ObLogInsert, PHY_PX_MULTI_PART_SSTABLE_INSERT, ObPxMultiPartSSTableInsertSpec, ObPxMultiPartSSTableInsertOp, ObPxMultiPartSSTableInsertOpInput);
+
+class ObPxMultiPartSSTableInsertVecSpec;
+class ObPxMultiPartSSTableInsertVecOp;
+class ObPxMultiPartSSTableInsertVecOpInput;
+REGISTER_OPERATOR(ObLogInsert, PHY_VEC_PX_MULTI_PART_SSTABLE_INSERT, ObPxMultiPartSSTableInsertVecSpec, ObPxMultiPartSSTableInsertVecOp, ObPxMultiPartSSTableInsertVecOpInput, VECTORIZED_OP, 0 /*version*/, SUPPORT_RICH_FORMAT, "PHY_VEC_PX_MULTI_PART_SSTABLE_INSERT");
 
 class ObLogicalOperator;
 class ObTableRowStoreSpec;
@@ -495,6 +508,12 @@ class ObUnpivotSpec;
 class ObUnpivotOp;
 REGISTER_OPERATOR(ObLogUnpivot, PHY_UNPIVOT, ObUnpivotSpec,
                   ObUnpivotOp, NOINPUT, VECTORIZED_OP);
+
+class ObUnpivotV2Spec;
+class ObUnpivotV2Op;
+REGISTER_OPERATOR(ObLogUnpivot, PHY_UNPIVOT_V2, ObUnpivotV2Spec, ObUnpivotV2Op,
+                  NOINPUT, VECTORIZED_OP, 0 /*+version*/, SUPPORT_RICH_FORMAT,
+                  "PHY_VEC_UNPIVOT");
 
 class ObLogForUpdate;
 class ObTableLockOpInput;

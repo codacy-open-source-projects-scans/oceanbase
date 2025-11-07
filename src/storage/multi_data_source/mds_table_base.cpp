@@ -10,11 +10,6 @@
  * See the Mulan PubL v2 for more details.
  */
 #include "mds_table_base.h"
-#include "lib/lock/ob_small_spin_lock.h"
-#include "lib/ob_errno.h"
-#include "lib/profile/ob_trace_id.h"
-#include "ob_clock_generator.h"
-#include "share/scn.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/compaction/ob_schedule_dag_func.h"
 #include "storage/multi_data_source/ob_mds_table_merge_dag_param.h"
@@ -51,7 +46,7 @@ int MdsTableBase::advance_state_to(State new_state) const
 int MdsTableBase::init(const ObTabletID tablet_id,
                        const share::ObLSID ls_id,
                        const share::SCN mds_ckpt_scn_from_tablet,// this is used to filter replayed nodes after removed action
-                       ObTabletPointer *pointer,
+                       ObTabletBasePointer *pointer,
                        ObMdsTableMgr *p_mgr)
 {
   int ret = OB_SUCCESS;
@@ -93,7 +88,7 @@ int MdsTableBase::register_to_mds_table_mgr()
   return ret;
 }
 
-void MdsTableBase::mark_removed_from_t3m(ObTabletPointer *pointer)
+void MdsTableBase::mark_removed_from_t3m(ObTabletBasePointer *pointer)
 {
   MDS_TG(1_ms);
   int ret = OB_SUCCESS;
@@ -186,7 +181,7 @@ int MdsTableBase::get_ls_max_consequent_callbacked_scn_(share::SCN &max_conseque
 int MdsTableBase::merge(const int64_t construct_sequence, const share::SCN &flushing_scn)
 {
   int ret = OB_SUCCESS;
-  ObMdsTableMergeDagParam param;
+  ObTabletMdsMiniMergeDagParam param;
   param.ls_id_ = ls_id_;
   param.tablet_id_ = tablet_id_;
   param.flush_scn_ = flushing_scn;

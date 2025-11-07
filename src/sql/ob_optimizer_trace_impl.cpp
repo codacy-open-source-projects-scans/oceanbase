@@ -11,26 +11,9 @@
  */
 
 #define USING_LOG_PREFIX SQL
-#include "lib/utility/ob_utility.h"
-#include "lib/string/ob_sql_string.h"
-#include "share/ob_errno.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/oblog/ob_log_module.h"
-#include "sql/ob_optimizer_trace_impl.h"
-#include "sql/ob_sql_utils.h"
-#include "sql/resolver/dml/ob_dml_stmt.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
+#include "ob_optimizer_trace_impl.h"
 #include "share/ob_version.h"
-#include "sql/resolver/ddl/ob_explain_stmt.h"
-#include "sql/optimizer/ob_log_plan.h"
 #include "sql/optimizer/ob_log_values.h"
-#include "sql/optimizer/ob_join_order.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "lib/file/file_directory_utils.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/optimizer/ob_dynamic_sampling.h"
 #include "sql/optimizer/ob_skyline_prunning.h"
 #include "sql/optimizer/ob_access_path_estimation.h"
 
@@ -315,16 +298,7 @@ int ObOptimizerTraceImpl::append_lower(const char* msg)
 
 int ObOptimizerTraceImpl::append_ptr(const void *ptr)
 {
-  int ret = OB_SUCCESS;
-  char buf[32] = {0};
-  int64_t buf_len = 32;
-  buf_len = snprintf(buf, buf_len, "ptr:%p", ptr);
-  if (buf_len > 0) {
-    if (OB_FAIL(log_handle_.append(buf, buf_len))) {
-      LOG_WARN("failed to append value", K(ret));
-    }
-  }
-  return ret;
+  return append_format<32>("ptr:%p", ptr);
 }
 
 int ObOptimizerTraceImpl::append()
@@ -362,58 +336,22 @@ int ObOptimizerTraceImpl::append(const common::ObString &msg)
 
 int ObOptimizerTraceImpl::append(const int64_t &value)
 {
-  int ret = OB_SUCCESS;
-  char buf[32] = {0};
-  int64_t buf_len = 32;
-  buf_len = snprintf(buf, buf_len, "%ld", value);
-  if (buf_len > 0) {
-    if (OB_FAIL(log_handle_.append(buf, buf_len))) {
-      LOG_WARN("failed to append value", K(ret));
-    }
-  }
-  return ret;
+  return append_format<32>("%ld", value);
 }
 
 int ObOptimizerTraceImpl::append(const uint64_t &value)
 {
-  int ret = OB_SUCCESS;
-  char buf[32] = {0};
-  int64_t buf_len = 32;
-  buf_len = snprintf(buf, buf_len, "%lu", value);
-  if (buf_len > 0) {
-    if (OB_FAIL(log_handle_.append(buf, buf_len))) {
-      LOG_WARN("failed to append value", K(ret));
-    }
-  }
-  return ret;
+  return append_format<32>("%lu", value);
 }
 
 int ObOptimizerTraceImpl::append(const uint32_t &value)
 {
-  int ret = OB_SUCCESS;
-  char buf[32] = {0};
-  int64_t buf_len = 32;
-  buf_len = snprintf(buf, buf_len, "%u", value);
-  if (buf_len > 0) {
-    if (OB_FAIL(log_handle_.append(buf, buf_len))) {
-      LOG_WARN("failed to append value", K(ret));
-    }
-  }
-  return ret;
+  return append_format<32>("%u", value);
 }
 
 int ObOptimizerTraceImpl::append(const double & value)
 {
-  int ret = OB_SUCCESS;
-  char buf[32] = {0};
-  int64_t buf_len = 32;
-  buf_len = snprintf(buf, buf_len, "%f", value);
-  if (buf_len > 0) {
-    if (OB_FAIL(log_handle_.append(buf, buf_len))) {
-      LOG_WARN("failed to append value", K(ret));
-    }
-  }
-  return ret;
+  return append_format<32>("%f", value);
 }
 
 int ObOptimizerTraceImpl::append(const ObObj& value)
@@ -628,11 +566,17 @@ int ObOptimizerTraceImpl::append(const Path *path)
     new_line();
     append("tables:", path->parent_);
     if (path->is_access_path()) {
+      new_line();
       const AccessPath& ap = static_cast<const AccessPath&>(*path);
       const ObIndexMetaInfo &index_info = ap.est_cost_info_.index_meta_info_;
-      append("index id:", ap.index_id_, ",global index:", ap.is_global_index_, ", use column store:", ap.use_column_store_);
+      if (ap.is_index_merge_path()) {
+        const IndexMergePath& index_merge_path = static_cast<const IndexMergePath&>(ap);
+        append("is index merge: True, index merge tree:", index_merge_path.root_);
+      } else {
+        append("is index merge: False, index id:", ap.index_id_, ", global index:", ap.is_global_index_, ", unique index:", index_info.is_unique_index_);
+      }
       new_line();
-      append("use das:", ap.use_das_, ",unique index:", index_info.is_unique_index_, ",index back:", index_info.is_index_back_);
+      append("use column store:", ap.use_column_store_, ", use das:", ap.use_das_, ", index back:", index_info.is_index_back_);
       new_line();
       append("table rows:", ap.get_table_row_count(), ",phy_query_range_row_count:", ap.get_phy_query_range_row_count());
       new_line();
@@ -643,10 +587,23 @@ int ObOptimizerTraceImpl::append(const Path *path)
       append("prefix filters:", ap.est_cost_info_.prefix_filters_, ",selectivity:", ap.est_cost_info_.prefix_filter_sel_);
       new_line();
       append("pushdown prefix filters:", ap.est_cost_info_.pushdown_prefix_filters_, ",selectivity:", ap.est_cost_info_.pushdown_prefix_filter_sel_);
+      if (ap.use_skip_scan_ != OptSkipScanState::SS_DISABLE) {
+        new_line();
+        append("ss range filters:", ap.est_cost_info_.ss_postfix_range_filters_, ",selectivity:", ap.est_cost_info_.ss_postfix_range_filters_sel_);
+        append(",ss prefix ndv:", ap.est_cost_info_.ss_prefix_ndv_);
+      }
       new_line();
       append("postfix filters:", ap.est_cost_info_.postfix_filters_, ",selectivity:", ap.est_cost_info_.postfix_filter_sel_);
       new_line();
       append("table filters:", ap.est_cost_info_.table_filters_, ",selectivity:", ap.est_cost_info_.table_filter_sel_);
+      if (!ap.est_cost_info_.real_range_exprs_.empty()) {
+        new_line();
+        append("precise range filters:", ap.est_cost_info_.precise_range_filters_);
+        new_line();
+        append("unprecise range filters:", ap.est_cost_info_.unprecise_range_filters_);
+      }
+      new_line();
+      append("output row count before revising:", ap.get_output_row_count());
     }
     new_line();
     append("cost:", path->cost_, ",card:", path->parent_->get_output_rows(),
@@ -654,6 +611,7 @@ int ObOptimizerTraceImpl::append(const Path *path)
     new_line();
     append("parallel:", path->parallel_, ", parallel rule:", path->op_parallel_rule_);
     append(", server count:", path->server_cnt_);
+    new_line();
     append(path->get_sharding());
     decrease_section();
   }
@@ -681,6 +639,7 @@ int ObOptimizerTraceImpl::append(const JoinPath* join_path)
             ",left need sort:", join_path->left_need_sort_, ",left prefix pos:", join_path->left_prefix_pos_,
             ",right need sort:", join_path->right_need_sort_, ",right prefix pos:", join_path->right_prefix_pos_);
     }
+    append("use hybrid hash:", join_path->use_hybrid_hash_dm_);
     new_line();
     append(join_path->get_sharding());
     new_line();
@@ -704,20 +663,26 @@ int ObOptimizerTraceImpl::append(const JoinPath* join_path)
     new_line();
     append("right path:");
     if (OB_NOT_NULL(join_path->right_path_) && OB_NOT_NULL(join_path->right_path_->parent_)) {
-      increase_section();
-      new_line();
-      append("tables:", join_path->right_path_->parent_);
-      new_line();
-      append_ptr(join_path->right_path_);
-      new_line();
-      append("cost:", join_path->right_path_->cost_, ",card:", join_path->right_path_->parent_->get_output_rows(),
-            ",width:", join_path->right_path_->parent_->get_output_row_size());
-      new_line();
-      append("parallel:", join_path->right_path_->parallel_, ",server count:", join_path->right_path_->server_cnt_);
-      if (NULL != join_path->right_path_->get_sharding()) {
-        append(",part count:", join_path->right_path_->get_sharding()->get_part_cnt());
+      if (NESTED_LOOP_JOIN == join_path->join_algo_ &&
+          join_path->right_path_->is_access_path() &&
+          join_path->right_path_->is_inner_path()) {
+        append(join_path->right_path_);
+      } else {
+        increase_section();
+        new_line();
+        append("tables:", join_path->right_path_->parent_);
+        new_line();
+        append_ptr(join_path->right_path_);
+        new_line();
+        append("cost:", join_path->right_path_->cost_, ",card:", join_path->right_path_->parent_->get_output_rows(),
+              ",width:", join_path->right_path_->parent_->get_output_row_size());
+        new_line();
+        append("parallel:", join_path->right_path_->parallel_, ",server count:", join_path->right_path_->server_cnt_);
+        if (NULL != join_path->right_path_->get_sharding()) {
+          append(",part count:", join_path->right_path_->get_sharding()->get_part_cnt());
+        }
+        decrease_section();
       }
-      decrease_section();
     }
     decrease_section();
   }
@@ -766,8 +731,8 @@ int ObOptimizerTraceImpl::append(const ObShardingInfo *info)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(info)) {
+    append("null sharding info");
   } else {
-    new_line();
     append("location type:", info->get_location_type());
     append(", partition count:", info->get_part_cnt());
   }
@@ -791,6 +756,7 @@ int ObOptimizerTraceImpl::append(const CandidatePlan &plan)
     new_line();
     append("parallel:", plan.plan_tree_->get_parallel(), ", parallel rule:", plan.plan_tree_->get_op_parallel_rule());
     append(", server count:", plan.plan_tree_->get_server_cnt());
+    new_line();
     append(plan.plan_tree_->get_sharding());
     decrease_section();
   }
@@ -812,6 +778,9 @@ int ObOptimizerTraceImpl::append(const ObDSResultItem &ds_result)
     LOG_WARN("failed to append msg", K(ret));
   } else if (OB_DS_INDEX_SCAN_STAT == ds_result.type_ &&
              OB_FAIL(append(", tpye:index scan"))) {
+    LOG_WARN("failed to append msg", K(ret));
+  } else if (OB_DS_INDEX_SKIP_SCAN_STAT == ds_result.type_ &&
+             OB_FAIL(append(", tpye:index skip scan"))) {
     LOG_WARN("failed to append msg", K(ret));
   } else if (OB_DS_INDEX_BACK_STAT == ds_result.type_ &&
              OB_FAIL(append(", tpye:index back"))) {
@@ -852,12 +821,12 @@ int ObOptimizerTraceImpl::append(const ObDSResultItem &ds_result)
   } else if (OB_FAIL(append("ds_degree:",
                             stat->get_ds_degree()))) {
     LOG_WARN("failed to append msg", K(ret));
-  } else if (OB_FAIL(new_line())) {
-    LOG_WARN("failed to append msg", K(ret));
   } else {
     for (int64_t j = 0; OB_SUCC(ret) && j < stat->get_ds_col_stats().count(); ++j) {
       const ObOptDSColStat &col_stat = stat->get_ds_col_stats().at(j);
-      if (OB_FAIL(append("column id:", col_stat.column_id_, ":"))) {
+      if (OB_FAIL(new_line())) {
+        LOG_WARN("failed to append msg", K(ret));
+      } else if (OB_FAIL(append("column id", col_stat.column_id_, ":"))) {
         LOG_WARN("failed to append msg", K(ret));
       } else if (OB_FALSE_IT(increase_section())) {
       } else if (OB_FAIL(new_line())) {
@@ -872,13 +841,14 @@ int ObOptimizerTraceImpl::append(const ObDSResultItem &ds_result)
         LOG_WARN("failed to append msg", K(ret));
       } else if (OB_FAIL(append("degree:", col_stat.degree_))) {
         LOG_WARN("failed to append msg", K(ret));
-      } else if (OB_FAIL(new_line())) {
-        LOG_WARN("failed to append msg", K(ret));
       } else {
         decrease_section();
       }
     }
     decrease_section();
+    if (FAILEDx(new_line())) {
+      LOG_WARN("failed to append msg", K(ret));
+    }
   }
   return ret;
 }
@@ -895,16 +865,27 @@ int ObOptimizerTraceImpl::append(const ObSkylineDim &dim)
     case ObSkylineDim::INTERESTING_ORDER: {
       const ObInterestOrderDim &order_dim = static_cast<const ObInterestOrderDim &>(dim);
       append("[intersting order dim] is interesting order:", order_dim.is_interesting_order_);
-      append(", need index back:", order_dim.need_index_back_);
-      append(", can extract range:", order_dim.can_extract_range_);
-      append(", column ids:", common::ObArrayWrap<uint64_t>(order_dim.column_ids_,  order_dim.column_cnt_));
-      append(", filter columns:", common::ObArrayWrap<uint64_t>(order_dim.filter_column_ids_, order_dim.filter_column_cnt_));
+      append(", column ids:", order_dim.column_ids_);
       break;
     }
     case ObSkylineDim::QUERY_RANGE: {
       const ObQueryRangeDim &range_dim = static_cast<const ObQueryRangeDim &>(dim);
       append("[query range dim] contain false range:", range_dim.contain_always_false_);
-      append(", rowkey ids:", common::ObArrayWrap<uint64_t>(range_dim.column_ids_, range_dim.column_cnt_));
+      append(", rowkey ids:", range_dim.range_column_ids_);
+      if (!range_dim.ss_range_column_ids_.empty()) {
+        append(", skip scan range ids:", range_dim.ss_range_column_ids_);
+        append(", skip scan offset ids:", range_dim.ss_offset_column_ids_);
+      }
+      break;
+    }
+    case ObSkylineDim::UNIQUE_RANGE: {
+      const ObUniqueRangeDim &unique_dim = static_cast<const ObUniqueRangeDim &>(dim);
+      append("[unique query range dim] range count:", unique_dim.range_cnt_);
+      break;
+    }
+    case ObSkylineDim::SHARDING_INFO: {
+      const ObShardingInfoDim &sharding_dim = static_cast<const ObShardingInfoDim &>(dim);
+      append("[sharding info dim]:", sharding_dim.sharding_info_, sharding_dim.is_single_get_ ? "(TABLE GET)" : "");
       break;
     }
     default: {
@@ -955,6 +936,7 @@ int ObOptimizerTraceImpl::append(const ObBatchEstTasks& task)
   const ObIArray<obrpc::ObEstPartResElement> &res = task.res_.index_param_res_;
   int64_t cnt = MIN(params.count(), res.count());
   for (int64_t i = 0; OB_SUCC(ret) && i < cnt; i ++) {
+    const ObIArray<ObEstRowCountRecord> &est_records = res.at(i).est_records_;
     if (i != 0 && OB_FAIL(new_line())) {
       LOG_WARN("failed to append", K(ret));
     } else if (OB_FAIL(append("( index", params.at(i).index_id_))) {
@@ -972,6 +954,22 @@ int ObOptimizerTraceImpl::append(const ObBatchEstTasks& task)
     } else if (!res.at(i).reliable_ && OB_FAIL(append(" [NOT RELIABLE]"))) {
       LOG_WARN("failed to append", K(ret));
     }
+    increase_section();
+    for (int64_t j = 0; OB_SUCC(ret) && j < est_records.count(); j ++) {
+      const ObEstRowCountRecord &record = est_records.at(j);
+      if (OB_FAIL(new_line())) {
+        LOG_WARN("failed to append", K(ret));
+      } else if (OB_FAIL(append("table type:", record.table_type_))) {
+        LOG_WARN("failed to append", K(ret));
+      } else if (OB_FAIL(append(", version:", record.version_range_))) {
+        LOG_WARN("failed to append", K(ret));
+      } else if (OB_FAIL(append(", logical rows:", record.logical_row_count_))) {
+        LOG_WARN("failed to append", K(ret));
+      } else if (OB_FAIL(append(", physical rows:", record.physical_row_count_))) {
+        LOG_WARN("failed to append", K(ret));
+      }
+    }
+    decrease_section();
   }
   return ret;
 }
@@ -979,6 +977,49 @@ int ObOptimizerTraceImpl::append(const ObBatchEstTasks& task)
 int ObOptimizerTraceImpl::append(const ObTabletID& id)
 {
   return append(id.id());
+}
+
+int ObOptimizerTraceImpl::append(const ObIndexMergeNode *node)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(node)) {
+    // do nothing
+  } else if (node->is_merge_node()) {
+    if (INDEX_MERGE_UNION == node->node_type_) {
+      if (OB_FAIL(append("OR("))) {
+        LOG_WARN("failed to append node type or", K(ret));
+      }
+    } else if (INDEX_MERGE_INTERSECT == node->node_type_) {
+      if (OB_FAIL(append("AND("))) {
+        LOG_WARN("failed to append node type and", K(ret));
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < node->children_.count(); ++i) {
+      if (OB_FAIL(SMART_CALL(append(node->children_.at(i))))) {
+        LOG_WARN("failed to append child node", K(ret), K(i));
+      } else if (i < node->children_.count() - 1 && OB_FAIL(append(", "))) {
+        LOG_WARN("failed to append comma", K(ret));
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(append(")"))) {
+      LOG_WARN("failed to append right bracket", K(ret));
+    }
+  } else { // is scan node
+    if (OB_FAIL(append(node->index_tid_, ":"))) {
+      LOG_WARN("failed to append index tid", K(ret));
+    } else if (OB_FAIL(append(node->filter_))) {
+      LOG_WARN("failed to append filter", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObOptimizerTraceImpl::append(const ObVersionRange& version_range)
+{
+  return append_format<128>("%ld-%ld-%ld",
+                            version_range.base_version_,
+                            version_range.multi_version_start_,
+                            version_range.snapshot_version_);
 }
 
 template <>

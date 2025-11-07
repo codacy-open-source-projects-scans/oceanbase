@@ -84,6 +84,8 @@ struct VectorCasterHelper
     } else if (OB_SUCCESS != ret && CM_IS_WARN_ON_FAIL(cast_mode)) {
       warning = ret;
       ret = OB_SUCCESS;
+    } else if (ret == OB_INVALID_ZERO_DATE) {
+      ret = OB_INVALID_DATE_VALUE;
     }
     return ret;
   }
@@ -254,6 +256,7 @@ struct VectorCasterUtil
           || OB_DATA_OUT_OF_RANGE == warning                      \
           || OB_ERR_DATA_TRUNCATED == warning                     \
           || OB_ERR_DOUBLE_TRUNCATED == warning                   \
+          || OB_INVALID_ZERO_DATE == warning                      \
           || OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD == warning) { \
         res_vec_->set_##func_val(idx, value);                      \
       } else if (CM_IS_ZERO_ON_WARN(cast_mode)) {                 \
@@ -269,6 +272,10 @@ struct VectorCasterUtil
   SET_RES_OBJ(expr.extra_, int, 0, value, idx)
 #define SET_RES_UINT(idx, value)        \
   SET_RES_OBJ(expr.extra_, uint,0, value, idx)
+#define SET_RES_DATE(idx, value)        \
+  SET_RES_OBJ(expr.extra_, date, ObTimeConverter::ZERO_DATE, value, idx)
+#define SET_RES_DATETIME(idx, value)    \
+  SET_RES_OBJ(expr.extra_, datetime,ObTimeConverter::ZERO_DATETIME, value, idx)
 
 #define EVAL_COMMON_ARG()                                                                   \
   int ret = OB_SUCCESS;                                                                     \
@@ -283,6 +290,8 @@ struct VectorCasterUtil
   ObCollationType out_cs_type = expr.datum_meta_.cs_type_;                                  \
   ObScale out_scale = expr.datum_meta_.scale_;                                              \
   ObPrecision out_prec = expr.datum_meta_.precision_;                                       \
+  bool is_diagnosis = ctx.exec_ctx_.get_my_session()->is_diagnosis_enabled();             \
+  ObDiagnosisManager& diagnosis_manager = ctx.exec_ctx_.get_diagnosis_manager();            \
   if (eval_flags.accumulate_bit_cnt(bound) == bound.range_size()) {                         \
   } else
 
@@ -291,6 +300,11 @@ struct VectorCasterUtil
 #include "sql/engine/expr/vector_cast/string_float.ipp"
 #include "sql/engine/expr/vector_cast/cast_to_decimalint.ipp"
 #include "sql/engine/expr/vector_cast/cast_to_int.ipp"
+#include "sql/engine/expr/vector_cast/cast_to_float.ipp"
+#include "sql/engine/expr/vector_cast/cast_to_date.ipp"
+#include "sql/engine/expr/vector_cast/cast_to_number.ipp"
+#include "sql/engine/expr/vector_cast/cast_to_datetime.ipp"
+#include "sql/engine/expr/vector_cast/cast_to_string.ipp"
 
 #undef DEF_VECTOR_IMPLICIT_CAST_FUNC
 #undef CAST_FAIL

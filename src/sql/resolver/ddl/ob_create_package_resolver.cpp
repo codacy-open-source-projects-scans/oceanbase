@@ -13,12 +13,8 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "ob_create_package_resolver.h"
 #include "ob_create_package_stmt.h"
-#include "share/ob_rpc_struct.h"
-#include "sql/resolver/ob_resolver_utils.h"
-#include "pl/ob_pl.h"
 #include "pl/ob_pl_package.h"
 #include "pl/ob_pl_compile.h"
-#include "lib/charset/ob_charset.h"
 
 namespace oceanbase
 {
@@ -31,6 +27,9 @@ namespace sql
 int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
+  bool need_reset_default_database = false;
+  uint64_t old_database_id = OB_INVALID_ID;
+  ObSqlString old_database_name;
   CK (T_PACKAGE_CREATE == parse_tree.type_);
   CK (CREATE_PACKAGE_NODE_CHILD_COUNT == parse_tree.num_child_);
   CK (OB_NOT_NULL(parse_tree.children_));
@@ -87,6 +86,26 @@ int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
       OZ (resolve_invoke_accessible(package_clause_node,
                                     is_invoker_right,
                                     has_accessible_by));
+      if (OB_SUCC(ret)) {
+        uint64_t database_id = OB_INVALID_ID;
+        const share::schema::ObDatabaseSchema *database_schema = NULL;
+        OZ (schema_checker_->get_schema_guard()->get_database_id(session_info_->get_effective_tenant_id(), db_name, database_id));
+        OZ (schema_checker_->get_schema_guard()->get_database_schema(session_info_->get_effective_tenant_id(), database_id, database_schema));
+        if (OB_FAIL(ret) || OB_ISNULL(database_schema)) {
+          ret = OB_ERR_BAD_DATABASE;
+          LOG_WARN("fail to get database schema", K(ret));
+          LOG_USER_ERROR(OB_ERR_BAD_DATABASE, db_name.length(), db_name.ptr());
+        }
+        if (OB_FAIL(ret)) {
+        } else if (database_schema->get_database_name_str() != session_info_->get_database_name()) {
+          OZ (old_database_name.append(session_info_->get_database_name()));
+          OX (old_database_id = session_info_->get_database_id());
+          OZ (session_info_->set_default_database(database_schema->get_database_name_str()));
+          OX (session_info_->set_database_id(database_id));
+          OX (need_reset_default_database = true);
+        }
+      }
+
       //NOTE: null package stmts is possible
       if (OB_SUCC(ret) && OB_NOT_NULL(package_stmts_node)) {
         uint64_t db_id = OB_INVALID_ID;
@@ -194,6 +213,7 @@ int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
                                                     create_package_arg.dependency_infos_,
                                                     ObObjectType::PACKAGE,
                                                     0, dep_attr, dep_attr));
+            OZ (ob_add_ddl_dependency(package_ast.get_dependency_table(), create_package_arg));
           }
           if (OB_SUCC(ret)) {
             ObErrorInfo &error_info = create_package_arg.error_info_;
@@ -222,6 +242,7 @@ int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
                                                 package_body_info));
           if (OB_SUCC(ret) && OB_NOT_NULL(package_body_info) && !package_body_info->is_for_trigger()) {
             ObString source = package_body_info->get_source();
+            bool is_wrap = false;
             OZ (ObSQLUtils::convert_sql_text_from_schema_for_resolve(
                   *allocator_, session_info_->get_dtc_params(), source));
             OZ (package_body_ast.init(db_name,
@@ -237,7 +258,8 @@ int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
             OZ (compiler.analyze_package(source,
                                          &(package_ast.get_body()->get_namespace()),
                                          package_body_ast,
-                                         false));
+                                         false,
+                                         is_wrap));
             if (OB_SUCC(ret)) {
               obrpc::ObCreatePackageArg &create_package_arg = stmt->get_create_package_arg();
               ObIArray<ObRoutineInfo> &routine_list = create_package_arg.public_routine_infos_;
@@ -274,6 +296,15 @@ int ObCreatePackageResolver::resolve(const ParseNode &parse_tree)
       // 2274的升级脚本还会用最新的Package脚本重建这个包, 为了避免产生的Warning使得升级失败, 这里把Warning清理掉
       common::ob_reset_tsi_warning_buffer();
     }
+    if (need_reset_default_database) {
+      int tmp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (tmp_ret = session_info_->set_default_database(old_database_name.string()))) {
+        ret = OB_SUCCESS == ret ? tmp_ret : ret;
+        LOG_ERROR("failed to reset default database", K(ret), K(tmp_ret), K(old_database_name));
+      } else {
+        session_info_->set_database_id(old_database_id);
+      }
+    }
   }
   return ret;
 }
@@ -293,7 +324,8 @@ int ObCreatePackageResolver::resolve_invoke_accessible(const ParseNode *package_
         if (T_SP_INVOKE == node->type_) {
           if (has_sp_invoker_clause) {
             ret = OB_ERR_DECL_MORE_THAN_ONCE;
-            LOG_WARN("PLS-00371: at most one declaration for 'string' is permitted",
+            LOG_USER_ERROR(OB_ERR_DECL_MORE_THAN_ONCE, static_cast<int>(strlen("AUTHID")), "AUTHID");
+            LOG_WARN("PLS-00371: at most one declaration for 'AUTHID' is permitted",
                       K(ret), K(node->type_), K(has_sp_invoker_clause));
           } else {
             has_sp_invoker_clause = true;
@@ -304,7 +336,8 @@ int ObCreatePackageResolver::resolve_invoke_accessible(const ParseNode *package_
         } else if (T_SP_ACCESSIBLE_BY == node->type_) {
           if (has_accessible_by_clause) {
             ret = OB_ERR_DECL_MORE_THAN_ONCE;
-            LOG_WARN("PLS-00371: at most one declaration for 'string' is permitted",
+            LOG_USER_ERROR(OB_ERR_DECL_MORE_THAN_ONCE, static_cast<int>(strlen("ACCESSIBLE BY")), "ACCESSIBLE BY");
+            LOG_WARN("PLS-00371: at most one declaration for 'ACCESSIBLE BY' is permitted",
                       K(ret), K(node->type_), K(has_accessible_by_clause));
           } else {
             has_accessible_by_clause = true;
@@ -409,6 +442,9 @@ int ObCreatePackageResolver::resolve_functions_spec(const ObPackageInfo &package
     } */else {
       if (pl_routine_info->is_deterministic()) {
         routine_info.set_deterministic();
+      }
+      if (pl_routine_info->is_result_cache()) {
+        routine_info.set_result_cache();
       }
       if (pl_routine_info->is_parallel_enable()) {
         routine_info.set_parallel_enable();
@@ -635,7 +671,8 @@ int ObCreatePackageBodyResolver::resolve(const ParseNode &parse_tree)
 
           OX (source = package_spec_info->get_source());
           OZ (ObSQLUtils::convert_sql_text_from_schema_for_resolve(tmp_allocator, session_info_->get_dtc_params(), source));
-          OZ (compiler.analyze_package(source,NULL, package_spec_ast, false));
+          bool is_wrap = false;
+          OZ (compiler.analyze_package(source,NULL, package_spec_ast, false, is_wrap));
 
           OZ (package_body_ast.init(db_name,
                                     package_name,
@@ -648,7 +685,8 @@ int ObCreatePackageBodyResolver::resolve(const ParseNode &parse_tree)
           OZ (compiler.analyze_package(package_body_src,
                                     &(package_spec_ast.get_body()->get_namespace()),
                                     package_body_ast,
-                                    false));
+                                    false,
+                                    is_wrap));
 
           if (OB_SUCC(ret)) {
             if (package_body_ast.get_serially_reusable()
@@ -707,6 +745,7 @@ int ObCreatePackageBodyResolver::resolve(const ParseNode &parse_tree)
                                                 stmt->get_create_package_arg().dependency_infos_,
                                                 ObObjectType::PACKAGE_BODY,
                                                 0, dep_attr, dep_attr));
+            OZ (ob_add_ddl_dependency(package_body_ast.get_dependency_table(), stmt->get_create_package_arg()));
           }
         }
       } // end of WIHT_CONTEXT

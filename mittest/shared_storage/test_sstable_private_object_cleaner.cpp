@@ -17,16 +17,18 @@
 #define protected public
 
 #include "mittest/mtlenv/mock_tenant_module_env.h"
-#include "unittest/storage/init_basic_struct.h"
 #include "unittest/storage/test_tablet_helper.h"
-#include "share/schema/ob_table_schema.h"
-#include "storage/blocksstable/ob_macro_block_writer.h"
-#include "storage/blocksstable/ob_sstable_private_object_cleaner.h"
-#include "storage/compaction/ob_compaction_util.h"
 
 namespace oceanbase
 {
-using namespace common;
+
+namespace common
+{
+bool is_tenant_has_sslog(const uint64_t tenant_id)
+{
+  return false;
+}
+}
 
 namespace blocksstable
 {
@@ -192,13 +194,16 @@ void TestSSTablePrivateObjectCleaner::create_ls(
 int TestSSTablePrivateObjectCleaner::prepare_data_store_desc(ObWholeDataStoreDesc &data_desc)
 {
   int ret = OB_SUCCESS;
+  const share::SCN reorganization_scn(share::SCN::min_scn());
   ret = data_desc.init(
       false /*is_ddl*/, TestSSTablePrivateObjectCleaner::table_schema_,
       ObLSID(ls_id_), ObTabletID(tablet_id_), compaction::MAJOR_MERGE,
       ObTimeUtility::fast_current_time() /*snapshot_version*/,
       DATA_CURRENT_VERSION,
       TestSSTablePrivateObjectCleaner::table_schema_.get_micro_index_clustered(),
-      0 /*transfer_seq*/);
+      0 /*transfer_seq*/,
+      0 /*concurrent_cnt*/,
+      reorganization_scn);
   data_desc.get_desc().sstable_index_builder_ = nullptr;
   return ret;
 }

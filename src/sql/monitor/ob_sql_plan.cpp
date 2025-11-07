@@ -13,19 +13,8 @@
 
 #define USING_LOG_PREFIX SQL
 
-#include "sql/optimizer/ob_logical_operator.h"
-#include "sql/engine/ob_physical_plan.h"
 #include "observer/ob_inner_sql_connection_pool.h"
-#include "observer/ob_inner_sql_connection.h"
-#include "sql/resolver/ddl/ob_explain_stmt.h"
-#include "sql/optimizer/ob_log_values.h"
-#include "sql/optimizer/ob_log_plan.h"
 #include "sql/optimizer/ob_del_upd_log_plan.h"
-#include "lib/time/Time.h"
-#include "pl/sys_package/ob_dbms_xplan.h"
-#include "lib/json/ob_json.h"
-#include "ob_plan_info_manager.h"
-#include "lib/rc/ob_rc.h"
 #include "ob_sql_plan.h"
 using namespace oceanbase::common;
 using namespace oceanbase::json;
@@ -97,7 +86,9 @@ int ObSqlPlan::store_sql_plan(ObLogPlan* log_plan, ObPhysicalPlan* phy_plan)
                                         log_plan->get_plan_root(),
                                         sql_plan_infos))) {
     LOG_WARN("failed to get sql plan infos", K(ret));
-  } else if (OB_FAIL(compress_plan.compress_logical_plan(allocator_, sql_plan_infos))) {
+  }
+  // overwrite ret
+  if (OB_FAIL(compress_plan.compress_logical_plan(allocator_, sql_plan_infos))) {
     LOG_WARN("failed to compress logical plan", K(ret));
   } else if (OB_FAIL(phy_plan->set_logical_plan(compress_plan))) {
     LOG_WARN("failed to set logical plan", K(ret));
@@ -219,7 +210,7 @@ int ObSqlPlan::get_plan_outline_info_one_line(PlanText &plan_text,
     } else if (OB_FAIL(get_global_hint_outline(plan_text, *plan))) {
       LOG_WARN("failed to get plan global hint outline", K(ret));
     } else {
-      BUF_PRINT_CONST_STR(" END_OUTLINE_DATA*/", plan_text);
+      BUF_PRINT_CONST_STR(OB_OUTLINE_DATA_END_STR, plan_text);
       plan_text.is_outline_data_ = false;
     }
     if (OB_SIZE_OVERFLOW == ret) {
@@ -244,7 +235,9 @@ int ObSqlPlan::get_plan_used_hint_info_one_line(PlanText &plan_text,
     plan_text.is_oneline_ = true;
     plan_text.pos_ = 0;
     BUF_PRINT_CONST_STR("/*+ ", plan_text);
-    if (OB_FAIL(get_plan_tree_used_hint(plan_text, plan->get_plan_root()))) {
+    if (OB_FAIL(reset_plan_tree_outline_flag(plan->get_plan_root()))) {
+      LOG_WARN("failed to reset plan tree outline flag", K(ret));
+    } else if (OB_FAIL(get_plan_tree_used_hint(plan_text, plan->get_plan_root()))) {
       LOG_WARN("failed to get plan tree used hint", K(ret));
     } else if (OB_FAIL(query_hint.print_qb_name_hints(plan_text))) {
       LOG_WARN("failed to print qb name hints", K(ret));
@@ -282,39 +275,33 @@ int ObSqlPlan::construct_outline_global_hint(ObLogPlan &plan, ObGlobalHint &outl
   ObDelUpdLogPlan *del_upd_plan = NULL;
   outline_global_hint.pdml_option_ = ObPDMLOption::NOT_SPECIFIED;
   outline_global_hint.parallel_ = ObGlobalHint::UNSET_PARALLEL;
+  outline_global_hint.dml_parallel_ = ObGlobalHint::UNSET_PARALLEL;
   outline_global_hint.parallel_das_dml_option_ = ObParallelDASOption::NOT_SPECIFIED;
   const ObQueryCtx *query_ctx = NULL;
   if (OB_ISNULL(query_ctx = plan.get_optimizer_context().get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected NULL", K(ret), K(query_ctx));
   } else {
-    bool has_set_parallel = false;
     outline_global_hint.opt_features_version_ = query_ctx->optimizer_features_enable_version_;
     if (NULL != (del_upd_plan = dynamic_cast<ObDelUpdLogPlan*>(&plan))) {
       if (del_upd_plan->use_pdml()) {
         outline_global_hint.pdml_option_ = ObPDMLOption::ENABLE;
-      }
-
-      if (del_upd_plan->get_can_use_parallel_das_dml()) {
-        has_set_parallel = true;
+        outline_global_hint.merge_dml_parallel_hint(del_upd_plan->get_max_dml_parallel());
+      } else if (del_upd_plan->get_can_use_parallel_das_dml()) {
         outline_global_hint.parallel_das_dml_option_ = ObParallelDASOption::ENABLE;
-        if (plan.get_optimizer_context().is_use_auto_dop()) {
-          outline_global_hint.merge_parallel_hint(ObGlobalHint::SET_ENABLE_AUTO_DOP);
-        } else {
-          outline_global_hint.merge_parallel_hint(del_upd_plan->get_max_dml_parallel());
-        }
+        outline_global_hint.merge_dml_parallel_hint(del_upd_plan->get_max_dml_parallel());
       }
     }
-    if (has_set_parallel) {
-      // set parallel_ before
-    } else if (plan.get_optimizer_context().is_use_auto_dop()) {
-      outline_global_hint.merge_parallel_hint(ObGlobalHint::SET_ENABLE_AUTO_DOP);
+    if (plan.get_optimizer_context().is_use_auto_dop()) {
+      outline_global_hint.parallel_ = ObGlobalHint::SET_ENABLE_AUTO_DOP;
+    } else if (plan.get_optimizer_context().get_max_parallel() > ObGlobalHint::DEFAULT_PARALLEL) {
+      outline_global_hint.merge_parallel_hint(plan.get_optimizer_context().get_max_parallel());
     } else if (plan.get_optimizer_context().get_max_parallel() > ObGlobalHint::DEFAULT_PARALLEL) {
       outline_global_hint.merge_parallel_hint(plan.get_optimizer_context().get_max_parallel());
     }
   }
   LOG_TRACE("after construct_outline_global_hint", K(outline_global_hint.parallel_das_dml_option_),
-            K(outline_global_hint.pdml_option_), K(outline_global_hint.parallel_));
+            K(outline_global_hint.pdml_option_), K(outline_global_hint.dml_parallel_), K(outline_global_hint.parallel_));
   return ret;
 }
 
@@ -333,6 +320,7 @@ int ObSqlPlan::inner_store_sql_plan_for_explain(ObExecContext *ctx,
   transaction::ObTxDesc *save_tx_desc = NULL;
   int64_t save_nested_count = 0;
   int64_t affected_rows = 0;
+  bool need_restore_session = false;
   ObSqlString sql;
   if (OB_ISNULL(ctx) ||
       OB_ISNULL(ctx->get_sql_proxy()) ||
@@ -349,7 +337,8 @@ int ObSqlPlan::inner_store_sql_plan_for_explain(ObExecContext *ctx,
   } else if (OB_FAIL(prepare_and_store_session(session,
                                                saved_session,
                                                save_tx_desc,
-                                               save_nested_count))) {
+                                               save_nested_count,
+                                               need_restore_session))) {
     LOG_WARN("failed to begin nested session", K(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < sql_plan_infos.count(); ++i) {
@@ -486,7 +475,7 @@ int ObSqlPlan::inner_store_sql_plan_for_explain(ObExecContext *ctx,
       OB_NOT_NULL(ctx->get_sql_proxy())) {
     ctx->get_sql_proxy()->close(conn, ret);
   }
-  if (OB_NOT_NULL(session)) {
+  if (OB_NOT_NULL(session) && need_restore_session) {
     int end_ret = restore_session(session,
                                   saved_session,
                                   save_tx_desc,
@@ -714,7 +703,9 @@ int ObSqlPlan::get_plan_used_hint_info(PlanText &plan_text,
     BUF_PRINT_CONST_STR("  /*+", temp_text);
     BUF_PRINT_CONST_STR(NEW_LINE, temp_text);
     BUF_PRINT_CONST_STR(OUTPUT_PREFIX, temp_text);
-    if (OB_FAIL(get_plan_tree_used_hint(temp_text, plan_top))) {
+    if (OB_FAIL(reset_plan_tree_outline_flag(plan_top))) {
+      LOG_WARN("failed to reset plan tree outline flag", K(ret));
+    } else if (OB_FAIL(get_plan_tree_used_hint(temp_text, plan_top))) {
       LOG_WARN("failed to get plan tree used hint", K(ret));
     } else if (OB_FAIL(query_hint.print_qb_name_hints(temp_text))) {
       LOG_WARN("failed to print qb name hints", K(ret));
@@ -1115,7 +1106,7 @@ int ObSqlPlan::format_sql_plan(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
     //do nothing
   } else {
     if (EXPLAIN_PLAN_TABLE == type) {
-      if (OB_FAIL(format_plan_table(sql_plan_infos, option, plan_text))) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, false, option, plan_text))) {
         LOG_WARN("failed to print plan", K(ret));
       }
     } else if (EXPLAIN_BASIC == type) {
@@ -1125,7 +1116,7 @@ int ObSqlPlan::format_sql_plan(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
         LOG_WARN("failed to print plan output", K(ret));
       }
     } else if (EXPLAIN_UNINITIALIZED == type) {
-      if (OB_FAIL(format_plan_table(sql_plan_infos, option, plan_text))) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, false, option, plan_text))) {
         LOG_WARN("failed to print plan", K(ret));
       } else if (OB_FAIL(format_plan_output(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print plan output", K(ret));
@@ -1138,7 +1129,7 @@ int ObSqlPlan::format_sql_plan(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
         }
       }
     } else if (EXPLAIN_OUTLINE == type) {
-      if (OB_FAIL(format_plan_table(sql_plan_infos, option, plan_text))) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, false, option, plan_text))) {
         LOG_WARN("failed to print plan", K(ret));
       } else if (OB_FAIL(format_plan_output(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print plan output", K(ret));
@@ -1147,7 +1138,7 @@ int ObSqlPlan::format_sql_plan(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
       }
     } else if (EXPLAIN_EXTENDED == type ||
                EXPLAIN_EXTENDED_NOADDR == type) {
-      if (OB_FAIL(format_plan_table(sql_plan_infos, option, plan_text))) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, false, option, plan_text))) {
         LOG_WARN("failed to print plan", K(ret));
       } else if (OB_FAIL(format_plan_output(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print plan output", K(ret));
@@ -1162,12 +1153,18 @@ int ObSqlPlan::format_sql_plan(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
       } else if (OB_FAIL(format_other_info(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print other info", K(ret));
       }
+    } else if (EXPLAIN_FORMAT_OBJECT_NAME_DISPLAY == type) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, true, option, plan_text))) {
+        LOG_WARN("failed to print plan", K(ret));
+      } else if (OB_FAIL(format_plan_output(sql_plan_infos, plan_text))) {
+        LOG_WARN("failed to print plan output", K(ret));
+      }
     } else if (EXPLAIN_FORMAT_JSON == type) {
       if (OB_FAIL(format_plan_to_json(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print plan to json", K(ret));
       }
     } else {
-      if (OB_FAIL(format_plan_table(sql_plan_infos, option, plan_text))) {
+      if (OB_FAIL(format_plan_table(sql_plan_infos, false, option, plan_text))) {
         LOG_WARN("failed to print plan", K(ret));
       } else if (OB_FAIL(format_plan_output(sql_plan_infos, plan_text))) {
         LOG_WARN("failed to print plan output", K(ret));
@@ -1662,6 +1659,7 @@ int ObSqlPlan::format_basic_plan_table(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
 }
 
 int ObSqlPlan::format_plan_table(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
+                                 const bool is_explain_format_object_name_display,
                                  const ObExplainDisplayOpt& option,
                                  PlanText &plan_text)
 {
@@ -1745,10 +1743,17 @@ int ObSqlPlan::format_plan_table(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
         ret = BUF_PRINTF(COLUMN_SEPARATOR);
       }
       if (OB_SUCC(ret) && plan_item->object_alias_len_ > 0) {
-        ret = BUF_PRINTF("%-*.*s",
+        if(is_explain_format_object_name_display) {
+           ret = BUF_PRINTF("%-*.*s",
+                         format_helper.column_len_.at(Name),
+                         static_cast<int>(plan_item->object_name_len_),
+                         plan_item->object_name_);
+        } else {
+           ret = BUF_PRINTF("%-*.*s",
                          format_helper.column_len_.at(Name),
                          static_cast<int>(plan_item->object_alias_len_),
                          plan_item->object_alias_);
+        }
       } else if (OB_SUCC(ret)) {
         ret = BUF_PRINTF("%-*s",
                          format_helper.column_len_.at(Name),
@@ -2513,13 +2518,15 @@ int ObSqlPlan::plan_text_to_strings(PlanText &plan_text,
 int ObSqlPlan::prepare_and_store_session(ObSQLSessionInfo *session,
                                         ObSQLSessionInfo::StmtSavedValue *&session_value,
                                         transaction::ObTxDesc *&tx_desc,
-                                        int64_t &nested_count)
+                                        int64_t &nested_count,
+                                        bool &need_restore)
 {
   int ret = OB_SUCCESS;
   void *ptr = NULL;
   session_value = NULL;
   tx_desc = NULL;
   nested_count = 0;
+  need_restore = false;
   if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected session value", K(ret));
@@ -2539,6 +2546,7 @@ int ObSqlPlan::prepare_and_store_session(ObSQLSessionInfo *session,
       session->set_autocommit(true);
       tx_desc = session->get_tx_desc();
       session->get_tx_desc() = NULL;
+      need_restore = true;
     }
   }
   return ret;

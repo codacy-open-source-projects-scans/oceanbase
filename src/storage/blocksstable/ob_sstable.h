@@ -25,17 +25,17 @@ namespace oceanbase
 {
 namespace storage
 {
-class ObAllMicroBlockRangeIterator;
+class ObMicroBlockIndexIterator;
 struct ObTabletCreateSSTableParam;
 class ObStoreRowIterator;
 class ObSSTableRowLockMultiChecker;
-class ObRowState;
-struct ObSSTableLinkBlockWriteInfo;
 }
 namespace blocksstable
 {
 extern const char *DDL_EMPTY_SSTABLE_DUMMY_INDEX_DATA_BUF;
 extern const int64_t DDL_EMPTY_SSTABLE_DUMMY_INDEX_DATA_SIZE;
+class ObSSTableIndexScanParam;
+class ObSSTableIndexScanner;
 class ObSSTableSecMetaIterator;
 class ObIMacroBlockIterator;
 struct ObMacroBlocksWriteCtx;
@@ -72,13 +72,15 @@ public:
     PADDING = 1,
     NORMAL = 2
   };
-  static const int SSTABLE_META_CACHE_VERSION = 1;
+  static const int SSTABLE_META_CACHE_VERSION_1 = 1;
+  static const int SSTABLE_META_CACHE_VERSION = 2;
   ObSSTableMetaCache();
   ~ObSSTableMetaCache() = default;
   void reset();
   int init(const blocksstable::ObSSTableMeta *meta, const bool has_multi_version_row = false);
   void set_upper_trans_version(const int64_t upper_trans_version);
-  bool is_valid() const { return version_ >= SSTABLE_META_CACHE_VERSION; }
+  void set_filled_tx_scn(const share::SCN &filled_tx_scn);
+  bool is_valid() const { return version_ >= SSTABLE_META_CACHE_VERSION_1; }
   int serialize(char *buf, const int64_t buf_len, int64_t &pos) const;
   int deserialize(const char *buf, const int64_t data_len, int64_t &pos);
   int deserialize_for_compat(const bool has_multi_version_row, const char *buf, const int64_t data_len, int64_t &pos);
@@ -112,6 +114,7 @@ public:
   int64_t upper_trans_version_;
   share::SCN filled_tx_scn_;
   bool contain_uncommitted_row_;
+  share::SCN rec_scn_;
 };
 
 
@@ -155,16 +158,6 @@ public:
       ObTableAccessContext &context,
       const common::ObIArray<ObDatumRowkey> &rowkeys,
       ObStoreRowIterator *&row_iter) override;
-  virtual int exist(
-      const ObTableIterParam &param,
-	    ObTableAccessContext &context,
-	    const blocksstable::ObDatumRowkey &rowkey,
-	    bool &is_exist,
-	    bool &has_found) override;
-  virtual int exist(
-      ObRowsInfo &rows_info,
-      bool &is_exist,
-      bool &all_rows_found) override;
 
   int scan_macro_block(
       const ObDatumRange &range,
@@ -178,7 +171,7 @@ public:
       const ObDatumRange &range,
       const ObITableReadInfo &rowkey_read_info,
       ObIAllocator &allocator,
-      ObAllMicroBlockRangeIterator *&micro_iter,
+      ObMicroBlockIndexIterator *&micro_iter,
       const bool is_reverse_scan = false);
   int scan_secondary_meta(
       ObIAllocator &allocator,
@@ -188,6 +181,11 @@ public:
       blocksstable::ObSSTableSecMetaIterator *&meta_iter,
       const bool is_reverse_scan = false,
       const int64_t sample_step = 0) const;
+  int scan_index(
+      const ObDatumRange &scan_range,
+      const ObSSTableIndexScanParam &scan_param,
+      ObIAllocator &allocator,
+      ObSSTableIndexScanner *&idx_scanner);
   int bf_may_contain_rowkey(const ObDatumRowkey &rowkey, bool &contain);
   int fill_column_ckm_array(ObIArray<int64_t> &column_checksums) const;
   // For transaction
@@ -196,8 +194,7 @@ public:
       const blocksstable::ObDatumRowkey &rowkey,
       ObTableAccessContext &context,
       ObStoreRowLockState &lock_state,
-      ObRowState &row_state,
-      bool check_exist = false);
+      bool check_exist);
   int check_rows_locked(
       const bool check_exist,
       storage::ObTableAccessContext &context,
@@ -206,6 +203,11 @@ public:
   int set_upper_trans_version(
       common::ObArenaAllocator &allocator,
       const int64_t upper_trans_version);
+  // for inc major sstable that needs update upper trans version && filled tx scn at same time
+  int backfill_commit_version(
+      common::ObArenaAllocator &allocator,
+      const int64_t commit_version,
+      const share::SCN &filled_tx_scn);
   virtual int64_t get_upper_trans_version() const override
   {
     return meta_cache_.upper_trans_version_;
@@ -221,6 +223,10 @@ public:
   OB_INLINE share::SCN get_filled_tx_scn() const
   {
     return meta_cache_.filled_tx_scn_;
+  }
+  OB_INLINE share::SCN get_rec_scn() override
+  {
+    return meta_cache_.rec_scn_;
   }
   OB_INLINE bool has_padding_meta_cache() const
   {
@@ -238,6 +244,10 @@ public:
   virtual bool is_ddl_merge_empty_sstable() const override
   {
     return is_empty() && is_ddl_merge_sstable();
+  }
+  OB_INLINE bool need_check_inc_major_can_access() const
+  {
+    return is_inc_major_type_sstable() || is_inc_major_ddl_sstable() || is_inc_major_ddl_aggregate_co_sstable();
   }
   int set_addr(const ObMetaDiskAddr &addr);
   OB_INLINE const ObMetaDiskAddr &get_addr() const { return addr_; }
@@ -284,10 +294,7 @@ public:
   OB_INLINE bool is_loaded() const { return nullptr != meta_; }
   int persist_linked_block_if_need(
       ObArenaAllocator &allocator,
-      const ObTabletID &tablet_id,
-      const int64_t tablet_transfer_seq,
-      const int64_t snapshot_version,
-      blocksstable::ObIMacroBlockFlushCallback *ddl_redo_cb,
+      const ObLinkedMacroInfoWriteParam &param,
       int64_t &macro_start_seq,
       ObSharedObjectsWriteCtx &linked_block_write_ctx);
   int get_meta(ObSSTableMetaHandle &meta_handle, common::ObSafeArenaAllocator *allocator = nullptr) const;
@@ -296,7 +303,7 @@ public:
   int set_status_for_read(const ObSSTableStatus status);
 
   // TODO: get_index_tree_root and get_last_rowkey now required sstable to be loaded
-  int get_index_tree_root(
+  virtual int get_index_tree_root(
       blocksstable::ObMicroBlockData &index_data,
       const bool need_transform = true);
   int get_last_rowkey(
@@ -337,17 +344,19 @@ public:
     UNUSEDx(dir_name, schema, fname);
     return OB_NOT_SUPPORTED;
   }
-  virtual int64_t get_serialize_size() const override;
-  virtual int serialize(char *buf, const int64_t buf_len, int64_t &pos) const override;
+  virtual int64_t get_serialize_size(const uint64_t data_version) const;
+  virtual int serialize(
+      const uint64_t data_version,
+      char *buf,
+      const int64_t buf_len,
+      int64_t &pos) const;
   virtual int deserialize(
       common::ObArenaAllocator &allocator,
       const char *buf,
       const int64_t data_len,
       int64_t &pos);
-  int deserialize_post_work(
-      common::ObIAllocator *allocator);
-  virtual int serialize_full_table(char *buf, const int64_t buf_len, int64_t &pos) const;
-  virtual int64_t get_full_serialize_size() const; // return -1 when it fails to get meta
+  virtual int serialize_full_table(const uint64_t data_version, char *buf, const int64_t buf_len, int64_t &pos) const;
+  virtual int64_t get_full_serialize_size(const uint64_t data_version) const; // return -1 when it fails to get meta
   int assign_meta(ObSSTableMeta *dest);
   int build_multi_row_lock_checker(
       ObRowsInfo &rows_info,
@@ -366,19 +375,9 @@ protected:
   int check_valid_for_reading();
   int add_used_size() const;
   int dec_used_size() const;
-  int build_exist_iterator(
-      const ObTableIterParam &iter_param,
-      const ObDatumRowkey &rowkey,
-      ObTableAccessContext &access_context,
-      ObStoreRowIterator *&iter);
-  int build_multi_exist_iterator(
-      const ObTableIterParam &iter_param,
-      const common::ObIArray<blocksstable::ObDatumRowkey> &rowkeys,
-      ObTableAccessContext &access_context,
-      ObStoreRowIterator *&iter);
-    int init_sstable_meta(
-        const ObTabletCreateSSTableParam &param,
-        common::ObArenaAllocator *allocator);
+  int init_sstable_meta(
+      const ObTabletCreateSSTableParam &param,
+      common::ObArenaAllocator *allocator);
   int get_last_rowkey(const ObDatumRowkey *&sstable_endkey);
   int serialize_fixed_struct(char *buf, const int64_t buf_len, int64_t &pos) const;
   int deserialize_fixed_struct(const char *buf, const int64_t data_len, int64_t &pos);

@@ -15,6 +15,7 @@
 #include "deps/oblib/src/lib/udt/ob_udt_type.h"
 #include "deps/oblib/src/lib/udt/ob_array_utils.h"
 #include "lib/enumset/ob_enum_set_meta.h"
+#include "share/rc/ob_tenant_base.h"
 
 namespace oceanbase
 {
@@ -295,7 +296,7 @@ int ObSubSchemaCtx::assgin(const ObSubSchemaCtx &other)
   } else {
     if (is_inited() && get_subschema_count() > 0) {
       reset();
-      LOG_INFO("subschema context reset due to assgin other", K(*this), K(lbt()));
+      LOG_DEBUG("subschema context reset due to assign other", K(*this), K(lbt()));
     }
     if (!is_inited() && OB_FAIL(init())) {
       LOG_WARN("fail to init subschema ctx", K(ret));
@@ -331,11 +332,12 @@ int ObSubSchemaCtx::init()
                                       "SubSchemaRev",
                                       "SubSchemaRev",
                                       tenant_id))) {
-      LOG_WARN("fail to create subschema map", K(ret));
+      LOG_WARN("fail to create subschema reverse map", K(ret));
     } else if (OB_FAIL(enum_set_meta_reverse_map_.create(SUBSCHEMA_BUCKET_NUM,
                                                               "SubSchemaRev",
                                                               "SubSchemaRev",
                                                                tenant_id))) {
+      LOG_WARN("fail to create enum_set meta reverse map", K(ret));
     } else {
       subschema_array_.set_attr(ObMemAttr(MTL_ID(), "SubSchemaHash"));
       is_inited_ = true;
@@ -347,10 +349,10 @@ int ObSubSchemaCtx::init()
 
 void ObSubSchemaCtx::reset() {
   // content in subschema value is alloc from plan object allocator? need a new allocator?
+  subschema_array_.destroy();
+  subschema_reverse_map_.destroy();
+  enum_set_meta_reverse_map_.destroy();
   if (is_inited_) {
-    subschema_array_.destroy();
-    subschema_reverse_map_.destroy();
-    enum_set_meta_reverse_map_.destroy();
     is_inited_ = false;
     used_subschema_id_ = MAX_NON_RESERVED_SUBSCHEMA_ID;
     reserved_ = 0;
@@ -426,7 +428,7 @@ int ObSubSchemaCtx::set_subschema(uint16_t subschema_id, ObSubSchemaValue &value
     if (OB_HASH_NOT_EXIST == ret) {
       // not exist
       ret = OB_SUCCESS;
-      LOG_INFO("add new subschema", K(ret), K(subschema_id), K(value), K(subschema_array_.count()));
+      LOG_DEBUG("add new subschema", K(ret), K(subschema_id), K(value), K(subschema_array_.count()));
       if (OB_FAIL(ensure_array_capacity(subschema_id + 1))) {
         LOG_WARN("fail to ensure array capacity", K(ret));
       } else if (FALSE_IT(subschema_array_.at(subschema_id) = value)) {
@@ -522,7 +524,7 @@ int ObSubSchemaCtx::get_subschema_id_by_typedef(const ObString &type_def,
             LOG_WARN("fail to ensure array capacity", K(ret));
           } else if (FALSE_IT(subschema_array_.at(key) = value)) {
           } else if (OB_FAIL(subschema_reverse_map_.set_refactored(rev_key, key))) {
-            LOG_WARN("set subschema map failed", K(ret), K(rev_key));
+            LOG_WARN("set subschema map failed", K(ret), K(rev_key), K(key));
             subschema_array_.at(key).reset();
           }
         }
@@ -556,7 +558,7 @@ int ObSubSchemaCtx::get_subschema_id_by_typedef(ObNestedType coll_type,
   int ret = OB_SUCCESS;
   const int MAX_LEN = 256;
   char tmp[MAX_LEN] = {0};
-  if (OB_FAIL(ObArrayUtil::get_type_name(elem_type, tmp, MAX_LEN))) {
+  if (OB_FAIL(ObArrayUtil::get_type_name(coll_type, elem_type, tmp, MAX_LEN))) {
     LOG_WARN("failed to convert len to string", K(ret));
   } else {
     ObString tmp_def(strlen(tmp), tmp);
@@ -575,7 +577,7 @@ int ObSubSchemaCtx::get_subschema_id_by_typedef(ObNestedType coll_type,
   const int MAX_LEN = 256;
   int64_t pos = 0;
   char tmp[MAX_LEN] = {0};
-  if (OB_FAIL(ObArrayUtil::get_type_name(elem_type, tmp, MAX_LEN))) {
+  if (OB_FAIL(ObArrayUtil::get_type_name(coll_type, elem_type, tmp, MAX_LEN))) {
     LOG_WARN("failed to convert len to string", K(ret));
   } else {
     ObString tmp_def(strlen(tmp), tmp);

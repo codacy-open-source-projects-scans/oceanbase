@@ -93,6 +93,7 @@ enum ObDSResultItemType
   OB_DS_BASIC_STAT,//basic table stat, like table rowcount、column ndv、column num null
   OB_DS_OUTPUT_STAT,
   OB_DS_INDEX_SCAN_STAT, //index scan with prefix filters
+  OB_DS_INDEX_SKIP_SCAN_STAT, //index skip scan with prefix filters
   OB_DS_INDEX_BACK_STAT //index scan with prefix and postfix filters
 };
 
@@ -112,6 +113,7 @@ struct ObDSResultItem
     type_(OB_DS_INVALID_STAT),
     index_id_(OB_INVALID_ID),
     exprs_(),
+    non_ds_exprs_(),
     stat_key_(),
     stat_handle_(),
     stat_(NULL)
@@ -120,19 +122,52 @@ struct ObDSResultItem
     type_(type),
     index_id_(index_id),
     exprs_(),
+    non_ds_exprs_(),
     stat_key_(),
     stat_handle_(),
     stat_(NULL)
   {}
+  void reset()
+  {
+    type_ = OB_DS_INVALID_STAT;
+    index_id_ = OB_INVALID_ID;
+    exprs_.reset();
+    non_ds_exprs_.reset();
+    stat_key_.reset();
+    stat_handle_.reset();
+    stat_ = nullptr;
+  }
+  int assign(const ObDSResultItem& other)
+  {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(this->stat_handle_.assign(other.stat_handle_))) {
+      COMMON_LOG(WARN, "failed to assign stat_handle");
+      this->reset();
+    } else if (OB_FAIL(exprs_.assign(other.exprs_))) {
+      COMMON_LOG(WARN, "failed to assign exprs", K(ret));
+    } else if (OB_FAIL(non_ds_exprs_.assign(other.non_ds_exprs_))) {
+      COMMON_LOG(WARN, "failed to assign exprs", K(ret));
+    } else {
+      this->type_ = other.type_;
+      this->index_id_ = other.index_id_;
+      this->stat_key_ = other.stat_key_;
+      this->stat_ = other.stat_;
+    }
+    return ret;
+  }
   TO_STRING_KV(K(type_),
                K(index_id_),
                K(exprs_),
+               K(non_ds_exprs_),
                K(stat_key_),
                KPC(stat_handle_.stat_),
                KPC(stat_));
+  int append_exprs(const ObIArray<ObRawExpr *> &exprs);
+
   ObDSResultItemType type_;
   uint64_t index_id_;
   ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> exprs_;
+  ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> non_ds_exprs_;
   ObOptDSStat::Key stat_key_;
   ObOptDSStatHandle stat_handle_;
   ObOptDSStat *stat_;
@@ -172,7 +207,11 @@ public:
   }
   virtual ~ObDSStatItem() { reset(); }
   virtual bool is_needed() const { return true; }//TODO, need refine??
-  virtual int gen_expr(char *buf, const int64_t buf_len, int64_t &pos);
+  virtual int gen_expr(common::ObIAllocator &allocator,
+                       ObSQLSessionInfo *session_info,
+                       char *buf,
+                       const int64_t buf_len,
+                       int64_t &pos);
   virtual int decode(double sample_ratio, ObObj &obj);
   ObDSStatItemType get_type() { return type_; }
   int cast_int(const ObObj &obj, int64_t &ret_value);
@@ -273,9 +312,9 @@ private:
                                      ObOptDSStatHandle &ds_stat_handle,
                                      int64_t &cur_modified_dml_cnt);
   int do_estimate_rowcount(ObSQLSessionInfo *session_info, const ObSqlString &raw_sql);
-  int estimte_rowcount(int64_t max_ds_timeout, int64_t degree, bool &throw_ds_error);
+  int estimate_rowcount(int64_t max_ds_timeout, int64_t degree, bool &throw_ds_error);
   int pack(ObSqlString &raw_sql_str);
-  int gen_select_filed(ObSqlString &select_fields);
+  int gen_select_field(ObSqlString &select_fields);
   int estimate_table_block_count_and_row_count(const ObDSTableParam &param);
   int get_all_tablet_id_and_object_id(const ObDSTableParam &param,
                                       ObIArray<ObTabletID> &tablet_ids,
@@ -317,13 +356,21 @@ private:
                                 sql::ObSQLSessionInfo::StmtSavedValue *&session_value,
                                 int64_t &nested_count,
                                 bool &is_no_backslash_escapes,
-                                transaction::ObTxDesc *&tx_desc);
+                                transaction::ObTxDesc *&tx_desc,
+                                bool &is_sess_in_retry,
+                                int &last_query_retry_err,
+                                int64_t ds_query_timeout,
+                                int64_t &session_query_timeout);
   int restore_session(ObSQLSessionInfo *session,
                       sql::ObSQLSessionInfo::StmtSavedValue *session_value,
                       int64_t nested_count,
                       bool is_no_backslash_escapes,
-                      transaction::ObTxDesc *tx_desc);
+                      transaction::ObTxDesc *tx_desc,
+                      bool &is_sess_in_retry,
+                      int &last_query_retry_err,
+                      int64_t session_query_timeout);
   int add_table_clause(ObSqlString &table_str);
+  bool allow_cache_ds_result_to_sql_ctx () const;
 
 private:
   ObOptimizerContext *ctx_;
@@ -369,8 +416,15 @@ public:
                                 ObDSTableParam &ds_table_param,
                                 bool &specify_ds);
 
-  static int check_ds_can_use_filters(const ObIArray<ObRawExpr*> &filters,
+  static int check_ds_can_be_applied_to_filters(const ObIArray<ObRawExpr*> &filters,
                                       bool &no_use);
+
+  static int check_ds_can_be_applied_to_filter(const ObRawExpr *filter,
+                                     bool &no_use,
+                                     int64_t &total_expr_cnt);
+
+  static int check_ds_can_be_applied_to_filter(const ObRawExpr *filter,
+                                     bool &no_use);
 
   static const ObDSResultItem *get_ds_result_item(ObDSResultItemType type,
                                                   uint64_t index_id,
@@ -394,10 +448,14 @@ public:
                                        const common::ObIArray<int64_t> &used_part_id,
                                        const common::ObIArray<ObDSFailTabInfo> &failed_list);
 
+  static bool is_valid_ds_col_type(const ObObjType type);
+  static int print_identifier(ObIAllocator& allocator,
+                              const ObString &src,
+                              ObString &dest,
+                              ObCollationType connection_collation,
+                              bool is_oracle_mode);
+
 private:
-  static int check_ds_can_use_filter(const ObRawExpr *filter,
-                                     bool &no_use,
-                                     int64_t &total_expr_cnt);
 
   static int get_ds_table_part_info(ObOptimizerContext &ctx,
                                     const uint64_t ref_table_id,

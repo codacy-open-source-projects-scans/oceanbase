@@ -13,18 +13,12 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_transmit_op.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/px/datahub/components/ob_dh_sample.h"
-#include "sql/dtl/ob_dtl_linked_buffer.h"
 #include "sql/dtl/ob_dtl_channel_group.h"
 #include "sql/dtl/ob_dtl_utils.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
 #include "sql/engine/aggregate/ob_merge_groupby_op.h"
 #include "sql/engine/aggregate/ob_merge_groupby_vec_op.h"
 #include "share/detect/ob_detect_manager_utils.h"
-#include <unordered_set>
 
 namespace oceanbase
 {
@@ -118,7 +112,8 @@ ObPxTransmitSpec::ObPxTransmitSpec(ObIAllocator &alloc, const ObPhyOperatorType 
       repartition_table_id_(0),
       wf_hybrid_aggr_status_expr_(NULL),
       wf_hybrid_pby_exprs_cnt_array_(alloc),
-      ddl_slice_id_expr_(NULL)
+      ddl_slice_id_expr_(NULL),
+      dfo_expr_frame_info_(NULL)
 {
 }
 
@@ -207,7 +202,14 @@ int ObPxTransmitOp::inner_open()
     rand48_buf_[0] = 0x330E; // 0x330E is the arbitrary value of srand48
     rand48_buf_[1] = trans_input->get_sqc_id();
     rand48_buf_[2] = trans_input->get_task_id();
-    OZ(params_.meta_.init(get_spec().output_, 0, params_.reorder_fixed_expr_));
+
+    if ((ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() >= MOCK_CLUSTER_VERSION_4_3_5_3 &&
+         ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() < CLUSTER_VERSION_4_4_0_0) ||
+        ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() >= CLUSTER_VERSION_4_4_1_0) {
+      OZ(params_.meta_.init(get_spec().output_, 0, params_.reorder_fixed_expr_, &px_row_allocator_));
+    } else {
+      OZ(params_.meta_.init(get_spec().output_, 0, params_.reorder_fixed_expr_));
+    }
     if (is_object_sample()) {
       OZ(init_channel(*trans_input));
       OZ(set_expect_range_count());
@@ -217,6 +219,8 @@ int ObPxTransmitOp::inner_open()
       OZ(init_channel(*trans_input));
     }
     chs_agent_.set_row_meta(params_.meta_);
+    chs_agent_.set_plan_min_cluster_version(ctx_.get_physical_plan_ctx()->
+      get_phy_plan()->get_min_cluster_version());
     if (OB_SUCC(ret) && get_spec().use_rich_format_) {
       if (dtl::ObDtlMsgType::PX_VECTOR_FIXED == data_msg_type_) {
         int64_t size_per_buffer = GCONF.dtl_buffer_size;
@@ -239,6 +243,7 @@ int ObPxTransmitOp::inner_open()
 int ObPxTransmitOp::transmit()
 {
   begin_cpu_time_counting();
+  ASH_ITEM_ATTACH_GUARD(plan_line_id, spec_.id_);
   int ret = do_transmit();
   end_cpu_time_counting();
   return ret;
@@ -408,6 +413,7 @@ int ObPxTransmitOp::init_channel(ObPxTransmitOpInput &trans_input)
         ch->set_operator_owner();
         ch->set_thread_id(thread_id);
         ch->set_row_meta(params_.meta_);
+        ch->plan_min_cluster_version_ = min_cluster_version;
       }
       LOG_TRACE("Transmit channel", K(ch), KP(ch->get_id()), K(ch->get_peer()));
     }
@@ -648,442 +654,6 @@ int ObPxTransmitOp::set_rollup_hybrid_keys(ObSliceIdxCalc &slice_calc)
     }
     has_set_hybrid_key_ = true;
   }
-  return ret;
-}
-
-template <ObSliceIdxCalc::SliceCalcType CALC_TYPE>
-int ObPxTransmitOp::send_rows_one_by_one(ObSliceIdxCalc &slice_calc)
-{
-  int ret = OB_SUCCESS;
-  int64_t send_row_time_recorder = 0;
-  int64_t row_count = 0;
-  ObObj tablet_id;
-
-  ObSliceIdxCalc::SliceIdxArray slice_idx_array;
-  ObPhysicalPlanCtx *phy_plan_ctx = GET_PHY_PLAN_CTX(ctx_);
-  if (OB_ISNULL(phy_plan_ctx)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("physical plan ctx is null", K(ret));
-  }
-  while (OB_SUCC(ret)) {
-    clear_evaluated_flag();
-    const ObPxTransmitSpec &spec = static_cast<const ObPxTransmitSpec &>(get_spec());
-    ret = next_row();
-    if (OB_FAIL(ret)) {
-      if (OB_UNLIKELY(OB_ITER_END != ret)) {
-        LOG_WARN("fail to get next row from child op",
-                 K(ret), K(child_->get_spec().get_type()));
-      } else {
-        // iter end
-        const ObPxTransmitSpec &spec = static_cast<const ObPxTransmitSpec &>(get_spec());
-        if (OB_FAIL(try_wait_channel())) {
-          LOG_WARN("failed to wait channel init", K(ret));
-        } else if (batch_param_remain_) {
-          ret = OB_SUCCESS;
-          ObPxNewRow px_eof_row;
-          px_eof_row.set_eof_row();
-          px_eof_row.set_data_type(data_msg_type_);
-          for (int i = 0; i < task_channels_.count() && OB_SUCC(ret); i++) {
-            dtl::ObDtlChannel *ch = task_channels_.at(i);
-            if (OB_FAIL(ch->send(px_eof_row, phy_plan_ctx->get_timeout_timestamp(), &eval_ctx_, false))) {
-              LOG_WARN("fail send eof row to slice channel", K(px_eof_row), K(ret));
-            } else if (OB_FAIL(ch->push_buffer_batch_info())) {
-              LOG_WARN("channel push back batch failed", K(ret));
-            }
-          }
-        } else if (OB_FAIL(send_eof_row())) { // overwrite err code
-          LOG_WARN("fail send eof rows to channels", K(ret));
-        }
-        break;
-      }
-    }
-    row_count++;
-    metric_.count();
-    if (OB_FAIL(ret)) {
-      LOG_WARN("fail to get next row", K(ret));
-    } else if (OB_FAIL(set_rollup_hybrid_keys(slice_calc))) {
-      LOG_WARN("failed to set rollup hybrid keys", K(ret));
-    } else if (OB_FAIL(set_wf_hybrid_slice_id_calc_type(slice_calc))) {
-      LOG_WARN("failed to set rollup hybrid keys", K(ret));
-    } else if (OB_FAIL((slice_calc.get_slice_indexes<CALC_TYPE, false>(
-                       get_spec().output_, eval_ctx_, slice_idx_array)))) {
-      LOG_WARN("fail get slice idx", K(ret));
-    } else if (dfc_.all_ch_drained()) {
-      int tmp_ret = child_->drain_exch();
-      if (OB_SUCCESS != tmp_ret) {
-        LOG_WARN("drain exchange data failed", K(tmp_ret));
-      }
-      ret = OB_ITER_END;
-      LOG_DEBUG("all channel has been drained");
-    } else if (NULL != spec.tablet_id_expr_
-               && OB_FAIL(slice_calc.get_previous_row_tablet_id(tablet_id))) {
-      LOG_WARN("failed to get previous row tablet_id", K(ret));
-    }
-    FOREACH_CNT_X(slice_idx, slice_idx_array, OB_SUCC(ret)) {
-      if (OB_FAIL(send_row(*slice_idx, send_row_time_recorder, tablet_id.get_int()))) {
-        if (OB_ITER_END != ret) {
-          LOG_WARN("fail emit row to interm result", K(ret), K(slice_idx_array));
-        }
-      }
-    }
-  }
-  if (OB_ITER_END == ret) {
-    ret = OB_SUCCESS;
-    LOG_TRACE("transmit meet a iter end");
-  }
-  LOG_TRACE("Transmit time record", K(row_count), K(ret));
-  return ret;
-}
-
-template <ObSliceIdxCalc::SliceCalcType CALC_TYPE>
-int ObPxTransmitOp::send_rows_in_batch(ObSliceIdxCalc &slice_calc)
-{
-  int ret = OB_SUCCESS;
-  int64_t send_row_time_recorder = 0;
-  int64_t row_count = 0;
-  ObObj tablet_id;
-  ObSliceIdxCalc::SliceIdxArray slice_idx_array;
-  ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);
-  while (OB_SUCC(ret)) {
-    if (OB_FAIL(next_row())) {
-      LOG_WARN("fetch next rows failed", K(ret));
-      break;
-    }
-    if (dfc_.all_ch_drained()) {
-      int tmp_ret = child_->drain_exch();
-      if (OB_SUCCESS != tmp_ret) {
-        LOG_WARN("drain exchange data failed", K(tmp_ret));
-      }
-      LOG_TRACE("all channel has been drained");
-      break;
-    }
-    const ObPxTransmitSpec &spec = static_cast<const ObPxTransmitSpec &>(get_spec());
-    batch_info_guard.set_batch_size(brs_.size_);
-    if (OB_FAIL(ret) || brs_.size_ <= 0) {
-    } else if (OB_FAIL(set_rollup_hybrid_keys(slice_calc))) {
-      LOG_WARN("failed to set rollup hybrid keys", K(ret));
-    } else if ((!slice_calc.support_vectorized_calc() || slice_calc.is_multi_slice_calc_type() || NULL != spec.tablet_id_expr_)) {
-      for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-        if (brs_.skip_->at(i)) {
-          continue;
-        }
-        batch_info_guard.set_batch_idx(i);
-        row_count += 1;
-        metric_.count();
-        if (OB_FAIL(set_wf_hybrid_slice_id_calc_type(slice_calc))) {
-          LOG_WARN("failed to set wf hybrid keys", K(ret));
-        } else if (OB_FAIL((slice_calc.get_slice_indexes<CALC_TYPE, false>(get_spec().output_, eval_ctx_, slice_idx_array)))) {
-          LOG_WARN("fail get slice idx", K(ret));
-        } else if (NULL != spec.tablet_id_expr_
-                   && OB_FAIL(slice_calc.get_previous_row_tablet_id(tablet_id))) {
-          LOG_WARN("failed to get previous row tablet_id", K(ret));
-        }
-        LOG_DEBUG("[VEC2.0 PX] send rows batch without prefetch", K(i), K(slice_idx_array), K(tablet_id.get_int()));
-        FOREACH_CNT_X(slice_idx, slice_idx_array, OB_SUCC(ret)) {
-          if (OB_FAIL(send_row(*slice_idx, send_row_time_recorder, tablet_id.get_int()))) {
-            LOG_WARN("fail emit row to interm result", K(ret), K(slice_idx_array));
-          }
-        }
-      }
-    } else {
-      int64_t *indexes = NULL;
-      if (OB_FAIL((slice_calc.get_slice_idx_batch<CALC_TYPE, false>(spec_.output_, eval_ctx_,
-                                               *brs_.skip_, brs_.size_,
-                                               indexes)))) {
-        LOG_WARN("calc slice indexes failed", K(ret));
-      } else {
-        for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-          if (brs_.skip_->at(i) || indexes[i] < 0) { continue; }
-            __builtin_prefetch(&blk_bufs_.at(indexes[i]),
-                               0, // for read
-                               1); // low temporal locality
-        }
-        for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-          if (brs_.skip_->at(i) || indexes[i] < 0) { continue; }
-          if (blk_bufs_.at(indexes[i]).is_inited()) {
-            __builtin_prefetch(blk_bufs_.at(indexes[i]).head(),
-                               1, // for write
-                               1); // low temporal locality
-          }
-        }
-        LOG_DEBUG("[VEC2.0 PX] send rows batch with prefetch", K(CALC_TYPE),
-                 K(ObArrayWrap<int64_t>(indexes, brs_.size_)));
-        for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-          if (brs_.skip_->at(i)) {
-            continue;
-          }
-          batch_info_guard.set_batch_idx(i);
-          row_count += 1;
-          metric_.count();
-          if (OB_FAIL(send_row(indexes[i], send_row_time_recorder, tablet_id.get_int()))) {
-            LOG_WARN("fail emit row to interm result", K(ret), K(indexes[i]));
-          }
-        }
-      }
-    }
-    if (OB_SUCC(ret) && brs_.end_) {
-      if (OB_FAIL(try_wait_channel())) {
-        LOG_WARN("failed to wait channel init", K(ret));
-      } else if (batch_param_remain_) {
-        ObPxNewRow px_eof_row;
-        px_eof_row.set_eof_row();
-        px_eof_row.set_data_type(data_msg_type_);
-        ObPhysicalPlanCtx *phy_plan_ctx = GET_PHY_PLAN_CTX(ctx_);
-        if (OB_ISNULL(phy_plan_ctx)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("phy plan ctx is null", K(ret));
-        }
-        for (int i = 0; i < task_channels_.count() && OB_SUCC(ret); i++) {
-          dtl::ObDtlChannel *ch = task_channels_.at(i);
-          if (OB_FAIL(ch->send(px_eof_row, phy_plan_ctx->get_timeout_timestamp(), &eval_ctx_, false))) {
-            LOG_WARN("fail send eof row to slice channel", K(px_eof_row), K(ret));
-          } else if (OB_FAIL(ch->push_buffer_batch_info())) {
-            LOG_WARN("channel push back batch failed", K(ret));
-          }
-        }
-      } else if (OB_FAIL(send_eof_row())) {
-        LOG_WARN("fail send eof rows to channels", K(ret));
-      }
-      break;
-    }
-    // for those break out ops
-  }
-  LOG_TRACE("Transmit time record", K(row_count), K(ret));
-  return ret;
-}
-
-template <ObSliceIdxCalc::SliceCalcType CALC_TYPE>
-int ObPxTransmitOp::send_rows_in_vector(ObSliceIdxCalc &slice_calc)
-{
-  int ret = OB_SUCCESS;
-  int64_t send_row_time_recorder = 0;
-  ObObj tablet_id;
-  ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);
-  ObSliceIdxCalc::SliceIdxArray slice_idx_array;
-  ObSliceIdxCalc::SliceIdxFlattenArray slice_idx_flatten_array;
-  ObSliceIdxCalc::EndIdxArray end_idx_array;
-  while (OB_SUCC(ret)) {
-    if (OB_FAIL(next_row())) {
-      LOG_WARN("fetch next rows failed", K(ret));
-      break;
-    }
-    if (dfc_.all_ch_drained()) {
-      int tmp_ret = child_->drain_exch();
-      if (OB_SUCCESS != tmp_ret) {
-        LOG_WARN("drain exchange data failed", K(tmp_ret));
-      }
-      LOG_TRACE("all channel has been drained");
-      break;
-    }
-    const ObPxTransmitSpec &spec = static_cast<const ObPxTransmitSpec &>(get_spec());
-    has_set_tablet_id_vector_ = false;
-    batch_info_guard.set_batch_size(brs_.size_);
-    if (OB_FAIL(ret) || brs_.size_ == 0) {
-    } else if (OB_FAIL(set_rollup_hybrid_keys(slice_calc))) {
-      LOG_WARN("failed to set rollup hybrid keys", K(ret));
-    } else if (OB_FAIL(prepare_for_nested_expr())) {
-      LOG_WARN("failed to prepare for nested expr", K(ret));
-    } else if (!slice_calc.support_vectorized_calc()) {
-      for (int64_t i = 0; i < spec_.output_.count() && OB_SUCC(ret); i++) {
-        ObExpr *expr = spec_.output_.at(i);
-        if (T_TABLET_AUTOINC_NEXTVAL == expr->type_) {
-          ObIVector *vec = expr->get_vector(eval_ctx_);
-          const char *payload = vec->get_payload(0);
-          if (NULL != payload) {
-          } else if (OB_FAIL(expr->init_vector(eval_ctx_, VEC_UNIFORM_CONST, 1 /*size*/))) {
-            LOG_WARN("init vector failed", K(ret));
-          } else {
-            vec->set_null(0);
-          }
-        } else if (OB_FAIL(expr->eval_vector(eval_ctx_, brs_))) {
-          LOG_WARN("eval expr failed", K(ret));
-        }
-      }
-      for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-        if (brs_.skip_->at(i)) {
-          continue;
-        }
-        batch_info_guard.set_batch_idx(i);
-        metric_.count();
-        //TODO: shanting2.0 支持wf2.0时做一下简单适配
-        if (OB_FAIL(set_wf_hybrid_slice_id_calc_type(slice_calc))) {
-          LOG_WARN("failed to set wf hybrid keys", K(ret));
-        } else if (OB_FAIL((slice_calc.get_slice_indexes<CALC_TYPE, true>(get_spec().output_,
-                            eval_ctx_, slice_idx_array, brs_.skip_)))) {
-          LOG_WARN("fail get slice idx", K(ret));
-        } else if (NULL != spec.tablet_id_expr_
-        // 为什么要获取上一次的tablet_id
-                   && OB_FAIL(slice_calc.get_previous_row_tablet_id(tablet_id))) {
-          LOG_WARN("failed to get previous row tablet_id", K(ret));
-        }
-        LOG_DEBUG("[VEC2.0 PX] send rows vec without prefetch", K(i), K(slice_idx_array), K(tablet_id.get_int()));
-        FOREACH_CNT_X(slice_idx, slice_idx_array, OB_SUCC(ret)) {
-          if (OB_FAIL(send_row(*slice_idx, send_row_time_recorder, tablet_id.get_int(), i))) {
-            LOG_WARN("fail emit row to interm result", K(ret), K(slice_idx_array));
-          }
-        }
-      }
-    } else if (slice_calc.is_multi_slice_calc_type()) {
-      if (NULL != spec.tablet_id_expr_) {
-        ObRepartSliceIdxCalc &repart_slice_calc =
-          static_cast<ObRepartSliceIdxCalc &>(slice_calc);
-        if (OB_FAIL(update_tabletid_batch(spec.tablet_id_expr_, repart_slice_calc))) {
-          LOG_WARN("failed to update_tabletid_batch", K(ret));
-        } else {
-          has_set_tablet_id_vector_ = true;
-        }
-      }
-      set_wf_hybrid_exprs(slice_calc);
-      if (OB_FAIL(ret)) {
-      } else if (OB_FAIL((slice_calc.get_multi_slice_idx_vector<CALC_TYPE>(spec_.output_, eval_ctx_,
-                                               *brs_.skip_, brs_.size_,
-                                               slice_idx_flatten_array, end_idx_array)))) {
-        LOG_WARN("calc slice indexes failed", K(ret));
-      } else {
-        bool is_broad_cast_calc_type =
-          CALC_TYPE == ObSliceIdxCalc::SliceCalcType::BROADCAST ||
-          CALC_TYPE == ObSliceIdxCalc::SliceCalcType::BC2HOST;
-        for (int64_t i = 0; i < spec_.output_.count() && OB_SUCC(ret); i++) {
-          ObExpr *expr = spec_.output_.at(i);
-          if (T_TABLET_AUTOINC_NEXTVAL == expr->type_) {
-            ObIVector *vec = expr->get_vector(eval_ctx_);
-            const char *payload = vec->get_payload(0);
-            if (NULL != payload) {
-            } else if (OB_FAIL(expr->init_vector(eval_ctx_, VEC_UNIFORM_CONST, 1 /*size*/))) {
-              LOG_WARN("init vector failed", K(ret));
-            } else {
-              vec->set_null(0);
-            }
-          } else if (OB_FAIL(spec_.output_.at(i)->eval_vector(eval_ctx_, brs_))) {
-            LOG_WARN("eval expr failed", K(ret));
-          }
-        }
-        if (OB_FAIL(ret)) {
-        } else {
-          if (PX_VECTOR_FIXED == data_msg_type_) {
-            if (OB_FAIL(keep_order_send_batch_fixed(batch_info_guard, slice_idx_flatten_array,
-                end_idx_array, is_broad_cast_calc_type))) {
-              LOG_WARN("failed to send batch", K(ret));
-            }
-          } else {
-            if (OB_FAIL(keep_order_send_batch(batch_info_guard, slice_idx_flatten_array,
-                end_idx_array, is_broad_cast_calc_type))) {
-              LOG_WARN("failed to send batch", K(ret));
-            }
-          }
-        }
-      }
-    } else {
-      int64_t *indexes = NULL;
-      if (NULL != spec.tablet_id_expr_) {
-        ObRepartSliceIdxCalc &repart_slice_calc =
-          static_cast<ObRepartSliceIdxCalc &>(slice_calc);
-        if (OB_FAIL(update_tabletid_batch(spec.tablet_id_expr_, repart_slice_calc))) {
-          LOG_WARN("failed to update_tabletid_batch", K(ret));
-        } else {
-          has_set_tablet_id_vector_ = true;
-        }
-      }
-      if (OB_FAIL(ret)) {
-      } else if (OB_FAIL((slice_calc.get_slice_idx_batch<CALC_TYPE, true>(spec_.output_, eval_ctx_,
-                                               *brs_.skip_, brs_.size_,
-                                               indexes)))) {
-        LOG_WARN("calc slice indexes failed", K(ret));
-      } else {
-        for (int64_t i = 0; i < spec_.output_.count() && OB_SUCC(ret); i++) {
-          ObExpr *expr = spec_.output_.at(i);
-          if (T_TABLET_AUTOINC_NEXTVAL == expr->type_) {
-            ObIVector *vec = expr->get_vector(eval_ctx_);
-            const char *payload = vec->get_payload(0);
-            if (NULL != payload) {
-            } else if (OB_FAIL(expr->init_vector(eval_ctx_, VEC_UNIFORM_CONST, 1 /*size*/))) {
-              LOG_WARN("init vector failed", K(ret));
-            } else {
-              vec->set_null(0);
-            }
-          } else if (OB_FAIL(spec_.output_.at(i)->eval_vector(eval_ctx_, brs_))) {
-            LOG_WARN("eval expr failed", K(ret));
-          }
-        }
-        LOG_DEBUG("[VEC2.0 PX] send rows vec with prefetch", K(CALC_TYPE),
-                 K(ObArrayWrap<int64_t>(indexes, brs_.size_)));
-        if (dtl::ObDtlMsgType::PX_VECTOR_ROW == data_msg_type_) {
-          for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; i++) {
-            if (brs_.skip_->at(i) || indexes[i] < 0) { continue; }
-              ObDtlBasicChannel *channel = static_cast<ObDtlBasicChannel *> (task_channels_.at(indexes[i]));
-              channel->get_vector_row_writer().prefetch();
-          }
-        }
-        if (OB_FAIL(ret)) {
-        } else {
-          slice_idx_flatten_array.reuse();
-          end_idx_array.reuse();
-          for (int i = 0; i < brs_.size_ && OB_SUCC(ret); i++) {
-            if (!brs_.skip_->at(i) && indexes[i] >= 0) {
-              if (OB_FAIL(slice_idx_flatten_array.push_back(indexes[i]))) {
-                LOG_WARN("pushback slice_idx_flatten_array failed", K(i), K(ret));
-              }
-            }
-            if (OB_SUCC(ret)) {
-              if (OB_FAIL(end_idx_array.push_back(slice_idx_flatten_array.count()))) {
-                LOG_WARN("pushback end_idx_array failed", K(i), K(ret));
-              }
-            }
-          }
-
-          if (OB_FAIL(ret)) {
-          } else if (PX_VECTOR_FIXED == data_msg_type_) {
-            if (OB_FAIL(keep_order_send_batch_fixed(batch_info_guard, slice_idx_flatten_array,
-                end_idx_array, false))) {
-              LOG_WARN("failed to send batch", K(ret));
-            }
-          } else if (OB_FAIL(keep_order_send_batch(batch_info_guard, slice_idx_flatten_array,
-                end_idx_array, false))) {
-            LOG_WARN("failed to send batch", K(ret));
-          }
-        }
-      }
-    }
-    if (OB_SUCC(ret) && brs_.end_) {
-      if (get_spec().use_rich_format_ && PX_VECTOR_FIXED == data_msg_type_) {
-        for (int64_t idx = 0; idx < task_channels_.count(); ++idx) {
-          ObDtlBasicChannel *channel =
-                          static_cast<ObDtlBasicChannel *> (task_channels_.at(idx));
-          ObDtlVectorFixedMsgWriter &row_writer = channel->get_vector_fixed_msg_writer();
-          if (row_writer.is_inited() && params_.row_cnts_[idx] > 0) {
-            row_writer.update_row_cnt(params_.row_cnts_[idx]);
-            row_writer.update_buffer_used();
-            params_.row_cnts_[idx] = 0;
-          }
-        }
-      }
-      if (OB_FAIL(try_wait_channel())) {
-        LOG_WARN("failed to wait channel init", K(ret));
-      } else if (batch_param_remain_) {
-        ObPxNewRow px_eof_row;
-        px_eof_row.set_eof_row();
-        px_eof_row.set_data_type(data_msg_type_);
-        ObPhysicalPlanCtx *phy_plan_ctx = GET_PHY_PLAN_CTX(ctx_);
-        if (OB_ISNULL(phy_plan_ctx)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("phy plan ctx is null", K(ret));
-        }
-        for (int i = 0; i < task_channels_.count() && OB_SUCC(ret); i++) {
-          dtl::ObDtlChannel *ch = task_channels_.at(i);
-          if (OB_FAIL(ch->send(px_eof_row, phy_plan_ctx->get_timeout_timestamp(), &eval_ctx_, false))) {
-            LOG_WARN("fail send eof row to slice channel", K(px_eof_row), K(ret));
-          } else if (OB_FAIL(ch->push_buffer_batch_info())) {
-            LOG_WARN("channel push back batch failed", K(ret));
-          }
-        }
-      } else if (OB_FAIL(send_eof_row())) {
-        LOG_WARN("fail send eof rows to channels", K(ret));
-      }
-      break;
-    }
-    // for those break out ops
-  }
-  LOG_TRACE("Transmit time record, send rows in vector", K(ret));
   return ret;
 }
 
@@ -1398,22 +968,6 @@ void ObPxTransmitOp::fill_broad_cast_ptrs_fixed(int64_t slice_idx)
   }
 }
 
-int ObPxTransmitOp::prepare_for_nested_expr()
-{
-  int ret = OB_SUCCESS;
-  for (int64_t i = 0; OB_SUCC(ret) && i < get_spec().output_.count(); ++i) {
-    ObExpr *expr = get_spec().output_.at(i);
-    if (expr->is_nested_expr() && !is_uniform_format(expr->get_format(eval_ctx_))) {
-      if (OB_FAIL(expr->nested_cast_to_uniform(brs_.size_, eval_ctx_, brs_.skip_))) {
-        LOG_WARN("failed to cast nested expr to uniform", K(ret));
-      } else if (!params_.vectors_.empty()) { // params_.vectors_ might be not used
-        params_.vectors_.at(i) = expr->get_vector(eval_ctx_);
-      }
-    }
-  }
-  return ret;
-}
-
 void ObPxTransmitOp::fill_batch_ptrs(ObSliceIdxCalc::SliceIdxFlattenArray &slice_idx_flatten_array,
                                      ObSliceIdxCalc::EndIdxArray &end_idx_array)
 {
@@ -1561,8 +1115,6 @@ int ObPxTransmitOp::keep_order_send_batch(ObEvalCtx::BatchInfoScopeGuard &batch_
     }
   }
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(prepare_for_nested_expr())) {
-    LOG_WARN("failed to prepare for nested expr", K(ret));
   } else if (OB_FAIL(ObTempRowStore::DtlRowBlock::calc_rows_size(params_.vectors_, params_.meta_,
                                                     brs_, params_.row_size_array_))) {
     LOG_WARN("failed to calc size", K(ret));
@@ -1577,13 +1129,15 @@ int ObPxTransmitOp::keep_order_send_batch(ObEvalCtx::BatchInfoScopeGuard &batch_
         for (int64_t i = 0; i < params_.selector_cnt_; ++i) {
           params_.return_rows_[i]->set_row_size(params_.row_size_array_[params_.selector_array_[i]]);
         }
-        for (int64_t idx = 0; idx < get_spec().output_.count(); ++idx) {
-          params_.vectors_.at(idx)->to_rows(params_.meta_, params_.return_rows_,
+        for (int64_t idx = 0; OB_SUCC(ret) && idx < get_spec().output_.count(); ++idx) {
+          ret = params_.vectors_.at(idx)->to_rows(params_.meta_, params_.return_rows_,
                                 params_.selector_array_, params_.selector_cnt_, idx);
         }
-        for (int64_t idx = 0; idx < task_channels_.count(); ++idx) {
-          if (nullptr != params_.blocks_[idx]) {
-            params_.blocks_[idx]->get_buffer()->fast_update_head(params_.heads_[idx]);
+        if (OB_SUCC(ret)) {
+          for (int64_t idx = 0; idx < task_channels_.count(); ++idx) {
+            if (nullptr != params_.blocks_[idx]) {
+              params_.blocks_[idx]->get_buffer()->fast_update_head(params_.heads_[idx]);
+            }
           }
         }
         for (int64_t i = 0; OB_SUCC(ret) && i < params_.fallback_cnt_; i++) {
@@ -1618,13 +1172,15 @@ int ObPxTransmitOp::keep_order_send_batch(ObEvalCtx::BatchInfoScopeGuard &batch_
         for (int64_t i = 0; i < params_.selector_cnt_; ++i) {
           params_.return_rows_[i]->set_row_size(params_.row_size_array_[params_.selector_array_[i]]);
         }
-        for (int64_t idx = 0; idx < get_spec().output_.count(); ++idx) {
-          params_.vectors_.at(idx)->to_rows(params_.meta_, params_.return_rows_,
+        for (int64_t idx = 0; OB_SUCC(ret) && idx < get_spec().output_.count(); ++idx) {
+          ret = params_.vectors_.at(idx)->to_rows(params_.meta_, params_.return_rows_,
                                 params_.selector_array_, params_.selector_cnt_, idx);
         }
-        for (int64_t idx = 0; idx < task_channels_.count(); ++idx) {
-          if (nullptr != params_.blocks_[idx]) {
-            params_.blocks_[idx]->get_buffer()->fast_update_head(params_.heads_[idx]);
+        if (OB_SUCC(ret)) {
+          for (int64_t idx = 0; idx < task_channels_.count(); ++idx) {
+            if (nullptr != params_.blocks_[idx]) {
+              params_.blocks_[idx]->get_buffer()->fast_update_head(params_.heads_[idx]);
+            }
           }
         }
         for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_ && params_.fallback_cnt_ > 0; i++) {
@@ -1795,87 +1351,6 @@ int ObPxTransmitOp::send_eof_row()
       op_monitor_info_.last_row_time_ = oceanbase::common::ObClockGenerator::getClock();
     }
   }
-  return ret;
-}
-
-template <bool USE_VEC>
-int ObPxTransmitOp::broadcast_rows(ObSliceIdxCalc &slice_calc)
-{
-  int ret = OB_SUCCESS;
-  UNUSED(slice_calc);
-  int64_t row_count = 0;
-
-  ObSliceIdxCalc::SliceIdxArray slice_idx_array;
-  while (OB_SUCC(ret)) {
-    int64_t rows = 0;
-    bool reach_end = false;
-    if (OB_FAIL(next_row())) {
-      if (OB_ITER_END == ret) {
-        reach_end = true;
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("fail to get next row from child op",
-                 K(ret), K(child_->get_spec().get_type()));
-      }
-    } else {
-      if (is_vectorized()) {
-        rows = brs_.size_;
-        reach_end = brs_.end_;
-      } else {
-        rows = 1;
-      }
-    }
-    row_count++;
-    metric_.count();
-    if (OB_FAIL(ret)) {
-      LOG_WARN("fail to get next row", K(ret));
-    } else if (dfc_.all_ch_drained()) {
-      LOG_DEBUG("all channel has been drained");
-      break;
-    } else if (OB_FAIL(try_wait_channel())) {
-      LOG_WARN("failed to wait channel", K(ret));
-    } else if (USE_VEC) {
-      ObPxNewRow px_row(get_spec().output_, OB_INVALID_ID, data_msg_type_);
-      ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);
-      batch_info_guard.set_batch_size(rows);
-      if (OB_FAIL(prepare_for_nested_expr())) {
-        LOG_WARN("failed to prepare for nested expr", K(ret));
-      }
-      for (int64_t i = 0; OB_SUCC(ret) && i < rows; i++) {
-        if (brs_.skip_->at(i)) {
-          continue;
-        }
-        row_count++;
-        metric_.count();
-        batch_info_guard.set_batch_idx(i);
-        px_row.set_vector_row_idx(i);
-        ret = chs_agent_.broadcast_row(px_row, &eval_ctx_);
-      }
-    } else {
-      ObPxNewRow px_row(get_spec().output_, OB_INVALID_ID, data_msg_type_);
-      ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);
-      batch_info_guard.set_batch_size(rows);
-      for (int64_t i = 0; OB_SUCC(ret) && i < rows; i++) {
-        if (is_vectorized() && brs_.skip_->at(i)) {
-          continue;
-        }
-        row_count++;
-        metric_.count();
-        batch_info_guard.set_batch_idx(i);
-        ret = chs_agent_.broadcast_row(px_row, &eval_ctx_);
-      }
-    }
-
-    if (OB_SUCC(ret) && reach_end) {
-      if (OB_FAIL(try_wait_channel())) {
-        LOG_WARN("failed to wait channel", K(ret));
-      } else if (OB_FAIL(broadcast_eof_row())) {
-        LOG_WARN("fail send eof rows to channels", K(ret));
-      }
-      break;
-    }
-  }
-  LOG_TRACE("Transmit time record", K(row_count), K(ret));
   return ret;
 }
 
@@ -2135,8 +1610,8 @@ int ObPxTransmitOp::do_datahub_dynamic_sample(int64_t op_id, ObDynamicSamplePiec
   ObPxSqcHandler *handler = ctx_.get_sqc_handler();
   if (OB_ISNULL(handler)) {
     ret = OB_NOT_SUPPORTED;
-    LOG_WARN("dynimic sample only supported in parallel execution mode", K(ret));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "dynimic sample in non-px mode");
+    LOG_WARN("dynamic sample only supported in parallel execution mode", K(ret));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "dynamic sample in non-px mode");
   } else if (OB_SUCCESS != ERRSIM_DYNAMIC_SAMPLE_FAIL &&
              ctx_.get_px_task_id() == 0) {
     ret = ERRSIM_DYNAMIC_SAMPLE_FAIL;
@@ -2174,7 +1649,7 @@ int ObPxTransmitOp::build_ds_piece_msg(int64_t expected_range_count,
   UNUSED(expected_range_count);
   UNUSED(piece_msg);
   int ret = OB_NOT_SUPPORTED;
-  LOG_USER_ERROR(OB_NOT_SUPPORTED, "build ds picec msg");
+  LOG_USER_ERROR(OB_NOT_SUPPORTED, "build ds piece msg");
   return ret;
 }
 
@@ -2435,13 +1910,12 @@ int ObPxTransmitOp::update_tabletid_batch(const ObExpr *expr,ObRepartSliceIdxCal
   } else if (OB_FAIL(expr->init_vector_for_write(eval_ctx_, VectorFormat::VEC_FIXED, brs_.size_))) {
     LOG_WARN("init_vector failed", K(ret));
   } else {
-    ObIVector *src_vec = slice_calc.get_calc_part_id_expr()->get_vector(eval_ctx_);
     ObIVector *dst_vec = expr->get_vector(eval_ctx_);
     for (int i = 0; i < brs_.size_; i++) {
       if (brs_.skip_->at(i)) {
         continue;
       }
-      dst_vec->set_int(i, src_vec->get_int(i));
+      dst_vec->set_int(i, tablet_ids[i]);
     }
   }
   return ret;

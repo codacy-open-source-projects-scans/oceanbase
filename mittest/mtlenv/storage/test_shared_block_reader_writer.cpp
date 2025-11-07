@@ -13,22 +13,11 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <errno.h>
-#include <gtest/gtest.h>
 #define protected public
 #define private public
 #define OK(ass) ASSERT_EQ(OB_SUCCESS, (ass))
-#include "storage/blockstore/ob_shared_object_reader_writer.h"
-#include "share/io/ob_io_define.h"
-#include "share/io/ob_io_manager.h"
+#include "src/share/io/io_schedule/ob_io_mclock.h"
 #include "mittest/mtlenv/mock_tenant_module_env.h"
-#include "storage/meta_mem/ob_storage_meta_cache.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
-#include "share/ob_simple_mem_limit_getter.h"
-#include "storage/blocksstable/ob_storage_cache_suite.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/blocksstable/ob_object_manager.h"
 
 namespace oceanbase
 {
@@ -108,6 +97,7 @@ void TestSharedBlockRWriter::create_empty_sstable(ObSSTable &empty_sstable)
   param.ddl_scn_.set_min();
   param.filled_tx_scn_.set_min();
   param.tx_data_recycle_scn_.set_min();
+  param.rec_scn_.set_min();
   param.original_size_ = 0;
   param.ddl_scn_.set_min();
   param.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
@@ -285,10 +275,11 @@ TEST_F(TestSharedBlockRWriter, test_cb_single_write)
 
   ObSSTable empty_sstable;
   create_empty_sstable(empty_sstable);
-  const int64_t sstable_size = empty_sstable.get_serialize_size();
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t sstable_size = empty_sstable.get_serialize_size(data_version);
   char *sstable_buf = static_cast<char *>(allocator_.alloc(sstable_size));
   int64_t pos = 0;
-  OK(empty_sstable.serialize(sstable_buf, sstable_size, pos));
+  OK(empty_sstable.serialize(data_version, sstable_buf, sstable_size, pos));
 
   ObSharedObjectWriteInfo write_info;
   ObSharedObjectWriteHandle write_handle;
@@ -359,10 +350,11 @@ TEST_F(TestSharedBlockRWriter, test_cb_batch_write)
 
   ObSSTable empty_sstable;
   create_empty_sstable(empty_sstable);
-  const int64_t sstable_size = empty_sstable.get_serialize_size();
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t sstable_size = empty_sstable.get_serialize_size(data_version);
   char *sstable_buf = static_cast<char *>(allocator_.alloc(sstable_size));
   int64_t pos = 0;
-  OK(empty_sstable.serialize(sstable_buf, sstable_size, pos));
+  OK(empty_sstable.serialize(data_version, sstable_buf, sstable_size, pos));
   write_info.buffer_ = sstable_buf;
   write_info.offset_ = 0;
   write_info.size_ = sstable_size;

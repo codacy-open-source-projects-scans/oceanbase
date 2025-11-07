@@ -32,7 +32,52 @@ namespace sql
 class ObPhysicalPlanCtx;
 struct ObUserLoggingCtx;
 
-class ObOdpsDataTypeCastUtil
+class ObDataTypeCastUtil
+{
+public:
+  static int common_string_decimalint_wrap(const ObExpr &expr, const ObString &in_str,
+                                          const ObUserLoggingCtx *user_logging_ctx,
+                                          ObDecimalIntBuilder &res_val);
+  static int common_string_number_wrap(const ObExpr &expr,
+                                      const ObString &in_str,
+                                      const ObUserLoggingCtx *user_logging_ctx,
+                                      ObIAllocator &alloc,
+                                      number::ObNumber &nmb);
+  static int common_uint_int_wrap(const ObExpr &expr, const ObObjType &out_type, uint64_t in_val,
+                                  ObEvalCtx &ctx, int64_t &out_val);
+  static int common_double_float_wrap(const ObExpr &expr, const double in_val, float &out_val);
+  static int common_double_int_wrap(const double in, int64_t &out,
+                                    const int64_t trunc_min_value, const int64_t trunc_max_value);
+  static int common_number_datetime_wrap(const number::ObNumber nmb, const ObTimeConvertCtx &cvrt_ctx,
+                                         int64_t &out_val, const ObCastMode cast_mode,
+                                         bool is_mysql_compat_dates);
+  static int common_number_date_wrap(const number::ObNumber &nmb, const ObCastMode cast_mode,
+                                     int32_t &out_val, bool is_mysql_compat_dates);
+  static int common_string_float_wrap(const ObExpr &expr, const ObString &in_str, float &out_val);
+
+  template <typename IN_TYPE>
+  static int common_floating_number_wrap(const IN_TYPE in_val,
+                                         const ob_gcvt_arg_type arg_type,
+                                         ObIAllocator &alloc,
+                                         number::ObNumber &number,
+                                         ObEvalCtx &ctx,
+                                         const ObCastMode cast_mode);
+  template<typename IN_TYPE>
+  static int common_floating_decimalint_wrap(const IN_TYPE in_val,
+                                             const ob_gcvt_arg_type arg_type,
+                                             ObIAllocator &alloc,
+                                             ObDecimalInt *&decint,
+                                             int32_t &int_bytes,
+                                             int16_t &scale,
+                                             int16_t &precision);
+  static void log_user_error_warning(const ObUserLoggingCtx *user_logging_ctx,
+                                     const int64_t ret,
+                                     const ObString &type_str,
+                                     const ObString &input,
+                                     const ObCastMode cast_mode);
+};
+
+class ObOdpsDataTypeCastUtil : public ObDataTypeCastUtil
 {
 public:
   static int common_int_number_wrap(const ObExpr &expr,
@@ -42,10 +87,6 @@ public:
   static int common_string_decimalint_wrap(const ObExpr &expr, const ObString &in_str,
                                           const ObUserLoggingCtx *user_logging_ctx,
                                           ObDecimalIntBuilder &res_val);
-  static int common_string_number_wrap(const ObExpr &expr,
-                                      const ObString &in_str,
-                                      ObIAllocator &alloc,
-                                      number::ObNumber &nmb);
   static int common_string_string_wrap(const ObExpr &expr,
                                       const ObObjType in_type,
                                       const ObCollationType in_cs_type,
@@ -60,8 +101,8 @@ public:
                                     ObEvalCtx &ctx,
                                     const ObLobLocatorV2 *lob_locator,
                                     ObDatum &res_datum,
-                                    ObObjType &in_type,
-                                    ObCollationType &in_cs_type);
+                                    const ObObjType &in_type,
+                                    const ObCollationType &in_cs_type);
   static int common_check_convert_string(const ObExpr &expr,
                                         ObEvalCtx &ctx,
                                         const ObString &in_str,
@@ -70,6 +111,72 @@ public:
                                         ObDatum &res_datum,
                                         bool &has_set_res);
 };
+
+template <typename IN_TYPE, typename OUT_TYPE>
+static OB_INLINE int common_floating_int(IN_TYPE &in_val, OUT_TYPE &out_val)
+{
+  static constexpr double ROUND_DOUBLE = 0.5;
+  int ret = OB_SUCCESS;
+  out_val = 0;
+  if (in_val < 0) {
+    out_val = static_cast<OUT_TYPE>(in_val - ROUND_DOUBLE);
+  } else if (in_val > 0) {
+    out_val = static_cast<OUT_TYPE>(in_val + ROUND_DOUBLE);
+  } else {
+    out_val = static_cast<OUT_TYPE>(in_val);
+  }
+  return ret;
+}
+
+template <typename IN_TYPE>
+static bool is_ieee754_nan_inf(const IN_TYPE in_val,
+                               char buf[], int64_t &length)
+{
+  bool is_nan_inf = true;
+  if (lib::is_oracle_mode()) {
+    // buf size is 256, nan or infinity string length is no more than 4 bytes.
+    // Never hit overflow
+    if (in_val == -INFINITY) {
+      length = strlen("-Inf");
+      strncpy(buf, "-Inf", length);
+    } else if (in_val == INFINITY) {
+      length = strlen("Inf");
+      strncpy(buf, "Inf", length);
+    } else if (isnan(in_val)) {
+      length = strlen("Nan");
+      strncpy(buf, "Nan", length);
+    } else {
+      is_nan_inf = false;
+    }
+  } else {
+    is_nan_inf = false;
+  }
+  return is_nan_inf;
+}
+
+int time_usec_scale_check(const ObCastMode &cast_mode,
+                          const ObAccuracy &accuracy,
+                          const int64_t value);
+
+int string_length_check(const ObExpr &expr,
+                        const ObCastMode &cast_mode,
+                        const ObAccuracy &accuracy,
+                        const ObObjType type,
+                        const ObCollationType cs_type,
+                        ObEvalCtx &ctx,
+                        const ObDatum &in_datum,
+                        ObDatum &res_datum,
+                        int &warning);
+int string_length_check(const ObExpr &expr,
+                        const ObCastMode &cast_mode,
+                        const ObAccuracy &accuracy,
+                        const ObObjType type,
+                        const ObCollationType cs_type,
+                        ObEvalCtx &ctx,
+                        const int64_t idx,
+                        const ObString &in_str,
+                        ObIVector &out_vec,
+                        int &warning);
 
 // extract accuracy info from %expr and call datum_accuracy_check() below.
 int datum_accuracy_check(const ObExpr &expr,
@@ -90,6 +197,25 @@ int datum_accuracy_check(const ObExpr &expr,
                          bool has_lob_header,
                          const common::ObDatum &in_datum,
                          ObDatum &res_datum,
+                         int &warning);
+
+int vector_accuracy_check(const ObExpr &expr,
+                          const uint64_t cast_mode,
+                          ObEvalCtx &ctx,
+                          bool has_lob_header,
+                          const int64_t idx,
+                          const ObIVector &in_vec,
+                          ObIVector &out_vec,
+                          int &warning);
+
+int vector_accuracy_check(const ObExpr &expr,
+                         const uint64_t cast_mode,
+                         ObEvalCtx &ctx,
+                         const ObAccuracy &accuracy,
+                         bool has_lob_header,
+                         const int64_t idx,
+                         const ObIVector &in_vec,
+                         ObIVector &out_vec,
                          int &warning);
 
 // 根据in_type,force_use_standard_format信息，获取fromat_str,优先从rt_expr保存的本地session变量列表获取，不存在则从session获取
@@ -201,6 +327,16 @@ int ob_datum_to_ob_time_with_date(const T &datum,
           ObTimeConverter::adjust_ob_time(ob_time, true);
         }
       }
+      break;
+    }
+    case ObMySQLDateTC: {
+      ob_time.mode_ |= DT_TYPE_DATE;
+      ret = ObTimeConverter::mdate_to_ob_time<true>(datum.get_mysql_date(), ob_time);
+      break;
+    }
+    case ObMySQLDateTimeTC: {
+      ob_time.mode_ |= DT_TYPE_DATETIME;
+      ret = ObTimeConverter::mdatetime_to_ob_time<true>(datum.get_mysql_datetime(), ob_time);
       break;
     }
     default: {
@@ -318,6 +454,14 @@ int ob_datum_to_ob_time_without_date(const T &datum,
       }
       break;
     }
+    case ObMySQLDateTC: {
+      ret = ObTimeConverter::mdate_to_ob_time<true>(datum.get_mysql_date(), ob_time);
+      break;
+    }
+    case ObMySQLDateTimeTC: {
+      ret = ObTimeConverter::mdatetime_to_ob_time<true>(datum.get_mysql_datetime(), ob_time);
+      break;
+    }
     default: {
       ret = OB_NOT_SUPPORTED;
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "cast to time without date");
@@ -337,9 +481,6 @@ int common_string_double(const ObExpr &expr,
                          const ObString &in_str,
                          ObDatum &res_datum);
 
-int common_string_float_wrap(const ObExpr &expr,
-                             const ObString &in_str,
-                             float &out_val);
 
 int get_cast_ret_wrap(const ObCastMode &cast_mode, int ret, int &warning);
 
@@ -380,8 +521,6 @@ inline bool decimal_int_truncated_check(const ObDecimalInt *decint, const int32_
   return bret;
 #undef TRUNC_CHECK
 }
-
-void log_user_warning_truncated(const ObUserLoggingCtx *user_logging_ctx);
 
 // copied from ob_obj_cast.cpp，函数逻辑没有修改，只是将输入参数从ObObj变为ObDatum
 class ObDatumHexUtils
@@ -550,7 +689,8 @@ public:
               const common::ObCastMode &cm,
               common::ObDatum *&res,
               int64_t batch_idx = 0,
-              const uint16_t subschema_id = 0);
+              const uint16_t subschema_id = 0,
+              const int32_t max_length = LENGTH_UNKNOWN_YET);
   // for xxx -> enumset.
   int to_type(const ObDatumMeta &dst_type,
               const common::ObIArray<common::ObString> &str_values,
@@ -570,7 +710,8 @@ private:
                       const ObExpr &src_expr,
                       const common::ObCastMode cm,
                       ObExpr &cast_expr,
-                      const uint16_t subschema_id = 0);
+                      const uint16_t subschema_id = 0,
+                      const int32_t max_length = LENGTH_UNKNOWN_YET);
   bool inited_;
   ObEvalCtx *eval_ctx_;
   ObExpr *cast_expr_;

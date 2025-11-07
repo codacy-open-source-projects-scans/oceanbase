@@ -59,14 +59,15 @@ struct ObBackupPieceFile {
   ObBackupPieceFile();
   void reset();
   int set(const int64_t dest_id, const int64_t round_id, const int64_t piece_id, const share::ObLSID &ls_id,
-      const int64_t file_id, const share::SCN &start_scn, const ObBackupPathString &path);
-  TO_STRING_KV(K_(dest_id), K_(round_id), K_(piece_id), K_(ls_id), K_(file_id), K_(path));
+      const int64_t file_id, const share::SCN &start_scn, const share::SCN &checkpoint_scn, const ObBackupPathString &path);
+  TO_STRING_KV(K_(dest_id), K_(round_id), K_(piece_id), K_(ls_id), K_(file_id), K_(start_scn), K_(checkpoint_scn), K_(path));
   int64_t dest_id_;
   int64_t round_id_;
   int64_t piece_id_;
   share::ObLSID ls_id_;
   int64_t file_id_;
   share::SCN start_scn_;
+  share::SCN checkpoint_scn_;
   ObBackupPathString path_;
 };
 
@@ -125,7 +126,7 @@ public:
   virtual int start_running() override;
   virtual bool operator==(const share::ObIDagNet &other) const override;
   virtual bool is_valid() const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_comment(char *buf, const int64_t buf_len) const override;
   virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   INHERIT_TO_STRING_KV("ObIDagNet", share::ObIDagNet, K_(ctx));
@@ -143,7 +144,7 @@ public:
   virtual ~ObBackupLSLogGroupDag();
   int init(const share::ObLSID &ls_id, ObBackupComplementLogCtx *ctx, common::ObInOutBandwidthThrottle *bandwidth_throttle);
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
   virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
@@ -191,7 +192,7 @@ public:
   virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual lib::Worker::CompatMode get_compat_mode() const { return lib::Worker::CompatMode::MYSQL; }
   virtual uint64_t get_consumer_group_id() const override { return consumer_group_id_; }
   virtual bool is_ha_dag() const override { return true; }
@@ -258,8 +259,12 @@ private:
   int copy_checkpoint_info_(const ObTenantArchivePieceAttr &piece_attr, const share::ObArchiveStore &src_store, const share::ObArchiveStore &dest_store);
   // round_start
   int copy_round_start_file_(const ObTenantArchivePieceAttr &piece_attr, const share::ObArchiveStore &src_store, const share::ObArchiveStore &dest_store);
+  // round_end
+  int copy_round_end_file_(const ObTenantArchivePieceAttr &piece_attr, const share::ObArchiveStore &src_store, const share::ObArchiveStore &dest_store);
   // piece_start
   int copy_piece_start_file_(const ObTenantArchivePieceAttr &piece_attr, const share::ObBackupDest &src, const share::ObBackupDest &dest);
+  // piece_end
+  int copy_piece_end_file_(const ObTenantArchivePieceAttr &piece_file, const share::ObBackupDest &src, const share::ObBackupDest &dest);
   int get_archive_backup_dest_(const ObBackupPathString &path, share::ObBackupDest &archive_dest);
   int get_copy_src_and_dest_(const ObTenantArchivePieceAttr &piece_file, share::ObBackupDest &src, share::ObBackupDest &dest);
   int record_server_event_();
@@ -344,7 +349,7 @@ public:
   virtual ~ObBackupLSLogGroupFinishDag();
   int init(ObBackupComplementLogCtx *ctx);
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
   virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;

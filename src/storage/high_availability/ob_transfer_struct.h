@@ -174,11 +174,12 @@ struct ObTXTransferUtils
       const bool get_commit,
       const ObTablet *tablet,
       ObTabletCreateDeleteMdsUserData &user_data);
-  static int create_empty_minor_sstable(
+  static int create_empty_mini_minor_sstable(
       const common::ObTabletID &tablet_id,
       const share::SCN start_scn,
       const share::SCN end_scn,
       const ObStorageSchema &table_schema,
+      const ObITable::TableType &table_type,
       common::ObArenaAllocator &allocator,
       ObTableHandleV2 &table_handle);
   static int set_tablet_freeze_flag(storage::ObLS &ls, ObTablet *tablet);
@@ -191,11 +192,12 @@ private:
       const bool get_commit,
       const ObTablet *tablet,
       ObTabletCreateDeleteMdsUserData &user_data);
-  static int build_empty_minor_sstable_param_(
+  static int build_empty_mini_minor_sstable_param_(
       const share::SCN start_scn,
       const share::SCN end_scn,
       const ObStorageSchema &table_schema,
       const common::ObTabletID &tablet_id,
+      const ObITable::TableType &table_type,
       ObTabletCreateSSTableParam &param);
 };
 
@@ -364,6 +366,10 @@ public:
   int build_storage_schema_info(
       const share::ObTransferTaskInfo &task_info,
       ObTimeoutCtx &timeout_ctx);
+#ifdef OB_BUILD_SHARED_STORAGE
+  int build_src_reorganization_scn(const share::ObTransferTaskInfo &task_info);
+  int get_src_reorganization_scn(common::ObIArray<share::SCN> &reorganization_scn);
+#endif
   TO_STRING_KV(K_(index), K_(tablet_info_array), K_(child_task_num), K_(total_tablet_count),
       K_(result), K_(data_version), K_(task_id));
 private:
@@ -430,6 +436,9 @@ private:
   uint64_t data_version_;
   common::ObCurTraceId::TraceId task_id_;
   ObTransferTabletInfoMgr mgr_;
+#ifdef OB_BUILD_SHARED_STORAGE
+  common::ObArray<share::SCN> src_reorganization_scn_array_;
+#endif
   DISALLOW_COPY_AND_ASSIGN(ObTransferBuildTabletInfoCtx);
 };
 

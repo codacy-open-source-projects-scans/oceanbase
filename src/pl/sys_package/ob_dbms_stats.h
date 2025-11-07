@@ -491,6 +491,12 @@ public:
                                     int64_t &succeed_cnt,
                                     ObOptStatTaskInfo &task_info);
 
+  static int build_stat_table_by_async_table(sql::ObExecContext &ctx,
+                                             const uint64_t tenant_id,
+                                             const ObTableSchema &table_schema,
+                                             const AsyncStatTable &async_table,
+                                             StatTable &stat_table);
+
   static int get_table_stale_percent(sql::ObExecContext &ctx,
                                      const uint64_t tenant_id,
                                      const share::schema::ObTableSchema &table_schema,
@@ -550,8 +556,6 @@ public:
                                       const common::ObDataTypeCastParams &dtc_params,
                                       ObString &ident_name,
                                       bool need_extra_conv = false);
-  static int parse_refine_min_max_options(ObExecContext &ctx,
-                                          ObTableStatParam &param);
 
 private:
   static int check_statistic_table_writeable(sql::ObExecContext &ctx);
@@ -576,20 +580,20 @@ private:
                                bool is_global_prefs,
                                ObStatPrefs *&stat_pref);
 
-  static int get_common_table_stale_percent(sql::ObExecContext &ctx,
-                                            const uint64_t tenant_id,
-                                            const share::schema::ObTableSchema &table_schema,
-                                            StatTable &stat_table);
+  static int get_non_partitioned_table_stale_percent(sql::ObExecContext &ctx,
+                                                     const uint64_t tenant_id,
+                                                     const share::schema::ObTableSchema &table_schema,
+                                                     StatTable &stat_table);
 
-  static int get_user_partition_table_stale_percent(sql::ObExecContext &ctx,
-                                                    const uint64_t tenant_id,
-                                                    const share::schema::ObTableSchema &table_schema,
-                                                    const double stale_percent_threshold,
-                                                    StatTable &stat_table);
+  static int get_partition_table_stale_percent(sql::ObExecContext &ctx,
+                                               const uint64_t tenant_id,
+                                               const share::schema::ObTableSchema &table_schema,
+                                               const double stale_percent_threshold,
+                                               StatTable &stat_table);
 
-  static bool is_table_gather_global_stats(const int64_t global_id,
-                                           const ObIArray<ObPartitionStatInfo> &partition_stat_infos,
-                                           int64_t &cur_row_cnt);
+  static bool is_missing_global_stats(const int64_t global_id,
+                                      const ObIArray<ObPartitionStatInfo> &partition_stat_infos,
+                                      int64_t &cur_row_cnt);
 
   static int parse_index_part_info(ObExecContext &ctx,
                                    const ObObjParam &owner,
@@ -597,13 +601,6 @@ private:
                                    const ObObjParam &part_name,
                                    const ObObjParam &table_name,
                                    ObTableStatParam &param);
-
-  static int get_table_index_infos(share::schema::ObSchemaGetterGuard *schema_guard,
-                                   const uint64_t tenant_id,
-                                   const uint64_t table_id,
-                                   uint64_t *index_tid_arr,
-                                   int64_t &index_count);
-
   static int get_table_partition_infos(const ObTableSchema &table_schema,
                                        ObIAllocator &allocator,
                                        ObIArray<PartInfo> &partition_infos);
@@ -620,9 +617,11 @@ private:
 
   static bool need_gather_index_stats(const ObTableStatParam &table_param);
 
-  static int resovle_granularity(ObGranularityType granu_type,
-                                 const bool use_size_auto,
-                                 ObTableStatParam &param);
+  static int adjust_gather_param(ObExecContext &ctx,
+                                 const share::schema::ObTableSchema *table_schema,
+                                 ObTableStatParam &stat_param);
+
+  static int resovle_granularity(ObGranularityType granu_type, const bool use_size_auto, ObTableStatParam &param);
 
   static void decide_modified_part(ObTableStatParam &param, const bool cascade_parts);
 
@@ -672,6 +671,25 @@ private:
   static int determine_auto_sample_table(ObExecContext &ctx,
                                          ObTableStatParam &param);
 
+  static int update_analyze_failed_count(const ObTableStatParam &stat_param,
+                                         const ObSEArray<int64_t, 4> &failed_part_ids,
+                                         const StatTable &stat_table);
+
+  static int gather_table_stats_by_parts(ObExecContext &ctx,
+                                         const int64_t task_start_time,
+                                         const int64_t duration_time,
+                                         ObTableStatParam &stat_param,
+                                         ObSEArray<int64_t, 4> &failed_part_ids,
+                                         ObSEArray<int64_t, 4> &succ_part_and_subpart_ids,
+                                         ObOptStatRunningMonitor &running_monitor);
+  static int collect_executed_part_ids(const ObTableStatParam &stat_param, ObSEArray<int64_t, 4> &part_ids);
+
+
+  static int append_part_id_if_valid(hash::ObHashMap<int64_t, ObPartitionStatInfo *> &id_to_part_stat_map,
+                                     int64_t part_id,
+                                     ObIArray<int64_t> &part_ids);
+
+  static bool sample_not_supported(const ObTableStatParam &param);
 };
 
 }

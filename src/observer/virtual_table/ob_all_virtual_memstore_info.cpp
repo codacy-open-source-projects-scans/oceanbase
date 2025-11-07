@@ -10,11 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "observer/ob_server.h"
 #include "observer/virtual_table/ob_all_virtual_memstore_info.h"
-#include "storage/memtable/ob_memtable.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tablet/ob_tablet.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::memtable;
@@ -161,7 +158,7 @@ int ObAllVirtualMemstoreInfo::get_next_memtable(ObITabletMemtable *&mt)
       } else if (OB_UNLIKELY(!tablet_handle.is_valid())) {
         ret = OB_ERR_UNEXPECTED;
         SERVER_LOG(WARN, "invalid tablet handle", K(ret), K(tablet_handle));
-      } else if (OB_FAIL(tablet_handle.get_obj()->get_all_memtables(tables_handle_))) {
+      } else if (OB_FAIL(tablet_handle.get_obj()->get_all_memtables_from_memtable_mgr(tables_handle_))) {
         SERVER_LOG(WARN, "failed to get_memtable_mgr for get all memtable", K(ret), KPC(tablet_handle.get_obj()));
       }
     } else if (OB_FAIL(tables_handle_.at(memtable_array_pos_++).get_tablet_memtable(mt))) {

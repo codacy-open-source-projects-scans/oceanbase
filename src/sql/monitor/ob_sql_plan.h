@@ -244,6 +244,7 @@ private:
                               PlanText &plan_text);
 
   int format_plan_table(ObIArray<ObSqlPlanItem*> &sql_plan_infos,
+                        const bool is_explain_format_object_name_display,
                         const ObExplainDisplayOpt& option,
                         PlanText &plan_text);
 
@@ -280,7 +281,8 @@ private:
   int prepare_and_store_session(ObSQLSessionInfo *session,
                                 ObSQLSessionInfo::StmtSavedValue *&session_value,
                                 transaction::ObTxDesc *&tx_desc,
-                                int64_t &nested_count);
+                                int64_t &nested_count,
+                                bool &need_restore);
 
   int restore_session(ObSQLSessionInfo *session,
                       ObSQLSessionInfo::StmtSavedValue *&session_value,

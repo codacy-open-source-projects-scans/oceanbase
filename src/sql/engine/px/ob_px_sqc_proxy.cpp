@@ -11,15 +11,10 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include "sql/engine/px/ob_dfo.h"
-#include "sql/dtl/ob_dtl_channel.h"
-#include "sql/dtl/ob_dtl_basic_channel.h"
+#include "ob_px_sqc_proxy.h"
 #include "sql/dtl/ob_dtl_channel_group.h"
-#include "sql/engine/px/ob_px_sqc_proxy.h"
 #include "sql/engine/px/ob_sqc_ctx.h"
-#include "sql/engine/px/datahub/ob_dh_msg_provider.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "storage/tx/ob_trans_service.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -143,7 +138,7 @@ int ObPxSQCProxy::link_sqc_qc_channel(ObPxRpcInitSqcArgs &sqc_arg)
 int ObPxSQCProxy::setup_loop_proc(ObSqcCtx &sqc_ctx)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(msg_ready_cond_.init(ObWaitEventIds::DEFAULT_COND_WAIT))) {
+  if (OB_FAIL(msg_ready_cond_.init(ObWaitEventIds::WAIT_SQC_PROXY))) {
     LOG_WARN("fail init cond", K(ret));
   } else if (OB_FAIL(sqc_ctx.receive_data_ch_provider_.init())) {
     LOG_WARN("fail init receive ch provider", K(ret));
@@ -456,10 +451,12 @@ int ObPxSQCProxy::report(int end_ret) const
     if (OB_NOT_NULL(session)) {
       transaction::ObTxDesc *&sqc_tx_desc = session->get_tx_desc();
       transaction::ObTxDesc *&task_tx_desc = tasks.at(i).get_tx_desc();
+      transaction::ObTxExecResult &task_tx_result = tasks.at(i).get_tx_result();
       if (OB_NOT_NULL(task_tx_desc)) {
         if (OB_NOT_NULL(sqc_tx_desc)) {
-          (void)MTL(transaction::ObTransService*)->merge_tx_state(*sqc_tx_desc, *task_tx_desc);
-          (void)MTL(transaction::ObTransService*)->release_tx(*task_tx_desc);
+          OZ(MTL(transaction::ObTransService*)->merge_tx_state(*sqc_tx_desc, *task_tx_desc));
+          OZ(finish_msg.get_trans_result().merge_result(task_tx_result));
+          OZ(MTL(transaction::ObTransService*)->release_tx(*task_tx_desc));
         } else {
           sql::ObSQLSessionInfo::LockGuard guard(session->get_thread_data_lock());
           sqc_tx_desc = task_tx_desc;

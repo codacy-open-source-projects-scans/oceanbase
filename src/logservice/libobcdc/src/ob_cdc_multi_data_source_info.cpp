@@ -14,8 +14,6 @@
 
 #define USING_LOG_PREFIX OBLOG_PARSER
 
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_macro_utils.h"
 
 #include "ob_cdc_multi_data_source_info.h"
@@ -185,7 +183,7 @@ int MultiDataSourceInfo::get_new_tenant_scehma_info(
           tenant_id,
           tenant_meta->get_schema_version(),
           tenant_meta->get_tenant_name(),
-          tenant_meta->is_restore());
+          tenant_meta->get_status());
     }
   }
 

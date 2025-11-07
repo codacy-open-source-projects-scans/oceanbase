@@ -11,7 +11,6 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "lib/charset/ob_mysql_global.h"
 #include "lib/charset/ob_ctype.h"
 #include "lib/charset/ob_ctype_gbk_tab.h"
 
@@ -191,7 +190,7 @@ size_t ob_varlen_encoding_gbk_for_spacecmp(const struct ObCharsetInfo* cs,
   *is_valid_unicode = 1;
 
   // trim
-  while (*(se-1) == 0x20 && se>src) se--;
+  while (se > src && *(se-1) == 0x20) se--;
   for (;*is_valid_unicode && dst < de && src < se && nweights; nweights--)
   {
     int16_t space_cnt = 0;

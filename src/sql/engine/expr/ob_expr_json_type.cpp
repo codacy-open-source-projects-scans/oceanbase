@@ -14,11 +14,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_json_type.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
-#include "sql/engine/expr/ob_expr_util.h"
-#include "share/object/ob_obj_cast.h"
-#include "objit/common/ob_item_type.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "lib/json_type/ob_json_tree.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -163,6 +158,11 @@ int ObExprJsonType::calc(ObEvalCtx &ctx, const ObDatum &data, ObDatumMeta meta, 
           }
         } else {
           ObJsonNodeType j_type = j_base->json_type();
+          if (j_type == ObJsonNodeType::J_MYSQL_DATE){
+            j_type = ObJsonNodeType::J_DATE;
+          } else if (j_type == ObJsonNodeType::J_MYSQL_DATETIME){
+            j_type = ObJsonNodeType::J_DATETIME;
+          }
           type_idx = static_cast<uint32_t>(j_type);
           if (j_type == ObJsonNodeType::J_OPAQUE) {
             type_idx = opaque_index(j_base->field_type());

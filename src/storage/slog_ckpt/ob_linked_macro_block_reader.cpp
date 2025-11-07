@@ -13,11 +13,6 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/slog_ckpt/ob_linked_macro_block_reader.h"
-#include "storage/blocksstable/ob_object_manager.h"
-#include "storage/blocksstable/ob_block_manager.h"
-#include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "storage/slog_ckpt/ob_linked_macro_block_struct.h"
-#include "share/config/ob_server_config.h"
 
 namespace oceanbase
 {
@@ -76,7 +71,7 @@ int ObLinkedMacroBlockReader::get_meta_blocks(const MacroBlockId &entry_block)
   read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
   read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
   read_info.io_desc_.set_sys_module_id(ObIOModule::LINKED_MACRO_BLOCK_IO);
-  read_info.mtl_tenant_id_ = MTL_ID();
+  read_info.mtl_tenant_id_ = is_valid_tenant_id(MTL_ID()) ? MTL_ID() : OB_SERVER_TENANT_ID;
 
   if (entry_block.second_id() >= 0) {
     read_info.macro_block_id_ = entry_block;
@@ -135,7 +130,7 @@ int ObLinkedMacroBlockReader::prefetch_block()
     read_info.io_desc_.set_sys_module_id(ObIOModule::LINKED_MACRO_BLOCK_IO);
     read_info.macro_block_id_ = macros_handle_.at(prefetch_macro_block_idx_);
     read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
-    read_info.mtl_tenant_id_ = MTL_ID();
+    read_info.mtl_tenant_id_ = is_valid_tenant_id(MTL_ID()) ? MTL_ID() : OB_SERVER_TENANT_ID;
     handles_[handle_pos_].reset();
     read_info.buf_ = io_buf_[handle_pos_];
     if (OB_FAIL(ObObjectManager::async_read_object(read_info, handles_[handle_pos_]))) {
@@ -181,7 +176,7 @@ int ObLinkedMacroBlockReader::pread_block(const ObMetaDiskAddr &addr, ObStorageO
   read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
   read_info.buf_ = item_buf;
   read_info.io_desc_.set_sys_module_id(ObIOModule::LINKED_MACRO_BLOCK_IO);
-  read_info.mtl_tenant_id_ = MTL_ID();
+  read_info.mtl_tenant_id_ = is_valid_tenant_id(MTL_ID()) ? MTL_ID() : OB_SERVER_TENANT_ID;
   if (OB_FAIL(addr.get_block_addr(read_info.macro_block_id_, read_info.offset_, read_info.size_))) {
     LOG_WARN("fail to get block address", K(ret), K(addr));
   } else if (OB_FAIL(ObObjectManager::async_read_object(read_info, handler))) {
@@ -206,7 +201,7 @@ int ObLinkedMacroBlockReader::read_block_by_id(
   read_info.macro_block_id_ = block_id;
   read_info.io_timeout_ms_ = GCONF._data_storage_io_timeout / 1000L;
   read_info.buf_ = io_buf;
-  read_info.mtl_tenant_id_ = MTL_ID();
+  read_info.mtl_tenant_id_ = is_valid_tenant_id(MTL_ID()) ? MTL_ID() : OB_SERVER_TENANT_ID;
   handler.reset();
   if (OB_FAIL(ObObjectManager::async_read_object(read_info, handler))) {
     LOG_WARN("fail to async read block", K(ret), K(read_info));

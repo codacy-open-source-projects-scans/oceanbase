@@ -30,7 +30,7 @@ public:
   virtual ~ObDictColumnDecoder() {}
   ObDictColumnDecoder(const ObDictColumnDecoder &) = delete;
   ObDictColumnDecoder &operator=(const ObDictColumnDecoder &) = delete;
-  virtual int get_null_count(const ObColumnCSDecoderCtx &ctx, const int32_t *row_ids,
+  virtual int inner_get_null_count(const ObColumnCSDecoderCtx &ctx, const int32_t *row_ids,
     const int64_t row_cap, int64_t &null_count) const override;
 
   virtual int pushdown_operator(
@@ -50,8 +50,7 @@ public:
 
   virtual int get_aggregate_result(
     const ObColumnCSDecoderCtx &col_ctx,
-    const int32_t *row_ids,
-    const int64_t row_cap,
+    const ObPushdownRowIdCtx &pd_row_id_ctx,
     storage::ObAggCellBase &agg_cell) const override;
 
   bool fast_decode_valid(const ObColumnCSDecoderCtx &ctx) const;
@@ -286,6 +285,7 @@ protected:
 
   static int traverse_datum_dict_agg(
     const ObDictColumnDecoderCtx &ctx,
+    const bool is_padding_mode,
     storage::ObAggCellBase &agg_cell);
 
   static int cmp_ref_and_set_result(const uint32_t ref_width_size, const char *ref_buf,
@@ -450,18 +450,19 @@ public:
   typedef std::random_access_iterator_tag iterator_category;
 public:
   ObDictValueIterator()
-    : ctx_(nullptr), index_(0), cell_(),
+    : ctx_(nullptr), index_(0), cell_(), is_padding_mode_(false),
       decode_by_ref_func_(nullptr) {}
-  explicit ObDictValueIterator(const ObDictColumnDecoderCtx *ctx, int64_t index)
-      : ctx_(ctx), index_(index), cell_()
+  ObDictValueIterator(const ObDictColumnDecoderCtx *ctx, const int64_t index, const bool is_padding_mode)
+      : ctx_(ctx), index_(index), cell_(), is_padding_mode_(is_padding_mode)
   {
     build_decode_by_ref_func_();
   }
-  explicit ObDictValueIterator(const ObDictColumnDecoderCtx *ctx, int64_t index, ObStorageDatum& cell)
+  ObDictValueIterator(const ObDictColumnDecoderCtx *ctx, const int64_t index, const ObStorageDatum& cell, const bool is_padding_mode)
   {
     ctx_ = ctx;
     index_ = index;
     cell_ = cell;
+    is_padding_mode_ = is_padding_mode;
     build_decode_by_ref_func_();
   }
   OB_INLINE value_type &operator*()
@@ -478,7 +479,7 @@ public:
   }
   OB_INLINE ObDictValueIterator operator--(int)
   {
-    return ObDictValueIterator(ctx_, index_--, cell_);
+    return ObDictValueIterator(ctx_, index_--, cell_, is_padding_mode_);
   }
   OB_INLINE ObDictValueIterator operator--()
   {
@@ -487,7 +488,7 @@ public:
   }
   OB_INLINE ObDictValueIterator operator++(int)
   {
-    return ObDictValueIterator(ctx_, index_++, cell_);
+    return ObDictValueIterator(ctx_, index_++, cell_, is_padding_mode_);
   }
   OB_INLINE ObDictValueIterator &operator++()
   {
@@ -540,6 +541,7 @@ private:
   const ObDictColumnDecoderCtx *ctx_;
   int64_t index_;
   value_type cell_;
+  bool is_padding_mode_;
   DecodeByRefsFunc decode_by_ref_func_;
 };
 

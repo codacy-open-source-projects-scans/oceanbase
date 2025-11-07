@@ -11,13 +11,12 @@
  */
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_context.h"
-#include "ob_table_service.h"
 #include "ob_table_cg_service.h" // for generate_table_loc_meta
-#include "sql/das/ob_das_define.h" // for ObDASTableLocMeta
-#include "lib/utility/utility.h"
-#include "share/ob_lob_access_utils.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "ob_table_aggregation.h"
+#include "sql/optimizer/ob_log_table_scan.h"
+#include "src/share/table/ob_table_util.h"
+#include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "observer/table/utils/ob_table_convert_utils.h"
 
 using namespace oceanbase::common;
 
@@ -59,7 +58,7 @@ int ObTableCtx::get_tablet_by_rowkey(const ObRowkey &rowkey,
 
 /*
   1. ObTableColumnItem record some column info, such as column id、column name、and so on.
-  2. we record some specific elements like is_stored_generated_column_
+  2. we record some specific elements like is_stored_generated_column()
     is_auto_increment_、auto_filled_timestamp_ for specific function.
   3. cascaded_column_ids_ is for update stored generate column.
     such as:
@@ -101,7 +100,7 @@ int ObTableCtx::cons_column_items_for_cg()
         if (OB_ISNULL(assign.column_info_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("assign column info is NULL", K(ret), K(i));
-        } else if (assign.column_info_->is_generated_column_) {
+        } else if (assign.column_info_->is_generated_column()) {
           void *buf = ctx_allocator_.alloc(sizeof(ObTableColumnItem));
           if (OB_ISNULL(buf)) {
             ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -301,45 +300,24 @@ int ObTableCtx::init_common(ObTableApiCredential &credential,
                             const int64_t &timeout_ts)
 {
   int ret = OB_SUCCESS;
-  credential_ = &credential;
-  tenant_id_ = credential.tenant_id_;
-  database_id_ = credential.database_id_;
-  if (OB_FAIL(init_schema_info_from_cache())) {
-    LOG_WARN("fail to init schema info from cache", K(ret), K(tenant_id_), K(database_id_));
-  } else {
-    if (OB_ISNULL(simple_table_schema_) || OB_ISNULL(schema_guard_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("table schema or schema guard is NULL", K(ret), KP(simple_table_schema_), KP(schema_guard_));
-    } else if (OB_FAIL(inner_init_common(arg_tablet_id, simple_table_schema_->get_table_name(), timeout_ts))) {
-      LOG_WARN("fail to inner init common", KR(ret), K(credential), K(timeout_ts));
-    }
+
+  if (OB_FAIL(init_common_without_check(credential, arg_tablet_id, timeout_ts))) {
+    LOG_WARN("fail to init common without check", K(ret), K(credential), K(timeout_ts));
+  } else if (OB_FAIL(check_legality())) {
+    LOG_WARN("fail to check legality", K(ret), K(tablet_id_));
   }
 
   return ret;
 }
 
-int ObTableCtx::inner_init_common(const ObTabletID &arg_tablet_id,
-                                  const ObString &table_name,
-                                  const int64_t &timeout_ts)
+int ObTableCtx::check_tablet_id_valid()
 {
   int ret = OB_SUCCESS;
-  bool is_cache_hit = false;
-  const ObTenantSchema *tenant_schema = nullptr;
-  ObTabletID tablet_id = arg_tablet_id;
-  bool is_tablet_exists = true;
-
-  if (OB_ISNULL(simple_table_schema_) || OB_ISNULL(schema_guard_)) {
-    ret = OB_ERR_UNKNOWN_TABLE;
-    LOG_WARN("table schema or schema guard is null", K(ret), K(table_name), K(simple_table_schema_), K(schema_guard_));
-  } else if (OB_FAIL(schema_guard_->get_schema_version(tenant_id_, tenant_schema_version_))) {
-    LOG_WARN("fail to get tenant schema", K(ret), K_(tenant_id));
-  } else if (FALSE_IT(init_physical_plan_ctx(timeout_ts, tenant_schema_version_))) {
-    LOG_WARN("fail to init physical plan ctx", K(ret));
-  } else if (!arg_tablet_id.is_valid() && !is_scan_) {
+  if (!tablet_id_.is_valid()) {
     // for scan scene, we will process it in init_scan when tablet_id is invalid
     // because we need to know if use index and index_type
     if (!simple_table_schema_->is_partitioned_table()) {
-      tablet_id = simple_table_schema_->get_tablet_id();
+      tablet_id_ = simple_table_schema_->get_tablet_id();
     } else {
       // trigger client to refresh table entry
       // maybe drop a non-partitioned table and create a
@@ -348,30 +326,62 @@ int ObTableCtx::inner_init_common(const ObTabletID &arg_tablet_id,
       LOG_WARN("partitioned table should pass right tablet id from client", K(ret));
     }
   }
+  return ret;
+}
 
-  if (OB_FAIL(ret)) {
-  } else if (!is_scan_ && !ls_id_.is_valid() && OB_FAIL(GCTX.location_service_->get(tenant_id_,
-                                                                                    tablet_id,
-                                                                                    0, /* expire_renew_time */
-                                                                                    is_cache_hit,
-                                                                                    ls_id_))) {
-    LOG_WARN("fail to get ls id", K(ret), K(tablet_id), K(table_name));
-  } else if (has_auto_inc_ && OB_FAIL(add_auto_inc_param())) {
-    LOG_WARN("fail to add auto inc param", K(ret));
+int ObTableCtx::check_legality()
+{
+  int ret = OB_SUCCESS;
+  bool is_cache_hit = false;
+  if (!is_scan_ && OB_FAIL(check_tablet_id_valid())) {
+    LOG_WARN("fail to check tablet id", K(ret), K(tablet_id_));
+  } else if (!is_scan_ && !ls_id_.is_valid() && tablet_id_.is_valid()
+      && OB_FAIL(GCTX.location_service_->get(tenant_id_,
+                                             tablet_id_,
+                                             0, /* expire_renew_time */
+                                             is_cache_hit,
+                                             ls_id_))) {
+    LOG_WARN("fail to get ls id", K(ret), K(tablet_id_), K_(tenant_id));
   } else if (!is_scan_ && OB_FAIL(adjust_entity())) {
     LOG_WARN("fail to adjust entity", K(ret));
-  } else if (OB_ISNULL(sess_guard_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("sess guard is NULL", K(ret));
-  } else if (OB_FAIL(sess_guard_->get_sess_info().get_binlog_row_image(binlog_row_image_type_))) {
-    LOG_WARN("fail to get binlog row image", K(ret));
   } else {
-    table_name_ = table_name;
+    index_tablet_id_ = tablet_id_;
+  }
+
+  return ret;
+}
+
+int ObTableCtx::init_common_without_check(ObTableApiCredential &credential,
+                                          const ObTabletID &arg_tablet_id,
+                                          const int64_t &timeout_ts)
+{
+  int ret = OB_SUCCESS;
+
+  credential_ = &credential;
+  tenant_id_ = credential.tenant_id_;
+  database_id_ = credential.database_id_;
+  if (OB_FAIL(init_schema_info_from_cache())) {
+    LOG_WARN("fail to init schema info from cache", K(ret), K(tenant_id_), K(database_id_));
+  } else if (OB_ISNULL(simple_table_schema_) || OB_ISNULL(schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table schema or schema guard is NULL", K(ret), KP(simple_table_schema_), KP(schema_guard_));
+  } else if (OB_FAIL(schema_guard_->get_schema_version(tenant_id_, tenant_schema_version_))) {
+    LOG_WARN("fail to get tenant schema", K(ret), K_(tenant_id));
+  } else if (FALSE_IT(init_physical_plan_ctx(timeout_ts, tenant_schema_version_))) {
+    LOG_WARN("fail to init physical plan ctx", K(ret));
+  } else if (has_auto_inc_ && OB_FAIL(add_auto_inc_param())) {
+    LOG_WARN("fail to add auto inc param", K(ret));
+  } else {
+    binlog_row_image_type_ = TABLEAPI_OBJECT_POOL_MGR->get_binlog_row_image();
+    table_name_ = simple_table_schema_->get_table_name();
     ref_table_id_ = simple_table_schema_->get_table_id();
     index_table_id_ = ref_table_id_;
-    tablet_id_ = tablet_id;
-    index_tablet_id_ = tablet_id_;
     timeout_ts_ = timeout_ts;
+    tablet_id_ = arg_tablet_id;
+    index_tablet_id_ = tablet_id_;
+    exec_ctx_.set_my_session(&get_session_info());
+    typedef ObSQLSessionInfo::ExecCtxSessionRegister MyExecCtxSessionRegister;
+    MyExecCtxSessionRegister ctx_register(get_session_info(), &exec_ctx_);
   }
 
   return ret;
@@ -380,19 +390,33 @@ int ObTableCtx::inner_init_common(const ObTabletID &arg_tablet_id,
 int ObTableCtx::init_schema_info_from_cache()
 {
   int ret = OB_SUCCESS;
+  ObKVAttr attr;
   if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is NULL or not inited", KP(schema_cache_guard_));
+  } else if (OB_FAIL(schema_cache_guard_->get_kv_attributes(attr))) {
+    LOG_WARN("fail to get kv attributes", K(ret));
   } else {
+    is_redis_ttl_table_ = attr.is_redis_ttl_;
     ObTableSchemaFlags flags = schema_cache_guard_->get_schema_flags();
     flags_ = flags;
     has_auto_inc_ = flags.has_auto_inc_;
     is_ttl_table_ = flags.is_ttl_table_;
+    if (OB_FAIL(schema_cache_guard_->get_ttl_definition(ttl_definition_))) {
+      LOG_WARN("fail to get ttl definition", K(ret));
+    }
     has_generated_column_ = flags.has_generated_column_;
     has_lob_column_ = flags.has_lob_column_;
     if (is_dml()) {
       has_global_index_ = flags.has_global_index_;
       has_local_index_ = flags.has_local_index_;
+    }
+    has_fts_index_ = flags.has_fts_index_;
+    if (has_fts_index_ && OB_ISNULL(fts_ctx_)) {
+      if (OB_ISNULL(fts_ctx_ = OB_NEWx(ObTableFtsCtx, &allocator_))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc fts_ctx", K(ret));
+      }
     }
   }
   return ret;
@@ -487,7 +511,7 @@ int ObTableCtx::read_real_lob(ObIAllocator &allocator, ObObj &obj)
 int ObTableCtx::adjust_column_type(const ObTableColumnInfo &column_info, ObObj &obj)
 {
   int ret = OB_SUCCESS;
-  const ObExprResType &column_type = column_info.type_;
+  const ObRawExprResType &column_type = column_info.type_;
   const ObCollationType cs_type = column_type.get_collation_type();
 
   // 1. check nullable
@@ -502,7 +526,9 @@ int ObTableCtx::adjust_column_type(const ObTableColumnInfo &column_info, ObObj &
       obj.set_collation_type(cs_type);
     }
   } else if (column_type.get_type() != obj.get_type()
-             && !(ob_is_string_type(column_type.get_type()) && ob_is_string_type(obj.get_type()))) {
+             && !(ob_is_string_type(column_type.get_type()) && ob_is_string_type(obj.get_type()))
+             && !(ob_is_mysql_date_tc(column_type.get_type()) && ob_is_date_tc(obj.get_type()))
+             && !(ob_is_mysql_datetime(column_type.get_type()) && ob_is_datetime(obj.get_type()))) {
     // 2. data type mismatch
     ret = OB_KV_COLUMN_TYPE_NOT_MATCH;
     const char *schema_type_str = ob_obj_type_str(column_type.get_type());
@@ -567,6 +593,30 @@ int ObTableCtx::adjust_column_type(const ObTableColumnInfo &column_info, ObObj &
   return ret;
 }
 
+int ObTableCtx::adjust_date_obj(const ObTableColumnInfo &column_info, ObObj &obj)
+{
+  int ret = OB_SUCCESS;
+  const ObExprResType &column_type = column_info.type_;
+
+  if (ob_is_mysql_date_tc(column_type.get_type()) && ob_is_date_tc(obj.get_type())) {
+    ObMySQLDate mdate = 0;
+    if (OB_FAIL(ObTimeConverter::date_to_mdate(obj.get_date(), mdate))) {
+      LOG_WARN("fail to convert date to mysql date", K(ret), K(obj));
+    } else {
+      obj.set_mysql_date(mdate);
+    }
+  } else if (ob_is_mysql_datetime(column_type.get_type()) && ob_is_datetime(obj.get_type())) {
+    ObMySQLDateTime mdatetime = 0;
+    if (OB_FAIL(ObTimeConverter::datetime_to_mdatetime(obj.get_datetime(), mdatetime))) {
+      LOG_WARN("fail to convert datetime to mysql datetime", K(ret), K(obj));
+    } else {
+      obj.set_mysql_datetime(mdatetime);
+    }
+  }
+
+  return ret;
+}
+
 /*
   check user rowkey is valid or not.
   1. rowkey count should equal schema rowkey count, except for auto increment.
@@ -590,6 +640,7 @@ int ObTableCtx::adjust_rowkey()
   } else {
     const int64_t entity_rowkey_cnt = rowkey.get_obj_cnt();
     bool has_auto_inc = false; // only one auto increment column in a table
+    bool has_pk_increment = false;
     bool is_full_filled = entity_rowkey_cnt == schema_rowkey_cnt; // allow not full filled when rowkey has auto_increment;
     uint64_t column_id = OB_INVALID_ID;
     ObObj *obj_ptr = rowkey.get_obj_ptr();
@@ -613,6 +664,12 @@ int ObTableCtx::adjust_rowkey()
           // curr column is auto_increment and user not fill，no need to check
           need_check = false;
         }
+      } else if (col_info->column_id_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
+        need_check = false;
+        has_pk_increment = true;
+      }
+      if (is_htable() && (operation_type_ == ObTableOperationType::Type::DEL)) {
+        need_check = false;
       }
 
       if (OB_SUCC(ret) && need_check) {
@@ -625,6 +682,8 @@ int ObTableCtx::adjust_rowkey()
           LOG_USER_ERROR(OB_KV_ROWKEY_COUNT_NOT_MATCH, schema_rowkey_cnt, entity_rowkey_cnt);
           LOG_WARN("entity rowkey count mismatch table schema rowkey count", K(ret),
                     K(entity_rowkey_cnt), K(schema_rowkey_cnt), K(rowkey));
+        } else if (is_need_ajust_date_op() && OB_FAIL(adjust_date_obj(*col_info, obj_ptr[idx]))) { // other op adjust in cg write_datum
+          LOG_WARN("fail to adjust date object", K(ret), K(obj_ptr[idx]), KPC(col_info));
         } else if (OB_FAIL(adjust_column_type(*col_info, obj_ptr[idx]))) { // [c1][c2][c3] [c1][c3]
           LOG_WARN("fail to adjust rowkey column type", K(ret), K(obj_ptr[idx]), KPC(col_info));
         } else {
@@ -635,7 +694,7 @@ int ObTableCtx::adjust_rowkey()
 
     if (OB_FAIL(ret)) {
       // do nothing
-    } else if (!has_auto_inc && entity_rowkey_cnt != schema_rowkey_cnt) {
+    } else if (!has_auto_inc && !has_pk_increment && entity_rowkey_cnt != schema_rowkey_cnt) {
       ret = OB_KV_ROWKEY_COUNT_NOT_MATCH;
       LOG_USER_ERROR(OB_KV_ROWKEY_COUNT_NOT_MATCH, schema_rowkey_cnt, entity_rowkey_cnt);
       LOG_WARN("entity rowkey count mismatch table schema rowkey count",
@@ -654,26 +713,35 @@ int ObTableCtx::adjust_rowkey()
 int ObTableCtx::adjust_properties()
 {
   int ret = OB_SUCCESS;
-  bool need_adjust_prop = (ObTableOperationType::Type::GET == operation_type_ ||
+  bool skip_adjust_prop = (ObTableOperationType::Type::GET == operation_type_ ||
                           ObTableOperationType::Type::DEL == operation_type_);
-  if (need_adjust_prop) {
+  if (skip_adjust_prop) {
     // do nothing
   } else if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is invalid", K(ret), KP(schema_cache_guard_));
   } else {
-    ObTableEntity *entity = static_cast<ObTableEntity*>(const_cast<ObITableEntity *>(entity_));
-    const ObIArray<ObString> &prop_names = entity->get_properties_names();
-    const ObIArray<ObObj> &prop_objs = entity->get_properties_values();
+    ObITableEntity *entity = const_cast<ObITableEntity *>(entity_);
+    ObSEArray<ObString, 1> prop_names;
+    ObSEArray<ObObj*, 1> prop_objs;
+    if (OB_FAIL(entity_->get_properties_names(prop_names))) {
+      LOG_WARN("fail to get properties names", K(ret));
+    } else if (OB_FAIL(entity_->get_properties_values(prop_objs))) {
+      LOG_WARN("fail to get properties values", K(ret));
+    } else if (prop_names.count() != prop_objs.count()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("property name count is not equal to property obj count", K(ret),
+                K(prop_names.count()), K(prop_objs.count()));
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < prop_names.count(); i++) {
       const ObString &col_name = prop_names.at(i);
-      ObObj &prop_obj = const_cast<ObObj &>(prop_objs.at(i));
+      ObObj *prop_obj = prop_objs.at(i);
       const ObTableColumnInfo *col_info = nullptr;
       if (OB_FAIL(schema_cache_guard_->get_column_info(col_name, col_info))) {
+        LOG_WARN("fail to get column schema", K(ret), K(col_name));
         ret = OB_ERR_BAD_FIELD_ERROR;
         const ObString &table = simple_table_schema_->get_table_name_str();
         LOG_USER_ERROR(OB_ERR_BAD_FIELD_ERROR, col_name.length(), col_name.ptr(), table.length(), table.ptr());
-        LOG_WARN("fail to get column schema", K(ret), K(col_name));
       } else if (OB_ISNULL(col_info)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("column info is NULL", K(ret), K(i));
@@ -681,12 +749,21 @@ int ObTableCtx::adjust_properties()
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "mutate rowkey column");
         LOG_WARN("property should not be rowkey column", K(ret), K(prop_names), K(i));
-      } else if (col_info->is_generated_column_) {
+      } else if (col_info->is_generated_column()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "The specified value for generated column");
         LOG_WARN("The specified value for generated column is not allowed", K(ret), K(col_info->column_name_));
-      } else if (OB_FAIL(adjust_column_type(*col_info, prop_obj))) {
-        LOG_WARN("fail to adjust rowkey column type", K(ret), K(prop_obj), KPC(col_info));
+      } else if (entity_type_ == ObTableEntityType::ET_KV && ob_is_json(col_info->type_.get_type())) {
+        if (OB_ISNULL(entity->get_allocator())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("allocator of entity is NULL", K(ret), KPC(entity));
+        } else if (OB_FAIL(ObTableConvertUtils::convert_to_json_bin(*entity->get_allocator(),
+                                                                    *col_info,
+                                                                    *prop_obj))) {
+          LOG_WARN("fail to convert json_text to json_bin", K(ret), KPC(col_info), KPC(prop_obj));
+        }
+      } else if (OB_FAIL(adjust_column_type(*col_info, *prop_obj))) {
+        LOG_WARN("fail to adjust rowkey column type", K(ret), KPC(prop_obj), KPC(col_info));
       }
     }
   }
@@ -705,12 +782,78 @@ int ObTableCtx::adjust_entity()
   if (OB_ISNULL(entity_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("entity is null", K(ret));
-  } else if (!is_htable() && OB_FAIL(adjust_rowkey())) {
+  } else if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema cache guard is invalid", K(ret), KP(schema_cache_guard_));
+  } else if (is_time_series_mode()) {
+    // do nothing
+  } else if (entity_->get_entity_type() == ObTableEntityType::ET_HKV_V2) {
+    if (OB_FAIL(adjust_hkv_v2_entity())) {
+      LOG_WARN("fail to adjust hkv_v2 entity", K(ret));
+    }
+  } else if (OB_FAIL(adjust_rowkey())) {
     LOG_WARN("fail to adjust rowkey", K(ret));
   } else if (OB_FAIL(adjust_properties())) {
     LOG_WARN("fail to check properties", K(ret));
   }
 
+  return ret;
+}
+
+int ObTableCtx::adjust_hkv_v2_entity()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(entity_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("entity is null", K(ret));
+  } else if (entity_->get_entity_type() != ObTableEntityType::ET_HKV_V2) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("entity type is not hkv_v2", K(ret), K(entity_->get_entity_type()));
+  } else {
+    ObHCell *hcell = const_cast<ObHCell *>(static_cast<const ObHCell *>(entity_));
+    ObSEArray<const ObTableColumnInfo*, 6> hbase_col_infos;
+    hbase_col_infos.set_attr(ObMemAttr(MTL_ID(), "HColInfos"));
+    if (OB_FAIL(schema_cache_guard_->get_hbase_column_infos(hbase_col_infos))) {
+      LOG_WARN("fail to get hbase column infos", K(ret));
+    } else if (hbase_col_infos.count() < hcell->count()) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_WARN("hbase column infos count is less than hcell count", K(ret), K(hbase_col_infos), K(hcell));
+    } else {
+      for (int64_t i = 0; i < hbase_col_infos.count(); ++i) {
+        const ObTableColumnInfo *col_info = hbase_col_infos.at(i);
+        if (OB_ISNULL(col_info)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("column info is NULL", K(ret), K(i));
+        } else if (col_info->rowkey_position_ > 0) {
+          ObObj *obj = hcell->get_cell_obj(col_info->rowkey_position_ - 1);
+          if (OB_ISNULL(obj)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("obj is null", K(ret), K(col_info->rowkey_position_ - 1), KPC(hcell));
+          } else if (OB_FAIL(adjust_column_type(*col_info, *obj))) {
+            LOG_WARN("fail to adjust column type", K(ret), K(obj), KPC(col_info));
+          }
+        } else {
+          const ObString &col_name = col_info->column_name_;
+          if (col_name.case_compare(ObHTableConstants::VALUE_CNAME) == 0) {
+            ObObj *obj = hcell->get_cell_obj(ObHTableConstants::COL_IDX_V);
+            if (OB_ISNULL(obj)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("obj is null", K(ret), KPC(hcell));
+            } else if (OB_FAIL(adjust_column_type(*col_info, *obj))) {
+              LOG_WARN("fail to adjust column type", K(ret), K(obj), KPC(col_info));
+            }
+          } else if (col_name.case_compare(ObHTableConstants::TTL_CNAME) == 0) {
+            ObObj *obj = hcell->get_cell_obj(ObHTableConstants::COL_IDX_TTL);
+            if (OB_ISNULL(obj)) {
+              // do nothing, maybe ttl val is nullable and we will check in refresh_hbase_frame
+            } else if (OB_FAIL(adjust_column_type(*col_info, *obj))) {
+              LOG_WARN("fail to adjust column type", K(ret), K(obj), KPC(col_info));
+            }
+          }
+        }
+      }
+    }
+  }
   return ret;
 }
 
@@ -737,21 +880,34 @@ int ObTableCtx::check_is_cs_replica_query(bool &is_cs_replica_query) const
   return ret;
 }
 
-bool ObTableCtx::has_exist_in_columns(const ObIArray<ObString> &columns,
-                                      const ObString &name,
-                                      int64_t *idx /* =nullptr */) const
+
+
+int ObTableCtx::generate_fts_search_range(const ObTableQuery &query)
 {
-  bool exist = false;
-  int64_t num = columns.count();
-  for (int64_t i = 0; i < num && !exist; i++) {
-    if (0 == name.case_compare(columns.at(i))) {
-      exist = true;
-      if (idx != NULL) {
-        *idx = i;
-      }
+  int ret = OB_SUCCESS;
+  ObKVParamsBase *kv_params_base = query.get_ob_params().ob_params_;
+  // 1. extract search text from ObKVParams
+  if (OB_ISNULL(kv_params_base) || kv_params_base->get_param_type() != ParamType::FTS) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("kv_params_base is NULL", K(ret), KPC(kv_params_base));
+  } else if (OB_ISNULL(fts_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("fts_ctx is NULL", K(ret), K(has_fts_index_));
+  } else {
+    ObFTSParam *fts_param = static_cast<ObFTSParam *>(kv_params_base);
+    fts_ctx_->search_text_ = fts_param->get_search_text();
+  }
+  // 2. init scan range with [MIN:MAX]
+  if (OB_SUCC(ret)) {
+    int64_t padding_num = index_schema_->get_rowkey_column_num();
+    key_ranges_.reset();
+    ObNewRange index_key_range;
+    index_key_range.set_whole_range();
+    if (OB_FAIL(key_ranges_.push_back(index_key_range))) {
+      LOG_WARN("fail to push back key_range", K(ret));
     }
   }
-  return exist;
+  return ret;
 }
 
 /*
@@ -828,8 +984,22 @@ int ObTableCtx::generate_key_range(const ObIArray<ObString> &scan_ranges_columns
             } else if (OB_ISNULL(columns_infos.at(k))) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("column info is NULL", K(ret), K(k));
-            }else if (OB_FAIL(adjust_column_type(*columns_infos.at(k), obj))) {
-              LOG_WARN("fail to adjust column type", K(ret), K(columns_infos.at(k)), K(obj));
+            } else if (!is_time_series_mode() && OB_FAIL(adjust_column_type(*columns_infos.at(k), obj))) {
+              LOG_WARN("fail to adjust column type", K(ret), K(*columns_infos.at(k)), K(obj));
+            } else if (ob_is_mysql_date_tc(columns_infos.at(k)->type_.get_type()) && ob_is_date_tc(obj.get_type())) {
+              ObMySQLDate mdate = 0;
+              if (OB_FAIL(ObTimeConverter::date_to_mdate(obj.get_date(), mdate))) {
+                LOG_WARN("fail to convert date to mysql date", K(ret), K(obj));
+              } else {
+                obj.set_mysql_date(mdate);
+              }
+            } else if (ob_is_mysql_datetime(columns_infos.at(k)->type_.get_type()) && ob_is_datetime(obj.get_type())) {
+              ObMySQLDateTime mdatetime = 0;
+              if (OB_FAIL(ObTimeConverter::datetime_to_mdatetime(obj.get_datetime(), mdatetime))) {
+                LOG_WARN("fail to convert datetime to mysql datetime", K(ret), K(obj));
+              } else {
+                obj.set_mysql_datetime(mdatetime);
+              }
             }
           }
         }
@@ -911,14 +1081,20 @@ int ObTableCtx::generate_key_range(const ObIArray<ObString> &scan_ranges_columns
 */
 int ObTableCtx::init_scan(const ObTableQuery &query,
                           const bool &is_wead_read,
-                          const uint64_t arg_table_id)
+                          const uint64_t arg_table_id,
+                          bool skip_get_ls_id /* false */)
 {
   int ret = OB_SUCCESS;
+  query_ = &query;
   const ObString &index_name = query.get_index_name();
   const ObIArray<ObString> &select_columns = query.get_select_columns();
   bool has_filter = (query.get_htable_filter().is_valid() || query.get_filter_string().length() > 0);
   const bool select_all_columns = select_columns.empty() || query.is_aggregate_query() || (has_filter && !is_htable());
   operation_type_ = ObTableOperationType::Type::SCAN;
+  if (query.is_aggregate_query() && query.get_aggregations().count() == 1) {
+    // support later
+    // is_count_all_ = query.get_aggregations().at(0).is_agg_all_column();
+  }
   // init is_weak_read_,scan_order_
   is_weak_read_ = is_wead_read;
   scan_order_ = query.get_scan_order();
@@ -969,7 +1145,9 @@ int ObTableCtx::init_scan(const ObTableQuery &query,
                                             is_cache_hit,
                                             ls_id_))) {
       LOG_WARN("fail to get ls id", K(ret), K(index_tablet_id_), K(table_name_));
-    } else if (OB_FAIL(generate_key_range(query.get_scan_range_columns(), query.get_scan_ranges()))) {// init key_ranges_
+    } else if (is_text_retrieval_scan() && OB_FAIL(generate_fts_search_range(query))) {
+      LOG_WARN("fail to generate fts search ranges", K(ret), K(query));
+    } else if (!is_text_retrieval_scan() && OB_FAIL(generate_key_range(query.get_scan_range_columns(), query.get_scan_ranges()))) {// init key_ranges_
       LOG_WARN("fail to generate key ranges", K(ret));
     } else if (query.is_aggregate_query() && OB_FAIL(init_agg_cell_proj(query.get_aggregations().count()))) {
       LOG_WARN("fail to init agg cell proj", K(ret));
@@ -981,10 +1159,7 @@ int ObTableCtx::init_scan(const ObTableQuery &query,
       const ObIArray<ObTableColumnInfo *> &col_info_array = schema_cache_guard_->get_column_info_array();
       ObSEArray<ObString, 4> ttl_columns;
       if (is_ttl_table_) {
-        ObString ttl_definition;
-        if (OB_FAIL(schema_cache_guard_->get_ttl_definition(ttl_definition))) {
-          LOG_WARN("fail to get ttl definition", K(ret));
-        } else if (OB_FAIL(ObTTLUtil::get_ttl_columns(ttl_definition, ttl_columns))) {
+        if (OB_FAIL(ObTTLUtil::get_ttl_columns(ttl_definition_, ttl_columns))) {
           LOG_WARN("fail to get ttl columns", K(ret));
         }
       }
@@ -997,7 +1172,9 @@ int ObTableCtx::init_scan(const ObTableQuery &query,
           LOG_WARN("column info is NULL", K(ret), K(cell_idx));
         } else if (FALSE_IT(column_name = col_info->column_name_)) {
         } else if (select_all_columns) {
-          if (OB_FAIL(select_col_ids_.push_back(col_info->column_id_))) {
+          if (!is_tsc_with_doc_id() && col_info->is_fulltext_column() ) {
+            // skip to add into the select coulmn id
+          } else if (OB_FAIL(select_col_ids_.push_back(col_info->column_id_))) {
             LOG_WARN("fail to add column id", K(ret));
           } else if (OB_FAIL(query_col_ids_.push_back(col_info->column_id_))) {
             LOG_WARN("fail to push back column id", K(ret), K(col_info->column_id_));
@@ -1009,7 +1186,7 @@ int ObTableCtx::init_scan(const ObTableQuery &query,
           } else if (is_index_scan_ && !is_index_back_ && OB_ISNULL(index_schema_->get_column_schema(column_name))) {
             is_index_back_ = true;
           }
-        } else if (has_exist_in_columns(select_columns, col_info->column_name_)
+        } else if (ObTableUtils::has_exist_in_columns(select_columns, col_info->column_name_)
             || (is_ttl_table_ && has_exist_in_array(ttl_columns, col_info->column_name_))) {
           if (OB_FAIL(select_col_ids_.push_back(col_info->column_id_))) {
             LOG_WARN("fail to add column id", K(ret));
@@ -1123,15 +1300,23 @@ int ObTableCtx::check_if_can_skip_update_index(const ObTableSchema *index_schema
   can_skip = false;
   if (operation_type_ == ObTableOperationType::UPDATE) {
     bool found = false;
+    bool is_full_index = false;
     if (OB_ISNULL(index_schema)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("index schema is NULL", K(ret));
+    } else {
+      is_full_index = index_schema->is_fts_index();
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < assigns_.count() && !found; i++) {
       const ObTableAssignment &assign = assigns_.at(i);
       if (OB_ISNULL(assign.column_info_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("assign column item is null", K(ret), K(assign));
+      } else if (is_full_index) {
+        // if assigins has fts col, we can not skip fts index schema
+        // and columns in fts index schema may be not contained in assigns,
+        // such as rowkey-doc and doc-rowkey table
+        found = assign.column_info_->is_fulltext_column();
       } else if (OB_NOT_NULL(index_schema->get_column_schema(assign.column_info_->column_id_))) {
         found = true;
       }
@@ -1154,7 +1339,7 @@ int ObTableCtx::init_primary_index_info()
   index_info.index_schema_ = nullptr;
   index_info.is_primary_index_ = true;
   ObIArray<common::ObTableID> &related_tids = index_info.related_index_ids_;
-  if (is_dml() && has_local_index_) {
+  if (need_related_table_id()) {
     if (OB_FAIL(init_dml_related_tid(related_tids))) {
       LOG_WARN("fail to init data table related tids", K(ret));
     }
@@ -1179,6 +1364,14 @@ int ObTableCtx::init_put(bool allow_insup)
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "invalid operation type use put");
     LOG_WARN("invalid operation type", K(ret), K_(operation_type));
+  } else if (is_heap_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use put");
+    LOG_WARN("heap table use put is not supported", K(ret));
+  }
+
+  if (OB_FAIL(ret)) {
+    // do nothing
   } else if (OB_FAIL(init_dml_index_info())) {
     LOG_WARN("fail to init index info for put", K(ret));
   } else if (has_secondary_index()) { // has index, can not use put
@@ -1189,7 +1382,7 @@ int ObTableCtx::init_put(bool allow_insup)
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "table with lob column use put");
     LOG_WARN("table with lob column use put is not supported", K(ret));
-  } else if (is_total_quantity_log() && !is_htable()) {
+  } else if (is_total_quantity_log() && !is_htable() && entity_type_ != ObTableEntityType::ET_HKV_V2) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "binlog_row_image is full use put");
     LOG_WARN("binlog_row_image is full use put is not supported", K(ret));
@@ -1215,30 +1408,37 @@ int ObTableCtx::init_put(bool allow_insup)
     cascaded_column_ids_-(17)
   2. add new ObTableAssignment.
 */
-int ObTableCtx::add_generated_column_assignment(const ObIArray<ObTableColumnInfo *> &col_info_array,
-                                                const ObTableAssignment &assign)
+int ObTableCtx::add_generated_column_assignment()
 {
   int ret = OB_SUCCESS;
-
-  for (int64_t i = 0; OB_SUCC(ret) && i < col_info_array.count(); i++) {
-    ObTableColumnInfo *col_info =nullptr;
-    if (OB_ISNULL(col_info = col_info_array.at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("column info is NULL", K(ret), K(i));
-    } else if (col_info->is_generated_column_) {
-      bool match = false;
-      for (int64_t j = 0; j < col_info->cascaded_column_ids_.count() && !match; j++) {
-        const uint64_t column_id = col_info->cascaded_column_ids_.at(j);
-        if (column_id == assign.column_info_->column_id_) {
-          match = true;
+  if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema cache guard is NULL or not init", K(ret));
+  } else {
+    const ObIArray<ObTableColumnInfo *> &col_info_array = schema_cache_guard_->get_column_info_array();
+    for (int64_t i = 0; OB_SUCC(ret) && i < col_info_array.count(); i++) {
+      ObTableColumnInfo *col_info =nullptr;
+      if (OB_ISNULL(col_info = col_info_array.at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column info is NULL", K(ret), K(i));
+      } else if (col_info->is_generated_column()) {
+        bool match = false;
+        for (int64_t j = 0; OB_SUCC(ret) && j < col_info->cascaded_column_ids_.count() && !match; j++) {
+          const uint64_t column_id = col_info->cascaded_column_ids_.at(j);
+          const ObTableAssignment *assign = nullptr;
+          if (OB_FAIL(get_assignment_by_column_id(column_id, assign))) {
+            LOG_WARN("fail to get assignment", K(ret), K(column_id));
+          } else if (OB_NOT_NULL(assign)) {
+            match = true;
+          }
         }
+        if (OB_SUCC(ret) && match) {
+          ObTableAssignment tmp_assign(col_info);
+          if (OB_FAIL(assigns_.push_back(tmp_assign))) {
+            LOG_WARN("fail to push back assignment", K(ret), K_(assigns), K(tmp_assign));
+          }
+        } // end if
       }
-      if (match) { // add this generated column into assigment column array
-        ObTableAssignment tmp_assign(col_info);
-        if (OB_FAIL(assigns_.push_back(tmp_assign))) {
-          LOG_WARN("fail to push back assignment", K(ret), K_(assigns), K(tmp_assign));
-        }
-      } // end if
     }
   }
   return ret;
@@ -1258,21 +1458,24 @@ int ObTableCtx::add_generated_column_assignment(const ObIArray<ObTableColumnInfo
         c3 should be update.
     3. on update current timestamp should be add.
 */
-int ObTableCtx::init_assignments(const ObTableEntity &entity)
+int ObTableCtx::init_assignments()
 {
   int ret = OB_SUCCESS;
   ObObj prop_obj;
   if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is NULL or not init", K(ret));
+  } else if (OB_ISNULL(entity_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("entity is NULL", K(ret));
   } else {
     const ObIArray<ObTableColumnInfo *> &column_info_array = schema_cache_guard_->get_column_info_array();
     for (int64_t i = 0; OB_SUCC(ret) && i < column_info_array.count(); i++) {
-      ObTableColumnInfo *col_info =nullptr;
+      ObTableColumnInfo *col_info = nullptr;
       if (OB_ISNULL(col_info = column_info_array.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("column info is NULL", K(ret), K(i));
-      } else if (OB_SUCCESS == entity.get_property(col_info->column_name_, prop_obj)) {
+      } else if (OB_SUCCESS == entity_->get_property(col_info->column_name_, prop_obj)) {
         if (col_info->rowkey_position_ > 0) {
           ret = OB_ERR_UPDATE_ROWKEY_COLUMN;
           LOG_USER_ERROR(OB_ERR_UPDATE_ROWKEY_COLUMN);
@@ -1283,9 +1486,6 @@ int ObTableCtx::init_assignments(const ObTableEntity &entity)
           assign.is_assigned_ = true;
           if (OB_FAIL(assigns_.push_back(assign))) {
             LOG_WARN("fail to push back assignment", K(ret), K_(assigns), K(assign));
-          } else if (has_generated_column_ &&
-                     OB_FAIL(add_generated_column_assignment(column_info_array, assign))) {
-            LOG_WARN("fail to add soterd generated column assignment", K(ret), K(assign));
           }
         }
       } else if (col_info->auto_filled_timestamp_) { // on update current timestamp
@@ -1294,6 +1494,10 @@ int ObTableCtx::init_assignments(const ObTableEntity &entity)
           LOG_WARN("fail to push back assignment", K(ret), K_(assigns), K(assign));
         }
       }
+    }
+
+    if (OB_SUCC(ret) && has_generated_column_ && OB_FAIL(add_generated_column_assignment())) {
+      LOG_WARN("fail to add generated column assignment", K(ret));
     }
   }
 
@@ -1316,9 +1520,16 @@ int ObTableCtx::init_update()
 {
   int ret = OB_SUCCESS;
   is_for_update_ = true;
+  if (is_heap_table() && operation_type_ == ObTableOperationType::Type::UPDATE) { // insert_up also init_update
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use update");
+    LOG_WARN("heap table use update is not supported", K(ret));
+  }
 
   // 1. init assignments
-  if (OB_FAIL(init_assignments(static_cast<const ObTableEntity&>(*entity_)))) {
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (OB_FAIL(init_assignments())) {
     LOG_WARN("fail to init assignments", K(ret), K(*entity_));
   } else {
     // 2. init scan
@@ -1354,7 +1565,15 @@ int ObTableCtx::init_update()
 int ObTableCtx::init_delete()
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
+  if (is_heap_table() && !is_ttl_delete_) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use delete");
+    LOG_WARN("heap table use delete is not supported", K(ret));
+  }
+
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is NULL or not init", K(ret));
   } else {
@@ -1368,14 +1587,13 @@ int ObTableCtx::init_delete()
       is_index_back_ = false;
       is_get_ = is_htable() ? false : true;
       scan_order_ = ObQueryFlag::Forward;
-
       // 2. init select_col_ids_
       const ObTableColumnInfo *col_info = nullptr;
       for (int64_t i = 0; OB_SUCC(ret) && i < column_num; i++) {
         if (OB_FAIL(schema_cache_guard_->get_column_info_by_idx(i, col_info))) {
           ret = OB_SCHEMA_ERROR;
           LOG_WARN("fail to get column schema bu idx", K(ret), K(i));
-        } else if (col_info->is_virtual_generated_column_) {
+        } else if (col_info->is_virtual_generated_column() && !col_info->is_doc_id_column()) {
           // skip
         } else if (OB_FAIL(select_col_ids_.push_back(col_info->column_id_))) {
           LOG_WARN("fail to push back column id", K(ret), K(col_info->column_id_));
@@ -1401,6 +1619,10 @@ int ObTableCtx::init_ttl_delete(const ObIArray<ObNewRange> &scan_ranges)
   ObIArray<ObNewRange> &query_scan_ranges = query.get_scan_ranges();
   if (OB_FAIL(query_scan_ranges.assign(scan_ranges))) {
     LOG_WARN("fail to assign scan ranges", KR(ret), K(query_scan_ranges));
+  } else if (OB_NOT_NULL(fts_ctx_)) {
+    fts_ctx_->need_tsc_with_doc_id_ = true;
+  }
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(init_scan(query, false/* is_weak_read */, index_table_id_))) {
     LOG_WARN("fail to init scan ctx", KR(ret), K(query));
   } else {
@@ -1454,7 +1676,15 @@ int ObTableCtx::init_get()
   is_index_back_ = false;
   is_get_ = true;
   scan_order_ = ObQueryFlag::Forward;
-  if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
+  if (is_heap_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use get");
+    LOG_WARN("heap table use get is not supported", K(ret));
+  }
+
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is NULL or not init", K(ret));
   } else if (OB_FAIL(init_primary_index_info())) {
@@ -1470,6 +1700,8 @@ int ObTableCtx::init_get()
       if (OB_ISNULL(col_info)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("column info is NULL", K(ret), K(i));
+      } else if (col_info->is_fulltext_column()) {
+        // skip
       } else if (OB_FAIL(select_col_ids_.push_back(col_info->column_id_))) {
         LOG_WARN("fail to add column id", K(ret));
       } else if (need_get_all_column
@@ -1501,8 +1733,15 @@ int ObTableCtx::init_append(bool return_affected_entity, bool return_rowkey)
   int ret = OB_SUCCESS;
   return_affected_entity_ = return_affected_entity;
   return_rowkey_ = return_rowkey;
+  if (is_heap_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use append");
+    LOG_WARN("heap table use append is not supported", K(ret));
+  }
 
-  if (OB_FAIL(init_update())) {
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (OB_FAIL(init_update())) {
     LOG_WARN("fail to init insert up", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < assigns_.count(); i++) {
@@ -1511,7 +1750,7 @@ int ObTableCtx::init_append(bool return_affected_entity, bool return_rowkey)
       if (OB_ISNULL(assign.column_info_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("column item is null", K(ret), K(assign));
-      } else if (assign.column_info_->auto_filled_timestamp_ || assign.column_info_->is_generated_column_) {
+      } else if (assign.column_info_->auto_filled_timestamp_ || assign.column_info_->is_generated_column()) {
         // do nothing
       } else if (delta.is_null()) {
         ret = OB_NOT_SUPPORTED;
@@ -1573,8 +1812,15 @@ int ObTableCtx::init_increment(bool return_affected_entity, bool return_rowkey)
   int ret = OB_SUCCESS;
   return_affected_entity_ = return_affected_entity;
   return_rowkey_ = return_rowkey;
+  if (is_heap_table()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "heap table use increment");
+    LOG_WARN("heap table use increment is not supported", K(ret));
+  }
 
-  if (OB_FAIL(init_update())) {
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (OB_FAIL(init_update())) {
     LOG_WARN("fail to init insert up", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < assigns_.count(); i++) {
@@ -1685,7 +1931,7 @@ int ObTableCtx::classify_scan_exprs()
     }
 
     // for index exprs, its order is schema define
-    if (OB_SUCC(ret) && is_index_scan_) {
+    if (OB_SUCC(ret) && is_index_scan_ && !is_text_retrieval_scan()) {
       for (int64_t i = 0; OB_SUCC(ret) && i < index_col_ids_.count(); i++) {
         const ObTableColumnItem *item = nullptr;
         if (OB_FAIL(get_column_item_by_column_id(index_col_ids_.at(i), item))) {
@@ -1703,7 +1949,28 @@ int ObTableCtx::classify_scan_exprs()
   return ret;
 }
 
-int ObTableCtx::init_exec_ctx()
+int ObTableCtx::init_fts_schema()
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(table_schema_) || OB_ISNULL(fts_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("data table schema or fts ctx is NULL", K(ret), KP(fts_ctx_));
+  } else if (OB_FAIL(table_schema_->get_rowkey_doc_tid(fts_ctx_->rowkey_doc_tid_))) {
+    LOG_WARN("failed to get rowkey doc tid", K(ret), KPC(table_schema_));
+  } else if (OB_FAIL(table_schema_->get_doc_id_rowkey_tid(fts_ctx_->doc_rowkey_tid_))) {
+    LOG_WARN("failed to get rowkey doc tid", K(ret), KPC(table_schema_));
+  } else if (OB_ISNULL(schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema guard is nullptr", K(ret));
+  } else if (OB_FAIL(schema_guard_->get_table_schema(tenant_id_, fts_ctx_->rowkey_doc_tid_, fts_ctx_->rowkey_doc_schema_))) {
+    LOG_WARN("fail to get rowkey doc table schema", K(ret), K(fts_ctx_->rowkey_doc_tid_));
+  } else if (OB_FAIL(schema_guard_->get_table_schema(tenant_id_, fts_ctx_->doc_rowkey_tid_, fts_ctx_->doc_rowkey_schema_))) {
+    LOG_WARN("fail to get doc rowkey table schema", K(ret), K(fts_ctx_->doc_rowkey_tid_));
+  }
+  return ret;
+}
+
+int ObTableCtx::init_exec_ctx(bool need_das_ctx/*true*/)
 {
   int ret = OB_SUCCESS;
   /*
@@ -1712,7 +1979,7 @@ int ObTableCtx::init_exec_ctx()
   */
   sql_ctx_.schema_guard_ = schema_guard_;
   exec_ctx_.get_das_ctx().set_sql_ctx(&sql_ctx_);
-  if (OB_FAIL(init_das_context(exec_ctx_.get_das_ctx()))) {
+  if (need_das_ctx && OB_FAIL(init_das_context(exec_ctx_.get_das_ctx()))) {
     LOG_WARN("fail to init das context", K(ret));
   } else {
     // init exec_ctx_.my_session_
@@ -1742,37 +2009,36 @@ int ObTableCtx::init_das_context(ObDASCtx &das_ctx)
 
   for (int64_t i = 0; i < table_index_info_.count() && OB_SUCC(ret); i++) {
     ObTableIndexInfo &index_info = table_index_info_.at(i);
-    if (OB_ISNULL(index_info.loc_meta_ = OB_NEWx(ObDASTableLocMeta, (&allocator_), allocator_))) {
+    const ObSimpleTableSchemaV2 *index_schema = index_info.is_primary_index_ ? simple_table_schema_ : index_info.index_schema_;
+    ObIArray<ObTableID> *related_index_tids = index_info.is_primary_index_ ? &index_info.related_index_ids_ : nullptr;
+    if (OB_ISNULL(index_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("index schema is NULL", K(ret));
+    } else if (OB_ISNULL(index_info.loc_meta_ = OB_NEWx(ObDASTableLocMeta, (&allocator_), allocator_))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc loc_meta", K(ret));
-    } else if (OB_FAIL(ObTableLocCgService::generate_table_loc_meta(*this, index_info, *index_info.loc_meta_))) {
+    } else if (OB_FAIL(ObTableLocCgService::generate_table_loc_meta(*this,
+                                                                    *index_schema,
+                                                                    *index_info.loc_meta_,
+                                                                    related_index_tids))) {
       LOG_WARN("fail to generate table location meta", K(ret));
     } else if (OB_FAIL(exec_ctx_.get_das_ctx().extended_table_loc(*index_info.loc_meta_, table_loc))) {
       LOG_WARN("fail to extend table loc", K(ret), K(*index_info.loc_meta_));
     } else if (index_info.is_primary_index_) {
-      if (is_dml() && OB_FAIL(init_related_tablet_map(das_ctx))) {
+      if (need_related_table_id() && tablet_id_.is_valid() && OB_FAIL(init_related_tablet_map(das_ctx))) {
         LOG_WARN("fail to init related tablet map", K(ret));
-      }
-      // for following operatons: the primary table tablet_id has been calculated locally
-      if (is_dml() || is_get() || (is_scan() && !is_index_scan())) {
-        local_table_loc = table_loc;
-      }
-    } else {
-      // for index back scene (including global index and local index):
-      // index table tablet_id has been calculated locally
-      if (is_scan() && is_index_scan()) {
-        local_table_loc = table_loc;
       }
     }
   }
 
   if (OB_SUCC(ret)) {
-    if (OB_ISNULL(local_table_loc)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("local_table_loc is NULL", K(ret));
-    } else if (OB_FAIL(exec_ctx_.get_das_ctx().extended_tablet_loc(*local_table_loc,
-                                                                  index_tablet_id_,
-                                                                  tablet_loc))) {
+   if (OB_ISNULL(local_table_loc = exec_ctx_.get_das_ctx().get_table_loc_by_id(ref_table_id_, index_table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("local_table_loc is NULL", K(ret));
+   } else if (index_tablet_id_.is_valid()
+      && OB_FAIL(exec_ctx_.get_das_ctx().extended_tablet_loc(*local_table_loc,
+                                                            index_tablet_id_,
+                                                            tablet_loc))) {
       LOG_WARN("fail to extend tablet loc", K(ret), K(index_tablet_id_));
     }
   }
@@ -1849,23 +2115,23 @@ int ObTableCtx::init_trans(transaction::ObTxDesc *trans_desc,
 int ObTableCtx::init_index_info(const ObString &index_name, const uint64_t arg_table_id)
 {
   int ret = OB_SUCCESS;
-  uint64_t tids[OB_MAX_AUX_TABLE_PER_MAIN_TABLE];
-  int64_t index_aux_cnt = OB_MAX_AUX_TABLE_PER_MAIN_TABLE;
+  uint64_t tids[OB_MAX_INDEX_PER_TABLE];
+  int64_t index_cnt = OB_MAX_INDEX_PER_TABLE;
 
   if (OB_FAIL(schema_guard_->get_can_read_index_array(tenant_id_,
                                                       ref_table_id_,
                                                       tids,
-                                                      index_aux_cnt,
+                                                      index_cnt,
                                                       false))) {
     LOG_WARN("fail to get can read index", K(ret), K_(tenant_id), K_(ref_table_id));
-  } else if (index_aux_cnt > OB_MAX_AUX_TABLE_PER_MAIN_TABLE) {
+  } else if (index_cnt > OB_MAX_INDEX_PER_TABLE) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("index aux count is bigger than OB_MAX_AUX_TABLE_PER_MAIN_TABLE", K(ret), K(index_aux_cnt));
+    LOG_WARN("index count is bigger than OB_MAX_INDEX_PER_TABLE", K(ret), K(index_cnt));
   } else {
     const share::schema::ObTableSchema *index_schema = nullptr;
     ObString this_index_name;
     bool is_found = false;
-    for (int64_t i = 0; OB_SUCC(ret) && i < index_aux_cnt && !is_found; i++) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < index_cnt && !is_found; i++) {
       if (OB_FAIL(schema_guard_->get_table_schema(tenant_id_, tids[i], index_schema))) {
         LOG_WARN("fail to get index schema", K(ret), K_(tenant_id), K(tids[i]));
       } else if (OB_ISNULL(index_schema)) {
@@ -1878,7 +2144,17 @@ int ObTableCtx::init_index_info(const ObString &index_name, const uint64_t arg_t
         index_table_id_ = tids[i];
         index_schema_ = index_schema;
         is_global_index_scan_ = index_schema->is_global_index_table();
-        if (!is_global_index_scan_ && OB_FAIL(get_related_tablet_id(*index_schema, index_tablet_id_))) {
+        if (index_schema->is_fts_index_aux()) {
+          if (OB_ISNULL(fts_ctx_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("ftx_ctx is NULL", K(ret));
+          } else {
+            fts_ctx_->is_text_retrieval_scan_ = true;
+            is_index_back_ = true;
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (!is_global_index_scan_ && OB_FAIL(get_related_tablet_id(*index_schema, index_tablet_id_))) {
           LOG_WARN("fail to get index tablet id", K(ret));
         } else if (is_global_index_scan_) {
           if (index_table_id_ != arg_table_id) {
@@ -1906,8 +2182,9 @@ int ObTableCtx::init_index_info(const ObString &index_name, const uint64_t arg_t
     }
 
     if (OB_SUCC(ret) && !is_found) {
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_WRONG_NAME_FOR_INDEX;
       LOG_WARN("invalid index name", K(ret), K(index_name));
+      LOG_USER_ERROR(OB_WRONG_NAME_FOR_INDEX, index_name.length(), index_name.ptr());
     }
   }
 
@@ -1937,6 +2214,13 @@ int ObTableCtx::init_dml_related_tid(ObIArray<common::ObTableID> &related_index_
           // do nothing
         } else if (OB_FAIL(related_index_tids.push_back(index_schema->get_table_id()))) {
           LOG_WARN("fail to add related index ids", K(ret), K(index_schema->get_table_id()));
+        } else if (has_fts_index_ && index_schema->is_rowkey_doc_id()) {
+          if (OB_ISNULL(fts_ctx_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("fts_ctx is NULL", K(ret));
+          } else {
+            fts_ctx_->need_tsc_with_doc_id_ = true;
+          }
         }
       }
     }
@@ -2074,6 +2358,9 @@ int ObTableCtx::get_related_tablet_id(const share::schema::ObTableSchema &index_
     if (OB_ISNULL(simple_table_schema_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("table schema is null", K(ret));
+    } else if (!tablet_id_.is_valid()) {
+      ret = OB_SCHEMA_ERROR;
+      LOG_WARN("partitioned table should pass right tablet id from client", K(ret));
     } else if (OB_FAIL(simple_table_schema_->get_part_idx_by_tablet(tablet_id_, part_idx, subpart_idx))) {
       LOG_WARN("fail to get part idx", K(ret), K_(tablet_id));
     } else if (OB_FAIL(index_schema.get_part_id_and_tablet_id_by_idx(part_idx,
@@ -2100,10 +2387,7 @@ int ObTableCtx::get_related_tablet_id(const share::schema::ObTableSchema &index_
 int ObTableCtx::check_insert_up_can_use_put(bool &use_put)
 {
   int ret = OB_SUCCESS;
-  if (ObTableOperationType::INSERT_OR_UPDATE != operation_type_) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid operation type", K(ret), K_(operation_type));
-  } else if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
+  if (OB_ISNULL(schema_cache_guard_) || !schema_cache_guard_->is_inited()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema cache guard is NULL or not inited", K(ret), KP(schema_cache_guard_));
   } else if (OB_FAIL(check_insert_up_can_use_put(*schema_cache_guard_,
@@ -2145,7 +2429,7 @@ int ObTableCtx::check_insert_up_can_use_put(ObKvSchemaCacheGuard &schema_cache_g
   } else if (has_lob_column) {
     // has lob column cannot use put: may cause lob storeage leak when put row to lob meta table
     can_use_put = false;
-  } else if (is_htable) { // htable has no index and alway full filled.
+  } else if (is_htable || entity->get_entity_type() == ObTableEntityType::ET_HKV_V2) { // htable has no index and alway full filled.
     can_use_put = true;
   } else {
     bool is_all_columns_filled = false;
@@ -2209,6 +2493,13 @@ int ObTableCtx::generate_table_schema_for_cg()
     }
   }
 
+  // for rowkey_doc_id scan in fulltext index
+  if (OB_SUCC(ret) && (is_tsc_with_doc_id() || is_text_retrieval_scan())) {
+    if (OB_FAIL(init_fts_schema())) {
+      LOG_WARN("fail to init rowkey doc schema", K(ret));
+    }
+  }
+
   return ret;
 }
 
@@ -2234,6 +2525,101 @@ int ObTableCtx::init_insert_when_inc_append()
     LOG_WARN("fail to init ttl insert", K(ret));
   }
   return ret;
+}
+
+int ObTableCtx::prepare_text_retrieval_scan()
+{
+  int ret = OB_SUCCESS;
+  uint64_t doc_id_rowkey_tid = OB_INVALID_ID;
+  uint64_t inv_index_tid = index_table_id_;
+  uint64_t fwd_idx_tid = OB_INVALID_ID;
+  ObSEArray<ObAuxTableMetaInfo, 4> index_infos;
+  if (OB_ISNULL(schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema guard is NULL", K(ret));
+  } else if (OB_ISNULL(table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table schema is NULL", K(ref_table_id_));
+  } else if (OB_FAIL(table_schema_->get_simple_index_infos(index_infos))) {
+    LOG_WARN("fail to get index infos", K(ret));
+  } else if (OB_FAIL(table_schema_->get_doc_id_rowkey_tid(doc_id_rowkey_tid))) {
+    LOG_WARN("fail to get doc_id rowkey index tid", K(ret));
+  } else if (OB_ISNULL(index_schema_) || !index_schema_->is_fts_index_aux()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("index schema is NULL", K(index_table_id_), KP(index_schema_));
+  } else {
+    // find fwd index schema
+    bool found_fwd_idx = false;
+    const ObString &inv_idx_name = index_schema_->get_table_name_str();
+    const ObTableSchema *fwd_idx_schema = NULL;
+    for (int64_t i = 0; OB_SUCC(ret) && i < index_infos.count(); ++i) {
+      const ObAuxTableMetaInfo &index_info = index_infos.at(i);
+      if (!share::schema::is_fts_doc_word_aux(index_info.index_type_)) {
+        // skip
+      } else if (OB_FAIL(schema_guard_->get_table_schema(tenant_id_, index_info.table_id_, fwd_idx_schema))) {
+        LOG_WARN("failed to get table schema", K(ret));
+      } else if (OB_ISNULL(fwd_idx_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpecter nullptr to fwd idx schema", K(ret));
+      } else {
+        const ObString &fwd_idx_name = fwd_idx_schema->get_table_name_str();
+        int64_t fwd_idx_suffix_len = strlen("_fts_doc_word");
+        ObString fwd_idx_prefix_name;
+        if (OB_UNLIKELY(fwd_idx_name.length() <= fwd_idx_suffix_len)) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("invalid argument", K(ret), K(fwd_idx_name), K(fwd_idx_suffix_len));
+        } else if (OB_FALSE_IT(fwd_idx_prefix_name.assign_ptr(fwd_idx_name.ptr(),
+                                                              fwd_idx_name.length() - fwd_idx_suffix_len))) {
+        } else if (fwd_idx_prefix_name.compare(inv_idx_name) == 0) {
+          found_fwd_idx = true;
+          fwd_idx_tid = fwd_idx_schema->get_table_id();
+        }
+      }
+    } // end for
+    if (OB_SUCC(ret)) {
+      if (!found_fwd_idx) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("fail to find fwd index", K(ret), K(inv_idx_name), K(index_table_id_));
+      } else if (OB_ISNULL(fts_ctx_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("fts_ctx is NULL", K(ret));
+      } else if (OB_ISNULL(fts_ctx_->text_retrieval_info_ = OB_NEWx(ObTextRetrievalInfo, &allocator_))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc ObTextRetrievalInfo", K(ret));
+      } else {
+        fts_ctx_->text_retrieval_info_->inv_idx_tid_ = index_table_id_;
+        fts_ctx_->text_retrieval_info_->fwd_idx_tid_ = fwd_idx_tid;
+        fts_ctx_->text_retrieval_info_->doc_id_idx_tid_ = doc_id_rowkey_tid;
+        fts_ctx_->text_retrieval_info_->need_calc_relevance_ = true;
+      }
+    }
+  }
+
+  return ret;
+}
+
+const ObDASScanCtDef* ObTableApiScanCtDef::get_lookup_ctdef() const
+{
+  ObDASScanCtDef *lookup_ctdef = nullptr;
+  const ObDASBaseCtDef *attach_ctdef = attach_spec_.attach_ctdef_;
+  if (nullptr == attach_ctdef) {
+    lookup_ctdef = lookup_ctdef_;
+  } else if (DAS_OP_DOMAIN_ID_MERGE == attach_ctdef->op_type_) {
+    OB_ASSERT(2 == attach_ctdef->children_cnt_ && attach_ctdef->children_ != nullptr);
+    if (OB_NOT_NULL(lookup_ctdef_)) {
+      lookup_ctdef = static_cast<ObDASScanCtDef*>(attach_ctdef->children_[0]);
+    }
+  } else if (DAS_OP_TABLE_LOOKUP == attach_ctdef->op_type_) {
+    OB_ASSERT(2 == attach_ctdef->children_cnt_ && attach_ctdef->children_ != nullptr);
+    if (DAS_OP_TABLE_SCAN == attach_ctdef->children_[1]->op_type_) {
+      lookup_ctdef = static_cast<ObDASScanCtDef*>(attach_ctdef->children_[1]);
+    } else if (DAS_OP_DOMAIN_ID_MERGE == attach_ctdef->children_[1]->op_type_) {
+      ObDASDocIdMergeCtDef *doc_id_merge_ctdef = static_cast<ObDASDocIdMergeCtDef *>(attach_ctdef->children_[1]);
+      OB_ASSERT(2 == doc_id_merge_ctdef->children_cnt_ && doc_id_merge_ctdef->children_ != nullptr);
+      lookup_ctdef = static_cast<ObDASScanCtDef*>(doc_id_merge_ctdef->children_[0]);
+    }
+  }
+  return lookup_ctdef;
 }
 
 }  // namespace table

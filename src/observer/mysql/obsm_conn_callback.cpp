@@ -11,15 +11,10 @@
  */
 
 #define USING_LOG_PREFIX RPC_OBMYSQL
-#include <openssl/ssl.h>
 #include "observer/mysql/obsm_conn_callback.h"
 #include "rpc/obmysql/ob_sql_sock_session.h"
-#include "rpc/obmysql/obsm_struct.h"
-#include "rpc/obmysql/ob_mysql_packet.h"
 #include "rpc/obmysql/packet/ompk_handshake.h"
 #include "lib/random/ob_mysql_random.h"
-#include "observer/ob_server_struct.h"
-#include "sql/session/ob_sql_session_mgr.h"
 #include "observer/omt/ob_tenant.h"
 #include "observer/ob_srv_task.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
@@ -199,6 +194,7 @@ void ObSMConnectionCallback::destroy(ObSMConnection& conn)
         ret = OB_ALLOCATE_MEMORY_FAILED;
       } else if (OB_UNLIKELY(NULL == conn.tenant_)) {
         ret = OB_TENANT_NOT_EXIST;
+      } else if (FALSE_IT(task->set_diagnostic_info(conn.get_diagnostic_info()))) {
       } else if (OB_FAIL(conn.tenant_->recv_request(*task))) {
         LOG_WARN("push disconnect task fail", K(conn.sessid_),
                   "proxy_sessid", conn.proxy_sessid_, K(ret));
@@ -206,6 +202,7 @@ void ObSMConnectionCallback::destroy(ObSMConnection& conn)
       }
       // free session locally
       if (OB_FAIL(ret)) {
+        ObDiagnosticInfoSwitchGuard g(conn.get_diagnostic_info());
         ObMPDisconnect disconnect_processor(ctx);
         rpc::frame::ObReqProcessor *processor = static_cast<rpc::frame::ObReqProcessor *>(&disconnect_processor);
         if (OB_FAIL(processor->run())) {
@@ -225,10 +222,9 @@ void ObSMConnectionCallback::destroy(ObSMConnection& conn)
       }
     }
   }
-  if (OB_NOT_NULL(conn.di_)) {
-    common::ObLocalDiagnosticInfo::dec_ref(conn.di_);
-    common::ObLocalDiagnosticInfo::return_diagnostic_info(conn.di_);
-    conn.di_ = nullptr;
+  common::ObDiagnosticInfo *di = conn.get_diagnostic_info();
+  if (OB_NOT_NULL(di)) {
+    conn.reset_diagnostic_info();
   }
 
   sm_conn_unlock_tenant(conn);
@@ -266,7 +262,7 @@ int ObSMConnectionCallback::on_disconnect(observer::ObSMConnection& conn)
                 "proxy_sessid", conn.proxy_sessid_);
     } else {
       sess_info->set_session_state(sql::SESSION_KILLED);
-      sess_info->set_shadow(true);
+      sess_info->set_mark_killed(true);
     }
   }
   LOG_INFO("kill and revert session", K(conn.sessid_), "proxy_sessid", conn.proxy_sessid_, K(ret));

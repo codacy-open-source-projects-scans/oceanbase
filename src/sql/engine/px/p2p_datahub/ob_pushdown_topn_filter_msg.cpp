@@ -12,12 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "sql/engine/px/p2p_datahub/ob_pushdown_topn_filter_msg.h"
+#include "ob_pushdown_topn_filter_msg.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_mgr.h"
-#include "sql/engine/sort/ob_sort_vec_op.h"
-#include "sql/engine/basic/ob_compact_row.h"
-#include "sql/engine/sort/ob_sort_vec_op_context.h"
-#include "sql/engine/expr/ob_expr.h"
 #include "sql/engine/expr/ob_expr_topn_filter.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
 
@@ -47,14 +43,15 @@ OB_SERIALIZE_MEMBER(ObTopNFilterCmpMeta, ser_cmp_func_, obj_meta_);
 OB_SERIALIZE_MEMBER(ObTopNFilterCompare, build_meta_, filter_meta_, is_ascending_, null_pos_);
 OB_SERIALIZE_MEMBER(ObPushDownTopNFilterInfo, enabled_, p2p_dh_id_, effective_sk_cnt_,
                     total_sk_cnt_, cmp_metas_, dh_msg_type_, expr_ctx_id_, is_shared_, is_shuffle_,
-                    max_batch_size_, adaptive_filter_ratio_);
+                    max_batch_size_, adaptive_filter_ratio_, enable_runtime_filter_adaptive_apply_);
 
 int ObPushDownTopNFilterInfo::init(int64_t p2p_dh_id, int64_t effective_sk_cnt,
                                    int64_t total_sk_cnt,
                                    const ObIArray<ObTopNFilterCmpMeta> &cmp_metas,
                                    ObP2PDatahubMsgBase::ObP2PDatahubMsgType dh_msg_type,
                                    uint32_t expr_ctx_id, bool is_shared, bool is_shuffle,
-                                   int64_t max_batch_size, double adaptive_filter_ratio)
+                                   int64_t max_batch_size, bool enable_runtime_filter_adaptive_apply,
+                                   double adaptive_filter_ratio)
 {
   int ret = OB_SUCCESS;
   p2p_dh_id_ = p2p_dh_id;
@@ -66,6 +63,7 @@ int ObPushDownTopNFilterInfo::init(int64_t p2p_dh_id, int64_t effective_sk_cnt,
   is_shuffle_ = is_shuffle;
   max_batch_size_ = max_batch_size;
   adaptive_filter_ratio_ = adaptive_filter_ratio;
+  enable_runtime_filter_adaptive_apply_ = enable_runtime_filter_adaptive_apply;
   if (OB_FAIL(cmp_metas_.assign(cmp_metas))) {
     LOG_WARN("failed to assign cmp_metas");
   } else {
@@ -86,6 +84,7 @@ int ObPushDownTopNFilterInfo::assign(const ObPushDownTopNFilterInfo &src)
   is_shuffle_ = src.is_shuffle_;
   max_batch_size_ = src.max_batch_size_;
   adaptive_filter_ratio_ = src.adaptive_filter_ratio_;
+  enable_runtime_filter_adaptive_apply_ = src.enable_runtime_filter_adaptive_apply_;
   enabled_ = src.enabled_;
   if (OB_FAIL(cmp_metas_.assign(src.cmp_metas_))) {
     LOG_WARN("failed to assign cmp_metas");
@@ -413,9 +412,8 @@ int ObPushDownTopNFilterMsg::update_filter_data(ObChunkDatumStore::StoredRow *st
 
 bool ObPushDownTopNFilterMsg::check_has_null(ObCompactRow *compact_row)
 {
-  int ret = OB_SUCCESS;
   bool has_null = false;
-  for (int64_t i = 0; i < heap_top_datums_.count() && OB_SUCC(ret); ++i) {
+  for (int64_t i = 0; i < heap_top_datums_.count(); ++i) {
     if (compact_row->is_null(i)) {
       has_null = true;
       break;
@@ -426,16 +424,15 @@ bool ObPushDownTopNFilterMsg::check_has_null(ObCompactRow *compact_row)
 
 bool ObPushDownTopNFilterMsg::check_has_null(ObChunkDatumStore::StoredRow *store_row)
 {
-  int ret = OB_SUCCESS;
   bool has_null = false;
   const common::ObDatum *incomming_datums = store_row->cells();
-  for (int64_t i = 0; i < heap_top_datums_.count() && OB_SUCC(ret); ++i) {
+  for (int64_t i = 0; i < heap_top_datums_.count(); ++i) {
     if (incomming_datums[i].is_null()) {
       has_null = true;
       break;
     }
   }
-  return ret;
+  return has_null;
 }
 
 int ObPushDownTopNFilterMsg::prepare_storage_white_filter_data(

@@ -13,11 +13,8 @@
 #define USING_LOG_PREFIX  SQL_ENG
 
 #include "ob_number_format_models.h"
-#include "lib/charset/ob_charset.h"
 #include "sql/engine/ob_exec_context.h"
-#include "sql/engine/expr/ob_expr_util.h"
 #include "sql/engine/expr/ob_expr_func_round.h"
-#include "share/system_variable/ob_nls_system_variable.h"
 
 namespace oceanbase
 {
@@ -1896,6 +1893,16 @@ int ObNFMToChar::process_tm_format(const ObNFMObj &nfm_obj, const int64_t in_sca
         MEMCPY(buf, num_str_buf, num_str_len);
         pos += num_str_len;
       } else if (num_str_len > 64) {
+        if (lib::is_mysql_mode()) {
+          // remove '0' before '.'
+          if (num_str_len > 2 && 0 == MEMCMP(num_str_buf, "0.", 2)) {
+            MEMMOVE(num_str_buf, num_str_buf + 1, num_str_len - 1);
+            num_str_len -= 1;
+          } else if (num_str_len > 3 &&  0 == MEMCMP(num_str_buf, "-0.", 3)) {
+            MEMMOVE(num_str_buf + 1, num_str_buf + 2, num_str_len - 2);
+            num_str_len -= 1;
+          }
+        }
         if (OB_FAIL(num_str_to_sci(num_str, out_scale, buf, buf_len, pos, true))) {
           LOG_WARN("failed to convert num to sci str", K(ret));
         }
@@ -1947,6 +1954,16 @@ int ObNFMToChar::process_tme_format(const ObNFMObj &nfm_obj, const int64_t in_sc
       LOG_WARN("invalid obj type", K(ret), K(obj_type));
     }
     if (OB_SUCC(ret)) {
+      if (lib::is_mysql_mode()) {
+        // remove '0' before '.'
+        if (num_str_len > 2 && 0 == MEMCMP(num_str_buf, "0.", 2)) {
+          MEMMOVE(num_str_buf, num_str_buf + 1, num_str_len - 1);
+          num_str_len -= 1;
+        } else if (num_str_len > 3 &&  0 == MEMCMP(num_str_buf, "-0.", 3)) {
+          MEMMOVE(num_str_buf + 1, num_str_buf + 2, num_str_len - 2);
+          num_str_len -= 1;
+        }
+      }
       num_str.assign_ptr(num_str_buf, static_cast<int32_t>(num_str_len));
       LOG_DEBUG("process_tme_format", K(ret), K(num_str_buf), K(num_str_len));
       if (OB_FAIL(num_str_to_sci(num_str, out_scale, buf, buf_len, pos, true))) {
@@ -2435,7 +2452,7 @@ int ObNFMToNumber::process_hex_format(const common::ObString &in_str,
     }
   }
   if (OB_FAIL(ret)) {
-  } else if ('-' == str[str_pos]) {
+  } else if (str_pos < str_len && '-' == str[str_pos]) {
     ret = OB_ERR_CAST_VARCHAR_TO_NUMBER;
     LOG_WARN("not support negative number", K(ret), K(in_str));
   } else if (ObNFMElem::has_type((~NFM_HEX_FLAG) & (~NFM_ZERO_FLAG)

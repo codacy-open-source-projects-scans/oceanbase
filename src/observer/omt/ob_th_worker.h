@@ -63,6 +63,7 @@ public:
   virtual void unset_need_retry() override { need_retry_ = false; }
   virtual bool need_retry() const override { return need_retry_; }
   virtual void resume() override;
+  virtual int try_add_stream_rpc_session_wait_cnt(int cnt) override;
 
   int init();
   void destroy();
@@ -101,8 +102,11 @@ public:
   OB_INLINE int64_t get_last_wakeup_ts() { return last_wakeup_ts_; }
   OB_INLINE void set_last_wakeup_ts(int64_t last_wakeup_ts) { last_wakeup_ts_ = last_wakeup_ts; }
   OB_INLINE int64_t blocking_ts() const { return OB_NOT_NULL(blocking_ts_) ? (*blocking_ts_) : 0; }
+  OB_INLINE const char *get_module_name() const { return module_name_; }
+  OB_INLINE bool is_doing_ddl() const { return OB_NOT_NULL(is_doing_ddl_) ? (*is_doing_ddl_) : false; }
 
   static thread_local uint64_t serving_tenant_id_;
+  int acquire_diagnostic_info(ObDiagnosticInfo *&di, rpc::ObRequest *req);
 private:
   void set_th_worker_thread_name();
   void update_ru_cputime();
@@ -133,6 +137,9 @@ private:
   int64_t last_wakeup_ts_;
   int64_t* blocking_ts_;
   int64_t idle_us_;
+  static const int64_t MAX_MODULE_NAME_LEN = 23; //no more than 3 int64_t
+  char module_name_[MAX_MODULE_NAME_LEN];
+  bool* is_doing_ddl_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObThWorker);
 }; // end of class ObThWorker
@@ -161,7 +168,8 @@ level: set worker's level, in ObResourceGroup level = INT32_MAX, in ObTenant lev
 group: set worker's group, in ObResourceGroup level = this, in ObTenant level = nullptr,
 */
 int create_worker(ObThWorker* &worker, ObTenant *tenant, uint64_t group_id,
-                  int32_t level = INT32_MAX, bool force = false, ObResourceGroup *group = nullptr);
+                  int32_t level = INT32_MAX, bool force = false, ObResourceGroup *group = nullptr,
+                  int32_t group_index = -1);
                     // defalut level=INT32_MAX, group=nullptr
 int destroy_worker(ObThWorker *worker);
 

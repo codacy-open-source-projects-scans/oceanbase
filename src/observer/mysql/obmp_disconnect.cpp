@@ -14,11 +14,6 @@
 
 #include "obmp_disconnect.h"
 
-#include "lib/stat/ob_session_stat.h"
-#include "rpc/ob_request.h"
-#include "observer/ob_server_struct.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "sql/ob_sql_trans_control.h"
 
 using namespace oceanbase::observer;
 using namespace oceanbase::common;
@@ -79,6 +74,7 @@ int ObMPDisconnect::run()
       if (OB_FAIL(GCTX.session_mgr_->free_session(ctx_))) {
         LOG_WARN("free session fail", K(ctx_));
       } else {
+        common::ObTenantDiagnosticInfoSummaryGuard guard(ctx_.tenant_id_);
         EVENT_INC(SQL_USER_LOGOUTS_CUMULATIVE);
         LOG_INFO("free session successfully", "sessid", ctx_.sessid_);
         if (OB_UNLIKELY(OB_FAIL(sql::ObSQLSessionMgr::is_need_clear_sessid(&conn, is_need_clear)))) {

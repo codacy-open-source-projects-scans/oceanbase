@@ -12,11 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "storage/backup/ob_backup_restore_util.h"
-#include "storage/blocksstable/ob_data_buffer.h"
 #include "storage/backup/ob_backup_data_store.h"
-#include "share/backup/ob_backup_io_adapter.h"
-#include "share/io/ob_io_struct.h"
-#include "share/backup/ob_backup_store.h"
 #include "storage/backup/ob_backup_meta_cache.h"
 
 using namespace oceanbase::share;
@@ -209,6 +205,28 @@ int ObLSBackupRestoreUtil::read_macro_block_data(const common::ObString &path, c
         MEMCPY(dest, read_buffer.current(), macro_block_size);
         LOG_DEBUG("read macro block data", K(path), K(macro_index), K(data_buffer));
       }
+    }
+  }
+  return ret;
+}
+
+int ObLSBackupRestoreUtil::read_macro_block_data_with_retry(const common::ObString &path, const share::ObBackupStorageInfo *storage_info, const common::ObStorageIdMod &mod,
+      const ObBackupMacroBlockIndex &macro_index, const int64_t align_size, blocksstable::ObBufferReader &read_buffer,
+      blocksstable::ObBufferReader &data_buffer)
+{
+  int ret = OB_SUCCESS;
+  int64_t io_retry_cnt = 0;
+  const int64_t max_retry_cnt = GCONF._restore_io_max_retry_count;
+  while (OB_SUCC(ret)) {
+    if (OB_FAIL(read_macro_block_data(path, storage_info, mod, macro_index, align_size, read_buffer, data_buffer))) {
+      LOG_WARN("fail to inner read macro block data", K(ret), K(path), K(macro_index),  K(align_size));
+      if (is_io_error(ret) && ++io_retry_cnt <= max_retry_cnt) {
+        ret = OB_SUCCESS;
+        LOG_INFO("read macro block data retry", K(io_retry_cnt), K(max_retry_cnt));
+        ob_usleep(READ_MACRO_BLOCK_RETRY_INTERVAL);
+      }
+    } else {
+      break;
     }
   }
   return ret;

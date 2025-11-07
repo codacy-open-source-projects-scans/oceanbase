@@ -371,10 +371,28 @@ public:
   void reset();
   int64_t get_convert_size() const;
   int add_type_attr(const ObUDTTypeAttr& attr);
+  int drop_type_attr(int64_t idx);
+
   int64_t get_attrs_count() const { return type_attrs_.count(); }
   bool is_collection() const { return UDT_TYPE_COLLECTION == typecode_; }
   bool is_varray() const {
       return UDT_TYPE_COLLECTION == typecode_ && coll_info_->is_varray(); }
+  uint8_t get_extend_type() const
+  {
+    uint8_t extend_type = 0;
+    if (is_collection()) {
+      if (is_varray()) {
+        extend_type = pl::PL_VARRAY_TYPE;
+      } else {
+        extend_type = pl::PL_NESTED_TABLE_TYPE;
+      }
+    } else if (is_opaque()) {
+      extend_type = pl::PL_OPAQUE_TYPE;
+    } else {
+      extend_type = pl::PL_RECORD_TYPE;
+    }
+    return extend_type;
+  }
   int set_coll_info(const ObUDTCollectionType& coll_info);
   const ObUDTCollectionType* get_coll_info() const { return coll_info_; }
   ObUDTCollectionType* get_coll_info() { return coll_info_; }
@@ -390,9 +408,16 @@ public:
   }
   OB_INLINE void set_is_opaque() { typecode_ = UDT_TYPE_OPAQUE; }
   OB_INLINE bool is_opaque() const { return UDT_TYPE_OPAQUE == typecode_; }
+  OB_INLINE bool is_obj_type() const
+  {
+    return UDT_TYPE_OBJECT == typecode_ ||
+             UDT_TYPE_OBJECT_BODY == typecode_;
+  }
 
   int deep_copy_name(common::ObIAllocator &allocator, const common::ObString &src, common::ObString &dst) const;
-  int transform_to_pl_type(common::ObIAllocator &allocator, const pl::ObUserDefinedType *&pl_type) const;
+  int transform_to_pl_type(common::ObIAllocator &allocator,
+                           ObSchemaGetterGuard &schema_guard,
+                           const pl::ObUserDefinedType *&pl_type) const;
   int transform_to_pl_type(const ObUDTTypeAttr* attr_info, pl::ObPLDataType &pl_type) const;
   int transform_to_pl_type(const ObUDTCollectionType *coll_info, pl::ObPLDataType &pl_type) const;
 
@@ -457,6 +482,8 @@ public:
     return UDT_FLAG_NONEDITIONABLE == (properties_ & UDT_FLAG_NONEDITIONABLE);
   }
 
+  int deep_copy_object_type_info(const ObUDTTypeInfo &other);
+
   int add_object_type_info(const ObUDTObjectType &udt_object);
   OB_INLINE const common::ObIArray<ObUDTObjectType*>& get_object_type_infos() const 
   {
@@ -480,6 +507,7 @@ public:
   }
 
   const ObUDTObjectType *get_object_info() const;
+  ObUDTObjectType *get_object_info();
 
   int copy_udt_info_in_require(const ObUDTTypeInfo &old_info);
   bool is_object_type_info_exist(const ObUDTObjectType &udt_object) const;
@@ -533,6 +561,7 @@ public:
     return bret;
   }
 
+  int check_dependency_valid(ObSchemaGetterGuard &schema_guard) const;
   
   TO_STRING_KV(K_(tenant_id),
                K_(database_id),

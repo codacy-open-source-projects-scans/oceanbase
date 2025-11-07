@@ -28,6 +28,7 @@ enum ObRowStoreType : uint8_t
   ENCODING_ROW_STORE = 1,
   SELECTIVE_ENCODING_ROW_STORE = 2,
   CS_ENCODING_ROW_STORE = 3,
+  FLAT_OPT_ROW_STORE = 4,
   MAX_ROW_STORE,
   DUMMY_ROW_STORE = UINT8_MAX, // invalid dummy row store type for compatibility
 };
@@ -59,6 +60,14 @@ enum ObTableStoreType : uint8_t
   OB_TABLE_STORE_COLUMN = 2,
   OB_TABLE_STORE_ROW_WITH_COLUMN= 3,
   OB_TABLE_STORE_MAX
+};
+
+enum class ObMergeEngineType : uint8_t
+{
+  OB_MERGE_ENGINE_PARTIAL_UPDATE = 0,
+  OB_MERGE_ENGINE_DELETE_INSERT = 1,
+  OB_MERGE_ENGINE_INSERT_ONLY = 2,
+  OB_MERGE_ENGINE_MAX
 };
 
 struct ObStoreFormatItem
@@ -123,6 +132,10 @@ public:
   static inline ObRowStoreType get_row_store_type(const ObStoreFormatType store_format)
   {
     return is_store_format_valid(store_format) ? store_format_items[store_format].row_store_type_: MAX_ROW_STORE;
+  }
+  static inline bool is_row_store_type_with_flat(const ObRowStoreType type)
+  {
+    return FLAT_ROW_STORE == type || FLAT_OPT_ROW_STORE == type;
   }
   static inline bool is_row_store_type_with_encoding(const ObRowStoreType type)
   {
@@ -198,6 +211,43 @@ public:
   TO_STRING_KV(K_(store_type), "store_type_str", to_str());
 private:
   ObLSStoreType store_type_;
+};
+
+static const char *MergeEngineTypeStr[] = { "PARTIAL_UPDATE",
+                                            "DELETE_INSERT",
+                                            "MAX" };
+class ObMergeEngineStoreFormat
+{
+public:
+  static inline bool is_merge_engine_valid(const ObMergeEngineType type)
+  {
+    return type >= ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE && type < ObMergeEngineType::OB_MERGE_ENGINE_MAX;
+  }
+  static inline const char *get_merge_engine_type_name(const ObMergeEngineType merge_engine_type)
+  {
+    const int64_t merge_engine_type_idx = static_cast<int64_t>(merge_engine_type);
+    const char *str = "INVALID";
+    switch (merge_engine_type) {
+      case ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE: {
+        str = "PARTIAL_UPDATE";
+        break;
+      }
+      case ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT: {
+        str = "DELETE_INSERT";
+        break;
+      }
+      case ObMergeEngineType::OB_MERGE_ENGINE_INSERT_ONLY: {
+        str = "INSERT_ONLY";
+        break;
+      }
+      case ObMergeEngineType::OB_MERGE_ENGINE_MAX:
+      default: {
+        str = "INVALID";
+        break;
+      }
+    }
+    return str;
+  }
 };
 
 }//end namespace common

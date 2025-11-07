@@ -14,7 +14,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <iostream>
 #define protected public
 #define private public
 
@@ -22,9 +21,7 @@
 #include "rootserver/ob_tenant_balance_service.h"
 #include "share/balance/ob_balance_job_table_operator.h"
 #include "mittest/env/ob_simple_server_helper.h"
-#include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tx/ob_tx_loop_worker.h"
-#include "storage/tx/ob_trans_part_ctx.h"
 
 namespace oceanbase
 {
@@ -326,7 +323,7 @@ TEST_F(ObTransferWithSmallerStartSCN, smaller_start_scn)
   ASSERT_EQ(0, SSH::submit_redo(tenant_id, loc1));
 
   ObTxLoopWorker *worker = MTL(ObTxLoopWorker *);
-  worker->scan_all_ls_(true, true, false);
+  worker->scan_all_ls_(true, true, false, false, false);
   usleep(1 * 1000 * 1000);
 
   // Step4: let the tx data table update upper info
@@ -404,7 +401,7 @@ TEST_F(ObTransferWithSmallerStartSCN, smaller_start_scn)
   }
   ASSERT_EQ(loc1, loc2);
 
-  worker->scan_all_ls_(true, true, false);
+  worker->scan_all_ls_(true, true, false, false, false);
   usleep(1 * 1000 * 1000);
 
   fprintf(stdout, "start update upper info the second time\n");

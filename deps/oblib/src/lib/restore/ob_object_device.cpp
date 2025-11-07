@@ -32,9 +32,9 @@ const char *get_storage_access_type_str(const ObStorageAccessType &type)
   return str;
 }
 
-ObObjectDevice::ObObjectDevice()
+ObObjectDevice::ObObjectDevice(const bool is_local_disk)
   : storage_info_(), is_started_(false), lock_(common::ObLatchIds::OBJECT_DEVICE_LOCK),
-    storage_id_mod_()
+    storage_id_mod_(), is_local_disk_(is_local_disk)
 {
   ObMemAttr attr = SET_USE_500("ObjectDevice");
   reader_ctx_pool_.set_attr(attr);
@@ -78,6 +78,15 @@ ObObjectDevice::~ObObjectDevice()
   OB_LOG(INFO, "destory the device!", KP(storage_info_str_));
 }
 
+int ObObjectDevice::setup_storage_info(const ObIODOpts &opts)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(storage_info_.set(device_type_, opts.opts_[0].value_.value_str))) {
+    OB_LOG(WARN, "failed to build storage info", K(ret));
+  }
+  return ret;
+}
+
 /*the app logical use call ObBackupIoAdapter::get_and_init_device*/
 /*decription: base_info just related to storage_info,
   base_info is used by the reader/appender*/
@@ -94,13 +103,14 @@ int ObObjectDevice::start(const ObIODOpts &opts)
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "fail to start device, args wrong !", KCSTRING(opts.opts_[0].key_), K(ret));
   } else {
-    if (OB_FAIL(storage_info_.set(device_type_, opts.opts_[0].value_.value_str))) {
-      OB_LOG(WARN, "failed to build storage_info");
+    if (OB_FAIL(setup_storage_info(opts))) {
+      OB_LOG(WARN, "failed to setup storage_info", K(ret));
     }
 
+    common::ObObjectStorageInfo &info = get_storage_info();
     if (OB_SUCCESS != ret) {
       //mem resource will be free with device destroy
-    } else if (OB_FAIL(util_.open(&storage_info_))) {
+    } else if (OB_FAIL(util_.open(&info))) {
       OB_LOG(WARN, "fail to open the util!", K(ret), KP(opts.opts_[0].value_.value_str));
     } else if (OB_FAIL(fd_mng_.init())) {
       OB_LOG(WARN, "fail to init fd manager!", K(ret));
@@ -183,7 +193,8 @@ int ObObjectDevice::open_for_reader(const char *pathname, void *&ctx, const bool
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc mem for object device reader! ", K(ret));
   } else {
-    if (OB_FAIL(reader->open(pathname, &storage_info_, head_meta))) {
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(reader->open(pathname, &info, head_meta))) {
       OB_LOG(WARN, "fail to open for read!", K(ret));
     } else {
       ctx = (void*)reader;
@@ -204,8 +215,9 @@ int ObObjectDevice::open_for_adaptive_reader_(const char *pathname, void *&ctx)
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc mem for object device adaptive_reader! ", K(ret), K(pathname));
   } else {
-    if (OB_FAIL(adaptive_reader->open(pathname, &storage_info_))) {
-      OB_LOG(WARN, "fail to open for read!", K(ret), K(pathname), K_(storage_info));
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(adaptive_reader->open(pathname, &info))) {
+      OB_LOG(WARN, "fail to open for read!", K(ret), K(pathname), K(info));
     } else {
       ctx = (void*)adaptive_reader;
     }
@@ -227,7 +239,8 @@ int ObObjectDevice::open_for_overwriter(const char *pathname, void*& ctx)
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc mem for object device reader! ", K(ret));
   } else {
-    if (OB_FAIL(overwriter->open(pathname, &storage_info_))) {
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(overwriter->open(pathname, &info))) {
       OB_LOG(WARN, "fail to open for overwrite!", K(ret));
     } else {
       ctx = (void*)overwriter;
@@ -271,7 +284,8 @@ int ObObjectDevice::open_for_appender(const char *pathname, ObIODOpts *opts, voi
 
   if (OB_SUCCESS == ret) {
     appender->set_open_mode(mode);
-    if (OB_FAIL(appender->open(pathname, &storage_info_))){
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(appender->open(pathname, &info))){
       OB_LOG(WARN, "fail to open the appender!", K(ret));
     } else {
       ctx = appender;
@@ -292,8 +306,9 @@ int ObObjectDevice::open_for_multipart_writer_(const char *pathname, void *&ctx)
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc multipart_writer!", K(ret), K(pathname));
   } else {
-    if (OB_FAIL(multipart_writer->open(pathname, &storage_info_))) {
-      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K_(storage_info));
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(multipart_writer->open(pathname, &info))) {
+      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K(info));
     } else {
       ctx = (void*)multipart_writer;
     }
@@ -313,8 +328,9 @@ int ObObjectDevice::open_for_parallel_multipart_writer_(const char *pathname, vo
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc multipart_writer!", K(ret), K(pathname));
   } else {
-    if (OB_FAIL(multipart_writer->open(pathname, &storage_info_))) {
-      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K_(storage_info));
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(multipart_writer->open(pathname, &info))) {
+      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K(info));
     } else {
       ctx = (void*)multipart_writer;
     }
@@ -334,8 +350,9 @@ int ObObjectDevice::open_for_buffered_multipart_writer_(const char *pathname, vo
     ret = OB_ALLOCATE_MEMORY_FAILED;
     OB_LOG(WARN, "fail to alloc multipart_writer!", K(ret), K(pathname));
   } else {
-    if (OB_FAIL(multipart_writer->open(pathname, &storage_info_))) {
-      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K_(storage_info));
+    common::ObObjectStorageInfo &info = get_storage_info();
+    if (OB_FAIL(multipart_writer->open(pathname, &info))) {
+      OB_LOG(WARN, "fail to open for multipart_writer!", K(ret), K(pathname), K(info));
     } else {
       ctx = (void*)multipart_writer;
     }
@@ -729,12 +746,21 @@ int ObObjectDevice::inner_stat_(const char *pathname,
     ObIODFileStat &statbuf, const bool is_adaptive)
 {
   int ret = OB_SUCCESS;
-  int64_t length = 0;
   common::ObString uri(pathname);
-  if (OB_FAIL(util_.get_file_length(uri, is_adaptive, length))) {
-    OB_LOG(WARN, "fail to get file length!", K(ret), K(uri), K(is_adaptive));
-  } else {
-    statbuf.size_ = length;
+  if (OB_FAIL(util_.get_file_stat(uri, is_adaptive, statbuf))) {
+    OB_LOG(WARN, "fail to get file stat!", K(ret), K(uri), K(is_adaptive));
+  }
+  return ret;
+}
+
+int ObObjectDevice::get_file_content_digest(
+    const char *pathname, char *digest_buf, const int64_t digest_buf_len)
+{
+  int ret = OB_SUCCESS;
+  const common::ObString uri(pathname);
+  if (OB_FAIL(util_.get_file_content_digest(uri, digest_buf, digest_buf_len))) {
+    OB_LOG(WARN, "fail to get file content digest!",
+        K(ret), K(uri), KP(digest_buf), K(digest_buf_len));
   }
   return ret;
 }
@@ -755,23 +781,15 @@ int ObObjectDevice::inner_scan_dir_(const char *dir_name,
 {
   common::ObString uri(dir_name);
   int ret = OB_SUCCESS;
-  if (op.is_marker_scan() && OB_ISNULL(op.get_marker())) {
-    ret = OB_INVALID_ARGUMENT;
-    OB_LOG(WARN, "marker should not be null for marker scan",
-        K(ret), K(op.is_marker_scan()), K(dir_name), K(op.get_marker()));
+  if (op.is_dir_scan()) {
+    ret = util_.list_directories(uri, is_adaptive, op);
   } else {
-    if (op.is_dir_scan()) {
-      ret = util_.list_directories(uri, is_adaptive, op);
-    } else if (op.is_marker_scan()) {
-      ret = util_.list_files_with_marker(uri, op);
-    } else {
-      ret = util_.list_files(uri, is_adaptive, op);
-    }
+    ret = util_.list_files(uri, is_adaptive, op);
+  }
 
-    if (OB_FAIL(ret)) {
-      OB_LOG(WARN, "fail to do list/dir scan!", K(ret), KCSTRING(dir_name),
-          "is_dir_scan", op.is_dir_scan(), "is_marker_scan", op.is_marker_scan());
-    }
+  if (OB_FAIL(ret)) {
+    OB_LOG(WARN, "fail to do list/dir scan!", K(ret), KCSTRING(dir_name),
+        "is_dir_scan", op.is_dir_scan());
   }
   return ret;
 }

@@ -16,11 +16,7 @@
 #define protected public
 #define private public
 #include "storage/blocksstable/cs_encoding/ob_integer_stream_encoder.h"
-#include "storage/blocksstable/cs_encoding/ob_integer_stream_decoder.h"
-#include "storage/blocksstable/cs_encoding/ob_column_encoding_struct.h"
 #include "storage/blocksstable/cs_encoding/ob_cs_decoding_util.h"
-#include "lib/codec/ob_fast_delta.h"
-#include <iostream>
 #include <random>
 
 namespace oceanbase
@@ -341,11 +337,11 @@ public:
     }
     ObBaseColumnDecoderCtx base_ctx;
     base_ctx.allocator_ = &allocator_;
-    base_ctx.null_flag_ = ObBaseColumnDecoderCtx::ObNullFlag::HAS_NO_NULL;
+    base_ctx.null_flag_ = ObBaseColumnDecoderCtx::ObNullFlag::HAS_NO_NULL_OR_NOP;
     base_ctx.null_desc_ = nullptr;
     if (use_nullbitmap) {
-      base_ctx.null_bitmap_ = bitmap;
-      base_ctx.null_flag_ = ObBaseColumnDecoderCtx::ObNullFlag::HAS_NULL_BITMAP;
+      base_ctx.null_or_nop_bitmap_ = bitmap;
+      base_ctx.null_flag_ = ObBaseColumnDecoderCtx::ObNullFlag::HAS_NULL_OR_NOP_BITMAP;
     }
     if (ctx.meta_.is_use_null_replace_value()) {
       base_ctx.null_flag_ = ObBaseColumnDecoderCtx::ObNullFlag::IS_NULL_REPLACED;

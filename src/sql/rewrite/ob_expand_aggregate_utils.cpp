@@ -13,21 +13,7 @@
 #define USING_LOG_PREFIX SQL_REWRITE
 
 #include "sql/rewrite/ob_expand_aggregate_utils.h"
-#include "common/ob_common_utility.h"
-#include "lib/allocator/ob_allocator.h"
-#include "lib/oblog/ob_log_module.h"
-#include "share/ob_errno.h"
-#include "share/schema/ob_table_schema.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
-#include "sql/resolver/ob_resolver_utils.h"
-#include "common/ob_common_utility.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/resolver/dml/ob_dml_stmt.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "sql/rewrite/ob_stmt_comparer.h"
-#include "sql/rewrite/ob_transform_utils.h"
 #include "sql/optimizer/ob_optimizer_util.h"
-#include "sql/rewrite/ob_transform_rule.h"
 
 namespace oceanbase {
 using namespace common;
@@ -171,7 +157,8 @@ int ObExpandAggregateUtils::expand_window_aggr_expr(ObDMLStmt *stmt, bool &trans
                                        win_expr->get_agg_expr()->get_result_type(),
                                        replace_expr))) {
         LOG_WARN("failed to add cast expr", K(ret));
-      } else if (OB_FAIL(ObRawExprUtils::process_window_complex_agg_expr(expr_factory_,
+      } else if (OB_FAIL(ObRawExprUtils::process_window_complex_agg_expr(session_info_,
+                                                                         expr_factory_,
                                                                          replace_expr->get_expr_type(),
                                                                          win_expr,
                                                                          replace_expr,
@@ -623,7 +610,7 @@ int ObExpandAggregateUtils::expand_var_expr(ObAggFunRawExpr *aggr_expr,
     ObRawExpr *minus_expr = NULL;
     ObRawExpr *div_minus_expr = NULL;
     //由于目前 mysql模式下的除法实现有点问题，存在部分精度不一致，因此这里暂时先添加cast显示转换为最大精度
-    ObExprResType dst_type;
+    ObRawExprResType dst_type;
     dst_type.set_number();
     dst_type.set_scale(ObAccuracy::MAX_ACCURACY2[MYSQL_MODE][ObNumberType].get_scale());
     dst_type.set_precision(ObAccuracy::MAX_ACCURACY2[MYSQL_MODE][ObNumberType].get_precision());
@@ -1137,10 +1124,8 @@ int ObExpandAggregateUtils::expand_regr_r2_expr(ObAggFunRawExpr *aggr_expr,
       LOG_WARN("failed to expand corr expr", K(ret));
     } else if (OB_FAIL(expr_factory_.create_raw_expr(T_FUN_SYS_POWER, power_expr))) {
       LOG_WARN("failed to create expr", K(ret));
-    } else if (OB_FAIL(power_expr->add_param_expr(power_param_expr))) {
-      LOG_WARN("failed to add param expr", K(ret));
-    } else if (OB_FAIL(power_expr->add_param_expr(two_expr))) {
-      LOG_WARN("failed to add param expr", K(ret));
+    } else if (OB_FAIL(power_expr->set_param_exprs(power_param_expr, two_expr))) {
+      LOG_WARN("failed to set param exprs", K(ret));
     } else if (OB_FAIL(ObRawExprUtils::build_common_binary_op_expr(expr_factory_,
                                                                    T_OP_EQ,
                                                                    eq_left_expr1,
@@ -1345,7 +1330,9 @@ bool ObExpandAggregateUtils::is_valid_aggr_type(const ObItemType aggr_type)
          aggr_type == T_FUN_STDDEV ||
          aggr_type == T_FUN_STDDEV_POP ||
          aggr_type == T_FUN_STDDEV_SAMP ||
-         aggr_type == T_FUN_APPROX_COUNT_DISTINCT;
+         aggr_type == T_FUN_APPROX_COUNT_DISTINCT ||
+         aggr_type == T_FUN_SYS_RB_AND_CARDINALITY_AGG ||
+         aggr_type == T_FUN_SYS_RB_OR_CARDINALITY_AGG;
 }
 
 bool ObExpandAggregateUtils::is_regr_expr_type(const ObItemType aggr_type)
@@ -1650,8 +1637,8 @@ int ObExpandAggregateUtils::expand_keep_stddev_expr(ObAggFunRawExpr *aggr_expr,
       } else if (OB_ISNULL(sqrt_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("add expr is null", K(ret), K(sqrt_expr));
-      } else if (OB_FAIL(sqrt_expr->add_param_expr(sqrt_param_expr))) {
-        LOG_WARN("add text expr to add expr failed", K(ret));
+      } else if (OB_FAIL(sqrt_expr->set_param_expr(sqrt_param_expr))) {
+        LOG_WARN("set param expr to sqrt expr failed", K(ret));
       } else {
         ObString func_name = ObString::make_string("sqrt");
         sqrt_expr->set_func_name(func_name);
@@ -1709,6 +1696,13 @@ int ObExpandAggregateUtils::expand_common_aggr_expr(ObAggFunRawExpr *aggr_expr,
                                                   replace_expr,
                                                   new_aggr_items))) {
       LOG_WARN("failed to expand approxy_count_distinct expr", K(ret));
+    }
+  } else if (aggr_expr->get_expr_type() == T_FUN_SYS_RB_AND_CARDINALITY_AGG ||
+             aggr_expr->get_expr_type() == T_FUN_SYS_RB_OR_CARDINALITY_AGG) {
+    if (OB_FAIL(expand_rb_cardinality_expr(aggr_expr,
+                                           replace_expr,
+                                           new_aggr_items))) {
+      LOG_WARN("failed to expand rb cardinality expr", K(ret));
     }
   } else {/*do nothing*/}
   return ret;
@@ -1915,11 +1909,11 @@ int ObExpandAggregateUtils::expand_mysql_variance_expr(ObAggFunRawExpr *aggr_exp
     ObRawExpr *div_multi_expr = NULL;
     ObRawExpr *cast_minus_expr = NULL;
     //由于目前 mysql模式下的除法实现有点问题，存在部分精度不一致，因此这里暂时先添加cast显示转换规避
-    ObExprResType dst_type;
+    ObRawExprResType dst_type;
     dst_type.set_number();
     dst_type.set_scale(ObAccuracy::MAX_ACCURACY2[MYSQL_MODE][ObNumberType].get_scale());
     dst_type.set_precision(ObAccuracy::MAX_ACCURACY2[MYSQL_MODE][ObNumberType].get_precision());
-    ObExprResType result_type;
+    ObRawExprResType result_type;
     result_type.set_double();
     result_type.set_scale(ObAccuracy(PRECISION_UNKNOWN_YET, SCALE_UNKNOWN_YET).get_scale());
     result_type.set_precision(ObAccuracy(PRECISION_UNKNOWN_YET, SCALE_UNKNOWN_YET).get_precision());
@@ -2042,12 +2036,12 @@ int ObExpandAggregateUtils::expand_stddev_expr(ObAggFunRawExpr *aggr_expr,
       } else if (OB_ISNULL(sqrt_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("add expr is null", K(ret), K(sqrt_expr));
-      } else if (OB_FAIL(sqrt_expr->add_param_expr(sqrt_param_expr))) {
-        LOG_WARN("add text expr to add expr failed", K(ret));
+      } else if (OB_FAIL(sqrt_expr->set_param_expr(sqrt_param_expr))) {
+        LOG_WARN("set param expr to sqrt expr failed", K(ret));
       } else {
         ObString func_name = ObString::make_string("sqrt");
         sqrt_expr->set_func_name(func_name);
-        sqrt_expr->set_extra(aggr_expr->get_expr_type());
+        sqrt_expr->set_aggr_type(aggr_expr->get_expr_type());
         replace_expr = sqrt_expr;
       }
     }
@@ -2087,8 +2081,8 @@ int ObExpandAggregateUtils::expand_stddev_pop_expr(ObAggFunRawExpr *aggr_expr,
       } else if (OB_ISNULL(sqrt_expr)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("add expr is null", K(ret), K(sqrt_expr));
-      } else if (OB_FAIL(sqrt_expr->add_param_expr(sqrt_param_expr))) {
-        LOG_WARN("add text expr to add expr failed", K(ret));
+      } else if (OB_FAIL(sqrt_expr->set_param_expr(sqrt_param_expr))) {
+        LOG_WARN("set param expr to sqrt expr failed", K(ret));
       } else {
         ObString func_name = ObString::make_string("sqrt");
         sqrt_expr->set_func_name(func_name);
@@ -2137,8 +2131,8 @@ int ObExpandAggregateUtils::expand_stddev_samp_expr(ObAggFunRawExpr *aggr_expr,
       } else {
         if (is_oracle_mode()) {
           if (OB_SUCC(ret)) {
-            if (OB_FAIL(sqrt_expr->add_param_expr(expand_var_expr_inner))) {
-              LOG_WARN("add text expr to add expr failed", K(ret));
+            if (OB_FAIL(sqrt_expr->set_param_expr(expand_var_expr_inner))) {
+              LOG_WARN("set param expr to sqrt expr failed", K(ret));
             }
           }
         } else {
@@ -2160,8 +2154,8 @@ int ObExpandAggregateUtils::expand_stddev_samp_expr(ObAggFunRawExpr *aggr_expr,
                                                                     expand_var_expr_inner,
                                                                     case_when_expr))) {
               LOG_WARN("failed to build the case when expr", K(ret));
-            } else if (OB_FAIL(sqrt_expr->add_param_expr(case_when_expr))) {
-              LOG_WARN("add text expr to add expr failed", K(ret));
+            } else if (OB_FAIL(sqrt_expr->set_param_expr(case_when_expr))) {
+              LOG_WARN("set param expr to sqrt expr failed", K(ret));
             }
           }
         }
@@ -2204,8 +2198,10 @@ int ObExpandAggregateUtils::expand_approx_count_distinct_expr(ObAggFunRawExpr *a
   } else if (OB_ISNULL(sys_func_expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("sys func expr is null", K(ret), K(sys_func_expr));
-  } else if (OB_FAIL(sys_func_expr->add_param_expr(synopsis))) {
-    LOG_WARN("failed to add sysnopsis add param", K(ret));
+  } else if (OB_FAIL(sys_func_expr->set_param_expr(synopsis))) {
+    LOG_WARN("failed to set sysnopsis param", K(ret));
+  } else if (OB_FAIL(sys_func_expr->formalize(session_info_))) {
+    LOG_WARN("failed to formalize expr", K(ret));
   } else {
     ObString func_name = ObString::make_string("ESTIMATE_NDV");
     sys_func_expr->set_func_name(func_name);
@@ -2214,8 +2210,59 @@ int ObExpandAggregateUtils::expand_approx_count_distinct_expr(ObAggFunRawExpr *a
   return ret;
 }
 
+int ObExpandAggregateUtils::expand_rb_cardinality_expr(ObAggFunRawExpr *aggr_expr,
+                                                       ObRawExpr *&replace_expr,
+                                                       ObIArray<ObAggFunRawExpr*> &new_aggr_items)
+{
+  int ret = OB_SUCCESS;
+  ObRawExpr *parma_expr = NULL;
+  ObAggFunRawExpr *calc_expr = NULL;
+  ObSysFunRawExpr *card_expr = NULL;
+  if (OB_ISNULL(aggr_expr) ||
+      OB_UNLIKELY(aggr_expr->get_expr_type() != T_FUN_SYS_RB_AND_CARDINALITY_AGG &&
+                  aggr_expr->get_expr_type() != T_FUN_SYS_RB_OR_CARDINALITY_AGG) ||
+      OB_UNLIKELY(aggr_expr->get_real_param_exprs().count() != 1) ||
+      OB_ISNULL(parma_expr = aggr_expr->get_real_param_exprs().at(0))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret), K(aggr_expr));
+  } else if (aggr_expr->get_expr_type() == T_FUN_SYS_RB_AND_CARDINALITY_AGG &&
+             OB_FAIL(ObRawExprUtils::build_common_aggr_expr(expr_factory_,
+                                                            session_info_,
+                                                            T_FUN_SYS_RB_AND_AGG,
+                                                            parma_expr,
+                                                            calc_expr))) {
+    LOG_WARN("failed to build common aggr expr", K(ret));
+  } else if (aggr_expr->get_expr_type() == T_FUN_SYS_RB_OR_CARDINALITY_AGG &&
+             OB_FAIL(ObRawExprUtils::build_common_aggr_expr(expr_factory_,
+                                                            session_info_,
+                                                            T_FUN_SYS_RB_OR_AGG,
+                                                            parma_expr,
+                                                            calc_expr))) {
+    LOG_WARN("failed to build common aggr expr", K(ret));
+  } else if (OB_FALSE_IT(calc_expr->set_param_distinct(aggr_expr->is_param_distinct()))) {
+  } else if (OB_FAIL(add_aggr_item(new_aggr_items, calc_expr))) {
+    LOG_WARN("failed to push back aggr item");
+
+  } else if (OB_FAIL(expr_factory_.create_raw_expr(T_FUN_SYS_RB_CARDINALITY, card_expr))) {
+    LOG_WARN("failed to create rb cardinality expr", K(ret));
+  } else if (OB_ISNULL(card_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sys func expr is null", K(ret), K(card_expr));
+  } else if (OB_FAIL(card_expr->set_param_expr(calc_expr))) {
+    LOG_WARN("failed to set calc_expr param", K(ret));
+  } else if (OB_FAIL(card_expr->formalize(session_info_))) {
+    LOG_WARN("failed to formalize expr", K(ret));
+  } else {
+    ObString func_name = ObString::make_string("rb_cardinality");
+    card_expr->set_func_name(func_name);
+    replace_expr = card_expr;
+  }
+
+  return ret;
+}
+
 int ObExpandAggregateUtils::add_cast_expr(ObRawExpr *expr,
-                                          const ObExprResType &dst_type,
+                                          const ObRawExprResType &dst_type,
                                           ObRawExpr *&new_expr)
 {
   int ret = OB_SUCCESS;

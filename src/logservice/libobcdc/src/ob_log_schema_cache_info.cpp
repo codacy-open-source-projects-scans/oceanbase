@@ -43,6 +43,7 @@ ColumnSchemaInfo::ColumnSchemaInfo()
       orig_default_value_str_(NULL),
       extended_type_info_size_(0),
       extended_type_info_(NULL),
+      collection_info_(NULL),
       is_rowkey_(false),
       udt_set_id_(0),
       sub_type_(0)
@@ -73,21 +74,21 @@ int ColumnSchemaInfo::init(
 
   if (OB_UNLIKELY(column_stored_idx < 0 || column_stored_idx > OB_USER_ROW_MAX_COLUMNS_COUNT + OB_APP_MIN_COLUMN_ID)
       || OB_UNLIKELY(is_usr_column && (usr_column_idx < 0 || usr_column_idx > OB_USER_ROW_MAX_COLUMNS_COUNT))) {
-    LOG_ERROR("invalid argument", K(column_stored_idx), K(is_usr_column), K(usr_column_idx));
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(get_column_ori_default_value_(table_schema, column_table_schema, column_stored_idx, tz_info_wrap,
-            obj2str_helper, allocator, orig_default_value_str))) {
-      LOG_ERROR("get_column_ori_default_value_ fail", KR(ret), K(table_schema), K(column_table_schema),
-          K(column_stored_idx));
-  } else if (OB_ISNULL(orig_default_value_str)) {
-    LOG_ERROR("orig_default_value_str is null", K(orig_default_value_str));
-    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("invalid argument", K(column_stored_idx), K(is_usr_column), K(usr_column_idx));
   } else if (OB_FAIL(init_extended_type_info_(table_schema, column_table_schema, column_stored_idx, allocator))) {
     LOG_ERROR("init_extended_type_info_ fail", KR(ret),
         "table_id", table_schema.get_table_id(),
         "table_name", table_schema.get_table_name(),
         "column_name", column_table_schema.get_column_name(),
         K(column_stored_idx));
+  } else if (OB_FAIL(get_column_ori_default_value_(table_schema, column_table_schema, column_stored_idx, tz_info_wrap,
+      obj2str_helper, allocator, orig_default_value_str))) {
+    LOG_ERROR("get_column_ori_default_value_ fail", KR(ret), K(table_schema), K(column_table_schema),
+        K(column_stored_idx));
+  } else if (OB_ISNULL(orig_default_value_str)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("orig_default_value_str is null", K(orig_default_value_str));
   } else {
     const ObObjMeta &meta_type = column_table_schema.get_meta_type();
     const ObAccuracy &accuracy = column_table_schema.get_accuracy();
@@ -183,6 +184,7 @@ int ColumnSchemaInfo::get_column_ori_default_value_(
             column_table_schema.get_column_id(),
             orig_default_obj, *str, allocator, true,
             column_table_schema.get_extended_type_info(),
+            collection_info_,
             column_table_schema.get_accuracy(),
             column_table_schema.get_collation_type(),
             tz_info_wrap))) {
@@ -258,6 +260,41 @@ int ColumnSchemaInfo::init_extended_type_info_(
 
       if (OB_SUCCESS != ret && NULL != buf) {
         allocator.free(buf);
+      }
+
+      if (OB_SUCC(ret) && column_table_schema.is_collection()) {
+        const int64_t collection_info_size = static_cast<int64_t>(sizeof(ObSqlCollectionInfo));
+        if (OB_ISNULL(collection_info_ = static_cast<ObSqlCollectionInfo *>(allocator.alloc(collection_info_size)))) {
+          LOG_WARN("alloc memory failed", K(collection_info_size));
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+        } else {
+          new (collection_info_) ObSqlCollectionInfo(allocator);
+          ObString collection_type_name = column_table_schema.get_extended_type_info().at(0);
+          collection_info_->set_name(collection_type_name);
+          if (OB_FAIL(collection_info_->parse_type_info())) {
+            LOG_WARN("parse_type_info failed", KR(ret), K(collection_type_name), K(table_schema),
+                "column_name", column_table_schema.get_column_name(), K(column_idx));
+          } else if (OB_ISNULL(collection_info_->collection_meta_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("collection_meta_ is null", KR(ret), K(collection_type_name), K(table_schema),
+                "column_name", column_table_schema.get_column_name(), K(column_idx));
+          } else {
+            LOG_INFO("parse_type_info succ", K(collection_type_name),
+                "table_id", table_schema.get_table_id(),
+                "table_name", table_schema.get_table_name(),
+                "column_id", column_table_schema.get_column_id(),
+                "column_name", column_table_schema.get_column_name(),
+                K(column_idx));
+          }
+        }
+        if (OB_FAIL(ret)) {
+          LOG_WARN("init_extended_type_info_ failed, will parse extended_type_info while format data", KR(ret), K(table_schema));
+          if (OB_NOT_NULL(collection_info_)) {
+            collection_info_->~ObSqlCollectionInfo();
+            allocator.free(collection_info_);
+            collection_info_ = NULL;
+          }
+        }
       }
     }
   }
@@ -432,7 +469,7 @@ int64_t ObLogRowkeyInfo::to_string(char* buf, const int64_t buf_len) const
 TableSchemaInfo::TableSchemaInfo(ObIAllocator &allocator)
     : is_inited_(false),
       allocator_(allocator),
-      is_heap_table_(false),
+      is_table_with_hidden_pk_column_(false),
       aux_lob_meta_tid_(OB_INVALID_ID),
       rowkey_info_(),
       user_column_idx_array_(NULL),
@@ -465,12 +502,12 @@ int TableSchemaInfo::init(const TABLE_SCHEMA *table_schema)
     // externally set user_column_idx_array_cnt_ to the number of hidden columns not included
     user_column_idx_array_cnt_ = table_schema->get_column_count();
     column_schema_array_cnt_ = table_schema->get_max_used_column_id() - OB_APP_MIN_COLUMN_ID + 1;
-    const bool is_heap_table = table_schema->is_heap_table();
+    const bool is_table_with_hidden_pk_column = table_schema->is_table_with_hidden_pk_column();
     aux_lob_meta_tid_ = table_schema->get_aux_lob_meta_tid();
 
     // For table without primary keys:
     // record hidden primary key information at the start column_id=1, column_name="__pk_increment", reserved position
-    if (is_heap_table) {
+    if (is_table_with_hidden_pk_column) {
       ++user_column_idx_array_cnt_;
       ++column_schema_array_cnt_;
     }
@@ -489,11 +526,11 @@ int TableSchemaInfo::init(const TABLE_SCHEMA *table_schema)
       LOG_ERROR("init_column_id_hash_array_ fail", KR(ret), K(column_schema_array_cnt_));
     } else {
       is_inited_ = true;
-      is_heap_table_ = is_heap_table;
+      is_table_with_hidden_pk_column_ = is_table_with_hidden_pk_column;
 
       LOG_INFO("table_schema_info init succ", "table_id", table_schema->get_table_id(),
           "table_name", table_schema->get_table_name(),
-          K_(is_heap_table),
+          K_(is_table_with_hidden_pk_column),
           K_(aux_lob_meta_tid),
           "version", table_schema->get_schema_version(),
           "user_column_idx_array_cnt", user_column_idx_array_cnt_,
@@ -515,7 +552,7 @@ void TableSchemaInfo::destroy()
 {
   is_inited_ = false;
 
-  is_heap_table_ = false;
+  is_table_with_hidden_pk_column_ = false;
   aux_lob_meta_tid_ = OB_INVALID_ID;
   rowkey_info_.release_mem(allocator_);
 
@@ -659,7 +696,7 @@ int TableSchemaInfo::init_column_schema_info(
   const bool is_rowkey_col = column_table_schema.is_rowkey_column();
   const int16_t rowkey_idx = column_table_schema.get_rowkey_position() -1;
   ColumnSchemaInfo *column_schema_info = NULL;
-  bool is_heap_table_pk_increment_column = table_schema.is_heap_table()  && (OB_HIDDEN_PK_INCREMENT_COLUMN_ID == column_id);
+  bool is_heap_table_pk_increment_column = table_schema.is_table_with_hidden_pk_column()  && (OB_HIDDEN_PK_INCREMENT_COLUMN_ID == column_id);
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;

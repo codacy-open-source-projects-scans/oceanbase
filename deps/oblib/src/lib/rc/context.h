@@ -31,6 +31,7 @@
 #include "lib/list/ob_dlist.h"
 #include "lib/hash/ob_hashmap.h"
 #include "common/ob_clock_generator.h"
+#include "lib/utility/ob_tracepoint.h"
 
 #ifdef OB_USE_ASAN
 #include "lib/allocator/ob_asan_allocator.h"
@@ -559,12 +560,13 @@ public:
   template<typename ... Args>
   int create_context(MemoryContext &context,
                      __MemoryContext__ &ref_context,
+                     __MemoryContext__ *parent,
                      const DynamicInfo &di,
                      Args && ... args)
   {
     int ret = common::OB_SUCCESS;
 
-    new (&ref_context) __MemoryContext__(/*need_free*/false, di, this, args...);
+    new (&ref_context) __MemoryContext__(/*need_free*/false, di, parent, args...);
     if (OB_FAIL(ref_context.init())) {
       OB_LOG(WARN, "init failed", K(ret));
     }
@@ -590,7 +592,6 @@ public:
     }
     const bool need_free = context->need_free_;
     TreeNode *parent_node = context->tree_node_.parent_;
-    abort_unless(parent_node != nullptr);
     context->deinit();
     if (need_free) {
       __MemoryContext__ *parent = node2context(parent_node);
@@ -608,18 +609,39 @@ public:
   }
   int64_t tree_mem_hold()
   {
+    int ret = common::OB_SUCCESS;
     int64_t total = 0;
+    int64_t ctx_num = 0;
+    static const int64_t MAX_MEM_CTX_NUM = 100;
     if (!tree_node_.with_lock_) {
       TreeNode *child_node = tree_node_.child_;
       while (child_node != nullptr) {
         __MemoryContext__ *child = node2context(child_node);
         total += child->tree_mem_hold();
         child_node = child_node->next_;
+        if (++ctx_num >= MAX_MEM_CTX_NUM) {
+          ret = OB_ERR_UNEXPECTED;
+          OB_LOG(WARN, "too many memory context", K(ret), K(ctx_num));
+          break;
+        }
       }
       total += hold();
+      if (ctx_num >= MAX_MEM_CTX_NUM) {
+        int64_t dump_ctx_num = 0;
+        int ret = OB_E(EventTable::EN_DUMP_THREAD_LEVEL_MEM_CTX) OB_SUCCESS;
+        if (OB_FAIL(ret)) {
+          child_node = tree_node_.child_;
+          while (child_node != nullptr && dump_ctx_num < MAX_MEM_CTX_NUM) {
+            __MemoryContext__ *child = node2context(child_node);
+            OB_LOG(INFO, "dump memory context", K(child->attr_), K(dump_ctx_num));
+            child_node = child_node->next_;
+          }
+        }
+      }
     }
     return total;
   }
+
 public:
   int64_t magic_code_;
   int64_t seq_id_;
@@ -850,7 +872,7 @@ public:
     int ret = common::OB_SUCCESS;
     if (OB_LIKELY(condition)) {
       __MemoryContext__ *tmp_context = reinterpret_cast<__MemoryContext__*>(buf0_);
-      if (OB_FAIL(CURRENT_CONTEXT->create_context(context_, *tmp_context, args...))) {
+      if (OB_FAIL(CURRENT_CONTEXT->create_context(context_, *tmp_context, nullptr, args...))) {
         OB_LOG(WARN, "create context failed", K(ret));
       } else {
         Flow *tmp_flow = new (buf1_) Flow(context_);

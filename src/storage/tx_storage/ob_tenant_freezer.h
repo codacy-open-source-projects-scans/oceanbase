@@ -55,6 +55,7 @@ public:
 
   int64_t captured_merge_time_cost_[ObFreezerMergeType::MAX_MERGE_TYPE];
   int64_t captured_merge_times_[ObFreezerMergeType::MAX_MERGE_TYPE];
+  int64_t captured_source_times_[MAX_FREEZE_SOURCE_TYPE_COUNT];
 
   int64_t last_captured_retire_clock_;
 
@@ -125,6 +126,7 @@ public:
   // replay use 1G/s
   const static int64_t REPLAY_RESERVE_MEMSTORE_BYTES = 100 * 1024 * 1024; // 100 MB
   const static int64_t MEMSTORE_USED_CACHE_REFRESH_INTERVAL = 100_ms;
+  const static int64_t TENANT_FREEZE_RETRY_TIME_US = 600LL * 1000LL * 1000LL; // 10 minutes
   static double MDS_TABLE_FREEZE_TRIGGER_TENANT_PERCENTAGE;
 
 public:
@@ -155,7 +157,15 @@ public:
   // check if this tenant's memstore is out of range, and trigger minor/major freeze.
   int check_and_do_freeze();
 
+  // do freezer diagnose info
   int do_freeze_diagnose();
+
+  // record freeze source history
+  void record_freezer_source_event(const share::ObLSID &ls_id,
+                                   const ObFreezeSourceFlag source);
+
+  // report freeze source history
+  void report_freezer_source_events();
 
   // used for replay to check whether can enqueue another replay task
   bool is_replay_pending_log_too_large(const int64_t pending_size);
@@ -194,6 +204,7 @@ public:
                                int64_t &memstore_freeze_trigger,
                                int64_t &memstore_limit,
                                int64_t &freeze_cnt,
+                               int64_t &throttle_trigger_percentage,
                                const bool force_refresh = true);
   // get the tenant memstore used
   int get_tenant_memstore_used(int64_t &total_memstore_used,
@@ -219,8 +230,7 @@ public:
   int print_tenant_usage(char *print_buf,
                          int64_t buf_len,
                          int64_t &pos);
-
-                                // if major freeze is failed and need retry, set the major freeze into at retry_major_info_.
+  // if major freeze is failed and need retry, set the major freeze into at retry_major_info_.
   const ObRetryMajorInfo &get_retry_major_info() const { return retry_major_info_; }
   void record_freeze_failed_tablet(const ObTabletID &tablet_id);
   void erase_freeze_failed_tablet(const ObTabletID &tablet_id);
@@ -229,6 +239,7 @@ public:
     retry_major_info_ = retry_major_info;
   }
   static int64_t get_freeze_trigger_interval() { return FREEZE_TRIGGER_INTERVAL; }
+  static int64_t get_freeze_trigger_percentage();
   bool exist_ls_freezing();
   bool exist_ls_throttle_is_skipping();
   bool memstore_remain_memory_is_exhausting();
@@ -243,17 +254,22 @@ public:
 
   void get_freezer_stat_from_history(int64_t pos, ObTenantFreezerStat& stat);
 
+  // record major frozen scn and reset freeze cnt
+  int update_frozen_scn(const int64_t frozen_scn);
+
 private:
   int get_tenant_memstore_cond_(int64_t &active_memstore_used,
                                 int64_t &total_memstore_used,
                                 int64_t &memstore_freeze_trigger,
                                 int64_t &memstore_limit,
                                 int64_t &freeze_cnt,
+                                int64_t &throttle_trigger_percentage,
                                 const bool force_refresh = true);
   int check_memstore_full_(bool &last_result,
                            int64_t &last_check_timestamp,
                            bool &is_out_of_mem,
                            const bool from_user = true);
+  static int ls_freeze_data_(ObLS *ls);
   static int ls_freeze_data_(ObLS *ls, const bool is_sync, const int64_t abs_timeout_ts);
   static int ls_freeze_all_unit_(
     ObLS *ls,
@@ -268,8 +284,8 @@ private:
   // unset tenant freezing flag.
   // @param[in] rollback_freeze_cnt, reduce the tenant's freeze count by 1, if true.
   int unset_tenant_freezing_(const bool rollback_freeze_cnt);
-  static int64_t get_freeze_trigger_percentage_();
   static int64_t get_memstore_limit_percentage_();
+  static int64_t get_throttle_trigger_percentage_();
   int post_freeze_request_(const storage::ObFreezeType freeze_type,
                            const int64_t try_frozen_version);
   int retry_failed_major_freeze_(bool &triggered);
@@ -290,6 +306,10 @@ private:
   int check_and_freeze_tx_data_();
   int check_and_freeze_mds_table_();
 
+  int get_tx_data_info_for_freeze_(int64_t &tenant_tx_data_frozen_mem_used,
+                                   int64_t &tenant_tx_data_active_mem_used,
+                                   bool &need_re_freeze,
+                                   bool for_statistic_print = false);
   int get_tenant_tx_data_mem_used_(int64_t &tenant_tx_data_frozen_mem_used,
                                    int64_t &tenant_tx_data_active_mem_used,
                                    bool for_statistic_print = false);

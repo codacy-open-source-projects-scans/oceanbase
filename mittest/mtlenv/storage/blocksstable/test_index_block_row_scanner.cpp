@@ -17,9 +17,8 @@
 #define private public
 #define protected public
 
-#include "storage/blocksstable/index_block/ob_index_block_row_scanner.h"
+#include "src/storage/ob_i_store.h"
 #include "ob_index_block_data_prepare.h"
-#include "storage/blocksstable/ob_shared_macro_block_manager.h"
 
 namespace oceanbase
 {
@@ -203,6 +202,7 @@ TEST_F(TestIndexBlockRowScanner, prefetch_and_scan)
       idx_row_header->get_macro_id(),
       idx_row,
       query_flag.is_use_block_cache(),
+      ObTabletID(tablet_id_),
       macro_handle,
       &allocator_));
 
@@ -217,6 +217,7 @@ TEST_F(TestIndexBlockRowScanner, prefetch_and_scan)
       idx_row_header->get_macro_id(),
       idx_row,
       false /* disable use block cache */,
+      ObTabletID(tablet_id_),
       raw_block_macro_handle,
       &allocator_));
   ASSERT_EQ(OB_SUCCESS, raw_block_macro_handle.wait());

@@ -11,18 +11,8 @@
  */
 
 
-#include "logservice/palf/election/message/election_message.h"
-#include "ob_role.h"
-#include "share/ob_occam_time_guard.h"
 #include "election_proposer.h"
-#include "common/ob_clock_generator.h"
 #include "election_impl.h"
-#include "lib/ob_errno.h"
-#include "lib/string/ob_string_holder.h"
-#include "logservice/palf/election/interface/election_msg_handler.h"
-#include "logservice/palf/election/utils/election_common_define.h"
-#include "logservice/palf/election/utils/election_member_list.h"
-#include "logservice/palf/palf_callback.h"
 
 namespace oceanbase
 {
@@ -77,6 +67,7 @@ ElectionProposer::ElectionProposer(ElectionImpl *election)
 :role_(ObRole::FOLLOWER),
 ballot_number_(INVALID_VALUE),
 prepare_success_ballot_(INVALID_VALUE),
+last_leader_epoch_(INVALID_VALUE),
 switch_source_leader_ballot_(INVALID_VALUE),
 restart_counter_(INVALID_VALUE),
 p_election_(election),
@@ -204,7 +195,13 @@ bool ElectionProposer::leader_takeover_if_lease_valid_(RoleChangeReason reason)
     (p_election_->role_change_cb_)(p_election_, ObRole::FOLLOWER, ObRole::LEADER, reason);
     highest_priority_cache_.reset();
     role_ = ObRole::LEADER;
-    propose();
+    if (prepare_success_ballot_ == last_leader_epoch_) {
+      LOG_PHASE(WARN, phase, "lease is expired, leader re-takeover at the same prepare_success_ballot, need do leader prepare");
+      advance_ballot_number_and_reset_related_states_(ballot_number_ + 1, "re-takover, do leader prepare");
+      prepare(ObRole::LEADER);
+    } else {
+      propose();
+    }
     ret_bool = true;
   }
   return ret_bool;
@@ -337,6 +334,7 @@ void ElectionProposer::stop()
   renew_lease_task_handle_.stop_and_wait();
   LockGuard lock_guard(p_election_->lock_);
   leader_lease_and_epoch_.reset();
+  last_leader_epoch_ = INVALID_VALUE;
   if (leader_revoke_if_lease_expired_(RoleChangeReason::StopToRevoke)) {
     LOG_DESTROY(INFO, "leader revoke because election is stopped");
   }
@@ -573,6 +571,7 @@ void ElectionProposer::on_accept_response(const ElectionAcceptResponseMsg &accep
     } else {
       if (leader_takeover_if_lease_valid_(RoleChangeReason::DevoteToBeLeader)) {
         LOG_ELECT_LEADER(INFO, "decentralized voting, leader takeover success");
+        last_leader_epoch_ = prepare_success_ballot_;
       }
     }
   }

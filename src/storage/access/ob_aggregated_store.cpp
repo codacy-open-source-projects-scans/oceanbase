@@ -12,15 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_aggregated_store.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/number/ob_number_v2.h"
-#include "common/sql_mode/ob_sql_mode_utils.h"
 #include "storage/blocksstable/ob_micro_block_row_scanner.h"
-#include "storage/blocksstable/encoding/ob_micro_block_decoder.h"
-#include "storage/blocksstable/index_block/ob_index_block_row_struct.h"
-#include "storage/access/ob_table_access_param.h"
-#include "storage/access/ob_table_access_context.h"
-#include "storage/lob/ob_lob_manager.h"
 namespace oceanbase
 {
 namespace storage
@@ -93,15 +85,17 @@ int ObCGAggCells::eval_batch(
     const ObTableAccessContext *context,
     const int32_t col_offset,
     blocksstable::ObIMicroBlockReader *reader,
-    const int32_t *row_ids,
-    const int64_t row_count,
-    const bool reserve_memory)
+    const ObPushdownRowIdCtx &pd_row_id_ctx)
 {
-  UNUSED(reserve_memory);
   int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(col_offset < 0 || !pd_row_id_ctx.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid arguments", K(ret), K(col_offset), K(pd_row_id_ctx));
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < agg_cells_.count(); ++i) {
     if (agg_cells_.at(i)->finished()) {
-    } else if (OB_FAIL(agg_cells_.at(i)->eval_micro_block(*iter_param, *context, col_offset, reader, row_ids, row_count))) {
+    } else if (OB_FAIL(agg_cells_.at(i)->eval_micro_block(*iter_param, *context, col_offset, reader,
+                                                          pd_row_id_ctx.row_ids_, pd_row_id_ctx.get_row_count()))) {
       LOG_WARN("Fail to eval micro", K(ret));
     }
   }
@@ -265,6 +259,13 @@ void ObAggregatedStore::reuse()
   iter_end_flag_ = IterEndState::PROCESSING;
 }
 
+int ObAggregatedStore::reuse_for_refresh_table()
+{
+  ObBlockBatchedRowStore::reuse_for_refresh_table();
+  iter_end_flag_ = IterEndState::PROCESSING;
+  return OB_SUCCESS;
+}
+
 int ObAggregatedStore::reuse_capacity(const int64_t capacity)
 {
   int ret = OB_SUCCESS;
@@ -407,12 +408,18 @@ int ObAggregatedStore::fill_rows(
             LOG_WARN("Failed to get row ids", K(ret), K(begin_index), K(end_index));
           }
         } else if (0 == row_count) {
-        } else if (agg_flat_row_mode_ && blocksstable::ObIMicroBlockReader::Reader == reader->get_type()) {
+        } else if (agg_flat_row_mode_
+                   && (blocksstable::ObIMicroBlockReader::Reader == reader->get_type()
+                       || blocksstable::ObIMicroBlockReader::NewFlatReader == reader->get_type())) {
           // for flat block, do aggregate in row mode in some case
-           blocksstable::ObMicroBlockReader *block_reader = static_cast<blocksstable::ObMicroBlockReader*>(reader);
-           if (OB_FAIL(block_reader->get_aggregate_result(*iter_param_, context_, row_ids_, row_count, row_buf_, agg_row_.get_agg_cells()))) {
-             LOG_WARN("Failed to get aggregate", K(ret));
-           }
+          if (OB_FAIL(reader->get_aggregate_result(*iter_param_,
+                                                   context_,
+                                                   row_ids_,
+                                                   row_count,
+                                                   row_buf_,
+                                                   agg_row_.get_agg_cells()))) {
+            LOG_WARN("Failed to get aggregate", K(ret));
+          }
         } else {
           for (int64_t i = 0; OB_SUCC(ret) && i < agg_row_.get_agg_count(); ++i) {
             ObAggCell *cell = agg_row_.at(i);
@@ -504,6 +511,21 @@ int ObAggregatedStore::get_agg_cell(const sql::ObExpr *expr, ObAggCell *&agg_cel
   if (OB_SUCC(ret) && nullptr == agg_cell) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Unexpected null agg cell", K(ret), KPC(expr));
+  }
+  return ret;
+}
+
+int ObAggregatedStore::set_ignore_eval_index_info(const bool ignore_eval_index_info)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; i < agg_row_.get_agg_count(); ++i) {
+    ObAggCell *cell = agg_row_.at(i);
+    if (OB_ISNULL(cell)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("Unexpected null agg cell", K(ret), K(i));
+    } else {
+      cell->set_ignore_eval_index_info(ignore_eval_index_info);
+    }
   }
   return ret;
 }

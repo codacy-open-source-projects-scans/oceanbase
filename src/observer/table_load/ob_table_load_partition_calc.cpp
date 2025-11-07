@@ -13,14 +13,9 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/table_load/ob_table_load_partition_calc.h"
-#include "observer/ob_server_struct.h"
-#include "observer/omt/ob_tenant_timezone_mgr.h"
 #include "observer/table_load/ob_table_load_obj_cast.h"
 #include "observer/table_load/ob_table_load_schema.h"
 #include "observer/table_load/ob_table_load_stat.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/ob_sql_utils.h"
 
 namespace oceanbase
 {
@@ -40,9 +35,15 @@ ObTableLoadPartitionCalc::ObTableLoadPartitionCalc()
     is_partitioned_(false),
     allocator_("TLD_PartCalc"),
     exec_ctx_(allocator_),
+    phy_plan_ctx_(allocator_),
     is_inited_(false)
 {
   allocator_.set_tenant_id(MTL_ID());
+}
+
+ObTableLoadPartitionCalc::~ObTableLoadPartitionCalc()
+{
+  exec_ctx_.set_physical_plan_ctx(NULL);
 }
 
 int ObTableLoadPartitionCalc::init(const ObTableLoadParam &param,
@@ -58,6 +59,7 @@ int ObTableLoadPartitionCalc::init(const ObTableLoadParam &param,
     uint64_t table_id = param.table_id_;
     sql_ctx_.schema_guard_ = &schema_guard_;
     exec_ctx_.set_sql_ctx(&sql_ctx_);
+    exec_ctx_.set_physical_plan_ctx(&phy_plan_ctx_);
     const ObTableSchema *table_schema = nullptr;
     ObDataTypeCastParams cast_params(session_info->get_timezone_info());
     if (OB_FAIL(time_cvrt_.init(cast_params.get_nls_format(ObDateTimeType)))) {
@@ -113,7 +115,7 @@ int ObTableLoadPartitionCalc::init_part_key_index(const ObTableSchema *table_sch
   int ret = OB_SUCCESS;
   ObArray<ObColDesc> column_descs;
   column_descs.set_tenant_id(MTL_ID());
-  if (OB_FAIL(table_schema->get_column_ids(column_descs, false))) {
+  if (OB_FAIL(table_schema->get_column_ids(column_descs, true/*no_virtual*/))) {
     LOG_WARN("fail to get column ids", KR(ret));
   } else if (OB_UNLIKELY(column_descs.empty())) {
     ret = OB_ERR_UNEXPECTED;
@@ -129,7 +131,10 @@ int ObTableLoadPartitionCalc::init_part_key_index(const ObTableSchema *table_sch
     }
   }
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(part_key_obj_index_.create(part_key_num, allocator))) {
+    if (OB_UNLIKELY(0 == part_key_num)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected zero part_key_num", KR(ret), K(part_key_num));
+    } else if (OB_FAIL(part_key_obj_index_.create(part_key_num, allocator))) {
       LOG_WARN("fail to create", KR(ret));
     }
   }
@@ -143,7 +148,7 @@ int ObTableLoadPartitionCalc::init_part_key_index(const ObTableSchema *table_sch
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected rowkey position", KR(ret), KPC(column_schema), K(pos));
       } else {
-        if (table_schema->is_heap_table()) {
+        if (table_schema->is_table_without_pk()) {
           abort_unless(i > 0);
           part_key_obj_index_[pos - 1].index_ = i - 1;
         } else {

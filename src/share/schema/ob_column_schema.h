@@ -101,6 +101,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   //is table PARTITION_LEVEL_TWO partition key column
   inline bool is_subpart_key_column() const { return part_pos_.subpart_key_pos_ > 0; }
   bool is_prefix_column() const;
+  bool is_prefix_index_column() const;
   bool is_func_idx_column() const;
   inline void set_data_type(const common::ColumnType type) { meta_type_.set_type(type); }
   inline void set_meta_type(const common::ObObjMeta type) { meta_type_ = type; }
@@ -156,6 +157,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline void set_geo_type(const common::ObGeoType geo_type) { srs_info_.geo_type_ = static_cast<uint8_t>(geo_type); }
   int set_geo_type(const int32_t type_val);
   inline void set_skip_index_attr(const uint64_t attr_val) { skip_index_attr_.set_column_attr(attr_val); }
+  inline void set_is_string_lob() { add_column_flag(STRING_LOB_COLUMN_FLAG); }
   //get methods
   inline uint64_t get_tenant_id() const { return tenant_id_; }
   inline uint64_t get_table_id() const { return table_id_; }
@@ -198,6 +200,11 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_roaringbitmap() const { return meta_type_.is_roaringbitmap(); }
   inline bool is_raw() const { return meta_type_.is_raw(); }
   inline bool is_decimal_int() const { return meta_type_.is_decimal_int(); }
+  inline bool is_string_lob() const { return column_flags_ & STRING_LOB_COLUMN_FLAG; }
+  inline bool is_key_forbid_lob() const { return ob_is_text_tc(meta_type_.get_type()) && !is_string_lob(); }
+  inline bool is_mysql_date_or_date() const { return meta_type_.is_mysql_date_or_date(); }
+  inline bool is_mysql_datetime_or_datetime() const { return meta_type_.is_mysql_datetime_or_datetime(); }
+  inline bool is_timestamp() const { return meta_type_.is_timestamp(); }
 
   inline bool is_xmltype() const {
     return ((meta_type_.is_ext() || meta_type_.is_user_defined_sql_type()) && sub_type_ == T_OBJ_XML)
@@ -250,6 +257,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_cte_generated_column() const { return column_flags_ & CTE_GENERATED_COLUMN_FLAG; }
   inline bool is_default_expr_v2_column() const { return column_flags_ & DEFAULT_EXPR_V2_COLUMN_FLAG; }
   inline bool is_generated_column() const { return (is_virtual_generated_column() || is_stored_generated_column()); }
+  inline bool is_mock_column() const { return column_flags_ & MOCK_COLUMN_FLAG; }
   inline bool is_identity_column() const { return is_always_identity_column() || is_default_identity_column() || is_default_on_null_identity_column(); }
   inline bool is_generated_column_using_udf() const { return /*is_generated_column() && global index table clean the virtual gen col flag*/ !!(column_flags_ & GENERATED_COLUMN_UDF_EXPR); }
   // to check whether storing column in index table is specified by user.
@@ -268,14 +276,37 @@ int assign(const ObColumnSchemaV2 &src_schema);
     del_column_flag(DEFAULT_IDENTITY_COLUMN_FLAG);
     del_column_flag(DEFAULT_ON_NULL_IDENTITY_COLUMN_FLAG);
   }
+  inline void erase_string_lob_flag()
+  {
+    del_column_flag(STRING_LOB_COLUMN_FLAG);
+  }
   /* vector index */
   inline bool is_vec_index_column() const { return ObSchemaUtils::is_vec_index_column(column_flags_); }
-  inline bool is_vec_vid_column() const { return ObSchemaUtils::is_vec_vid_column(column_flags_); }
-  inline bool is_vec_type_column() const { return ObSchemaUtils::is_vec_type_column(column_flags_); }
-  inline bool is_vec_vector_column() const { return ObSchemaUtils::is_vec_vector_column(column_flags_); }
-  inline bool is_vec_scn_column() const { return ObSchemaUtils::is_vec_scn_column(column_flags_); }
-  inline bool is_vec_key_column() const { return ObSchemaUtils::is_vec_key_column(column_flags_); }
-  inline bool is_vec_data_column() const { return ObSchemaUtils::is_vec_data_column(column_flags_); }
+  inline bool is_vec_ivf_center_id_column() const { return ObSchemaUtils::is_vec_ivf_center_id_column(column_flags_); }
+  inline bool is_vec_ivf_center_vector_column() const { return ObSchemaUtils::is_vec_ivf_center_vector_column(column_flags_); }
+  inline bool is_vec_ivf_data_vector_column() const { return ObSchemaUtils::is_vec_ivf_data_vector_column(column_flags_); }
+  inline bool is_vec_ivf_meta_id_column() const { return ObSchemaUtils::is_vec_ivf_meta_id_column(column_flags_); }
+  inline bool is_vec_ivf_meta_vector_column() const { return ObSchemaUtils::is_vec_ivf_meta_vector_column(column_flags_); }
+  inline bool is_vec_ivf_pq_center_id_column() const { return ObSchemaUtils::is_vec_ivf_pq_center_id_column(column_flags_); }
+  inline bool is_vec_ivf_pq_center_ids_column() const { return ObSchemaUtils::is_vec_ivf_pq_center_ids_column(column_flags_); }
+
+  inline bool is_vec_hnsw_vid_column() const { return ObSchemaUtils::is_vec_hnsw_vid_column(column_flags_); }
+  inline bool is_vec_hnsw_type_column() const { return ObSchemaUtils::is_vec_hnsw_type_column(column_flags_); }
+  inline bool is_vec_hnsw_vector_column() const { return ObSchemaUtils::is_vec_hnsw_vector_column(column_flags_); }
+  inline bool is_vec_hnsw_scn_column() const { return ObSchemaUtils::is_vec_hnsw_scn_column(column_flags_); }
+  inline bool is_vec_hnsw_key_column() const { return ObSchemaUtils::is_vec_hnsw_key_column(column_flags_); }
+  inline bool is_vec_hnsw_data_column() const { return ObSchemaUtils::is_vec_hnsw_data_column(column_flags_); }
+  inline bool is_hybrid_vec_index_chunk_column() const { return ObSchemaUtils::is_hybrid_vec_index_chunk_column(column_flags_); }
+  inline bool is_hybrid_embedded_vec_column() const {
+    return get_column_name_str().prefix_match(OB_HYBRID_VEC_EMBEDDED_VECTOR_COLUMN_NAME_PREFIX) &&
+           ObSchemaUtils::is_vec_hnsw_vector_column(column_flags_);
+  }
+  inline bool is_vec_hnsw_visible_column() const { return ObSchemaUtils::is_vec_hnsw_visible_column(column_flags_); }
+
+  inline bool is_vec_spiv_dim_column() const { return ObSchemaUtils::is_vec_spiv_dim_column(column_flags_); }
+  inline bool is_vec_spiv_value_column() const { return ObSchemaUtils::is_vec_spiv_value_column(column_flags_); }
+  inline bool is_vec_spiv_vec_column() const { return ObSchemaUtils::is_vec_spiv_vec_column(column_flags_); }
+
   inline bool is_fulltext_column() const { return ObSchemaUtils::is_fulltext_column(column_flags_); }
   inline bool is_doc_id_column() const { return ObSchemaUtils::is_doc_id_column(column_flags_); }
   inline bool is_word_segment_column() const { return ObSchemaUtils::is_word_segment_column(column_flags_); }
@@ -285,6 +316,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_spatial_cellid_column() const { return is_spatial_generated_column() && get_data_type() == common::ObUInt64Type; }
   inline bool is_multivalue_generated_column() const { return column_flags_ & MULTIVALUE_INDEX_GENERATED_COLUMN_FLAG; }
   inline bool is_multivalue_generated_array_column() const { return column_flags_ & MULTIVALUE_INDEX_GENERATED_ARRAY_COLUMN_FLAG; }
+  inline bool is_domain_index_column() const { return is_vec_index_column() || is_fulltext_column() || is_multivalue_generated_column() || is_multivalue_generated_array_column(); }
   inline bool has_generated_column_deps() const { return column_flags_ & GENERATED_DEPS_CASCADE_FLAG; }
   inline bool is_primary_vp_column() const { return column_flags_ & PRIMARY_VP_COLUMN_FLAG; }
   inline bool is_aux_vp_column() const { return column_flags_ & AUX_VP_COLUMN_FLAG; }
@@ -320,7 +352,20 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_enum_or_set() const { return meta_type_.is_enum_or_set(); }
 
   inline static bool is_hidden_pk_column_id(const uint64_t column_id);
+  inline bool is_heap_table_primary_key_column() const
+  { return ::oceanbase::share::schema::is_heap_table_primary_key_column(column_flags_); }
+  inline bool is_heap_table_clustering_key_column() const
+  { return ::oceanbase::share::schema::is_heap_table_clustering_key_column(column_flags_); }
+  inline bool is_hidden_clustering_key_column() const
+  { return ::oceanbase::share::schema::is_heap_table_clustering_key_column(column_flags_) && is_hidden(); }
+
   inline bool is_unused() const { return column_flags_ & UNUSED_COLUMN_FLAG; }
+  inline bool is_user_visible_column() const { return !(is_hidden() || is_invisible_column()); }
+  inline void set_unused()
+  {
+    set_is_hidden(true);
+    add_column_flag(UNUSED_COLUMN_FLAG);
+  }
 
   //other methods
   int64_t get_convert_size(void) const;

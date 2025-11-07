@@ -12,12 +12,7 @@
 
 #define USING_LOG_PREFIX RS
 #include "ob_disaster_recovery_info.h"
-#include "lib/container/ob_array.h"
-#include "lib/container/ob_array_iterator.h"
-#include "lib/container/ob_se_array.h"
-#include "lib/container/ob_se_array_iterator.h"
-#include "ob_unit_manager.h"
-#include "ob_zone_manager.h"
+#include "observer/ob_server_struct.h"
 #include "share/ob_all_server_tracer.h"
 
 using namespace oceanbase::common;
@@ -280,9 +275,9 @@ int DRLSInfo::fill_servers()
   ObArray<ObServerInfoInTable> servers_info;
   if (OB_FAIL(SVR_TRACER.get_servers_info(zone, servers_info))) {
     LOG_WARN("fail to get all servers_info", KR(ret));
-  } else if (OB_ISNULL(zone_mgr_)) {
+  } else if (OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("zone_mgr_ is null", KR(ret), KP(zone_mgr_));
+    LOG_WARN("GCTX.sql_proxy_ is null", KR(ret), KP(GCTX.sql_proxy_));
   } else {
     server_stat_info_map_.reuse();
     FOREACH_X(s, servers_info, OB_SUCC(ret)) {
@@ -294,7 +289,7 @@ int DRLSInfo::fill_servers()
       } else {
         const ObAddr &server = s->get_server();
         const ObZone &zone = s->get_zone();
-        if (OB_FAIL(zone_mgr_->check_zone_active(zone, zone_active))) {
+        if (OB_FAIL(ObZoneTableOperation::check_zone_active(*GCTX.sql_proxy_, zone, zone_active))) {
           LOG_WARN("fail to check zone active", KR(ret), "zone", zone);
         } else if (OB_FAIL(server_stat_info_map_.locate(server, item))) {
           LOG_WARN("fail to locate server status", KR(ret), "server", server);
@@ -382,7 +377,8 @@ void DRLSInfo::reset_last_disaster_recovery_ls()
 int DRLSInfo::construct_filtered_ls_info_to_use_(
     const share::ObLSInfo &input_ls_info,
     share::ObLSInfo &output_ls_info,
-    const bool &filter_readonly_replicas_with_flag)
+    const bool &filter_readonly_replicas_with_flag,
+    const bool for_replace)
 {
   int ret = OB_SUCCESS;
   output_ls_info.reset();
@@ -390,15 +386,19 @@ int DRLSInfo::construct_filtered_ls_info_to_use_(
   if (OB_UNLIKELY(!input_ls_info.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(input_ls_info));
-  } else if (OB_FAIL(output_ls_info.init(
-                         input_ls_info.get_tenant_id(),
-                         input_ls_info.get_ls_id()))) {
+  } else if (OB_FAIL(output_ls_info.init(input_ls_info.get_tenant_id(), input_ls_info.get_ls_id()))) {
     LOG_WARN("fail to init ls info", KR(ret), K(input_ls_info));
-  } else if (OB_FAIL(input_ls_info.find_leader(leader_replica))) {
-    LOG_WARN("fail to find leader replica in input_ls_info", KR(ret), K(input_ls_info));
-  } else if (OB_ISNULL(leader_replica)) {
-    ret = OB_LEADER_NOT_EXIST;
-    LOG_WARN("no leader in input_ls_info", KR(ret), K(input_ls_info));
+  } else if (!for_replace) {
+    // replace replica task should not check whether there is a leader
+    // when checking replace replica task, the current LS may have no leader.
+    if (OB_FAIL(input_ls_info.find_leader(leader_replica))) {
+      LOG_WARN("fail to find leader replica in input_ls_info", KR(ret), K(input_ls_info));
+    } else if (OB_ISNULL(leader_replica)) {
+      ret = OB_LEADER_NOT_EXIST;
+      LOG_WARN("no leader in input_ls_info", KR(ret), K(input_ls_info));
+    }
+  }
+  if (OB_FAIL(ret)) {
   } else {
     uint64_t tenant_id = input_ls_info.get_tenant_id();
     ObLSID ls_id = input_ls_info.get_ls_id();
@@ -411,6 +411,7 @@ int DRLSInfo::construct_filtered_ls_info_to_use_(
         }
       } else if (ls_replica.get_in_learner_list()) {
         if (!filter_readonly_replicas_with_flag) {
+          // for replace replica task, filter_readonly_replicas_with_flag is false.
           if (OB_FAIL(output_ls_info.add_replica(ls_replica))) {
             LOG_WARN("fail to add read only replica to new ls_info", KR(ret), K(ls_replica));
           }
@@ -438,7 +439,8 @@ int DRLSInfo::construct_filtered_ls_info_to_use_(
 int DRLSInfo::build_disaster_ls_info(
     const share::ObLSInfo &ls_info,
     const share::ObLSStatusInfo &ls_status_info,
-    const bool &filter_readonly_replicas_with_flag)
+    const bool &filter_readonly_replicas_with_flag,
+    const bool for_replace)
 {
   int ret = OB_SUCCESS;
 
@@ -454,9 +456,9 @@ int DRLSInfo::build_disaster_ls_info(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("tenant id not match", KR(ret), K(resource_tenant_id_),
              "ls_tenant_id", ls_info.get_tenant_id());
-  } else if (OB_FAIL(construct_filtered_ls_info_to_use_(ls_info, inner_ls_info_, filter_readonly_replicas_with_flag))) {
+  } else if (OB_FAIL(construct_filtered_ls_info_to_use_(ls_info, inner_ls_info_, filter_readonly_replicas_with_flag, for_replace))) {
     LOG_WARN("fail to filter not in member/learner list replicas and learner_with_flag replicas",
-             KR(ret), K(ls_info), K(filter_readonly_replicas_with_flag));
+             KR(ret), K(ls_info), K(filter_readonly_replicas_with_flag), K(for_replace));
   } else if (OB_FAIL(ls_status_info_.assign(ls_status_info))) {
     LOG_WARN("fail to assign ls_status_info", KR(ret));
   } else if (OB_FAIL(sys_schema_guard_.get_tenant_info(
@@ -604,39 +606,6 @@ int DRLSInfo::get_default_data_source(
                                   leader_replica->get_member_time_us(),
                                   leader_replica->get_replica_type(),
                                   leader_replica->get_memstore_percent());
-  }
-  return ret;
-}
-
-int DRLSInfo::get_member_by_server(
-    const common::ObAddr& server_addr,
-    ObMember &member) const
-{
-  int ret = OB_SUCCESS;
-  member.reset();
-  common::ObAddr leader_addr; // not used
-  GlobalLearnerList learner_list;
-  common::ObMemberList member_list;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", KR(ret));
-  } else if (OB_UNLIKELY(!server_addr.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(server_addr));
-  } else if (OB_FAIL(get_leader_and_member_list(leader_addr, member_list, learner_list))) {
-    LOG_WARN("fail to get leader and member list", KR(ret), K(server_addr));
-  } else if (member_list.contains(server_addr)) {
-    if (OB_FAIL(member_list.get_member_by_addr(server_addr, member))) {
-      LOG_WARN("fail to get member by addr", KR(ret), K(server_addr), K(member_list));
-    }
-  } else if (learner_list.contains(server_addr)) {
-    if (OB_FAIL(learner_list.get_learner_by_addr(server_addr, member))) {
-      LOG_WARN("fail to get member by addr", KR(ret), K(server_addr), K(learner_list));
-    }
-  } else {
-    ret = OB_ENTRY_NOT_EXIST;
-    LOG_WARN("fail to find server in leader member list and learner list",
-                KR(ret), K(server_addr), K(learner_list), K(member_list));
   }
   return ret;
 }

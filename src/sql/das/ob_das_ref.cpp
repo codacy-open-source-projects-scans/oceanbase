@@ -11,17 +11,10 @@
  */
 
 #define USING_LOG_PREFIX SQL_DAS
-#include "sql/das/ob_das_ref.h"
-#include "sql/das/ob_das_extra_data.h"
+#include "ob_das_ref.h"
 #include "sql/das/ob_data_access_service.h"
-#include "sql/das/ob_das_scan_op.h"
-#include "sql/das/ob_das_insert_op.h"
-#include "sql/das/ob_das_utils.h"
-#include "storage/tx/ob_trans_service.h"
-#include "sql/engine/ob_exec_context.h"
 #include "sql/das/ob_das_rpc_processor.h"
-#include "sql/das/ob_das_retry_ctrl.h"
-#include "observer/mysql/ob_query_retry_ctrl.h"
+#include "share/detect/ob_detect_manager_utils.h"
 
 namespace oceanbase
 {
@@ -130,6 +123,7 @@ ObDASRef::ObDASRef(ObEvalCtx &eval_ctx, ObExecContext &exec_ctx)
     async_cb_list_(das_alloc_),
     das_ref_count_ctx_(),
     das_parallel_ctx_(),
+    detectable_id_(),
     flags_(0)
 {
 }
@@ -457,18 +451,86 @@ bool ObDASRef::check_rcode_can_retry(int ret)
   return bret;
 }
 
+int ObDASRef::get_detectable_id(ObDetectableId &detectable_id) {
+  int ret = OB_SUCCESS;
+  if (OB_LIKELY(GCONF._enable_px_fast_reclaim)) {
+    if (detectable_id_.is_invalid() &&
+        OB_FAIL(ObDetectManagerUtils::das_task_register_detectable_id_into_dm(detectable_id_,
+                    get_exec_ctx().get_my_session()->get_effective_tenant_id()))) {
+        LOG_WARN("register detectable id into dm failed", K(ret));
+    } else {
+      detectable_id = detectable_id_;
+    }
+  } else {
+    detectable_id.reset();
+  }
+  return ret;
+}
+
+int ObDASRef::cancel_all_async_callbacks()
+{
+  int ret = OB_SUCCESS;
+  DLIST_FOREACH_NORET(curr, async_cb_list_.get_obj_list()) {
+    ObRpcDasAsyncAccessCallBack *cb = curr->get_obj();
+    if (!cb->is_visited() &&
+        !(cb->is_processed() || cb->is_timeout() || cb->is_invalid())) {
+      uint64_t gtid = cb->gtid_;
+      uint32_t pkt_id = cb->pkt_id_;
+      int err = 0;
+      if ((err = pn_terminate_pkt(gtid, pkt_id)) != 0) {
+        ret = tranlate_to_ob_error(err);
+        LOG_WARN("terminate pkt failed", K(ret), K(err));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDASRef::wait_all_executing_tasks()
 {
   int ret = OB_SUCCESS;
   if (das_ref_count_ctx_.is_need_wait()) {
     ObThreadCondGuard guard(das_ref_count_ctx_.get_cond());
-    while (OB_SUCC(ret) &&
-        das_ref_count_ctx_.get_current_concurrency() < das_ref_count_ctx_.get_max_das_task_concurrency()) {
+    while (OB_SUCC(ret) && OB_SUCC(get_exec_ctx().check_status()) &&
+           das_ref_count_ctx_.get_current_concurrency() < das_ref_count_ctx_.get_max_das_task_concurrency()) {
       // we cannot use ObCond here because it can not explicitly lock mutex, causing concurrency problem.
-      if (OB_FAIL(das_ref_count_ctx_.get_cond().wait())) {
-        LOG_WARN("failed to wait all das tasks to be finished.", K(ret));
+      if (OB_FAIL(das_ref_count_ctx_.get_cond().wait(1000))) {
+        if (ret != OB_TIMEOUT) {
+          LOG_WARN("failed to wait all das tasks to be finished.", K(ret));
+        } else {
+          ret = OB_SUCCESS;
+        }
       }
     }
+  }
+
+  if (OB_FAIL(ret)) {
+    int64_t save_ret = ret;
+    bool need_retry_cancel_cb = false;
+    ret = OB_SUCCESS;
+
+    // must ensure that all callbacks have been called to exit the function
+    if (OB_FAIL(cancel_all_async_callbacks())) {
+      LOG_WARN("failed to cancel all async callbacks", K(ret));
+      need_retry_cancel_cb = true;
+    }
+
+    ObThreadCondGuard guard(das_ref_count_ctx_.get_cond());
+    while (das_ref_count_ctx_.get_current_concurrency() < das_ref_count_ctx_.get_max_das_task_concurrency()) {
+      if (OB_FAIL(das_ref_count_ctx_.get_cond().wait_us(1000))) {
+        if (ret != OB_TIMEOUT) {
+          LOG_WARN("failed to wait all das tasks to be finished.", K(ret));
+        }
+        ret = OB_SUCCESS;
+      }
+      if (need_retry_cancel_cb && OB_FAIL(cancel_all_async_callbacks())) {
+        LOG_WARN("failed to cancel all async callbacks", K(ret));
+      } else {
+        need_retry_cancel_cb = false;
+      }
+    }
+
+    ret = save_ret;
   }
   return ret;
 }
@@ -478,9 +540,17 @@ int ObDASRef::wait_tasks_and_process_response()
   int ret = OB_SUCCESS;
   if (OB_FAIL(wait_all_executing_tasks())) {
     LOG_WARN("fail to wait all executing tasks", K(ret));
-  } else if (OB_FAIL(process_remote_task_resp())) {
-    LOG_WARN("failed to process remote task resp", K(ret));
   }
+
+
+  // it is possible that tasks that have already been executed need to be rollback,
+  // and must clear async_cb_list_, when it is using reuse_alloc_ from das ref,
+  // reuse_alloc_ will be released before async_cb_list_
+  int tmp_ret = OB_SUCCESS;
+  if (OB_TMP_FAIL(process_remote_task_resp())) {
+    LOG_WARN("failed to process remote task resp", K(tmp_ret));
+  }
+  ret = COVER_SUCC(tmp_ret);
   return ret;
 }
 
@@ -534,6 +604,7 @@ int ObDASRef::process_remote_task_resp()
   DLIST_FOREACH_X(curr, async_cb_list_.get_obj_list(), OB_SUCC(ret)) {
     const sql::ObDASTaskResp &task_resp = curr->get_obj()->get_task_resp();
     const common::ObSEArray<ObIDASTaskOp*, 2> &task_ops = curr->get_obj()->get_task_ops();
+    curr->get_obj()->set_visited(true);
     if (OB_UNLIKELY(OB_SUCCESS != task_resp.get_err_code())) {
       LOG_WARN("das async execution failed", K(task_resp));
       for (int i = 0; i < task_ops.count(); i++) {
@@ -634,8 +705,15 @@ int ObDASRef::create_das_task(const ObDASTabletLoc *tablet_loc,
   int ret = OB_SUCCESS;
   ObDASTaskFactory &das_factory = get_das_factory();
   ObSQLSessionInfo *session = get_exec_ctx().get_my_session();
-  int64_t task_id;
-  if (OB_FAIL(MTL(ObDataAccessService*)->get_das_task_id(task_id))) {
+  int64_t task_id = 0;
+  bool need_das_id = true;
+  ObPhysicalPlanCtx *plan_ctx = NULL;
+  const ObPhysicalPlan *plan = NULL;
+  if (OB_NOT_NULL(plan_ctx = GET_PHY_PLAN_CTX(get_exec_ctx()))
+      && OB_NOT_NULL(plan = plan_ctx->get_phy_plan())) {
+    need_das_id = !(plan->is_local_plan() && OB_PHY_PLAN_LOCAL == plan->get_location_type());
+  }
+  if (need_das_id && OB_FAIL(MTL(ObDataAccessService*)->get_das_task_id(task_id, tablet_loc->ls_id_))) {
     LOG_WARN("get das task id failed", KR(ret));
   } else if (OB_FAIL(das_factory.create_das_task_op(op_type, task_op))) {
     LOG_WARN("create das task op failed", K(ret), KPC(task_op));
@@ -649,14 +727,14 @@ int ObDASRef::create_das_task(const ObDASTabletLoc *tablet_loc,
     task_op->set_tablet_id(tablet_loc->tablet_id_);
     task_op->set_ls_id(tablet_loc->ls_id_);
     task_op->set_tablet_loc(tablet_loc);
+    ObDiagnosticInfo *di = ObLocalDiagnosticInfo::get();
+    if (OB_NOT_NULL(di)) {
+      task_op->set_plan_line_id(di->get_ash_stat().plan_line_id_);
+    }
     if (is_do_gts_opt() && OB_FAIL(task_op->init_das_gts_opt_info(session->get_tx_isolation()))) {
       LOG_WARN("fail to init gts opt info", K(ret), K(session->get_tx_isolation()));
     } else if (OB_FAIL(add_aggregated_task(task_op, op_type))) {
       LOG_WARN("failed to add aggregated task", K(ret));
-    }
-    ObDiagnosticInfo *di = ObLocalDiagnosticInfo::get();
-    if (OB_NOT_NULL(di)) {
-      task_op->set_plan_line_id(di->get_ash_stat().plan_line_id_);
     }
   }
   return ret;
@@ -779,6 +857,7 @@ void ObDASRef::reset()
   init_mem_used_ = 0;
   das_ref_count_ctx_.reuse();
   das_parallel_ctx_.reset();
+  async_cb_list_.destroy();
   if (task_map_.created()) {
     task_map_.destroy();
   }
@@ -787,6 +866,10 @@ void ObDASRef::reset()
   if (reuse_alloc_ != nullptr) {
     reuse_alloc_->reset();
     reuse_alloc_ = nullptr;
+  }
+  if (!detectable_id_.is_invalid()) {
+    ObDetectManagerUtils::das_task_unregister_detectable_id_from_dm(detectable_id_);
+    detectable_id_ = ObDetectableId();
   }
 }
 
@@ -801,6 +884,7 @@ void ObDASRef::reuse()
   init_mem_used_ = 0;
   das_ref_count_ctx_.reuse();
   das_parallel_ctx_.reuse();
+  async_cb_list_.destroy();
   if (task_map_.created()) {
     task_map_.destroy();
   }
@@ -810,6 +894,10 @@ void ObDASRef::reuse()
     reuse_alloc_ = new(&reuse_alloc_buf_) common::ObArenaAllocator();
     reuse_alloc_->set_attr(das_alloc_.get_attr());
     das_alloc_.set_alloc(reuse_alloc_);
+  }
+  if (!detectable_id_.is_invalid()) {
+    ObDetectManagerUtils::das_task_unregister_detectable_id_from_dm(detectable_id_);
+    detectable_id_ = ObDetectableId();
   }
 }
 

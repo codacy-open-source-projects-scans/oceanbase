@@ -21,6 +21,10 @@ namespace oceanbase
 {
 namespace storage
 {
+#define INIT_SET_GET_FLAG_FUNC(type)                                                \
+  OB_INLINE void set_##type##_flag(const bool t_##type) { t_##type##_ = t_##type; } \
+  OB_INLINE bool has_##type() const { return t_##type##_; }
+
 struct ObAggTypeFlag
 {
 public:
@@ -33,35 +37,38 @@ public:
     }
     return *this;
   }
-  OB_INLINE void set_count_flag(const bool t_count) { t_count_ = t_count; }
-  OB_INLINE void set_minmax_flag(const bool t_minmax) { t_minmax_ = t_minmax; }
-  OB_INLINE void set_sum_flag(const bool t_sum) { t_sum_ = t_sum; }
-  OB_INLINE void set_has_rb_build_agg(const bool t_rb_build_agg) { t_rb_build_agg_ = t_rb_build_agg; }
-  OB_INLINE bool has_count() const { return t_count_; }
-  OB_INLINE bool has_minmax() const { return t_minmax_; }
-  OB_INLINE bool has_sum() const { return t_sum_; }
-  OB_INLINE bool has_rb_build_agg() const { return t_rb_build_agg_; }
-  OB_INLINE bool only_count() const { return t_flag_ == 1; }
+  INIT_SET_GET_FLAG_FUNC(count)
+  INIT_SET_GET_FLAG_FUNC(minmax)
+  INIT_SET_GET_FLAG_FUNC(sum)
+  INIT_SET_GET_FLAG_FUNC(hll)
+  INIT_SET_GET_FLAG_FUNC(sum_op_nsize)
+  INIT_SET_GET_FLAG_FUNC(rb_build)
+  INIT_SET_GET_FLAG_FUNC(count_sum)
   TO_STRING_KV(K_(t_flag));
 
-  union {
+  union { // FARM COMPAT WHITELIST
     struct {
-      int16_t t_count_  : 1;
-      int16_t t_minmax_ : 1;
-      int16_t t_sum_    : 1;
-      int16_t t_rb_build_agg_ : 1;
-      int16_t reserved_ : 12;
+      int16_t t_count_        : 1;
+      int16_t t_minmax_       : 1;
+      int16_t t_sum_          : 1;
+      int16_t t_rb_build_     : 1;
+      int16_t t_hll_          : 1;
+      int16_t t_sum_op_nsize_ : 1;
+      int16_t t_count_sum_    : 1;
+      int16_t reserved_ : 9;
     };
     int16_t t_flag_;
   };
 };
+#undef INIT_SET_GET_FLAG_FUNC
 
 struct ObAggGroupVec : public ObAggGroupBase
 {
 public:
   ObAggGroupVec();
-  ObAggGroupVec(ObColumnParam* col_param, sql::ObExpr* project_expr,
-                 const int32_t col_offset, const int32_t col_index);
+  ObAggGroupVec(ObColumnParam* col_param,
+                const int32_t col_offset,
+                const int32_t col_index);
   virtual ~ObAggGroupVec();
   void reuse();
   int eval(blocksstable::ObStorageDatum &datum, const int64_t row_count) override;
@@ -70,12 +77,16 @@ public:
       const ObTableAccessContext *context,
       const int32_t col_offset,
       blocksstable::ObIMicroBlockReader *reader,
-      const int32_t *row_ids,
-      const int64_t row_count,
-      const bool reserve_memory) override;
+      const ObPushdownRowIdCtx &pd_row_id_ctx) override;
+  int agg_pushdown_decoder(
+      blocksstable::ObIMicroBlockReader *reader,
+      const int32_t col_offset, // column store is 0
+      const ObPushdownRowIdCtx &pd_row_id_ctx);
   int can_use_index_info(const blocksstable::ObMicroIndexInfo &index_info, const int32_t col_index, bool &can_agg) override;
   int fill_index_info(const blocksstable::ObMicroIndexInfo &index_info, const bool is_cg) override;
+  int set_ignore_eval_index_info(const bool ignore_eval_index_info);
   int collect_result();
+  int reset_agg_row_id();
   OB_INLINE int set_agg_type_flag(const ObPDAggType agg_type);
   OB_INLINE bool check_need_project(
       blocksstable::ObIMicroBlockReader *reader,
@@ -84,12 +95,16 @@ public:
       const int64_t row_count)
   {
     bool bret = false;
-    if (agg_type_flag_.has_sum() || agg_type_flag_.has_rb_build_agg()) {
+    if (agg_type_flag_.has_sum() || agg_type_flag_.has_rb_build()) {
       bret = true;
-    } else if (agg_type_flag_.has_minmax()) {
+    } else {
       for (int64_t i = 0; !bret && i < agg_cells_.count(); ++i) {
         const ObAggCellVec *agg_cell = agg_cells_.at(i);
-        bret |= !agg_cell->can_pushdown_decoder(reader, col_offset, row_ids, row_count);
+        if (PD_COUNT == agg_cell->get_type() || PD_SUM_OP_SIZE == agg_cell->get_type()) {
+          bret |= agg_cell->need_access_data();
+        } else { // min/max/hyperloglog
+          bret |= !agg_cell->can_pushdown_decoder(reader, col_offset, row_ids, row_count);
+        }
       }
     }
     return bret;
@@ -98,20 +113,31 @@ public:
   OB_INLINE int64_t get_agg_count() const { return agg_cells_.count(); }
   OB_INLINE bool is_vec() const override { return true; }
   OB_INLINE bool check_finished() const override { return false; }
+  OB_INLINE bool is_agg_finish(const ObPushdownRowIdCtx &pd_row_id_ctx)
+  {
+    return OB_INVALID_CS_ROW_ID != agg_row_id_
+        && OB_INVALID_CS_ROW_ID != pd_row_id_ctx.bound_row_id_
+        && ((!pd_row_id_ctx.is_reverse_ && agg_row_id_ >= pd_row_id_ctx.bound_row_id_ )
+            || (pd_row_id_ctx.is_reverse_ && agg_row_id_ <= pd_row_id_ctx.bound_row_id_));
+  }
   TO_STRING_KV(K_(col_offset), K_(col_index), K_(need_access_data),
-               K_(need_get_row_ids), K_(agg_type_flag),
+               K_(need_get_row_ids), K_(agg_row_id),
+               K_(has_aggr_with_expr), K_(agg_type_flag),
                K_(agg_cells), KPC_(col_param), KPC_(project_expr));
+private:
+  int clear_evaluated_infos();
+  DISALLOW_COPY_AND_ASSIGN(ObAggGroupVec);
 public:
   ObSEArray<ObAggCellVec*, 1> agg_cells_;
   ObColumnParam* col_param_;
   sql::ObExpr* project_expr_;
+  int64_t agg_row_id_; // row id in column store, row offset of the microblock in row store.
   int32_t col_offset_; // for row store
   int32_t col_index_;  // for row store
   ObAggTypeFlag agg_type_flag_;
   bool need_access_data_;
   bool need_get_row_ids_;
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObAggGroupVec);
+  bool has_aggr_with_expr_;
 };
 
 class ObAggregatedStoreVec : public ObAggStoreBase, public ObVectorStore
@@ -139,13 +165,35 @@ public:
   int fill_index_info(const blocksstable::ObMicroIndexInfo &index_info, const bool is_cg) override;
   int collect_aggregated_result() override;
   int get_agg_group(const sql::ObExpr *expr, ObAggGroupVec *&agg_group);
+  int do_aggregate(
+      blocksstable::ObIMicroBlockReader *reader = nullptr,
+      const int64_t bound_row_id = OB_INVALID_CS_ROW_ID);
+  int reset_agg_row_id();
+  int prepare_batch_scan();
+  int reuse_for_refresh_table() override;
+  int set_ignore_eval_index_info(const bool ignore_eval_index_info) override;
+  OB_INLINE bool has_aggr_with_expr() const { return has_aggr_with_expr_; }
   INHERIT_TO_STRING_KV("ObVectorStore", ObVectorStore, K_(pd_agg_ctx), K_(agg_groups),
-                        K_(need_access_data), K_(need_get_row_ids));
+      K_(need_access_data), K_(need_get_row_ids), K_(has_aggr_with_expr));
 private:
   void release_agg_group();
   int init_agg_groups(const ObTableAccessParam &param);
   int check_agg_store_valid();
-  int do_aggregate(blocksstable::ObIMicroBlockReader *reader, const bool reserve_memory);
+  int fill_output_rows(
+      blocksstable::ObIMicroBlockRowScanner &scanner,
+      int64_t &begin_index,
+      const int64_t end_index,
+      const ObFilterResult &res);
+  int agg_pushdown_decoder(
+      blocksstable::ObIMicroBlockReader *reader,
+      int64_t &begin_index,
+      const int64_t end_index,
+      const ObFilterResult &res,
+      bool &all_agg_pd_decoder);
+  int agg_groups_pushdown_decoder(
+      blocksstable::ObIMicroBlockReader *reader,
+      const ObPushdownRowIdCtx &pd_row_id_ctx,
+      bool &all_agg_pd_decoder);
   OB_INLINE void reset_after_aggregate()
   {
     count_ = 0;
@@ -160,6 +208,7 @@ private:
   // need_access_data is false => need_get_row_ids_ may be true/false.
   bool need_access_data_;
   bool need_get_row_ids_;
+  bool has_aggr_with_expr_;
   DISALLOW_COPY_AND_ASSIGN(ObAggregatedStoreVec);
 };
 

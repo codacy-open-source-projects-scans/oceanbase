@@ -12,24 +12,9 @@
 
 #define USING_LOG_PREFIX SHARE
 
-#include "share/ob_tenant_info_proxy.h"
-#include "share/ob_cluster_role.h"//ObClusterTYPE
-#include "share/ob_share_util.h"//ObShareUtil
-#include "share/ob_tenant_info_proxy.h" //ObAllTenantInfo
-#include "share/config/ob_server_config.h"//GCONF
-#include "share/inner_table/ob_inner_table_schema.h"//ALL_TENANT_INFO_TNAME
-#include "share/ls/ob_ls_i_life_manager.h"//TODO SCN VALUE
-#include "share/ls/ob_ls_status_operator.h"//get_tenant max ls id
-#include "lib/string/ob_sql_string.h"//ObSqlString
-#include "lib/mysqlclient/ob_mysql_transaction.h"//ObMySQLTrans
-#include "common/ob_timeout_ctx.h"//ObTimeoutCtx
 #include "ob_tenant_info_proxy.h"
-#include "share/ls/ob_ls_recovery_stat_operator.h"//ObLSRecoveryStatOperator
-#include "lib/string/ob_sql_string.h"//ObSqlString
-#include "lib/mysqlclient/ob_mysql_transaction.h"//ObMySQLTrans
-#include "common/ob_timeout_ctx.h"//ObTimeoutCtx
+#include "share/ls/ob_ls_status_operator.h"//get_tenant max ls id
 #include "rootserver/ob_root_utils.h"//ObRootUtils
-#include "rootserver/ob_rs_event_history_table_operator.h" // ROOTSERVICE_EVENT_ADD
 #include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" // ObTenantSnapshotUtil
 #include "share/restore/ob_log_restore_source_mgr.h"  // ObLogRestoreSourceMgr
 
@@ -439,6 +424,7 @@ int ObAllTenantInfoProxy::load_pure_tenant_info_(const uint64_t tenant_id,
     } else if(for_update && OB_FAIL(sql.append(" for update"))) {
       LOG_WARN("failed to assign sql", KR(ret), K(sql));
     } else {
+      DEBUG_SYNC(BEFORE_GET_TENANT_INFO);
       HEAP_VAR(ObMySQLProxy::MySQLResult, res) {
         common::sqlclient::ObMySQLResult *result = NULL;
         if (OB_FAIL(proxy->read(res, exec_tenant_id, sql.ptr()))) {
@@ -484,7 +470,7 @@ int ObAllTenantInfoProxy::update_tenant_recovery_status_in_trans(
     } else {
       const int64_t MAX_GAP = tenant_config->_standby_max_replay_gap_time * 1000;
       SCN new_readable_scn_plus_gap = SCN::plus(new_readable_scn, MAX_GAP);
-      if (REACH_TENANT_TIME_INTERVAL(10 * 1000 * 1000)) { // 10s
+      if (REACH_THREAD_TIME_INTERVAL(10 * 1000 * 1000)) { // 10s
         const int64_t REAL_GAP = new_replayable_scn.get_val_for_gts() - new_readable_scn.get_val_for_gts();
         const bool IS_MAX_GAP_REACHED = REAL_GAP > MAX_GAP ? true : false;
         LOG_INFO("tenant scn gap info", K(IS_MAX_GAP_REACHED), K(REAL_GAP), K(MAX_GAP), K(new_sync_scn),

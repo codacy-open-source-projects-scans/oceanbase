@@ -12,7 +12,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "row_store.h"
-#include "sql/engine/basic/ob_temp_row_store.h"
 #include "sql/engine/window_function/ob_window_function_vec_op.h"
 
 namespace oceanbase
@@ -89,6 +88,29 @@ int RowStore::get_batch_rows(const int64_t start_idx, const int64_t end_idx,
     SQL_ENG_LOG(WARN, "get batch rows failed", K(ret), K(start_idx), K(end_idx));
   } else if (OB_UNLIKELY(read_rows != end_idx - start_idx)) {
     SQL_ENG_LOG(WARN, "unexpected read rows", K(ret), K(read_rows), K(end_idx), K(start_idx));
+  }
+  return ret;
+}
+
+int RowStore::is_all_null(const int64_t col_idx, const int64_t start_idx, const int64_t end_idx, bool& /* out */ all_null)
+{
+  int ret = OB_SUCCESS;
+  all_null = false;
+  int64_t read_rows = 0;
+  if (OB_UNLIKELY(end_idx <= start_idx)) {
+    ret = OB_UNEXPECT_INTERNAL_ERROR;
+    LOG_WARN("bad parameter", K(ret), K(end_idx), K(start_idx));
+  } else {
+    all_null = true;
+    const ObCompactRow* row = nullptr;
+    for (int i = start_idx; i < end_idx && OB_SUCC(ret); ++ i) {
+      if (OB_FAIL(ra_reader_.get_row(i, row))) {
+        LOG_WARN("failed to read row", K(ret), K(i));
+      } else if (!row->is_null(col_idx)){
+        all_null = false;
+        break;
+      }
+    }
   }
   return ret;
 }

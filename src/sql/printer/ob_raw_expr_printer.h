@@ -70,6 +70,13 @@ class ObRawExprPrinter
     }                                                     \
   } while(0)                                               \
 
+#define PRINT_BOOL_EXPR(expr)                              \
+  do {                                                 \
+    if (OB_SUCCESS == ret && OB_FAIL(SMART_CALL(print_bool_expr(expr)))) {    \
+      LOG_WARN("fail to print expr", K(ret));            \
+    }                                                     \
+  } while(0)                                               \
+
 #define SET_SYMBOL_IF_EMPTY(str)  \
   do {                             \
     if (0 == symbol.length()) {     \
@@ -116,6 +123,8 @@ public:
   int do_print(ObRawExpr *expr, ObStmtScope scope, bool only_column_namespace = false, bool print_cte = false);
   int pre_check_treat_opt(ObRawExpr *expr, bool &is_treat);
 private:
+  int print_bool_expr(ObRawExpr *expr);
+  int print_select_expr(ObRawExpr *expr);
   int print(ObRawExpr *expr);
 
   int print(ObConstRawExpr *expr);
@@ -131,6 +140,7 @@ private:
   int print(ObWinFunRawExpr *expr);
   int print(ObPseudoColumnRawExpr *expr);
   int print(ObMatchFunRawExpr *expr);
+  int print(ObUnpivotRawExpr *expr);
 
   int print_date_unit(ObRawExpr *expr);
   int print_get_format_unit(ObRawExpr *expr);
@@ -162,10 +172,8 @@ private:
   int print_sql_udt_construct(ObSysFunRawExpr *expr);
   int print_st_asmvt(ObAggFunRawExpr *expr);
   int print_array_agg_expr(ObAggFunRawExpr *expr);
-  int print_array_map(ObSysFunRawExpr *expr);
-  int get_max_lambda_param_idx(ObRawExpr *expr, uint32_t &max_idx);
-
-  int print_type(const ObExprResType &dst_type);
+  int print_array_map(ObSysFunRawExpr *expr, const char *func_name);
+  int print_type(const ObRawExprResType &dst_type);
 
   int inner_print_fun_params(ObSysFunRawExpr &expr);
 

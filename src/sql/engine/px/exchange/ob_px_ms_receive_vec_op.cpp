@@ -13,17 +13,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_ms_receive_vec_op.h"
-#include "lib/container/ob_fixed_array.h"
-#include "sql/engine/px/exchange/ob_row_heap.h"
-#include "sql/engine/px/ob_dfo.h"
-#include "sql/engine/px/ob_px_dtl_msg.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/px/ob_px_data_ch_provider.h"
-#include "sql/engine/px/ob_px_dtl_proc.h"
-#include "sql/dtl/ob_dtl_channel_loop.h"
-#include "sql/engine/basic/ob_ra_row_store.h"
 #include "sql/engine/px/ob_px_scheduler.h"
-#include "sql/engine/basic/ob_temp_row_store.h"
 
 namespace oceanbase
 {
@@ -107,6 +97,10 @@ int ObPxMSReceiveVecOp::init_merge_sort_input(int64_t n_channel)
           msi->compressor_type_ = MY_SPEC.compress_type_;
           if (OB_FAIL(merge_inputs_.push_back(msi))) {
             LOG_WARN("push back merge sort input fail", K(idx), K(ret));
+            msi->clean_row_store(ctx_);
+            msi->destroy();
+            msi->~MergeSortInput();
+            mem_context_->get_malloc_allocator().free(msi);
           }
         }
       }
@@ -833,6 +827,9 @@ int ObPxMSReceiveVecOp::new_local_order_input(MergeSortInput *&out_msi)
       LOG_WARN("failed to allocate dir id for temp row store", K(ret));
     } else if (OB_FAIL(merge_inputs_.push_back(local_input))) {
       LOG_WARN("fail push back MergeSortInput", K(ret));
+      local_input->clean_row_store(ctx_);
+      local_input->destroy();
+      mem_context_->get_malloc_allocator().free(local_input);
     } else {
       out_msi = local_input;
     }
@@ -1073,7 +1070,7 @@ int ObPxMSReceiveVecOp::inner_rescan()
   output_iter_.reset();
   output_store_.reset();
   if (OB_FAIL(ObPxReceiveOp::inner_rescan())) {
-    LOG_WARN("fail to do recieve op rescan", K(ret));
+    LOG_WARN("fail to do receive op rescan", K(ret));
   } else if (!MY_SPEC.local_order_
              && OB_FAIL(row_heap_.init(get_channel_count(),
                                        &MY_SPEC.sort_collations_,

@@ -10,28 +10,29 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "ob_object.h"
 #include <string.h>
-#include <algorithm>
-#include <math.h>  // for fabs, fabsf
 #define USING_LOG_PREFIX COMMON
-#include "common/object/ob_object.h"
-#include "lib/utility/serialization.h"
-#include "lib/utility/utility.h"
-#include "lib/checksum/ob_crc64.h"
 #include "common/object/ob_obj_compare.h"
-#include "common/ob_action_flag.h"
-#include "lib/hash_func/murmur_hash.h"
-#include "lib/utility/ob_print_utils.h"
-#include "lib/timezone/ob_time_convert.h"
-#include "lib/number/ob_number_v2.h"
-#include "lib/utility/ob_hang_fatal_error.h"
 #include "lib/string/ob_sql_string.h"
-#include "lib/worker.h"
 #include "common/object/ob_obj_funcs.h"
-#include "lib/charset/ob_charset.h"
+#include "lib/geo/ob_s2adapter.h"
 
 using namespace oceanbase;
 using namespace oceanbase::common;
+
+namespace oceanbase
+{
+namespace common
+{
+int __attribute__((weak)) ob_obj_read_lob_data(ObIAllocator &allocator, const common::ObObj &obj, ObString &data)
+{
+  int ret = OB_NOT_SUPPORTED;
+  LOG_WARN("not support outrow lob read", K(ret), K(obj));
+  return ret;
+}
+}
+}
 
 bool ObLobId::operator==(const ObLobId &other) const
 {
@@ -727,6 +728,23 @@ bool ObLobLocatorV2::is_empty_lob() const
   return (ret == OB_SUCCESS ? bret : false);
 }
 
+int ObLobLocatorV2::update_payload_size(ObString &dst, int64_t header_size, bool is_lob_v1)
+{
+  int ret = OB_SUCCESS;
+  if (is_lob_v1) {
+    reinterpret_cast<ObLobLocator *>(dst.ptr())->payload_size_ = dst.length() - header_size;
+  } else {
+    ObLobLocatorV2 lob(dst);
+    if (OB_UNLIKELY(!lob.is_valid())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("got invalid ps lob param", K(dst));
+    } else if (lob.has_inrow_data() && !lob.is_lob_disk_locator() && lob.has_extern()) {
+      reinterpret_cast<ObMemLobExternHeader *>(dst.ptr() + sizeof(ObMemLobCommon))->payload_size_ = dst.length() - header_size;
+    }
+  }
+  return ret;
+}
+
 int ObLobLocatorV2::get_lob_data_byte_len(int64_t &len) const
 {
   int ret =  OB_SUCCESS;
@@ -1188,6 +1206,247 @@ int ObDocId::from_string(const ObString &doc_id)
   return ret;
 }
 
+ObCenterId::ObCenterId()
+  : tablet_id_(ObTabletID::INVALID_TABLET_ID),
+    center_id_(-1)
+{
+  static_assert(sizeof(ObCenterId) == OB_DOC_ID_COLUMN_BYTE_LENGTH, "size of ObCenterId isn't equal to OB_DOC_ID_COLUMN_BYTE_LENGTH");
+}
+
+ObCenterId::ObCenterId(const uint64_t tablet_id, const uint64_t center_id)
+  : tablet_id_(tablet_id),
+    center_id_(center_id)
+{
+  static_assert(sizeof(ObCenterId) == OB_DOC_ID_COLUMN_BYTE_LENGTH, "size of ObCenterId isn't equal to OB_DOC_ID_COLUMN_BYTE_LENGTH");
+}
+
+bool ObCenterId::operator==(const ObCenterId &other) const
+{
+  return tablet_id_ == other.tablet_id_ && center_id_ == other.center_id_;
+}
+
+bool ObCenterId::operator!=(const ObCenterId &other) const
+{
+  return !(operator==(other));
+}
+
+bool ObCenterId::operator <(const ObCenterId &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret= true;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret = false;
+  } else if (center_id_ < other.center_id_) {
+    bool_ret= true;
+  } else if (center_id_ > other.center_id_) {
+    bool_ret = false;
+  }
+
+  return bool_ret;
+}
+
+bool ObCenterId::operator >(const ObCenterId &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret = false;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret= true;
+  } else if (center_id_ < other.center_id_) {
+    bool_ret = false;
+  } else if (center_id_ > other.center_id_) {
+    bool_ret= true;
+  }
+
+  return bool_ret;
+
+}
+
+void ObCenterId::reset()
+{
+  tablet_id_ = ObTabletID::INVALID_TABLET_ID;
+  center_id_ = -1;
+}
+
+bool ObCenterId::is_valid() const
+{
+  return ObTabletID(tablet_id_).is_valid() && center_id_ >= 0;
+}
+
+ObHiddenClusteringKey::ObHiddenClusteringKey()
+  : tablet_id_(ObTabletID::INVALID_TABLET_ID),
+    seq_id_(0)
+{
+  static_assert(sizeof(ObHiddenClusteringKey) == OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH,
+                "size of ObHiddenClusteringKey isn't equal to OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH");
+}
+
+ObHiddenClusteringKey::ObHiddenClusteringKey(const uint64_t tablet_id, const uint64_t seq_id)
+  : tablet_id_(tablet_id),
+    seq_id_(seq_id)
+{
+  static_assert(sizeof(ObHiddenClusteringKey) == OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH,
+                "size of ObHiddenClusteringKey isn't equal to OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH");
+}
+
+bool ObHiddenClusteringKey::operator==(const ObHiddenClusteringKey &other) const
+{
+  return tablet_id_ == other.tablet_id_ && seq_id_ == other.seq_id_;
+}
+
+bool ObHiddenClusteringKey::operator!=(const ObHiddenClusteringKey &other) const
+{
+  return !(operator==(other));
+}
+
+bool ObHiddenClusteringKey::operator <(const ObHiddenClusteringKey &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret= true;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret = false;
+  } else if (seq_id_ < other.seq_id_) {
+    bool_ret= true;
+  } else if (seq_id_ > other.seq_id_) {
+    bool_ret = false;
+  }
+
+  return bool_ret;
+}
+
+bool ObHiddenClusteringKey::operator >(const ObHiddenClusteringKey &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret = false;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret= true;
+  } else if (seq_id_ < other.seq_id_) {
+    bool_ret = false;
+  } else if (seq_id_ > other.seq_id_) {
+    bool_ret= true;
+  }
+
+  return bool_ret;
+
+}
+
+void ObHiddenClusteringKey::reset()
+{
+  tablet_id_ = ObTabletID::INVALID_TABLET_ID;
+  seq_id_ = 0;
+}
+
+bool ObHiddenClusteringKey::is_valid() const
+{
+  return ObTabletID(tablet_id_).is_valid() && seq_id_ > 0;
+}
+int ObHiddenClusteringKey::set_hidden_clustering_key_to_string(const ObHiddenClusteringKey &hidden_clustering_key,
+                                                              ObString &str)
+{
+  int ret = OB_SUCCESS;
+  if (!hidden_clustering_key.is_valid() || OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH != str.size()) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid hidden clustering key or string", KR(ret), K(hidden_clustering_key), K(str));
+  } else {
+    ObHiddenClusteringKey tmp;
+    tmp.tablet_id_ = hidden_clustering_key.tablet_id_;
+    tmp.seq_id_ = htonll(hidden_clustering_key.seq_id_);
+    if (OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH != str.write(reinterpret_cast<const char *>(&tmp), OB_CLUSTER_BY_TABLE_HIDDEN_PK_BYTE_LENGTH)) {
+      ret = OB_ERR_UNEXPECTED;
+      COMMON_LOG(WARN, "failed write data to string", KR(ret), K(hidden_clustering_key), K(str));
+    }
+  }
+  return ret;
+}
+
+ObPqCenterId::ObPqCenterId()
+  : tablet_id_(ObTabletID::INVALID_TABLET_ID),
+    m_id_(0),
+    center_id_(-1)
+{
+  static_assert(sizeof(ObPqCenterId) == OB_DOC_ID_COLUMN_BYTE_LENGTH, "size of ObPqCenterId isn't equal to OB_DOC_ID_COLUMN_BYTE_LENGTH");
+}
+
+ObPqCenterId::ObPqCenterId(const uint64_t tablet_id, const uint32_t m_id, const uint32_t center_id)
+  : tablet_id_(tablet_id),
+    m_id_(m_id),
+    center_id_(center_id)
+{
+  static_assert(sizeof(ObPqCenterId) == OB_DOC_ID_COLUMN_BYTE_LENGTH, "size of ObPqCenterId isn't equal to OB_DOC_ID_COLUMN_BYTE_LENGTH");
+}
+
+bool ObPqCenterId::operator==(const ObPqCenterId &other) const
+{
+  return tablet_id_ == other.tablet_id_ && center_id_ == other.center_id_ && m_id_ == other.m_id_;
+}
+
+bool ObPqCenterId::operator!=(const ObPqCenterId &other) const
+{
+  return !(operator==(other));
+}
+
+bool ObPqCenterId::operator <(const ObPqCenterId &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret= true;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret = false;
+  } else if (m_id_ < other.m_id_) {
+    bool_ret= true;
+  } else if (m_id_ > other.m_id_) {
+    bool_ret = false;
+  } else if (center_id_ < other.center_id_) {
+    bool_ret= true;
+  } else if (center_id_ > other.center_id_) {
+    bool_ret = false;
+  }
+
+  return bool_ret;
+}
+
+bool ObPqCenterId::operator >(const ObPqCenterId &other) const
+{
+  bool bool_ret = false;
+
+  if (tablet_id_ < other.tablet_id_) {
+    bool_ret = false;
+  } else if (tablet_id_ > other.tablet_id_) {
+    bool_ret= true;
+  } else if (m_id_ < other.m_id_) {
+    bool_ret = false;
+  } else if (m_id_ > other.m_id_) {
+    bool_ret= true;
+  } else if (center_id_ < other.center_id_) {
+    bool_ret = false;
+  } else if (center_id_ > other.center_id_) {
+    bool_ret= true;
+  }
+
+  return bool_ret;
+
+}
+
+void ObPqCenterId::reset()
+{
+  tablet_id_ = ObTabletID::INVALID_TABLET_ID;
+  m_id_ = 0;
+  center_id_ = -1;
+}
+
+bool ObPqCenterId::is_valid() const
+{
+  return ObTabletID(tablet_id_).is_valid() && center_id_ >= 0 && m_id_ > 0;
+}
+
 #define PRINT_META()
 //#define PRINT_META() BUF_PRINTO(obj.get_meta()); J_COLON();
 
@@ -1466,6 +1725,12 @@ int ObObj::build_not_strict_default_value(
       }
       break;
     }
+    case ObMySQLDateType:
+      set_mysql_date(ObTimeConverter::MYSQL_ZERO_DATE);
+      break;
+    case ObMySQLDateTimeType:
+      set_mysql_datetime(ObTimeConverter::MYSQL_ZERO_DATETIME);
+      break;
     default:
       ret = OB_INVALID_ARGUMENT;
       _OB_LOG(WARN, "unexpected data type=%u", data_type);
@@ -1949,6 +2214,7 @@ int64_t (*oceanbase::common::composite_serialize_size_callback)(const ObObj&) = 
       obj_crc64_v3<OBJTYPE>,                    \
       ObjHashCalculator<OBJTYPE, ObXxHash, ObObj>::calc_hash_value,  \
       ObjHashCalculator<OBJTYPE, ObMurmurHash, ObObj>::calc_hash_value,  \
+      ObjHashCalculator<OBJTYPE, ObMurmurHash3_x86_32, ObObj>::calc_hash_value,  \
   }
 
 ObObjTypeFuncs OBJ_FUNCS[ObMaxType] =
@@ -2005,8 +2271,8 @@ ObObjTypeFuncs OBJ_FUNCS[ObMaxType] =
   DEF_FUNC_ENTRY(ObUserDefinedSQLType),// 49, udt
   DEF_FUNC_ENTRY(ObDecimalIntType),    // 50, decimal int
   DEF_FUNC_ENTRY(ObCollectionSQLType), // 51, collection
-  DEF_FUNC_ENTRY(ObNullType),          // 52, mysql date
-  DEF_FUNC_ENTRY(ObNullType),          // 53, mysql datetime
+  DEF_FUNC_ENTRY(ObMySQLDateType),     // 52, mysql date
+  DEF_FUNC_ENTRY(ObMySQLDateTimeType), // 53, mysql datetime
   DEF_FUNC_ENTRY(ObRoaringBitmapType), // 54, roaringbitmap
 
 };
@@ -2083,8 +2349,15 @@ int ObObj::print_plain_str_literal(char *buffer, int64_t length, int64_t &pos, c
 
 void ObObj::print_str_with_repeat(char *buf, int64_t buf_len, int64_t &pos) const
 {
-  const unsigned char *uptr = reinterpret_cast<const unsigned char*>(v_.string_);
+  const char *str_ptr = v_.string_;
   int32_t real_len = val_len_;
+  ObString data;
+  if (is_lob_storage()) {
+    data = get_text_print_string(buf_len - pos);
+    str_ptr = data.ptr();
+    real_len = data.length();
+  }
+  const unsigned char *uptr = reinterpret_cast<const unsigned char*>(str_ptr);
   int32_t repeats = 0;
   int8_t cnt_space = 0;//There is no space for whole multibyte character, then add trailing spaces.
   if (NULL != uptr && real_len > 0) {
@@ -2099,9 +2372,9 @@ void ObObj::print_str_with_repeat(char *buf, int64_t buf_len, int64_t &pos) cons
     }
   }
   if (0 == repeats) {
-    real_len = val_len_;
+    real_len = is_lob_storage() ? data.length() : val_len_;
   }
-  BUF_PRINTO(ObString(0, real_len, v_.string_));
+  BUF_PRINTO(ObString(0, real_len, str_ptr));
   if (repeats > 0) {
     BUF_PRINTF(" \'<%X%X%X><repeat %d times>\' ", uptr[real_len], uptr[real_len + 1], uptr[real_len + 2], repeats);
     //There is no space for whole multibyte character, then add trailing spaces.
@@ -2243,6 +2516,12 @@ int ObObj::hash_xx(uint64_t &res, uint64_t seed) const
 {
   check_collation_integrity();
   return OBJ_FUNCS[meta_.get_type()].xxhash64(*this, seed, res);
+}
+
+int ObObj::hash_murmur3_x86_32(uint64_t &res, uint64_t seed) const
+{
+  check_collation_integrity();
+  return OBJ_FUNCS[meta_.get_type()].murmurhash3_x86_32(*this, seed, res);
 }
 
 int64_t ObObj::checksum(const int64_t current) const
@@ -2488,6 +2767,25 @@ int ObObj::get_real_param_count(int64_t &count) const
     } else {
       count = array_obj->count_;
     }
+  }
+  return ret;
+}
+
+int ObObj::read_lob_data(ObIAllocator &allocator, ObString &data) const
+{
+  int ret = OB_SUCCESS;
+  if (is_lob_storage() || get_type() == ObTinyTextType) {
+    ObLobLocatorV2 locator(reinterpret_cast<char *>(v_.ptr_), val_len_, has_lob_header());
+    if(locator.has_inrow_data()) {
+      if (OB_FAIL(locator.get_inrow_data(data))) {
+        LOG_WARN("fail to get inrow data", K(ret), K(locator), KPC(this), K(lbt()));
+      }
+    } else if (OB_FAIL(ob_obj_read_lob_data(allocator, *this, data))) {
+      LOG_WARN("read data fail", K(ret), K(locator), KPC(this), K(lbt()));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("not lob storage type", K(ret), KPC(this), K(lbt()));
   }
   return ret;
 }

@@ -13,7 +13,6 @@
 
 #define USING_LOG_PREFIX SQL
 #include "ob_json_parse.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
 
 namespace oceanbase {
 namespace common {
@@ -326,8 +325,8 @@ bool ObRapidJsonHandler::is_end_object_or_array()
     if (current_element_->json_type() == ObJsonNodeType::J_OBJECT) { // current is object
       // Sort the key-value pairs of the ObJsonObject at the current level.
       ObJsonObject *obj = static_cast<ObJsonObject *>(current_element_);
-      obj->update_serialize_size();
       obj->stable_sort();
+      obj->update_serialize_size();
       int64_t origin_num = obj->element_count();
       if (!preserve_dup_key_) {
         obj->unique();

@@ -143,15 +143,29 @@ public:
   void get_all_add_stats(ObStatEventAddStatArray &arr) const;
   void get_all_latch_stat(ObLatchStatArray &arr) const;
   ObDiagnosticInfoSlot *get_slot(int64_t session_id);
+  void reuse()__attribute__((deprecated("reuse of di collector is not implemented."))) {}
 
   TO_STRING_KV(K_(tenant_id), K_(group_id), K_(slot_mask), K_(is_inited), K(get_uref()), K(get_href()));
 
+  void set_using_cache()
+  {
+    using_cache_ = true;
+  }
+  void unset_using_cache()
+  {
+    using_cache_ = false;
+  }
+  bool is_using_cache() const
+  {
+    return using_cache_;
+  }
 private:
   int64_t tenant_id_;
   int64_t group_id_;
   int64_t slot_mask_;
   int64_t slot_count_;
   bool is_inited_;
+  bool using_cache_;
   ObDiagnosticInfoSlot *di_info_bundle_;
 };
 
@@ -162,7 +176,7 @@ public:
   friend class ObDiagnosticInfoContainer;
   explicit ObBaseDiagnosticInfoSummary(
       DiagnosticInfoValueAlloc<ObDiagnosticInfoCollector, ObDiagnosticKey> value_alloc)
-      : collectors_(value_alloc), mutex_(ObLatchIds::DI_COLLECTOR_LOCK), cpu_cnt_(1)
+      : collectors_(value_alloc), mutex_(ObLatchIds::DI_COLLECTOR_LOCK), cpu_cnt_(1), is_inited_(false)
   {}
 
   ~ObBaseDiagnosticInfoSummary()
@@ -178,11 +192,12 @@ public:
   int get_tenant_event(int64_t tenant_id, ObWaitEventStatArray &arr);
   int get_tenant_add_stats(int64_t tenant_id, ObStatEventAddStatArray &arr);
   int get_tenant_latch_stat(int64_t tenant_id, ObLatchStatArray &arr);
-  int for_each_group(std::function<void(int64_t, const ObDiagnoseTenantInfo &)> fn);
+  int for_each_group(int64_t tenant_id, std::function<void(int64_t, const ObDiagnoseTenantInfo &)> fn);
 
   int get_group_event(int64_t group_id, ObWaitEventStatArray &arr);
   int get_group_add_stats(int64_t group_id, ObStatEventAddStatArray &arr);
   int remove_if(std::function<bool(const ObDiagnosticKey&, ObDiagnosticInfoCollector*)> fn);
+  int64_t get_value_alloc_count() const { return collectors_.get_alloc_handle().get_alloc_count(); }
   DISABLE_COPY_ASSIGN(ObBaseDiagnosticInfoSummary);
   TO_STRING_KV(K_(cpu_cnt));
 
@@ -196,6 +211,7 @@ private:
   SummaryMap collectors_;
   lib::ObMutex mutex_;
   int64_t cpu_cnt_;
+  bool is_inited_;
 };
 
 } /* namespace common */

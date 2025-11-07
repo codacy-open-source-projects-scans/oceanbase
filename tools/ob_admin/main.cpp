@@ -10,14 +10,6 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <iostream>
-#include <sstream>
-#include <iterator>
-#include <string.h>
-#include <sys/types.h>
-#include <pwd.h>
-#include <malloc.h>
-#include "share/ob_define.h"
 #include "dumpsst/ob_admin_dumpsst_executor.h"
 #include "io_bench/ob_admin_io_executor.h"
 #include "server_tool/ob_admin_server_executor.h"
@@ -30,10 +22,13 @@
 #include "slog_tool/ob_admin_slog_executor.h"
 #include "io_bench/ob_admin_io_adapter_bench.h"
 #include "io_device/ob_admin_test_io_device_executor.h"
-#include "lib/utility/ob_print_utils.h"
+#include "object_storage_driver_quality/ob_admin_object_storage_driver_quality.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "tools/ob_admin/shared_storage_tool/ob_admin_shared_storage_tool_executor.h"
 #endif
+#include "deps/oblib/src/lib/alloc/malloc_hook.h"
+#include "tools/ob_admin/sql_tool/ob_admin_uncompress_plan_executor.h"
+
 using namespace oceanbase::common;
 using namespace oceanbase::tools;
 
@@ -43,6 +38,7 @@ void print_usage()
          "       ob_admin slog_tool\n"
          "       ob_admin dumpsst\n"
          "       ob_admin dump_enum_value\n"
+         "       ob_admin dump_backup\n"
 #ifdef OB_BUILD_TDE_SECURITY
          "       ob_admin dump_key\n"
 #endif
@@ -51,6 +47,9 @@ void print_usage()
          "       ob_admin ss_tool\n"
 #endif
          "       ob_admin log_tool ## './ob_admin log_tool' for more detail\n"
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+         "       ob_admin log_service_log_tool ## './ob_admin log_service_log_tool' for more detail\n"
+#endif
          "       ob_admin -h127.0.0.1 -p2883 xxx\n"
          "       ob_admin -h127.0.0.1 -p2883 (-sintl/-ssm -mbkmi/-mlocal) [command]\n"
          "              ## The options in parentheses take effect when ssl enabled.\n"
@@ -118,6 +117,7 @@ int get_log_base_directory(char *log_file_name, const int64_t log_file_name_len,
 
 int main(int argc, char *argv[])
 {
+  init_malloc_hook();
   int ret = 0;
   char log_file_name[OB_MAX_FILE_NAME_LENGTH] = {'\0'};
   char log_file_rs_name[OB_MAX_FILE_NAME_LENGTH] = {'\0'};
@@ -135,6 +135,9 @@ int main(int argc, char *argv[])
   _OB_LOG(INFO, "cmd: [%s]", ss.str().c_str());
 
   ObAdminExecutor *executor = NULL;
+  oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
+  oceanbase::ObClusterVersion::get_instance().update_cluster_version(CLUSTER_CURRENT_VERSION);
+
   if (argc < 2) {
     print_usage();
   } else {
@@ -153,7 +156,11 @@ int main(int argc, char *argv[])
       executor = new ObAdminSSToolExecutor();
 #endif
     } else if (0 == strcmp("log_tool", argv[1])) {
-      executor = new ObAdminLogExecutor();
+      executor = new ObAdminLogExecutor(false);
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+    } else if (0 == strcmp("log_service_log_tool", argv[1])) {
+      executor = new ObAdminLogExecutor(true);
+#endif
     } else if (0 == strcmp("dump_backup", argv[1])) {
       executor = new ObAdminDumpBackupDataExecutor();
     } else if (0 == strcmp("slog_tool", argv[1])) {
@@ -162,6 +169,10 @@ int main(int argc, char *argv[])
       executor = new ObAdminIOAdapterBenchmarkExecutor();
     } else if (0 == strcmp("test_io_device", argv[1])) {
       executor = new ObAdminTestIODeviceExecutor();
+    } else if (0 == strcmp("io_driver_quality", argv[1])) {
+      executor = new ObAdminObjectStorageDriverQualityExecutor();
+    } else if (0 == strcmp("uncompress_plan", argv[1])) {
+      executor = new ObAdminUncompressPlanExecutor();
     } else if (0 == strncmp("-h", argv[1], 2) || 0 == strncmp("-S", argv[1], 2)) {
       executor = new ObAdminServerExecutor();
     } else {

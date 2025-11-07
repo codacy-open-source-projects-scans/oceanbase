@@ -15,6 +15,7 @@
 
 #include "share/io/ob_io_define.h"
 #include "storage/blocksstable/ob_macro_block_id.h"
+
 namespace oceanbase
 {
 namespace storage
@@ -22,13 +23,20 @@ namespace storage
   class ObBloomFilterBuildTask;
 #ifdef OB_BUILD_SHARED_STORAGE
   class ObBaseFileManager;
-  class ObSSTmpFileFlushTask;
+  class ObSSMacroCacheFlushTask;
   class ObSSPreReadTask;
   class ObSSMicroCacheHandler;
   class ObSSMicroCache;
+  class ObSSMemMacroCache;
   class ObTenantFileManager;
+  class ObServerFileManager;
   class ObSSBaseReader;
+  class ObSSTableMacroPrewarmer;
+  class ObServerSlogFlushTask;
+  class ObSSObjectAccessUtil;
+  class ObStorageCachePolicyPrewarmer;
 #endif
+  class ObStorageIOPipelineTaskInfo;
 }
 namespace blocksstable
 {
@@ -44,13 +52,20 @@ class ObStorageObjectHandle final
   friend class storage::ObBloomFilterBuildTask; // in construct_func
   friend class blocksstable::ObMacroBlockWriter; // int ObMacroBlockWriter::alloc_block_from_device
   #ifdef OB_BUILD_SHARED_STORAGE
-  friend class storage::ObSSTmpFileFlushTask;
+  friend class storage::ObSSMacroCacheFlushTask;
   friend class storage::ObSSPreReadTask;
   friend class storage::ObSSMicroCacheHandler;
   friend class storage::ObSSMicroCache;
+  friend class storage::ObSSMemMacroCache;
   friend class storage::ObTenantFileManager;
+  friend class storage::ObServerFileManager;
   friend class storage::ObSSBaseReader;
+  friend class storage::ObSSTableMacroPrewarmer;
+  friend class storage::ObServerSlogFlushTask;
+  friend class storage::ObSSObjectAccessUtil;
+  friend class storage::ObStorageCachePolicyPrewarmer;
   #endif
+  friend class storage::ObStorageIOPipelineTaskInfo;
 public:
   ObStorageObjectHandle() = default;
   ~ObStorageObjectHandle();
@@ -66,6 +81,7 @@ public:
   const MacroBlockId& get_macro_id() const { return macro_id_; }
   common::ObIOHandle &get_io_handle() { return io_handle_; }
   int64_t get_data_size() const { return io_handle_.get_data_size(); }
+  int64_t get_user_io_size() const { return io_handle_.get_user_io_size(); }
   int async_read(const ObStorageObjectReadInfo &read_info);
   int async_write(const ObStorageObjectWriteInfo &write_info);
   int wait();
@@ -83,8 +99,8 @@ private:
 #ifdef OB_BUILD_SHARED_STORAGE
   int ss_async_read(const ObStorageObjectReadInfo &read_info);
   int ss_async_write(const ObStorageObjectWriteInfo &write_info);
-  int get_file_manager(const uint64_t tenant_id,
-                       storage::ObBaseFileManager *&file_manager);
+  int ss_update_object_type_rw_stat(const blocksstable::ObStorageObjectType &object_type, const int result,
+    const int64_t delta_cnt);
 #endif
 
 private:

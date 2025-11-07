@@ -12,9 +12,6 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "ob_virtual_ash.h"
-#include "common/ob_smart_call.h"
-#include "share/inner_table/ob_inner_table_schema_constants.h"
-#include "observer/ob_server.h"
 
 using namespace oceanbase::observer;
 using namespace oceanbase::common;
@@ -25,7 +22,9 @@ using namespace oceanbase::share;
 
 ObVirtualASH::ObVirtualASH() :
     ObVirtualTableScannerIterator(),
-    iterator_(),
+    reverse_iterator_(),
+    forward_iterator_(),
+    iterator_(&forward_iterator_),
     addr_(),
     ipstr_(),
     port_(0),
@@ -76,15 +75,15 @@ int ObVirtualASH::set_ip(const common::ObAddr &addr)
 int ObVirtualASH::inner_get_next_row(common::ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
-  bool is_stack_overflow = false;
   if (is_first_get_) {
     is_first_get_ = false;
-    iterator_ = ObActiveSessHistList::get_instance().create_iterator();
+    reverse_iterator_ = ObActiveSessHistList::get_instance().create_reverse_iterator();
+    iterator_ = &reverse_iterator_;
   }
 
   do {
-    if (iterator_.has_next()) {
-      const ObActiveSessionStatItem &node = iterator_.next();
+    if (iterator_->has_next()) {
+      const ObActiveSessionStatItem &node = iterator_->next();
       if (OB_SYS_TENANT_ID == effective_tenant_id_ || node.tenant_id_ == effective_tenant_id_) {
         if (OB_FAIL(convert_node_to_row(node, row))) {
           LOG_WARN("fail convert row", K(ret));
@@ -139,7 +138,11 @@ int ObVirtualASH::convert_node_to_row(const ObActiveSessionStatItem &node, ObNew
         break;
       }
       case SESSION_ID: {
-        cells[cell_idx].set_int(node.session_id_);
+        if (node.session_type_ == 0 && node.client_sid_ != INVALID_SESSID) {
+          cells[cell_idx].set_int(node.client_sid_);
+        } else {
+          cells[cell_idx].set_int(node.session_id_);
+        }
         break;
       }
       case SESSION_TYPE: {
@@ -450,19 +453,19 @@ int ObVirtualASH::convert_node_to_row(const ObActiveSessionStatItem &node, ObNew
         break;
       }
       case DELTA_READ_IO_REQUESTS: {
-        cells[cell_idx].set_null();
+        cells[cell_idx].set_int(node.delta_read_.count_);
         break;
       }
       case DELTA_READ_IO_BYTES: {
-        cells[cell_idx].set_null();
+        cells[cell_idx].set_int(node.delta_read_.size_);
         break;
       }
       case DELTA_WRITE_IO_REQUESTS: {
-        cells[cell_idx].set_null();
+        cells[cell_idx].set_int(node.delta_write_.count_);
         break;
       }
       case DELTA_WRITE_IO_BYTES: {
-        cells[cell_idx].set_null();
+        cells[cell_idx].set_int(node.delta_write_.size_);
         break;
       }
       default: {
@@ -483,8 +486,8 @@ int ObVirtualASHI1::inner_get_next_row(common::ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
   do {
-    if (iterator_.has_next()) {
-      const ObActiveSessionStatItem &node = iterator_.next();
+    if (iterator_->has_next()) {
+      const ObActiveSessionStatItem &node = iterator_->next();
       if (OB_SYS_TENANT_ID == effective_tenant_id_ || node.tenant_id_ == effective_tenant_id_) {
         if (OB_FAIL(convert_node_to_row(node, row))) {
           LOG_WARN("fail convert row", K(ret));
@@ -528,13 +531,24 @@ int ObVirtualASHI1::init_next_query_range()
       if (cur_range.end_key_.is_max_row()) {
         right = INT64_MAX;  // maximum sample time is INT64_MAX
       }
+      if (lib::is_oracle_mode() && cur_range.end_key_.get_obj_ptr()->is_null()) {
+        // oracle null last
+        right = INT64_MAX;  // sample time cannot be null.
+      }
       if (OB_UNLIKELY(cur_range.end_key_.is_min_row() || cur_range.start_key_.is_max_row())) {
         left = INT64_MAX;
         right = 0;
       }
       ++current_key_range_index_;
-      iterator_ = ObActiveSessHistList::get_instance().create_iterator();
-      iterator_.init_with_sample_time_index(left, right);
+      if (common::ObQueryFlag::ScanOrder::Reverse == scan_flag_.scan_order_) {
+        reverse_iterator_ = ObActiveSessHistList::get_instance().create_reverse_iterator();
+        iterator_ = &reverse_iterator_;
+      } else {
+        // we treat every thing else as forward order.
+        forward_iterator_ = ObActiveSessHistList::get_instance().create_forward_iterator();
+        iterator_ = &forward_iterator_;
+      }
+      iterator_->init_with_sample_time_index(left, right);
       LOG_DEBUG("current ash query range", K(key_ranges_), K(left), K(right), K_(iterator));
     }
   }

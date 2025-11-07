@@ -11,19 +11,10 @@
  */
 
 #define USING_LOG_PREFIX DDL
-#include "pl/sys_package/ob_dbms_space.h"
+#include "ob_dbms_space.h"
 #include "sql/parser/ob_parser.h"
-#include "sql/ob_sql_context.h"
 #include "sql/resolver/ddl/ob_create_index_resolver.h"
 #include "share/stat/ob_opt_stat_manager.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "share/stat/ob_dbms_stats_utils.h"
-#include "pl/sys_package/ob_dbms_stats.h"
-#include "sql/ob_sql_define.h"
-#include "lib/utility/utility.h"
-#include "share/ob_ddl_common.h"
-#include "observer/ob_server_struct.h"
 
 #define GET_COMPRESSED_INFO_SQL "select sum(occupy_size)/sum(original_size) as compression_ratio from oceanbase.__all_virtual_tablet_sstable_macro_info "\
                                 "where tablet_id in (%.*s) and (svr_ip, svr_port) in (%.*s) and tenant_id = %lu;"\
@@ -758,6 +749,9 @@ int ObDbmsSpace::estimate_index_table_size(ObMySQLProxy *sql_proxy,
   if (OB_ISNULL(sql_proxy)) {
     ret = OB_INVALID_ARGUMENT;
     SQL_ENG_LOG(WARN, "the args is null", K(ret), KP(sql_proxy));
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    SQL_ENG_LOG(WARN, "unexpected null ptr of table schema", K(ret), K(table_schema));
   } else if (OB_FAIL(get_optimizer_stats(info, opt_stats))) {
     SQL_ENG_LOG(WARN, "fail to get opt stats", K(ret));
   } else if (OB_FAIL(check_stats_valid(opt_stats, is_valid))) {
@@ -766,8 +760,10 @@ int ObDbmsSpace::estimate_index_table_size(ObMySQLProxy *sql_proxy,
     if (OB_FAIL(estimate_index_table_size_by_opt_stats(sql_proxy, table_schema, opt_stats, info, table_size))) {
       SQL_ENG_LOG(WARN, "fail to estimate index table size", K(ret));
     }
-  } else if (OB_FAIL(estimate_index_table_size_default(sql_proxy, table_schema, info, table_size))) {
-    SQL_ENG_LOG(WARN, "fail to estimate index table size by default", K(ret));
+  } else {
+    ret = OB_NOT_SUPPORTED;
+    SQL_ENG_LOG(WARN, "not supported to estimate the size of the index table without optimizer stats", K(ret), "main table schema", *table_schema,
+        K(info));
   }
 
   if (OB_SUCC(ret)) {
@@ -818,8 +814,7 @@ int ObDbmsSpace::estimate_index_table_size_by_opt_stats(ObMySQLProxy *sql_proxy,
                                               info.tablet_ids_,
                                               info.table_tenant_id_))) {
     SQL_ENG_LOG(WARN, "fail to get info from schema", K(ret));
-  } else if (OB_FAIL(inner_get_compressed_ratio(sql_proxy, info))) {
-    SQL_ENG_LOG(WARN, "fail to get compression ratio", K(ret));
+  } else if (OB_FALSE_IT(info.compression_ratio_ = 0.5)) {
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < info.part_ids_.count(); i++) {
       uint64_t dummy_alloc_size = 0;
@@ -1021,11 +1016,10 @@ int ObDbmsSpace::generate_part_key_str(ObSqlString &target_str,
 {
   int ret = OB_SUCCESS;
   target_str.reset();
-  const static int MAX_IP_BUFFER_LEN = 32;
-  char host[MAX_IP_BUFFER_LEN];
+  char host[MAX_IP_ADDR_LENGTH];
   for (int64_t i = 0; OB_SUCC(ret) && i < addr_list.count(); i++) {
     host[0] = '\0';
-    if (!addr_list.at(i).ip_to_string(host, MAX_IP_BUFFER_LEN)) {
+    if (!addr_list.at(i).ip_to_string(host, MAX_IP_ADDR_LENGTH)) {
       ret = OB_BUF_NOT_ENOUGH;
       SQL_ENG_LOG(WARN, "fail to get host.", K(ret));
     } else if (OB_FAIL(target_str.append_fmt((i == addr_list.count() - 1) ? "('%.*s', %d)" : "('%.*s', %d),",

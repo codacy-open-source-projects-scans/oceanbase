@@ -175,16 +175,28 @@ public:
   static int create_stash_savepoint(ObExecContext &exec_ctx, const ObString &name);
   static int release_stash_savepoint(ObExecContext &exec_ctx, const ObString &name);
   static int explicit_start_trans(ObExecContext &exec_ctx, const bool read_only, const ObString hint = ObString());
+  static int explicit_start_trans(ObSQLSessionInfo *session,
+                                  transaction::ObTxParam &tx_param,
+                                  bool &need_disconnect,
+                                  const bool read_only,
+                                  const ObString hint = ObString());
   static int explicit_end_trans(ObExecContext &exec_ctx, const bool is_rollback, const ObString hint = ObString());
   static int implicit_end_trans(ObExecContext &exec_ctx,
                                 const bool is_rollback,
                                 ObEndTransAsyncCallback *callback = NULL,
                                 bool reset_trans_variable = true);
-  static int end_trans(ObExecContext &exec_ctx,
+  static int end_trans(ObSQLSessionInfo *session,
+                       bool &need_disconnect,
+                       TransState &trans_state,
                        const bool is_rollback,
                        const bool is_explicit,
                        ObEndTransAsyncCallback *callback = NULL,
-                       bool reset_trans_variable = true);
+                       bool reset_trans_variable = true,
+                       const ObString hint = ObString());
+  static int end_trans_before_cmd_execute(ObSQLSessionInfo &session,
+                                          bool &need_disconnect,
+                                          TransState &trans_state,
+                                          const int cmd_type);
   static int rollback_trans(ObSQLSessionInfo *session,
                             bool &need_disconnect);
   static int do_end_trans_(ObSQLSessionInfo *session,
@@ -210,6 +222,12 @@ public:
                                   const ObPhysicalPlanCtx *plan_ctx,
                                   transaction::ObTransService *txs,
                                   ObExecContext &exec_ctx);
+  static int stmt_setup_snapshot_for_sslog_(ObSQLSessionInfo *session,
+                                            ObDASCtx &das_ctx,
+                                            const ObPhysicalPlan *plan,
+                                            const ObPhysicalPlanCtx *plan_ctx,
+                                            transaction::ObTransService *txs,
+                                            ObExecContext &exec_ctx);
   static int can_do_plain_insert(ObSQLSessionInfo *session,
                                  const ObPhysicalPlan *plan,
                                  ObExecContext &exec_ctx,
@@ -220,7 +238,8 @@ public:
                                    ObDASCtx &das_ctx,
                                    ObPhysicalPlanCtx *plan_ctx,
                                    transaction::ObTransService* txs,
-                                   const int64_t nested_level);
+                                   const int64_t nested_level,
+                                   const bool is_for_sslog);
   static int end_stmt(ObExecContext &exec_ctx, const bool is_rollback, const bool will_retry);
   static int alloc_branch_id(ObExecContext &exec_ctx, const int64_t count, int16_t &branch_id);
   static int kill_query_session(ObSQLSessionInfo &session, const ObSQLSessionState &status);
@@ -279,6 +298,7 @@ private:
   static bool has_same_lsid(const ObDASCtx &das_ctx,
                             const transaction::ObTxReadSnapshot &snapshot,
                             share::ObLSID &first_lsid);
+  static bool is_accessing_sslog(const ObPhysicalPlan *plan);
 public:
   /*
    * create a savepoint without name
@@ -328,6 +348,7 @@ public:
   static int reset_trans_for_autocommit_lock_conflict(ObExecContext &exec_ctx);
   static transaction::ObTxCleanPolicy
   decide_stmt_rollback_tx_clean_policy_(const int error_code, const bool will_retry);
+  static int set_audit_tx_id_(ObSQLSessionInfo *session);
 };
 
 inline int ObSqlTransControl::get_trans_expire_ts(const ObSQLSessionInfo &my_session,

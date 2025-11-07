@@ -16,6 +16,7 @@
 #include "lib/container/ob_iarray.h"
 #include "lib/mysqlclient/ob_isql_client.h"
 #include "common/ob_zone.h"
+#include "common/ob_idc.h"
 #include "share/ob_lease_struct.h"
 #include "share/schema/ob_schema_struct.h"
 
@@ -64,6 +65,8 @@ public:
   static int remove_zone_info(common::ObISQLClient &sql_client, const common::ObZone &zone);
   static int get_region_list(
       common::ObISQLClient &sql_client, common::ObIArray<common::ObRegion> &region_list);
+  static int get_idc_list(
+      common::ObISQLClient &sql_client, common::ObIArray<common::ObIDC> &idc_list);
   static int check_encryption_zone(
       common::ObISQLClient &sql_client,
       const common::ObZone &zone,
@@ -82,6 +85,9 @@ public:
       const ObZone &zone,
       common::ObISQLClient &sql_client,
       ObZoneInfo &zone_info);
+  static int update_global_config_version_with_lease(
+      ObMySQLTransaction &trans,
+      const int64_t global_config_version);
 private:
   template <typename T>
       static int set_info_item(const char *name, const int64_t value, const char *info_str,
@@ -100,6 +106,14 @@ private:
       common::ObISQLClient &sql_client,
       common::ObIArray<common::ObZone> &zone_list,
       const bool is_active);
+  static int get_config_version_with_lease_(
+      ObMySQLTransaction &trans,
+      int64_t &current_config_version,
+      int64_t &current_lease_info_version);
+  static int inner_update_global_config_version_with_lease_(
+      ObMySQLTransaction &trans,
+      const int64_t global_config_version_to_update,
+      const int64_t lease_info_version_to_update);
 };
 
 }//end namespace share

@@ -6,9 +6,23 @@
 set(ob_sql_parser_charset_object_list
     ob_ctype_bin.cc
     ob_ctype.cc
+    ob_ctype_gbk_tab.cpp
     ob_ctype_gbk.cc
+    ob_ctype_latin1_tab.cpp
     ob_ctype_latin1.cc
+    ob_ctype_ascii_tab.cpp
+    ob_ctype_gb2312_tab.cpp
+    ob_ctype_gb2312.cc
+    ob_ctype_ujis_tab.cpp
+    ob_ctype_ujis.cc
+    ob_ctype_euckr_tab.cpp
+    ob_ctype_euckr.cc
+    ob_ctype_eucjpms_tab.cpp
+    ob_ctype_eucjpms.cc
+    ob_ctype_cp932_tab.cpp
+    ob_ctype_cp932.cc
     ob_ctype_ascii.cc
+    ob_ctype_tis620_tab.cpp
     ob_ctype_tis620.cc
     ob_ctype_mb.cc
     ob_ctype_simple.cc
@@ -16,6 +30,7 @@ set(ob_sql_parser_charset_object_list
     ob_dtoa.cc
     ob_ctype_utf16.cc
     ob_ctype_uca.cc
+    ob_ctype_gb18030_tab.cpp
     ob_ctype_gb18030.cc
     uca900_ja_tbls.cc
     uca900_zh_tbls.cc
@@ -76,6 +91,14 @@ set(ob_inner_sql_parser_object_list
   sql_parser_mysql_mode_lex.h
   sql_parser_mysql_mode_tab.c
   sql_parser_mysql_mode_tab.h
+  ftsblex_lex.c
+  ftsblex_lex.h
+  ftsparser_tab.c
+  ftsparser_tab.h
+  fts_base.h
+  fts_base.c
+  fts_parse.h
+  fts_parse.c
   non_reserved_keywords_mysql_mode.c
   ob_item_type_str.h
   ob_non_reserved_keywords.c
@@ -99,6 +122,7 @@ set(ob_inner_sql_parser_object_list
   parser_utility.cpp
   parser_utility.h
   type_name.c
+  ob_parse_simd.cpp
 )
 
 # parser objects for server parser
@@ -120,10 +144,12 @@ if (BUILD_CDC_ONLY)
   set_target_properties(ob_sql_proxy_parser_objects PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
+
 # ob_sql_server_parser_object is the static library for observer
 add_library(ob_sql_server_parser_objects OBJECT
   ${ob_inner_sql_parser_object_list}
   ${ob_extra_sql_parser_object_list})
+
 
 target_link_libraries(ob_sql_proxy_parser_objects PUBLIC ob_base ob_sql_parser_base)
 target_link_libraries(ob_sql_server_parser_objects PUBLIC ob_base)
@@ -140,9 +166,11 @@ add_library(ob_sql_proxy_parser_static
   STATIC
   EXCLUDE_FROM_ALL)
 
+
 add_library(ob_sql_server_parser_static
   STATIC
   EXCLUDE_FROM_ALL)
+
 
 target_link_libraries(ob_sql_proxy_parser_static
   PUBLIC

@@ -15,9 +15,6 @@
 #include "sql/engine/sort/ob_sort_op.h"
 #include "sql/engine/px/ob_px_util.h"
 #include "sql/engine/aggregate/ob_hash_groupby_op.h"
-#include "sql/engine/window_function/ob_window_function_op.h"
-#include "sql/engine/aggregate/ob_hash_groupby_vec_op.h"
-#include "share/ob_rpc_struct.h"
 #include "sql/engine/expr/ob_expr_topn_filter.h"
 
 namespace oceanbase
@@ -132,10 +129,22 @@ void ObSortOp::destroy()
 
 int ObSortOp::inner_close()
 {
+  int ret = OB_SUCCESS;
   sort_impl_.collect_memory_dump_info(op_monitor_info_);
   sort_impl_.unregister_profile();
   prefix_sort_impl_.unregister_profile();
-  return OB_SUCCESS;
+  if (MY_SPEC.enable_pd_topn_filter()) {
+    uint32_t expr_ctx_id = MY_SPEC.pd_topn_filter_info_.expr_ctx_id_;
+    ObExprTopNFilterContext *topn_filter_ctx =
+        static_cast<ObExprTopNFilterContext *>(ctx_.get_expr_op_ctx(expr_ctx_id));
+    if (OB_NOT_NULL(topn_filter_ctx)) {
+      SET_METRIC_VAL(ObMetricId::TOPN_RUNTIME_FILTER_CHECK_ROWS, topn_filter_ctx->check_count_);
+      SET_METRIC_VAL(ObMetricId::TOPN_RUNTIME_FILTER_FILTER_ROWS, topn_filter_ctx->filter_count_);
+      SET_METRIC_VAL(ObMetricId::TOPN_RUNTIME_FILTER_BYPASS_ROWS,
+                     topn_filter_ctx->total_count_ - topn_filter_ctx->check_count_);
+    }
+  }
+  return ret;
 }
 
 int ObSortOp::get_int_value(const ObExpr *in_val, int64_t &out_val)
@@ -287,6 +296,8 @@ int ObSortOp::process_sort_batch()
         LOG_WARN("fail to scan all rows before inmem sort", K(ret));
       }
     }
+    op_monitor_info_.otherstat_7_id_ = ObSqlMonitorStatIds::ROW_COUNT;
+    op_monitor_info_.otherstat_7_value_ = sort_row_count_;
     OZ(sort_impl_.sort());
     sort_impl_.collect_memory_dump_info(op_monitor_info_);
   } else {
@@ -395,6 +406,8 @@ int ObSortOp::scan_all_then_sort_batch()
     if (OB_ITER_END == ret) {
       ret = OB_SUCCESS;
     }
+    op_monitor_info_.otherstat_7_id_ = ObSqlMonitorStatIds::ROW_COUNT;
+    op_monitor_info_.otherstat_7_value_ = sort_row_count_;
     if (OB_SUCC(ret)) {
       if (OB_FAIL(cache_store.finish_add_row(false))) {
         LOG_WARN("fail to finish add row", K(ret));
@@ -519,10 +532,6 @@ int ObSortOp::inner_get_next_row()
       if (OB_ITER_END != ret) {
         LOG_WARN("get next row failed");
       } else {
-        if (ctx_.get_my_session()->get_ddl_info().is_ddl() && ret_row_count_ != sort_row_count_) {
-          ret = OB_CHECKSUM_ERROR;
-          LOG_WARN("output row count not match", K(ret), K(sort_row_count_), K(ret_row_count_));
-        }
         iter_end_ = true;
         reset();
       }
@@ -576,10 +585,6 @@ int ObSortOp::inner_get_next_batch(const int64_t max_row_cnt)
     } else {
       ret_row_count_ += brs_.size_;
       if (brs_.end_) {
-        if (ctx_.get_my_session()->get_ddl_info().is_ddl() && ret_row_count_ != sort_row_count_) {
-          ret = OB_CHECKSUM_ERROR;
-          LOG_WARN("output row count not match", K(ret), K(sort_row_count_), K(ret_row_count_));
-        }
         LOG_DEBUG("finish ObSortOp::inner_get_next_batch",
                   K(MY_SPEC.output_), K(brs_), K(ret_row_count_));
       }

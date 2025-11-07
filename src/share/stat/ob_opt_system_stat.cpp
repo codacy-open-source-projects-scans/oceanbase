@@ -13,10 +13,8 @@
 #define USING_LOG_PREFIX SQL_OPT
 #include "share/stat/ob_opt_system_stat.h"
 #include "share/ob_io_device_helper.h"
-#include "lib/utility/ob_unify_serialize.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "src/storage/blocksstable/ob_object_manager.h"
 #include "src/share/io/ob_io_manager.h"
+#include "observer/ob_server_struct.h"
 
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_file_manager.h"
@@ -118,7 +116,7 @@ int OptSystemIoBenchmark::run_benchmark(ObIAllocator &allocator, const uint64_t 
       LOG_WARN("fail to switch tenant", KR(ret), K(tenant_id));
     } else {
       ObTenantFileManager *tnt_file_manager = MTL(ObTenantFileManager*);
-      ObTenantDiskSpaceManager *tnt_disk_space_manager = MTL(ObTenantDiskSpaceManager*);
+      ObTenantDiskSpaceManager *tnt_disk_space_manager = MTL(ObTenantDiskSpaceManager *);
       ss_second_id = tnt_file_manager->get_micro_cache_file_fd();
       if (OB_UNLIKELY(OB_INVALID_FD == ss_second_id)) {
         ret = OB_ERR_UNEXPECTED;

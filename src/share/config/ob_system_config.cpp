@@ -10,12 +10,10 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "share/config/ob_system_config.h"
-#include "share/config/ob_config.h"
+#include "ob_system_config.h"
 #include "share/config/ob_server_config.h"
 #include "share/ob_task_define.h"
 #include "share/ob_cluster_version.h"
-#include "common/ob_tenant_data_version_mgr.h"
 
 namespace oceanbase
 {
@@ -203,36 +201,6 @@ int ObSystemConfig::update_value(const ObSystemConfigKey &key, const ObSystemCon
     }
   } else {
     sys_value->set_value(value.value());
-  }
-  return ret;
-}
-
-int ObSystemConfig::reload(FILE *fp)
-{
-  int ret = OB_SUCCESS;
-  size_t cnt = 0;
-  if (OB_ISNULL(fp)) {
-    ret = OB_ERR_UNEXPECTED;
-    SHARE_LOG(ERROR, "Got NULL file pointer", K(ret));
-  } else {
-    ObSystemConfigKey key;
-    SMART_VAR(ObSystemConfigValue, value) {
-      while (1) { // 设计上单个config reload失败不影响下一个,故未判断OB_SUCC(ret)
-        if (1 != (cnt = fread(&key, sizeof(key), 1, fp))) {
-          if (0 == cnt) {
-            break;
-          } else {
-            ret = OB_ERR_UNEXPECTED;
-            SHARE_LOG(WARN, "fail to read config from file", KERRMSG, K(ret));
-          }
-        } else if (1 != (cnt = fread(&value, sizeof(value), 1, fp))) {
-          ret = OB_ERR_UNEXPECTED;
-          SHARE_LOG(WARN, "fail to read config from file", KERRMSG, K(ret));
-        } else {
-          ret = update_value(key, value);
-        }
-      }
-    }
   }
   return ret;
 }

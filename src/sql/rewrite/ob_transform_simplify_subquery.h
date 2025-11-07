@@ -31,6 +31,7 @@ public:
   virtual int transform_one_stmt(common::ObIArray<ObParentDMLStmt> &parent_stmts,
                                  ObDMLStmt *&stmt,
                                  bool &trans_happened) override;
+  virtual int check_rule_bypass(const ObDMLStmt &stmt, bool &reject) override;
 private:
   int transform_subquery_as_expr(ObDMLStmt *stmt, bool &trans_happened);
   int try_trans_subquery_in_expr(ObDMLStmt *stmt,
@@ -55,7 +56,7 @@ private:
                                      bool &trans_happened);
 
   int add_limit_for_exists_subquery(ObDMLStmt *stmt,bool &trans_happened);
-
+  static bool is_add_limit_for_exists_subquery_enabled(const uint64_t compat_version);
   int recursive_add_limit_for_exists_expr(ObRawExpr *expr, bool &trans_happened);
 
   /**

@@ -28,6 +28,7 @@ public:
 
   static int gather_stats(ObExecContext &ctx,
                           const ObOptStatGatherParam &param,
+                          ObOptStatGatherAudit &audit,
                           ObIArray<ObOptStat> &opt_stats);
 
   static int gather_index_stats(ObExecContext &ctx,
@@ -50,9 +51,7 @@ private:
   static int classfy_column_histogram(const ObOptStatGatherParam &param,
                                       ObOptStat &opt_stat);
 
-  static int refine_sample_block_for_async_gather(const ObIArray<ObOptStat> &opt_stats,
-                                                  ObOptStatGatherParam &param);
-
+  static int adjust_sample_param(const ObIArray<ObOptStat> &opt_stats, ObOptStatGatherParam &param);
 };
 
 } // end of sql

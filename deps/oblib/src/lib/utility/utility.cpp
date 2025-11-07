@@ -12,21 +12,12 @@
 
 #define USING_LOG_PREFIX LIB
 
+#include "utility.h"
 #include "dirent.h"
-#include <dlfcn.h>
 #include <gnu/libc-version.h>
-#include "lib/utility/utility.h"
-#include "lib/ob_define.h"
-#include "util/easy_inet.h"
-#include "common/rowkey/ob_rowkey.h"
-#include "lib/time/ob_time_utility.h"
 #include "lib/file/file_directory_utils.h"
-#include "common/ob_range.h"
+#include "deps/oblib/src/common/ob_string_buf.h"
 #include "lib/string/ob_sql_string.h"
-#include "lib/stat/ob_diagnose_info.h"
-#include "common/object/ob_object.h"
-#include "lib/net/ob_addr.h"
-#include "lib/json/ob_yson.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 
 namespace oceanbase
@@ -1687,12 +1678,15 @@ int ob_strtoll(const char *str, char *&endptr, int64_t &res)
 {
   int ret = OB_SUCCESS;
   res = 0;
+  errno = 0;
   if (OB_ISNULL(str)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     res = strtoll(str, &endptr, 10);
-    if (INT64_MAX == res) {
+    if (ERANGE == errno) {
       ret = OB_SIZE_OVERFLOW;
+    } else if (errno != 0) {
+      ret = OB_INVALID_ARGUMENT;
     }
   }
   return ret;
@@ -1703,12 +1697,15 @@ int ob_strtoull(const char *str, char *&endptr, uint64_t &res)
   int ret = OB_SUCCESS;
   res = 0;
   int64_t tmp_res = 0;
+  errno = 0;
   if (OB_ISNULL(str)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     tmp_res = strtoull(str, &endptr, 10);
-    if (UINT64_MAX == tmp_res) {
+    if (ERANGE == errno) {
       ret = OB_SIZE_OVERFLOW;
+    } else if (errno != 0) {
+      ret = OB_INVALID_ARGUMENT;
     } else {
       res = tmp_res;
     }
@@ -2011,6 +2008,72 @@ bool glibc_prereq(int major, int minor)
   int cur_minor = 0;
   get_glibc_version(cur_major, cur_minor);
   return (cur_major > major) || (cur_major == major && cur_minor >= minor);
+}
+
+const char *extract_demangled_class_name(const char *full_class_name, const char *prefix, char *buffer, int64_t &len)
+{
+  int ti_status = 0;
+  char *tmp_name = abi::__cxa_demangle(full_class_name, nullptr, nullptr, &ti_status);
+  const char *demangled_name = ti_status != 0 ? full_class_name : tmp_name;
+  const char *sub_name = nullptr;
+  if (prefix != nullptr) {
+    sub_name = strstr(demangled_name, prefix);
+  }
+  if (nullptr == sub_name) {
+    sub_name = demangled_name;
+  }
+  if (sub_name != nullptr && buffer != nullptr) {
+    STRNCPY(buffer, sub_name, len);
+    len = std::min(static_cast<int64_t>(strlen(sub_name)), len);
+    sub_name = buffer;
+  } else {
+    sub_name = nullptr;
+    len = 0;
+  }
+  if (tmp_name != nullptr) {
+    //tmp_name malloc by abi::__cxa_demangle,
+    //truncate class name to buffer len and free the tmp name
+    free(tmp_name);
+  }
+  return sub_name;
+}
+
+const char *get_transparent_hugepage_status()
+{
+  char buf[32];
+  const char *status = "unknown";
+  FILE *file = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+  if (NULL != file) {
+    if (NULL != fgets(buf, sizeof(buf), file)) {
+      if (NULL != STRSTR(buf, "[never]")) {
+        status = "never";
+      } else if (NULL != STRSTR(buf, "[always]")) {
+        status = "always";
+      } else if (NULL != STRSTR(buf, "[madvise]")) {
+        status = "madvise";
+      }
+    }
+    fclose(file);
+  }
+
+  return status;
+}
+
+int read_one_int(const char *file_name, int64_t &value)
+{
+  int ret = OB_SUCCESS;
+  FILE *fp = fopen(file_name, "r");
+  if (fp != nullptr) {
+    if (1 != fscanf(fp, "%ld", &value)) {
+      ret = OB_IO_ERROR;
+      LOG_ERROR("Failed to read integer from file", K(ret));
+    }
+    fclose(fp);
+  } else {
+    ret = OB_FILE_NOT_EXIST;
+    LOG_WARN("File does not exist", K(ret));
+  }
+  return ret;
 }
 
 } // end namespace common

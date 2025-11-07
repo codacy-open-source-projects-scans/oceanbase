@@ -12,20 +12,12 @@
 
 #define USING_LOG_PREFIX TRANS
 
-#include "lib/hash/ob_hashmap.h"
-#include "lib/worker.h"
-#include "lib/list/ob_list.h"
-#include "lib/container/ob_array.h"
-#include "lib/profile/ob_perf_event.h"
+#include "ob_trans_ctx_mgr_v4.h"
 #include "observer/ob_server.h"
-#include "storage/ob_storage_log_type.h"
-#include "ob_trans_factory.h"
 #include "ob_trans_functor.h"
-#include "ob_dup_table.h"
-#include "storage/ls/ob_ls_tx_service.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/tx/ob_trans_ctx_mgr_v4.h"
 #include "storage/tx_storage/ob_ls_service.h"
+
+#define USING_LOG_PREFIX TRANS
 
 namespace oceanbase
 {
@@ -167,7 +159,7 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
                        const ObLSID &ls_id,
                        ObTxTable *tx_table,
                        ObLockTable *lock_table,
-                       ObITsMgr *ts_mgr,
+                       ObTsMgr *ts_mgr,
                        ObTransService *txs,
                        ObITxLogParam *param,
                        ObITxLogAdapter *log_adapter)
@@ -186,6 +178,8 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
     TRANS_LOG(WARN, "tx log adapter init error", KR(ret));
   } else if (OB_NOT_NULL(log_adapter) && OB_FALSE_IT(tx_log_adapter_ = log_adapter)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(log_cb_pool_mgr_.init(tenant_id, ls_id))) {
+    TRANS_LOG(WARN, "init log_cb_pool_mgr failed", K(ret), K(ls_id_), K(log_cb_pool_mgr_));
   } else if (OB_FAIL(ls_log_writer_.init(tenant_id, ls_id, tx_log_adapter_, this))) {
     TRANS_LOG(WARN, "ls_log_writer init fail", KR(ret));
   } else if (OB_FAIL(tx_ls_state_mgr_.init(ls_id))) {
@@ -204,9 +198,6 @@ int ObLSTxCtxMgr::init(const int64_t tenant_id,
     aggre_rec_scn_.reset();
     prev_aggre_rec_scn_.reset();
     online_ts_ = 0;
-    for (int64_t i = 0; i < READONLY_REQUEST_TRACE_ID_NUM; i++) {
-      readonly_request_trace_id_set_[i].reset();
-    }
     TRANS_LOG(INFO, "ObLSTxCtxMgr inited success", KP(this), K(ls_id));
   }
   return ret;
@@ -216,6 +207,7 @@ void ObLSTxCtxMgr::destroy()
 {
   WLockGuardWithRetryInterval guard(rwlock_, TRY_THRESOLD_US, RETRY_INTERVAL_US);
   if (IS_INIT) {
+    log_cb_pool_mgr_.destroy();
     ls_log_writer_.destroy();
     is_inited_ = false;
     TRANS_LOG(INFO, "ObLSTxCtxMgr destroyed", KP(this), K_(ls_id));
@@ -362,6 +354,7 @@ int ObLSTxCtxMgr::create_tx_ctx_(const ObTxCreateArg &arg,
     if (OB_FAIL(tmp->init(arg.tenant_id_,
                           arg.scheduler_,
                           arg.session_id_,
+                          arg.client_sid_,
                           arg.associated_session_id_,
                           arg.tx_id_,
                           arg.trans_expired_time_,
@@ -582,6 +575,7 @@ int ObLSTxCtxMgr::remove_callback_for_uncommited_tx(const memtable::ObMemtableSe
 int ObLSTxCtxMgr::replay_start_working_log(const ObTxStartWorkingLog &log, SCN start_working_ts)
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   UNUSED(log);
 
   share::SCN tmp_applying_swl_scn;
@@ -621,6 +615,7 @@ int ObLSTxCtxMgr::replay_start_working_log(const ObTxStartWorkingLog &log, SCN s
 int ObLSTxCtxMgr::retry_apply_start_working_log()
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
 
   share::SCN retry_start_working_ts;
 
@@ -628,6 +623,9 @@ int ObLSTxCtxMgr::retry_apply_start_working_log()
     ret = on_start_working_log_cb_succ(retry_start_working_ts);
   }
 
+  if (OB_TMP_FAIL(log_cb_pool_mgr_.clear_log_cb_pool(false /*for_replay*/))) {
+    TRANS_LOG(WARN, "clear log cb pool failed", K(ret), K(ls_id_), K(log_cb_pool_mgr_));
+  }
   return ret;
 }
 
@@ -739,6 +737,7 @@ int ObLSTxCtxMgr::submit_start_working_log_()
 int ObLSTxCtxMgr::switch_to_follower_forcedly()
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   ObTimeGuard timeguard("ObLSTxCtxMgr::switch_to_follower_forcedly");
   ObTxCommitCallback *cb_list = NULL;
   {
@@ -763,6 +762,9 @@ int ObLSTxCtxMgr::switch_to_follower_forcedly()
       }
     }
   }
+  if (OB_TMP_FAIL(log_cb_pool_mgr_.clear_log_cb_pool(false /*for_replay*/))) {
+    TRANS_LOG(WARN, "clear log cb pool failed", K(ret), K(ls_id_), K(log_cb_pool_mgr_));
+  }
   timeguard.click();
   // run callback out of lock, ignore ret
   (void)process_callback_(cb_list);
@@ -779,8 +781,10 @@ int ObLSTxCtxMgr::try_wait_gts_and_inc_max_commit_ts_()
   if (!is_leader_serving_) {
     SCN gts;
     MonotonicTs receive_gts_ts(0);
+    const bool is_sslog = is_tenant_sslog_ls(tenant_id_, ls_id_);
+    const uint64_t gts_tenant_id = !is_sslog ? tenant_id_ : get_sslog_gts_tenant_id(tenant_id_);
 
-    if (OB_FAIL(ts_mgr_->get_gts(tenant_id_,
+    if (OB_FAIL(ts_mgr_->get_gts(gts_tenant_id,
                                  leader_takeover_ts_,
                                  nullptr,
                                  gts,
@@ -796,12 +800,18 @@ int ObLSTxCtxMgr::try_wait_gts_and_inc_max_commit_ts_()
         ret = OB_NOT_MASTER;
       } else {
         is_leader_serving_ = true;
-        txs_->get_tx_version_mgr().update_max_commit_ts(gts, false);
+        if (!is_sslog) {
+          txs_->get_tx_version_mgr().update_max_commit_ts(gts, false);
+        } else {
+          // for sslog
+          txs_->get_tx_version_mgr_for_sslog().update_max_commit_ts(gts, false);
+          TRANS_LOG(INFO, "update max commit ts for sslog", K(gts), K_(ls_id));
+        }
         TRANS_LOG(INFO, "skip waiting gts when takeover",
             K(ls_id_), K(tenant_id_), K(max_replay_commit_version_), K(gts));
       }
     }
-    TRANS_LOG(INFO, "try wait gts", KR(ret), K_(ls_id), K_(tenant_id),
+    TRANS_LOG(INFO, "try wait gts", KR(ret), K_(ls_id), K_(tenant_id), K(gts_tenant_id),
         K_(max_replay_commit_version), K(gts));
   }
   return ret;
@@ -811,6 +821,7 @@ int ObLSTxCtxMgr::try_wait_gts_and_inc_max_commit_ts_()
 int ObLSTxCtxMgr::switch_to_leader()
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
 
   if (OB_FAIL(retry_apply_start_working_log())) {
     TRANS_LOG(WARN, "retry to apply prev start working log failed", K(ret), KPC(this));
@@ -831,6 +842,11 @@ int ObLSTxCtxMgr::switch_to_leader()
       }
     }
   }
+
+  if (OB_TMP_FAIL(log_cb_pool_mgr_.switch_to_leader(get_active_tx_count()))) {
+    TRANS_LOG(WARN, "switch to leader failed in log_cb_pool_mgr", K(ret), K(tmp_ret), K(ls_id_));
+  }
+
   FLOG_INFO("[LsTxCtxMgr Role Change] switch_to_leader", K(ret), KPC(this));
   return ret;
 }
@@ -838,6 +854,7 @@ int ObLSTxCtxMgr::switch_to_leader()
 int ObLSTxCtxMgr::switch_to_follower_gracefully()
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   ObTimeGuard timeguard("switch_to_follower_gracefully");
   int64_t start_time = ObTimeUtility::current_time();
   int64_t process_count = 0;
@@ -904,6 +921,11 @@ int ObLSTxCtxMgr::switch_to_follower_gracefully()
       timeguard.click();
     }
   }
+
+  if (OB_TMP_FAIL(log_cb_pool_mgr_.clear_log_cb_pool(false /*for_replay*/))) {
+    TRANS_LOG(WARN, "clear log cb pool failed", K(ret), K(tmp_ret), K(ls_id_), K(log_cb_pool_mgr_));
+  }
+
   (void)process_callback_(cb_list);
   timeguard.click();
   FLOG_INFO("[LsTxCtxMgr Role Change] switch_to_follower_gracefully", K(ret), KPC(this),
@@ -1475,7 +1497,7 @@ int ObLSTxCtxMgr::get_min_start_scn(SCN &min_start_scn)
   return ret;
 }
 
-SCN ObLSTxCtxMgr::get_aggre_rec_scn_()
+SCN ObLSTxCtxMgr::get_aggre_rec_scn_() const
 {
   SCN ret;
   SCN prev_aggre_rec_scn = prev_aggre_rec_scn_.atomic_get();
@@ -1608,9 +1630,6 @@ int ObLSTxCtxMgr::start_readonly_request()
     // readonly read must be blocked, because trx may be killed forcely
     TRANS_LOG(WARN, "logstream is blocked", K(ret));
   } else {
-    const ObCurTraceId::TraceId trace_id = *(ObCurTraceId::get_trace_id());
-    const uint64_t idx = ((uint64_t)trace_id.hash()) % READONLY_REQUEST_TRACE_ID_NUM;
-    readonly_request_trace_id_set_[idx].set(trace_id);
     inc_total_active_readonly_request_count();
   }
   return ret;
@@ -1621,26 +1640,8 @@ int ObLSTxCtxMgr::end_readonly_request()
   if (is_all_blocked_()) {
     TRANS_LOG(INFO, "end readonly request when ls is blocked");
   }
-  const ObCurTraceId::TraceId trace_id = *(ObCurTraceId::get_trace_id());
-  const uint64_t idx = ((uint64_t)trace_id.hash()) % READONLY_REQUEST_TRACE_ID_NUM;
-  if (readonly_request_trace_id_set_[idx] == trace_id) {
-    readonly_request_trace_id_set_[idx].reset();
-  }
   dec_total_active_readonly_request_count();
   return OB_SUCCESS;
-}
-
-void ObLSTxCtxMgr::dump_readonly_request(const int64_t max_req_number)
-{
-  int64_t dump_cnt = 0;
-  for (int64_t i = 0; dump_cnt < max_req_number && i < READONLY_REQUEST_TRACE_ID_NUM; i++) {
-    ObCurTraceId::TraceId trace_id;
-    trace_id.set(readonly_request_trace_id_set_[i]);
-    if (trace_id.is_valid()) {
-      TRANS_LOG(INFO, "readonly request is running", K(trace_id));
-      dump_cnt++;
-    }
-  }
 }
 
 int ObTxCtxMgr::remove_all_ls_()
@@ -1711,7 +1712,7 @@ int ObTxCtxMgr::wait_ls_(const ObLSID &ls_id)
 }
 
 int ObTxCtxMgr::init(const int64_t tenant_id,
-                     ObITsMgr *ts_mgr,
+                     ObTsMgr *ts_mgr,
                      ObTransService *txs)
 {
   int ret = OB_SUCCESS;
@@ -1881,10 +1882,11 @@ int ObTxCtxMgr::get_ls_tx_ctx_mgr(const ObLSID &ls_id, ObLSTxCtxMgr *&ls_tx_ctx_
     TRANS_LOG(WARN, "invalid argument", K(ls_id));
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(ls_tx_ctx_mgr_map_.get(ls_id, ls_tx_ctx_mgr))) {
-    if (OB_ENTRY_NOT_EXIST != ret && OB_PARTITION_NOT_EXIST != ret) {
-      TRANS_LOG(WARN, "get ls_tx_ctx_mgr error", KR(ret), K(ls_id));
-    } else {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      ret = OB_PARTITION_NOT_EXIST;
       TRANS_LOG(TRACE, "get ls_tx_ctx_mgr error", KR(ret), K(ls_id));
+    } else {
+      TRANS_LOG(WARN, "get ls_tx_ctx_mgr error", KR(ret), K(ls_id));
     }
     ls_tx_ctx_mgr = NULL;
   }
@@ -2769,6 +2771,7 @@ int ObLSTxCtxMgr::move_tx_op(const ObTransferMoveTxParam &move_tx_param,
                                arg.cluster_id_,
                                arg.cluster_version_,
                                arg.session_id_,
+                               arg.client_sid_,
                                arg.associated_session_id_,
                                arg.scheduler_,
                                INT64_MAX, // tx expired time

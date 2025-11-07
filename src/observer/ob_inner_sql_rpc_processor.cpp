@@ -13,16 +13,10 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "ob_inner_sql_rpc_processor.h"
-#include "ob_inner_sql_connection.h"
-#include "ob_inner_sql_connection_pool.h"
 #include "ob_inner_sql_result.h"
 #include "ob_resource_inner_sql_connection_pool.h"
-#include "observer/omt/ob_multi_tenant.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/container/ob_iarray.h"
-#include "storage/tx/ob_multi_data_source.h"
-#include "sql/plan_cache/ob_plan_cache_util.h"
 #include "storage/tablelock/ob_lock_inner_connection_util.h"
+#include "storage/ob_inner_tablet_access_service.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share::schema;
@@ -427,6 +421,12 @@ int ObInnerSqlRpcP::process()
             }
             break;
           }
+          case ObInnerSQLTransmitArg::OPERATION_TYPE_INNER_TABLET_WRITE: {
+            if (OB_FAIL(process_inner_tablet_write(conn, transmit_arg, transmit_result))) {
+              LOG_WARN("failed to process inner tablet write", K(ret), K(transmit_arg));
+            }
+            break;
+          }
           default: {
             ret = OB_NOT_SUPPORTED;
             LOG_WARN("Unknown operation type", K(ret), K(transmit_arg.get_operation_type()));
@@ -476,13 +476,47 @@ int ObInnerSqlRpcP::set_session_param_to_conn(
   } else {
     conn->set_is_load_data_exec(transmit_arg.get_is_load_data_exec());
     conn->set_nls_formats(transmit_arg.get_nls_formats());
+    const bool need_update_lower_case_table_names = transmit_arg.get_name_case_mode() != OB_NAME_CASE_INVALID;
+    const bool need_enable_index_direct_select = transmit_arg.get_select_index_enabled();
     if (OB_FAIL(conn->set_ddl_info(&transmit_arg.get_ddl_info()))) {
       LOG_WARN("fail to set ddl info", K(ret), K(transmit_arg));
+    } else if (need_update_lower_case_table_names &&
+        OB_FAIL(conn->set_session_variable(share::OB_SV_LOWER_CASE_TABLE_NAMES, transmit_arg.get_name_case_mode()))) {
+      LOG_WARN("fail to set name case mode", K(ret), K(transmit_arg));
+    } else if (need_enable_index_direct_select &&
+        OB_FAIL(conn->set_session_variable(share::OB_SV_ENABLE_INDEX_DIRECT_SELECT, 1))) {
+      LOG_WARN("fail to set select index enabled", K(ret), K(transmit_arg));
     } else if (0 != transmit_arg.get_sql_mode() && OB_FAIL(conn->set_session_variable("sql_mode", transmit_arg.get_sql_mode()))) {
       LOG_WARN("fail to set sql mode", K(ret), K(transmit_arg));
     } else if (transmit_arg.get_tz_info_wrap().is_valid() && OB_FAIL(conn->set_tz_info_wrap(transmit_arg.get_tz_info_wrap()))) {
       LOG_WARN("fail to set tz info wrap", K(ret), K(transmit_arg));
     }
+  }
+  return ret;
+}
+
+int ObInnerSqlRpcP::process_inner_tablet_write(
+    sqlclient::ObISQLConnection *conn,
+    const ObInnerSQLTransmitArg &arg,
+    ObInnerSQLTransmitResult &transmit_result)
+{
+  int ret = OB_SUCCESS;
+  observer::ObInnerSQLConnection *inner_conn = static_cast<observer::ObInnerSQLConnection *>(conn);
+  ObInnerTabletSQLStr inner_tablet_str;
+  int64_t pos = 0;
+  int64_t affected_rows = -1;
+  if (OB_FAIL(inner_tablet_str.deserialize(arg.get_inner_sql().ptr(), arg.get_inner_sql().length(), pos))) {
+    LOG_WARN("deserialize multi data source str failed", K(ret), K(arg), K(pos));
+  } else if (OB_FAIL(inner_conn->execute_inner_tablet_write(
+      arg.get_tenant_id(),
+      inner_tablet_str.get_ls_id(),
+      inner_tablet_str.get_tablet_id(),
+      inner_tablet_str.get_buf(), inner_tablet_str.get_buf_len(), affected_rows))) {
+    LOG_WARN("failed to execute inner tablet write", K(ret), K(arg), K(inner_tablet_str));
+  } else {
+    transmit_result.set_affected_rows(affected_rows);
+    transmit_result.set_stmt_type(
+    static_cast<observer::ObInnerSQLConnection *>(conn)->get_session().get_stmt_type());
   }
   return ret;
 }

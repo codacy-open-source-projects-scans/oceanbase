@@ -12,10 +12,7 @@
 
 #define USING_LOG_PREFIX SERVER
 
-#include "observer/ob_server_schema_updater.h"
-#include "lib/thread/thread_mgr.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "share/inner_table/ob_inner_table_schema.h"
+#include "ob_server_schema_updater.h"
 #include "observer/ob_server.h"
 
 using namespace oceanbase::common;
@@ -54,11 +51,16 @@ ObServerSchemaTask::ObServerSchemaTask(TYPE type)
 ObServerSchemaTask::ObServerSchemaTask(
   TYPE type,
   const uint64_t tenant_id,
-  const int64_t schema_version)
+  const int64_t schema_version,
+  const share::schema::ObRefreshSchemaInfo *schema_info)
   : type_(type), did_retry_(false), schema_info_()
 {
-  schema_info_.set_tenant_id(tenant_id);
-  schema_info_.set_schema_version(schema_version);
+  if (OB_NOT_NULL(schema_info)) {
+    schema_info_.assign(*schema_info);
+  } else {
+    schema_info_.set_tenant_id(tenant_id);
+    schema_info_.set_schema_version(schema_version);
+  }
 }
 
 bool ObServerSchemaTask::need_process_alone() const
@@ -253,11 +255,65 @@ int ObServerSchemaUpdater::batch_process_tasks(
   return ret;
 }
 
+int ObServerSchemaUpdater::construct_tenants_to_refresh_schema_(
+    const ObRefreshSchemaInfo &local_schema_info,
+    const ObRefreshSchemaInfo &new_schema_info,
+    ObIArray<uint64_t> &tenant_ids,
+    bool &skip_refresh)
+{
+  int ret = OB_SUCCESS;
+  tenant_ids.reset();
+  skip_refresh = false;
+  uint64_t refresh_tenant_id = new_schema_info.get_tenant_id();
+  const ObDDLSequenceID local_sequence_id = local_schema_info.get_sequence_id();
+  const ObDDLSequenceID new_sequence_id = new_schema_info.get_sequence_id();
+  switch (new_sequence_id.compare_to_other_id(local_sequence_id)) {
+    case ObDDLSequenceID::NOT_COMPARABLE:
+    case ObDDLSequenceID::MORE_OVER: {
+      // refresh all tenant schema
+      tenant_ids.reset();
+      skip_refresh = false;
+      LOG_INFO("[REFRESH_SCHEMA] sequence_id is not comparable or local schema is far behind,"
+               " refresh all tenant schema", K(new_sequence_id), K(local_sequence_id));
+      break;
+    }
+    case ObDDLSequenceID::LESS_THAN:
+    case ObDDLSequenceID::EQUAL_TO: {
+      // do not refresh any tenant schema
+      tenant_ids.reset();
+      skip_refresh = true;
+      LOG_INFO("[REFRESH_SCHEMA] local schema is newer, do not refresh any tenant schema",
+               K(new_sequence_id), K(local_sequence_id));
+      break;
+    }
+    case ObDDLSequenceID::ONE_OVER: {
+      // refresh specified tenant schema
+      if (OB_FAIL(tenant_ids.push_back(refresh_tenant_id))) {
+        LOG_WARN("fail to push back tenant_id", KR(ret), K(refresh_tenant_id));
+      } else {
+        skip_refresh = false;
+        LOG_INFO("[REFRESH_SCHEMA] refresh specified tenant schema",
+                 K(refresh_tenant_id), K(new_sequence_id), K(local_sequence_id));
+      }
+      break;
+    }
+    default: {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("unexpect compare result", KR(ret));
+      break;
+    }
+  }
+  return ret;
+}
+
 int ObServerSchemaUpdater::process_refresh_task(const ObServerSchemaTask &task)
 {
   ObASHSetInnerSqlWaitGuard ash_inner_sql_guard(ObInnerSqlWaitTypeId::REFRESH_SCHEMA);
   int ret = OB_SUCCESS;
   const ObRefreshSchemaInfo &schema_info = task.schema_info_;
+  ObRefreshSchemaInfo local_schema_info;
+  ObSEArray<uint64_t, 1> tenant_ids;
+  bool skip_refresh = false;
   ObTaskController::get().switch_task(share::ObTaskType::SCHEMA);
   THIS_WORKER.set_timeout_ts(INT64_MAX);
   LOG_INFO("[REFRESH_SCHEMA] start to process schema refresh task", KR(ret), K(schema_info));
@@ -274,47 +330,29 @@ int ObServerSchemaUpdater::process_refresh_task(const ObServerSchemaTask &task)
     ret = OB_EAGAIN;
     LOG_WARN("rootservice is not in full service, try again", KR(ret),
              K(GCTX.root_service_->in_service()), K(GCTX.root_service_->is_full_service()));
+  } else if (OB_FAIL(schema_mgr_->get_last_refreshed_schema_info(local_schema_info))) {
+    LOG_WARN("fail to get local schema info", KR(ret));
+  } else if (OB_FAIL(construct_tenants_to_refresh_schema_(local_schema_info, schema_info, tenant_ids, skip_refresh))) {
+    LOG_WARN("fail to construct tenants to refresh schema", KR(ret), K(schema_info), K(local_schema_info), K(skip_refresh));
+  } else if (skip_refresh) {
+    // skip
+    LOG_INFO("[REFRESH_SCHEMA] local schema info is newer, no need to refresh schema",
+              KR(ret), K(local_schema_info), K(schema_info));
   } else {
-    ObRefreshSchemaInfo local_schema_info;
-    const uint64_t new_sequence_id = schema_info.get_sequence_id();
-    uint64_t last_sequence_id = OB_INVALID_ID;
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(schema_mgr_->get_last_refreshed_schema_info(local_schema_info))) {
-      LOG_WARN("fail to get local schema info", KR(ret));
-    } else if (FALSE_IT(last_sequence_id = local_schema_info.get_sequence_id())) {
-    } else if (OB_INVALID_ID != last_sequence_id && last_sequence_id >= new_sequence_id) {
-      // skip
-      LOG_INFO("[REFRESH_SCHEMA] local schema info is newer, no need to refresh schema",
-               KR(ret), K(local_schema_info), K(schema_info));
-    } else {
-      // empty tenant_ids means refresh all tenants' schema.
-      ObSEArray<uint64_t, 1> tenant_ids;
-      uint64_t local_sequence_id = local_schema_info.get_sequence_id();
-      uint64_t new_sequence_id = schema_info.get_sequence_id();
-      // It means observer don't lost heartbeat if sequence_id is consistent, so observer can only refresh specific tenant's schema.
-      if (local_schema_info.is_valid()
-          && OB_INVALID_VERSION != local_sequence_id
-          && local_sequence_id + 1 == new_sequence_id) {
-        uint64_t refresh_tenant_id = schema_info.get_tenant_id();
-        if (OB_FAIL(tenant_ids.push_back(refresh_tenant_id))) {
-          LOG_WARN("fail to push back tenant_id", KR(ret), K(refresh_tenant_id));
-        } else {
-          LOG_INFO("[REFRESH_SCHEMA] refresh schema by tenant",
-                   KR(ret), K(refresh_tenant_id), K(local_schema_info), K(schema_info));
-        }
-      }
-      int64_t begin_time = ::oceanbase::common::ObTimeUtility::current_time();
-      LOG_INFO("[REFRESH_SCHEMA] begin refresh schema, ", K(begin_time));
-      bool check_bootstrap = (OB_INVALID_ID == new_sequence_id);
-      if (FAILEDx(schema_mgr_->refresh_and_add_schema(tenant_ids, check_bootstrap))) {
-        LOG_WARN("fail to refresh and add schema", KR(ret));
-      } else if (OB_FAIL(schema_mgr_->set_last_refreshed_schema_info(schema_info))) {
-        LOG_WARN("fail to set last_refreshed_schema_info", KR(ret));
-      } else {
-      }
-      LOG_INFO("[REFRESH_SCHEMA] end refresh schema with new mode, ",
-               KR(ret), K(tenant_ids), "used time", ObTimeUtility::current_time() - begin_time);
+    int64_t begin_time = ::oceanbase::common::ObTimeUtility::current_time();
+    LOG_INFO("[REFRESH_SCHEMA] begin refresh schema, ", K(begin_time), K(tenant_ids), K(schema_info));
+    bool check_bootstrap = GCTX.in_bootstrap_;
+    // GCTX.in_bootstrap_ = false only when sys full schema version is refreshed
+    // check bootstrap to avoid refreshing schema too early
+    // empty tenant_ids means refresh all tenants' schema.
+    if (FAILEDx(schema_mgr_->refresh_and_add_schema(tenant_ids, check_bootstrap))) {
+      LOG_WARN("fail to refresh and add schema", KR(ret), K(check_bootstrap));
+    } else if (OB_FAIL(schema_mgr_->set_last_refreshed_schema_info(schema_info))) {
+      LOG_WARN("fail to set last_refreshed_schema_info", KR(ret), K(schema_info));
     }
+    LOG_INFO("[REFRESH_SCHEMA] end refresh schema with new mode, ",
+             KR(ret), K(tenant_ids), "used time", ObTimeUtility::current_time() - begin_time,
+             K(check_bootstrap), K(schema_info));
   }
 
   int tmp_ret = OB_SUCCESS;
@@ -368,8 +406,11 @@ int ObServerSchemaUpdater::process_async_refresh_tasks(
   } else {
     // For each tenant, we can only execute the async refresh schema task which has maximum schema_version.
     ObSEArray<uint64_t, UNIQ_TASK_QUEUE_BATCH_EXECUTE_NUM> tenant_ids;
+    ObArray<ObRefreshSchemaInfo> refresh_schema_infos;
+
     for (int64_t i = 0; OB_SUCC(ret) && i < tasks.count(); i++) {
       const ObServerSchemaTask &cur_task = tasks.at(i);
+      const ObRefreshSchemaInfo &cur_schema_info = cur_task.schema_info_;
       if (ObServerSchemaTask::ASYNC_REFRESH != cur_task.type_) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("cur task type should be ASYNC_REFRESH", KR(ret), K(cur_task));
@@ -403,10 +444,19 @@ int ObServerSchemaUpdater::process_async_refresh_tasks(
           }
         }
       }
+      if (FAILEDx(refresh_schema_infos.push_back(cur_schema_info))) {
+        LOG_WARN("fail to push back schema info", KR(ret), K(cur_schema_info));
+      }
     }
+
     if (OB_SUCC(ret) && tenant_ids.count() > 0) {
+      // update sequence id if refresh schema successfully,
+      // try to avoid heartbeat find sequence id is not continuous
+      // and trigger schema refresh for all tenants
       if (OB_FAIL(schema_mgr_->refresh_and_add_schema(tenant_ids))) {
         LOG_WARN("fail to refresh schema", KR(ret), K(tenant_ids));
+      } else if (OB_FAIL(schema_mgr_->try_update_last_refreshed_schema_info(refresh_schema_infos))) {
+        LOG_WARN("fail to check can update sequence id", KR(ret), K(refresh_schema_infos));
       }
     }
   }
@@ -469,14 +519,16 @@ int ObServerSchemaUpdater::try_release_schema()
   return ret;
 }
 
+// Only when schema refresh is triggered by DDL, schema_info needs to be specified
 int ObServerSchemaUpdater::async_refresh_schema(
     const uint64_t tenant_id,
-    const int64_t schema_version)
+    const int64_t schema_version,
+    const share::schema::ObRefreshSchemaInfo *schema_info)
 {
   int ret = OB_SUCCESS;
   DEBUG_SYNC(BEFORE_ADD_ASYNC_REFRESH_SCHEMA_TASK);
   ObServerSchemaTask refresh_task(ObServerSchemaTask::ASYNC_REFRESH,
-                                  tenant_id, schema_version);
+                                  tenant_id, schema_version, schema_info);
   if (!inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("ob_server_schema_updeter is not inited.", KR(ret));

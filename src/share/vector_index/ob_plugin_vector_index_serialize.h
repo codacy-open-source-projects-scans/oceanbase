@@ -16,7 +16,8 @@
 #include "lib/allocator/page_arena.h"
 #include "common/row/ob_row_iterator.h"
 #include "share/ob_lob_access_utils.h"
-
+#include "share/vector_index/ob_plugin_vector_index_util.h"
+#include "ob_vector_index_util.h"
 
 namespace oceanbase
 {
@@ -115,12 +116,15 @@ class ObHNSWDeserializeCallback {
 public:
   struct CbParam : public ObIStreamBuf::CbParam {
     CbParam(ObNewRowIterator *iter, ObIAllocator *allocator)
-      : iter_(iter), allocator_(allocator), str_iter_(nullptr)
+      : iter_(iter), allocator_(allocator), str_iter_(nullptr),
+        is_vec_tablet_rebuild_(false), is_need_unvisible_row_(false)
     {}
     CbParam()
       : iter_(nullptr),
         allocator_(nullptr),
-        str_iter_(nullptr)
+        str_iter_(nullptr),
+        is_vec_tablet_rebuild_(false),
+        is_need_unvisible_row_(false)
     {}
     virtual ~CbParam() {
       if (str_iter_ != nullptr) {
@@ -139,12 +143,17 @@ public:
     ObNewRowIterator *iter_;
     ObIAllocator *allocator_;
     ObTextStringIter *str_iter_;
+    bool is_vec_tablet_rebuild_;
+    bool is_need_unvisible_row_;
   };
 public:
-  ObHNSWDeserializeCallback()
+  ObHNSWDeserializeCallback(void *adp) : index_type_(VIAT_MAX), adp_(adp)
   {}
+  ObVectorIndexAlgorithmType get_serialize_index_type() { return index_type_; }
   int operator()(char *&data, const int64_t data_size, int64_t &read_size, share::ObIStreamBuf::CbParam &cb_param);
 private:
+  ObVectorIndexAlgorithmType index_type_;
+  void *adp_;
 };
 
 class ObHNSWSerializeCallback {

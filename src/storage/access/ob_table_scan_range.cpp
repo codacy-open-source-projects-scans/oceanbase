@@ -11,11 +11,8 @@
  */
 
 #include "ob_table_scan_range.h"
-#include "ob_dml_param.h"
-#include "storage/ob_storage_struct.h"
 #include "share/ob_partition_split_query.h"
 #include "storage/tablet/ob_tablet.h"
-#include "storage/tablet/ob_tablet_split_mds_helper.h"
 
 namespace oceanbase
 {
@@ -31,6 +28,7 @@ ObTableScanRange::ObTableScanRange()
     skip_scan_ranges_(),
     allocator_(nullptr),
     status_(EMPTY),
+    enable_new_false_range_(false),
     is_inited_(false)
 {
   rowkeys_.set_attr(ObMemAttr(MTL_ID(), "TScanRowkeys"));
@@ -68,10 +66,11 @@ do {                                                                            
   skip_scan_ranges_.reset();
   allocator_ = nullptr;
   status_ = EMPTY;
+  enable_new_false_range_ = false;
   is_inited_ = false;
 }
 
-int ObTableScanRange::init(ObTableScanParam &scan_param, const bool is_tablet_spliting)
+int ObTableScanRange::init(ObTableScanParam &scan_param, const ObTablet &tablet, const bool is_tablet_spliting)
 {
   int ret = OB_SUCCESS;
   if (IS_INIT) {
@@ -84,6 +83,7 @@ int ObTableScanRange::init(ObTableScanParam &scan_param, const bool is_tablet_sp
     scan_param.is_tablet_spliting_ = is_tablet_spliting;
     allocator_ = scan_param.scan_allocator_;
     status_ = scan_param.is_get_ ? GET : SCAN;
+    enable_new_false_range_ = scan_param.enable_new_false_range_;
     const ObStorageDatumUtils *datum_utils  = nullptr;
     datum_utils = &scan_param.table_param_->get_read_info().get_datum_utils();
     if (OB_UNLIKELY(!datum_utils->is_valid())) {
@@ -93,7 +93,7 @@ int ObTableScanRange::init(ObTableScanParam &scan_param, const bool is_tablet_sp
       if (scan_param.use_index_skip_scan()) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Unexpected, index skip scan can only be used in scan", K(ret));
-      } else if (OB_FAIL(init_rowkeys(scan_param.tablet_id_, scan_param.ls_id_,
+      } else if (OB_FAIL(init_rowkeys(tablet,
           scan_param.is_tablet_spliting_,
           scan_param.key_ranges_,
           scan_param.scan_flag_,
@@ -101,7 +101,8 @@ int ObTableScanRange::init(ObTableScanParam &scan_param, const bool is_tablet_sp
         STORAGE_LOG(WARN, "Failed to init rowkeys", K(ret));
       }
     } else if (scan_param.use_index_skip_scan()) {
-      if (OB_FAIL(init_ranges_in_skip_scan(
+      if (OB_FAIL(init_ranges_in_skip_scan(tablet,
+          scan_param.is_tablet_spliting_,
           scan_param.key_ranges_,
           scan_param.ss_key_ranges_,
           scan_param.scan_flag_,
@@ -109,7 +110,7 @@ int ObTableScanRange::init(ObTableScanParam &scan_param, const bool is_tablet_sp
         STORAGE_LOG(WARN, "Failed to init range in skip scan",
           K(ret), K(scan_param.key_ranges_), K(scan_param.ss_key_ranges_));
       }
-    } else if (OB_FAIL(init_ranges(scan_param.tablet_id_, scan_param.ls_id_,
+    } else if (OB_FAIL(init_ranges(tablet,
         scan_param.is_tablet_spliting_,
         scan_param.key_ranges_,
         scan_param.scan_flag_,
@@ -158,7 +159,7 @@ int ObTableScanRange::init(
       STORAGE_LOG(WARN, "Invalid simple batch", K(ret), K(simple_batch));
     } else if (OB_FAIL(ranges.push_back(*simple_batch.range_))) {
       STORAGE_LOG(WARN, "Failed to push back range", K(ret));
-    } else if (OB_FAIL(init_ranges(scan_param.tablet_id_, scan_param.ls_id_,
+    } else if (OB_FAIL(init_ranges(*tablet_handle.get_obj(),
         scan_param.is_tablet_spliting_,
         ranges,
         scan_flag,
@@ -169,7 +170,7 @@ int ObTableScanRange::init(
   } else if (OB_ISNULL(simple_batch.ranges_)) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid simple batch", K(ret), K(simple_batch));
-  } else if (OB_FAIL(init_ranges(scan_param.tablet_id_, scan_param.ls_id_,
+  } else if (OB_FAIL(init_ranges(*tablet_handle.get_obj(),
       scan_param.is_tablet_spliting_,
       *simple_batch.ranges_,
       scan_flag,
@@ -178,6 +179,7 @@ int ObTableScanRange::init(
   }
   if (OB_SUCC(ret)) {
     status_ = ranges_.empty() ? EMPTY : SCAN;
+    enable_new_false_range_ = scan_param.enable_new_false_range_;
     is_inited_ = true;
     STORAGE_LOG(DEBUG, "Succ to init table scan range", K(*this), K(simple_batch));
   }
@@ -190,7 +192,9 @@ int ObTableScanRange::always_false(const common::ObNewRange &range, bool &is_fal
   int ret = OB_SUCCESS;
   int cmp = 0;
 
-  if (OB_FAIL(range.get_start_key().compare(range.get_end_key(), cmp))) {
+  if (OB_LIKELY(enable_new_false_range_)) {
+    is_false = false;
+  } else if (OB_FAIL(range.get_start_key().compare(range.get_end_key(), cmp))) {
     STORAGE_LOG(WARN, "Failed to compare range keys", K(ret), K(range));
   } else {
     is_false = (cmp > 0) || (0 == cmp && (!range.border_flag_.inclusive_start() || !range.border_flag_.inclusive_end()));
@@ -202,15 +206,14 @@ int ObTableScanRange::always_false(const common::ObNewRange &range, bool &is_fal
 }
 
 int ObTableScanRange::get_split_partition_rowkeys(
-    const ObTabletID &tablet_id,
-    const ObLSID &ls_id,
+    const ObTablet &tablet,
     const common::ObIArray<common::ObNewRange> &ranges,
     const blocksstable::ObStorageDatumUtils *datum_utils)
 {
   int ret = OB_SUCCESS;
   ObPartitionSplitQuery split_query;
-  if (OB_FAIL(split_query.get_tablet_split_info(tablet_id, ls_id, *allocator_))) {
-    STORAGE_LOG(WARN, "fail to check tablet in spliting", K(ret), K(tablet_id));
+  if (OB_FAIL(split_query.get_tablet_split_info(tablet, *allocator_))) {
+    STORAGE_LOG(WARN, "fail to check tablet in spliting", K(ret));
   } else {
     const int64_t range_cnt = ranges.count();
     for (int64_t i = 0; OB_SUCC(ret) && i < range_cnt; i++) {
@@ -223,9 +226,9 @@ int ObTableScanRange::get_split_partition_rowkeys(
       } else if (is_false) {
       } else if (OB_FAIL(datum_rowkey.from_rowkey(rowkey, *allocator_))) {
         STORAGE_LOG(WARN, "Failed to transfer rowkey to datum rowkey", K(ret));
-      } else if (FALSE_IT(datum_rowkey.set_group_idx(ranges.at(i).get_group_idx()))) {
-      } else if (OB_FAIL(split_query.check_rowkey_is_included(datum_rowkey, datum_utils, is_included))) {
-        STORAGE_LOG(WARN, "Failed to check rowkey is included", K(ret), K(tablet_id), K(datum_rowkey));
+      } else if (FALSE_IT(datum_rowkey.set_group_idx(ranges.at(i).get_group_id()))) {
+      } else if (OB_FAIL(split_query.check_rowkey_is_included(tablet, datum_rowkey, datum_utils, is_included))) {
+        STORAGE_LOG(WARN, "Failed to check rowkey is included", K(ret), K(datum_rowkey));
       } else if (is_included && OB_FAIL(rowkeys_.push_back(datum_rowkey))) {
         STORAGE_LOG(WARN, "Failed to push back datum rowkey", K(ret));
       }
@@ -235,8 +238,7 @@ int ObTableScanRange::get_split_partition_rowkeys(
 }
 
 int ObTableScanRange::init_rowkeys(
-    const ObTabletID &tablet_id,
-    const ObLSID &ls_id,
+    const ObTablet &tablet,
     const bool is_tablet_spliting,
     const common::ObIArray<common::ObNewRange> &ranges,
     const common::ObQueryFlag &scan_flag,
@@ -253,7 +255,7 @@ int ObTableScanRange::init_rowkeys(
       status_ = EMPTY;
     } else {
       if (is_tablet_spliting) {
-        if (OB_FAIL(get_split_partition_rowkeys(tablet_id, ls_id, ranges, datum_utils))) {
+        if (OB_FAIL(get_split_partition_rowkeys(tablet, ranges, datum_utils))) {
           STORAGE_LOG(WARN, "fail to get split partition rowkeys", K(ret));
         }
       } else {
@@ -275,7 +277,7 @@ int ObTableScanRange::init_rowkeys(
       if (OB_SUCC(ret)) {
         if (rowkeys_.empty()) {
           status_ = EMPTY;
-        } else if (rowkeys_.count() > 1 && nullptr != datum_utils && scan_flag.is_ordered_scan()) {
+        } else if (rowkeys_.count() > 1 && nullptr != datum_utils && scan_flag.is_support_sort_scan()) {
           ObDatumComparor<ObDatumRowkey> comparor(*datum_utils, ret, scan_flag.is_reverse_scan());
           lib::ob_sort(rowkeys_.begin(), rowkeys_.end(), comparor);
           if (OB_FAIL(ret)) {
@@ -290,8 +292,7 @@ int ObTableScanRange::init_rowkeys(
 }
 
 int ObTableScanRange::init_ranges(
-    const ObTabletID &tablet_id,
-    const ObLSID &ls_id,
+    const ObTablet &tablet,
     const bool is_tablet_spliting,
     const common::ObIArray<common::ObNewRange> &ranges,
     const common::ObQueryFlag &scan_flag,
@@ -299,21 +300,29 @@ int ObTableScanRange::init_ranges(
 {
   int ret = OB_SUCCESS;
 
-  if (OB_UNLIKELY(nullptr == allocator_ || !tablet_id.is_valid() || !ls_id.is_valid())) {
+  if (OB_UNLIKELY(nullptr == allocator_)) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid argument to init ranges", K(ret), K(allocator_));
   } else {
+    const ObLSID &ls_id = tablet.get_tablet_meta().ls_id_;
+    const ObTabletID &tablet_id = tablet.get_tablet_meta().tablet_id_;
     const int64_t range_cnt = ranges.count();
     if (0 == range_cnt) {
-      ObDatumRange datum_range;
-      datum_range.set_whole_range();
-      if (OB_FAIL(ranges_.push_back(datum_range))) {
-        STORAGE_LOG(WARN, "Failed to push back datum range", K(ret));
+      if (OB_LIKELY(enable_new_false_range_)) {
+        status_ = EMPTY;
+      } else {
+        ObDatumRange datum_range;
+        datum_range.set_whole_range();
+        if (OB_FAIL(ranges_.push_back(datum_range))) {
+          STORAGE_LOG(WARN, "Failed to push back datum range", K(ret));
+        } else if (OB_UNLIKELY(is_tablet_spliting)) {
+          STORAGE_LOG(INFO, "whole range with split, maybe bug if partkey is rowkey prefix", K(ret), K(tablet_id), K(ranges), K(common::lbt()));
+        }
       }
     } else {
       ObPartitionSplitQuery split_query;
       if (is_tablet_spliting &&
-          OB_FAIL(split_query.get_tablet_split_info(tablet_id, ls_id, *allocator_))) {
+          OB_FAIL(split_query.get_tablet_split_info(tablet, *allocator_))) {
         STORAGE_LOG(WARN, "fail to check tablet in spliting", K(ret), K(tablet_id));
       }
       for (int64_t i = 0; OB_SUCC(ret) && i < range_cnt; i++) {
@@ -323,15 +332,17 @@ int ObTableScanRange::init_ranges(
         if (OB_FAIL(always_false(range, is_false))) {
           STORAGE_LOG(WARN, "Failed to check range always false", K(ret), K(range));
         } else if (is_false) {
-        } else if (OB_FAIL(datum_range.from_range(range, *allocator_))) {
+        } else if (OB_FAIL(datum_range.from_range(range, *allocator_, enable_new_false_range_))) {
           STORAGE_LOG(WARN, "Failed to transfer range to datum range", K(ret));
         } else if (is_tablet_spliting && OB_FAIL(split_query.get_split_datum_range(
+            tablet,
             datum_utils,
             *allocator_,
             datum_range,
             is_false))) {
           STORAGE_LOG(WARN, "Failed to get split datum range", K(ret), K(tablet_id), K(ls_id));
         } else if (is_false) {
+          STORAGE_LOG(INFO, "Range after split is empty", K(ret), K(range_cnt), K(i), K(tablet_id), K(range));
         } else if (OB_FAIL(ranges_.push_back(datum_range))) {
           STORAGE_LOG(WARN, "Failed to push back datum range", K(ret));
         }
@@ -339,7 +350,7 @@ int ObTableScanRange::init_ranges(
       if (OB_SUCC(ret)) {
         if (ranges_.empty()) {
           status_ = EMPTY;
-        } else if (ranges_.count() > 1 && nullptr != datum_utils && scan_flag.is_ordered_scan()) {
+        } else if (ranges_.count() > 1 && nullptr != datum_utils && scan_flag.is_support_sort_scan()) {
           ObDatumComparor<ObDatumRange> comparor(*datum_utils, ret, scan_flag.is_reverse_scan());
           lib::ob_sort(ranges_.begin(), ranges_.end(), comparor);
           if (OB_FAIL(ret)) {
@@ -353,7 +364,9 @@ int ObTableScanRange::init_ranges(
   return ret;
 }
 
-int ObTableScanRange::init_ranges_in_skip_scan(const common::ObIArray<common::ObNewRange> &ranges,
+int ObTableScanRange::init_ranges_in_skip_scan(const ObTablet &tablet,
+                                               const bool is_tablet_spliting,
+                                               const common::ObIArray<common::ObNewRange> &ranges,
                                                const common::ObIArray<common::ObNewRange> &skip_scan_ranges,
                                                const common::ObQueryFlag &scan_flag,
                                                const blocksstable::ObStorageDatumUtils *datum_utils)
@@ -365,8 +378,15 @@ int ObTableScanRange::init_ranges_in_skip_scan(const common::ObIArray<common::Ob
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid argument to init ranges", K(ret), K(allocator_), K(ranges.count()), K(skip_scan_ranges.count()));
   } else {
+    const ObLSID &ls_id = tablet.get_tablet_meta().ls_id_;
+    const ObTabletID &tablet_id = tablet.get_tablet_meta().tablet_id_;
     common::ObSEArray<ObSkipScanWrappedRange, DEFAULT_RANGE_CNT> wrapped_ranges_;
     const int64_t range_cnt = ranges.count();
+    ObPartitionSplitQuery split_query;
+    if (is_tablet_spliting &&
+        OB_FAIL(split_query.get_tablet_split_info(tablet, *allocator_))) {
+      STORAGE_LOG(WARN, "Failed to get tablet split info", K(ret), K(tablet_id));
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < range_cnt; i++) {
       ObSkipScanWrappedRange wrapped_range;
       const ObNewRange &range = ranges.at(i);
@@ -375,9 +395,18 @@ int ObTableScanRange::init_ranges_in_skip_scan(const common::ObIArray<common::Ob
       if (OB_FAIL(always_false(range, is_false))) {
         STORAGE_LOG(WARN, "Failed to check range always false", K(ret), K(range));
       } else if (is_false) {
-      } else if (OB_FAIL(wrapped_range.datum_range_.from_range(range, *allocator_))) {
+      } else if (OB_FAIL(wrapped_range.datum_range_.from_range(range, *allocator_, enable_new_false_range_))) {
         STORAGE_LOG(WARN, "Failed to transfer range to datum range", K(ret));
-      } else if (OB_FAIL(wrapped_range.datum_skip_range_.from_range(skip_scan_range, *allocator_))) {
+      } else if (is_tablet_spliting && OB_FAIL(split_query.get_split_datum_range(
+          tablet,
+          datum_utils,
+          *allocator_,
+          wrapped_range.datum_range_,
+          is_false))) {
+        STORAGE_LOG(WARN, "Failed to get split datum range", K(ret), K(tablet_id), K(ls_id));
+      } else if (is_false) {
+        STORAGE_LOG(INFO, "Range after split is empty", K(ret), K(range_cnt), K(i), K(tablet_id), K(range), K(skip_scan_range));
+      } else if (OB_FAIL(wrapped_range.datum_skip_range_.from_range(skip_scan_range, *allocator_, enable_new_false_range_))) {
         STORAGE_LOG(WARN, "Failed to transfer skip range to datum range", K(ret));
       } else if (OB_FAIL(wrapped_ranges_.push_back(wrapped_range))) {
         STORAGE_LOG(WARN, "Failed to push back", K(ret), K(wrapped_range));
@@ -386,7 +415,7 @@ int ObTableScanRange::init_ranges_in_skip_scan(const common::ObIArray<common::Ob
     if (OB_SUCC(ret)) {
       if (wrapped_ranges_.empty()) {
         status_ = EMPTY;
-      } else if (wrapped_ranges_.count() > 1 && nullptr != datum_utils && scan_flag.is_ordered_scan()) {
+      } else if (wrapped_ranges_.count() > 1 && nullptr != datum_utils && scan_flag.is_support_sort_scan()) {
         ObDatumComparor<ObSkipScanWrappedRange> comparor(*datum_utils, ret, scan_flag.is_reverse_scan());
         lib::ob_sort(wrapped_ranges_.begin(), wrapped_ranges_.end(), comparor);
         if (OB_FAIL(ret)) {

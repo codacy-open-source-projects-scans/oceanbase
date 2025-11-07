@@ -12,15 +12,11 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "ob_tenant_tablet_ttl_mgr.h"
-#include "share/ob_srv_rpc_proxy.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "observer/table/ob_htable_filter_operator.h"
-#include "observer/table/ob_htable_utils.h"
-#include "storage/ls/ob_ls.h"
 #include "storage/tx_storage/ob_tenant_freezer.h"
 #include "observer/table/ttl/ob_table_ttl_task.h"
 #include "observer/table/ob_table_service.h"
 #include "share/table/ob_table_config_util.h"
+#include "src/share/table/redis/ob_redis_util.h"
 
 namespace oceanbase
 {
@@ -66,8 +62,6 @@ int ObTabletTTLScheduler::init(const uint64_t tenant_id)
     LOG_WARN("schema service is null", KR(ret));
   } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::TenantTabletTTLMgr, tg_id_))) {
     LOG_WARN("fail to init timer", KR(ret));
-  } else if (OB_FAIL(TG_START(tg_id_))) {
-    LOG_WARN("fail to create ObTenantTabletTTLMgr thread", K(ret), K_(tg_id));
   } else if (OB_FAIL(alloc_tenant_info(tenant_id))) {
     LOG_WARN("fail to alloc tenant info", KR(ret), K(MTL_ID()));
   } else {
@@ -138,10 +132,12 @@ void ObTabletTTLScheduler::inner_switch_to_follower()
 int ObTabletTTLScheduler::start()
 {
   int ret = OB_SUCCESS;
-  FLOG_INFO("tenant_tablet_ttl_mgr: begin to start", KPC_(ls), K_(tenant_id));
-  if (IS_NOT_INIT || tg_id_ == 0) {
+  FLOG_INFO("ObTabletTTLScheduler: begin to start", KPC_(ls), K_(tenant_id));
+  if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_WARN("tablet ttl mgr not init", KR(ret), K(tg_id_));
+    LOG_WARN("tablet ttl mgr not init", KR(ret));
+  } else if (OB_FAIL(TG_START(tg_id_))) {
+    LOG_WARN("fail to create ObTabletTTLScheduler thread", K(ret), K_(tg_id));
   } else if (OB_FAIL(TG_SCHEDULE(tg_id_, periodic_task_, periodic_delay_, true))) {
     LOG_WARN("fail to schedule periodic task", KR(ret), K_(tg_id));
   } else {
@@ -395,6 +391,9 @@ int ObTabletTTLScheduler::generate_one_tablet_task(ObTTLTaskInfo& task_info, con
 
   if (OB_NOT_NULL(ctx = get_one_tablet_ctx(task_info.tablet_id_))) {
     LOG_INFO("ttl ctx exist", KR(ret), K(task_info.tablet_id_));
+  } else if (OB_ISNULL(ls_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ls", K(ret));
   } else {
     char *ctx_buf = static_cast<char *>(local_tenant_task_.allocator_.alloc(sizeof(ObTTLTaskCtx)));
     if (OB_ISNULL(ctx_buf)) {
@@ -444,10 +443,7 @@ int ObTabletTTLScheduler::check_and_generate_tablet_tasks()
 {
   int ret = OB_SUCCESS;
   ObTimeGuard guard("ObTabletTTLScheduler::check_and_generate_tablet_tasks", TTL_NORMAL_TIME_THRESHOLD);
-  bool can_ttl = false;
   ObTabletHandle tablet_handle;
-  ObSEArray<const schema::ObTableSchema *, 64> table_schema_arr;
-  const schema::ObTableSchema *table_schema = nullptr;
   ObSEArray<uint64_t, DEFAULT_TABLE_ARRAY_SIZE> table_id_array;
   hash::ObHashMap<uint64_t, table::ObTTLTaskParam> param_map; // table_id, task param
   ObMemAttr bucket_attr(tenant_id_, "TTLTaskParBuck");
@@ -462,6 +458,9 @@ int ObTabletTTLScheduler::check_and_generate_tablet_tasks()
     LOG_WARN("fail to reserve", KR(ret));
   } else if (!table_id_array.empty() && OB_FAIL(param_map.create(DEFAULT_PARAM_BUCKET_SIZE, bucket_attr, node_attr))) {
     LOG_WARN("fail to create param map", KR(ret));
+  } else if (OB_ISNULL(ls_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ls", K(ret));
   }
 
   int64_t start_idx = 0;
@@ -485,7 +484,9 @@ int ObTabletTTLScheduler::check_and_generate_tablet_tasks()
           ret = OB_TABLE_NOT_EXIST;
           LOG_WARN("table schema is null", KR(ret), K(table_id), K_(tenant_id));
         } else if (OB_FAIL(check_is_ttl_table(*table_schema, is_ttl_table))) {
-          LOG_WARN("fail to check is ttl table", KR(ret));
+          LOG_ERROR("fail to check is ttl table", KR(ret), K(table_schema->get_table_name()));
+          // skip this error table to prevent one table from causing TTL unavailability.
+          ret = OB_SUCCESS; // ignore error
         } else if (is_ttl_table) {
           ObArray<ObTabletID> tablet_ids;
           ObTTLTaskParam ttl_param;
@@ -607,13 +608,13 @@ ObTTLTaskCtx* ObTabletTTLScheduler::get_one_tablet_ctx(const ObTabletID& tablet_
 }
 
 /*other inner function*/
-int ObTabletTTLScheduler::deep_copy_task(ObTTLTaskCtx* ctx, ObTTLTaskInfo& task_info, const ObTTLTaskParam &task_param)
+int ObTabletTTLScheduler::deep_copy_task(ObTTLTaskCtx* ctx, ObTTLTaskInfo& task_info, const ObTTLTaskParam &task_param, bool with_rowkey_copy /*true*/)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(ctx)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("the ctx is null", KR(ret));
-  } else if (OB_FAIL(ctx->deep_copy_rowkey(task_info.row_key_)) ) {
+  } else if (with_rowkey_copy && OB_FAIL(ctx->deep_copy_rowkey(task_info.row_key_)) ) {
     LOG_WARN("fail to deep copy rowkey", KR(ret), K(task_info.row_key_));
   } else {
     ctx->task_info_.ttl_del_cnt_ += task_info.ttl_del_cnt_;
@@ -740,12 +741,14 @@ int ObTabletTTLScheduler::check_tenant_memory()
       int64_t active_memstore_used = 0;
       int64_t memstore_limit = 0;
       int64_t freeze_cnt = 0;
+      int64_t unused_throttle_trigger = 0;
       if (OB_FAIL(MTL(storage::ObTenantFreezer *)->get_tenant_memstore_cond(
                               active_memstore_used,
                               total_memstore_used,
                               minor_freeze_trigger,
                               memstore_limit,
-                              freeze_cnt)) ) {
+                              freeze_cnt,
+                              unused_throttle_trigger)) ) {
         LOG_WARN("fail to get tenant memstore info for tenant ", KR(ret), K_(tenant_id));
       } else if (total_memstore_used > minor_freeze_trigger) {
         local_tenant_task_.ttl_continue_ = false;
@@ -766,20 +769,45 @@ int ObTabletTTLScheduler::get_ttl_para_from_schema(const schema::ObTableSchema *
                                                    ObTTLTaskParam &param)
 {
   int ret = OB_SUCCESS;
+  ObKVAttr attr;
+  ObHbaseModeType mode_type = ObHbaseModeType::OB_INVALID_MODE_TYPE;
+  bool is_table_model = false;
   if (OB_ISNULL(table_schema)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("schema is null", KR(ret));
   } else if (!table_schema->get_kv_attributes().empty()) {
-    if (OB_FAIL(ObHTableUtils::check_htable_schema(*table_schema))) {
-      LOG_WARN("fail to check htable schema", KR(ret), K(table_schema->get_table_name()));
-    } else if (OB_FAIL(ObTTLUtil::parse_kv_attributes(table_schema->get_kv_attributes(), param.max_version_, param.ttl_))) {
+    if (OB_FAIL(ObTTLUtil::parse_kv_attributes(table_schema->get_kv_attributes(), attr))) {
       LOG_WARN("fail to parse kv attributes", KR(ret), K(table_schema->get_kv_attributes()));
-    } else if (param.max_version_ != INT32_MIN && param.ttl_ != INT32_MIN) {
-      param.is_htable_ = true;
+    } else if (FALSE_IT(is_table_model = attr.type_ == ObKVAttr::ObTTLTableType::TABLE)) {
+    } else if (attr.type_ == ObKVAttr::ObTTLTableType::REDIS) {
+      if (OB_FAIL(ObRedisHelper::check_redis_ttl_schema(*table_schema, attr.redis_model_))) {
+        LOG_WARN("fail to check redis schema", KR(ret), K(table_schema->get_table_name()));
+      }
+    } else if (attr.type_ != ObKVAttr::ObTTLTableType::HBASE && !is_table_model) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid ObKVAttr type", K(ret), K(attr));
+    }
+
+    if (OB_SUCC(ret) && !is_table_model) {
+      param.max_version_ = attr.max_version_;
+      param.ttl_ = attr.ttl_;
+      param.is_redis_table_ = (attr.type_ == ObKVAttr::ObTTLTableType::REDIS);
+      param.is_redis_ttl_ = attr.is_redis_ttl_;
+      param.redis_model_ = attr.redis_model_;
       LOG_DEBUG("success to find a hbase ttl partition", KR(ret), K(param));
     }
-  } else if (!table_schema->get_ttl_definition().empty()) {
-    LOG_DEBUG("success to find a table ttl partition", KR(ret), K(param));
+  }
+  if (OB_SUCC(ret) && !param.is_redis_table_ && !is_table_model) {
+    if (OB_FAIL(ObHTableUtils::get_mode_type(*table_schema, mode_type))) {
+      LOG_WARN("fail to check htable schema", KR(ret), K(table_schema->get_table_name()));
+    } else if (mode_type == ObHbaseModeType::OB_HBASE_NORMAL_TYPE) {
+      const ObColumnSchemaV2 *ttl_schema = NULL;
+      param.is_htable_ = true;
+      if (OB_NOT_NULL(ttl_schema = table_schema->get_column_schema_by_idx(ObHTableConstants::COL_IDX_TTL)) &&
+          ObHTableConstants::TTL_CNAME_STR.case_compare(ttl_schema->get_column_name()) == 0) {
+        param.has_cell_ttl_ = true;
+      }
+    }
   }
 
   if (OB_SUCC(ret)) {
@@ -1366,7 +1394,9 @@ int ObTabletHRowkeyTTLScheduler::report_task_status(ObTTLTaskInfo& task_info, Ob
     ctx->last_modify_time_ = ObTimeUtility::current_time();
     ctx->in_queue_ = false;
     mark_ttl_ctx_dirty(local_tenant_task_, *ctx);
-    if (need_copy_task && OB_FAIL(deep_copy_task(ctx, task_info, task_para))) {
+    // A tablet task is associated with multiple rowkey ttl tasks,
+    // so it's meaningless to copy the rowkey of current task
+    if (need_copy_task && OB_FAIL(deep_copy_task(ctx, task_info, task_para, false))) {
       LOG_WARN("fail to deep copy task", KR(ret), K_(tenant_id), K(task_info), K(task_para));
       ctx->task_status_ = OB_TTL_TASK_PENDING;
       ctx->failure_times_++;
@@ -1429,7 +1459,7 @@ int ObTenantTabletTTLMgr::init(storage::ObLS *ls)
     LOG_WARN("fail to alloc and init tablet scheduler", K(ret), KPC(ls));
   } else if (OB_FAIL(alloc_and_init_tablet_scheduler<ObTabletHRowkeyTTLScheduler>(ls))) {
     LOG_WARN("fail to alloc and init hrowkey ttl scheduler", K(ret), KPC(ls));
-  } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::TenantTabletTTLMgr, vec_tg_id_))) {
+  } else if (OB_FAIL(TG_CREATE_TENANT(lib::TGDefIDs::TenantTabletTTLMgr, vec_tg_id_))) {  // vec mem index sync task
     LOG_WARN("fail to init timer", KR(ret));
   } else if (OB_FAIL(TG_START(vec_tg_id_))) {
     LOG_WARN("fail to create ObTenantTabletTTLMgr thread", K(ret), K_(vec_tg_id));
@@ -1522,7 +1552,6 @@ int ObTenantTabletTTLMgr::safe_to_destroy(bool &is_safe_destroy)
         LOG_WARN("fail to safe to destory", K(ret), KPC(ttl_scheduler));
       }
     }
-
     if (is_safe_destroy && OB_SUCC(ret) && OB_FAIL(vector_idx_scheduler_.safe_to_destroy(is_safe_destroy))) {
       LOG_WARN("fail to check vector index scheduler safe to destroy", KR(ret), K(is_safe_destroy));
     }
@@ -1554,6 +1583,7 @@ void ObTenantTabletTTLMgr::destroy()
   if (vec_tg_id_ != 0) {
     TG_WAIT(vec_tg_id_);
     TG_DESTROY(vec_tg_id_);
+    vector_idx_scheduler_.destroy();
   }
   DELEGATE_TTL_SCHEDULERS_NOT_RET(~ObTabletTTLScheduler);
 }
@@ -1673,13 +1703,18 @@ int ObTabletHRowkeyTTLScheduler::init(storage::ObLS *ls)
 int ObTabletHRowkeyTTLScheduler::do_after_leader_switch()
 {
   int ret = OB_SUCCESS;
-  if (true == ATOMIC_LOAD(&is_leader_)) {
-    if (OB_FAIL(MTL(ObHTableRowkeyMgr*)->register_rowkey_queue(ls_->get_ls_id(), hrowkey_queue_))) {
-      LOG_WARN("fail to register rowkey queue", K(ret), KPC_(ls));
-    }
+  if (OB_ISNULL(ls_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ls", K(ret));
   } else {
-    if (OB_FAIL(MTL(ObHTableRowkeyMgr*)->unregister_rowkey_queue(ls_->get_ls_id(), hrowkey_queue_))) {
-      LOG_WARN("fail to register rowkey queue", K(ret), KPC_(ls));
+    if (true == ATOMIC_LOAD(&is_leader_)) {
+      if (OB_FAIL(MTL(ObHTableRowkeyMgr*)->register_rowkey_queue(ls_->get_ls_id(), hrowkey_queue_))) {
+        LOG_WARN("fail to register rowkey queue", K(ret), KPC_(ls));
+      }
+    } else {
+      if (OB_FAIL(MTL(ObHTableRowkeyMgr*)->unregister_rowkey_queue(ls_->get_ls_id(), hrowkey_queue_))) {
+        LOG_WARN("fail to register rowkey queue", K(ret), KPC_(ls));
+      }
     }
   }
   return ret;
@@ -1780,7 +1815,22 @@ HRowkeyNode *ObTabletHRowkeyTTLScheduler::traverse_rowkey_set(HRowkeyDedupMap::H
 
 int ObTabletHRowkeyTTLScheduler::check_is_ttl_table(const ObTableSchema &table_schema, bool &is_ttl_table)
 {
-  return ObTTLUtil::check_is_htable_ttl(table_schema, is_ttl_table);
+  return ObTTLUtil::check_is_rowkey_ttl_table(table_schema, is_ttl_table);
+}
+
+int ObTabletHRowkeyTTLScheduler::safe_to_destroy(bool &is_safe)
+{
+  int ret = OB_SUCCESS;
+  is_safe = false;
+  if (OB_ISNULL(ls_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ls", K(ret));
+  } else if (OB_FAIL(ObTabletTTLScheduler::safe_to_destroy(is_safe))) {
+    LOG_WARN("ObTabletTTLScheduler cannot safe to destroy", K(ret));
+  } else if (is_safe && OB_FAIL(MTL(ObHTableRowkeyMgr*)->unregister_rowkey_queue(ls_->get_ls_id(), hrowkey_queue_))) {
+    LOG_WARN("fail to unregister rowkey queue", K(ret), KPC_(ls));
+  }
+  return ret;
 }
 
 } // table

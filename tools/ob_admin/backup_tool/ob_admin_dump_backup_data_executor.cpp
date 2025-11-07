@@ -12,20 +12,13 @@
 
 #include "ob_admin_dump_backup_data_executor.h"
 
-#include "src/share/io/ob_io_manager.h"
 #include "src/share/ob_device_manager.h"
-#include "share/backup/ob_backup_io_adapter.h"
-#include "lib/container/ob_array.h"
-#include "storage/blocksstable/ob_data_buffer.h"
 #include "../dumpsst/ob_admin_dumpsst_print_helper.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
 #include "rootserver/backup/ob_backup_table_list_mgr.h"
 #ifdef OB_BUILD_TDE_SECURITY
 #include "share/ob_master_key_getter.h"
 #endif
 
-#include <algorithm>
-#include <functional>
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -460,7 +453,7 @@ int ObAdminDumpBackupDataUtil::parse_from_index_index_blocks(blocksstable::ObBuf
       if (OB_FAIL(buffer_reader.advance(data_zlength + common_header->align_length_))) {
         STORAGE_LOG(WARN, "buffer reader buf not enough", K(ret), KPC(common_header));
       } else {
-        STORAGE_LOG(WARN, "failed to advance", KPC(common_header));
+        STORAGE_LOG(INFO, "success to advance", KPC(common_header));
       }
     }
   }
@@ -561,7 +554,7 @@ int ObAdminDumpBackupDataExecutor::execute(int argc, char *argv[])
 #ifdef OB_BUILD_TDE_SECURITY
   // The root_key is set to ensure the successful parsing of backup_dest, because there is encryption and decryption of access_key
   share::ObMasterKeyGetter::instance().init(NULL);
-  ObMasterKeyGetter::instance().set_root_key(OB_SYS_TENANT_ID, obrpc::RootKeyType::DEFAULT, ObString());
+  ObMasterKeyGetter::instance().fake_sys_default_root_key();
 #endif
   if (OB_FAIL(parse_cmd_(argc, argv))) {
     STORAGE_LOG(WARN, "failed to parse cmd", K(ret), K(argc), K(argv));
@@ -577,6 +570,8 @@ int ObAdminDumpBackupDataExecutor::execute(int argc, char *argv[])
     STORAGE_LOG(WARN, "failed to init io manager", K(ret));
   } else if (OB_FAIL(ObIOManager::get_instance().start())) {
     STORAGE_LOG(WARN, "failed to start io manager", K(ret));
+  } else if (OB_FAIL(ObObjectStorageInfo::register_cluster_state_mgr(&ObClusterStateBaseMgr::get_instance()))) {
+    STORAGE_LOG(WARN, "fail to register cluster state mgr", KR(ret));
   } else if (check_exist_) {
     // ob_admin dump_backup -d'xxxxx' -c
     if (OB_FAIL(do_check_exist_())) {
@@ -620,7 +615,7 @@ int ObAdminDumpBackupDataExecutor::parse_cmd_(int argc, char *argv[])
   int ret = OB_SUCCESS;
   int opt = 0;
   int index = -1;
-  const char *opt_str = "h:d:s:o:l:qce:";
+  const char *opt_str = "h:d:s:o:l:qce:i:";
   struct option longopts[] = {{"help", 0, NULL, 'h'},
       {"backup_path", 1, NULL, 'd'},
       {"storage_info", 1, NULL, 's'},
@@ -630,6 +625,7 @@ int ObAdminDumpBackupDataExecutor::parse_cmd_(int argc, char *argv[])
       {"check_exist", 0, NULL, 'c'},
       {"length", 1, NULL, 'l'},
       {"s3_url_encode_type", 0, NULL, 'e'},
+      {"sts_credential", 0, NULL, 'i'},
       {NULL, 0, NULL, 0}};
   while (OB_SUCC(ret) && -1 != (opt = getopt_long(argc, argv, opt_str, longopts, &index))) {
     switch (opt) {
@@ -674,6 +670,12 @@ int ObAdminDumpBackupDataExecutor::parse_cmd_(int argc, char *argv[])
       case 'e': {
         if (OB_FAIL(set_s3_url_encode_type(optarg))) {
           STORAGE_LOG(WARN, "failed to set s3 url encode type", KR(ret));
+        }
+        break;
+      }
+      case 'i': {
+        if (OB_FAIL(set_sts_credential_key(optarg))) {
+          STORAGE_LOG(WARN, "failed to set sts credential", KR(ret));
         }
         break;
       }
@@ -980,12 +982,13 @@ int ObAdminDumpBackupDataExecutor::print_usage_()
 
   printf("options:\n");
   printf(HELP_FMT, "-d,--backup-file-path", "absolute backup file path with file prefix");
-  printf(HELP_FMT, "-s,--storage-info", "oss/cos should provide storage info");
+  printf(HELP_FMT, "-s,--storage-info", "oss/s3 should provide storage info");
   printf(HELP_FMT, "-f,--file-path", "relative data file path");
   printf(HELP_FMT, "-o,--offset", "data offset");
   printf(HELP_FMT, "-l,--length", "data length");
   printf(HELP_FMT, "-c,--check-exist", "check file is exist or not");
   printf(HELP_FMT, "-e,--s3_url_encode_type", "set S3 protocol url encode type");
+  printf(HELP_FMT, "-i, --sts_credential", "set STS credential");
   printf("samples:\n");
   printf("  dump meta: \n");
   printf("\tob_admin dump_backup -dfile:///home/admin/backup_info \n");
@@ -996,9 +999,15 @@ int ObAdminDumpBackupDataExecutor::print_usage_()
   printf("  dump data with -s: \n");
   printf("\tob_admin dump_backup -d'oss://home/admin/backup_info' "
          "-s'host=xxx.com&access_id=111&access_key=222'\n");
-  printf("\tob_admin dump_backup -d'cos://home/admin/backup_info' "
-         "-s'host=xxx.com&access_id=111&access_key=222&region=333'\t"
-         "-e'compliantRfc3986Encoding'");
+  printf("\tob_admin dump_backup -d's3://home/admin/backup_info' "
+         "-s'host=xxx.com&access_id=111&access_key=222&s3_region=333' "
+         "-e'compliantRfc3986Encoding'\n");
+  printf("\tob_admin dump_backup -d's3://home/admin/backup_info' "
+         "-s'host=xxx.com&role_arn=xxx' "
+         "-i'sts_url=xxx&sts_ak=aaa&sts_sk=bbb'\n");
+  printf("\tob_admin dump_backup -d's3://home/admin/backup_info' "
+         "-s'host=xxx.com&role_arn=xxx&external_id=xxx' "
+         "-i'sts_url=xxx&sts_ak=aaa&sts_sk=bbb'\n");
   return ret;
 }
 

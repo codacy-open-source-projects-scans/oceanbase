@@ -12,8 +12,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_transfer_service.h"
-#include "storage/tx_storage/ob_ls_handle.h"
-#include "observer/ob_server_struct.h"
 #include "storage/meta_store/ob_server_storage_meta_service.h"
 
 namespace oceanbase
@@ -215,6 +213,7 @@ int ObTransferService::scheduler_transfer_handler_()
 int ObTransferService::do_transfer_handler_(const share::ObLSID &ls_id)
 {
   int ret = OB_SUCCESS;
+  ObDIActionGuard(ObDIActionGuard::NS_ACTION, "TransferLSID:%ld", ls_id.id());
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
 

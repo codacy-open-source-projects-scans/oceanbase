@@ -12,7 +12,6 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include "deps/oblib/src/lib/json_type/ob_json_path.h"
 #include "ob_expr_json_remove.h"
 #include "ob_expr_json_func_helper.h"
 
@@ -119,9 +118,10 @@ int ObExprJsonRemove::eval_json_remove(const ObExpr &expr, ObEvalCtx &ctx, ObDat
     } else {
       ObString path_val = path_data->get_string();
       ObJsonPath *json_path;
+      bool is_const = expr.args_[i]->is_const_expr();
       if (OB_FAIL(ObJsonExprHelper::get_json_or_str_data(expr.args_[i], ctx, temp_allocator, path_val, is_null_result))) {
         LOG_WARN("fail to get real data.", K(ret), K(path_val));
-      } else if (OB_FAIL(ObJsonExprHelper::find_and_add_cache(path_cache, json_path, path_val, i, false))) {
+      } else if (OB_FAIL(ObJsonExprHelper::find_and_add_cache(temp_allocator, path_cache, json_path, path_val, i, false, is_const))) {
         LOG_WARN("parse text to path failed", K(path_data->get_string()), K(ret));
       } else if (json_path->path_node_cnt() == 0) {
         ret = OB_ERR_JSON_VACUOUS_PATH;

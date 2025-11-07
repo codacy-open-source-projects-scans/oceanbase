@@ -18,11 +18,11 @@ ob_define(ENABLE_LATCH_DIAGNOSE OFF)
 ob_define(ENABLE_MEMORY_DIAGNOSIS OFF)
 ob_define(ENABLE_OBJ_LEAK_CHECK OFF)
 ob_define(ENABLE_FATAL_ERROR_HANG ON)
+ob_define(DETECT_RECURSION OFF)
 ob_define(ENABLE_SMART_VAR_CHECK OFF)
 ob_define(ENABLE_COMPILE_DLL_MODE OFF)
 ob_define(OB_CMAKE_RULES_CHECK ON)
 ob_define(OB_STATIC_LINK_LGPL_DEPS ON)
-ob_define(HOTFUNC_PATH "${CMAKE_SOURCE_DIR}/hotfuncs.txt")
 ob_define(OB_BUILD_CCLS OFF)
 ob_define(LTO_JOBS all)
 ob_define(LTO_CACHE_DIR "${CMAKE_BINARY_DIR}/cache")
@@ -31,6 +31,8 @@ ob_define(NEED_PARSER_CACHE ON)
 # get compiler from build.sh
 ob_define(OB_CC "")
 ob_define(OB_CXX "")
+ob_define(OB_BUILD_STANDALONE OFF)
+ob_define(OB_BUILD_DESKTOP OFF)
 
 # 'ENABLE_PERF_MODE' use for offline system insight performance test
 # PERF_MODE macro controls many special code path in system
@@ -51,6 +53,16 @@ ob_define(OB_DISABLE_PIE OFF)
 ob_define(OB_ENABLE_MCMODEL OFF)
 
 ob_define(USE_LTO_CACHE OFF)
+# odps jni
+ob_define(OB_BUILD_JNI_ODPS ON)
+
+ob_define(OB_BUILD_WITH_EMPTY_LOAD_SCHEMA OFF)
+ob_define(ASAN_DISABLE_STACK ON)
+
+# 开源模式默认支持系统租户使用向量索引
+ob_define(OB_BUILD_SYS_VEC_IDX ON)
+
+EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE)
 
 if(WITH_COVERAGE)
   # -ftest-coverage to generate .gcno file
@@ -66,8 +78,13 @@ endif()
 
 ob_define(AUTO_FDO_OPT "")
 if(ENABLE_AUTO_FDO)
-  # file name pattern [observer.prof.{current_timestamp ms}]
-  set(AUTO_FDO_OPT "-finline-functions -fprofile-sample-use=${CMAKE_SOURCE_DIR}/observer.prof.1702984872675")
+  if( ${ARCHITECTURE} STREQUAL "x86_64" )
+    set(AUTO_FDO_PATH "${CMAKE_SOURCE_DIR}/profile/observer-x86_64.prof")
+  elseif( ${ARCHITECTURE} STREQUAL "aarch64" )
+    set(AUTO_FDO_PATH "${CMAKE_SOURCE_DIR}/profile/observer-aarch64.prof")
+  endif()
+  set(AUTO_FDO_OPT "-finline-functions -fprofile-sample-use=${AUTO_FDO_PATH}")
+  message(STATUS "auto fdo path: " ${AUTO_FDO_PATH})
 endif()
 
 ob_define(THIN_LTO_OPT "")
@@ -83,33 +100,34 @@ endif()
 
 set(HOTFUNC_OPT "")
 if(ENABLE_HOTFUNC)
+  if( ${ARCHITECTURE} STREQUAL "x86_64" )
+    set(HOTFUNC_PATH "${CMAKE_SOURCE_DIR}/profile/hotfuncs-x86_64.txt")
+  elseif( ${ARCHITECTURE} STREQUAL "aarch64" )
+    set(HOTFUNC_PATH "${CMAKE_SOURCE_DIR}/profile/hotfuncs-aarch64.txt")
+  endif()
   set(HOTFUNC_OPT "-Wl,--no-warn-symbol-ordering,--symbol-ordering-file,${HOTFUNC_PATH}")
+  message(STATUS "hotfunc path: " ${HOTFUNC_PATH})
 endif()
 
 set(BOLT_OPT "")
 if((ENABLE_BOLT OR (NOT DEFINED ENABLE_BOLT AND ENABLE_BOLT_AUTO)) AND NOT OB_BUILD_OPENSOURCE)
-  EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE)
   if( ${ARCHITECTURE} STREQUAL "x86_64" )
-    message(STATUS "build with bolt opt")
+    message(STATUS "build with bolt opt (x86_64)")
+    set(BOLT_OPT "-Wl,--emit-relocs")
+    ob_define(OB_ENABLE_BOLT ON)
+  elseif( ${ARCHITECTURE} STREQUAL "aarch64" )
+    message(STATUS "build with bolt opt (aarch64)")
     set(BOLT_OPT "-Wl,--emit-relocs")
     ob_define(OB_ENABLE_BOLT ON)
   endif()
 endif()
 
-ob_define(CPP_STANDARD_20 OFF)
-if(CPP_STANDARD_20)
-  message(STATUS "Using C++20 standard")
-  set(CMAKE_CXX_FLAGS "-std=gnu++20")
-  ob_define(CPP_STANDARD_20 ON)
-  add_definitions(-DCPP_STANDARD_20)
-else()
-  message(STATUS "Using C++11 standard")
-  set(CMAKE_CXX_FLAGS "-std=gnu++11")
-endif()
+message(STATUS "Using C++17 standard")
+set(CMAKE_CXX_FLAGS "-std=gnu++17")
 
 if(OB_DISABLE_PIE)
   message(STATUS "build without pie")
-  set(PIE_OPT "")
+  set(PIE_OPT "-no-pie")
 else()
   message(STATUS "build with pie")
   set(PIE_OPT "-pie")
@@ -143,11 +161,15 @@ if(OB_BUILD_CLOSE_MODULES)
   ob_define(OB_BUILD_DBLINK ON)
   # odps
   ob_define(OB_BUILD_CPP_ODPS ON)
+
   # 仲裁功能
   ob_define(OB_BUILD_ARBITRATION ON)
 
   # 日志存储压缩
   ob_define(OB_BUILD_LOG_STORAGE_COMPRESS ON)
+
+  # 独立日志服务
+  ob_define(OB_BUILD_SHARED_LOG_SERVICE ON)
 
   # 默认使用BABASSL
   ob_define(OB_USE_BABASSL ON)
@@ -155,6 +177,9 @@ if(OB_BUILD_CLOSE_MODULES)
   # 默认使用OB_USE_DRCMSG
   ob_define(OB_USE_DRCMSG ON)
   add_definitions(-DOB_USE_DRCMSG)
+
+  # 闭源模式不支持系统租户使用向量索引
+  set(OB_BUILD_SYS_VEC_IDX OFF)
 endif()
 
 # 下面开始逻辑控制
@@ -164,6 +189,14 @@ endif()
 
 if(OB_BUILD_TDE_SECURITY)
   add_definitions(-DOB_BUILD_TDE_SECURITY)
+endif()
+
+if(OB_BUILD_STANDALONE)
+  add_definitions(-DOB_BUILD_STANDALONE)
+endif()
+
+if (OB_USE_TEST_PUBKEY)
+  add_definitions(-DOB_USE_TEST_PUBKEY)
 endif()
 
 if(OB_BUILD_AUDIT_SECURITY)
@@ -176,6 +209,16 @@ endif()
 
 if(OB_BUILD_SHARED_STORAGE)
   add_definitions(-DOB_BUILD_SHARED_STORAGE)
+endif()
+
+if(OB_BUILD_STANDALONE)
+  add_definitions(-DOB_BUILD_STANDALONE)
+  add_definitions(-DOB_ENABLE_STANDALONE_LAUNCH)
+endif()
+
+if(OB_BUILD_DESKTOP)
+  add_definitions(-DOB_BUILD_DESKTOP)
+  add_definitions(-DOB_ENABLE_STANDALONE_LAUNCH)
 endif()
 
 if(OB_BUILD_SPM)
@@ -204,6 +247,22 @@ endif()
 
 if(OB_BUILD_CPP_ODPS)
   add_definitions(-DOB_BUILD_CPP_ODPS)
+endif()
+
+if (OB_BUILD_JNI_ODPS)
+ add_definitions(-DOB_BUILD_JNI_ODPS)
+endif()
+
+if(OB_BUILD_SHARED_LOG_SERVICE)
+  add_definitions(-DOB_BUILD_SHARED_LOG_SERVICE)
+endif()
+
+if(OB_BUILD_WITH_EMPTY_LOAD_SCHEMA)
+  add_definitions(-DOB_BUILD_WITH_EMPTY_LOAD_SCHEMA)
+endif()
+
+if (OB_BUILD_SYS_VEC_IDX)
+ add_definitions(-DOB_BUILD_SYS_VEC_IDX)
 endif()
 
 # should not use initial-exec for tls-model if building OBCDC.
@@ -236,26 +295,20 @@ if (OB_USE_CLANG)
   if (OB_CC)
     message(STATUS "Using OB_CC compiler: ${OB_CC}")
   else()
-    find_program(OB_CC clang
+    find_program(OB_CC clang-17
     "${DEVTOOLS_DIR}/bin"
       NO_DEFAULT_PATH)
-  endif()
-
-  if(CPP_STANDARD_20)
-    execute_process(COMMAND ${OB_CC} --version OUTPUT_VARIABLE CLANG_VERSION_STRING)
-    string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" CLANG_VERSION ${CLANG_VERSION_STRING})
-    if(CLANG_VERSION VERSION_LESS "17.0.0")
-      message(FATAL_ERROR "Clang version must be at least 17.0.0 if CPP_STANDARD_20 is ON, Please run the cmake process with '-DCPP_STANDARD_20=ON --init'")
-    endif()
   endif()
 
   if (OB_CXX)
     message(STATUS "Using OB_CXX compiler: ${OB_CXX}")
   else()
-    find_program(OB_CXX clang++
+    find_program(OB_CXX clang++-17
     "${DEVTOOLS_DIR}/bin"
       NO_DEFAULT_PATH)
   endif()
+
+  set(OB_OBJCOPY_BIN "${DEVTOOLS_DIR}/bin/llvm-objcopy")
 
   find_file(GCC9 devtools
     PATHS ${CMAKE_SOURCE_DIR}/deps/3rd/usr/local/oceanbase
@@ -264,17 +317,21 @@ if (OB_USE_CLANG)
   set(_CMAKE_TOOLCHAIN_LOCATION "${DEVTOOLS_DIR}/bin")
 
   if (OB_USE_ASAN)
-    ob_define(CMAKE_ASAN_FLAG "-mllvm -asan-stack=0 -fsanitize=address -fno-optimize-sibling-calls -fsanitize-blacklist=${ASAN_IGNORE_LIST}")
+    if (ASAN_DISABLE_STACK)
+      ob_define(CMAKE_ASAN_FLAG "-mllvm -asan-stack=0 -fsanitize=address -fno-optimize-sibling-calls -fsanitize-blacklist=${ASAN_IGNORE_LIST}")
+    else()
+      ob_define(CMAKE_ASAN_FLAG "-fstack-protector-strong -fsanitize=address -fno-optimize-sibling-calls -fsanitize-blacklist=${ASAN_IGNORE_LIST}")
+    endif()
   endif()
 
   if (OB_USE_LLD)
     set(LD_OPT "-fuse-ld=${DEVTOOLS_DIR}/bin/ld.lld -Wno-unused-command-line-argument")
-    set(REORDER_COMP_OPT "-ffunction-sections -fdebug-info-for-profiling")
-    set(REORDER_LINK_OPT "-Wl,--no-rosegment,--build-id=sha1 ${HOTFUNC_OPT}")
+    set(REORDER_COMP_OPT "-ffunction-sections -fdata-sections -fdebug-info-for-profiling")
+    set(REORDER_LINK_OPT "-Wl,--no-rosegment,--build-id=sha1,--gc-sections ${HOTFUNC_OPT}")
     set(OB_LD_BIN "${DEVTOOLS_DIR}/bin/ld.lld")
   endif()
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-toolchain=${GCC9} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
-  set(CMAKE_C_FLAGS "--gcc-toolchain=${GCC9} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-toolchain=${GCC9} -gdwarf-4 ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
+  set(CMAKE_C_FLAGS "--gcc-toolchain=${GCC9} -gdwarf-4 ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
   set(CMAKE_CXX_LINK_FLAGS "${LD_OPT} --gcc-toolchain=${GCC9} ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT}")
   set(CMAKE_SHARED_LINKER_FLAGS "${LD_OPT} -Wl,-z,noexecstack ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT}")
   set(CMAKE_EXE_LINKER_FLAGS "${LD_OPT} -Wl,-z,noexecstack ${PIE_OPT} ${THIN_LTO_CONCURRENCY_LINK} ${REORDER_LINK_OPT} ${CMAKE_COVERAGE_EXE_LINKER_OPTIONS}")

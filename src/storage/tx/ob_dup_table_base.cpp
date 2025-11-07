@@ -8,13 +8,9 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PubL v2 for more details.
 
-#include "logservice/ob_log_base_header.h"
 #include "ob_dup_table_base.h"
-#include "ob_dup_table_lease.h"
-#include "ob_dup_table_tablets.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 #include "storage/tx/ob_trans_service.h"
-#include "storage/tx_storage/ob_ls_handle.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/meta_store/ob_tenant_storage_meta_service.h"
 
@@ -212,7 +208,7 @@ int ObDupTableLSRoleStateHelper::state_change_succ(const ObDupTableLSRoleState &
 /*******************************************************
  *  Dup_Table Lease
  *******************************************************/
-OB_SERIALIZE_MEMBER(DupTableDurableLease, request_ts_, lease_interval_us_);
+OB_SERIALIZE_MEMBER(DupTableDurableLease, request_ts_, lease_interval_us_, flag_.flag_val_);
 OB_SERIALIZE_MEMBER(DupTableLeaseItem, log_header_, durable_lease_);
 OB_SERIALIZE_MEMBER(DupTableDurableLeaseLogBody, durable_lease_);
 OB_SERIALIZE_MEMBER(DupTableLeaseLogHeader, addr_, lease_log_code_);
@@ -312,13 +308,16 @@ int ObDupTableLSCheckpoint::set_dup_ls_meta(const ObLSDupTableMeta &dup_ls_meta_
 share::SCN ObDupTableLSCheckpoint::get_lease_log_rec_scn() const
 {
   share::SCN rec_scn;
+  rec_scn.set_max();
 
   SpinRLockGuard r_guard(ckpt_rw_lock_);
 
   if (lease_log_rec_scn_.is_valid()) {
-    rec_scn = lease_log_rec_scn_;
-  } else {
-    rec_scn.set_max();
+    rec_scn = share::SCN::min(lease_log_rec_scn_, rec_scn);
+  }
+
+  if (tablet_log_rec_scn_.is_valid()) {
+    rec_scn = share::SCN::min(tablet_log_rec_scn_, rec_scn);
   }
 
   return rec_scn;
@@ -378,6 +377,11 @@ int ObDupTableLSCheckpoint::update_ckpt_after_lease_log_synced(
       dup_ls_meta_.readable_tablets_min_base_applied_scn_.reset();
     } else if (!dup_ls_meta_.readable_tablets_min_base_applied_scn_.is_valid()) {
       dup_ls_meta_.readable_tablets_min_base_applied_scn_ = scn;
+    }
+    if (!tablet_log_rec_scn_.is_valid()) {
+      DUP_TABLE_LOG(INFO, "[CKPT] set rec log scn for readable tablet", K(ret), KPC(this), K(scn),
+                    K(for_replay), K(modify_readable_sets), K(contain_all_readable));
+      tablet_log_rec_scn_ = scn;
     }
     DUP_TABLE_LOG(INFO, "[CKPT] modify ckpt scn for readable tablets", K(ret), KPC(this), K(scn),
                   K(for_replay), K(modify_readable_sets), K(contain_all_readable));
@@ -443,6 +447,12 @@ bool ObDupTableLSCheckpoint::contain_all_readable_on_replica() const
                   K(contain_all_readable), KPC(this));
   }
 
+  if (GCTX.is_shared_storage_mode()) {
+    contain_all_readable = false;
+    DUP_TABLE_LOG(INFO, "[CKPT] rebuild readable set in the shared storage mode",
+                  K(contain_all_readable), KPC(this));
+  }
+
   return contain_all_readable;
 }
 
@@ -451,18 +461,12 @@ int ObDupTableLSCheckpoint::flush()
   int ret = OB_SUCCESS;
 
   SpinWLockGuard w_guard(ckpt_rw_lock_);
-  ObLSHandle ls_handle;
 
-  if (OB_FAIL(MTL(ObLSService *)->get_ls(dup_ls_meta_.ls_id_, ls_handle, ObLSGetMod::TRANS_MOD))) {
-    DUP_TABLE_LOG(WARN, "get ls failed", K(ret), K(dup_ls_meta_));
-  } else if (OB_ISNULL(ls_handle.get_ls())) {
-    ret = OB_ERR_NULL_VALUE;
-    DUP_TABLE_LOG(WARN, "ls pointer is nullptr", K(ret));
-  } else if (OB_FAIL(TENANT_STORAGE_META_PERSISTER.update_dup_table_meta(
-      ls_handle.get_ls()->get_ls_epoch(), dup_ls_meta_))) {
+  if (OB_FAIL(TENANT_STORAGE_META_SERVICE.update_dup_table_meta(dup_ls_meta_))) {
     DUP_TABLE_LOG(WARN, "fail to update dup table meta", K(ret));
   } else {
     lease_log_rec_scn_.reset();
+    tablet_log_rec_scn_.reset();
     DUP_TABLE_LOG(INFO, "Write dup_table slog successfully", K(ret), KPC(this));
   }
 
@@ -486,6 +490,7 @@ int ObDupTableLSCheckpoint::online()
   SpinWLockGuard w_guard(ckpt_rw_lock_);
 
   lease_log_rec_scn_.reset();
+  tablet_log_rec_scn_.reset();
   start_replay_scn_.reset();
   readable_ckpt_base_scn_is_accurate_ = true;
 

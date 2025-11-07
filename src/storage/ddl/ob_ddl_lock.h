@@ -42,7 +42,7 @@ public:
       const ObTableSchema &data_table_schema,
       const uint64_t index_table_id,
       const bool is_global_index,
-      const ObTableLockOwnerID lock_owner,
+      const transaction::tablelock::ObTableLockOwnerID lock_owner,
       ObMySQLTransaction &trans);
   static int lock_for_rebuild_index(
       const share::schema::ObTableSchema &data_table_schema,
@@ -82,8 +82,8 @@ public:
     const uint64_t tenant_id,
     const ObTableSchema &table_schema,
     const ObIArray<ObTabletID> &tablet_ids,
-    const ObTableLockOwnerID &lock_owner,
-    const ObTableLockOwnerID new_lock_owner,
+    const transaction::tablelock::ObTableLockOwnerID &lock_owner,
+    const transaction::tablelock::ObTableLockOwnerID new_lock_owner,
     const bool is_global_idx,
     ObMySQLTransaction &trans);
 
@@ -93,8 +93,25 @@ public:
       const ObIArray<uint64_t> &global_index_table_ids,
       ObMySQLTransaction &trans);
 
+  static int lock_for_modify_truncate_info_in_trans(
+      const uint64_t tenant_id,
+      const uint64_t global_index_table_id,
+      ObMySQLTransaction &trans);
+
   static int lock_for_add_lob_in_trans(
       const share::schema::ObTableSchema &data_table_schema,
+      ObMySQLTransaction &trans);
+
+  static int lock_for_online_drop_column_in_trans(
+      const share::schema::ObTableSchema &table_schema,
+      ObMySQLTransaction &trans);
+  static int lock_for_drop_lob(
+      const share::schema::ObTableSchema &data_table_schema,
+      const transaction::tablelock::ObTableLockOwnerID lock_owner,
+      ObMySQLTransaction &trans);
+  static int unlock_for_drop_lob(
+      const share::schema::ObTableSchema &data_table_schema,
+      const transaction::tablelock::ObTableLockOwnerID lock_owner,
       ObMySQLTransaction &trans);
 
   static int lock_for_add_partition_in_trans(
@@ -130,6 +147,20 @@ public:
       const ObIArray<ObTabletID> *hidden_tablet_ids_alone,
       const transaction::tablelock::ObTableLockOwnerID lock_owner,
       ObMySQLTransaction &trans);
+  static int lock_table_in_trans(
+      const ObTableSchema &table_schema,
+      const transaction::tablelock::ObTableLockMode lock_mode,
+      ObMySQLTransaction &trans);
+
+protected:
+  static int do_table_lock(
+    const uint64_t tenant_id,
+    const uint64_t table_id,
+    const transaction::tablelock::ObTableLockMode lock_mode,
+    const transaction::tablelock::ObTableLockOwnerID lock_owner,
+    const int64_t timeout_us,
+    const bool is_lock,
+    ObMySQLTransaction &trans);
 
 private:
   static int lock_table_lock_in_trans(
@@ -139,14 +170,6 @@ private:
       const transaction::tablelock::ObTableLockMode lock_mode,
       const int64_t timeout_us,
       ObMySQLTransaction &trans);
-  static int do_table_lock(
-    const uint64_t tenant_id,
-    const uint64_t table_id,
-    const transaction::tablelock::ObTableLockMode lock_mode,
-    const transaction::tablelock::ObTableLockOwnerID lock_owner,
-    const int64_t timeout_us,
-    const bool is_lock,
-    ObMySQLTransaction &trans);
   static int do_table_lock(
     const uint64_t tenant_id,
     const uint64_t table_id,

@@ -13,21 +13,11 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_json_table_op.h"
-#include "share/object/ob_obj_cast_util.h"
-#include "share/object/ob_obj_cast.h"
-#include "share/ob_json_access_utils.h"
-#include "common/sql_mode/ob_sql_mode_utils.h"
-#include "sql/ob_sql_utils.h"
-#include "sql/engine/expr/ob_datum_cast.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/expr/ob_expr_json_func_helper.h"
 #include "sql/engine/expr/ob_expr_multi_mode_func_helper.h"
 #include "sql/engine/expr/ob_expr_json_value.h"
 #include "sql/engine/expr/ob_expr_json_query.h"
 #include "sql/engine/expr/ob_expr_json_exists.h"
 #include "lib/xml/ob_binary_aggregate.h"
-#include "lib/xml/ob_xpath.h"
 #include "sql/engine/expr/ob_expr_rb_func_helper.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "lib/roaringbitmap/ob_rb_utils.h"
@@ -799,6 +789,9 @@ int ObJsonTableOp::inner_close()
 {
   INIT_SUCC(ret);
   if (OB_NOT_NULL(root_)) {
+    if (OB_FAIL(root_->reset(&jt_ctx_))) {
+      LOG_WARN("failed to reset root node", K(ret));
+    }
     root_->destroy();
   }
   if (OB_NOT_NULL(def_root_)) {
@@ -930,9 +923,9 @@ int RegularCol::eval_value_col(ObRegCol &col_node, JtScanCtx* ctx, ObExpr* col_e
     ret = OB_ERR_BOOL_CAST_NUMBER;
     LOG_WARN("boolean cast number cast not support");
     SET_COVER_ERROR(ctx, ret);
-  } else if ((in->json_type() == ObJsonNodeType::J_INT
-              || in->json_type() == ObJsonNodeType::J_INT)
-            && (ob_is_datetime_tc(col_node.col_info_.data_type_.get_obj_type()))) {
+  } else if ((in->json_type() == ObJsonNodeType::J_INT || in->json_type() == ObJsonNodeType::J_INT)
+             && (ob_is_datetime_tc(col_node.col_info_.data_type_.get_obj_type())
+                 || ob_is_mysql_datetime_tc(col_node.col_info_.data_type_.get_obj_type()))) {
     char* res_ptr = ctx->buf;
     int len = snprintf(ctx->buf, sizeof(ctx->buf), "%ld", in->get_int());
     if (len > 0) {
@@ -1003,123 +996,34 @@ int RegularCol::eval_unnest_col(ObRegCol &col_node, void* in, JtScanCtx* ctx, Ob
   INIT_SUCC(ret);
   col_node.cur_pos_++;
   ObIArrayType **arr_stucts = reinterpret_cast<ObIArrayType**>(in);
-  ObDataType data_type = col_node.col_info_.data_type_;
   ObIArrayType *arr_obj = arr_stucts[col_node.col_info_.output_column_idx_];
-  ObObjType obj_type = data_type.get_obj_type();
   int32_t idx = col_node.cur_pos_;
   ObExpr* expr = ctx->spec_ptr_->column_exprs_.at(col_node.col_info_.output_column_idx_);
   ObDatum& res_datum = expr->locate_datum_for_write(*ctx->eval_ctx_);
 
-  if (OB_ISNULL(arr_obj) || (arr_obj->get_format() !=  ArrayFormat::Vector && arr_obj->is_null(idx))) {
-    col_expr->locate_datum_for_write(*ctx->eval_ctx_).set_null();
+  if (OB_ISNULL(arr_obj) || arr_obj->is_null(idx)) {
+    res_datum.set_null();
+  } else if (arr_obj->get_format() == Nested_Array) {
+    ObArrayNested *arr = static_cast<ObArrayNested*>(arr_obj);
+    ObIArrayType* child_arr = NULL;
+    ObString res_str;
+    ObEvalCtx::TempAllocGuard tmp_alloc_g(*ctx->eval_ctx_);
+    common::ObArenaAllocator &temp_allocator = tmp_alloc_g.get_allocator();
+    if (OB_FAIL(ObArrayTypeObjFactory::construct(temp_allocator, *dynamic_cast<const ObCollectionArrayType*>(arr_obj->get_array_type())->element_type_, child_arr))) {
+      LOG_WARN("failed to add null to array", K(ret));
+    } else if (OB_FAIL(arr->at(idx, *child_arr))) {
+      LOG_WARN("failed to get elem", K(ret), K(idx));
+    } else if (OB_FAIL(ObArrayExprUtils::set_array_res(child_arr, child_arr->get_raw_binary_len(), *expr, *ctx->eval_ctx_, res_str))) {
+      LOG_WARN("get array binary string failed", K(ret));
+    } else {
+      res_datum.set_string(res_str);
+    }
   } else {
-    switch (obj_type) {
-      case ObTinyIntType: {
-        ObArrayFixedSize<int8_t> *arr = static_cast<ObArrayFixedSize<int8_t> *>(arr_obj);
-        res_datum.set_int(static_cast<int64_t>((*arr)[idx]));
-        break;
-      }
-      case ObSmallIntType: {
-        ObArrayFixedSize<int16_t> *arr = static_cast<ObArrayFixedSize<int16_t> *>(arr_obj);
-        res_datum.set_int(static_cast<int64_t>((*arr)[idx]));
-        break;
-      }
-      case ObIntType: {
-        ObArrayFixedSize<int64_t> *arr = static_cast<ObArrayFixedSize<int64_t> *>(arr_obj);
-        res_datum.set_int((*arr)[idx]);
-        break;
-      }
-      case ObInt32Type: {
-        ObArrayFixedSize<int32_t> *arr = static_cast<ObArrayFixedSize<int32_t> *>(arr_obj);
-        res_datum.set_int32((*arr)[idx]);
-        break;
-      }
-      case ObUTinyIntType: {
-        ObArrayFixedSize<uint8_t> *arr = static_cast<ObArrayFixedSize<uint8_t> *>(arr_obj);
-        res_datum.set_uint(static_cast<uint64_t>((*arr)[idx]));
-        break;
-      }
-      case ObUSmallIntType: {
-        ObArrayFixedSize<uint16_t> *arr = static_cast<ObArrayFixedSize<uint16_t> *>(arr_obj);
-        res_datum.set_uint(static_cast<uint64_t>((*arr)[idx]));
-        break;
-      }
-      case ObUInt64Type: {
-        ObArrayFixedSize<uint64_t> *arr = static_cast<ObArrayFixedSize<uint64_t> *>(arr_obj);
-        res_datum.set_uint((*arr)[idx]);
-        break;
-      }
-      case ObUInt32Type: {
-        ObArrayFixedSize<int32_t> *arr = static_cast<ObArrayFixedSize<int32_t> *>(arr_obj);
-        res_datum.set_uint32((*arr)[idx]);
-        break;
-      }
-      case ObDecimalIntType: {
-        ObPrecision prec = data_type.get_precision();
-        if (get_decimalint_type(prec) == DECIMAL_INT_32) {
-          ObArrayFixedSize<int32_t> *arr = static_cast<ObArrayFixedSize<int32_t> *>(arr_obj);
-          res_datum.set_decimal_int(arr->get_decimal_int(idx), sizeof(int32_t));
-        } else if (get_decimalint_type(prec) == DECIMAL_INT_64) {
-          ObArrayFixedSize<int64_t> *arr = static_cast<ObArrayFixedSize<int64_t> *>(arr_obj);
-          res_datum.set_decimal_int(arr->get_decimal_int(idx), sizeof(int64_t));
-        } else if (get_decimalint_type(prec) == DECIMAL_INT_128) {
-          ObArrayFixedSize<int128_t> *arr = static_cast<ObArrayFixedSize<int128_t> *>(arr_obj);
-          res_datum.set_decimal_int(arr->get_decimal_int(idx), sizeof(int128_t));
-        } else if (get_decimalint_type(prec) == DECIMAL_INT_256) {
-          ObArrayFixedSize<int256_t> *arr = static_cast<ObArrayFixedSize<int256_t> *>(arr_obj);
-          res_datum.set_decimal_int(arr->get_decimal_int(idx), sizeof(int256_t));
-        } else if (get_decimalint_type(prec) == DECIMAL_INT_512) {
-          ObArrayFixedSize<int512_t> *arr = static_cast<ObArrayFixedSize<int512_t> *>(arr_obj);
-          res_datum.set_decimal_int(arr->get_decimal_int(idx), sizeof(int512_t));
-        } else {
-          ret = OB_ERR_UNEXPECTED;
-          OB_LOG(WARN, "unexpected precision", K(ret), K(prec));
-        }
-        break;
-      }
-      case ObVarcharType : {
-        ObArrayBinary *arr = static_cast<ObArrayBinary *>(arr_obj);
-        res_datum.set_string((*arr)[idx]);
-        break;
-      }
-      case ObDoubleType: {
-        ObArrayFixedSize<double> *arr = static_cast<ObArrayFixedSize<double> *>(arr_obj);
-        res_datum.set_double((*arr)[idx]);
-        break;
-      }
-      case ObFloatType: {
-        ObArrayFixedSize<float> *arr = static_cast<ObArrayFixedSize<float> *>(arr_obj);
-        res_datum.set_float((*arr)[idx]);
-        break;
-      }
-      case ObCollectionSQLType: {
-        ObArrayNested *arr = static_cast<ObArrayNested*>(arr_obj);
-        uint16_t subschema_id = data_type.get_subschema_id();
-        ObSubSchemaValue value;
-        ObSqlCollectionInfo *coll_info  = NULL;
-        ObIArrayType* child_arr = NULL;
-        ObString res_str;
-        if (OB_FAIL(ctx->exec_ctx_->get_sqludt_meta_by_subschema_id(subschema_id, value))) {
-          LOG_WARN("failed to get subschema ctx", K(ret));
-        } else if (value.type_ >= OB_SUBSCHEMA_MAX_TYPE) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid subschema type", K(ret), K(value));
-        } else if (OB_FALSE_IT(coll_info = reinterpret_cast<ObSqlCollectionInfo *>(value.value_))) {
-        } else if (OB_FAIL(ObArrayTypeObjFactory::construct(*ctx->op_exec_alloc_, *coll_info->collection_meta_, child_arr))) {
-          LOG_WARN("failed to add null to array", K(ret));
-        } else if (OB_FAIL(arr->at(idx, *child_arr))) {
-          LOG_WARN("failed to get elem", K(ret), K(idx));
-        } else if (OB_FAIL(ObArrayExprUtils::set_array_res(child_arr, child_arr->get_raw_binary_len(), *expr, *ctx->eval_ctx_, res_str))) {
-          LOG_WARN("get array binary string failed", K(ret));
-        } else {
-          res_datum.set_string(res_str);
-        }
-        break;
-      }
-      default: {
-        ret = OB_ERR_UNEXPECTED;
-        OB_LOG(WARN, "unexpected element type", K(ret), K(data_type.get_obj_type()));
-      }
+    ObObj elem_obj;
+    if (OB_FAIL(arr_obj->elem_at(idx, elem_obj))) {
+      LOG_WARN("failed to get element", K(ret), K(idx));
+    } else {
+      res_datum.from_obj(elem_obj);
     }
   }
 
@@ -1175,6 +1079,18 @@ int RbIterateTableFunc::eval_input(ObJsonTableOp &jt, JtScanCtx &ctx, ObEvalCtx 
 int RbIterateTableFunc::reset_ctx(ObRegCol &scan_node, JtScanCtx*& ctx)
 {
   INIT_SUCC(ret);
+  if (OB_ISNULL(scan_node.iter_)) {
+    // do nothing
+  } else {
+    int col_num = ctx->spec_ptr_->value_exprs_.count();
+    ObRoaringBitmapIter **rb_iters = reinterpret_cast<ObRoaringBitmapIter **>(scan_node.iter_);
+    for (int64_t i = 0; i < col_num; ++i) {
+      if (OB_NOT_NULL(rb_iters[i])) {
+        rb_iters[i]->destory();
+        rb_iters[i] = NULL;
+      }
+    }
+  }
   return ret;
 }
 
@@ -1195,6 +1111,8 @@ int RbIterateTableFunc::reset_path_iter(ObRegCol &scan_node, void* in, JtScanCtx
   if (OB_ISNULL(rb_iters = static_cast<ObRoaringBitmapIter **>(ctx->row_alloc_.alloc(col_num * sizeof(ObRoaringBitmapIter *))))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to alloc memory for rbs", K(ret));
+  } else {
+    MEMSET(rb_iters, 0, col_num * sizeof(ObRoaringBitmapIter *));
   }
 
   for (int64_t i = 0; OB_SUCC(ret) && i < col_num; ++i) {
@@ -1220,7 +1138,12 @@ int RbIterateTableFunc::reset_path_iter(ObRegCol &scan_node, void* in, JtScanCtx
   }
   if (OB_FAIL(ret)) {
     for (int64_t i = 0; i < col_num; ++i) {
-      ObRbUtils::rb_destroy(rbs[i]);
+      if (OB_NOT_NULL(rb_iters[i])) {
+        rb_iters[i]->destory();
+        rb_iters[i] = NULL;
+      } else {
+        ObRbUtils::rb_destroy(rbs[i]);
+      }
     }
   } else {
     scan_node.iter_ = rb_iters;
@@ -2281,32 +2204,36 @@ int ScanNode::get_next_iter(void* in, JtScanCtx* ctx, bool& is_null_value)
   is_null_value = false;
   bool is_null_iter = false;
   if (!is_evaled_ || in_ != in) {
-    in_ = in;
-    is_null_result_ = false;
-    if (OB_ISNULL(in_)) {
-      is_null_value = is_null_result_ = true;
-      seek_node_.curr_ = seek_node_.iter_ = nullptr;
-      seek_node_.cur_pos_ = 0;
-      seek_node_.total_ = 0;
-    } else if (OB_FAIL(ctx->table_func_->reset_path_iter(seek_node_, in_, ctx, ScanType::SCAN_NODE_TYPE, is_null_iter))) {   // reset path & get first result
-      RESET_COVER_CODE(ctx);
-      LOG_WARN("fail to init path", K(ret), K(ctx->spec_ptr_->table_type_), K(ctx->table_func_));
-    } else if (is_null_iter) {
-      is_null_value = is_null_result_ = true;
-      seek_node_.curr_ = seek_node_.iter_ = nullptr;
-      seek_node_.total_ = 1;
-      seek_node_.cur_pos_ = 0;
-      // 1. if root node seek result is NULL, but input(in) not null,then return end.
-      if (seek_node_.col_info_.parent_id_ == common::OB_INVALID_ID
-          || (ctx->jt_op_->get_root_param() == in  // 2. if path == '$' && root scan node not have regular column,
-              && ctx->jt_op_->get_root_entry()->get_scan_node()->reg_column_count() == 0
-              && ctx->jt_op_->get_root_entry()->get_scan_node() == this)) {
-        ret = OB_ITER_END;
+    if (OB_FAIL(seek_node_.reset(ctx))) {
+      LOG_WARN("failed to reset seek_node", K(ret));
+    } else {
+      in_ = in;
+      is_null_result_ = false;
+      if (OB_ISNULL(in_)) {
+        is_null_value = is_null_result_ = true;
+        seek_node_.curr_ = seek_node_.iter_ = nullptr;
+        seek_node_.cur_pos_ = 0;
+        seek_node_.total_ = 0;
+      } else if (OB_FAIL(ctx->table_func_->reset_path_iter(seek_node_, in_, ctx, ScanType::SCAN_NODE_TYPE, is_null_iter))) {   // reset path & get first result
+        RESET_COVER_CODE(ctx);
+        LOG_WARN("fail to init path", K(ret), K(ctx->spec_ptr_->table_type_), K(ctx->table_func_));
+      } else if (is_null_iter) {
+        is_null_value = is_null_result_ = true;
+        seek_node_.curr_ = seek_node_.iter_ = nullptr;
+        seek_node_.total_ = 1;
+        seek_node_.cur_pos_ = 0;
+        // 1. if root node seek result is NULL, but input(in) not null,then return end.
+        if (seek_node_.col_info_.parent_id_ == common::OB_INVALID_ID
+            || (ctx->jt_op_->get_root_param() == in  // 2. if path == '$' && root scan node not have regular column,
+                && ctx->jt_op_->get_root_entry()->get_scan_node()->reg_column_count() == 0
+                && ctx->jt_op_->get_root_entry()->get_scan_node() == this)) {
+          ret = OB_ITER_END;
+        }
       }
-    }
-    if (OB_SUCC(ret)) {
-      is_evaled_= true;
-      seek_node_.cur_pos_ = 0;
+      if (OB_SUCC(ret)) {
+        is_evaled_= true;
+        seek_node_.cur_pos_ = 0;
+      }
     }
   } else {
     is_null_iter = false;

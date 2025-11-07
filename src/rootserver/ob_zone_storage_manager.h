@@ -52,7 +52,7 @@ public:
   virtual int get_zone_storage_count(int64_t &zone_storage_count) const;
   virtual int add_storage(const common::ObString &storage_path, const common::ObString &access_info,
                           const common::ObString &attribute, const share::ObStorageUsedType::TYPE &use_for,
-                          const common::ObZone &zone, const bool &wait_type);
+                          const common::ObZone &zone, const bool &wait_type, common::ObMySQLTransaction &trans);
   virtual int drop_storage(const common::ObString &storage_path,
                            const share::ObStorageUsedType::TYPE &use_for,
                            const common::ObZone &zone, const bool &force_type,
@@ -64,7 +64,7 @@ public:
   virtual int get_zone_storage_with_zone(const common::ObZone &zone, const share::ObStorageUsedType::TYPE used_for,
                                          share::ObBackupDest &storage_dest, bool &is_exist);    // get zone storage with zone_name and used_for_type
   virtual int check_zone_storage_with_region_scope(const common::ObRegion &region, const share::ObStorageUsedType::TYPE used_for,
-                                                   const share::ObBackupDest &storage_dest);    // get zone storage with region_name and used_for_type
+                                                   const share::ObBackupDest &storage_dest, common::ObMySQLTransaction &trans);    // get zone storage with region_name and used_for_type
 
   virtual int get_storage_infos_by_zone(const ObZone &zone,
       ObIArray<share::ObZoneStorageTableInfo> &storage_infos) const;
@@ -73,13 +73,14 @@ private:
   int add_storage_operation(const share::ObBackupDest &storage_dest,
                             const share::ObStorageUsedType::TYPE &used_for,
                             const common::ObZone &zone, const bool &wait_type,
-                            const int64_t max_iops, const int64_t max_bandwidth);
+                            const int64_t max_iops, const int64_t max_bandwidth,
+                            common::ObMySQLTransaction &trans);
   int drop_storage_operation(const common::ObString &storage_path,
                              const share::ObStorageUsedType::TYPE &use_for,
                              const common::ObZone &zone, const bool &wait_type);
   int alter_storage_authorization(const share::ObBackupDest &storage_dest, const bool &wait_type);
   int alter_storage_attribute(const common::ObString &storage_path, const bool &wait_type,
-                              const int64_t max_iops, const int64_t max_bandwidth);
+                              const int64_t max_iops, const int64_t max_bandwidth, const ObStorageChecksumType &checksum_type);
   int check_zone_storage_exist(const common::ObZone &zone, const share::ObBackupDest &storage_dest,
                                const share::ObStorageUsedType::TYPE used_for, int64_t &idx) const;
   int check_zone_storage_exist(const common::ObZone &zone, const ObString &storage_path,
@@ -88,7 +89,7 @@ private:
   int get_zone_storage_list_by_zone(const common::ObZone &zone,
                                     common::ObArray<int64_t> &drop_zone_storage_list) const;
   int update_zone_storage_table_state(const int64_t idx);
-  int parse_attribute_str(const common::ObString &attribute, int64_t &max_iops, int64_t &max_bandwidth);
+  int parse_attribute_str(const common::ObString &attribute, int64_t &max_iops, int64_t &max_bandwidth, ObStorageChecksumType &checksum_type);
   int check_need_fetch_storage_id(const share::ObBackupDest &storage_dest, bool &is_need_fetch, uint64_t &storage_id);
 
 protected:
@@ -116,7 +117,7 @@ public:
 
   virtual int add_storage(const common::ObString &storage_path, const common::ObString &access_info,
                           const common::ObString &attribute, const share::ObStorageUsedType::TYPE &use_for,
-                          const common::ObZone &zone, const bool &wait_type);
+                          const common::ObZone &zone, const bool &wait_type, common::ObMySQLTransaction &trans);
   virtual int drop_storage(const common::ObString &storage_path,
                            const share::ObStorageUsedType::TYPE &use_for,
                            const common::ObZone &zone, const bool &force_type,

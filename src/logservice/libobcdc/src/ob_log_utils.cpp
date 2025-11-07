@@ -20,10 +20,8 @@
 #include <net/if.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <linux/sockios.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
-#include <stdlib.h>                                     // strtoll
 #include <openssl/md5.h>                                // MD5
 
 #include "lib/string/ob_string.h"                       // ObString
@@ -34,7 +32,6 @@
 #include "share/schema/ob_table_schema.h"               // ObTableSchema
 #include "share/schema/ob_column_schema.h"              // ObColumnSchemaV2
 #include "share/schema/ob_schema_struct.h"
-#include "share/ob_get_compat_mode.h"
 #include "rpc/obmysql/ob_mysql_global.h"                // MYSQL_TYPE_*
 #include "ob_log_config.h"
 #include "ob_log_schema_cache_info.h"                   // ColumnSchemaInfo
@@ -195,8 +192,8 @@ RecordType get_record_type(const ObDmlRowFlag &dml_flag)
 
   // Set record type
   // Note: The REPLACE type is not handled, it does not exist in Redo
-  // Note: must judge is_delete_insert first because PUT is also is_insert, but it's flag_type is DF_TYPE_INSERT_DELETE
-  if (OB_UNLIKELY(dml_flag.is_delete_insert())) {
+  // Note: must judge is_upsert first because PUT is also is_insert, but it's flag_type is DF_TYPE_INSERT_DELETE
+  if (OB_UNLIKELY(dml_flag.is_upsert())) {
     record_type = EPUT;
   } else if (dml_flag.is_insert()) {
     record_type = EINSERT;
@@ -215,7 +212,7 @@ const char *print_dml_flag(const blocksstable::ObDmlRowFlag &dml_flag)
 {
   const char *str = "UNKNOWN";
 
-  if (dml_flag.is_delete_insert()) {
+  if (dml_flag.is_upsert()) {
     str = "put";
   } else if (dml_flag.is_insert()) {
     str = "insert";
@@ -499,6 +496,14 @@ const char *get_ctype_string(int ctype)
       sc_type = "MYSQL_TYPE_OB_ARRAY";
       break;
 
+    case oceanbase::obmysql::MYSQL_TYPE_OB_MAP:
+      sc_type = "MYSQL_TYPE_OB_MAP";
+      break;
+
+    case oceanbase::obmysql::MYSQL_TYPE_OB_SPARSE_VECTOR:
+      sc_type = "MYSQL_TYPE_OB_SPARSE_VECTOR";
+      break;
+
     case oceanbase::obmysql::MYSQL_TYPE_NEWDECIMAL:
       sc_type = "MYSQL_TYPE_NEWDECIMAL";
       break;
@@ -641,7 +646,9 @@ bool is_roaringbitmap_type(const int ctype)
 bool is_collection_type(const int ctype)
 {
   return (ctype == oceanbase::obmysql::MYSQL_TYPE_OB_ARRAY
-          || ctype == oceanbase::obmysql::MYSQL_TYPE_OB_VECTOR);
+          || ctype == oceanbase::obmysql::MYSQL_TYPE_OB_VECTOR
+          || ctype == oceanbase::obmysql::MYSQL_TYPE_OB_MAP)
+          || ctype == oceanbase::obmysql::MYSQL_TYPE_OB_SPARSE_VECTOR;
 }
 
 double get_delay_sec(const int64_t tstamp_ns)
@@ -1247,7 +1254,7 @@ int get_tenant_compat_mode(const uint64_t tenant_id,
     if (! done) {
       // Retry to get it again
       ret = OB_SUCCESS;
-      // After a failure to acquire the tenant schema, and in order to ensure that the modules can handle the performance, usleep for a short time
+      // After a failure to acquire the tenant schema, and in order to ensure that the modules can handle the performance, ob_usleep for a short time
       ob_usleep(100);
     }
 
@@ -1513,6 +1520,25 @@ int c_str_to_int(const char *str, int64_t &num)
     ret = OB_INVALID_ARGUMENT;
   } else {
     num = strtoll(str, &end_str, 10);
+    if (errno != 0 || (NULL != end_str && *end_str != '\0')) {
+      LOG_ERROR("strtoll convert string to int value fail", K(str), K(num),
+        "error", strerror(errno), K(end_str));
+      ret = OB_INVALID_DATA;
+    }
+  }
+  return ret;
+}
+
+int c_str_to_uint64(const char *str, uint64_t &num)
+{
+  int ret = OB_SUCCESS;
+  errno = 0;
+  char *end_str = NULL;
+  if (OB_ISNULL(str) || OB_UNLIKELY(0 == strlen(str))) {
+    LOG_ERROR("c_str_to_int str should not null");
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    num = strtoull(str, &end_str, 10);
     if (errno != 0 || (NULL != end_str && *end_str != '\0')) {
       LOG_ERROR("strtoll convert string to int value fail", K(str), K(num),
         "error", strerror(errno), K(end_str));

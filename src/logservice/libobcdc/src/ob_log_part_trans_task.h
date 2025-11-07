@@ -266,6 +266,11 @@ protected:
       const ObLogAllDdlOperationSchemaInfo *all_ddl_operation_table_schema_info,
       const bool is_macroblock_row,
       ColValueList &cols);
+  int parse_outrow_lob_column_(
+      const bool is_parse_new_col,
+      const blocksstable::ObDmlRowFlag &dml_flag,
+      const uint64_t column_id,
+      const ObLobCommon &lob_common);
   int parse_rowkey_(
       ColValueList &rowkey_cols,
       const common::ObStoreRowkey &rowkey,
@@ -525,7 +530,7 @@ public:
   bool is_insert() const { return row_.get_dml_flag().is_insert(); }
   bool is_update() const { return row_.get_dml_flag().is_update(); }
   bool is_delete() const { return row_.get_dml_flag().is_delete(); }
-  bool is_put() const { return row_.get_dml_flag().is_delete_insert(); }
+  bool is_put() const { return row_.get_dml_flag().is_upsert(); }
 
   // Parse the column data
   // If obj2str_helper is empty, then no conversion of obj to string

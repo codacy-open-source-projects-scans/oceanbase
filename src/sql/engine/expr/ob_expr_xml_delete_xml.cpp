@@ -12,12 +12,7 @@
  */
 
 #include "ob_expr_xml_delete_xml.h"
-#include "ob_expr_lob_utils.h"
-#include "lib/xml/ob_xml_parser.h"
-#include "lib/xml/ob_xml_util.h"
 #include "sql/engine/expr/ob_expr_xml_func_helper.h"
-#include "lib/utility/utility.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -89,7 +84,6 @@ int ObExprDeleteXml::eval_delete_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
   ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
   uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
   MultimodeAlloctor allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
   ObDatum *xml_datum = NULL;
   ObIMulModeBase *xml_tree = NULL;
   ObXmlDocument *xml_doc = NULL;
@@ -121,6 +115,7 @@ int ObExprDeleteXml::eval_delete_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDatum
     LOG_WARN("fail to construct namespace params", K(ret), K(namespace_str));
   }
 
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
   if (OB_FAIL(ret)) {
   } else if (xpath_str.empty()) {
     // do nothing

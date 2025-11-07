@@ -14,14 +14,8 @@
 
 #include "sql/engine/join/hash_join/ob_hash_join_vec_op.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "share/diagnosis/ob_sql_monitor_statname.h"
 #include "sql/engine/join/ob_join_filter_op.h"
-#include "sql/engine/join/ob_join_filter_partition_splitter.h"
 
 namespace oceanbase
 {
@@ -61,7 +55,7 @@ int ObHashJoinVecInput::sync_wait(ObExecContext &ctx, int64_t &sync_event, Event
         if (ATOMIC_LOAD(&sync_event) + 1 >= exit_cnt) {
           // last thread, it will singal and exit by self
           ATOMIC_INC(&sync_event);
-          shared_hj_info->cond_.signal();
+          shared_hj_info->cond_.signal(INT32_MAX);
           LOG_DEBUG("debug signal event", K(ret), K(lbt()), K(sync_event));
           break;
         }
@@ -719,7 +713,8 @@ int ObHashJoinVecOp::process_left(bool &need_not_read_right)
   }
 
   if (OB_SUCC(ret)
-     && (!is_shared_ || 0 == cur_join_table_->get_row_count())
+     && (!is_shared_ || (0 == cur_join_table_->get_row_count()
+                         && cur_dumped_partition_ == MAX_PART_COUNT_PER_LEVEL))
      && ((0 == num_left_rows
          && RIGHT_ANTI_JOIN != MY_SPEC.join_type_
          && RIGHT_OUTER_JOIN != MY_SPEC.join_type_
@@ -773,7 +768,7 @@ int ObHashJoinVecOp::do_drain_exch()
 void ObHashJoinVecOp::destroy()
 {
   sql_mem_processor_.unregister_profile_if_necessary();
-  jt_ctx_.reset();
+  jt_ctx_.reset(alloc_);
   if (OB_LIKELY(nullptr != alloc_)) {
     alloc_ = nullptr;
   }
@@ -880,7 +875,10 @@ int ObHashJoinVecOp::reuse_for_next_chunk()
     LOG_WARN("failed to calc basic info", K(ret));
   } else {
     // reuse buckets
-    OZ(cur_join_table_->build_prepare(jt_ctx_, profile_.get_row_count(), profile_.get_bucket_size()));
+    OZ(cur_join_table_->build_prepare(jt_ctx_,
+                                      profile_.get_row_count(),
+                                      profile_.get_bucket_size(),
+                                      alloc_));
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(right_part_->rescan())) {
       LOG_WARN("failed to rescan right", K(ret));
@@ -1364,6 +1362,11 @@ int ObHashJoinVecOp::create_partition(bool is_left, int64_t part_id, ObHJPartiti
   part_shift += min(__builtin_ctz(part_count_), 8);
   // if is create left partition and is top level, no need to create real partition store,
   // only create the ObHJPartition(an wrapper)
+  uint32_t build_extra_size = sizeof(ObHJStoredRow::ExtraInfo);
+  if (is_left && MY_SPEC.use_realistic_runtime_bloom_filter_size()) {
+    build_extra_size =
+        MY_SPEC.jf_material_control_info_.extra_hash_count_ * sizeof(ObHJStoredRow::ExtraInfo);
+  }
   bool need_create_left_partition_store = !(is_left && is_top_level_process_with_join_filter());
   if (OB_FAIL(part_mgr_->get_or_create_part(part_level_, part_shift,
                                             (tmp_batch_round << 32) + part_id, is_left, part, false,
@@ -1375,7 +1378,7 @@ int ObHashJoinVecOp::create_partition(bool is_left, int64_t part_id, ObHJPartiti
     // the row store in part is already inited
   // } else if (OB_FAIL(part->init(is_left ? left_->get_spec().output_ : right_->get_spec().output_,
   } else if (OB_FAIL(part->init(is_left ? *jt_ctx_.build_output_ : right_->get_spec().output_,
-                                MY_SPEC.max_batch_size_, MY_SPEC.compress_type_))) {
+                                MY_SPEC.max_batch_size_, MY_SPEC.compress_type_, build_extra_size))) {
     LOG_WARN("fail to init batch", K(ret), K(part_level_), K(part_id), K(is_left));
   } else {
     part->get_row_store().set_dir_id(sql_mem_processor_.get_dir_id());
@@ -2155,7 +2158,10 @@ int ObHashJoinVecOp::prepare_hash_table()
     }
     if (OB_FAIL(ret)) {
     } else {
-      if (OB_FAIL(cur_join_table_->build_prepare(jt_ctx_, profile_.get_row_count(), profile_.get_bucket_size()))) {
+      if (OB_FAIL(cur_join_table_->build_prepare(jt_ctx_,
+                                                 profile_.get_row_count(),
+                                                 profile_.get_bucket_size(),
+                                                 alloc_))) {
         LOG_WARN("trace failed to  prepare hash table",
                 K(profile_.get_expect_size()), K(profile_.get_bucket_size()), K(profile_.get_row_count()),
                 K(get_mem_used()), K(sql_mem_processor_.get_mem_bound()), K(cur_dumped_partition_));
@@ -2903,7 +2909,7 @@ int ObHashJoinVecOp::fill_left_unmatched_result()
     brs_.skip_->reset(brs_.size_);
     brs_.all_rows_active_ = true;
   }
-  if (OB_FAIL(cur_join_table_->get_unmatched_rows(jt_ctx_, output_info_))) {
+  if (OB_FAIL(jt_ctx_.get_unmatched_rows(output_info_))) {
     if (OB_ITER_END != ret) {
       LOG_WARN("fail to get unmatched batch", K(ret));
     }

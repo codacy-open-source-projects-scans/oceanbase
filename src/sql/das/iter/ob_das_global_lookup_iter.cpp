@@ -14,7 +14,6 @@
 #include "sql/das/iter/ob_das_global_lookup_iter.h"
 #include "sql/das/iter/ob_das_merge_iter.h"
 #include "sql/das/ob_das_attach_define.h"
-#include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase
 {
@@ -84,6 +83,7 @@ int ObDASGlobalLookupIter::add_rowkey()
 {
   int ret = OB_SUCCESS;
   ObObjectID partition_id = OB_INVALID_ID;
+  ObObjectID first_partition_id = OB_INVALID_ID;
   ObTabletID tablet_id(OB_INVALID_ID);
   ObDASScanOp *das_scan_op = nullptr;
   ObDASTabletLoc *tablet_loc = nullptr;
@@ -95,14 +95,28 @@ int ObDASGlobalLookupIter::add_rowkey()
     LOG_WARN("failed to get das ctx", KPC_(exec_ctx));
   } else {
     ObDASMergeIter *merge_iter = static_cast<ObDASMergeIter*>(data_table_iter_);
-    if (OB_FAIL(ObExprCalcPartitionBase::calc_part_and_tablet_id(calc_part_id_,
-                                                                 *eval_ctx_,
-                                                                 partition_id,
-                                                                 tablet_id))) {
-      LOG_WARN("failed to calc part id", K(ret), KPC(calc_part_id_));
+    if (merge_iter->has_pseudo_part_id_columnref()) {
+      if (OB_FAIL(ObExprCalcPartitionBase::calc_part_and_subpart_and_tablet_id(calc_part_id_,
+                                            *eval_ctx_,
+                                            partition_id,
+                                            first_partition_id,
+                                            tablet_id))) {
+        LOG_WARN("failed to calc_part_and_subpart_and_tablet_id", K(ret), KPC(calc_part_id_));
+      }
+    } else {
+      if (OB_FAIL(ObExprCalcPartitionBase::calc_part_and_tablet_id(calc_part_id_,
+                                            *eval_ctx_,
+                                            partition_id,
+                                            tablet_id))) {
+        LOG_WARN("failed to calc_part_and_tablet_id", K(ret), KPC(calc_part_id_));
+      }
+    }
+    if (OB_FAIL(ret)) {
     } else if (OB_FAIL(das_ctx->extended_tablet_loc(*lookup_rtdef_->table_loc_,
                                                     tablet_id,
-                                                    tablet_loc))) {
+                                                    tablet_loc,
+                                                    partition_id,
+                                                    first_partition_id))) {
       LOG_WARN("failed to get tablet loc by tablet_id", K(ret));
     } else if (OB_FAIL(merge_iter->create_das_task(tablet_loc, das_scan_op, reuse_das_op))) {
       LOG_WARN("failed to create das task", K(ret));

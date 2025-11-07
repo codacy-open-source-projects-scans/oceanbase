@@ -25,6 +25,7 @@
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/plan_cache/ob_id_manager_allocator.h"
 #include "sql/plan_cache/ob_plan_cache_util.h"
+#include "sql/plan_cache/ob_plan_cache_param_constraint.h"
 
 namespace oceanbase
 {
@@ -58,6 +59,7 @@ struct SqlInfo: public ParameterizationHashValue
     ps_need_parameterized_ = that.ps_need_parameterized_;
     parse_infos_ = that.parse_infos_;
     need_check_fp_ = that.need_check_fp_;
+    fmt_int_or_ch_decint_idx_ = that.fmt_int_or_ch_decint_idx_;
     return *this;
   }
   void destroy() {}
@@ -67,6 +69,7 @@ struct SqlInfo: public ParameterizationHashValue
   common::ObBitSet<> fixed_param_index_;//记录限流语句中可参数化的位置不为?的位置
   common::ObBitSet<> trans_from_minus_index_;
   common::ObBitSet<> must_be_positive_index_; // 记录那些常量必须是正数
+  common::ObBitSet<> fmt_int_or_ch_decint_idx_;
   common::ObSEArray<common::ObCharsetType, 16> param_charset_type_;
   ObSqlTraits sql_traits_;
 
@@ -89,6 +92,7 @@ struct SqlInfo: public ParameterizationHashValue
   bool ps_need_parameterized_;
   common::ObSEArray<ObPCParseInfo, 4> parse_infos_;
   bool need_check_fp_;
+  common::ObSEArray<ObPCParamConstraint *, 4> params_constraint_;
 
   SqlInfo();
 };
@@ -213,6 +217,7 @@ public:
   static SQL_EXECUTION_MODE get_sql_execution_mode(ObPlanCacheCtx &pc_ctx);
   static bool is_prepare_mode(SQL_EXECUTION_MODE mode);
   static bool is_execute_mode(SQL_EXECUTION_MODE mode);
+  static bool is_text_mode(SQL_EXECUTION_MODE mode);
   static bool is_ignore_scale_check(TransformTreeCtx &ctx, const ParseNode *parent);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSqlParameterization);
@@ -228,7 +233,7 @@ private:
                        const bool *mark_arr,
                        int64_t arg_num,
                        SqlInfo &sql_info);
-  static int mark_tree(ParseNode *tree, SqlInfo &sql_info);
+  static int mark_tree(TransformTreeCtx &ctx, ParseNode *tree, SqlInfo &sql_info);
   static int get_related_user_vars(const ParseNode *tree, common::ObIArray<common::ObString> &user_vars);
 
   static int get_select_item_param_info(const common::ObIArray<ObPCParam *> &raw_params,

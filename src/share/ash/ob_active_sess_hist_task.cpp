@@ -12,17 +12,10 @@
 
 #define USING_LOG_PREFIX SHARE
 
-#include "lib/oblog/ob_log.h"
-#include "lib/thread/thread_mgr.h"
 #include "observer/ob_srv_network_frame.h"
-#include "share/ob_thread_mgr.h"
 #include "share/ash/ob_active_sess_hist_task.h"
 #include "share/ash/ob_active_sess_hist_list.h"
 #include "share/ash/ob_ash_refresh_task.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "lib/statistic_event/ob_stat_event.h"
-#include "lib/time/ob_time_utility.h"
 #include "share/wr/ob_wr_stat_guard.h"
 #include "observer/omt/ob_th_worker.h"
 #include "deps/oblib/src/rpc/obmysql/ob_mysql_packet.h"
@@ -139,7 +132,16 @@ bool ObActiveSessHistTask::process_running_di(const SessionID &session_id, ObDia
     di->get_ash_stat().sample_time_ = sample_time_;
     ObActiveSessionStat::calc_db_time(di, sample_time_, tsc_sample_time_);
     ObActiveSessionStat::calc_retry_wait_event(di->get_ash_stat(), sample_time_);
+    ObActiveSessionStat::cal_delta_io_data(di);
     ObActiveSessHistList::get_instance().add(di->get_ash_stat());
+  } else {
+    // inactive session
+// #ifdef ENABLE_DEBUG_LOG
+//     if (di->get_ash_stat().is_in_row_lock_wait()) {
+//       LOG_ERROR_RET(OB_ERR_UNEXPECTED, "inactive session enter row lock conflict stat", KPC(di));
+//     }
+// #endif
   }
+
   return true;
 }

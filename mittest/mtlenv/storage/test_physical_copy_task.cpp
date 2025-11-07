@@ -13,21 +13,16 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
 
 #define USING_LOG_PREFIX STORAGE
 
 #define private public
 #define protected public
 
-#include "common/ob_tablet_id.h"
-#include "share/ob_simple_mem_limit_getter.h"
-#include "storage/blocksstable/ob_sstable_meta.h"
-#include "storage/blocksstable/ob_block_manager.h"
+#include "src/share/io/io_schedule/ob_io_mclock.h"
 #include "storage/blocksstable/ob_data_file_prepare.h"
 #include "storage/schema_utils.h"
-#include "storage/ls/ob_ls_tablet_service.h"
-#include "storage/high_availability/ob_physical_copy_task.h"
+#include "src/storage/high_availability/ob_storage_ha_macro_block_writer.h"
 
 namespace oceanbase
 {
@@ -114,7 +109,7 @@ void TestRootBlockInfo::prepare_tablet_read_info()
 void TestRootBlockInfo::prepare_block_root()
 {
   const int64_t block_size = 2L * 1024 * 1024L;
-  ObMicroBlockWriter writer;
+  ObMicroBlockWriter<> writer;
   ASSERT_EQ(OB_SUCCESS, writer.init(block_size, ROWKEY_COL_CNT, COLUMN_CNT));
   ObDatumRow row;
   ASSERT_EQ(OB_SUCCESS, row.init(allocator_, COLUMN_CNT));
@@ -269,6 +264,7 @@ void TestSSTableMeta::prepare_create_sstable_param()
   param_.ddl_scn_.set_min();
   param_.filled_tx_scn_.set_min();
   param_.tx_data_recycle_scn_.set_min();
+  param_.rec_scn_.set_min();
   param_.original_size_ = 0;
   param_.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   param_.encrypt_id_ = 0;

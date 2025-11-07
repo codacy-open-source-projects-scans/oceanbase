@@ -12,8 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_ha_macro_block_writer.h"
-#include "share/scheduler/ob_tenant_dag_scheduler.h"
-#include "lib/utility/ob_tracepoint.h"
+#include "storage/high_availability/ob_storage_ha_utils.h"
 
 namespace oceanbase
 {
@@ -172,6 +171,9 @@ int ObStorageHAMacroBlockWriter::process(
         STORAGE_LOG(WARN, "copy task has been canceled, skip remaining macro blocks",
           K(ret), K_(dag_id), "finished_macro_block_count", copied_ctx.macro_block_list_.count());
         break;
+      } else if (OB_FAIL(ObStorageHAUtils::check_disk_space())) {
+        STORAGE_LOG(WARN, "failed to check disk space", K(ret));
+        break;
       } else if (OB_FAIL(ObStorageHAUtils::check_log_status(tenant_id_, ls_id_, result))) {
         LOG_WARN("failed to check log status", K(ret), K(tenant_id_), K(ls_id_));
       } else if (OB_SUCCESS != result) {
@@ -197,7 +199,6 @@ int ObStorageHAMacroBlockWriter::process(
         STORAGE_LOG(WARN, "invalid read data", K(ret), K(read_data));
       } else if (read_data.is_macro_meta()) {
         const MacroBlockId &macro_id = read_data.macro_meta_->get_macro_id();
-
         if (ObIndexBlockRowHeader::DEFAULT_IDX_ROW_MACRO_ID == macro_id) {
           ret = OB_INVALID_ARGUMENT;
           STORAGE_LOG(WARN, "invalid macro id (id is default)", K(ret), K(macro_id));
@@ -314,14 +315,14 @@ int ObStorageHALocalMacroBlockWriter::set_macro_write_info_(
     blocksstable::ObStorageObjectOpt &opt)
 {
   int ret = OB_SUCCESS;
-  int64_t tablet_transfer_seq = OB_INVALID_TRANSFER_SEQ;
+  int32_t tablet_transfer_epoch = OB_INVALID_TRANSFER_SEQ;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "not inited", K(ret));
   } else if (OB_ISNULL(index_block_rebuilder_)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "index_block_rebuilder_ should not be nullptr", KR(ret), KP(index_block_rebuilder_));
-  } else if (OB_FAIL(index_block_rebuilder_->get_tablet_transfer_seq(tablet_transfer_seq))) {
+  } else if (OB_FAIL(index_block_rebuilder_->get_tablet_transfer_epoch(tablet_transfer_epoch))) {
     STORAGE_LOG(WARN, "failed to get tablet_transfer_seq", K(ret));
   } else {
     write_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_MIGRATE_WRITE);
@@ -332,10 +333,10 @@ int ObStorageHALocalMacroBlockWriter::set_macro_write_info_(
     write_info.offset_ = 0;
     /*
       For private_block in SS_mode, macro_block is seperated by transfer_seq directory.
-      But the macro_transfer_seq of input macro_block_id may be old.
+      But the macro_transfer_epoch of input macro_block_id may be old.
       Therefore, we use the tablet_transfer_seq_ from index_builder to write new macro_block.
     */
-    opt.set_private_object_opt(tablet_id_.id(), tablet_transfer_seq);
+    opt.set_private_object_opt(tablet_id_.id(), tablet_transfer_epoch);
   }
   return ret;
 }
@@ -384,7 +385,7 @@ int ObStorageHASharedMacroBlockWriter::set_macro_write_info_(
     write_info.io_desc_.set_unsealed();
     write_info.mtl_tenant_id_ = MTL_ID();
     write_info.offset_ = 0;
-    write_info.ls_epoch_id_ = 0;
+    write_info.set_ls_epoch_id(0);
     opt.set_ss_share_data_macro_object_opt(macro_block_id.second_id(), macro_block_id.third_id(), macro_block_id.column_group_id());
   }
   return ret;

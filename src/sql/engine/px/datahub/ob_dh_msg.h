@@ -14,16 +14,13 @@
 #define _OB_SQL_ENGINE_PX_DATAHUB_DH_MSG_H__
 
 #include "sql/dtl/ob_dtl_msg.h"
-#include "sql/engine/expr/ob_expr.h"
-#include "sql/engine/sort/ob_sort_basic_info.h"
-#include "sql/engine/ob_io_event_observer.h"
-#include "sql/engine/px/ob_dfo.h"
 
 namespace oceanbase
 {
 namespace sql
 {
 
+class ObDfo;
 /* base header for all piece and whole msgs*/
 
 template <dtl::ObDtlMsgType T>
@@ -99,6 +96,7 @@ public:
     worker N  piece -/
    */
   virtual int aggregate_piece(const dtl::ObDtlMsg &piece) { return OB_NOT_IMPLEMENT; }
+  virtual int after_aggregate_piece() { return OB_NOT_IMPLEMENT; }
   VIRTUAL_TO_STRING_KV(K_(op_id));
   uint64_t op_id_;   // 在 whole 消息处理中，用于寻址 SQC 端 msg provider
 };

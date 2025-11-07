@@ -16,9 +16,6 @@
 #define protected public
 
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
-#include "share/scheduler/ob_tenant_dag_scheduler.h"
-#include "storage/compaction/ob_sstable_merge_history.h"
-#include "observer/omt/ob_tenant_node_balancer.h"
 
 namespace oceanbase
 {
@@ -99,7 +96,7 @@ public:
     ObIDag(ObDagType::DAG_TYPE_TABLET_BACKFILL_TX)
   {}
   void init() { is_inited_ = true; }
-  virtual int64_t hash() const {
+  virtual uint64_t hash() const {
     return KEY_START;
   }
   virtual bool operator == (const ObIDag &other) const
@@ -144,8 +141,8 @@ public:
   ObSeqDag() :
     ObBasicDag()
   {}
-  virtual int64_t hash() const {
-    static int64_t key = KEY_START;
+  virtual uint64_t hash() const {
+    static uint64_t key = KEY_START;
     return key++;
   }
 };
@@ -158,7 +155,7 @@ public:
   {
     hash_ = hash;
   }
-  virtual int64_t hash() const {
+  virtual uint64_t hash() const {
     return hash_;
   }
   int64_t hash_;

@@ -15,8 +15,8 @@
 
 #include <gtest/gtest.h>
 #define private public
-#include "storage/blocksstable/index_block/ob_index_block_row_struct.h"
-#include "storage/blocksstable/ob_macro_block.h"
+#define protected public
+#include "src/storage/ob_i_store.h"
 #include "mtlenv/mock_tenant_module_env.h"
 
 namespace oceanbase
@@ -58,6 +58,8 @@ void TestIndexBlockRowStruct::TearDownTestCase()
 void TestIndexBlockRowStruct::SetUp()
 {
   ASSERT_TRUE(MockTenantModuleEnv::get_instance().is_inited());
+  oceanbase::ObClusterVersion::get_instance().update_data_version(DATA_CURRENT_VERSION);
+  oceanbase::ObClusterVersion::get_instance().update_cluster_version(CLUSTER_CURRENT_VERSION);
   ObDataStoreDesc &data_desc = desc_.get_desc();
   ObStaticDataStoreDesc &static_desc = desc_.get_static_desc();
   ObColDataStoreDesc &col_desc = desc_.get_col_desc();
@@ -67,7 +69,7 @@ void TestIndexBlockRowStruct::SetUp()
   static_desc.ls_id_.id_ = 1;
   static_desc.tablet_id_.id_ = 1;
   static_desc.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
-  static_desc.tablet_transfer_seq_ = 0;
+  static_desc.private_transfer_epoch_ = 0;
   data_desc.micro_block_size_ = 8 * 1024;
   static_desc.micro_block_size_limit_ = 8 * 1024;
   col_desc.row_column_count_ = rowkey_column_count + 1;
@@ -122,6 +124,7 @@ TEST_F(TestIndexBlockRowStruct, test_invalid)
 
   const ObDatumRow *row;
   ObIndexBlockRowDesc desc;
+  desc.macro_id_ = MacroBlockId::mock_valid_macro_id();
   desc.row_key_ = row_key;
   ret = row_builder.build_row(desc, row);
   EXPECT_NE(OB_SUCCESS, ret);
@@ -142,9 +145,10 @@ TEST_F(TestIndexBlockRowStruct, test_normal)
   ret = row_builder.init(allocator_, data_desc_.get_desc(), data_desc_.get_desc());
   ASSERT_EQ(OB_SUCCESS, ret);
 
-  ObIndexBlockRowDesc row_desc;
-  row_desc.data_store_desc_ = &desc_.get_desc();
+  ObIndexBlockRowDesc row_desc(desc_.get_desc());
+  // row_desc.data_store_desc_ = &desc_.get_desc();
   row_desc.row_key_ = row_key;
+  row_desc.macro_id_ = MacroBlockId::mock_valid_macro_id();
   ASSERT_TRUE(row_desc.is_valid());
 
   const ObDatumRow *row;
@@ -164,8 +168,9 @@ TEST_F(TestIndexBlockRowStruct, test_parser_normal)
   ObDatumRowkey row_key;
   EXPECT_EQ(OB_SUCCESS, row_key.assign(obj, 2));
 
-  ObDatumRow agg_row;
-  ASSERT_EQ(OB_SUCCESS, agg_row.init(allocator_, desc_.get_col_desc().agg_meta_array_.count()));
+  ObSkipIndexAggResult agg_res;
+  ASSERT_EQ(OB_SUCCESS, agg_res.init(desc_.get_col_desc().agg_meta_array_.count(), allocator_));
+  ObDatumRow &agg_row = agg_res.agg_row_;
   for (int64_t i = 0; i < agg_row.get_column_count(); ++i) {
     agg_row.storage_datums_[i].set_int(0);
   }
@@ -173,17 +178,18 @@ TEST_F(TestIndexBlockRowStruct, test_parser_normal)
   ObIndexBlockRowBuilder row_builder;
   ASSERT_EQ(OB_SUCCESS, row_builder.init(allocator_, data_desc_.get_desc(), data_desc_.get_desc()));
 
-  ObIndexBlockRowDesc row_desc;
+  ObIndexBlockRowDesc row_desc(desc_.get_desc());
   row_desc.block_size_ = 1024;
   row_desc.is_deleted_ = false;
   row_desc.block_offset_ = 128;
   row_desc.is_data_block_ = true;
   row_desc.is_macro_node_ = false;
   row_desc.micro_block_count_ = 1;
-  row_desc.aggregated_row_ = &agg_row;
+  row_desc.aggregated_row_ = &agg_res;
   row_desc.is_serialized_agg_row_ = false;
+  row_desc.set_major_working_cluster_version(DATA_CURRENT_VERSION);
 
-  row_desc.data_store_desc_ = &desc_.get_desc();
+  // row_desc.data_store_desc_ = &desc_.get_desc();
   row_desc.row_key_ = row_key;
   const ObDatumRow *row;
   ret = row_builder.build_row(row_desc, row);
@@ -202,13 +208,14 @@ TEST_F(TestIndexBlockRowStruct, test_parser_normal)
   EXPECT_TRUE(parsed_header->is_valid());
   EXPECT_TRUE(parsed_header->is_data_block());
   EXPECT_TRUE(parsed_header->is_data_index());
+  EXPECT_TRUE(parsed_header->is_major_node());
   EXPECT_FALSE(parsed_header->is_macro_node());
   EXPECT_EQ(parsed_header->get_compressor_type(), ObCompressorType::NONE_COMPRESSOR);
 
   const ObIndexBlockRowMinorMetaInfo *minor_meta = nullptr;
 
   ret = row_parser.get_minor_meta(minor_meta);
-  EXPECT_NE(OB_SUCCESS, ret);
+  EXPECT_EQ(OB_SUCCESS, ret);
 
   const char *pre_agg_row = nullptr;
   int64_t row_size = 0;
@@ -244,12 +251,13 @@ TEST_F(TestIndexBlockRowStruct, test_set_rowkey)
   ret = row_builder.init(allocator_, data_desc_.get_desc(), data_desc_.get_desc());
   EXPECT_EQ(OB_SUCCESS, ret);
 
-  ObIndexBlockRowDesc row_desc;
-  row_desc.data_store_desc_ = &desc_.get_desc();
+  ObIndexBlockRowDesc row_desc(desc_.get_desc());
+  // row_desc.data_store_desc_ = &desc_.get_desc();
   ASSERT_TRUE(row_desc.is_valid());
 
   const ObDatumRow *row;
   row_desc.row_key_ = row_key;
+  row_desc.macro_id_ = MacroBlockId::mock_valid_macro_id();
   ret = row_builder.build_row(row_desc, row);
   EXPECT_EQ(OB_SUCCESS, ret);
   EXPECT_TRUE(row->storage_datums_[0] == row_key.datums_[0]);
@@ -263,7 +271,7 @@ TEST_F(TestIndexBlockRowStruct, test_set_rowkey)
 int main(int argc, char** argv)
 {
   system("rm -f test_index_block_row_struct.log*");
-  OB_LOGGER.set_file_name("test_index_block_row_struct.log");
+  OB_LOGGER.set_file_name("test_index_block_row_struct.log", true);
   OB_LOGGER.set_log_level("INFO");
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

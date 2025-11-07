@@ -1,5 +1,5 @@
 set(CPACK_GENERATOR "RPM")
-# use seperated RPM SPECs and generate different RPMs
+# use separated RPM SPECs and generate different RPMs
 set(CPACK_COMPONENTS_IGNORE_GROUPS 1)
 set(CPACK_RPM_COMPONENT_INSTALL ON)
 # use "server" as main component so its RPM filename won't have "server"
@@ -11,10 +11,10 @@ endif()
 # let rpmbuild determine rpm filename
 set(CPACK_RPM_FILE_NAME "RPM-DEFAULT")
 set(CMAKE_INSTALL_LIBDIR "lib64")
-## Stardard debuginfo generating instructions in cmake.  However 6u
+## Standard debuginfo generating instructions in cmake.  However 6u
 ## server with rpm-4.8.0 which doesn't support dwarf4 won't generate
 ## BUILDID for RPM. And Our debuginfo package doesn't contain source
-## code. Thus we don't use the way cmake sugguests.
+## code. Thus we don't use the way cmake suggests.
 #set(CPACK_RPM_DEBUGINFO_PACKAGE ON)
 #set(CPACK_RPM_BUILD_SOURCE_DIRS_PREFIX "/usr/src/debug")
 # RPM package informations.
@@ -45,7 +45,7 @@ set(CPACK_RPM_PACKAGE_DESCRIPTION ${CPACK_PACKAGE_DESCRIPTION})
 set(CPACK_RPM_PACKAGE_LICENSE "Mulan PubL v2.")
 set(CPACK_RPM_DEFAULT_USER "admin")
 set(CPACK_RPM_DEFAULT_GROUP "admin")
-if (OB_BUILD_OPENSOURCE AND NOT BUILD_CDC_ONLY)
+if ((OB_BUILD_OPENSOURCE AND NOT BUILD_CDC_ONLY) OR OB_BUILD_STANDALONE)
   set(DEBUG_INSTALL_POST "mv $RPM_BUILD_ROOT/../server/home/admin/oceanbase/bin/obshell %{_builddir}/obshell; %{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir}; mv %{_builddir}/obshell $RPM_BUILD_ROOT/../server/home/admin/oceanbase/bin/obshell; %{nil}")
 else()
   set(DEBUG_INSTALL_POST "%{_rpmconfigdir}/find-debuginfo.sh %{?_find_debuginfo_opts} %{_builddir}/%{?buildsubdir};%{nil}")
@@ -120,7 +120,41 @@ else()
   add_custom_target(ob_table ALL
     DEPENDS obtable obtable_static)
 endif()
+
+if (OB_BUILD_STANDALONE)
+  set(CPACK_COMPONENTS_ALL server libs)
+  # specify relocatable paths
+  set(CPACK_RPM_RELOCATION_PATHS "/usr/bin")
+endif()
+
+# add software package info
+set(RPM_DIST "")
+if (OB_BUILD_OPENSOURCE)
+  execute_process(
+      COMMAND rpm --eval "%{dist}"
+      OUTPUT_VARIABLE RPM_DIST
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET
+  )
+endif()
+
+set(CPACK_FULL_PACKAGE_NAME
+  "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_RPM_PACKAGE_RELEASE}${RPM_DIST}.${ARCHITECTURE}.rpm")
+
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/tools/ocp/software_package.template
+              ${CMAKE_CURRENT_SOURCE_DIR}/tools/ocp/software_package
+              @ONLY)
+
+install(FILES
+  tools/ocp/software_package
+  DESTINATION "."
+  COMPONENT server)
+
 message(STATUS "Cpack Components:${CPACK_COMPONENTS_ALL}")
+
+# refs https://stackoverflow.com/questions/48711342/what-does-the-cpack-preinstall-target-do
+# see https://cmake.org/cmake/help/latest/module/CPack.html
+set(CPACK_CMAKE_GENERATOR "Ninja") # this disables a rebuild i.e. "CPack: - Run preinstall target for..." which seems to be only done for "Unix Makefiles"
 
 # install cpack to make everything work
 include(CPack)

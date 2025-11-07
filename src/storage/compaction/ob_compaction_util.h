@@ -32,6 +32,7 @@ enum ObMergeType : uint8_t
   MDS_MINOR_MERGE,
   BATCH_EXEC, // for ObBatchExecDag
   CONVERT_CO_MAJOR_MERGE, // convert row store major into columnar store cg sstables
+  INC_MAJOR_MERGE,
   // add new merge type here
   // fix merge_type_to_str & ObPartitionMergePolicy::get_merge_tables
   MERGE_TYPE_MAX
@@ -49,6 +50,10 @@ inline bool is_major_merge(const ObMergeType &merge_type)
 inline bool is_medium_merge(const ObMergeType &merge_type)
 {
   return MEDIUM_MERGE == merge_type;
+}
+inline bool is_inc_major_merge(const ObMergeType &merge_type)
+{
+  return INC_MAJOR_MERGE == merge_type;
 }
 inline bool is_convert_co_major_merge(const ObMergeType &merge_type)
 {
@@ -93,6 +98,10 @@ inline bool is_major_or_meta_merge_type(const ObMergeType &merge_type)
 inline bool is_backfill_tx_merge(const ObMergeType &merge_type)
 {
   return BACKFILL_TX_MERGE == merge_type;
+}
+inline bool need_collect_uncommit_tx_info(const ObMergeType &merge_type)
+{
+  return is_mini_merge(merge_type) || is_minor_merge_type(merge_type);
 }
 inline bool is_mds_mini_merge(const ObMergeType &merge_type)
 {
@@ -158,8 +167,7 @@ const char *exec_mode_to_str(const ObExecMode &exec_mode);
 enum ObGetMacroSeqStage : uint8_t
 {
   BUILD_INDEX_TREE = 0,
-  BUILD_TABLET_META = 1,
-  GET_NEW_ROOT_MACRO_SEQ = 2, // for next major
+  GET_NEW_ROOT_MACRO_SEQ = 1, // for next major
   MACRO_SEQ_TYPE_MAX
 };
 bool is_valid_get_macro_seq_stage(const ObGetMacroSeqStage stage);

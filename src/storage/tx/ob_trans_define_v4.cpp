@@ -10,23 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "ob_trans_define.h"
-#include "lib/container/ob_array_iterator.h"
-#include "lib/container/ob_se_array_iterator.h"
-#include "lib/objectpool/ob_concurrency_objpool.h"
-#include "ob_trans_part_ctx.h"
-#include "ob_trans_ctx.h"
-#include "storage/memtable/ob_memtable_interface.h"
-#include "storage/memtable/ob_lock_wait_mgr.h"
-#include "observer/ob_server.h"
-#include "lib/profile/ob_trace_id.h"
-#include "share/ob_define.h"
-#include "common/storage/ob_sequence.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/stat/ob_latch_define.h"
+#include "ob_trans_define_v4.h"
 #include "ob_trans_functor.h"
-#include "ob_tx_stat.h"
-#include "ob_xa_ctx.h"
 
 #define USING_LOG_PREFIX TRANS
 namespace oceanbase
@@ -185,7 +170,8 @@ DEF_TO_STRING(ObTxSavePoint)
 }
 OB_SERIALIZE_MEMBER(ObTxExecResult, incomplete_, parts_,
                     conflict_txs_,// FARM COMPAT WHITELIST for cflict_txs_
-                    conflict_info_array_);
+                    conflict_info_array_,
+                    touched_ls_list_);
 OB_SERIALIZE_MEMBER(ObTxSnapshot, tx_id_, version_, scn_, elr_);
 OB_SERIALIZE_MEMBER(ObTxReadSnapshot,
                     valid_,
@@ -209,29 +195,32 @@ OB_SERIALIZE_MEMBER(ObTxReadSnapshot,
    }                                            \
 }                                               \
 
-int ObTxReadSnapshot::serialize_for_lob(const share::ObLSID &ls_id, SERIAL_PARAMS) const
+int ObTxReadSnapshot::serialize_for_lob(const share::ObLSID &ls_id, const share::SCN &fb_snapshot, SERIAL_PARAMS) const
 {
   int ret = OB_SUCCESS;
   PREPARE_LOB_PARTS(parts, ls_id);
   LST_DO_CODE(OB_UNIS_ENCODE, core_, source_, snapshot_lsid_, snapshot_ls_role_, parts);
+  OB_UNIS_ENCODE(fb_snapshot);
   return ret;
 }
 
-int ObTxReadSnapshot::deserialize_for_lob(DESERIAL_PARAMS)
+int ObTxReadSnapshot::deserialize_for_lob(share::SCN &fb_snapshot, DESERIAL_PARAMS)
 {
   int ret = OB_SUCCESS;
   LST_DO_CODE(OB_UNIS_DECODE, core_, source_, snapshot_lsid_, snapshot_ls_role_, parts_);
+  OB_UNIS_DECODE(fb_snapshot);
   if (OB_SUCC(ret)) {
     valid_ = true;
   }
   return ret;
 }
 
-int64_t ObTxReadSnapshot::get_serialize_size_for_lob(const share::ObLSID &ls_id) const
+int64_t ObTxReadSnapshot::get_serialize_size_for_lob(const share::ObLSID &ls_id, const share::SCN &fb_snapshot) const
 {
   int64_t len = 0;
   PREPARE_LOB_PARTS(parts, ls_id);
   LST_DO_CODE(OB_UNIS_ADD_LEN, core_, source_, snapshot_lsid_, snapshot_ls_role_, parts);
+  OB_UNIS_ADD_LEN(fb_snapshot);
   return len;
 }
 
@@ -375,13 +364,16 @@ OB_SERIALIZE_MEMBER(ObTxDesc,
                     parts_,
                     xid_,
                     flags_.for_serialize_v_,
-                    seq_base_);
+                    seq_base_,
+                    client_sid_);
 OB_SERIALIZE_MEMBER(ObTxParam,
                     timeout_us_,
                     lock_timeout_us_,
                     access_mode_,
                     isolation_,
-                    cluster_id_);
+                    cluster_id_,
+                    is_for_sslog_ // FARM COMPAT WHITELIST
+                    );
 OB_SERIALIZE_MEMBER(ObTxSavePoint,
                     type_,
                     scn_,
@@ -436,10 +428,12 @@ ObTxDesc::ObTxDesc()
     isolation_(ObTxIsolationLevel::RC), // default is RC
     access_mode_(ObTxAccessMode::INVL),   // default is INVL
     snapshot_version_(),
+    last_rc_snapshot_version_(share::SCN::min_scn()),
     snapshot_uncertain_bound_(0),
     snapshot_scn_(),
     sess_id_(0),
     assoc_sess_id_(0),
+    client_sid_(0),
     global_tx_type_(ObGlobalTxType::PLAIN),
     op_sn_(0),                          // default is from 0
     state_(State::INVL),
@@ -466,7 +460,6 @@ ObTxDesc::ObTxDesc()
     commit_times_(0),
     commit_start_scn_(),
     abort_cause_(0),
-    can_elr_(false),
     lock_(common::ObLatchIds::TX_DESC_LOCK),
     commit_cb_lock_(common::ObLatchIds::TX_DESC_COMMIT_LOCK),
     commit_cb_(NULL),
@@ -514,7 +507,6 @@ int ObTxDesc::switch_to_idle()
   commit_times_ = 0;
   commit_start_scn_.set_min();
   abort_cause_ = 0;
-  can_elr_ = false;
   commit_cb_ = NULL;
   cb_tid_ = -1;
   exec_info_reap_ts_ = 0;
@@ -587,6 +579,7 @@ void ObTxDesc::reset()
   isolation_ = ObTxIsolationLevel::INVALID;
   access_mode_ = ObTxAccessMode::INVL;
   snapshot_version_.reset();
+  last_rc_snapshot_version_.set_min();
   snapshot_uncertain_bound_ = 0;
   snapshot_scn_.reset();
   global_tx_type_ = ObGlobalTxType::PLAIN;
@@ -622,7 +615,6 @@ void ObTxDesc::reset()
   commit_times_ = 0;
   commit_start_scn_.set_min();
   abort_cause_ = 0;
-  can_elr_ = false;
 
   commit_cb_ = NULL;
   cb_tid_ = -1;
@@ -718,7 +710,7 @@ bool ObTxDesc::in_tx_or_has_extra_state_() const
 
 bool ObTxDesc::has_extra_state_() const
 {
-  if (snapshot_version_.is_valid()) {
+  if (with_tx_snapshot()) {
     return true;
   }
   // TODO(yunxing.cyx): refine this iter for performance
@@ -755,10 +747,13 @@ bool ObTxDesc::contain_savepoint(const ObString &sp)
   return hit;
 }
 
-int ObTxDesc::update_part_(ObTxPart &a, const bool append)
+int ObTxDesc::update_part_(ObTxPart &a, const bool append, const bool check_only_if_exist)
 {
   int ret = OB_SUCCESS;
   bool hit = false;
+  if (exec_info_reap_ts_ == 0) {
+    exec_info_reap_ts_ = ObSequence::get_max_seq_no();
+  }
   ARRAY_FOREACH_NORET(parts_, i) {
     ObTxPart &p = parts_[i];
     if (p.id_ == a.id_) {
@@ -776,11 +771,14 @@ int ObTxDesc::update_part_(ObTxPart &a, const bool append)
         ret = OB_TRANS_NEED_ROLLBACK;
         TRANS_LOG(WARN, "tx-part epoch changed", K(ret), K(a), K(p));
       }
-      if (OB_SUCC(ret)) {
+      if (OB_SUCC(ret) && !check_only_if_exist) {
         if (a.addr_.is_valid()) { p.addr_ = a.addr_; }
         p.first_scn_ = MIN(a.first_scn_, p.first_scn_);
         p.last_scn_ = p.last_scn_.is_max() ? a.last_scn_ : MAX(a.last_scn_, p.last_scn_);
         p.last_touch_ts_ = exec_info_reap_ts_ + 1;
+        if (p.is_clean() && !a.is_clean()) {
+          p.flag_.set_dirty();
+        }
       }
       break;
     }
@@ -830,6 +828,26 @@ int ObTxDesc::update_clean_part(const share::ObLSID &id,
   p.first_scn_ = ObTxSEQ::MAX_VAL();
   p.last_scn_ = get_tx_seq();
   return update_part_(p, false);
+}
+
+int ObTxDesc::add_clean_part_if_absent(const share::ObLSID &id,
+                                          const int64_t epoch,
+                                          const ObAddr &addr,
+                                          const bool is_dup)
+{
+  int ret = OB_SUCCESS;
+  ObTxSEQ cur_seq = get_tx_seq();
+  ObTxPart p;
+  p.id_ = id;
+  p.epoch_ = epoch;
+  p.addr_ = addr;
+  p.first_scn_ = cur_seq;
+  p.last_scn_ = cur_seq;
+  p.flag_.set_clean();
+  if (is_dup) {
+    p.flag_.set_dup_ls();
+  }
+  return update_part_(p, true, true);
 }
 
 /*
@@ -890,6 +908,29 @@ int64_t ObTxDesc::get_expire_ts() const
     ret = (MAX_TRANS_TIMEOUT_US - start_ts) <= timeout_us_ ? MAX_TRANS_TIMEOUT_US : (start_ts + timeout_us_);
   }
   return ret;
+}
+
+bool ObTxDesc::is_dup_ls_modified() const
+{
+  int ret = OB_SUCCESS;
+  bool dup_ls_modified = false;
+  const bool self_locked = lock_.self_locked();
+  if (!self_locked && OB_FAIL(lock_.lock())) {
+    TRANS_LOG(ERROR, "lock tx_desc failed", K(ret), K_(tx_id));
+  } else {
+    ARRAY_FOREACH_NORET(parts_, i)
+    {
+     if(parts_[i].flag_.is_dup_ls())
+     {
+       dup_ls_modified = true;
+       break;
+     }
+    }
+    if (!self_locked) {
+      lock_.unlock();
+    }
+  }
+  return dup_ls_modified;
 }
 
 int ObTxDesc::update_parts_(const ObTxPartList &list)
@@ -1109,7 +1150,7 @@ void ObTxDesc::release_implicit_savepoint(const ObTxSEQ savepoint)
     min_implicit_savepoint_.reset();
   }
   // invalid txn snapshot if it was created after the savepoint
-  if (snapshot_version_.is_valid() && savepoint < snapshot_scn_) {
+  if (with_tx_snapshot() && savepoint < snapshot_scn_) {
     TRANS_LOG(INFO, "release txn snapshot_version", K_(snapshot_version),
               K(savepoint), K_(snapshot_scn), K_(tx_id));
     snapshot_version_.reset();
@@ -1220,7 +1261,8 @@ ObTxParam::ObTxParam()
     lock_timeout_us_(-1),
     access_mode_(ObTxAccessMode::RW),
     isolation_(ObTxIsolationLevel::RC),
-    cluster_id_(0)
+    cluster_id_(0),
+    is_for_sslog_(false)
 {}
 bool ObTxParam::is_valid() const
 {
@@ -1237,6 +1279,7 @@ ObTxParam::~ObTxParam()
   access_mode_ = ObTxAccessMode::INVL;
   isolation_ = ObTxIsolationLevel::INVALID;
   cluster_id_ = -1;
+  is_for_sslog_ = false;
 }
 
 ObTxSnapshot::ObTxSnapshot()
@@ -1326,6 +1369,23 @@ void ObTxReadSnapshot::init_weak_read(const SCN snapshot)
   core_.scn_.reset();
   core_.elr_ = false;
   source_ = SRC::WEAK_READ_SERVICE;
+  snapshot_lsid_.reset();
+  snapshot_ls_role_= common::ObRole::INVALID_ROLE;
+  snapshot_acquire_addr_.reset();
+  parts_.reset();
+  valid_ = true;
+}
+
+void ObTxReadSnapshot::init_weak_read(const SCN snapshot, const ObTransID tx_id)
+{
+  core_.version_ = snapshot;
+  core_.tx_id_ = tx_id;
+  core_.scn_.reset();
+  core_.elr_ = false;
+  source_ = SRC::WEAK_READ_SERVICE;
+  snapshot_lsid_.reset();
+  snapshot_ls_role_ = common::ObRole::INVALID_ROLE;
+  snapshot_acquire_addr_.reset();
   parts_.reset();
   valid_ = true;
 }
@@ -1355,11 +1415,20 @@ void ObTxReadSnapshot::specify_snapshot_scn(const share::SCN snapshot)
   source_ = SRC::SPECIAL;
 }
 
+void ObTxReadSnapshot::try_set_read_elr()
+{
+  const bool can_read_elr = (source_ == SRC::LS && snapshot_ls_role_ == common::ObRole::LEADER);
+  core_.set_elr(can_read_elr);
+}
+
 void ObTxReadSnapshot::wait_consistency()
 {
   if (SRC::GLOBAL == source_) {
     const int64_t ts = MonotonicTs::current_time().mts_;
     if (ts < uncertain_bound_) {
+      if (TC_REACH_TIME_INTERVAL(1000000)) {
+        TRANS_LOG(INFO, "wait for consistency", K(uncertain_bound_), K(ts));
+      }
       ob_usleep(uncertain_bound_ - ts);
     }
   }
@@ -1470,7 +1539,7 @@ void ObTxExecResult::reset()
 int ObTxExecResult::add_touched_ls(const share::ObLSID ls)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(touched_ls_list_.push_back(ls))) {
+  if (OB_FAIL(common::add_var_to_array_no_dup(touched_ls_list_, ls))) {
     incomplete_ = true;
     TRANS_LOG(WARN, "add touched ls failed, set incomplete", K(ret), K(ls));
   }
@@ -1558,14 +1627,18 @@ ObTxPart::ObTxPart()
     epoch_(-1),
     first_scn_(),
     last_scn_(),
-    last_touch_ts_(0)
-{}
+    last_touch_ts_(0),
+    flag_()
+{
+}
+
 ObTxPart::~ObTxPart()
 {
   epoch_ = -1;
   first_scn_.reset();
   last_scn_.reset();
   last_touch_ts_ = 0;
+  flag_.reset();
 }
 
 int ObTxDescMgr::init(std::function<int(ObTransID&)> tx_id_allocator, const lib::ObMemAttr &mem_attr)
@@ -1682,12 +1755,26 @@ int ObTxDescMgr::wait()
 }
 
 void ObTxDescMgr::destroy() { inited_ = false; }
-int ObTxDescMgr::alloc(ObTxDesc *&tx_desc)
+int ObTxDescMgr::alloc(ObTxDesc *&tx_desc, const bool in_tenant_space)
 {
   int ret = OB_SUCCESS;
   OV(inited_, OB_NOT_INIT);
   OV(!stoped_, OB_IN_STOP_STATE);
-  OZ(map_.alloc_value(tx_desc));
+  OV(tx_desc, NULL);
+  if (OB_SUCC(ret)) {
+    if (in_tenant_space) {
+       OZ(map_.alloc_value(tx_desc));
+    } else {
+      tx_desc = (ObTxDesc*)ob_malloc(sizeof(ObTxDesc), "ObTxDesc");
+      if (tx_desc) {
+        new(tx_desc) ObTxDesc();
+        tx_desc->__alloced_in_current_tenant__ = false;
+      } else {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        TRANS_LOG(WARN, "alloc tx desc failed", K(ret));
+      }
+    }
+  }
   OX(tx_desc->inc_ref(1));
   return ret;
 }
@@ -1902,7 +1989,7 @@ int ObTxDesc::clear_state_for_autocommit_retry()
   ObSpinLockGuard guard(lock_);
   if (tx_id_.is_valid()) {
     savepoints_.reset();
-    if (isolation_ == ObTxIsolationLevel::RR || isolation_ == ObTxIsolationLevel::SERIAL) {
+    if (with_tx_snapshot()) {
       snapshot_version_.reset();
       snapshot_scn_.reset();
       snapshot_uncertain_bound_ = 0;
@@ -1944,7 +2031,7 @@ int ObTxDesc::add_modified_tables(const ObIArray<uint64_t> &dml_table_ids)
           }
         }
       }
-      for (; last < cnt; last++) {
+      for (; last < cnt - 1; last++) {
         modified_tables_.pop_back();
       }
     }
@@ -1959,6 +2046,23 @@ bool ObTxDesc::has_modify_table(const uint64_t table_id) const
   return is_contain(modified_tables_, table_id);
 }
 
+bool ObTxDesc::is_all_parts_clean() const
+{
+  bool bret = true;
+  ARRAY_FOREACH_X(parts_, i, cnt, bret) {
+    bret = parts_[i].is_without_ctx() || parts_[i].is_clean();
+  }
+  return bret;
+}
+
+bool ObTxDesc::is_all_parts_without_valid_write() const
+{
+  bool bret = true;
+  ARRAY_FOREACH_X(parts_, i, cnt, bret) {
+    bret = parts_[i].is_without_ctx() || parts_[i].is_clean() || parts_[i].is_without_valid_write();
+  }
+  return bret;
+}
 } // transaction
 } // oceanbase
 #undef USING_LOG_PREFIX

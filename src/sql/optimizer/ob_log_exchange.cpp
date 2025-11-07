@@ -15,12 +15,7 @@
 #include "sql/optimizer/ob_log_table_scan.h"
 #include "sql/optimizer/ob_log_subplan_filter.h"
 #include "sql/optimizer/ob_log_join.h"
-#include "sql/optimizer/ob_optimizer_util.h"
-#include "sql/optimizer/ob_log_plan.h"
-#include "sql/optimizer/ob_opt_est_cost.h"
 #include "sql/optimizer/ob_log_distinct.h"
-#include "common/ob_smart_call.h"
-#include "sql/optimizer/ob_join_order.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -44,7 +39,7 @@ int ObLogExchange::get_explain_name_internal(char *buf,
       (is_repart_exchange() || is_pq_dist())) {
     ret = BUF_PRINTF(" (");
     if (OB_FAIL(ret)){
-    } else if (is_repart_exchange()) {
+    } else if (is_repart_exchange() && ObPQDistributeMethod::SM_BROADCAST != dist_method_) {
       if (OB_SUCC(ret) && dist_method_ == ObPQDistributeMethod::PARTITION_RANDOM) {
         ret = BUF_PRINTF("PKEY RANDOM");
       } else if (OB_SUCC(ret) && dist_method_ == ObPQDistributeMethod::PARTITION_HASH) {
@@ -401,7 +396,7 @@ int ObLogExchange::compute_op_parallel_and_server_info()
     } else { /*do nothing*/ }
   } else if (is_pq_local()) {
     set_parallel(ObGlobalHint::DEFAULT_PARALLEL);
-    set_available_parallel(child->get_parallel());
+    set_available_parallel(child->get_available_parallel());
     set_server_cnt(1);
     static_cast<ObLogExchange*>(child)->set_in_server_cnt(1);
     get_server_list().reuse();
@@ -411,7 +406,7 @@ int ObLogExchange::compute_op_parallel_and_server_info()
   } else {
     // set_exchange_info not set these info, use child parallel and server info.
     if (OB_FAIL(ret)) {
-    } else if (is_pq_hash_dist()) {
+    } else if ((is_pq_hash_dist() && !is_slave_mapping()) || is_pq_random()) {
       server_list_.reuse();
       common::ObAddr all_server_list;
       all_server_list.set_max(); // a special ALL server list indicating hash data distribution
@@ -428,14 +423,12 @@ int ObLogExchange::compute_op_parallel_and_server_info()
       static_cast<ObLogExchange*>(child)->set_in_server_cnt(get_server_cnt());
     }
     if (OB_SUCC(ret) && ObGlobalHint::DEFAULT_PARALLEL > get_parallel()) {
-      // parallel not set when allocate exchange, and not pull to local
-      if (OB_UNLIKELY(child->is_match_all())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected exchange above match all sharding", K(ret));
-      } else if (child->is_single()) {
+      if (child->is_single()) {
         set_parallel(child->get_available_parallel());
+        set_available_parallel(child->get_available_parallel());
       } else {
         set_parallel(child->get_parallel());
+        set_available_parallel(child->get_available_parallel());
       }
     }
   }
@@ -885,13 +878,13 @@ int ObLogExchange::add_px_table_location(ObLogicalOperator *op,
     bool has_exec_param = false;
     OZ(find_table_location_exprs(drop_expr_idxs, table_scan->get_range_conditions(), exprs, has_exec_param));
     OZ(find_table_location_exprs(drop_expr_idxs, table_scan->get_filter_exprs(), exprs, has_exec_param));
-    if (OB_SUCC(ret) && !exprs.empty() && has_exec_param) {
+    if (OB_SUCC(ret) && !exprs.empty() && has_exec_param &&
+        (ObTableType::EXTERNAL_TABLE != table_scan->get_table_type())) {
       SMART_VAR(ObTableLocation, table_location) {
         const ObDMLStmt *cur_stmt = NULL;
         const ObDataTypeCastParams dtc_params = ObBasicSessionInfo::create_dtc_params(
             get_plan()->get_optimizer_context().get_session_info());
-        int64_t ref_table_id = table_scan->get_is_index_global() ? table_scan->get_index_table_id() :
-            table_scan->get_ref_table_id();
+        int64_t ref_table_id = table_scan->get_index_table_id();
         if (cur_idx >= stmts.count()) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("stmts idx is unexpected", K(cur_idx), K(stmts.count()));
@@ -937,7 +930,7 @@ int ObLogExchange::find_need_drop_expr_idxs(ObLogicalOperator *op,
   if (OB_ISNULL(op->get_child(0))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null op", K(ret));
-  } else if (OB_FAIL(op->get_child(0)->check_has_op_below(LOG_EXCHANGE, left_has_exchange))) {
+  } else if (OB_FAIL(op->get_child(0)->check_has_op_below(log_op_def::LOG_EXCHANGE, left_has_exchange))) {
     LOG_WARN("fail to check has exchange below");
   } else if (!left_has_exchange) {
     if (type == log_op_def::LOG_SUBPLAN_FILTER) {

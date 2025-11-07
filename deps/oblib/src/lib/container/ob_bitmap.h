@@ -96,6 +96,7 @@ public:
   int init(const size_type valid_bytes, const bool is_all_true = false);
   int reserve(size_type capacity);
   int copy_from(const ObBitmap &bitmap, const int64_t start, const int64_t count);
+  int append(const int64_t offset, const ObBitmap &bitmap, const int64_t start, const int64_t count);
   void reuse(const bool is_all_true = false);
   int get_row_ids(
       int32_t *row_ids,
@@ -142,7 +143,7 @@ public:
       const int64_t size,
       uint8_t *skip);
 
-  TO_STRING_KV(K_(is_inited), K_(valid_bytes), K_(capacity), KP_(data));
+  TO_STRING_KV(K_(is_inited), K_(valid_bytes), K_(capacity), KPHEX_(data, valid_bytes_));
 
 private:
   OB_INLINE void set_(const size_type pos, const bool value = true);

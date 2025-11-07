@@ -31,16 +31,17 @@ public:
   DEF(CSV, )                      \
   DEF(OB_BACKUP_1_4, )            \
   DEF(OB_BACKUP_3_X, )            \
+  DEF(OB_BACKUP_2_X_LOG, )        \
+  DEF(OB_BACKUP_2_X_PHY, )        \
   DEF(MAX_FORMAT, )
 
   DECLARE_ENUM(Type, type, LOAD_DATA_FORMAT_DEF, static);
 };
 
-class ObLoadDataStorageInfo : public share::ObBackupStorageInfo
+class ObLoadDataStorageInfo : public share::ObExternalTableStorageInfo
 {
 public:
-  using common::ObObjectStorageInfo::set;
-
+  using share::ObExternalTableStorageInfo::set;
 public:
   ObLoadDataStorageInfo();
   virtual ~ObLoadDataStorageInfo();

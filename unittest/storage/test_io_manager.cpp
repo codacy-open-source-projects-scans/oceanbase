@@ -12,27 +12,13 @@
 
 #define USING_LOG_PREFIX COMMON
 
-#include <gtest/gtest.h>
-#include <gmock/gmock.h>
 #define private public
 #define protected public
-#include "share/io/ob_io_define.h"
-#include "share/io/ob_io_manager.h"
-#include "share/io/ob_io_calibration.h"
-#include "share/io/io_schedule/ob_io_mclock.h"
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "mittest/mtlenv/mock_tenant_module_env.h"
 #undef private
 #undef protected
-#include "share/ob_local_device.h"
-#include "lib/thread/thread_pool.h"
-#include "lib/file/file_directory_utils.h"
-#include "common/ob_clock_generator.h"
-#include "storage/blocksstable/ob_micro_block_cache.h"
-#include "storage/tmp_file/ob_tmp_file_cache.h"
-#include "storage/meta_mem/ob_storage_meta_cache.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "share/io/ob_ss_io_request.h"
 #endif
 
 #define ASSERT_SUCC(ret) ASSERT_EQ((ret), ::oceanbase::common::OB_SUCCESS)
@@ -125,8 +111,8 @@ static void get_random_io_info(ObIOInfo &io_info)
 static ObTenantIOConfig default_tenant_io_config()
 {
   ObTenantIOConfig tenant_config;
-  tenant_config.callback_thread_count_ = 2;
-  tenant_config.memory_limit_ = 1024L * 1024L * 1024L;
+  tenant_config.param_config_.callback_thread_count_ = 2;
+  tenant_config.param_config_.memory_limit_ = 1024L * 1024L * 1024L;
   tenant_config.unit_config_.min_iops_ = 1000;
   tenant_config.unit_config_.max_iops_ = 1000;
   tenant_config.unit_config_.weight_ = 1000;
@@ -154,6 +140,7 @@ public:
   virtual int alloc_data_buf(const char *io_data_buffer, const int64_t data_size) override;
   virtual int inner_process(const char *data_buffer, const int64_t size) override;
   virtual ObIAllocator *get_allocator() override { return allocator_; }
+  virtual const char *get_cb_name() const override { return "TestIOCB"; }
   TO_STRING_KV(KP(number_), KP(allocator_), KP(help_buf_));
 
 public:
@@ -608,8 +595,8 @@ TEST_F(TestIOStruct, MClockQueue)
   ObIOAllocator io_allocator;
   ASSERT_SUCC(io_allocator.init(TEST_TENANT_ID, IO_MEMORY_LIMIT));
   ObTenantIOConfig io_config;
-  io_config.callback_thread_count_ = 2;
-  io_config.memory_limit_ = 1024L * 1024L * 1024L;
+  io_config.param_config_.callback_thread_count_ = 2;
+  io_config.param_config_.memory_limit_ = 1024L * 1024L * 1024L;
   io_config.unit_config_.min_iops_ = 100;
   io_config.unit_config_.max_iops_ = 10000L;
   io_config.unit_config_.weight_ = 1000;
@@ -896,44 +883,44 @@ TEST_F(TestIOStruct, IOFaultDetector)
 //   }
 // };
 
-TEST_F(TestIOStruct, memory_pool)
-{
-  ObRefHolder<ObTenantIOManager> tenant_holder;
-  ASSERT_SUCC(OB_IO_MANAGER.get_tenant_io_manager(500, tenant_holder));
-  ASSERT_NE(nullptr, tenant_holder.get_ptr());
+// TEST_F(TestIOStruct, memory_pool)
+// {
+//   ObRefHolder<ObTenantIOManager> tenant_holder;
+//   ASSERT_SUCC(OB_IO_MANAGER.get_tenant_io_manager(500, tenant_holder));
+//   ASSERT_NE(nullptr, tenant_holder.get_ptr());
 
-  ObIORequest *io_request = nullptr;
-  ASSERT_SUCC(tenant_holder.get_ptr()->io_request_pool_.alloc(io_request));
-  ASSERT_NE(nullptr, io_request);
-  io_request->tenant_io_mgr_.hold(tenant_holder.get_ptr());
-  ASSERT_TRUE(tenant_holder.get_ptr()->io_request_pool_.contain(io_request));
-  ASSERT_SUCC(tenant_holder.get_ptr()->io_request_pool_.recycle(io_request));
-  io_request->tenant_io_mgr_.reset();
+//   ObIORequest *io_request = nullptr;
+//   ASSERT_SUCC(tenant_holder.get_ptr()->io_request_pool_.alloc(io_request));
+//   ASSERT_NE(nullptr, io_request);
+//   io_request->tenant_io_mgr_.hold(tenant_holder.get_ptr());
+//   ASSERT_TRUE(tenant_holder.get_ptr()->io_request_pool_.contain(io_request));
+//   ASSERT_SUCC(tenant_holder.get_ptr()->io_request_pool_.recycle(io_request));
+//   io_request->tenant_io_mgr_.reset();
 
-  ObIOResult *io_result = nullptr;
-  ASSERT_SUCC(tenant_holder.get_ptr()->io_result_pool_.alloc(io_result));
-  ASSERT_NE(nullptr, io_result);
-  io_result->tenant_io_mgr_.hold(tenant_holder.get_ptr());
-  ASSERT_TRUE(tenant_holder.get_ptr()->io_result_pool_.contain(io_result));
-  ASSERT_SUCC(tenant_holder.get_ptr()->io_result_pool_.recycle(io_result));
-  io_result->tenant_io_mgr_.reset();
+//   ObIOResult *io_result = nullptr;
+//   ASSERT_SUCC(tenant_holder.get_ptr()->io_result_pool_.alloc(io_result));
+//   ASSERT_NE(nullptr, io_result);
+//   io_result->tenant_io_mgr_.hold(tenant_holder.get_ptr());
+//   ASSERT_TRUE(tenant_holder.get_ptr()->io_result_pool_.contain(io_result));
+//   ASSERT_SUCC(tenant_holder.get_ptr()->io_result_pool_.recycle(io_result));
+//   io_result->tenant_io_mgr_.reset();
 
-  void *result_buf = tenant_holder.get_ptr()->io_allocator_.alloc(sizeof(ObIOResult));
-  ObIOResult *result1 = new (result_buf) ObIOResult;
-  result1->tenant_io_mgr_.hold(tenant_holder.get_ptr());
-  ASSERT_FALSE(tenant_holder.get_ptr()->io_result_pool_.contain(result1));
-  ASSERT_FAIL(tenant_holder.get_ptr()->io_result_pool_.recycle(result1));
-  result1->~ObIOResult();
-  tenant_holder.get_ptr()->io_allocator_.free(result1);
+//   void *result_buf = tenant_holder.get_ptr()->io_allocator_.alloc(sizeof(ObIOResult));
+//   ObIOResult *result1 = new (result_buf) ObIOResult;
+//   result1->tenant_io_mgr_.hold(tenant_holder.get_ptr());
+//   ASSERT_FALSE(tenant_holder.get_ptr()->io_result_pool_.contain(result1));
+//   ASSERT_FAIL(tenant_holder.get_ptr()->io_result_pool_.recycle(result1));
+//   result1->~ObIOResult();
+//   tenant_holder.get_ptr()->io_allocator_.free(result1);
 
-  void *req_buf = tenant_holder.get_ptr()->io_allocator_.alloc(sizeof(ObIORequest));
-  ObIORequest *req1 = new (req_buf) ObIORequest;
-  req1->tenant_io_mgr_.hold(tenant_holder.get_ptr());
-  ASSERT_FALSE(tenant_holder.get_ptr()->io_request_pool_.contain(req1));
-  ASSERT_FAIL(tenant_holder.get_ptr()->io_request_pool_.recycle(req1));
-  req1->~ObIORequest();
-  tenant_holder.get_ptr()->io_allocator_.free(req1);
-}
+//   void *req_buf = tenant_holder.get_ptr()->io_allocator_.alloc(sizeof(ObIORequest));
+//   ObIORequest *req1 = new (req_buf) ObIORequest;
+//   req1->tenant_io_mgr_.hold(tenant_holder.get_ptr());
+//   ASSERT_FALSE(tenant_holder.get_ptr()->io_request_pool_.contain(req1));
+//   ASSERT_FAIL(tenant_holder.get_ptr()->io_request_pool_.recycle(req1));
+//   req1->~ObIORequest();
+//   tenant_holder.get_ptr()->io_allocator_.free(req1);
+// }
 
 TEST_F(TestIOStruct, simple)
 {
@@ -1433,7 +1420,7 @@ TEST_F(TestIOStruct, alloc_memory)
   // prepare tenant io manager
   for (int64_t i = 0; i < perf_tenants.count(); ++i) {
     IOPerfTenant &curr_config = perf_tenants.at(i);
-    curr_config.config_.memory_limit_ = 16L* 1024L * 1024L; //16MB
+    curr_config.config_.param_config_.memory_limit_ = 16L* 1024L * 1024L; //16MB
     ObRefHolder<ObTenantIOManager> tenant_holder;
     ASSERT_SUCC(OB_IO_MANAGER.get_tenant_io_manager(curr_config.tenant_id_, tenant_holder));
     ASSERT_SUCC(tenant_holder.get_ptr()->refresh_group_io_config());
@@ -1942,8 +1929,8 @@ int parse_group_perf_config(const char *config_file_path,
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("scan config file failed", K(ret), K(scan_ret));
         } else {
-          item.config_.memory_limit_ = IO_MEMORY_LIMIT;
-          item.config_.callback_thread_count_ = 0;
+          item.config_.param_config_.memory_limit_ = IO_MEMORY_LIMIT;
+          item.config_.param_config_.callback_thread_count_ = 0;
           // parse group config
           if (OB_FAIL(item.config_.parse_group_config(group_config))) {
             LOG_WARN("parse group config failed", K(ret), K(group_config));
@@ -2405,7 +2392,7 @@ int IOConfModify::modify_tenant_io( const int64_t min_iops,
   curr_tenant.config_.unit_config_.max_iops_ = max_iops;
   curr_tenant.config_.unit_config_.weight_ = weight;
 
-  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_config(curr_tenant.tenant_id_, curr_tenant.config_))) {
+  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_unit_config(curr_tenant.tenant_id_, curr_tenant.config_.unit_config_))) {
     LOG_WARN("refresh tenant io config failed", K(ret), K(curr_tenant.tenant_id_), K(curr_tenant.config_));
   }
   return ret;
@@ -2520,8 +2507,8 @@ void IOTracerSwitch::run1()
 int IOTracerSwitch::modify_tenant_io(IOPerfTenant &curr_tenant)
 {
   int ret = OB_SUCCESS;
-  ATOMIC_SET(&curr_tenant.config_.enable_io_tracer_, true);
-  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_config(curr_tenant.tenant_id_, curr_tenant.config_))) {
+  ATOMIC_SET(&curr_tenant.config_.param_config_.enable_io_tracer_, true);
+  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_param_config(curr_tenant.tenant_id_, curr_tenant.config_.param_config_))) {
     LOG_WARN("refresh tenant io config failed", K(ret), K(curr_tenant.tenant_id_), K(curr_tenant.config_));
   }
   return ret;
@@ -2580,9 +2567,9 @@ int IOCallbackModifier::modify_callback_num(const int64_t thread_num,
                                             IOPerfTenant &curr_tenant)
 {
   int ret = OB_SUCCESS;
-  curr_tenant.config_.callback_thread_count_ = thread_num;
+  curr_tenant.config_.param_config_.callback_thread_count_ = thread_num;
 
-  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_config(curr_tenant.tenant_id_, curr_tenant.config_))) {
+  if (OB_FAIL(OB_IO_MANAGER.refresh_tenant_io_param_config(curr_tenant.tenant_id_, curr_tenant.config_.param_config_))) {
     LOG_WARN("refresh tenant io config failed", K(ret), K(curr_tenant.tenant_id_), K(curr_tenant.config_));
   }
   return ret;

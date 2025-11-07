@@ -13,9 +13,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/expr/ob_expr_autoinc_nextval.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase
@@ -326,8 +323,8 @@ int ObExprAutoincNextval::generate_autoinc_value(const ObSQLSessionInfo &my_sess
     LOG_WARN("Invalid argument(s)", K(ret), K(autoinc_param), K(plan_ctx));
   } else {
     if (ctx.exec_ctx_.is_ddl_idempotent_autoinc()) {
-      const int64_t table_all_slice_count = ctx.exec_ctx_.get_table_all_slice_count();
-      const int64_t table_level_slice_idx = ctx.exec_ctx_.get_table_level_slice_idx();
+      const int64_t table_all_slice_count = ctx.exec_ctx_.get_slice_count();
+      const int64_t table_level_slice_idx = ctx.exec_ctx_.get_slice_idx();
       const int64_t slice_row_idx = ctx.exec_ctx_.get_slice_row_idx();
       const int64_t autoinc_range_interval = ctx.exec_ctx_.get_autoinc_range_interval();
       if (OB_FAIL(auto_service.calculate_idempotent_autoinc_val_for_ddl(
@@ -521,7 +518,7 @@ int ObAutoincNextvalExtra::init_autoinc_nextval_extra(common::ObIAllocator *allo
     autoinc_nextval_extra->autoinc_column_name_ = autoinc_column_name;
   }
   if (OB_SUCC(ret)) {
-    expr->set_extra(reinterpret_cast<uint64_t>(autoinc_nextval_extra));
+    expr->set_autoinc_nextval_extra(reinterpret_cast<uint64_t>(autoinc_nextval_extra));
     LOG_DEBUG("succ init_autoinc_nextval_extra", KPC(autoinc_nextval_extra));
   }
   return ret;
@@ -545,7 +542,7 @@ int ObAutoincNextvalInfo::init_autoinc_nextval_info(common::ObIAllocator *alloca
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to alloc memory", K(ret));
   } else if (OB_ISNULL(autoinc_nextval_extra =
-          reinterpret_cast<ObAutoincNextvalExtra *>(raw_expr.get_extra()))) {
+          reinterpret_cast<ObAutoincNextvalExtra *>(raw_expr.get_autoinc_nextval_extra()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("raw_expr.extra_ is null", K(ret));
   } else {

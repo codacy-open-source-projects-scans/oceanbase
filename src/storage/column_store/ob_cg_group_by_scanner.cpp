@@ -155,7 +155,7 @@ int ObCGGroupByScanner::decide_can_group_by(const int32_t group_by_col, bool &ca
         int64_t row_cnt = 0;
         int64_t read_cnt = 0;
         int64_t distinct_cnt = 0;
-        if (OB_FAIL(open_cur_data_block())) {
+        if (OB_FAIL(open_cur_data_block(true))) {
           LOG_WARN("Failed to open data block", K(ret));
         } else if (OB_FAIL(micro_scanner_->check_can_group_by(group_by_col, row_cnt, read_cnt, distinct_cnt, can_group_by))) {
           LOG_WARN("Failed to check group by", K(ret));
@@ -174,7 +174,7 @@ int ObCGGroupByScanner::read_distinct(const int32_t group_by_col)
 {
   const char **cell_data = group_by_cell_->get_cell_datas();
   return micro_scanner_->read_distinct(group_by_col,
-      nullptr == cell_data ? cell_data_ptrs_ : cell_data, *group_by_cell_);
+      nullptr == cell_data ? cell_data_ptrs_ : cell_data, is_padding_mode_, *group_by_cell_);
 }
 
 int ObCGGroupByScanner::read_reference(const int32_t group_by_col)
@@ -194,6 +194,21 @@ int ObCGGroupByScanner::read_reference(const int32_t group_by_col)
     LOG_WARN("Fail to get row ids", K(ret), K_(current), K_(query_index_range));
   } else if (OB_FAIL(micro_scanner_->read_reference(group_by_col, row_ids_, row_cap, *group_by_cell_))) {
     LOG_WARN("Failed to read ref", K(ret));
+  }
+  return ret;
+}
+
+int ObCGGroupByScanner::fill_group_by_col_lob_locator()
+{
+  int ret = OB_SUCCESS;
+  const bool has_lob_out_row = micro_scanner_->get_reader()->has_lob_out_row();
+  const share::schema::ObColumnParam *col_param = group_by_cell_->get_group_by_col_param();
+  if (iter_param_->has_lob_column_out() && has_lob_out_row
+    && nullptr != col_param && col_param->get_meta_type().is_lob_storage()) {
+    if (OB_FAIL(fill_datums_lob_locator(*iter_param_, *access_ctx_, *col_param,
+          group_by_cell_->get_distinct_cnt(), group_by_cell_->get_group_by_col_datums_to_fill(), false))) {
+      LOG_WARN("Failed to fill lob locator", K(ret), K(has_lob_out_row), K(col_param), KPC(group_by_cell_), KPC(iter_param_));
+    }
   }
   return ret;
 }
@@ -223,6 +238,8 @@ int ObCGGroupByScanner::calc_aggregate(const bool is_group_by_col)
       } else if (OB_UNLIKELY(0 == read_row_count || read_row_count > remain_row_count)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("Unexpected output row count", K(ret), K(read_row_count), K(remain_row_count));
+      } else if (OB_FAIL(group_by_cell_->clear_evaluated_infos())) {
+        LOG_WARN("Failed to clear evaluated infos", K(ret), KPC_(group_by_cell));
       } else if (OB_FAIL(do_group_by_aggregate(read_row_count, is_group_by_col, ref_offset))) {
         LOG_WARN("Failed to do group by aggregate", K(ret));
       } else {

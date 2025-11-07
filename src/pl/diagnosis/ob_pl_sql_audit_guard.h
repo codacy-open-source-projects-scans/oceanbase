@@ -84,7 +84,7 @@ public:
   }
 public:
   sql::ObExecRecord exec_record_;
-  // ObExecutingSqlStatRecord sqlstat_record_;
+  // sql::ObExecutingSqlStatRecord sqlstat_record_;
   sql::ObExecTimestamp exec_timestamp_;
   ObPLTimeRecord time_record_;
 };
@@ -100,7 +100,9 @@ public:
                     ObString ps_sql,
                     observer::ObQueryRetryCtrl &retry_ctrl,
                     sql::ObPLSPITraceIdGuard &traceid_guard,
-                    sql::stmt::StmtType stmt_type);
+                    sql::stmt::StmtType stmt_type,
+                    bool is_ps_cursor_open = false,
+                    ObPLCursorInfo *cursor = nullptr);
 
   ~ObPLSqlAuditGuard();
 
@@ -127,10 +129,13 @@ private:
   sql::ObPLSPITraceIdGuard &traceid_guard_;
   sql::stmt::StmtType stmt_type_;
 
-  ObExecutingSqlStatRecord sqlstat_record_;
+  sql::ObExecutingSqlStatRecord sqlstat_record_;
   int64_t sql_used_memory_size_;
   observer::ObProcessMallocCallback pmcb_;
   lib::ObMallocCallbackGuard memory_guard_;
+  int64_t plsql_compile_time_;
+  bool is_ps_cursor_open_;
+  ObPLCursorInfo *cursor_;
 };
 
 }

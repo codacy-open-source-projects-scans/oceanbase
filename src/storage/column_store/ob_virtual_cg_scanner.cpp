@@ -11,14 +11,8 @@
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_virtual_cg_scanner.h"
-#include "storage/access/ob_table_access_context.h"
-#include "storage/access/ob_aggregate_base.h"
 #include "storage/access/ob_aggregated_store.h"
 #include "storage/access/ob_aggregated_store_vec.h"
-#include "storage/access/ob_vector_store.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/column_store/ob_column_oriented_sstable.h"
-#include "storage/lob/ob_lob_manager.h"
 
 namespace oceanbase
 {
@@ -166,9 +160,14 @@ int ObVirtualCGScanner::get_next_rows(uint64_t &count, const uint64_t capacity)
     if (0 == current_group_size_) {
       ret = OB_ITER_END;
     }
+  } else if (current_group_size_ == 0) {
+    ret = OB_ITER_END;
   } else {
-    if (OB_FAIL(agg_group_->eval_batch(iter_param_, access_ctx_, 0/*col_offset*/, nullptr/*reader*/,
-                                       nullptr/*row_ids*/, current_group_size_, false/*reserve_memory*/))) {
+    ObPushdownRowIdCtx pd_row_id_ctx;
+    pd_row_id_ctx.begin_ = 0;
+    pd_row_id_ctx.end_ = current_group_size_ - 1;
+    if (OB_FAIL(agg_group_->eval_batch(iter_param_, access_ctx_, 0/*col_offset*/,
+                                       nullptr/*reader*/, pd_row_id_ctx))) {
       LOG_WARN("Fail to eval batch rows", K(ret));
     } else {
       count = current_group_size_;
@@ -185,10 +184,10 @@ int ObVirtualCGScanner::init_agg_group(const ObTableIterParam &iter_param, ObTab
   if (!iter_param.enable_pd_aggregate()) {
   } else if (OB_UNLIKELY(nullptr == access_ctx.block_row_store_ ||
                   nullptr == iter_param.aggregate_exprs_ ||
-                  1 != iter_param.aggregate_exprs_->count())) {
+                  iter_param.aggregate_exprs_->count() <= 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Unexpected aggregated expr count", K(ret), KPC(iter_param.aggregate_exprs_));
-  } else if (access_ctx.block_row_store_->is_vec2()) {
+  } else if (iter_param.plan_use_new_format()) {
     ObAggregatedStoreVec *agg_store_vec = static_cast<ObAggregatedStoreVec *>(access_ctx.block_row_store_);
     ObAggGroupVec *agg_group_vec = nullptr;
     if (OB_FAIL(agg_store_vec->get_agg_group(nullptr, agg_group_vec))){
@@ -235,7 +234,7 @@ int ObVirtualCGScanner::init_agg_group(const ObTableIterParam &iter_param, ObTab
 void ObDefaultCGScanner::reset()
 {
   if (nullptr != agg_group_) {
-    if (agg_group_->is_vec()) {
+    if (!agg_group_->is_vec()) {
       agg_group_->~ObAggGroupBase();
       if (stmt_allocator_ != nullptr ) {
         stmt_allocator_->free(agg_group_);
@@ -288,6 +287,7 @@ int ObDefaultCGScanner::init(
   } else {
     query_range_valid_row_count_ = 0;
     iter_param_ = &iter_param;
+    access_ctx_ = &access_ctx;
     filter_ = nullptr;
     filter_result_ = false;
     stmt_allocator_ = access_ctx.stmt_allocator_;
@@ -307,7 +307,7 @@ int ObDefaultCGScanner::init_agg_group(const ObTableIterParam &iter_param, ObTab
                   0 == iter_param.aggregate_exprs_->count())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("Unexpected aggregated expr count", K(ret), KPC(iter_param.aggregate_exprs_));
-  } else if (access_ctx.block_row_store_->is_vec2()) {
+  } else if (iter_param.plan_use_new_format()) {
     const sql::ObExpr *output_expr = nullptr;
     ObAggregatedStoreVec *agg_store_vec = static_cast<ObAggregatedStoreVec *>(access_ctx.block_row_store_);
     ObAggGroupVec *agg_group_vec = nullptr;
@@ -428,6 +428,9 @@ int ObDefaultCGScanner::switch_context(
                         !wrapper.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "unexpected argument", K(ret), K(wrapper), K(iter_param), K(access_ctx));
+  } else if (OB_UNLIKELY(iter_param.enable_pd_aggregate() && nullptr == agg_group_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected state, agg group is null", K(ret), K(iter_param));
   } else if (OB_FAIL(wrapper.get_merge_row_cnt(iter_param, total_row_count_))) {
     STORAGE_LOG(WARN, "fail to get ddl merge row cnt", K(ret), K(iter_param), K(total_row_count_), K(wrapper));
   } else {
@@ -533,6 +536,8 @@ int ObDefaultCGScanner::get_next_rows(uint64_t &count, const uint64_t capacity)
   }
 
   if (OB_SUCC(ret)) {
+    LOG_DEBUG("[DEFAULT CG SCANNER]", K(ret), K(count), K(capacity), K(query_range_valid_row_count_),
+                                      KP(agg_group_), KPC(iter_param_));
     ret = query_range_valid_row_count_ <= count ? OB_ITER_END : OB_SUCCESS;
     query_range_valid_row_count_ -= count;
   }
@@ -724,6 +729,20 @@ int ObDefaultCGGroupByScanner::read_reference(const int32_t group_by_col)
     query_range_valid_row_count_ -= read_cnt;
   }
   LOG_DEBUG("[GROUP BY PUSHDOWN]", K(ret), KPC(group_by_cell_));
+  return ret;
+}
+
+int ObDefaultCGGroupByScanner::fill_group_by_col_lob_locator()
+{
+  int ret = OB_SUCCESS;
+  const share::schema::ObColumnParam *col_param = group_by_cell_->get_group_by_col_param();
+  if (iter_param_->has_lob_column_out() && nullptr != col_param && col_param->get_meta_type().is_lob_storage()) {
+    if (OB_FAIL(fill_datums_lob_locator(*iter_param_, *access_ctx_, *col_param,
+          group_by_cell_->get_distinct_cnt(), group_by_cell_->get_group_by_col_datums_to_fill(), false))) {
+      LOG_WARN("Failed to fill lob locator", K(ret), K(col_param), KPC(group_by_cell_), KPC(iter_param_));
+    }
+  }
+  LOG_DEBUG("[GROUP BY PUSHDOWN]", K(ret), KPC(col_param), KPC(group_by_cell_));
   return ret;
 }
 

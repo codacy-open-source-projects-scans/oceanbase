@@ -11,10 +11,6 @@
  */
 
 #include <gtest/gtest.h>
-#include "lib/utility/ob_test_util.h"
-#include "lib/restore/ob_storage.h"
-#include "lib/allocator/page_arena.h"
-#include "share/backup/ob_backup_io_adapter.h"
 #include "share/io/ob_io_manager.h"
 #include "common/storage/ob_fd_simulator.h"
 #define private public
@@ -54,10 +50,10 @@ TEST_F(TestFdSimulator, test_fd)
   int device_flag = 0;
   oceanbase::common::ObArenaAllocator allocator;
   void* ctx = NULL;
-  int test_total_num = 200;
-  int test_1_num = 90; //<100
-  int test_2_num = 30; //90-110
-  int test_3_num = 80; //200
+  int test_total_num = 600; // 2 * DEFAULT_ARRAY_SIZE
+  int test_1_num = 270; //(0, DEFAULT_ARRAY_SIZE)
+  int test_2_num = 60; //(DEFAULT_ARRAY_SIZE, 2 * DEFAULT_ARRAY_SIZE)
+  int test_3_num = 270; //let total num is (2 * DEFAULT_ARRAY_SIZE)
   int used_fd_cnt = 0;
   int free_fd_cnt = 0;
   int expect_used_fd_cnt = 0;
@@ -153,6 +149,18 @@ protected:
   // disallow copy
 private:
   DISALLOW_COPY_AND_ASSIGN(TestDeviceManager);
+};
+
+class ObClusterEnableObdalConfigFalse: public ObClusterEnableObdalConfigBase
+{
+public:
+  ObClusterEnableObdalConfigFalse() {};
+  virtual ~ObClusterEnableObdalConfigFalse() {};
+  virtual bool is_enable_obdal() const { return false; }
+  static ObClusterEnableObdalConfigFalse &get_instance() {
+    static ObClusterEnableObdalConfigFalse instance;
+    return instance;
+  }
 };
 
 TEST_F(TestDeviceManager, test_device_manager)
@@ -287,6 +295,62 @@ TEST_F(TestDeviceManager, test_device_manager)
     } else {
       tmp_dev_handle = device_handle[i];
     }
+  }
+
+  // same storage_id_mod, same storage_info, use obdal or not, expect different device
+  manager.destroy();
+  ASSERT_EQ(0, manager.get_device_cnt());
+  ASSERT_EQ(OB_SUCCESS, manager.init_devices_env());
+  {
+    ObStorageIdMod default_storage_id_mod;
+    ObObjectStorageInfo tmp_storage_info;
+    tmp_storage_info.device_type_ = ObStorageType::OB_STORAGE_OSS;
+    ASSERT_EQ(OB_SUCCESS, databuff_printf(tmp_storage_info.access_id_,
+                                          sizeof(tmp_storage_info.access_id_),
+                                          "%d", 0));
+    cluster_enable_obdal_config = &ObClusterEnableObdalConfigFalse::get_instance();
+    ObIODevice *device_handle = nullptr;
+    ASSERT_EQ(OB_SUCCESS, manager.get_device(storage_prefix_oss, tmp_storage_info,
+                                             default_storage_id_mod, device_handle));
+    cluster_enable_obdal_config = &ObClusterEnableObdalConfigBase::get_instance();
+    ObIODevice *device_handle2 = nullptr;
+    ASSERT_EQ(OB_SUCCESS, manager.get_device(storage_prefix_oss, tmp_storage_info,
+                                             default_storage_id_mod, device_handle2));
+    ASSERT_NE(device_handle, device_handle2);
+    cluster_enable_obdal_config = &ObClusterEnableObdalConfig::get_instance();
+  }
+}
+
+TEST_F(TestDeviceManager, test_nfs_and_local_disk)
+{
+  if (false) {
+    // ASSERT_EQ(OB_SUCCESS, ObIOManager::get_instance().init());
+    ObDeviceManager &manager = ObDeviceManager::get_instance();
+    ObString nfs_path = "file:///mnt/nfs_share";
+    ObString nfs_path2 = "file:///mnt/nfs_share/a/b/c/d/e";
+    ObString local_disk_path = "file:///home";
+
+    ObIODevice *nfs_device_handle = nullptr;
+    ObIODevice *nfs_device_handle2 = nullptr;
+    ObIODevice *local_disk_handle = nullptr;
+    ObObjectStorageInfo nfs_storage_info;
+    ObObjectStorageInfo nfs_storage_info2;
+    ObObjectStorageInfo local_disk_info;
+    ObStorageIdMod nfs_storage_id_mod(0, ObStorageUsedMod::STORAGE_USED_DATA);
+    ObStorageIdMod nfs_storage_id_mod2(0, ObStorageUsedMod::STORAGE_USED_DATA);
+    ObStorageIdMod local_disk_id_mod(1, ObStorageUsedMod::STORAGE_USED_DATA);
+    ASSERT_EQ(OB_SUCCESS, manager.get_device(nfs_path, nfs_storage_info, nfs_storage_id_mod, nfs_device_handle));
+    ASSERT_EQ(OB_SUCCESS, manager.get_device(nfs_path2, nfs_storage_info2, nfs_storage_id_mod2, nfs_device_handle2));
+    ASSERT_EQ(OB_SUCCESS, manager.get_device(local_disk_path, local_disk_info, local_disk_id_mod, local_disk_handle));
+
+    ASSERT_TRUE(nfs_device_handle != nullptr);
+    ASSERT_TRUE(nfs_device_handle2 != nullptr);
+    ASSERT_TRUE(local_disk_handle != nullptr);
+    ASSERT_TRUE(nfs_device_handle != local_disk_handle);
+    ASSERT_TRUE(nfs_device_handle == nfs_device_handle);
+    ASSERT_EQ(true, nfs_device_handle->should_limit_net_bandwidth());
+    ASSERT_EQ(true, nfs_device_handle->should_limit_net_bandwidth());
+    ASSERT_EQ(false, local_disk_handle->should_limit_net_bandwidth());
   }
 }
 

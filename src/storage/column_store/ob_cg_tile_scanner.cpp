@@ -12,9 +12,6 @@
 #define USING_LOG_PREFIX STORAGE
 #include "ob_cg_tile_scanner.h"
 #include "ob_cg_scanner.h"
-#include "ob_column_oriented_sstable.h"
-#include "ob_co_sstable_rows_filter.h"
-#include "sql/engine/basic/ob_pushdown_filter.h"
 
 namespace oceanbase
 {
@@ -260,14 +257,16 @@ int ObCGTileScanner::get_next_rows(uint64_t &count, const uint64_t capacity)
         ret = OB_SUCCESS;
       }
     }
+    uint64_t target_row_count = count;
     for (int64_t i = 1; OB_SUCC(ret) && i < cg_scanners_.count(); ++i) {
+      uint64_t got_count = target_row_count;
       if (OB_ISNULL(cg_scanner = cg_scanners_.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("Unexpected null cg scanner", K(ret), K(i));
       } else if (is_valid_cg_row_scanner(cg_scanner->get_type())) {
-        ret = get_next_aligned_rows(static_cast<ObCGRowScanner*>(cg_scanner), count);
+        ret = get_next_aligned_rows(static_cast<ObCGRowScanner*>(cg_scanner), target_row_count);
       } else {
-        ret = cg_scanner->get_next_rows(count, capacity);
+        ret = cg_scanner->get_next_rows(got_count, target_row_count);
       }
       if (OB_FAIL(ret)) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -275,6 +274,10 @@ int ObCGTileScanner::get_next_rows(uint64_t &count, const uint64_t capacity)
         } else {
           ret = OB_SUCCESS;
         }
+      }
+      if (OB_SUCC(ret) && OB_UNLIKELY(got_count != target_row_count)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected row count", K(ret), K(got_count), K(target_row_count), KPC(cg_scanner));
       }
     }
     if (OB_SUCC(ret) && first_scanner_end) {
@@ -344,5 +347,35 @@ int ObCGTileScanner::get_next_aligned_rows(ObCGRowScanner *cg_scanner, const uin
   return ret;
 }
 
+int ObCGTileScanner::get_current_row_id(ObCSRowId& current_row_id) const
+{
+  int ret = OB_SUCCESS;
+  ObICGIterator* cg_iter;
+  current_row_id = OB_INVALID_CS_ROW_ID;
+  // we can only get current row id from cg scanners that inherited from ObCGScanner
+  bool found = false;
+  for (int i = 0; OB_SUCC(ret) && i < cg_scanners_.count(); ++i) {
+    if (OB_FAIL(cg_scanners_.at(i, cg_iter))) {
+      LOG_WARN("failed to get cg scanner", K(ret), K(i), K(cg_scanners_));
+    } else if (OB_ISNULL(cg_iter)) {
+      ret = OB_BAD_NULL_ERROR;
+      LOG_WARN("cg scanner is null", K(ret));
+    } else if (OB_FAIL(cg_iter->get_current_row_id(current_row_id))) {
+      if (OB_ERR_UNSUPPORTED_TYPE == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("failed to get current row id", K(cg_iter->get_type()));
+      }
+    } else if (OB_INVALID_CS_ROW_ID != current_row_id) {
+      found = true;
+      break;
+    }
+  }
+  if (OB_SUCC(ret) && !found) {
+    ret = OB_ERR_UNSUPPORTED_TYPE;
+    LOG_INFO("Unsupported to get current row id now", K(ret), K(access_ctx_->ls_id_), K(access_ctx_->tablet_id_));
+  }
+  return ret;
+}
 }
 }

@@ -286,6 +286,7 @@ public:
   DASRefCountContext &get_das_ref_count_ctx() { return das_ref_count_ctx_; }
   void clear_task_map();
   int wait_tasks_and_process_response();
+  int get_detectable_id(ObDetectableId &detectable_id);
 private:
   DISABLE_COPY_ASSIGN(ObDASRef);
   int create_task_map();
@@ -293,6 +294,7 @@ private:
   int wait_all_executing_tasks();
   int process_remote_task_resp();
   bool check_rcode_can_retry(int ret);
+  int cancel_all_async_callbacks();
 private:
   typedef common::ObObjNode<ObIDASTaskOp*> DasOpNode;
   //declare das allocator
@@ -320,11 +322,12 @@ private:
   DasAsyncCbList async_cb_list_;
   DASRefCountContext das_ref_count_ctx_;
   DASParallelContext das_parallel_ctx_;
+  ObDetectableId detectable_id_;
 public:
   //all flags
   union {
     uint64_t flags_;
-    struct {
+    struct { // FARM COMPAT WHITELIST
       uint64_t execute_directly_                : 1;
       uint64_t enable_rich_format_              : 1;
       uint64_t do_gts_opt_                      : 1;

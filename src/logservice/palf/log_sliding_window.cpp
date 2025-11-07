@@ -12,22 +12,9 @@
 
 #define USING_LOG_PREFIX PALF
 #include "log_sliding_window.h"
-#include "lib/lock/ob_spin_lock.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/queue/ob_link_queue.h"
-#include "share/allocator/ob_tenant_mutil_allocator.h"
-#include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
-#include "share/ob_define.h"
-#include "palf_callback_wrapper.h"
-#include "log_writer_utils.h"
-#include "log_entry_header.h"
-#include "log_group_entry_header.h"
-#include "log_entry_header.h"
 #include "log_engine.h"
 #include "log_io_task_cb_utils.h"
 #include "log_config_mgr.h"
-#include "log_state_mgr.h"
 #include "log_mode_mgr.h"
 namespace oceanbase
 {
@@ -606,7 +593,7 @@ int LogSlidingWindow::wait_group_buffer_ready_(const LSN &lsn, const int64_t dat
       sleep_us = MAX_SLEEP_US;
     }
     ob_usleep(sleep_us);
-    PALF_LOG(WARN, "usleep wait", K_(palf_id), K_(self), K(lsn), K(data_len), K(curr_committed_end_lsn));
+    PALF_LOG(WARN, "ob_usleep wait", K_(palf_id), K_(self), K(lsn), K(data_len), K(curr_committed_end_lsn));
     get_committed_end_lsn_(curr_committed_end_lsn);
   }
   return ret;

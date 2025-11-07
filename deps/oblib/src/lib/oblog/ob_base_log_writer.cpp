@@ -11,23 +11,9 @@
  */
 
 #include "ob_base_log_writer.h"
-#include <unistd.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/time.h>
-#include <errno.h>
-#include <stdio.h>
-#include <linux/prctl.h>
-#include "lib/ob_errno.h"
-#include "lib/atomic/ob_atomic.h"
 #include "lib/lock/ob_scond.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/utility/ob_utility.h"
-#include "lib/oblog/ob_log_print_kv.h"
-#include "lib/worker.h"
+#include "deps/oblib/src/lib/rc/context.h"
 #include "lib/thread/ob_thread_name.h"
-#include "lib/thread/thread.h"
-#include "lib/thread/protected_stack_allocator.h"
 #include "lib/ash/ob_active_session_guard.h"
 
 using namespace oceanbase::lib;
@@ -142,7 +128,7 @@ void ObBaseLogWriter::stop()
       }
 
       if (!is_empty) {
-        ::usleep(MAX_STOP_WAIT_TIME_US / max_try_cnt);
+        ob_usleep(MAX_STOP_WAIT_TIME_US / max_try_cnt);
         --try_cnt;
       }
     }
@@ -269,6 +255,7 @@ void *ObBaseLogWriter::flush_log_thread(void *arg)
     pthread_cleanup_push(cleanup_log_thread, arg);
     ObBaseLogWriter *log_writer = reinterpret_cast<ObBaseLogWriter*> (arg);
     lib::set_thread_name(log_writer->thread_name_);
+    ObDIActionGuard ag("flush log");
     log_writer->flush_log();
     pthread_cleanup_pop(1);
   }

@@ -17,9 +17,7 @@
 #include "storage/blocksstable/ob_micro_block_writer.h"
 #include "storage/blocksstable/ob_micro_block_reader.h"
 #include "storage/blocksstable/ob_row_cache.h"
-#include "storage/ob_i_store.h"
 #include "ob_row_generate.h"
-#include "common/rowkey/ob_rowkey.h"
 #include "share/ob_simple_mem_limit_getter.h"
 
 namespace oceanbase
@@ -133,7 +131,7 @@ TEST_F(TestMicroBlockReader, test_success)
   ASSERT_EQ(OB_SUCCESS, row.init(allocator_, column_num));
   ObDatumRow multi_version_row;
   ASSERT_EQ(OB_SUCCESS, multi_version_row.init(allocator_, column_num +2));
-  ObMicroBlockWriter writer;
+  ObMicroBlockWriter<> writer;
   writer.data_buffer_.allocator_.set_tenant_id(500);
   writer.index_buffer_.allocator_.set_tenant_id(500);
   ret = writer.init(macro_block_size, rowkey_column_count, column_num + 2);
@@ -154,7 +152,7 @@ TEST_F(TestMicroBlockReader, test_success)
   ASSERT_EQ(OB_SUCCESS, read_info_.init(
           allocator_, 16000, row_generate_.get_schema().get_rowkey_column_num(), lib::is_oracle_mode(), columns, nullptr/*storage_cols_index*/));
   /*** init reader ***/
-  ObMicroBlockReader reader;
+  ObMicroBlockReader<> reader;
   ObMicroBlockData block(buf, size);
   ASSERT_EQ(OB_SUCCESS, reader.init(block, read_info_));
 

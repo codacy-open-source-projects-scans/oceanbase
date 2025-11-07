@@ -12,8 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_scan_iter.h"
-#include "sql/das/ob_das_scan_op.h"
 #include "storage/tx_storage/ob_access_service.h"
+#include "src/sql/engine/ob_exec_context.h"
 
 namespace oceanbase
 {
@@ -51,6 +51,7 @@ int ObDASScanIter::inner_reuse()
     scan_param_->key_ranges_.reuse();
     scan_param_->ss_key_ranges_.reuse();
     scan_param_->mbr_filters_.reuse();
+    scan_param_->scan_tasks_.reuse();
   }
   return ret;
 }
@@ -95,6 +96,9 @@ int ObDASScanIter::rescan()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
   } else if (OB_FAIL(tsc_service_->table_rescan(*scan_param_, result_))) {
+      if (OB_SNAPSHOT_DISCARDED == ret && scan_param_->fb_snapshot_.is_valid()) {
+        ret = OB_INVALID_QUERY_TIMESTAMP;
+      }
     LOG_WARN("failed to rescan tablet", K(scan_param_->tablet_id_), K(ret));
   } else {
     // reset need_switch_param_ after real rescan.
@@ -108,6 +112,8 @@ int ObDASScanIter::rescan()
 int ObDASScanIter::inner_get_next_row()
 {
   int ret = OB_SUCCESS;
+  common::ObASHTabletIdSetterGuard ash_tablet_id_guard(scan_param_ != nullptr? scan_param_->index_id_ : 0);
+
   if (OB_ISNULL(result_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan iter", K(ret));
@@ -122,6 +128,8 @@ int ObDASScanIter::inner_get_next_row()
 int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
+  common::ObASHTabletIdSetterGuard ash_tablet_id_guard(scan_param_ != nullptr? scan_param_->index_id_ : 0);
+
   if (OB_ISNULL(result_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan iter", K(ret));
@@ -139,7 +147,62 @@ int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 void ObDASScanIter::clear_evaluated_flag()
 {
   OB_ASSERT(nullptr != scan_param_);
-  scan_param_->op_->clear_evaluated_flag();
+  if (OB_NOT_NULL(scan_param_->op_)) {
+    scan_param_->op_->clear_evaluated_flag();
+  }
+}
+
+int ObDASScanIter::set_scan_rowkey(ObEvalCtx *eval_ctx,
+                                   const ObIArray<ObExpr *> &rowkey_exprs,
+                                   const ObDASScanCtDef *lookup_ctdef,
+                                   ObIAllocator *alloc,
+                                   int64_t group_id)
+{
+  int ret = OB_SUCCESS;
+  ObNewRange range;
+  if (OB_ISNULL(eval_ctx) || OB_UNLIKELY(rowkey_exprs.empty()) || OB_ISNULL(lookup_ctdef) || OB_ISNULL(alloc)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid eval ctx, rowkey exprs, lookup ctdef, or allocator",
+             K(eval_ctx), K(rowkey_exprs), K(lookup_ctdef), K(alloc), K(ret));
+  } else {
+    ObObj *obj_ptr = nullptr;
+    void *buf = nullptr;
+    int64_t rowkey_cnt = rowkey_exprs.count();
+    if (OB_ISNULL(buf = alloc->alloc(sizeof(ObObj) * rowkey_cnt))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate enough memory", K(rowkey_cnt), K(ret));
+    } else {
+      obj_ptr = new (buf) ObObj(rowkey_cnt);
+    }
+
+    for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_cnt; i++) {
+      ObObj tmp_obj;
+      const ObExpr *expr = rowkey_exprs.at(i);
+      ObDatum &col_datum = expr->locate_expr_datum(*eval_ctx);
+      if (OB_UNLIKELY(T_PSEUDO_GROUP_ID == expr->type_ || T_PSEUDO_ROW_TRANS_INFO_COLUMN == expr->type_)) {
+        // skip.
+      } else if (OB_FAIL(col_datum.to_obj(tmp_obj, expr->obj_meta_, expr->obj_datum_map_))) {
+        LOG_WARN("failed to convert datum to obj", K(ret));
+      } else if (OB_FAIL(ob_write_obj(*alloc, tmp_obj, obj_ptr[i]))) {
+        LOG_WARN("failed to deep copy rowkey", K(ret), K(tmp_obj));
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      ObRowkey row_key(obj_ptr, rowkey_cnt);
+      if (OB_FAIL(range.build_range(lookup_ctdef->ref_table_id_, row_key))) {
+        LOG_WARN("failed to build lookup range", K(ret), K(lookup_ctdef->ref_table_id_), K(row_key));
+      } else if (FALSE_IT(range.group_idx_ = ObNewRange::get_group_idx(group_id))) {
+      } else if (OB_FAIL(scan_param_->key_ranges_.push_back(range))) {
+        LOG_WARN("failed to push back lookup range", K(ret));
+      } else {
+        scan_param_->is_get_ = true;
+      }
+    }
+  }
+  LOG_DEBUG("set scan iter scan rowkey", K(range), K(ret));
+
+  return ret;
 }
 
 }  // namespace sql

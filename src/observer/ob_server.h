@@ -79,6 +79,7 @@
 #include "share/wr/ob_wr_service.h"
 
 #include "sql/engine/table/ob_external_table_access_service.h"
+#include "sql/engine/table/ob_pcached_external_file_service.h"
 #include "share/external_table/ob_external_table_file_rpc_proxy.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "close_modules/shared_storage/storage/shared_storage/ob_tenant_gc_task.h"
@@ -243,7 +244,6 @@ public:
   };
   share::schema::ObMultiVersionSchemaService &get_schema_service() { return schema_service_; }
   ObInOutBandwidthThrottle &get_bandwidth_throttle() { return bandwidth_throttle_; }
-  uint64_t get_cpu_frequency_khz() { return cpu_frequency_; }
   int64_t get_network_speed() const { return ethernet_speed_; }
   const common::ObAddr &get_self() const { return self_addr_; }
   const ObGlobalContext &get_gctx() const { return gctx_; }
@@ -277,6 +277,7 @@ private:
   int init_pre_setting();
   int init_network();
   int init_interrupt();
+  int init_plugin();
   int init_zlib_lite_compressor();
   int init_multi_tenant();
   int init_sql_proxy();
@@ -336,6 +337,7 @@ private:
   int check_if_timezone_usable();
   int parse_mode();
   void deinit_zlib_lite_compressor();
+  void deinit_plugin();
 
   // ------------------------------- arb server start ------------------------------------
   int start_sig_worker_and_handle();
@@ -387,6 +389,7 @@ private:
   obrpc::ObStorageRpcProxy storage_rpc_proxy_;
   obrpc::ObCommonRpcProxy rs_rpc_proxy_;
   common::ObMySQLProxy sql_proxy_;
+  common::ObOracleSqlProxy oracle_sql_proxy_;
   common::ObMySQLProxy ddl_sql_proxy_;
   common::ObOracleSqlProxy ddl_oracle_sql_proxy_;
   common::ObDbLinkProxy dblink_proxy_;
@@ -510,10 +513,30 @@ inline ObServer &ObServer::get_instance()
   return THE_ONE;
 }
 
+class ObServerFrequence {
+private:
+  ObServerFrequence();
+  ~ObServerFrequence() = default;
+public:
+  static const uint64_t DEFAULT_CPU_FREQUENCY = 2500 * 1000; // 2500 * 1000 khz
+  ObServerFrequence(const ObServerFrequence&) = delete;
+  ObServerFrequence& operator=(const ObServerFrequence&) = delete;
+  static ObServerFrequence &get_instance()
+  {
+    static ObServerFrequence observer_frequence;
+    return observer_frequence;
+  }
+  int refresh_cpu_frequency();
+  uint64_t &get_cpu_frequency_khz() { return cpu_frequency_; }
+private:
+  uint64_t cpu_frequency_;
+};
+
 } // end of namespace observer
 } // end of namespace oceanbase
 
 #define OBSERVER (::oceanbase::observer::ObServer::get_instance())
 #define MYADDR (OBSERVER.get_self())
+#define OBSERVER_FREQUENCE (::oceanbase::observer::ObServerFrequence::get_instance())
 
 #endif /* _OCEABASE_OBSERVER_OB_SERVER_H_ */

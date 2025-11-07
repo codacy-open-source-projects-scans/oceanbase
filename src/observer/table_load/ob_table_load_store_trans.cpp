@@ -13,10 +13,10 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/table_load/ob_table_load_store_trans.h"
-#include "observer/table_load/ob_table_load_store.h"
+#include "observer/table_load/ob_table_load_store_ctx.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 #include "observer/table_load/ob_table_load_trans_store.h"
-#include "sql/engine/cmd/ob_load_data_utils.h"
+#include "storage/direct_load/ob_direct_load_i_table.h"
 
 namespace oceanbase
 {
@@ -62,7 +62,7 @@ int ObTableLoadStoreTrans::init()
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to new ObTableLoadTransStore", KR(ret));
     } else if (OB_ISNULL(trans_store_writer_ = OB_NEWx(ObTableLoadTransStoreWriter,
-                                                       (&trans_ctx_->allocator_), trans_store_))) {
+                                                       (&trans_ctx_->allocator_), this, trans_store_))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to new ObTableLoadTransStoreWriter", KR(ret));
     } else if (OB_FAIL(trans_store_->init())) {
@@ -122,7 +122,7 @@ int ObTableLoadStoreTrans::get_store_writer(ObTableLoadTransStoreWriter *&store_
     ret = OB_NOT_INIT;
     LOG_WARN("ObTableLoadStoreTrans not init", KR(ret), KP(this));
   } else {
-    obsys::ObRLockGuard guard(trans_ctx_->rwlock_);
+    obsys::ObRLockGuard<> guard(trans_ctx_->rwlock_);
     if (OB_ISNULL(trans_store_writer_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null store writer", KR(ret));
@@ -144,7 +144,7 @@ void ObTableLoadStoreTrans::put_store_writer(ObTableLoadTransStoreWriter *store_
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid null store", KR(ret));
   } else {
-    obsys::ObRLockGuard guard(trans_ctx_->rwlock_);
+    obsys::ObRLockGuard<> guard(trans_ctx_->rwlock_);
     OB_ASSERT(trans_store_writer_ == store_writer);
   }
   if (OB_SUCC(ret)) {
@@ -176,7 +176,7 @@ int ObTableLoadStoreTrans::output_store(ObTableLoadTransStore *&trans_store)
     ret = OB_NOT_INIT;
     LOG_WARN("ObTableLoadStoreTrans not init", KR(ret), KP(this));
   } else {
-    obsys::ObWLockGuard guard(trans_ctx_->rwlock_);
+    obsys::ObWLockGuard<> guard(trans_ctx_->rwlock_);
     if (OB_ISNULL(trans_store_) || OB_ISNULL(trans_store_writer_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null store", KR(ret), KP_(trans_store), KP_(trans_store_writer));

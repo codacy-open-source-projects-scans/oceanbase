@@ -12,18 +12,11 @@
 
 #define USING_LOG_PREFIX TEST
 #include <getopt.h>
-#include <unistd.h>
 #include <gtest/gtest.h>
 #define protected public
 #define private public
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
-#include "share/scheduler/ob_tenant_dag_scheduler.h"
-#include "lib/atomic/ob_atomic.h"
-#include "lib/alloc/ob_malloc_allocator.h"
-#include "observer/omt/ob_tenant_node_balancer.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/column_store/ob_co_merge_dag.h"
 
 int64_t dag_cnt = 1;
 int64_t stress_time= 1; // 100ms
@@ -168,7 +161,7 @@ public:
     id_(ObTimeUtility::current_time() + random())
   {}
   void init(int64_t id) { id_ = id; }
-  virtual int64_t hash() const { return murmurhash(&id_, sizeof(id_), 0);}
+  virtual uint64_t hash() const { return murmurhash(&id_, sizeof(id_), 0);}
   virtual bool operator == (const ObIDag &other) const
   {
     bool bret = false;
@@ -256,7 +249,7 @@ public:
     }
     return common::OB_SUCCESS;
   }
-  bool check_can_retry()
+  bool inner_check_can_retry()
   {
     bool bret = true;
     if (retry_times_++ > MAX_RETRY_TIMES) {
@@ -486,6 +479,69 @@ TEST_F(TestDagScheduler, test_dag_retry)
   EXPECT_EQ(0, MTL(ObDagWarningHistoryManager *)->size());
 }
 
+class ObDagRetryFailedTask : public ObITask
+{
+public:
+  ObDagRetryFailedTask() : ObITask(ObITaskType::TASK_TYPE_NORMAL_MINOR_MERGE) {}
+  virtual ~ObDagRetryFailedTask() {}
+  virtual int process()
+  {
+    int ret = OB_ERROR;
+    return ret;
+  }
+};
+
+class ObRetryFailedDag : public ObDagRetryDag
+{
+public:
+  ObRetryFailedDag() : ObDagRetryDag() {}
+  virtual ~ObRetryFailedDag() {}
+  virtual int create_first_task() override
+  {
+    int ret = OB_SUCCESS;
+    ObDagRetryFailedTask *task = nullptr;
+    if (OB_FAIL(alloc_task(task))) {
+      COMMON_LOG(WARN, "Fail to alloc task", K(ret));
+    } else if (OB_FAIL(add_task(*task))) {
+      COMMON_LOG(WARN, "Fail to add task", K(ret));
+    } else if (running_times_ >= 1) {
+      ret = OB_ERR_UNEXPECTED;
+      COMMON_LOG(WARN, "create first task failed when dag retry", K_(running_times), KPC(this));
+    }
+    return ret;
+  }
+};
+
+TEST_F(TestDagScheduler, test_dag_retry_failed)
+{
+  ObTenantDagScheduler *scheduler = MTL(ObTenantDagScheduler*);
+  ASSERT_TRUE(nullptr != scheduler);
+  ObDagWarningHistoryManager* manager = MTL(ObDagWarningHistoryManager *);
+  ASSERT_TRUE(nullptr != manager);
+  EXPECT_EQ(OB_SUCCESS, MTL(ObDagWarningHistoryManager *)->init(true, MTL_ID(), "DagWarnHis"));
+
+  int ret = OB_SUCCESS;
+  for (int i = 0; OB_SUCC(ret) && i < 5; ++i) {
+    ObRetryFailedDag *dag = NULL;
+    ObRetryDagInitParam param;
+    const int64_t str_len = 100;
+    char str[str_len];
+    param.id_ = i + 1;
+    snprintf(str, str_len, "Hello OceanBase_%d", i);
+    param.str_ = ObString(str);
+    if (OB_FAIL(scheduler->create_dag(&param, dag))) {
+      COMMON_LOG(WARN, "failed to create dag", K(ret));
+    } else if (FALSE_IT(dag->set_max_retry_times(3))) {
+    } else if (OB_FAIL(scheduler->add_dag(dag))) {
+      COMMON_LOG(WARN, "failed to add dag", K(ret));
+    }
+    EXPECT_EQ(OB_SUCCESS, ret);
+  }
+
+  wait_scheduler();
+  EXPECT_EQ(5, MTL(ObDagWarningHistoryManager *)->size());
+}
+
 class ObOperator
 {
 public:
@@ -660,7 +716,7 @@ public:
     }
     return common::OB_SUCCESS;
   }
-  INHERIT_TO_STRING_KV("BasicDag", ObBasicDag, K_(is_inited), K_(type), K_(id), K(task_list_.get_size()));
+  INHERIT_TO_STRING_KV("ObFatherPrepareDag", ObBasicDag, K_(is_inited), K_(type), K_(id), K(task_list_.get_size()));
 
 private:
   ObOperator *op_;
@@ -704,7 +760,7 @@ public:
     }
     return common::OB_SUCCESS;
   }
-  INHERIT_TO_STRING_KV("BasicDag", ObBasicDag, K_(is_inited), K_(type), K_(id), K(task_list_.get_size()));
+  INHERIT_TO_STRING_KV("ObFatherFinishDag", ObBasicDag, K_(is_inited), K_(type), K_(id), K(task_list_.get_size()));
 
 private:
   ObOperator *op_;
@@ -750,7 +806,7 @@ public:
     }
     return ret;
   }
-  virtual int64_t hash() const { return murmurhash(&id_, sizeof(id_), 0);}
+  virtual uint64_t hash() const { return murmurhash(&id_, sizeof(id_), 0);}
   virtual bool operator == (const ObIDagNet &other) const
   {
     bool bret = false;
@@ -1704,7 +1760,7 @@ TEST_F(TestDagScheduler, test_cancel_waiting_dag)
 
   ObCancelDag *first_dag = dag_net->first_dag_;
   EXPECT_NE(nullptr, first_dag);
-  first_dag->set_stop();
+  EXPECT_EQ(OB_SUCCESS, first_dag->set_stop());
   first_dag->can_schedule_ = true;
   wait_scheduler();
 }
@@ -1780,6 +1836,107 @@ TEST_F(TestDagScheduler, test_add_multi_co_merge_dag_net)
 }
 */
 
+class ObLoopDagNet : public ObIDagNet
+{
+public:
+  ObLoopDagNet() :
+    ObIDagNet(ObDagNetType::DAG_NET_TYPE_MIGRATION),
+    id_(ObTimeUtility::current_time() + random()),
+    op_()
+  {}
+  void init(int64_t id) { id_ = id; }
+  bool is_valid() const { return true; }
+  virtual int start_running() override
+  {
+    int ret = OB_SUCCESS;
+    ObFatherPrepareDag *prepare_dag = nullptr;
+    ObFatherFinishDag *finish_dag = nullptr;
+    ObFatherPrepareDag *running_dag = nullptr;
+
+    // create dag and connections
+    if (OB_FAIL(MTL(ObTenantDagScheduler*)->alloc_dag(prepare_dag))) {
+      COMMON_LOG(WARN, "Fail to create dag", K(ret));
+    } else if (FALSE_IT(prepare_dag->init(op_))) {
+    } else if (OB_FAIL(prepare_dag->create_first_task())) {
+      COMMON_LOG(WARN, "Fail to create first task", K(ret));
+    } else if (OB_FAIL(add_dag_into_dag_net(*prepare_dag))) { // add first dag into this dag_net
+      COMMON_LOG(WARN, "Fail to add dag into dag_net", K(ret));
+    } else if (OB_FAIL(MTL(ObTenantDagScheduler*)->alloc_dag(running_dag))) {
+      COMMON_LOG(WARN, "Fail to create dag", K(ret));
+    } else if (FALSE_IT(running_dag->init(op_))) {
+    } else if (OB_FAIL(running_dag->create_first_task())) {
+      COMMON_LOG(WARN, "Fail to create first task", K(ret));
+    } else if (OB_FAIL(MTL(ObTenantDagScheduler*)->alloc_dag(finish_dag))) {
+      COMMON_LOG(WARN, "Fail to create dag", K(ret));
+    } else if (FALSE_IT(finish_dag->init(op_))) {
+    } else if (OB_FAIL(finish_dag->create_first_task())) {
+      COMMON_LOG(WARN, "Fail to create first task", K(ret));
+    } else if (OB_FAIL(prepare_dag->add_child(*finish_dag))) {
+      COMMON_LOG(WARN, "Fail to add child", K(ret), KPC(prepare_dag), KPC(finish_dag));
+    } else if (OB_FAIL(prepare_dag->add_child(*running_dag))) {
+      COMMON_LOG(WARN, "Fail to add child", K(ret), KPC(prepare_dag), KPC(running_dag));
+    } else if (OB_FAIL(running_dag->add_child(*finish_dag))) {
+      COMMON_LOG(WARN, "Fail to add child", K(ret), KPC(running_dag), KPC(finish_dag));
+    } else if (OB_FAIL(MTL(ObTenantDagScheduler*)->add_dag(prepare_dag))
+        || OB_FAIL(MTL(ObTenantDagScheduler*)->add_dag(running_dag))
+        || OB_FAIL(MTL(ObTenantDagScheduler*)->add_dag(finish_dag))) {
+      COMMON_LOG(WARN, "Fail to add dag into dag_scheduler", K(ret));
+    } else {
+      // add all dags into dag_scheduler
+      COMMON_LOG(INFO, "success to add dag into dag_scheduler", K(ret));
+    }
+    EXPECT_NE(OB_SUCCESS, ret);
+    if (OB_NOT_NULL(prepare_dag)) {
+      MTL(ObTenantDagScheduler*)->free_dag(*prepare_dag);
+      prepare_dag = nullptr;
+    }
+    if (OB_NOT_NULL(finish_dag)) {
+      MTL(ObTenantDagScheduler*)->free_dag(*finish_dag);
+      finish_dag = nullptr;
+    }
+    if (OB_NOT_NULL(running_dag)) {
+      MTL(ObTenantDagScheduler*)->free_dag(*running_dag);
+      running_dag = nullptr;
+    }
+    return ret;
+  }
+  virtual uint64_t hash() const { return murmurhash(&id_, sizeof(id_), 0);}
+  virtual bool operator == (const ObIDagNet &other) const
+  {
+    bool bret = false;
+    if (get_type() == other.get_type()) {
+      const ObFatherDagNet &dag = static_cast<const ObFatherDagNet &>(other);
+      bret = dag.id_ == id_;
+    }
+    return bret;
+  }
+  virtual int fill_comment(char *buf, const int64_t buf_len) const override
+  { UNUSEDx(buf, buf_len); return OB_SUCCESS; }
+  virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override
+  { UNUSEDx(buf, buf_len); return OB_SUCCESS; }
+  virtual bool is_ha_dag_net() const override { return false; }
+  INHERIT_TO_STRING_KV("ObLoopDagNet", ObIDagNet, K_(type), K_(id));
+  virtual int clear_dag_net_ctx() override
+  {
+    return OB_SUCCESS;
+  }
+private:
+
+  int64_t id_;
+  ObOperator op_;
+  DISALLOW_COPY_AND_ASSIGN(ObLoopDagNet);
+};
+
+TEST_F(TestDagScheduler, loop_dag_net)
+{
+  int ret = OB_SUCCESS;
+  ObTenantDagScheduler *scheduler = MTL(ObTenantDagScheduler*);
+  ASSERT_TRUE(nullptr != scheduler);
+  EXPECT_EQ(OB_SUCCESS, scheduler->create_and_add_dag_net<ObLoopDagNet>(nullptr));
+
+  wait_scheduler();
+}
+
 }
 }
 
@@ -1819,6 +1976,6 @@ int main(int argc, char **argv)
   OB_LOGGER.set_log_level("DEBUG");
   OB_LOGGER.set_max_file_size(256*1024*1024);
   system("rm -f test_dag_net_in_dag_scheduler.log*");
-  OB_LOGGER.set_file_name("test_dag_net_in_dag_scheduler.log");
+  OB_LOGGER.set_file_name("test_dag_net_in_dag_scheduler.log", true);
   return RUN_ALL_TESTS();
 }

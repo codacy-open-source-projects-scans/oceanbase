@@ -11,12 +11,7 @@
  */
 
 #include "storage/tx/ob_tx_log.h"
-#include "logservice/ob_log_base_header.h"
-#include "logservice/ob_log_base_type.h"
 #include "storage/memtable/ob_memtable_mutator.h"
-#include "storage/blocksstable/ob_row_reader.h"
-#include "storage/tx/ob_multi_data_source_printer.h"
-#include "common/cell/ob_cell_reader.h"
 
 namespace oceanbase
 {
@@ -43,7 +38,10 @@ ObTxLogTypeChecker::need_replay_barrier(const ObTxLogType log_type,
         || data_source_type == ObTxDataSourceType::FINISH_TRANSFER_OUT
         || data_source_type == ObTxDataSourceType::TABLET_SPLIT
         || data_source_type == ObTxDataSourceType::TABLET_BINDING
-        || data_source_type == ObTxDataSourceType::MV_NOTICE_SAFE) {
+        || data_source_type == ObTxDataSourceType::MV_NOTICE_SAFE
+        || data_source_type == ObTxDataSourceType::UNBIND_LOB_TABLET
+        || data_source_type == ObTxDataSourceType::DDL_COMPLETE_MDS
+        || data_source_type == ObTxDataSourceType::TABLET_SPLIT_INFO) {
       barrier_flag = logservice::ObReplayBarrierType::PRE_BARRIER;
 
     } else if (data_source_type == ObTxDataSourceType::FINISH_TRANSFER_IN
@@ -356,7 +354,7 @@ OB_TX_SERIALIZE_MEMBER(ObTxRollbackToLog, compat_bytes_, /* 1 */ from_, /* 2 */ 
 
 OB_TX_SERIALIZE_MEMBER(ObTxMultiDataSourceLog, compat_bytes_, /* 1 */ data_);
 
-OB_TX_SERIALIZE_MEMBER(ObTxDirectLoadIncLog, compat_bytes_, /* 1 */ ddl_log_type_, /* 2 */ log_buf_);
+OB_TX_SERIALIZE_MEMBER(ObTxDirectLoadIncLog, compat_bytes_, /* 1 */ ddl_log_type_, /* 2 */ log_buf_, /* 3 */ batch_key_);
 
 int ObTxActiveInfoLog::before_serialize()
 {
@@ -621,7 +619,7 @@ int ObTxDirectLoadIncLog::before_serialize()
       TRANS_LOG(WARN, "reset all compat_bytes_ valid failed", K(ret));
     }
   } else {
-    if (OB_FAIL(compat_bytes_.init(2))) {
+    if (OB_FAIL(compat_bytes_.init(3))) {
       TRANS_LOG(WARN, "init compat_bytes_ failed", K(ret));
     }
   }
@@ -629,6 +627,7 @@ int ObTxDirectLoadIncLog::before_serialize()
   if (OB_SUCC(ret)) {
     TX_NO_NEED_SER(false, 1, compat_bytes_);
     TX_NO_NEED_SER(false, 2, compat_bytes_);
+    TX_NO_NEED_SER(false, 3, compat_bytes_);
   }
 
   return ret;
@@ -650,6 +649,7 @@ const ObTxLogType ObTxStartWorkingLog::LOG_TYPE = ObTxLogType::TX_START_WORKING_
 const ObTxLogType ObTxRollbackToLog::LOG_TYPE = ObTxLogType::TX_ROLLBACK_TO_LOG;
 const ObTxLogType ObTxMultiDataSourceLog::LOG_TYPE = ObTxLogType::TX_MULTI_DATA_SOURCE_LOG;
 const ObTxLogType ObTxDirectLoadIncLog::LOG_TYPE = ObTxLogType::TX_DIRECT_LOAD_INC_LOG;
+const ObTxLogType ObTxDirectLoadIncMajorLog::LOG_TYPE = ObTxLogType::TX_DIRECT_LOAD_INC_MAJOR_LOG;
 
 int ObTxRedoLog::set_mutator_buf(char *buf)
 {
@@ -905,7 +905,7 @@ int ObTxRedoLog::format_row_data_(const memtable::ObRowData &row_data, ObAdminMu
   int ret = OB_SUCCESS;
 
   blocksstable::ObDatumRow datum_row;
-  blocksstable::ObRowReader row_reader;
+  blocksstable::ObCompatRowReader row_reader;
   const blocksstable::ObRowHeader *row_header = nullptr;
   if (row_data.size_ > 0) {
     if (OB_FAIL(row_reader.read_row(row_data.data_, row_data.size_, nullptr, datum_row))) {
@@ -1186,8 +1186,15 @@ int  ObTxDirectLoadIncLog::ob_admin_dump(share::ObAdminMutatorStringArg &arg)
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "invalid arg writer is NULL", K(arg), K(ret));
   } else {
+    ObCStringHelper helper;
     arg.writer_ptr_->dump_key("<TxDirectLoadIncLog>");
     arg.writer_ptr_->start_object();
+    arg.writer_ptr_->dump_key("dli_log_type");
+    arg.writer_ptr_->dump_int64(static_cast<int64_t>(ddl_log_type_));
+    arg.writer_ptr_->dump_key("dli_buf_size");
+    arg.writer_ptr_->dump_int64(log_buf_.get_buf_size());
+    arg.writer_ptr_->dump_key("dli_batch_key");
+    arg.writer_ptr_->dump_string(helper.convert(batch_key_));
     //TODO direct_load_inc
     //dump direct_load_inc log_buf as a string in ob_admin log_tool
     arg.writer_ptr_->end_object();

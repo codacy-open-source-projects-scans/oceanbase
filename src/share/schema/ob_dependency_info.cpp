@@ -11,19 +11,10 @@
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
-#include "share/schema/ob_dependency_info.h"
-#include "ob_schema_getter_guard.h"
-#include "lib/container/ob_tuple.h"
-#include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "lib/string/ob_sql_string.h"
-#include "share/ob_dml_sql_splicer.h"
-#include "share/schema/ob_schema_utils.h"
-#include "observer/ob_server_struct.h"
+#include "ob_dependency_info.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/executor/ob_maintain_dependency_info_task.h"
-#include "share/schema/ob_schema_struct.h"
 #include "rootserver/ob_ddl_operator.h"
-#include "share/inner_table/ob_inner_table_schema_constants.h"
 
 namespace oceanbase
 {
@@ -344,6 +335,60 @@ int ObDependencyInfo::insert_schema_object_dependency(common::ObISQLClient &tran
   return ret;
 }
 
+int ObDependencyInfo::get_timestamp_str(int64_t timestamp, ObSqlString &value_str)
+{
+  int ret = OB_SUCCESS;
+  if (timestamp > 0) {
+    OZ (value_str.append_fmt("usec_to_time(%ld)", timestamp));
+  } else {
+    OZ (value_str.append_fmt("now(6)"));
+  }
+  return ret;
+}
+
+int ObDependencyInfo::get_insert_value_str(ObSqlString &value_str)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id_);
+  ObSqlString dep_timestamp_str;
+  ObSqlString ref_timestamp_str;
+  OZ (get_timestamp_str(dep_timestamp_, dep_timestamp_str));
+  OZ (get_timestamp_str(ref_timestamp_, ref_timestamp_str));
+
+  OZ (value_str.append_fmt("(%ld,%ld,%d,%ld,%ld,%s,%ld,%d,%s,%ld,%ld,NULL,NULL,NULL,now(6),now(6))",
+                            ObSchemaUtils::get_extract_tenant_id(exec_tenant_id, tenant_id_),
+                            extract_obj_id(exec_tenant_id, dep_obj_id_), dep_obj_type_, order_, schema_version_,
+                            dep_timestamp_str.ptr(), ref_obj_id_, ref_obj_type_,
+                            ref_timestamp_str.ptr(), extract_obj_id(exec_tenant_id, dep_obj_owner_id_), property_));
+
+  return ret;
+}
+
+int ObDependencyInfo::remove_duplicated_dep_infos(ObIArray<ObDependencyInfo> &deps,
+                                                 ObIArray<ObDependencyInfo> &source_deps)
+{
+  int ret = OB_SUCCESS;
+  bool duplicated = false;
+  for (int64_t i = 0; OB_SUCC(ret) && i < deps.count();) {
+    duplicated = false;
+    for (int64_t j = 0; OB_SUCC(ret) && j < source_deps.count(); j++) {
+      if (deps.at(i).get_dep_obj_type() == source_deps.at(j).get_dep_obj_type()
+          && deps.at(i).get_ref_obj_id() == source_deps.at(j).get_ref_obj_id()
+          && deps.at(i).get_ref_obj_type() == source_deps.at(j).get_ref_obj_type()) {
+        duplicated = true;
+        break;
+      }
+    }
+    if (duplicated) {
+      OZ (deps.remove(i));
+    } else {
+      OX (deps.at(i).set_order(source_deps.count() + i));
+      i++;
+    }
+  }
+  return ret;
+}
+
 int ObDependencyInfo::collect_dep_info(ObIArray<ObDependencyInfo> &deps,
                                        ObObjectType dep_obj_type,
                                        int64_t ref_obj_id,
@@ -654,7 +699,7 @@ int ObDependencyInfo::collect_all_dep_objs_inner(uint64_t tenant_id,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("result is null", K(ret));
       } else {
-        while (OB_SUCC(result->next())) {
+        while (OB_SUCC(ret) && OB_SUCC(result->next())) {
           int64_t tmp_obj_id = OB_INVALID_ID;
           int64_t tmp_type = static_cast<int64_t> (share::schema::ObObjectType::INVALID);
           EXTRACT_INT_FIELD_MYSQL(*result, "dep_obj_id", tmp_obj_id, int64_t);
@@ -748,7 +793,7 @@ int ObDependencyInfo::collect_all_dep_objs(
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("result is null", K(ret));
       } else {
-        while (OB_SUCC(result->next())) {
+        while (OB_SUCC(ret) && OB_SUCC(result->next())) {
           int64_t tmp_obj_id = OB_INVALID_ID;
           int64_t tmp_type = static_cast<int64_t>(share::schema::ObObjectType::INVALID);
           int64_t tmp_schema_version = OB_INVALID_VERSION;
@@ -924,6 +969,33 @@ int ObDependencyInfo::modify_all_obj_status(const ObIArray<std::pair<uint64_t, s
       } else if (share::schema::ObObjectType::SYNONYM == objs.at(i).second) {
         // TODO:peihan.dph
       }
+    }
+  }
+  return ret;
+}
+
+int ObDependencyInfo::insert_dependency_infos(common::ObMySQLTransaction &trans,
+                                           ObIArray<ObDependencyInfo> &dep_infos,
+                                           uint64_t tenant_id,
+                                           uint64_t dep_obj_id,
+                                           uint64_t schema_version, uint64_t owner_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_INVALID_ID == owner_id
+   || OB_INVALID_ID == dep_obj_id
+   || OB_INVALID_ID == tenant_id
+   || OB_INVALID_SCHEMA_VERSION == schema_version) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("illegal schema version or owner id", K(ret), K(schema_version),
+                                                   K(owner_id), K(dep_obj_id));
+  } else {
+    for (int64_t i = 0 ; OB_SUCC(ret) && i < dep_infos.count(); ++i) {
+      ObDependencyInfo & dep = dep_infos.at(i);
+      dep.set_tenant_id(tenant_id);
+      dep.set_dep_obj_id(dep_obj_id);
+      dep.set_dep_obj_owner_id(owner_id);
+      dep.set_schema_version(schema_version);
+      OZ (dep.insert_schema_object_dependency(trans));
     }
   }
   return ret;
@@ -1427,7 +1499,9 @@ int ObReferenceObjTable::get_or_add_def_obj_item(const uint64_t dep_obj_id,
     if (OB_FAIL(ref_obj_version_table_.get_refactored(ref_obj_key, dep_obj_item))) {
       if (OB_HASH_NOT_EXIST == ret) {
         ret = OB_SUCCESS;
-        CK (OB_NOT_NULL(buf = static_cast<char *>(allocator.alloc(sizeof(ObDependencyObjItem)))));
+        OV (OB_NOT_NULL(buf = static_cast<char *>(allocator.alloc(sizeof(ObDependencyObjItem)))),
+            OB_ALLOCATE_MEMORY_FAILED,
+            K(sizeof(ObDependencyObjItem)));
         OX (dep_obj_item = new(buf) ObDependencyObjItem);
         OZ (ref_obj_version_table_.set_refactored(ref_obj_key, dep_obj_item));
       } else {

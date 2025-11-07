@@ -12,31 +12,12 @@
 
 #define USING_LOG_PREFIX  SQL_ENG
 
-#include "lib/string/ob_sql_string.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "common/sql_mode/ob_sql_mode_utils.h"
-#include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
-#include "share/ob_i_sql_expression.h"
-#include "share/ob_schema_status_proxy.h"
-#include "share/ob_common_rpc_proxy.h"
-#include "share/object/ob_obj_cast.h"
-#include "share/inner_table/ob_inner_table_schema.h"
-#include "share/schema/ob_schema_utils.h"
 #include "sql/engine/cmd/ob_variable_set_executor.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/code_generator/ob_expr_generator_impl.h"
-#include "sql/code_generator/ob_column_index_provider.h"
-#include "sql/ob_sql_trans_control.h"
-#include "sql/ob_end_trans_callback.h"
-#include "sql/printer/ob_select_stmt_printer.h"
-#include "lib/timezone/ob_oracle_format_models.h"
 #include "observer/ob_server.h"
+#include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
 #include "sql/engine/cmd/ob_set_names_executor.h"
-#include "sql/privilege_check/ob_privilege_check.h"
 using namespace oceanbase::common;
 using namespace oceanbase::share;
 using namespace oceanbase::share::schema;
@@ -158,7 +139,23 @@ int ObVariableSetExecutor::execute(ObExecContext &ctx, ObVariableSetStmt &stmt)
           }
           if (OB_FAIL(ret)) {
           } else if (false == node.is_system_variable_) {
-            if (OB_FAIL(set_user_variable(value_obj, node.variable_name_, expr_ctx))) {
+            if (ob_is_enum_or_set_type(value_obj.get_type())) {
+              ObObjParam obj_param = value_obj;
+              const ObEnumSetMeta *meta = NULL;
+              if (OB_FAIL(ObRawExprUtils::extract_enum_set_meta(node.value_expr_->get_result_type(), session, meta))) {
+                LOG_WARN("failed to extrac enum set meta", K(ret));
+              } else if (OB_ISNULL(meta) || OB_ISNULL(meta->get_str_values())) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("failed to get enum set meta", K(ret));
+              } else if (OB_FAIL(ObSPIService::cast_enum_set_to_string(ctx,
+                                                                       *meta->get_str_values(),
+                                                                       obj_param,
+                                                                       value_obj))) {
+                LOG_WARN("cast enum set to string failed", K(ret));
+              }
+            }
+            if (OB_FAIL(ret)) {
+            } else if (OB_FAIL(set_user_variable(value_obj, node.variable_name_, expr_ctx))) {
               LOG_WARN("set user variable failed", K(ret));
             }
           } else {
@@ -397,6 +394,9 @@ int ObVariableSetExecutor::calc_var_value_static_engine(
                                 param_store,
                                 &exec_ctx))) {
     LOG_WARN("calc const expr failed", K(ret));
+  } else if (value_obj.is_pl_extend()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("pl extend type is not supported in set stmt", K(ret), K(value_obj));
   }
   return ret;
 }
@@ -730,6 +730,15 @@ int ObVariableSetExecutor::update_global_variables(ObExecContext &ctx,
       if (OB_FAIL(ObBasicSessionInfo::check_optimizer_features_enable_valid(val))) {
         LOG_WARN("fail check privilege_features_enable valid", K(val), K(ret));
       }
+#ifdef OB_BUILD_CLOSE_MODULES
+    } else if (set_var.var_name_ == OB_SV_EARLY_LOCK_RELEASE) {
+      int64_t early_lock_release = 0;
+      if (OB_FAIL(val.get_int(early_lock_release))) {
+        LOG_WARN("fail get int", K(ret), K(val));
+      } else if (OB_FAIL(do_early_lock_release(ctx, *session, early_lock_release > 0))) {
+        LOG_WARN("fail do early lock release ", K(ret), K(early_lock_release), K(val));
+      }
+#endif
     }
 
     if (OB_SUCC(ret) && should_update_extra_var) {
@@ -919,8 +928,10 @@ int ObVariableSetExecutor::check_and_convert_sys_var(ObExecContext &ctx,
   if (OB_FAIL(ret)) {
   } else if (set_var.var_name_ == OB_SV_DEFAULT_STORAGE_ENGINE) {
     static const common::ObString DEFAULT_VALUE_STORAGE_ENGINE("OceanBase");
+    static const common::ObString INNODB_STORAGE_ENGINE("InnoDB");
     const ObString new_value = out_val.get_string();
-    if (new_value.case_compare(DEFAULT_VALUE_STORAGE_ENGINE) != 0) {
+    if (new_value.case_compare(DEFAULT_VALUE_STORAGE_ENGINE) != 0
+        && new_value.case_compare(INNODB_STORAGE_ENGINE) != 0) {
       ret = OB_ERR_PARAM_VALUE_INVALID;
       LOG_USER_ERROR(OB_ERR_PARAM_VALUE_INVALID);
     }
@@ -1220,7 +1231,7 @@ int ObVariableSetExecutor::switch_to_session_variable(const ObExprCtx &expr_ctx,
     sess_var.value_ = value;
     sess_var.meta_.set_type(value.get_type());
     sess_var.meta_.set_scale(value.get_scale());
-    sess_var.meta_.set_collation_level(CS_LEVEL_IMPLICIT);
+    sess_var.meta_.set_collation_level(value.get_collation_level());
     sess_var.meta_.set_collation_type(value.get_collation_type());
   }
   return ret;
@@ -1241,7 +1252,7 @@ int ObVariableSetExecutor::switch_to_session_variable(const ObObj &value,
     sess_var.value_ = value;
     sess_var.meta_.set_type(value.get_type());
     sess_var.meta_.set_scale(value.get_scale());
-    sess_var.meta_.set_collation_level(CS_LEVEL_IMPLICIT);
+    sess_var.meta_.set_collation_level(value.get_collation_level());
     sess_var.meta_.set_collation_type(value.get_collation_type());
   }
   return ret;
@@ -1364,11 +1375,17 @@ int ObVariableSetExecutor::is_support(const share::ObSetVar &set_var)
  if(SYS_VAR_INVALID == (var_id = ObSysVarFactory::find_sys_var_id_by_name(set_var.var_name_))) {
     ret = OB_ERR_SYS_VARIABLE_UNKNOWN;
     LOG_WARN("unknown variable", K(set_var.var_name_), K(ret));
-  } else if ((SYS_VAR_DEBUG <= var_id && SYS_VAR_STORED_PROGRAM_CACHE >= var_id) ||
-             (SYS_VAR_INSERT_ID <= var_id && SYS_VAR_MAX_WRITE_LOCK_COUNT >= var_id) ||
-             (SYS_VAR_BIG_TABLES <= var_id && SYS_VAR_DELAYED_INSERT_LIMIT >= var_id) ||
-             (SYS_VAR_GTID_EXECUTED <= var_id && SYS_VAR_TRANSACTION_WRITE_SET_EXTRACTION >= var_id) ||
-             (SYS_VAR_INNODB_READ_ONLY <= var_id && SYS_VAR_SUPER_READ_ONLY >= var_id)) {
+  } else if (((SYS_VAR_DEBUG <= var_id && SYS_VAR_STORED_PROGRAM_CACHE >= var_id) ||
+              (SYS_VAR_INSERT_ID <= var_id && SYS_VAR_MAX_WRITE_LOCK_COUNT >= var_id) ||
+              (SYS_VAR_BIG_TABLES <= var_id && SYS_VAR_DELAYED_INSERT_LIMIT >= var_id) ||
+              (SYS_VAR_GTID_EXECUTED <= var_id && SYS_VAR_TRANSACTION_WRITE_SET_EXTRACTION >= var_id) ||
+              (SYS_VAR_INNODB_READ_ONLY <= var_id && SYS_VAR_SUPER_READ_ONLY >= var_id) ||
+              (SYS_VAR_INSERT_ID <= var_id && SYS_VAR_MAX_WRITE_LOCK_COUNT >= var_id) ||
+              (SYS_VAR_NDB_ALLOW_COPYING_ALTER_TABLE <= var_id
+               && SYS_VAR_RELAY_LOG_SPACE_LIMIT >= var_id)) &&
+              SYS_VAR_LOG_SLAVE_UPDATES != var_id &&
+              SYS_VAR_EXPIRE_LOGS_DAYS != var_id &&
+              SYS_VAR_LOG_BIN_TRUST_FUNCTION_CREATORS != var_id) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("This variable not support, just mock", K(set_var.var_name_), K(var_id), K(ret));
   } else if (SYS_VAR_LOW_PRIORITY_UPDATES <= var_id && SYS_VAR_MAX_INSERT_DELAYED_THREADS >= var_id) {

@@ -103,6 +103,7 @@ private:
   int test_list_before_complete_multipart_write_();
   int generate_random_str_(char *&buf, const int64_t size);
   int print_usage_();
+  bool is_simulate_append_(TestObjectStorageInterfaceContext &ctx) const;
 
 private:
   char backup_path_[common::OB_MAX_URI_LENGTH];
@@ -120,6 +121,8 @@ private:
   static const int64_t UPLOAD_TIMES = 10;
   static const int64_t APPEND_TIMES = 5;
   static const int64_t CLOG_FILE_SIZE = 64 * 1024 * 1024;
+
+  static const int64_t IO_TIMEOUT_MS = 120LL * 1000LL;
 
   DISALLOW_COPY_AND_ASSIGN(ObAdminTestIODeviceExecutor);
 };

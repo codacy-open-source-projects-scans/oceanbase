@@ -16,28 +16,30 @@
 #define private public
 #define protected public
 
-#include "lib/string/ob_sql_string.h"
-#include "roaring/roaring64.h"
-#include "share/vector_index/ob_plugin_vector_index_adaptor.h"
-#include "share/vector_index/ob_plugin_vector_index_serialize.h"
 #include "storage/ob_i_store.h"
 #include "mtlenv/mock_tenant_module_env.h"
-#include "lib/oblog/ob_log_module.h"
 
-#include "lib/allocator/ob_mod_define.h"
-#include "lib/allocator/page_arena.h"
-#include "lib/vector/ob_vector_util.h"
 
 #undef private
 #undef protected
-#include <random>
-#include<iostream>
+#include <ctime>
 
 namespace oceanbase {
 
 
 using namespace storage;
 using namespace common;
+
+class TestFilter : public obvsag::FilterInterface
+{
+public:
+    TestFilter(roaring::api::roaring64_bitmap_t *bitmap) : bitmap_(bitmap) {}
+    ~TestFilter() {}
+    bool test(int64_t id) override { return roaring::api::roaring64_bitmap_contains(bitmap_, id); }
+    bool test(const char* data) override { return true; }
+public:
+    roaring::api::roaring64_bitmap_t* bitmap_;
+};
 
 class TestVectorIndexAdaptor : public ::testing::Test {
 public:
@@ -87,310 +89,59 @@ void* global_allocator_free(void *size) {
   return res;
 }
 
-/*
-TEST_F(TestVectorIndexAdaptor, bitmap_alloc)
+int test_knn_search(obvsag::VectorIndexPtr& index,
+                        int64_t *ids,
+                        float *vecs,
+                        const int dim,
+                        const int num_vectors,
+                        const int ef_search,
+                        void* bitmap)
 {
-  roaring_memory_t memory_hook;
-  memory_hook.malloc = &global_allocator_malloc;
-  roaring_init_memory_hook(memory_hook);
-
-  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-  roaring::api::roaring64_bitmap_add(bitmap, 3);
-  roaring::api::roaring64_bitmap_add(bitmap, 5);
-  roaring::api::roaring64_bitmap_add(bitmap, 7);
-
-  ASSERT_EQ(roaring64_bitmap_contains(bitmap, 5), true);
-  ASSERT_EQ(roaring64_bitmap_contains(bitmap, 20), false);
-}
-*/
-
-/*
-void *ob_bitmap_mallloc(size_t size)
-{
-  return oceanbase::common::ob_malloc(size, oceanbase::common::ObModIds::TEST);
-}
-
-void *ob_bitmap_realloc(void *ptr, size_t size)
-{
-  ObMemAttr attr(oceanbase::common::OB_SERVER_TENANT_ID, "test");
-  return oceanbase::common::ob_realloc(ptr, size, attr);
-}
-
-void *ob_bitmap_aligned_malloc(size_t a, size_t b)
-{
-  ObMemAttr attr(oceanbase::common::OB_SERVER_TENANT_ID, "test");
-  return oceanbase::common::ob_malloc_align(a, b, attr);
-}
-
-void ob_bitmap_free(void *ptr)
-{
-  oceanbase::common::ob_free(ptr);
-}
-
-void ob_bitmap_aligned_free(void *ptr)
-{
-  oceanbase::common::ob_free_align(ptr);
-}
-
-
-TEST_F(TestVectorIndexAdaptor, bitmap_malloc)
-{
-  roaring_memory_t memory_hook;
-  memory_hook.malloc = &ob_bitmap_mallloc;
-  memory_hook.realloc = &ob_bitmap_realloc;
-  memory_hook.aligned_malloc = &ob_bitmap_aligned_malloc;
-  memory_hook.free = &ob_bitmap_free;
-  memory_hook.aligned_free = &ob_bitmap_aligned_free;
-  roaring_init_memory_hook(memory_hook);
-
-  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-  roaring::api::roaring64_bitmap_add(bitmap, 3);
-
-  ASSERT_EQ(roaring64_bitmap_contains(bitmap, 3), true);
-
-}
-
-TEST_F(TestVectorIndexAdaptor, bitmap_flip)
-{
-  ObArenaAllocator allocator(ObModIds::TEST);
-
-  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-  roaring::api::roaring64_bitmap_add(bitmap, 3);
-  roaring::api::roaring64_bitmap_add(bitmap, 5);
-  roaring::api::roaring64_bitmap_add(bitmap, 7);
-
-  ASSERT_EQ(roaring64_bitmap_contains(bitmap, 5), true);
-  ASSERT_EQ(roaring64_bitmap_contains(bitmap, 20), false);
-
-  ASSERT_EQ(roaring64_bitmap_minimum(bitmap), 3);
-  ASSERT_EQ(roaring64_bitmap_maximum(bitmap), 7);
-
-  roaring::api::roaring64_bitmap_t *flip_bitmap =
-        roaring64_bitmap_flip_closed(bitmap, 3, 7);
-
-  ASSERT_EQ(roaring64_bitmap_contains(flip_bitmap, 5), false);
-  ASSERT_EQ(roaring64_bitmap_contains(flip_bitmap, 7), false);
-  ASSERT_EQ(roaring64_bitmap_contains(flip_bitmap, 4), true);
-
-
-  std::cout << roaring64_bitmap_contains(bitmap, 5) << std::endl;
-}
-
-
-TEST_F(TestVectorIndexAdaptor, result)
-{
-  int dim = 10;
-  void* index = nullptr;
-  std::mt19937 rng;
-  rng.seed(47);
-  //ASSERT_EQ(obvectorlib::init(), true);
-  std::uniform_real_distribution<> distrib_real;
-  ASSERT_EQ(obvectorlib::create_index(dim, dim, 200, 100, index), 0);
-
-  float a[110] = {0.203846,0.205289,0.880265,0.824340,0.615737,0.496899,0.983632,0.865571,0.248373,0.542833,
-  0.735541,0.670776,0.903237,0.447223,0.232028,0.659316,0.765661,0.226980,0.579658,0.933939,
-  0.327936,0.048756,0.084670,0.389642,0.970982,0.370915,0.181664,0.940780,0.013905,0.628127,
-  0.148869,0.878546,0.028024,0.326642,0.044912,0.144034,0.717580,0.442633,0.637534,0.633993,
-  0.334970,0.857377,0.886132,0.668270,0.983913,0.418145,0.208459,0.190118,0.959676,0.796483,
-  0.117582,0.302352,0.471198,0.248725,0.315868,0.717533,0.028496,0.710370,0.007130,0.710913,
-  0.551185,0.231134,0.075354,0.230557,0.248149,0.383390,0.483179,0.238120,0.289662,0.970101,
-  0.185221,0.315131,0.558301,0.543172,0.335010,0.556101,0.595842,0.168794,0.567442,0.062338,
-  0.928764,0.254038,0.272721,0.648755,0.966464,0.200054,0.093298,0.901419,0.676738,0.122339,
-  0.345999,0.254102,0.950869,0.275233,0.844568,0.215723,0.302821,0.563644,0.811224,0.175574,
-  0.615558,0.613338,0.031494,0.114999,0.713017,0.792606,0.551865,0.990780,0.034867,0.062117};
-
-  int64_t vids[11] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
-
-  ASSERT_EQ(obvectorlib::add_index(dim, a, vids, 11, index), 0);
-
-  int k = 3;
+  int ret = OB_SUCCESS;
+  std::time_t start_timestamp = std::time(nullptr);
+  const float* result_dist = nullptr;
+  const int64_t* result_ids = nullptr;
+  const char* extra_info_buf_ptr = nullptr;
+  const int expect_cnt = 1;
   int64_t result_size = 0;
-  const float* res_dist = new float[k];
-  const int64_t* res_ids = new int64_t[k];
-  std::map<int64_t, bool> myMap;
-  std::shared_ptr<std::map<int64_t, bool>> myMapPtr = std::make_shared<std::map<int64_t, bool>>(myMap);
-
-  float search[10] = {0.712338,0.603321,0.133444,0.428146,0.876387,0.763293,0.408760,0.765300,0.560072,0.900498};
-
-  ASSERT_EQ(obvectorlib::knn_search1(dim, index, search, k, res_dist, res_ids, result_size, myMapPtr), 0);
-
-  std::cout << "vid: " << res_ids[0] << " " << "dis: " << res_dist[0] << std::endl;
-
-}
-*/
-
-/*
-TEST_F(TestVectorIndexAdaptor, vsag_index)
-{
-  int dim = 16;
-  void* index = nullptr;
-  std::mt19937 rng;
-  rng.seed(47);
-  //ASSERT_EQ(obvectorlib::init(), true);
-  std::uniform_real_distribution<> distrib_real;
-  ASSERT_EQ(obvectorlib::create_index(dim, dim, 200, 100, index), 0);
-  std::cout << "index: " << index << " " <<  (index == nullptr) << std::endl;
-  ASSERT_EQ(index == nullptr, 0);
-
-  int num_vectors = 10;
-  float *dis = new float[num_vectors * dim];
-  for (int cnt = 0; cnt < 10; cnt++) {
-    for (int64_t i = 0; i < num_vectors * dim; ++i) {
-      dis[i] = distrib_real(rng);
+  int64_t hit_cnt = 0;
+  for (int i = 0; OB_SUCC(ret) && i < num_vectors; ++i) {
+    float *query_vecs = vecs + i * dim;
+    if (OB_FAIL(obvectorutil::knn_search(index,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist,
+                                      result_ids,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      bitmap))) {
+      LOG_WARN("knn_search fail", K(ret));
+    } else if (expect_cnt != result_size) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("result size is not equal to expect_cnt", K(result_size), K(expect_cnt));
+    } else {
+      if (result_ids[0] == ids[i]) {
+        ++hit_cnt;
+      }
     }
-    ASSERT_EQ(obvectorlib::add_index(dim, dis, num_vectors, index), 0);
-    std::cout << "add_index " << cnt << " finish." << std::endl;
   }
-
-  std::cout << "add_index finish" << std::endl;
-
-  float *search = new float[dim];
-  for (int64_t i = 0; i < dim; ++i) {
-    search[i] = distrib_real(rng);
+  if (OB_SUCC(ret)) {
+    std::time_t end_timestamp = std::time(nullptr);
+    std::time_t time_cost = end_timestamp - start_timestamp;
+    double recall = ((double)hit_cnt)/num_vectors;
+    std::cout << "time_cost="<< time_cost << ", hit_cnt=" << hit_cnt << ", num_vectors=" << num_vectors << ", recall=" << recall <<std::endl;
+    LOG_INFO("result: ", K(time_cost), K(hit_cnt), K(num_vectors), K(recall));
   }
-  int k = 10;
-  std::cout << "search info finish" << std::endl;
-  const float* res_dist = new float[k];
-  const int64_t* res_ids = new int64_t[k];
-  int64_t result_size = 0;
-
-  ASSERT_EQ(obvectorlib::knn_search(dim, index, search, k, res_dist, res_ids, result_size), 0);
-
-  std::cout << "knn_search" << std::endl;
-  for (int i = 0; i < result_size; i++) {
-    std::cout << "vid: " << res_ids[i] << " " << "dis: " << res_dist[i] << std::endl;
-  }
-
-  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-
-  uint64_t *vid = new uint64_t[20];
-  for (int i = 0; i < 20; i++) {
-    vid[i] = i + 1;
-  }
-  std::cout << "build roaring bitmap" << std::endl;
-  roaring::api::roaring64_bitmap_add_many(bitmap, 20, vid);
-  std::map<int64_t, bool> myMap;
-
-  std::cout << "get roaring bitmap iter" << std::endl;
-  uint64_t *buf = new uint64_t[20];
-  roaring::api::roaring64_iterator_t *roaring_iter = roaring64_iterator_create(bitmap);
-  uint64_t ele_cnt = roaring64_iterator_read(roaring_iter, buf, 20);
-
-  std::cout << "get roaring bitmap buf" << std::endl;
-  for (int i = 0; i < ele_cnt; i++) {
-    std::cout << buf[i] << " ";
-    myMap[buf[i]] = false;
-  }
-  std::shared_ptr<std::map<int64_t, bool>> myMapPtr = std::make_shared<std::map<int64_t, bool>>(myMap);
-  std::cout << std::endl << "before knn search 1" << std::endl;
-
-  const float* res_dist1 = new float[k];
-  const int64_t* res_ids1 = new int64_t[k];
-  int64_t result_size1 = 0;
-  ASSERT_EQ(obvectorlib::knn_search1(dim, index, search, k, res_dist1, res_ids1, result_size1, myMapPtr), 0);
-
-  std::cout << "knn_search1 result" << std::endl;
-  for (int i = 0; i < result_size; i++) {
-    std::cout << "vid: " << res_ids1[i] << " " << "dis: " << res_dist1[i] << std::endl;
-  }
-
+  return ret;
 }
 
 using namespace oceanbase::share;
-TEST_F(TestVectorIndexAdaptor, adapt)
-{
-  ObArenaAllocator allocator(ObModIds::TEST);
-  ObVectorIndexHNSWParam param;
-  param.type_ = ObVectorIndexAlgorithmType::VIAT_HNSW;
-  param.lib_ = ObVectorIndexAlgorithmLib::VIAL_VSAG;
-  param.dim_ = 10;
-  param.m_ = 10;
-  param.ef_construction_ = 200;
-  param.ef_search_ = 200;
-
-  // serialize param
-  int64_t param_len = param.get_serialize_size();
-  char *param_buf = static_cast<char *>(allocator.alloc(sizeof(char) * param_len));
-  int64_t pos = 0;
-  ASSERT_EQ(param.serialize(param_buf, param_len, pos), 0);
-
-  // init adaptor
-  ObPluginVectorIndexAdaptor adaptor(&allocator);
-  adaptor.init_incr_tablet();
-  ASSERT_EQ(adaptor.init(ObString(param_len, param_buf)), 0);
-
-  // adaptor param
-  int64_t dim = 0;
-  ASSERT_EQ(adaptor.get_dim(dim), 0);
-  std::cout << "dim: " << dim << std::endl;
-
-  // insert_rows
-  ObStoreRow *rows = nullptr;
-  int64_t row_cnt = 100;
-  rows = static_cast<ObStoreRow *>(allocator.alloc(sizeof(ObStoreRow) * row_cnt));
-  ASSERT_EQ(rows == nullptr, 0);
-  std::cout << "create rows" << std::endl;
-
-  std::mt19937 rng;
-  rng.seed(88);
-  std::uniform_real_distribution<> distrib_real;
-  float a = distrib_real(rng);
-  std::cout << "new float" << std::endl;
-  uint64_t vid = 0;
-
-  for (int i = 0; i < row_cnt; i++) {
-    float *vector = static_cast<float *>(allocator.alloc(sizeof(float) * dim));
-    ASSERT_EQ(vector == nullptr, 0);
-    for (int j = 0; j < dim; j++) {
-      vector[j] = distrib_real(rng);
-      std::cout << vector[j] << " ";
-    }
-    std::cout << std::endl;
-    char *vector_void = reinterpret_cast<char *>(vector);
-    int64_t vector_str_len = 40;
-
-    ObStoreRow *row = nullptr;
-    ASSERT_EQ(OB_SUCCESS, malloc_store_row(allocator, 3, row, FLAT_ROW_STORE));
-    row->row_val_.cells_[0].set_uint64(vid++);
-    row->row_val_.cells_[2].set_string(ObVarcharType, vector_void, vector_str_len);
-    rows[i] = *row;
-  }
-  std::cout << "build row finish." << std::endl;
-
-  ASSERT_EQ(adaptor.insert_rows(rows, row_cnt), 0);
-
-  float *search = new float[dim];
-  std::map<int64_t, bool> myMap;
-  int k = 5;
-  for (int64_t i = 0; i < dim; ++i) {
-    search[i] = distrib_real(rng);
-  }
-
-  const float* res_dist1 = new float[k];
-  const int64_t* res_ids1 = new int64_t[k];
-  int64_t result_size1 = 0;
-  std::shared_ptr<std::map<int64_t, bool>> myMapPtr;
-  uint64_t insert_min = roaring64_bitmap_minimum(adaptor.get_incr_ibitmap());
-  uint64_t insert_max = roaring64_bitmap_maximum(adaptor.get_incr_ibitmap());
-  roaring::api::roaring64_bitmap_t *insert_flip_bitmap =
-        roaring64_bitmap_flip_closed(adaptor.get_incr_ibitmap(), insert_min, insert_max);
-  ASSERT_EQ(ObPluginVectorIndexAdaptor::cast_roaringbitmap_to_stdmap(insert_flip_bitmap, myMapPtr), 0);
-  ASSERT_EQ(obvectorlib::knn_search1(dim, adaptor.get_incr_index(), search, k, res_dist1, res_ids1, result_size1, myMapPtr), 0);
-
-  std::cout << "knn_search1 result" << std::endl;
-  for (int i = 0; i < result_size1; i++) {
-    std::cout << "vid: " << res_ids1[i] << " " << "dis: " << res_dist1[i] << std::endl;
-  }
-
-}
-*/
-
-using namespace oceanbase::share;
-
 
 TEST_F(TestVectorIndexAdaptor, vsag_add_duplicate)
 {
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
   rng.seed(47);
   int dim = 128;
@@ -401,13 +152,13 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_duplicate)
   const char* const DATATYPE_FLOAT32 = "float32";
 
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search), 0);
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
 
   int num_vectors = 1000;
 
@@ -424,12 +175,12 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_duplicate)
   }
 
   for (int64_t i = 0; i < 10; ++i) {
-    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, 100));
+    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, nullptr, 100));
   }
 
   std::cout << "add duplicate vector" << std::endl;
 
-  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, 100));
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, nullptr, 100));
 
   int64_t index_size = 0;
   ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
@@ -442,7 +193,7 @@ TEST_F(TestVectorIndexAdaptor, vsag_build_index)
 {
   //ASSERT_EQ(obvectorutil::example(), 0);
 
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
   rng.seed(47);
   int dim = 128;
@@ -453,13 +204,13 @@ TEST_F(TestVectorIndexAdaptor, vsag_build_index)
   const char* const DATATYPE_FLOAT32 = "float32";
 
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search), 0);
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
 
   int num_vectors = 10000;
 
@@ -485,10 +236,11 @@ TEST_F(TestVectorIndexAdaptor, vsag_build_index)
   const int64_t* result_ids0;
   const float* result_dist1;
   const int64_t* result_ids1;
+  const char* extra_info_buf_ptr = nullptr;
   int64_t expect_cnt = 10;
   int64_t result_size = 0;
   roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-
+  TestFilter test_filter(bitmap);
   std::cout << "===================== Query Vec ================" << std::endl;
   float *query_vecs = new float[dim];
   for (int64_t i = 0; i < dim; ++i) {
@@ -505,14 +257,15 @@ TEST_F(TestVectorIndexAdaptor, vsag_build_index)
   std::cout << "===================== Query Result ================" << std::endl;
 
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist0,
-                                       result_ids0,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
     for (int64_t j = 0; j < dim; ++j) {
@@ -531,17 +284,21 @@ TEST_F(TestVectorIndexAdaptor, vsag_build_index)
   roaring64_bitmap_add(bitmap, 7055);
   roaring64_bitmap_add(bitmap, 2030);
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist1,
-                                       result_ids1,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
 
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
+    if (result_ids1[i] == 7055 || result_ids1[i] == 2030) {
+      ASSERT_EQ(0, 1);
+    }
     for (int64_t j = 0; j < dim; ++j) {
       if (j == 0) {
         std::cout << "[" << vecs[i * dim + j] << ", ";
@@ -558,7 +315,7 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
 {
   //ASSERT_EQ(obvectorutil::example(), 0);
 
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
   rng.seed(50);
   int dim = 128;
@@ -569,13 +326,13 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
   const char* const DATATYPE_FLOAT32 = "float32";
 
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search), 0);
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
 
   int num_vectors = 10000;
 
@@ -592,7 +349,7 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
   }
 
   for (int64_t i = 0; i < 100; ++i) {
-    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, 100));
+    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, nullptr, 100));
   }
   //ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, num_vectors));
 
@@ -604,10 +361,11 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
   const int64_t* result_ids0;
   const float* result_dist1;
   const int64_t* result_ids1;
+  const char* extra_info_buf_ptr = nullptr;
   int64_t expect_cnt = 10;
   int64_t result_size = 0;
   roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-
+  TestFilter test_filter(bitmap);
   std::cout << "===================== Query Vec ================" << std::endl;
   float *query_vecs = new float[dim];
   for (int64_t i = 0; i < dim; ++i) {
@@ -624,14 +382,15 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
   std::cout << "===================== Query Result ================" << std::endl;
 
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist0,
-                                       result_ids0,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
     for (int64_t j = 0; j < dim; ++j) {
@@ -650,14 +409,15 @@ TEST_F(TestVectorIndexAdaptor, vsag_add_index)
   roaring64_bitmap_add(bitmap, 545);
   roaring64_bitmap_add(bitmap, 3720);
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist1,
-                                       result_ids1,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
 
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
@@ -677,7 +437,7 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
 {
   //ASSERT_EQ(obvectorutil::example(), 0);
 
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
   rng.seed(50);
   int dim = 3;
@@ -688,13 +448,13 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
   const char* const DATATYPE_FLOAT32 = "float32";
 
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search), 0);
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
 
   int num_vectors = 40;
 
@@ -713,7 +473,7 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
   // for (int64_t i = 0; i < 100; ++i) {
   //   ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, 100));
   // }
-  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, num_vectors));
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, nullptr, num_vectors));
 
   int64_t index_size = 0;
   ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
@@ -723,10 +483,11 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
   const int64_t* result_ids0;
   const float* result_dist1;
   const int64_t* result_ids1;
+  const char* extra_info_buf_ptr = nullptr;
   int64_t expect_cnt = 10;
   int64_t result_size = 0;
   roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-
+  TestFilter test_filter(bitmap);
   std::cout << "===================== Query Vec ================" << std::endl;
   float *query_vecs = new float[dim];
   for (int64_t i = 0; i < dim; ++i) {
@@ -743,14 +504,15 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
   std::cout << "===================== Query Result ================" << std::endl;
 
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist0,
-                                       result_ids0,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
     for (int64_t j = 0; j < dim; ++j) {
@@ -769,14 +531,15 @@ TEST_F(TestVectorIndexAdaptor, test_insert)
   roaring64_bitmap_add(bitmap, 3720);
     roaring64_bitmap_add(bitmap, 545);
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist1,
-                                       result_ids1,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
 
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
@@ -838,7 +601,7 @@ public:
     bool is_valid() const
     {
       return nullptr != data_
-             && nullptr != allocator_;
+            && nullptr != allocator_;
     }
     ObIAllocator *allocator_;
     void *data_;
@@ -853,7 +616,7 @@ public:
   {
     int ret = OB_SUCCESS;
     ObTestHNSWDeserializeCallback::CbParam &param = static_cast<ObTestHNSWDeserializeCallback::CbParam&>(cb_param);
-    if (param.cur_pos_ <= param.size_) {
+    if (param.cur_pos_ < param.size_) {
       read_size = (param.size_ - param.cur_pos_) > param.part_size_ ? param.part_size_ : (param.size_ - param.cur_pos_);
       data = ((char*)param.data_) + param.cur_pos_;
       param.cur_pos_ += read_size;
@@ -870,8 +633,8 @@ TEST_F(TestVectorIndexAdaptor, test_ser_deser)
 {
   void* raw_memory = (void*)malloc(sizeof(common::obvectorutil::ObVsagLogger));
   common::obvectorutil::ObVsagLogger* ob_logger = new (raw_memory)common::obvectorutil::ObVsagLogger();
-  obvectorlib::set_logger(ob_logger);
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::set_logger(ob_logger);
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
   rng.seed(50);
   int dim = 3;
@@ -881,13 +644,13 @@ TEST_F(TestVectorIndexAdaptor, test_ser_deser)
   const char* const METRIC_L2 = "l2";
   const char* const DATATYPE_FLOAT32 = "float32";
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search), 0);
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
   int num_vectors = 40;
 
   int64_t *ids = new int64_t[num_vectors];
@@ -905,7 +668,7 @@ TEST_F(TestVectorIndexAdaptor, test_ser_deser)
   // for (int64_t i = 0; i < 100; ++i) {
   //   ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + i * 100, ids + i * 100, dim, 100));
   // }
-  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, num_vectors));
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, nullptr, num_vectors));
 
   int64_t index_size = 0;
   ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
@@ -922,7 +685,7 @@ TEST_F(TestVectorIndexAdaptor, test_ser_deser)
   ASSERT_EQ(0, index_seri.serialize(index_handler, ser_param, ser_cb, MTL_ID()));
 
   // do deserialize
-  obvectorlib::VectorIndexPtr des_index_handler = nullptr;
+  obvsag::VectorIndexPtr des_index_handler = nullptr;
   ObTestHNSWDeserializeCallback des_callback;
   ObIStreamBuf::Callback des_cb = des_callback;
 
@@ -933,7 +696,7 @@ TEST_F(TestVectorIndexAdaptor, test_ser_deser)
   des_param.cur_pos_ = 0;
   des_param.part_size_ = 10;
   ASSERT_EQ(obvectorutil::create_index(des_index_handler,
-                                      obvectorlib::HNSW_TYPE,
+                                      obvsag::HNSW_TYPE,
                                       DATATYPE_FLOAT32,
                                       METRIC_L2,
                                       dim,
@@ -1155,32 +918,28 @@ TEST_F(TestVectorIndexAdaptor, mem_ctx)
 
 }
 
-#if 0
-TEST_F(TestVectorIndexAdaptor, vsag_alloc)
+TEST_F(TestVectorIndexAdaptor, vsag_build_hnswsq_index)
 {
-  VsagMemContext vsag_mem_context;
-  ASSERT_EQ(vsag_mem_context.init(), 0);
-  obvectorlib::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
   std::mt19937 rng;
-  rng.seed(50);
+  rng.seed(47);
   int dim = 128;
   int max_degree = 16;
   int ef_search = 200;
   int ef_construction = 100;
   const char* const METRIC_L2 = "l2";
   const char* const DATATYPE_FLOAT32 = "float32";
-  std::cout << "MemoryUsed0: " << vsag_mem_context.total() << std::endl;
+
   ASSERT_EQ(obvectorutil::create_index(index_handler,
-                                       obvectorlib::HNSW_TYPE,
-                                       DATATYPE_FLOAT32,
-                                       METRIC_L2,
-                                       dim,
-                                       max_degree,
-                                       ef_construction,
-                                       ef_search,
-                                       &vsag_mem_context), 0);
-  std::cout << "MemoryUsed1: " << vsag_mem_context.total() << std::endl;
-  int num_vectors = 100;
+                                      obvsag::HNSW_SQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+  int num_vectors = 10000;
 
   int64_t *ids = new int64_t[num_vectors];
   float *vecs = new float[dim * num_vectors];
@@ -1194,8 +953,7 @@ TEST_F(TestVectorIndexAdaptor, vsag_alloc)
     vecs[i] = distrib_real(rng);
   }
 
-  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, num_vectors));
-  std::cout << "MemoryUsed2: " << vsag_mem_context.total() << std::endl;
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler, vecs, ids, dim, num_vectors));
 
   int64_t index_size = 0;
   ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
@@ -1205,10 +963,12 @@ TEST_F(TestVectorIndexAdaptor, vsag_alloc)
   const int64_t* result_ids0;
   const float* result_dist1;
   const int64_t* result_ids1;
+  const char* extra_info_buf_ptr = nullptr;
   int64_t expect_cnt = 10;
   int64_t result_size = 0;
   roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
-
+  TestFilter test_filter(bitmap);
+  std::cout << "===================== Query Vec ================" << std::endl;
   float *query_vecs = new float[dim];
   for (int64_t i = 0; i < dim; ++i) {
     query_vecs[i] = distrib_real(rng);
@@ -1221,33 +981,800 @@ TEST_F(TestVectorIndexAdaptor, vsag_alloc)
     }
   }
 
+  std::cout << "===================== Query Result ================" << std::endl;
+
   ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
-                                       query_vecs,
-                                       dim,
-                                       expect_cnt,
-                                       result_dist0,
-                                       result_ids0,
-                                       result_size,
-                                       ef_search,
-                                       bitmap));
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
   for (int64_t i = 0; i < result_size; ++i) {
     std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
-    // for (int64_t j = 0; j < dim; ++j) {
-    //   if (j == 0) {
-    //     std::cout << "[" << vecs[i * dim + j] << ", ";
-    //   } else if (j == dim - 1) {
-    //     std::cout << vecs[i * dim + j] << "]" << std::endl;
-    //   } else {
-    //     std::cout << vecs[i * dim + j] << ", ";
-    //   }
-    // }
+    for (int64_t j = 0; j < dim; ++j) {
+      if (j == 0) {
+        std::cout << "[" << vecs[i * dim + j] << ", ";
+      } else if (j == dim - 1) {
+        std::cout << vecs[i * dim + j] << "]" << std::endl;
+      } else {
+        std::cout << vecs[i * dim + j] << ", ";
+      }
+    }
   }
-  std::cout << "MemoryUsed3: " << vsag_mem_context.total() << std::endl;
 
-  obvectorutil::delete_index(index_handler);
-  std::cout << "MemoryUsed: " << vsag_mem_context.total() << std::endl;
+  std::cout << "===================== Query StdMap ================" << std::endl;
+
+  roaring64_bitmap_add(bitmap, 7055);
+  roaring64_bitmap_add(bitmap, 2030);
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+
+  for (int64_t i = 0; i < result_size; ++i) {
+    std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
+    for (int64_t j = 0; j < dim; ++j) {
+      if (j == 0) {
+        std::cout << "[" << vecs[i * dim + j] << ", ";
+      } else if (j == dim - 1) {
+        std::cout << vecs[i * dim + j] << "]" << std::endl;
+      } else {
+        std::cout << vecs[i * dim + j] << ", ";
+      }
+    }
+  }
 }
-#endif
+
+TEST_F(TestVectorIndexAdaptor, vsag_build_hnswsq_index_query)
+{
+  obvsag::VectorIndexPtr index_handler_sq = nullptr;
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler_bq = nullptr;
+  std::mt19937 rng;
+  rng.seed(47);
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 100;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler_sq,
+                                      obvsag::HNSW_SQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler_bq,
+                                      obvsag::HNSW_BQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+  int num_vectors = 10000;
+
+  int64_t *ids = new int64_t[num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler_sq, vecs, ids, dim, num_vectors));
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler, vecs, ids, dim, num_vectors));
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler_bq, vecs, ids, dim, num_vectors));
+
+  int64_t index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler_sq, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+  index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+  index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler_bq, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+
+  const float* result_dist0;
+  const int64_t* result_ids0;
+  const float* result_dist1;
+  const int64_t* result_ids1;
+  const float* result_dist_bq;
+  const int64_t* result_ids_bq;
+  const char* extra_info_buf_ptr = nullptr;
+  int64_t expect_cnt = 10;
+  int64_t result_size = 0;
+  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
+  TestFilter test_filter(bitmap);
+  std::cout << "===================== Query Vec ================" << std::endl;
+  float *query_vecs = new float[dim];
+  for (int64_t i = 0; i < dim; ++i) {
+    query_vecs[i] = distrib_real(rng);
+    if (i == 0) {
+      std::cout << "[" << query_vecs[i] << ", ";
+    } else if (i == dim - 1) {
+      std::cout << query_vecs[i] << "]" << std::endl;
+    } else {
+      std::cout << query_vecs[i] << ", ";
+    }
+  }
+
+  std::cout << "===================== Query Result ================" << std::endl;
+
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler_sq,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler_bq,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist_bq,
+                                      result_ids_bq,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+  for (int64_t i = 0; i < result_size; ++i) {
+    std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
+    std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
+    std::cout << i <<  " id: " << result_ids_bq[i] << " dis: " << result_dist_bq[i] << std::endl;
+  }
+
+  ASSERT_EQ(OB_SUCCESS, test_knn_search(index_handler_sq, ids, vecs, dim, num_vectors, ef_search, &test_filter));
+  ASSERT_EQ(OB_SUCCESS, test_knn_search(index_handler, ids, vecs, dim, num_vectors, ef_search, &test_filter));
+  ASSERT_EQ(OB_SUCCESS, test_knn_search(index_handler_bq, ids, vecs, dim, num_vectors, ef_search, &test_filter));
+
+}
+
+/*  too much to execute all
+TEST_F(TestVectorIndexAdaptor, test_for_hnsw_insert_time)
+{
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  std::mt19937 rng;
+  rng.seed(47);
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 200;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+  int num_vectors = 100000;
+  int batch_cnt = 1000;
+
+  int64_t *ids = new int64_t[num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  std::time_t start_timestamp = std::time(nullptr);
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::HNSW_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler, vecs, ids, dim, batch_cnt));
+
+  for (int64_t i = batch_cnt; i < num_vectors; i++) {
+    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + dim * i, ids + i, dim, 1));
+  }
+  std::time_t end_timestamp = std::time(nullptr);
+  std::cout << "hnsw cos: " << end_timestamp - start_timestamp << std::endl;
+}
+
+TEST_F(TestVectorIndexAdaptor, test_for_hnswsq_insert_time)
+{
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  std::mt19937 rng;
+  rng.seed(47);
+  int dim = 128;
+  int max_degree = 32;
+  int ef_search = 200;
+  int ef_construction = 200;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+  int num_vectors = 100000;
+  int batch_cnt = 1000;
+
+  int64_t *ids = new int64_t[num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  std::time_t start_timestamp = std::time(nullptr);
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::HNSW_SQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+
+
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler, vecs, ids, dim, batch_cnt));
+
+  for (int64_t i = batch_cnt; i < num_vectors; i++) {
+    ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs + dim * i, ids + i, dim, 1));
+  }
+  std::time_t end_timestamp = std::time(nullptr);
+  std::cout << "hnswsq cos: " << end_timestamp - start_timestamp << std::endl;
+}
+
+*/
+
+TEST_F(TestVectorIndexAdaptor, vsag_build_hnswbq_index)
+{
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  std::mt19937 rng;
+  rng.seed(47);
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 100;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::HNSW_BQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+  int num_vectors = 10000;
+
+  int64_t *ids = new int64_t[num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  ASSERT_EQ(0, obvectorutil::build_index(index_handler, vecs, ids, dim, num_vectors));
+
+  int64_t index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+
+  const float* result_dist0;
+  const int64_t* result_ids0;
+  const float* result_dist1;
+  const int64_t* result_ids1;
+  const char* extra_info_buf_ptr = nullptr;
+  int64_t expect_cnt = 10;
+  int64_t result_size = 0;
+  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
+  TestFilter test_filter(bitmap);
+  std::cout << "===================== Query Vec ================" << std::endl;
+  float *query_vecs = new float[dim];
+  for (int64_t i = 0; i < dim; ++i) {
+    query_vecs[i] = distrib_real(rng);
+    if (i == 0) {
+      std::cout << "[" << query_vecs[i] << ", ";
+    } else if (i == dim - 1) {
+      std::cout << query_vecs[i] << "]" << std::endl;
+    } else {
+      std::cout << query_vecs[i] << ", ";
+    }
+  }
+
+  std::cout << "===================== Query Result ================" << std::endl;
+
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+  for (int64_t i = 0; i < result_size; ++i) {
+    std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << std::endl;
+    for (int64_t j = 0; j < dim; ++j) {
+      if (j == 0) {
+        std::cout << "[" << vecs[result_ids0[i] * dim + j] << ", ";
+      } else if (j == dim - 1) {
+        std::cout << vecs[result_ids0[i] * dim + j] << "]" << std::endl;
+      } else {
+        std::cout << vecs[result_ids0[i] * dim + j] << ", ";
+      }
+    }
+  }
+
+  std::cout << "===================== Query StdMap ================" << std::endl;
+
+  roaring64_bitmap_add(bitmap, 7055);
+  roaring64_bitmap_add(bitmap, 2030);
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_vecs,
+                                      dim,
+                                      expect_cnt,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      ef_search,
+                                      &test_filter));
+
+  for (int64_t i = 0; i < result_size; ++i) {
+    std::cout << i <<  " id: " << result_ids1[i] << " dis: " << result_dist1[i] << std::endl;
+    for (int64_t j = 0; j < dim; ++j) {
+      if (j == 0) {
+        std::cout << "[" << vecs[result_ids0[i] * dim + j] << ", ";
+      } else if (j == dim - 1) {
+        std::cout << vecs[result_ids0[i] * dim + j] << "]" << std::endl;
+      } else {
+        std::cout << vecs[result_ids0[i] * dim + j] << ", ";
+      }
+    }
+  }
+}
+
+TEST_F(TestVectorIndexAdaptor, test_hnsw_bq_ser_deser)
+{
+  void* raw_memory = (void*)malloc(sizeof(common::obvectorutil::ObVsagLogger));
+  common::obvectorutil::ObVsagLogger* ob_logger = new (raw_memory)common::obvectorutil::ObVsagLogger();
+  obvsag::set_logger(ob_logger);
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  obvsag::VectorIndexPtr index_handler_flat = nullptr;
+  std::mt19937 rng;
+  rng.seed(50);
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 100;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                       obvsag::HNSW_BQ_TYPE,
+                                       DATATYPE_FLOAT32,
+                                       METRIC_L2,
+                                       dim,
+                                       max_degree,
+                                       ef_construction,
+                                       ef_search), 0);
+  ASSERT_EQ(obvectorutil::create_index(index_handler_flat,
+                                      obvsag::HGRAPH_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+  int num_vectors = 10000;
+
+  int64_t *ids = new int64_t[num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler, vecs, ids, dim, nullptr, num_vectors));
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler_flat, vecs, ids, dim, nullptr, num_vectors));
+  int64_t index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+
+  float *query_vecs = new float[dim];
+  for (int64_t i = 0; i < dim; ++i) {
+    query_vecs[i] = distrib_real(rng);
+    if (i == 0) {
+      std::cout << "[" << query_vecs[i] << ", ";
+    } else if (i == dim - 1) {
+      std::cout << query_vecs[i] << "]" << std::endl;
+    } else {
+      std::cout << query_vecs[i] << ", ";
+    }
+  }
+  roaring::api::roaring64_bitmap_t *bmap = roaring::api::roaring64_bitmap_create();
+  TestFilter test_filter(bmap);
+  ASSERT_EQ(OB_SUCCESS, test_knn_search(index_handler, ids, vecs, dim, num_vectors, ef_search, &test_filter));
+  // do serialize
+  ObArenaAllocator allocator;
+  ObVectorIndexSerializer index_seri(allocator);
+  ObTestHNSWSerializeCallback ser_callback;
+  ObOStreamBuf::Callback ser_cb = ser_callback;
+
+  ObTestHNSWSerializeCallback::CbParam ser_param;
+  ser_param.allocator_ = &allocator;
+  ASSERT_EQ(0, index_seri.serialize(index_handler, ser_param, ser_cb, MTL_ID()));
+  std::cout << "serialize size " << ser_param.size_ << std::endl;
+
+  ObVectorIndexSerializer flat_index_seri(allocator);
+  ObTestHNSWSerializeCallback flat_ser_callback;
+  ObOStreamBuf::Callback flat_ser_cb = flat_ser_callback;
+  ObTestHNSWSerializeCallback::CbParam flat_ser_param;
+  flat_ser_param.allocator_ = &allocator;
+  ASSERT_EQ(0, flat_index_seri.serialize(index_handler_flat, flat_ser_param, flat_ser_cb, MTL_ID()));
+  std::cout << "flat serialize size " << flat_ser_param.size_ << std::endl;
+
+  // do deserialize
+  obvsag::VectorIndexPtr des_index_handler = nullptr;
+  ObTestHNSWDeserializeCallback des_callback;
+  ObIStreamBuf::Callback des_cb = des_callback;
+
+  ObTestHNSWDeserializeCallback::CbParam des_param;
+  des_param.allocator_ = &allocator;
+  des_param.data_ = ser_param.data_;
+  des_param.size_ = ser_param.size_;
+  des_param.cur_pos_ = 0;
+  des_param.part_size_ = 10;
+  ASSERT_EQ(obvectorutil::create_index(des_index_handler,
+                                      obvsag::HNSW_BQ_TYPE,
+                                      DATATYPE_FLOAT32,
+                                      METRIC_L2,
+                                      dim,
+                                      max_degree,
+                                      ef_construction,
+                                      ef_search), 0);
+  ASSERT_EQ(0, index_seri.deserialize(des_index_handler, des_param, des_cb, MTL_ID()));
+  // check vector count
+  ASSERT_EQ(0, obvectorutil::get_index_number(des_index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+  ASSERT_EQ(OB_SUCCESS, test_knn_search(index_handler, ids, vecs, dim, num_vectors, ef_search, &test_filter));
+}
+
+TEST_F(TestVectorIndexAdaptor, test_sparse_vector_index_query)
+{
+  obvsag::VectorIndexPtr index_handler = nullptr;
+
+  const char* const METRIC = "ip";
+  const char* const DATATYPE = "sparse";
+  bool use_reorder = false;
+  float doc_prune_ratio = 0.0;
+  int window_size = 10000;
+  VsagMemContext vsag_mem_context;
+  ASSERT_EQ(vsag_mem_context.init(), 0);
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::IPIVF_TYPE,
+                                      DATATYPE,
+                                      METRIC,
+                                      use_reorder,
+                                      doc_prune_ratio,
+                                      window_size,
+                                      &vsag_mem_context), 0);
+
+  std::vector<std::pair<std::vector<uint32_t>, std::vector<float>>> custom_data = {{{1, 2, 3}, {0.1f, 0.2f, 0.3f}},
+      {{2, 3, 4}, {0.2f, 0.3f, 0.4f}},
+      {{3, 4, 5}, {0.3f, 0.4f, 0.5f}},
+      {{4, 5, 6}, {0.4f, 0.5f, 0.6f}},
+      {{5, 6, 7}, {0.5f, 0.6f, 0.7f}},
+      {{6, 7, 8}, {0.6f, 0.7f, 0.8f}},
+      {{7, 8, 9}, {0.7f, 0.8f, 0.9f}},
+      {{8, 9, 10}, {0.8f, 0.9f, 1.0f}},
+      {{9, 10, 11}, {0.9f, 1.0f, 1.1f}},
+      {{11, 10, 12}, {1.1f, 1.0f, 1.2f}}};
+  int num_sparse_vector = custom_data.size();
+  int total_length = num_sparse_vector * 3;
+  ObArenaAllocator allocator;
+  uint32_t *lens = static_cast<uint32_t *>(allocator.alloc(sizeof(uint32_t) * num_sparse_vector));
+  uint32_t *dims = static_cast<uint32_t *>(allocator.alloc(sizeof(uint32_t) * total_length));
+  float *vals = static_cast<float *>(allocator.alloc(sizeof(float) * total_length));
+  int64_t *ids = static_cast<int64_t *>(allocator.alloc(sizeof(int64_t) * num_sparse_vector));
+  int pos = 0;
+  for (int i = 0; i < custom_data.size(); ++i) {
+    lens[i] = 3;
+    MEMCPY(dims + pos, custom_data[i].first.data(), custom_data[i].first.size() * sizeof(uint32_t));
+    MEMCPY(vals + pos, custom_data[i].second.data(), custom_data[i].second.size() * sizeof(float));
+    pos += 3;
+    ids[i] = i + 1;
+  }
+  pos = 0;
+  for (int i = 0; i < custom_data.size(); ++i) {
+    ASSERT_EQ(0, obvectorutil::add_index(index_handler, &lens[i], dims+pos, vals+pos, &ids[i], 1));
+    pos += 3;
+  }
+  int64_t index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
+  ASSERT_EQ(index_size, num_sparse_vector);
+  int64_t min_id = 1, max_id = custom_data.size();
+  int64_t min, max;
+  ASSERT_EQ(0, obvectorutil::get_vid_bound(index_handler, min, max));
+  // ASSERT_EQ(min_id, min);
+  // ASSERT_EQ(max_id, max);
+  std::cout << "num vectors: " << index_size << ", min id: " << min << ", max id: " << max << std::endl;
+
+  int query_len = 2;
+  uint32_t query_dims[2] = {3, 4};
+  float query_vals[2] = {1, 1};
+
+  const float* result_dist0;
+  const int64_t* result_ids0;
+  const char* extra_info_buf_ptr = nullptr;
+  float query_prune_ratio = 0.0;
+  int64_t n_candidate = 10;
+  int64_t top_k = 10;
+  int64_t result_size = 0;
+  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
+  TestFilter test_filter(bitmap);
+
+  std::cout << "===================== Query Result ================" << std::endl;
+
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_len,
+                                      query_dims,
+                                      query_vals,
+                                      top_k,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      query_prune_ratio,
+                                      n_candidate,
+                                      &test_filter));
+  std::cout << "result size: " << result_size << std::endl;
+  for (int64_t i = 0; i < result_size; ++i) {
+    std::cout << i <<  " id: " << result_ids0[i] << " dis: " << result_dist0[i] << ", Vector: {";
+    auto data = custom_data[result_ids0[i] - 1];
+    for (int j = 0; j < data.first.size(); j++) {
+      if (j > 0) std::cout << ", ";
+      std::cout << data.first[j] << ":" << data.second[j];
+    }
+    std::cout << "}" << std::endl;
+  }
+
+  uint32_t query_dims1[2] = {13, 14};
+  float query_vals1[2] = {1, 1};
+  const float* result_dist1;
+  const int64_t* result_ids1;
+  result_size = 0;
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_len,
+                                      query_dims1,
+                                      query_vals1,
+                                      top_k,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      query_prune_ratio,
+                                      n_candidate,
+                                      nullptr));
+  std::cout << "result size: " << result_size << std::endl;
+  ASSERT_EQ(0, result_size);
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      0,
+                                      query_dims,
+                                      query_vals,
+                                      top_k,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size,
+                                      query_prune_ratio,
+                                      n_candidate,
+                                      nullptr));
+  std::cout << "result size: " << result_size << std::endl;
+  ASSERT_EQ(0, result_size);
+}
+
+TEST_F(TestVectorIndexAdaptor, test_sparse_vector_index_serial)
+{
+  void* raw_memory = (void*)malloc(sizeof(common::obvectorutil::ObVsagLogger));
+  common::obvectorutil::ObVsagLogger* ob_logger = new (raw_memory)common::obvectorutil::ObVsagLogger();
+  obvsag::set_logger(ob_logger);
+  obvsag::VectorIndexPtr index_handler = nullptr;
+
+  const char* const METRIC = "ip";
+  const char* const DATATYPE = "sparse";
+  bool use_reorder = false;
+  float doc_prune_ratio = 0.0;
+  int window_size = 10000;
+  std::mt19937 rng;
+  rng.seed(50);
+  VsagMemContext vsag_mem_context;
+  ASSERT_EQ(vsag_mem_context.init(), 0);
+
+  ASSERT_EQ(obvectorutil::create_index(index_handler,
+                                      obvsag::IPIVF_TYPE,
+                                      DATATYPE,
+                                      METRIC,
+                                      use_reorder,
+                                      doc_prune_ratio,
+                                      window_size,
+                                      &vsag_mem_context), 0);
+
+  int num_vectors = 1000;
+  int dim = 3;
+  uint32_t *lens = new uint32_t[num_vectors];
+  int64_t *ids = new int64_t[num_vectors];
+  uint32_t *dims = new uint32_t[dim * num_vectors];
+  float *vecs = new float[dim * num_vectors];
+
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i + 1;
+    lens[i] = dim;
+  }
+
+  for (int64_t i = 0; i < num_vectors * dim; ++i) {
+    vecs[i] = (i % dim + 1) / 10.0;
+    dims[i] = i % dim + 1;
+  }
+
+  ASSERT_EQ(0, obvectorutil::add_index(index_handler, lens, dims, vecs, ids, num_vectors));
+  int64_t index_size = 0;
+  ASSERT_EQ(0, obvectorutil::get_index_number(index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+
+  int64_t min_id = 1, max_id = num_vectors;
+  int64_t min, max;
+  ASSERT_EQ(0, obvectorutil::get_vid_bound(index_handler, min, max));
+  // ASSERT_EQ(min_id, min);
+  // ASSERT_EQ(max_id, max);
+  std::cout << "num vectors: " << index_size << ", min id: " << min << ", max id: " << max << std::endl;
+
+  int query_len = 2;
+  uint32_t query_dims[2] = {2, 3};
+  float query_vals[2] = {1, 1};
+
+  const float* result_dist0;
+  const int64_t* result_ids0;
+  int64_t result_size0 = 0;
+  const char* extra_info_buf_ptr = nullptr;
+  float query_prune_ratio = 0.0;
+  int64_t n_candidate = 0;
+  int64_t top_k = num_vectors;
+  roaring::api::roaring64_bitmap_t *bitmap = roaring::api::roaring64_bitmap_create();
+  TestFilter test_filter(bitmap);
+
+  std::cout << "===================== Query Result ================" << std::endl;
+
+  ASSERT_EQ(0, obvectorutil::knn_search(index_handler,
+                                      query_len,
+                                      query_dims,
+                                      query_vals,
+                                      top_k,
+                                      result_dist0,
+                                      result_ids0,
+                                      extra_info_buf_ptr,
+                                      result_size0,
+                                      query_prune_ratio,
+                                      n_candidate,
+                                      &test_filter));
+  std::cout << "result size: " << result_size0 << std::endl;
+
+  // do serialize
+  ObArenaAllocator allocator;
+  ObVectorIndexSerializer index_seri(allocator);
+  ObTestHNSWSerializeCallback ser_callback;
+  ObOStreamBuf::Callback ser_cb = ser_callback;
+
+  ObTestHNSWSerializeCallback::CbParam ser_param;
+  ser_param.allocator_ = &allocator;
+  ASSERT_EQ(0, index_seri.serialize(index_handler, ser_param, ser_cb, MTL_ID()));
+  std::cout << "serialize size " << ser_param.size_ << std::endl;
+
+  // do deserialize
+  obvsag::VectorIndexPtr des_index_handler = nullptr;
+  ObTestHNSWDeserializeCallback des_callback;
+  ObIStreamBuf::Callback des_cb = des_callback;
+
+  ObTestHNSWDeserializeCallback::CbParam des_param;
+  des_param.allocator_ = &allocator;
+  des_param.data_ = ser_param.data_;
+  des_param.size_ = ser_param.size_;
+  des_param.cur_pos_ = 0;
+  des_param.part_size_ = 1000;
+  ASSERT_EQ(obvectorutil::create_index(des_index_handler,
+                                      obvsag::IPIVF_TYPE,
+                                      DATATYPE,
+                                      METRIC,
+                                      use_reorder,
+                                      doc_prune_ratio,
+                                      window_size,
+                                      &vsag_mem_context), 0);
+  ASSERT_EQ(0, index_seri.deserialize(des_index_handler, des_param, des_cb, MTL_ID()));
+  // check vector count
+  ASSERT_EQ(0, obvectorutil::get_index_number(des_index_handler, index_size));
+  ASSERT_EQ(index_size, num_vectors);
+  std::cout << "deserialize index number: " << index_size << std::endl;
+
+  int query_len1 = 2;
+  uint32_t *query_dims1 = new uint32_t[2];
+  query_dims1[0] = 2;
+  query_dims1[1] = 3;
+  float *query_vals1 = new float[2];
+  query_vals1[0] = 1;
+  query_vals1[1] = 1;
+  const float* result_dist1;
+  const int64_t* result_ids1;
+  int64_t result_size1 = 0;
+  extra_info_buf_ptr = nullptr;
+  ASSERT_EQ(0, obvectorutil::knn_search(des_index_handler,
+                                      query_len1,
+                                      query_dims1,
+                                      query_vals1,
+                                      top_k,
+                                      result_dist1,
+                                      result_ids1,
+                                      extra_info_buf_ptr,
+                                      result_size1,
+                                      query_prune_ratio,
+                                      n_candidate,
+                                      &test_filter));
+  std::cout << "result size: " << result_size1 << std::endl;
+}
 
 };
 

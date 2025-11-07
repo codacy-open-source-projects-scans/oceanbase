@@ -9,15 +9,16 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
+
 #define USING_LOG_PREFIX STORAGE
-#include "ob_co_sstable_row_scanner.h"
-#include "ob_cg_scanner.h"
-#include "ob_cg_tile_scanner.h"
-#include "ob_cg_group_by_scanner.h"
-#include "ob_column_oriented_sstable.h"
-#include "storage/blocksstable/ob_datum_row.h"
-#include "storage/access/ob_pushdown_aggregate.h"
+
+#include "storage/column_store/ob_co_sstable_row_scanner.h"
 #include "storage/access/ob_vector_store.h"
+#include "storage/access/ob_aggregated_store.h"
+#include "storage/access/ob_aggregated_store_vec.h"
+#include "storage/column_store/ob_i_cg_iterator.h"
+#include "storage/column_store/ob_cg_scanner.h"
+#include "storage/column_store/ob_cg_tile_scanner.h"
 
 namespace oceanbase
 {
@@ -94,6 +95,7 @@ int ObCOSSTableRowScanner::init(
     if (OB_FAIL(init_project_iter_for_single_row(param, context, table))) {
       LOG_WARN("Fail to init project iter for single row", K(ret));
     } else if (param.has_lob_column_out()
+        && nullptr != param.out_cols_project_ && param.out_cols_project_->count() > 0
         && (nullptr == context.lob_locator_helper_
             || !context.lob_locator_helper_->enable_lob_locator_v2()
             || !context.lob_locator_helper_->is_valid())) {
@@ -105,11 +107,12 @@ int ObCOSSTableRowScanner::init(
     is_sstable_iter_ = true;
     iter_param_ = &param;
     access_ctx_ = &context;
+    table_ = static_cast<ObCOSSTableV2*>(table);
     batch_size_ = param.get_storage_rowsets_size();
     reverse_scan_ = context.query_flag_.is_reverse_scan();
     batched_row_store_ = static_cast<ObBlockBatchedRowStore*>(context.block_row_store_);
     block_row_store_ = context.block_row_store_;
-    column_group_cnt_ = static_cast<ObCOSSTableV2*>(table)->get_cs_meta().get_column_group_count();
+    column_group_cnt_ = table_->get_cs_meta().get_column_group_count();
   }
   return ret;
 }
@@ -182,7 +185,12 @@ int ObCOSSTableRowScanner::get_next_rows()
     switch(state_) {
       case BEGIN: {
         blockscan_state_ = BLOCKSCAN_RANGE;
-        if (OB_FAIL(row_scanner_->get_blockscan_start(current_, range_idx_, blockscan_state_))) {
+        if (iter_param_->enable_pd_aggregate() && iter_param_->plan_use_new_format()) {
+          if (OB_FAIL(static_cast<ObAggregatedStoreVec *>(block_row_store_)->reset_agg_row_id())) {
+            LOG_WARN("Fail to reset agg row id", K(ret), KPC(block_row_store_));
+          }
+        }
+        if (FAILEDx(row_scanner_->get_blockscan_start(current_, range_idx_, blockscan_state_))) {
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
             LOG_WARN("Fail to get blockscan start", K(ret), KPC(this));
           } else {
@@ -190,8 +198,7 @@ int ObCOSSTableRowScanner::get_next_rows()
             state_ = END;
           }
         } else if (BLOCKSCAN_FINISH == blockscan_state_) {
-          blockscan_state_ = MAX_STATE;
-          ret = OB_PUSHDOWN_STATUS_CHANGED;
+          state_ = END;
         } else {
           LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [change to filter_rows]", K(ret), K_(state), K_(blockscan_state),
                     K_(current), K_(group_size), K_(end));
@@ -208,10 +215,15 @@ int ObCOSSTableRowScanner::get_next_rows()
             LOG_WARN("Fail to filter rows", K(ret), KPC(this));
           } else if (MAX_STATE == blockscan_state_) {
             ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("Unexpected blockscan state", K(ret), K_(blockscan_state));
+            LOG_WARN("Unexpected blockscan state", K(ret), K_(blockscan_state), KPC(this));
           } else {
             ret = OB_SUCCESS;
+            // filter rows meets iter end
+            // `BLOCKSCAN_RANGE -> FILTER_ROWS`, still in blockscan range, try to update the blockscan border boundary and get next filterd group
+            // `SWITCH_RANGE -> BEGIN`, try to update the blockscan start boundary
+            // `BLOCKSCAN_FINISH/SCAN_FINISH` -> END
             state_ = STATE_TRANSITION[blockscan_state_];
+            LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [change by state transition]", K(ret), K_(state), K_(blockscan_state));
           }
         } else {
           LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [change to project_rows]", K(ret), K_(state), K_(blockscan_state),
@@ -227,6 +239,7 @@ int ObCOSSTableRowScanner::get_next_rows()
             update_current(group_size_);
             LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [change to filter_rows]", K(ret), K_(state), K_(blockscan_state),
                       K_(current), K_(group_size), K_(end));
+            // project rows meets iter end, go to filter rows
             state_ = FILTER_ROWS;
           } else {
             LOG_WARN("Fail to fetch rows", K(ret), KPC(this));
@@ -235,12 +248,16 @@ int ObCOSSTableRowScanner::get_next_rows()
         break;
       }
       case END: {
-        ret = OB_ITER_END;
-        LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [change to iter_end]", K(ret), K_(state), K_(blockscan_state),
-                  K_(current), K_(group_size), K_(end));
         if (BLOCKSCAN_FINISH == blockscan_state_) {
-          ret = OB_PUSHDOWN_STATUS_CHANGED;
+          if (iter_param_->is_delete_insert_ && OB_FAIL(row_scanner_->try_skip_deleted_row(current_))) {
+            if (OB_UNLIKELY(OB_ITER_END != ret)) {
+              LOG_WARN("fail to skip deleted row for delete insert table", K_(current), K_(blockscan_state), KPC(this));
+            }
+          } else {
+            ret = OB_PUSHDOWN_STATUS_CHANGED;
+          }
         } else {
+          ret = OB_ITER_END;
           batched_row_store_->set_end();
         }
         blockscan_state_ = MAX_STATE;
@@ -248,7 +265,7 @@ int ObCOSSTableRowScanner::get_next_rows()
       }
     }
     LOG_DEBUG("[COLUMNSTORE] COScanner get_next_rows [end]", K(ret), K_(state), K_(blockscan_state),
-              K_(current), K_(group_size), K_(end), K(batched_row_store_->is_end()));
+              K_(current), K_(group_size), K_(end), K(batched_row_store_->is_end()), KPC(this));
   }
   LOG_TRACE("[COLUMNSTORE] COScanner get_next_rows", K(ret), K_(state), K_(blockscan_state), K_(current),
             K_(group_size), K_(end), K(batched_row_store_->is_end()), "can_blockscan", can_blockscan());
@@ -336,30 +353,64 @@ int ObCOSSTableRowScanner::init_project_iter(
 {
   int ret = OB_SUCCESS;
   ObCOSSTableV2* co_sstable = static_cast<ObCOSSTableV2*>(table);
-  common::ObSEArray<ObTableIterParam*, 8> iter_params;
-  if (OB_FAIL(construct_cg_iter_params(row_param, context, iter_params))) {
-    LOG_WARN("Failed to construct cg scan params", K(ret));
-  } else if (nullptr == project_iter_) {
-    if (1 == iter_params.count()) {
-      ObICGIterator *cg_scanner = nullptr;
-      if (OB_FAIL(co_sstable->cg_scan(*iter_params.at(0), context, cg_scanner, true, false))) {
-        LOG_WARN("Failed to cg scan", K(ret));
-      } else {
-        project_iter_ = cg_scanner;
-        if (ObICGIterator::OB_CG_ROW_SCANNER == cg_scanner->get_type() ||
-            ObICGIterator::OB_CG_GROUP_BY_SCANNER == cg_scanner->get_type()) {
-          static_cast<ObCGRowScanner *>(cg_scanner)->set_project_type(nullptr == rows_filter_);
-        }
+  if (use_row_store_projector(row_param, context, *co_sstable)) {
+    ObSSTableWrapper wrapper;
+    wrapper.set_sstable(co_sstable);
+    if (nullptr == project_iter_) {
+      if (OB_ISNULL(project_iter_ =
+                        OB_NEWx(ObCGRowScanner, context.stmt_allocator_))) {
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Failed to alloc cg row scanner");
+      } else if (OB_FAIL(static_cast<ObCGRowScanner *>(project_iter_)
+                             ->init(row_param, context, wrapper))) {
+        LOG_WARN("Failed to init cg row scanner", K(row_param));
       }
-    } else if (OB_ISNULL(project_iter_ = OB_NEWx(ObCGTileScanner, context.stmt_allocator_))) {
-      ret = common::OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("Fail to alloc cg tile scanner", K(ret));
-    } else if (OB_FAIL(static_cast<ObCGTileScanner*>(project_iter_)->init(iter_params, false, nullptr == rows_filter_, context, co_sstable))) {
-      LOG_WARN("Fail to init cg tile scanner", K(ret), K(iter_params));
+    } else if (OB_FAIL(
+                   project_iter_->switch_context(row_param, context, wrapper))) {
+        LOG_WARN("Failed to switch context", K(row_param));
     }
-  } else if (OB_FAIL(ObCOSSTableRowsFilter::switch_context_for_cg_iter(true, false, nullptr == rows_filter_, co_sstable, context, iter_params,
-      column_group_cnt_ != co_sstable->get_cs_meta().get_column_group_count(), project_iter_))) {
-    LOG_WARN("Fail to switch context for cg iter", K(ret));
+  } else {
+    common::ObSEArray<ObTableIterParam *, 8> iter_params;
+    if (OB_FAIL(construct_cg_iter_params(row_param, context, iter_params))) {
+      LOG_WARN("Failed to construct cg scan params", K(ret));
+    } else if (nullptr == project_iter_) {
+      if (1 == iter_params.count()) {
+        ObICGIterator *cg_scanner = nullptr;
+        if (OB_FAIL(co_sstable->cg_scan(
+                *iter_params.at(0), context, cg_scanner, true, false))) {
+          LOG_WARN("Failed to cg scan", K(ret));
+        } else {
+          project_iter_ = cg_scanner;
+          if (ObICGIterator::OB_CG_ROW_SCANNER == cg_scanner->get_type() ||
+              ObICGIterator::OB_CG_GROUP_BY_SCANNER == cg_scanner->get_type()) {
+            static_cast<ObCGRowScanner *>(cg_scanner)
+                ->set_project_type(nullptr == rows_filter_);
+          }
+        }
+      } else if (OB_ISNULL(project_iter_ = OB_NEWx(ObCGTileScanner,
+                                                   context.stmt_allocator_))) {
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Fail to alloc cg tile scanner", K(ret));
+      } else if (OB_FAIL(static_cast<ObCGTileScanner *>(project_iter_)
+                             ->init(iter_params,
+                                    false,
+                                    nullptr == rows_filter_,
+                                    context,
+                                    co_sstable))) {
+        LOG_WARN("Fail to init cg tile scanner", K(ret), K(iter_params));
+      }
+    } else if (OB_FAIL(ObCOSSTableRowsFilter::switch_context_for_cg_iter(
+                   true,
+                   false,
+                   nullptr == rows_filter_,
+                   co_sstable,
+                   context,
+                   iter_params,
+                   column_group_cnt_ !=
+                       co_sstable->get_cs_meta().get_column_group_count(),
+                   project_iter_))) {
+      LOG_WARN("Fail to switch context for cg iter", K(ret));
+    }
   }
   LOG_DEBUG("[COLUMNSTORE] init project iter", K(ret), KPC(project_iter_), K(row_param));
   return ret;
@@ -465,7 +516,9 @@ int ObCOSSTableRowScanner::construct_cg_iter_params(
       if (OB_FAIL(construct_cg_agg_iter_params(row_param, context, iter_params))) {
         LOG_WARN("Fail to cons agg iter_params", K(ret));
       }
-    } else if (0 == row_param.output_exprs_->count()) {
+    } else if (0 == row_param.output_exprs_->count() ||
+               (1 == row_param.output_exprs_->count() &&
+                is_group_idx_expr(row_param.output_exprs_->at(0)))) {
       const uint32_t cg_idx = OB_CS_VIRTUAL_CG_IDX;
       if (OB_FAIL(cg_param_pool_->get_iter_param(cg_idx, row_param, *row_param.output_exprs_, cg_param))) {
         LOG_WARN("Fail to get cg iter param", K(ret), K(cg_idx), K(row_param));
@@ -608,9 +661,7 @@ int ObCOSSTableRowScanner::filter_rows(BlockScanState &blockscan_state)
   if (iter_param_->has_lob_column_out()) {
     access_ctx_->reuse_lob_locator_helper();
   }
-  if (OB_FAIL(THIS_WORKER.check_status())) {
-    LOG_WARN("query interrupt", K(ret));
-  } else if (nullptr != group_by_cell_) {
+  if (nullptr != group_by_cell_) {
     ret = filter_group_by_rows();
   } else if (nullptr != access_ctx_->limit_param_) {
     ret = filter_rows_with_limit(blockscan_state);
@@ -634,7 +685,9 @@ int ObCOSSTableRowScanner::filter_rows_with_limit(BlockScanState &blockscan_stat
   while (OB_SUCC(ret) && !is_limit_end_) {
     ObCSRowId begin = current_;
     const ObCGBitmap* result_bitmap = nullptr;
-    if (OB_FAIL(inner_filter(begin, group_size_, result_bitmap, blockscan_state))) {
+    if (OB_FAIL(THIS_WORKER.check_status())) {
+      LOG_WARN("query interrupt", K(ret));
+    } else if (OB_FAIL(inner_filter(begin, group_size_, result_bitmap, blockscan_state))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("Fail to inner filter", K(ret));
       }
@@ -699,6 +752,8 @@ int ObCOSSTableRowScanner::filter_rows_without_limit(BlockScanState &blockscan_s
       pending_end_row_id_ = OB_INVALID_CS_ROW_ID;
     }
     if (OB_FAIL(ret) || !need_do_filter) {
+    } else if (OB_FAIL(THIS_WORKER.check_status())) {
+      LOG_WARN("query interrupt", K(ret));
     } else if (OB_FAIL(inner_filter(current_start_row_id, current_group_size, result_bitmap, blockscan_state))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("Fail to inner filter", K(ret));
@@ -757,15 +812,12 @@ int ObCOSSTableRowScanner::inner_filter(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("Unexpected result bitmap", K(ret), KPC(rows_filter_));
     } else {
-      EVENT_ADD(ObStatEventIds::PUSHDOWN_STORAGE_FILTER_ROW_CNT, result_bitmap->popcnt());
+      access_ctx_->table_store_stat_.storage_filtered_row_cnt_ += (result_bitmap->size() - result_bitmap->popcnt());
+      access_ctx_->table_store_stat_.blockscan_row_cnt_ += group_size;
+      access_ctx_->table_store_stat_.major_sstable_read_row_cnt_ += group_size;
     }
-  } else {
-    EVENT_ADD(ObStatEventIds::PUSHDOWN_STORAGE_FILTER_ROW_CNT, group_size);
   }
   if (OB_SUCC(ret)) {
-    EVENT_ADD(ObStatEventIds::BLOCKSCAN_ROW_CNT, group_size);
-    access_ctx_->table_store_stat_.logical_read_cnt_ += group_size;
-    access_ctx_->table_store_stat_.physical_read_cnt_ += group_size;
     LOG_TRACE("[COLUMNSTORE] COSSTableRowScanner inner filter", K(ret), "begin", begin, "count", group_size,
               "filtered", nullptr == rows_filter_ ? 0 : 1, "popcnt", nullptr == result_bitmap ? group_size : result_bitmap->popcnt(),
               "filter_constant_type", nullptr == result_bitmap ? sql::ObBoolMaskType::ALWAYS_TRUE : result_bitmap->get_filter_constant_type(),
@@ -871,6 +923,10 @@ int ObCOSSTableRowScanner::fetch_output_rows()
       if (count > 0) {
         int64_t group_idx = 0;
         access_ctx_->out_cnt_ += count;
+        if (OB_ISNULL(rows_filter_)) {
+          access_ctx_->table_store_stat_.blockscan_row_cnt_ += count;
+          access_ctx_->table_store_stat_.major_sstable_read_row_cnt_ += count;
+        }
         if (OB_FAIL(get_group_idx(group_idx))) {
           LOG_WARN("Fail to get group idx", K(ret));
         } else if (OB_FAIL(batched_row_store_->fill_rows(group_idx, count))) {
@@ -892,13 +948,13 @@ int ObCOSSTableRowScanner::inner_get_next_row(const ObDatumRow *&store_row)
   if (OB_UNLIKELY(OB_INVALID_CS_ROW_ID != current_ &&
                   ((reverse_scan_ && current_ > end_) || (!reverse_scan_ && current_ < end_)))) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpected state", K(ret), K(reverse_scan_), K(current_), K(end_));
+    LOG_WARN("Unexpected state", K(ret), K(reverse_scan_), K(current_), K(end_), KPC(this));
   } else if (END == state_ && SCAN_FINISH == blockscan_state_) {
     ret = OB_ITER_END;
     // 1. Fetch rowkey columns from rowkey column group.
   } else if (OB_FAIL(row_scanner_->inner_get_next_row_with_row_id(store_row, row_id))) {
     if (OB_UNLIKELY(OB_PUSHDOWN_STATUS_CHANGED != ret && OB_ITER_END != ret)) {
-      LOG_WARN("Fail to get next row from row scanner", K(ret));
+      LOG_WARN("Fail to get next row from row scanner", K(ret), KPC(this));
     } else if (OB_PUSHDOWN_STATUS_CHANGED == ret) {
       state_ = BEGIN;
       blockscan_state_ = BLOCKSCAN_RANGE;
@@ -908,18 +964,18 @@ int ObCOSSTableRowScanner::inner_get_next_row(const ObDatumRow *&store_row)
   } else {
     // 3. Seek position in cg iterator.
     if (OB_FAIL(getter_project_iter_->locate({row_id, 1}))) {
-      LOG_WARN("Failed to locate", K(ret), KPC_(getter_project_iter), K(row_id));
+      LOG_WARN("Failed to locate", K(ret), KPC_(getter_project_iter), K(row_id), KPC(this));
       // 4. Fetch one row in all cg iterators, datum will be set in gext_next_row.
     } else if (OB_FAIL(getter_project_iter_->get_next_row(cg_datum_row))) {
       if (OB_ITER_END == ret) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("Unexpected OB_ITER_END in getter_project_iter ", K(ret), KPC_(getter_project_iter), K(row_id));
+        LOG_WARN("Unexpected OB_ITER_END in getter_project_iter ", K(ret), KPC_(getter_project_iter), K(row_id), KPC(this));
       } else {
-        LOG_WARN("Failed to get next row", K(ret), KPC_(getter_project_iter), K(row_id));
+        LOG_WARN("Failed to get next row", K(ret), KPC_(getter_project_iter), K(row_id), KPC(this));
       }
     } else if (OB_UNLIKELY(getter_projector_.count() != cg_datum_row->count_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("Unexpected datum row count", K(ret), K(getter_projector_.count()), K(cg_datum_row->count_));
+      LOG_WARN("Unexpected datum row count", K(ret), K(getter_projector_.count()), K(cg_datum_row->count_), KPC(this));
     } else {
       for (int64_t i = 0; i < cg_datum_row->count_; ++i) {
         store_row->storage_datums_[getter_projector_.at(i)] = cg_datum_row->storage_datums_[i];
@@ -1033,14 +1089,14 @@ int ObCOSSTableRowScanner::filter_group_by_rows()
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("Unexpected result bitmap", K(ret), KPC(rows_filter_));
       } else {
-        EVENT_ADD(ObStatEventIds::PUSHDOWN_STORAGE_FILTER_ROW_CNT, result_bitmap->popcnt());
+        access_ctx_->table_store_stat_.storage_filtered_row_cnt_ += (result_bitmap->size() - result_bitmap->popcnt());
+        access_ctx_->table_store_stat_.blockscan_row_cnt_ += group_size_;
+        access_ctx_->table_store_stat_.major_sstable_read_row_cnt_ += group_size_;
         if (result_bitmap->is_all_false()) {
           update_current(group_size_);
           continue;
         }
       }
-    } else {
-      EVENT_ADD(ObStatEventIds::PUSHDOWN_STORAGE_FILTER_ROW_CNT, group_size_);
     }
     if (OB_SUCC(ret)) {
       break;
@@ -1052,9 +1108,6 @@ int ObCOSSTableRowScanner::filter_group_by_rows()
     LOG_WARN("Fail to locate", K(ret), K(current_), K(group_size_), KP(result_bitmap));
   } else {
     is_new_group_ = true;
-    EVENT_ADD(ObStatEventIds::BLOCKSCAN_ROW_CNT, group_size_);
-    access_ctx_->table_store_stat_.logical_read_cnt_ += group_size_;
-    access_ctx_->table_store_stat_.physical_read_cnt_ += group_size_;
   }
   LOG_TRACE("[GROUP BY PUSHDOWN]", K(ret), K(current_), K(end_), K(blockscan_state_),
             "popcnt", nullptr == result_bitmap ? group_size_ : result_bitmap->popcnt());
@@ -1068,7 +1121,6 @@ int ObCOSSTableRowScanner::fetch_group_by_rows()
   ObVectorStore *vector_store = dynamic_cast<ObVectorStore *>(batched_row_store_);
   ObICGGroupByProcessor *group_by_processor = group_by_iters_.at(0);
   bool can_group_by = false;
-  bool already_init_header = false;
   sql::ObEvalCtx &eval_ctx = iter_param_->op_->get_eval_ctx();
   if (group_by_cell_->is_processing()) {
     can_group_by = true;
@@ -1088,9 +1140,7 @@ int ObCOSSTableRowScanner::fetch_group_by_rows()
       } else if (!group_by_cell_->is_exceed_sql_batch()) {
         output_cnt = group_by_cell_->get_distinct_cnt();
       } else {
-        group_by_cell_->reset_projected_cnt();
         group_by_cell_->set_is_processing(true);
-        already_init_header = true;
       }
     }
     if (OB_FAIL(ret)) {
@@ -1134,8 +1184,13 @@ int ObCOSSTableRowScanner::do_group_by()
   int ret = OB_SUCCESS;
   const int32_t group_by_col_offset = 0; // TODO(yht146439) multiple columns in cg
   ObICGGroupByProcessor *group_by_processor = group_by_iters_.at(0);
+  if (nullptr !=access_ctx_->lob_locator_helper_) {
+    access_ctx_->lob_locator_helper_->reuse();
+  }
   if (OB_FAIL(group_by_processor->read_distinct(group_by_col_offset))) {
     LOG_WARN("Failed to read distinct", K(ret));
+  } else if (OB_FAIL(group_by_processor->fill_group_by_col_lob_locator())) {
+    LOG_WARN("Failed to fill lob locator", K(ret));
   } else if (group_by_cell_->need_read_reference()) {
     const bool need_extract_distinct = group_by_cell_->need_extract_distinct();
     const bool need_do_aggregate = group_by_cell_->need_do_aggregate();
@@ -1160,6 +1215,10 @@ int ObCOSSTableRowScanner::do_group_by()
             LOG_WARN("Failed to get next group by rows", K(ret), K(i));
           }
         }
+      }
+      if (OB_SUCC(ret) && OB_ISNULL(rows_filter_)) {
+        access_ctx_->table_store_stat_.blockscan_row_cnt_ += group_by_cell_->get_ref_cnt();
+        access_ctx_->table_store_stat_.major_sstable_read_row_cnt_ += group_by_cell_->get_ref_cnt();
       }
     }
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -1227,5 +1286,152 @@ int ObCOSSTableRowScanner::push_group_by_processor(ObICGIterator *cg_iterator)
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_CO_SCAN_USE_ROW_PROJ)
+
+bool ObCOSSTableRowScanner::use_row_store_projector(const ObTableIterParam& row_param, const ObTableAccessContext& context, const ObCOSSTableV2& co_sstable) const
+{
+  bool b_ret = false;
+  if (!co_sstable.is_all_cg_base() || co_sstable.is_ddl_sstable()) {
+  } else if (row_param.enable_pd_aggregate()) {
+  } else if (row_param.enable_pd_group_by()) {
+  } else if (OB_SUCCESS != ERRSIM_CO_SCAN_USE_ROW_PROJ) {
+    b_ret = true;
+  } else {
+    b_ret = !context.block_row_store_->filter_is_null() && row_param.output_exprs_->count() >= ROW_STORE_PROJECTION_THRESHOLD;
+  }
+  return b_ret;
+}
+
+int ObCOSSTableRowScanner::construct_cg_iter_params_for_rowkey(
+      const ObTableIterParam &row_param,
+  common::ObIArray<ObTableIterParam*>& iter_params)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!row_param.is_valid() || nullptr == row_param.out_cols_project_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid argument", K(ret), K(row_param));
+  } else {
+    ObTableIterParam* cg_param = nullptr;
+    const common::ObIArray<int32_t> *access_cgs = nullptr;
+    const int64_t schema_rowkey_cnt = row_param.get_read_info()->get_schema_rowkey_count();
+    if (OB_ISNULL(access_cgs = row_param.get_read_info()->get_cg_idxs())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("Unexpected null access cg index", K(ret));
+    } else {
+      for (int32_t col_offset = 0; OB_SUCC(ret) && col_offset < schema_rowkey_cnt; ++col_offset) {
+        int32_t cg_idx = access_cgs->at(col_offset);
+        if (OB_FAIL(cg_param_pool_->get_iter_param(cg_idx, row_param, /* expr */ nullptr, cg_param))) {
+          LOG_WARN("Fail to get cg iter param", K(ret), K(col_offset), K(cg_idx), K(row_param), KPC(access_cgs));
+        } else if (OB_FAIL(iter_params.push_back(cg_param))) {
+          LOG_WARN("Fail to push back cg iter param", K(ret), K(cg_param));
+        }
+        LOG_DEBUG("[COLUMNSTORE] cons one cg param", K(ret), K(cg_idx), KPC(cg_param));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObCOSSTableRowScanner::get_next_rowkey(int64_t &curr_scan_index,
+                                           blocksstable::ObDatumRowkey& rowkey,
+                                           common::ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  ObCSRowId current_row_id = OB_INVALID_CS_ROW_ID;
+  ObICGIterator *scanner = nullptr;
+  const ObDatumRow* row = nullptr;
+  common::ObSEArray<ObTableIterParam*, 8> iter_params;
+  ObDatumRowkey tmp_rowkey;
+  rowkey.reset();
+
+  // get next row id
+  if (OB_ISNULL(project_iter_) || OB_ISNULL(row_scanner_) || OB_ISNULL(iter_param_) ||
+      OB_ISNULL(access_ctx_) || OB_ISNULL(table_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("init params is null", KP_(project_iter), KP_(iter_param), KP_(access_ctx), KP_(table), KPC(this));
+  } else if (row_scanner_->is_end_of_scan() && OB_INVALID_CS_ROW_ID == current_) {
+    // iter_end, range_idx_ maybe -1 for empty range
+    curr_scan_index = MAX(range_idx_, 0);
+    if (access_ctx_->query_flag_.is_reverse_scan()) {
+      rowkey.set_min_rowkey();
+    } else {
+      rowkey.set_max_rowkey();
+    }
+  } else {
+    if (OB_FAIL(project_iter_->get_current_row_id(current_row_id))) {
+      if (OB_ERR_UNSUPPORTED_TYPE != ret) {
+        LOG_WARN("failed to get current row id", K(project_iter_->get_type()));
+      }
+    } else if (OB_INVALID_CS_ROW_ID != current_) {
+      // current_ moved because of skip_deleted_row
+      if (access_ctx_->query_flag_.is_reverse_scan()) {
+        current_row_id = MIN(current_, current_row_id);
+      } else {
+        current_row_id = MAX(current_, current_row_id);
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_INVALID_CS_ROW_ID == current_row_id) {
+      ret = OB_ERR_UNSUPPORTED_TYPE;
+    } else {
+      // construct cg(tile)scanner for rowkey
+      if (OB_FAIL(construct_cg_iter_params_for_rowkey(*iter_param_, iter_params))) {
+        LOG_WARN("Failed to construct cg scan params");
+      } else if (iter_params.empty()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("iter params is empty!");
+      } else if (1 == iter_params.count()) {
+        ObICGIterator* cg_scanner = nullptr;
+        if (OB_FAIL(table_->cg_scan(*iter_params.at(0), *access_ctx_, cg_scanner, true, true, access_ctx_->allocator_))) {
+          LOG_WARN("Failed to init cg canner for single row", K(ret));
+        } else {
+          scanner = cg_scanner;
+        }
+      } else if (OB_ISNULL(scanner = OB_NEWx(ObCGTileScanner, access_ctx_->allocator_))) {
+        ret = common::OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Failed to alloc cg tile scanner", K(ret));
+      } else if (OB_FAIL(static_cast<ObCGTileScanner*>(scanner)->init(iter_params, true, false, *access_ctx_, table_))) {
+        LOG_WARN("Failed to init cg tile scanner", K(ret), K(iter_params));
+      }
+
+      // get next row from scanner
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(scanner->locate({current_row_id, 1}))) {
+        LOG_WARN("Failed to locate", K(ret), KPC_(getter_project_iter), K(current_row_id));
+      } else if (OB_FAIL(scanner->get_next_row(row))) {
+        if (OB_ITER_END == ret) {
+          // range_idx_ maybe -1 for empty range
+          curr_scan_index = MAX(range_idx_, 0);
+          if (access_ctx_->query_flag_.is_reverse_scan()) {
+            rowkey.set_min_rowkey();
+          } else {
+            rowkey.set_max_rowkey();
+          }
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("Failed to get next row", K(ret), KPC_(getter_project_iter), K(current_row_id));
+        }
+      } else if (row->count_ != iter_param_->read_info_->get_schema_rowkey_count()) {
+        LOG_ERROR("row key count mismatch!", K(row->count_), K(iter_param_->read_info_->get_schema_rowkey_count()));
+      } else if (OB_FAIL(tmp_rowkey.assign(row->storage_datums_, row->count_))) {
+        LOG_WARN("assign rowkey failed", K(ret), K(row));
+      } else if (OB_UNLIKELY(!tmp_rowkey.is_valid())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("tmp_rowkey is not valid", K(ret), K(tmp_rowkey));
+      } else if (OB_FAIL(tmp_rowkey.deep_copy(rowkey, allocator))) {
+        LOG_WARN("fail to deep copy rowkey", K(ret), K(tmp_rowkey));
+      } else {
+        curr_scan_index = range_idx_;
+      }
+    }
+  }
+
+  if (OB_NOT_NULL(scanner)) {
+    scanner->~ObICGIterator();
+    access_ctx_->allocator_->free(scanner);
+  }
+  return ret;
+}
 }
 }

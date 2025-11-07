@@ -9,9 +9,10 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
-
 #include "ob_empty_shell_object_checker.h"
+#include "storage/ls/ob_ls.h"
 #include "share/scheduler/ob_partition_auto_split_helper.h"
+#include "share/ob_io_device_helper.h"
 
 namespace oceanbase
 {
@@ -155,7 +156,7 @@ int ObDDLEmptyShellChecker::check_delay_deleted_time_exceeds(
     } else {
       STORAGE_LOG(WARN, "get refactored failed", K(ret), K(tablet_id));
     }
-  } else if (ObClockGenerator::getClock() - tag_deleted_us >= DELAY_GC_INTERVAL) {
+  } else if (GCTX.is_shared_storage_mode() || ObClockGenerator::getClock() - tag_deleted_us >= DELAY_GC_INTERVAL) {
     can_become_empty_shell = true;
     STORAGE_LOG(INFO, "delete split src tablet when reaching predefined time limit", K(ret), K(tablet_id));
   } else {
@@ -203,7 +204,7 @@ int ObDDLEmptyShellChecker::check_split_src_deleted_tablet(
     STORAGE_LOG(WARN, "failed to get max decided scn", K(ret), K(user_data));
   } else if (decided_scn < user_data.delete_commit_scn_) {
     need_retry = true;
-    if (REACH_TENANT_TIME_INTERVAL(1 * 1000 * 1000/*1s*/)) {
+    if (REACH_THREAD_TIME_INTERVAL(1 * 1000 * 1000/*1s*/)) {
       STORAGE_LOG(INFO, "decided_scn is smaller than tablet delete commit scn",
         K(ls_id), K(tablet_id), K(user_data), K(decided_scn));
     }

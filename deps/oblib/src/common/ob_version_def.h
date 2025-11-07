@@ -15,6 +15,7 @@
 
 #include "lib/ob_define.h"
 #include "lib/allocator/page_arena.h"
+#include "lib/utility/ob_print_utils.h"
 
 namespace oceanbase
 {
@@ -127,6 +128,13 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define MOCK_CLUSTER_VERSION_4_2_4_0 (oceanbase::common::cal_version(4, 2, 4, 0))
 #define MOCK_CLUSTER_VERSION_4_2_5_0 (oceanbase::common::cal_version(4, 2, 5, 0))
 #define MOCK_CLUSTER_VERSION_4_2_5_1 (oceanbase::common::cal_version(4, 2, 5, 1))
+#define MOCK_CLUSTER_VERSION_4_2_5_2 (oceanbase::common::cal_version(4, 2, 5, 2))
+#define MOCK_CLUSTER_VERSION_4_2_5_3 (oceanbase::common::cal_version(4, 2, 5, 3))
+#define MOCK_CLUSTER_VERSION_4_2_5_4 (oceanbase::common::cal_version(4, 2, 5, 4))
+#define MOCK_CLUSTER_VERSION_4_2_5_5 (oceanbase::common::cal_version(4, 2, 5, 5))
+#define MOCK_CLUSTER_VERSION_4_2_5_6 (oceanbase::common::cal_version(4, 2, 5, 6))
+#define MOCK_CLUSTER_VERSION_4_2_5_7 (oceanbase::common::cal_version(4, 2, 5, 7))
+#define MOCK_CLUSTER_VERSION_4_2_5_8 (oceanbase::common::cal_version(4, 2, 5, 8))
 // new data version before 4.3 cannot upgrade to master, must add "MOCK_" prefix
 #define CLUSTER_VERSION_4_3_0_0 (oceanbase::common::cal_version(4, 3, 0, 0))
 #define CLUSTER_VERSION_4_3_0_1 (oceanbase::common::cal_version(4, 3, 0, 1))
@@ -138,9 +146,19 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define CLUSTER_VERSION_4_3_4_0 (oceanbase::common::cal_version(4, 3, 4, 0))
 #define CLUSTER_VERSION_4_3_4_1 (oceanbase::common::cal_version(4, 3, 4, 1))
 #define CLUSTER_VERSION_4_3_5_0 (oceanbase::common::cal_version(4, 3, 5, 0))
+#define CLUSTER_VERSION_4_3_5_1 (oceanbase::common::cal_version(4, 3, 5, 1))
+#define CLUSTER_VERSION_4_3_5_2 (oceanbase::common::cal_version(4, 3, 5, 2))
+#define MOCK_CLUSTER_VERSION_4_3_5_3 (oceanbase::common::cal_version(4, 3, 5, 3))
+#define MOCK_CLUSTER_VERSION_4_3_5_4 (oceanbase::common::cal_version(4, 3, 5, 4))
+#define MOCK_CLUSTER_VERSION_4_3_5_5 (oceanbase::common::cal_version(4, 3, 5, 5))
+#define CLUSTER_VERSION_4_4_0_0 (oceanbase::common::cal_version(4, 4, 0, 0))
+#define MOCK_CLUSTER_VERSION_4_4_0_1 (oceanbase::common::cal_version(4, 4, 0, 1))
+#define CLUSTER_VERSION_4_4_1_0 (oceanbase::common::cal_version(4, 4, 1, 0))
+#define MOCK_CLUSTER_VERSION_4_4_2_0 (oceanbase::common::cal_version(4, 4, 2, 0))
+#define CLUSTER_VERSION_4_5_0_0 (oceanbase::common::cal_version(4, 5, 0, 0))
 //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 //TODO: If you update the above version, please update CLUSTER_CURRENT_VERSION.
-#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_4_3_5_0
+#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_4_5_0_0
 
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // 1. After 4.0, each cluster_version is corresponed to a data version.
@@ -167,6 +185,13 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define MOCK_DATA_VERSION_4_2_4_0 (oceanbase::common::cal_version(4, 2, 4, 0))
 #define MOCK_DATA_VERSION_4_2_5_0 (oceanbase::common::cal_version(4, 2, 5, 0))
 #define MOCK_DATA_VERSION_4_2_5_1 (oceanbase::common::cal_version(4, 2, 5, 1))
+#define MOCK_DATA_VERSION_4_2_5_2 (oceanbase::common::cal_version(4, 2, 5, 2))
+#define MOCK_DATA_VERSION_4_2_5_3 (oceanbase::common::cal_version(4, 2, 5, 3))
+#define MOCK_DATA_VERSION_4_2_5_4 (oceanbase::common::cal_version(4, 2, 5, 4))
+#define MOCK_DATA_VERSION_4_2_5_5 (oceanbase::common::cal_version(4, 2, 5, 5))
+#define MOCK_DATA_VERSION_4_2_5_6 (oceanbase::common::cal_version(4, 2, 5, 6))
+#define MOCK_DATA_VERSION_4_2_5_7 (oceanbase::common::cal_version(4, 2, 5, 7))
+#define MOCK_DATA_VERSION_4_2_5_8 (oceanbase::common::cal_version(4, 2, 5, 8))
 // new data version before 4.3 cannot upgrade to master, must add "MOCK_" prefix
 #define DATA_VERSION_4_3_0_0 (oceanbase::common::cal_version(4, 3, 0, 0))
 #define DATA_VERSION_4_3_0_1 (oceanbase::common::cal_version(4, 3, 0, 1))
@@ -178,10 +203,24 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define DATA_VERSION_4_3_4_0 (oceanbase::common::cal_version(4, 3, 4, 0))
 #define DATA_VERSION_4_3_4_1 (oceanbase::common::cal_version(4, 3, 4, 1))
 #define DATA_VERSION_4_3_5_0 (oceanbase::common::cal_version(4, 3, 5, 0))
-#define DATA_CURRENT_VERSION DATA_VERSION_4_3_5_0
+#define DATA_VERSION_4_3_5_1 (oceanbase::common::cal_version(4, 3, 5, 1))
+#define DATA_VERSION_4_3_5_2 (oceanbase::common::cal_version(4, 3, 5, 2))
+#define MOCK_DATA_VERSION_4_3_5_3 (oceanbase::common::cal_version(4, 3, 5, 3))
+#define MOCK_DATA_VERSION_4_3_5_4 (oceanbase::common::cal_version(4, 3, 5, 4))
+#define MOCK_DATA_VERSION_4_3_5_5 (oceanbase::common::cal_version(4, 3, 5, 5))
+#define DATA_VERSION_4_4_0_0 (oceanbase::common::cal_version(4, 4, 0, 0))
+#define MOCK_DATA_VERSION_4_4_0_1 (oceanbase::common::cal_version(4, 4, 0, 1))
+#define DATA_VERSION_4_4_1_0 (oceanbase::common::cal_version(4, 4, 1, 0))
+#define MOCK_DATA_VERSION_4_4_2_0 (oceanbase::common::cal_version(4, 4, 2, 0))
+#define DATA_VERSION_4_5_0_0 (oceanbase::common::cal_version(4, 5, 0, 0))
+#define DATA_CURRENT_VERSION DATA_VERSION_4_5_0_0
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // LAST_BARRIER_DATA_VERSION should be the latest barrier data version before DATA_CURRENT_VERSION
 #define LAST_BARRIER_DATA_VERSION DATA_VERSION_4_2_1_0
+
+#define PROXY_VERSION_4_2_3_0 (oceanbase::common::cal_version(4, 2, 3, 0))
+#define PROXY_VERSION_4_3_0_0 (oceanbase::common::cal_version(4, 3, 0, 0))
+#define PROXY_VERSION_4_3_3_0 (oceanbase::common::cal_version(4, 3, 3, 0))
 
 class VersionUtil
 {
@@ -208,6 +247,8 @@ private:
 #define CVP(version) VP(version)
 // print data version in human readable way
 #define KDV(x) #x, DVP(x)
+#define KDV_(x) #x, DVP(x##_)
 // print cluster version in human readable way
 #define KCV(x) #x, CVP(x)
+#define KCV_(x) #x, CVP(x##_)
 #endif

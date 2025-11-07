@@ -101,6 +101,9 @@ public:
                               int64_t &out_read_size,
                               LogIOContext &io_ctx);
 
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+  inline const libpalf::LibPalfIteratorMemoryStorageFFI * get_memory_storage() { return nullptr; }
+#endif
   int truncate(const LSN &lsn);
   int truncate_prefix_blocks(const LSN &lsn);
 
@@ -126,6 +129,11 @@ public:
   LogReader *get_log_reader();
   int fill_cache_when_slide(const LSN &begin_lsn, const int64_t size);
 
+  int get_io_statistic_info(int64_t &last_working_time,
+                            int64_t &last_write_size,
+                            int64_t &accum_write_size,
+                            int64_t &accum_write_count,
+                            int64_t &accum_write_rt) const;
   TO_STRING_KV(K_(log_tail),
                K_(readable_log_tail),
                K_(log_block_header),
@@ -197,6 +205,7 @@ private:
   int update_manifest_(const block_id_t expected_next_block_id, const bool in_restart = false);
   int check_read_integrity_(const block_id_t &block_id);
   bool is_log_cache_inited_();
+  bool check_in_flashback_(const int64_t flashback_version) const;
 private:
   // Used to perform IO tasks in the background
   LogBlockMgr block_mgr_;

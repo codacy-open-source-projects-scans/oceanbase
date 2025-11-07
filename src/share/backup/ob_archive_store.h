@@ -332,10 +332,17 @@ public:
 
   bool is_valid() const override;
 
+  void reset() {
+    dest_id_ = 0;
+    round_id_ = 0;
+    piece_id_ = 0;
+    filelist_.reset();
+  }
+
   INHERIT_TO_STRING_KV("ObExternArchiveDesc", ObExternArchiveDesc, K_(dest_id), K_(round_id), K_(piece_id), K_(filelist));
 };
 
-
+typedef common::hash::ObHashSet<int64_t> ObPieceFlag;
 // Define archive store
 class ObArchiveStore : public ObBackupStore
 {
@@ -396,6 +403,13 @@ public:
 
   // oss://[user_specified_path]/[s_id].file_info.obarc
   int read_single_ls_info(const ObLSID &ls_id, ObSingleLSInfoDesc &desc) const;
+  int seal_file(
+    const int64_t dest_id,
+    const int64_t round_id,
+    const int64_t piece_id,
+    const ObLSID &ls_id,
+    const int64_t file_id) const;
+
 
   // oss://archive/d[dest_id]r[round_id]p[piece_id]/file_info.obarc
   int is_piece_info_file_exist(const int64_t dest_id, const int64_t round_id, const int64_t piece_id, bool &is_exist) const;
@@ -458,14 +472,17 @@ private:
     int init(ObArchiveStore *store, const int64_t dest_id, const int64_t round_id);
     int func(const dirent *entry) override;
 
-    ObArray<int64_t> &result() { return pieces_; }
-
+    ObArray<int64_t> &result();
+  private:
+    static constexpr int64_t BUCKET_NUM = 1024;
   private:
     bool is_inited_;
     ObArchiveStore *store_;
     int64_t dest_id_;
     int64_t round_id_;
-
+    // pieces_set_: record pieces that only have start file or end file
+    ObPieceFlag pieces_set_;
+    // pieces_: record pieces that have both start file and end file
     ObArray<int64_t> pieces_;
 
   private:
@@ -522,16 +539,51 @@ private:
     int init(ObArchiveStore *store, const SCN &scn);
     int func(const dirent *entry) override;
 
-    ObArray<int64_t> &result() { return rounds_; }
-
-    TO_STRING_KV(K_(is_inited), K_(*store), K_(scn), K_(rounds));
+    ObArray<int64_t> &result()
+    {
+      process_rounds_info_();
+      return rounds_;
+    }
+    TO_STRING_KV(K_(is_inited), K_(*store), K_(scn), K_(rounds), K_(rounds_info));
 
   private:
+    void process_rounds_info_();
+
+  private:
+    struct ObRoundInfo
+    {
+      ObRoundInfo() : round_id_(-1), dest_id_(-1), is_end_file_exist_(false) {
+        start_scn_.reset();
+        end_scn_.reset();
+      }
+      ~ObRoundInfo(){}
+
+      int set(const int64_t round_id, const int64_t dest_id, const SCN &start_scn, const SCN &end_scn, const bool is_end_file_exist);
+      bool is_valid();
+      int64_t round_id_;
+      int64_t dest_id_;
+      SCN start_scn_;
+      SCN end_scn_;
+      bool is_end_file_exist_;
+      TO_STRING_KV(K_(round_id), K_(dest_id), K_(is_end_file_exist), K_(start_scn), K_(end_scn));
+    };
+    struct RoundInfoCmp
+    {
+      inline bool operator()(ObRoundInfo left, ObRoundInfo right) const
+      {
+        bool bret = false;
+        if (left.is_valid() && right.is_valid()) {
+          bret = left.round_id_ < right.round_id_;
+        }
+        return bret;
+      }
+    };
     bool is_inited_;
     ObArchiveStore *store_;
     SCN scn_;
 
     ObArray<int64_t> rounds_;
+    ObArray<ObRoundInfo> rounds_info_;
 
   private:
     DISALLOW_COPY_AND_ASSIGN(ObLocateRoundFilter);
@@ -566,7 +618,7 @@ private:
     ObLSFileListOp();
     virtual ~ObLSFileListOp() {}
     int init(const ObArchiveStore *store, ObIArray<ObSingleLSInfoDesc::OneFile> *filelist);
-    bool need_get_file_size() const override { return true; }
+    bool need_get_file_meta() const override { return true; }
     int func(const dirent *entry) override;
 
     TO_STRING_KV(K_(is_inited), KPC(store_), KPC(filelist_));

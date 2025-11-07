@@ -13,26 +13,9 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_log_restore_proxy.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/net/ob_addr.h"
-#include "observer/ob_sql_client_decorator.h"  //ObSQLClientRetryWeak
 #include "observer/ob_server_struct.h"
-#include "common/ob_smart_var.h"
-#include "lib/mysqlclient/ob_mysql_connection_pool.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/string/ob_string.h"
-#include "share/inner_table/ob_inner_table_schema_constants.h"
-#include "share/backup/ob_backup_struct.h"     // COMPATIBILITY_MODE
-#include "share/ob_thread_mgr.h"
-#include "share/config/ob_server_config.h"
-#include "logservice/palf/palf_options.h"
 #include "share/oracle_errno.h"
 #include "share/backup/ob_log_restore_struct.h"
-#include <mysql.h>
 
 namespace oceanbase
 {
@@ -616,7 +599,7 @@ int ObLogRestoreProxyUtil::construct_server_ip_list(const common::ObSqlString &s
     LOG_WARN("sql is empty", KR(ret), K(sql));
   } else {
     RESTORE_RETRY(SMART_VAR(ObMySQLProxy::MySQLResult, result) {
-      ObMySQLResult *res = NULL;
+      common::sqlclient::ObMySQLResult *res = NULL;
       if (OB_FAIL(sql_proxy_.read(result, OB_INVALID_TENANT_ID, sql.ptr()))) {
         LOG_WARN("read value from DBA_OB_ACCESS_POINT failed", K(tenant_id_), K(sql));
       } else if (OB_ISNULL(res = result.get_result())) {
@@ -841,12 +824,11 @@ int ObLogRestoreProxyUtil::detect_tenant_mode_(common::sqlclient::ObMySQLServerP
         if (OB_FAIL(server_provider->get_server(idx, server))) {
           LOG_WARN("[RESTORE PROXY] failed to get server", KR(ret), K(idx), K(svr_cnt));
         } else {
-          const static int MAX_IP_BUFFER_LEN = 32;
-          char host[MAX_IP_BUFFER_LEN] = { 0 };
+          char host[MAX_IP_ADDR_LENGTH] = { 0 };
           const char *default_db_name = "";
           int32_t port = server.get_port();
 
-          if (!server.ip_to_string(host, MAX_IP_BUFFER_LEN)) {
+          if (!server.ip_to_string(host, MAX_IP_ADDR_LENGTH)) {
             ret = OB_BUF_NOT_ENOUGH;
             LOG_WARN("fail to get host.", K(server), K(ret));
           } else if (NULL == (mysql = mysql_init(NULL))) {

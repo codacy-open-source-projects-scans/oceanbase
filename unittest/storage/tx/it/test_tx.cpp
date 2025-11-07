@@ -11,12 +11,8 @@
  */
 
 #include <gtest/gtest.h>
-#include <thread>
 #define private public
 #define protected public
-#include "storage/tx/ob_trans_define.h"
-#include "storage/tx/ob_trans_service.h"
-#include "storage/tx/ob_trans_part_ctx.h"
 #define USING_LOG_PREFIX TRANS
 #include "tx_node.h"
 #include "../mock_utils/async_util.h"
@@ -35,7 +31,7 @@ namespace share {
 
 ObTxDataThrottleGuard::~ObTxDataThrottleGuard() {}
 
-int ObTenantTxDataAllocator::init(const char *label)
+int ObTenantTxDataAllocator::init(const char *label, TxShareThrottleTool* throttle_tool)
 {
   int ret = OB_SUCCESS;
   ObMemAttr mem_attr;

@@ -18,20 +18,10 @@
 #define protected public
 #define private public
 
-#include "lib/ob_errno.h"
-#include "lib/allocator/page_arena.h"
-#include "lib/oblog/ob_log.h"
-#include "common/ob_tablet_id.h"
-#include "share/ob_ls_id.h"
-#include "share/scn.h"
-#include "share/rc/ob_tenant_base.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "mtlenv/storage/medium_info_helper.h"
 #include "unittest/storage/test_tablet_helper.h"
 #include "unittest/storage/test_dml_common.h"
-#include "storage/tablet/ob_mds_row_iterator.h"
 #include "storage/tablet/ob_mds_scan_param_helper.h"
-#include "storage/tablet/ob_mds_schema_helper.h"
 #include "storage/compaction/ob_tablet_merge_ctx.h"
 
 #define USING_LOG_PREFIX STORAGE
@@ -64,6 +54,7 @@ public:
   static const share::ObLSID LS_ID;
 public:
   common::ObArenaAllocator allocator_;
+  ObMdsReadInfoCollector placeholder_collector_;
 };
 
 const share::ObLSID TestMdsTableScan::LS_ID(1234);
@@ -244,8 +235,10 @@ int TestMdsTableScan::try_schedule_mds_minor(const common::ObTabletID &tablet_id
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
   ObApplyStatusGuard guard;
-
-  if (OB_FAIL(MTL(ObLSService*)->get_ls(LS_ID, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+  if (GCONF.enable_logservice) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_ERROR("logservice is not supported", K(ret));
+  } else if (OB_FAIL(MTL(ObLSService*)->get_ls(LS_ID, ls_handle, ObLSGetMod::STORAGE_MOD))) {
     LOG_WARN("failed to get ls", K(ret));
   } else {
     int times = 0;
@@ -264,7 +257,7 @@ int TestMdsTableScan::try_schedule_mds_minor(const common::ObTabletID &tablet_id
         LOG_WARN("failed to get apply status", K(ret), K(LS_ID));
       } else if (OB_FALSE_IT(guard.apply_status_->max_applied_cb_scn_ = share::SCN::plus(share::SCN::min_scn(), 350+100))) {
       } else if (OB_FALSE_IT(guard.apply_status_->last_check_scn_ = share::SCN::plus(share::SCN::min_scn(), 350+100))) {
-      } else if (OB_FALSE_IT(static_cast<palf::PalfHandleImpl* >(guard.apply_status_->palf_handle_.palf_handle_impl_)->sw_.lsn_allocator_.lsn_ts_meta_.scn_delta_ =450)) {
+      } else if (OB_FALSE_IT(static_cast<palf::PalfHandleImpl* >(static_cast<palf::PalfHandle*>(guard.apply_status_->palf_handle_)->palf_handle_impl_)->sw_.lsn_allocator_.lsn_ts_meta_.scn_delta_ =450)) {
       } else if (OB_FAIL(compaction::ObTenantTabletScheduler::schedule_tablet_minor_merge<compaction::ObTabletMergeExecuteDag>(
           compaction::MDS_MINOR_MERGE, ls_handle, tablet_handle))) {
         STORAGE_LOG(WARN, "fail to schedule mds minor merge", K(ret));
@@ -306,7 +299,6 @@ int TestMdsTableScan::try_schedule_mds_minor(const common::ObTabletID &tablet_id
 
   return ret;
 }
-
 TEST_F(TestMdsTableScan, tablet_status)
 {
   int ret = OB_SUCCESS;
@@ -358,7 +350,6 @@ TEST_F(TestMdsTableScan, tablet_status)
   constexpr uint8_t mds_unit_id = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletCreateDeleteMdsUserData>>::value;
   common::ObString dummy_key;
   const int64_t timeout_us = ObClockGenerator::getClock() + 1_s;
-  share::SCN snapshot = share::SCN::plus(share::SCN::min_scn(), 120);
   ObStoreCtx store_ctx;
   ObMdsRowIterator iter;
 
@@ -371,7 +362,8 @@ TEST_F(TestMdsTableScan, tablet_status)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot,
+      ObVersionRange(0/*base_version*/, 120/*snapshot_version*/),
+      placeholder_collector_,
       scan_param);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -396,7 +388,7 @@ TEST_F(TestMdsTableScan, tablet_status)
   ASSERT_EQ(OB_ITER_END, ret);
 
   kv.reset();
-  snapshot = share::SCN::plus(share::SCN::min_scn(), 10);
+  SCN snapshot = share::SCN::plus(share::SCN::min_scn(), 10);
   ret = tablet->read_raw_data(allocator_, mds_unit_id, dummy_key, snapshot, timeout_us, kv);
   ASSERT_EQ(OB_ITER_END, ret);
 }
@@ -468,7 +460,6 @@ TEST_F(TestMdsTableScan, aux_tablet_info)
   constexpr uint8_t mds_unit_id = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletBindingMdsUserData>>::value;
   common::ObString dummy_key;
   const int64_t timeout_us = ObClockGenerator::getClock() + 1_s;
-  share::SCN snapshot = share::SCN::plus(share::SCN::min_scn(), 130);
   ObStoreCtx store_ctx;
   ObMdsRowIterator iter;
 
@@ -481,7 +472,8 @@ TEST_F(TestMdsTableScan, aux_tablet_info)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot,
+      ObVersionRange(0/*base_version*/, 130/*snapshot_version*/),
+      placeholder_collector_,
       scan_param);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -731,7 +723,6 @@ TEST_F(TestMdsTableScan, multi_version_row)
 
   // get tablet status with 330
   ObTableScanParam scan_param;
-  const share::SCN snapshot = share::SCN::plus(share::SCN::min_scn(), 330);
   ObStoreCtx store_ctx;
   ObMdsRowIterator iter;
 
@@ -744,7 +735,8 @@ TEST_F(TestMdsTableScan, multi_version_row)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot,
+      ObVersionRange(0/*base_version*/, 330/*snapshot_version*/),
+      placeholder_collector_,
       scan_param);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -769,7 +761,6 @@ TEST_F(TestMdsTableScan, multi_version_row)
 
   // get tablet status with 110
   ObTableScanParam scan_param2;
-  const share::SCN snapshot2 = share::SCN::plus(share::SCN::min_scn(), 110);
   ObMdsRowIterator iter2;
   ObStoreCtx store_ctx2;
 
@@ -782,7 +773,8 @@ TEST_F(TestMdsTableScan, multi_version_row)
       common::ObString()/*udf_key*/,
       true/*is_get*/,
       timeout_us,
-      snapshot2,
+      ObVersionRange(0/*base_version*/, 110/*snapshot_version*/),
+      placeholder_collector_,
       scan_param2);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -807,7 +799,6 @@ TEST_F(TestMdsTableScan, multi_version_row)
   // get aux_tablet_info with 220
   ObTableScanParam scan_param3;
   constexpr uint8_t mds_unit_id3 = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletBindingMdsUserData>>::value;
-  const share::SCN snapshot3 = share::SCN::plus(share::SCN::min_scn(), 220);
   ObStoreCtx store_ctx3;
   ObMdsRowIterator iter3;
 
@@ -820,7 +811,8 @@ TEST_F(TestMdsTableScan, multi_version_row)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot3,
+      ObVersionRange(0/*base_version*/, 220/*snapshot_version*/),
+      placeholder_collector_,
       scan_param3);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -844,7 +836,6 @@ TEST_F(TestMdsTableScan, multi_version_row)
   // get aux_tablet_info with 190
   ObTableScanParam scan_param4;
   constexpr uint8_t mds_unit_id4 = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletBindingMdsUserData>>::value;
-  const share::SCN snapshot4 = share::SCN::plus(share::SCN::min_scn(), 190);
   ObStoreCtx store_ctx4;
   ObMdsRowIterator iter4;
 
@@ -857,7 +848,8 @@ TEST_F(TestMdsTableScan, multi_version_row)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot4,
+      ObVersionRange(0/*base_version*/, 190/*snapshot_version*/),
+      placeholder_collector_,
       scan_param4);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1020,7 +1012,6 @@ TEST_F(TestMdsTableScan, test_minor_scan)
 
   // get tablet status with 330
   ObTableScanParam scan_param;
-  const share::SCN snapshot = share::SCN::plus(share::SCN::min_scn(), 330);
   ObStoreCtx store_ctx;
   ObMdsRowIterator iter;
 
@@ -1033,7 +1024,8 @@ TEST_F(TestMdsTableScan, test_minor_scan)
       dummy_key,
       true/*is_get*/,
       timeout_us,
-      snapshot,
+      ObVersionRange(0/*base_version*/, 330/*snapshot_version*/),
+      placeholder_collector_,
       scan_param);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1058,7 +1050,6 @@ TEST_F(TestMdsTableScan, test_minor_scan)
 
   // get tablet status with 110
   ObTableScanParam scan_param2;
-  const share::SCN snapshot2 = share::SCN::plus(share::SCN::min_scn(), 110);
   ObMdsRowIterator iter2;
   ObStoreCtx store_ctx2;
 
@@ -1071,7 +1062,8 @@ TEST_F(TestMdsTableScan, test_minor_scan)
       common::ObString()/*udf_key*/,
       true/*is_get*/,
       timeout_us,
-      snapshot2,
+      ObVersionRange(0/*base_version*/, 110/*snapshot_version*/),
+      placeholder_collector_,
       scan_param2);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1096,7 +1088,6 @@ TEST_F(TestMdsTableScan, test_minor_scan)
   // get aux_tablet_info with 220
   ObTableScanParam scan_param3;
   constexpr uint8_t mds_unit_id3 = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletBindingMdsUserData>>::value;
-  const share::SCN snapshot3 = share::SCN::plus(share::SCN::min_scn(), 220);
   ObStoreCtx store_ctx3;
   ObMdsRowIterator iter3;
 
@@ -1109,7 +1100,8 @@ TEST_F(TestMdsTableScan, test_minor_scan)
       common::ObString()/*udf_key*/,
       true/*is_get*/,
       timeout_us,
-      snapshot3,
+      ObVersionRange(0/*base_version*/, 220/*snapshot_version*/),
+      placeholder_collector_,
       scan_param3);
   ASSERT_EQ(OB_SUCCESS, ret);
 
@@ -1133,7 +1125,6 @@ TEST_F(TestMdsTableScan, test_minor_scan)
   // get aux_tablet_info with 190
   ObTableScanParam scan_param4;
   constexpr uint8_t mds_unit_id4 = mds::TupleTypeIdx<mds::NormalMdsTable, mds::MdsUnit<mds::DummyKey, ObTabletBindingMdsUserData>>::value;
-  const share::SCN snapshot4 = share::SCN::plus(share::SCN::min_scn(), 190);
   ObStoreCtx store_ctx4;
   ObMdsRowIterator iter4;
 
@@ -1146,7 +1137,8 @@ TEST_F(TestMdsTableScan, test_minor_scan)
       common::ObString()/*udf_key*/,
       true/*is_get*/,
       timeout_us,
-      snapshot4,
+      ObVersionRange(0/*base_version*/, 190/*snapshot_version*/),
+      placeholder_collector_,
       scan_param4);
   ASSERT_EQ(OB_SUCCESS, ret);
 

@@ -10,8 +10,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "storage/tx_table/ob_tx_table_define.h"
-#include "share/rc/ob_tenant_base.h"
+#include "ob_tx_table_define.h"
 #include "storage/tx_table/ob_tx_data_table.h"
 
 namespace oceanbase
@@ -115,6 +114,14 @@ int ObTxCtxTableInfo::serialize_(char *buf,
     TRANS_LOG(WARN, "serialize exec_info fail.", KR(ret), K(pos), K(buf_len));
   } else if (OB_FAIL(serialization::encode_vi64(buf, buf_len, pos, (int64_t)cluster_version_))) {
     TRANS_LOG(WARN, "encode cluster_version fail", K(buf_len), K(pos), K(ret));
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else {
+    if (GCTX.is_shared_storage_mode()) {
+      if (OB_FAIL(notify_task_queue_view_.serialize(buf, buf_len, pos))) {
+        TRANS_LOG(WARN, "encode notify_task_queue_ fail", K(buf_len), K(pos), K(ret));
+      }
+    }
+#endif
   }
 
   return ret;
@@ -176,6 +183,19 @@ int ObTxCtxTableInfo::deserialize_(const char *buf,
       TRANS_LOG(ERROR, "cluster version malformed", K(cluster_version_), KPC(this));
     }
   }
+#ifdef OB_BUILD_SHARED_STORAGE
+  if (GCTX.is_shared_storage_mode()) {
+    if (OB_SUCC(ret)) {
+      if (pos == buf_len) {
+        if (REACH_TIME_INTERVAL(1_s)) {
+          TRANS_LOG(INFO, "skip deserialize notify_task_queue_ in compat scenario", K(buf_len), K(pos), K(ret));
+        }
+      } else if (OB_FAIL(notify_task_queue_view_.deserialize(buf, buf_len, pos))) {
+        TRANS_LOG(WARN, "dencode notify_task_queue_ fail", K(buf_len), K(pos), K(ret));
+      }
+    }
+  }
+#endif
 
   return ret;
 }
@@ -202,6 +222,11 @@ int64_t ObTxCtxTableInfo::get_serialize_size_(void) const
   len += (OB_NOT_NULL(tx_data_guard_.tx_data()) ? tx_data_guard_.tx_data()->get_serialize_size() : 0);
   len += exec_info_.get_serialize_size();
   len += table_lock_info_.get_serialize_size();
+#ifdef OB_BUILD_SHARED_STORAGE
+  if (GCTX.is_shared_storage_mode()) {
+    len += notify_task_queue_view_.get_serialize_size();
+  }
+#endif
   return len;
 }
 

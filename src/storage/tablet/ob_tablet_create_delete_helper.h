@@ -53,7 +53,8 @@ public:
   static int get_tablet(
       const ObTabletMapKey &key,
       ObTabletHandle &handle,
-      const int64_t timeout_us = ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US);
+      const int64_t timeout_us = ObTabletCommon::DEFAULT_GET_TABLET_DURATION_US,
+      const WashTabletPriority priority = WashTabletPriority::WTP_HIGH);
 
   // snapshot version is used for multi source data reading,
   // tablet's multi source data will infect its visibility.
@@ -154,6 +155,10 @@ public:
       const ObTabletPoolType &type,
       const ObTabletMapKey &key,
       ObTabletHandle &handle);
+  static int acquire_tablet_from_pool_for_ss(
+    const ObTabletPoolType &type,
+    const ObTabletMapKey &key,
+    ObTabletHandle &handle);
   // Attention !!! only used when first creating tablet
   static int create_empty_sstable(
       common::ObArenaAllocator &allocator,
@@ -162,6 +167,18 @@ public:
       const int64_t snapshot_version,
       ObTableHandleV2 &table_handle);
   static int create_empty_co_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      ObTableHandleV2 &table_handle);
+  static int create_shared_empty_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      ObTableHandleV2 &table_handle);
+  static int create_shared_empty_co_sstable(
       common::ObArenaAllocator &allocator,
       const ObStorageSchema &storage_schema,
       const common::ObTabletID &tablet_id,
@@ -183,27 +200,27 @@ public:
   static bool is_pure_aux_tablets(const obrpc::ObCreateTabletInfo &info);
   static bool is_pure_hidden_tablets(const obrpc::ObCreateTabletInfo &info);
 
-  static int build_create_sstable_param(
-      const ObStorageSchema &storage_schema,
-      const common::ObTabletID &tablet_id,
-      const int64_t snapshot_version,
-      ObTabletCreateSSTableParam &param);
-  static int build_create_cs_sstable_param(
-      const ObStorageSchema &storage_schema,
-      const ObTabletID &tablet_id,
-      const int64_t snapshot_version,
-      const int64_t column_group_idx,
-      const bool has_all_column_group,
-      ObTabletCreateSSTableParam &cs_param);
   template<typename Arg, typename Helper>
   static int process_for_old_mds(
              const char *buf,
              const int64_t len,
              const transaction::ObMulSourceDataNotifyArg &notify_arg);
+
 private:
-#ifdef OB_BUILD_SHARED_STORAGE
-  static int try_get_current_version_tablet_(const ObTabletMapKey &key, ObLS *ls, ObTabletHandle &handle);
-#endif
+  static int inner_create_empty_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      const bool is_shared,
+      ObTableHandleV2 &table_handle);
+  static int inner_create_empty_co_sstable(
+      common::ObArenaAllocator &allocator,
+      const ObStorageSchema &storage_schema,
+      const common::ObTabletID &tablet_id,
+      const int64_t snapshot_version,
+      const bool is_shared,
+      ObTableHandleV2 &table_handle);
 
 private:
   class ReadMdsFunctor
@@ -244,7 +261,7 @@ int ObTabletCreateDeleteHelper::process_for_old_mds(
         if (notify_arg.for_replay_) {
           ret = OB_EAGAIN;
         } else {
-          usleep(100 * 1000);
+          ob_usleep(100 * 1000);
         }
       }
     } while (OB_FAIL(ret) && !notify_arg.for_replay_);
@@ -269,7 +286,7 @@ int ObTabletCreateDeleteHelper::process_for_old_mds(
         do {
           if (OB_FAIL(Helper::register_process(arg, mds_ctx))) {
             TRANS_LOG(ERROR, "fail to register_process, retry", K(ret), K(arg), K(notify_arg));
-            usleep(100 * 1000);
+            ob_usleep(100 * 1000);
           }
         } while (OB_FAIL(ret));
       }

@@ -14,7 +14,6 @@
 
 #include "sql/engine/set/ob_hash_set_vec_op.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/basic/ob_hp_infras_vec_op.h"
 
 namespace oceanbase
 {
@@ -291,11 +290,8 @@ int ObHashSetVecOp::convert_vector(const common::ObIArray<ObExpr*> &src_exprs,
             MEMCPY(dst, src, child_brs->size_ * sizeof(ObDatum));
           }
           OZ(to->init_vector(eval_ctx_, VEC_UNIFORM, child_brs->size_));
-        } else {
-          to_vec_header = from_vec_header;
-          if (from->is_nested_expr()) {
-            OZ(to->assign_nested_vector(*from, eval_ctx_));
-          }
+        } else if (OB_FAIL(to_vec_header.assign(from_vec_header))) {
+          LOG_WARN("assign vector header failed", K(ret));
         }
         // init eval info
         if (OB_SUCC(ret)) {

@@ -17,6 +17,12 @@
 
 namespace oceanbase
 {
+
+namespace sql
+{
+  struct ObDiagnosisManager;
+}
+
 namespace common
 {
 

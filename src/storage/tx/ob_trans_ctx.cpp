@@ -12,11 +12,7 @@
 
 #define USING_LOG_PREFIX TRANS
 #include "ob_trans_ctx.h"
-#include "ob_trans_ctx_mgr.h"
 #include "ob_trans_service.h"
-#include "storage/memtable/ob_memtable_interface.h"
-#include "share/ob_cluster_version.h"
-#include "share/rc/ob_context.h"
 
 namespace oceanbase
 {
@@ -141,6 +137,11 @@ void ObTransCtx::print_trace_log_if_necessary_()
     FORCE_PRINT_TRACE(tlog_, "[long trans] ");
   } else if (OB_UNLIKELY(trans_id_ % SAMPLING_SEED == 1)) {
     FORCE_PRINT_TRACE(tlog_, "[trans sampling] ");
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else if (OB_UNLIKELY(is_tenant_sslog_ls(tenant_id_, ls_id_) &&
+                         ObClockGenerator::getClock() >= (ctx_create_time_ + 30_ms))) {
+    FORCE_PRINT_TRACE(tlog_, "[long sslog trans] ");
+#endif
   } else {
     PRINT_TRACE(tlog_);
   }
@@ -197,7 +198,7 @@ MonotonicTs ObTransCtx::get_stc_()
   return stc_;
 }
 
-ObITsMgr *ObTransCtx::get_ts_mgr_()
+ObTsMgr *ObTransCtx::get_ts_mgr_()
 {
   return trans_service_->get_ts_mgr();
 }

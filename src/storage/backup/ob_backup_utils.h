@@ -55,7 +55,7 @@ class ObBackupMacroBlockIndexStore;
 class ObBackupUtils {
 public:
   static int get_sstables_by_data_type(const storage::ObTabletHandle &tablet_handle, const share::ObBackupDataType &backup_data_type,
-      const storage::ObTabletTableStore &table_store, const bool is_major_compaction_mview_dep_tablet,
+      const storage::ObTabletTableStore &table_store, const bool is_major_compaction_mview_dep_tablet, const share::SCN &mview_dep_scn,
       common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
   static int check_tablet_with_major_sstable(const storage::ObTabletHandle &tablet_handle, bool &with_major);
   static int fetch_macro_block_logic_id_list(const storage::ObTabletHandle &tablet_handle,
@@ -70,10 +70,14 @@ public:
   static int calc_start_replay_scn(const share::ObBackupSetTaskAttr &set_task_attr,
       const storage::ObBackupLSMetaInfosDesc &ls_meta_infos, const share::ObTenantArchiveRoundAttr &round_attr,
       share::SCN &start_replay_scn);
+  static int check_tenant_backup_dest_exists(const uint64_t tenant_id, bool &exists, common::ObISQLClient &sql_proxy);
 private:
   static int check_tablet_minor_sstable_validity_(const storage::ObTabletHandle &tablet_handle,
       const common::ObIArray<storage::ObSSTableWrapper> &minor_sstable_array);
   static int check_tablet_ddl_sstable_validity_(const storage::ObTabletHandle &tablet_handle,
+      const common::ObIArray<storage::ObSSTableWrapper> &ddl_sstable_array);
+  static int check_tablet_inc_major_ddl_sstable_validity_(
+      const storage::ObTabletHandle &tablet_handle,
       const common::ObIArray<storage::ObSSTableWrapper> &ddl_sstable_array);
   static int get_ls_leader_(const uint64_t tenant_id, const share::ObLSID &ls_id, common::ObAddr &leader);
   static int fetch_ls_member_list_(const uint64_t tenant_id, const share::ObLSID &ls_id,
@@ -81,11 +85,23 @@ private:
 private:
   static int fetch_sys_tablet_sstables_(const storage::ObTabletHandle &tablet_handle,
       const storage::ObTabletTableStore &tablet_table_store, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
-  static int fetch_minor_and_ddl_sstables_(const storage::ObTabletHandle &tablet_handle,
+  static int fetch_incremental_sstables_(const storage::ObTabletHandle &tablet_handle,
       const storage::ObTabletTableStore &tablet_table_store, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
   static int fetch_major_sstables_(const storage::ObTabletHandle &tablet_handle,
       const storage::ObTabletTableStore &tablet_table_store, const bool is_major_compaction_mview_dep_tablet,
+      const share::SCN &mview_dep_scn, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
+  static int check_and_filter_major_sstables_for_mview_(
+      const share::SCN &mview_dep_scn,
+      const storage::ObSSTableArray *major_sstable_array_ptr,
       common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
+  static int check_major_sstables_for_mview_(const share::SCN &mview_dep_scn,
+      const storage::ObSSTableArray *major_sstable_array_ptr);
+  static int filter_major_sstables_for_mview_(
+      const share::SCN &mview_dep_scn,
+      const storage::ObSSTableArray *major_sstable_array_ptr,
+      common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
+  static int lock_policy_table_then_check(
+      common::ObMySQLTransaction &trans, const uint64_t tenant_id, const bool log_only, bool &policy_exists);
 };
 
 struct ObBackupTabletCtx final {
@@ -381,7 +397,7 @@ private:
   int hold_tablet_handle_(const common::ObTabletID &tablet_id, ObBackupTabletHandleRef *tablet_handle);
   int fetch_tablet_sstable_array_(const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
       const ObTabletTableStore &table_store, const share::ObBackupDataType &backup_data_type,
-      const bool is_major_compaction_mview_dep_tablet, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
+      const bool is_major_compaction_mview_dep_tablet, const share::SCN &mview_dep_scn, common::ObIArray<storage::ObSSTableWrapper> &sstable_array);
   int prepare_tablet_logic_id_reader_(const common::ObTabletID &tablet_id, const storage::ObTabletHandle &tablet_handle,
       const storage::ObITable::TableKey &table_key, const blocksstable::ObSSTable &sstable,
       ObITabletLogicMacroIdReader *&reader);
@@ -399,12 +415,9 @@ private:
   int remove_duplicates_(common::ObIArray<ObBackupProviderItem> &array);
   int check_tablet_status_(const storage::ObTabletHandle &tablet_handle, bool &is_normal, bool &is_split_dst);
   int get_tablet_status_(const share::ObLSID &ls_id, const common::ObTabletID &tablet_id, ObTabletStatus &status);
-  int check_tx_data_can_explain_user_data_(const storage::ObTabletHandle &tablet_handle, bool &can_explain);
   int get_tenant_meta_index_turn_id_(int64_t &turn_id);
   int get_tenant_meta_index_retry_id_(const share::ObBackupDataType &backup_data_type,
       const int64_t turn_id, int64_t &retry_id);
-  int check_tablet_replica_validity_(const uint64_t tenant_id, const share::ObLSID &ls_id,
-      const common::ObTabletID &tablet_id, const share::ObBackupDataType &backup_data_type);
   int push_item_to_queue_(const ObBackupProviderItem &item);
   int pop_item_from_queue_(ObBackupProviderItem &item);
   void free_queue_item_();

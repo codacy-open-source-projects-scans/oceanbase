@@ -18,18 +18,8 @@
 #define private public
 #define protected public
 
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "unittest/storage/test_tablet_helper.h"
 #include "unittest/storage/test_dml_common.h"
-#include "share/ob_ls_id.h"
-#include "common/ob_tablet_id.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/ls/ob_ls_get_mod.h"
-#include "storage/multi_data_source/mds_ctx.h"
-#include "storage/tablet/ob_tablet_create_delete_mds_user_data.h"
-#include "storage/tx/ob_trans_define.h"
 
 using namespace oceanbase::common;
 
@@ -424,7 +414,8 @@ TEST_F(TestTabletStatusCache, get_transfer_out_tablet)
   ObLS *ls = ls_handle.get_ls();
   ASSERT_NE(nullptr, ls);
 
-  ret = ls->get_tablet_svr()->update_tablet_to_empty_shell(tablet_id);
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  ret = ls->get_tablet_svr()->update_tablet_to_empty_shell(data_version, tablet_id);
   ASSERT_EQ(OB_SUCCESS, ret);
 
   ret = ObTabletCreateDeleteHelper::check_and_get_tablet(key, tablet_handle, 1_s,
@@ -486,7 +477,8 @@ TEST_F(TestTabletStatusCache, get_transfer_deleted)
   ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_TRUE(!tablet->tablet_status_cache_.is_valid());
 
-  ret = ls->get_tablet_svr()->update_tablet_to_empty_shell(tablet_id);
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  ret = ls->get_tablet_svr()->update_tablet_to_empty_shell(data_version, tablet_id);
   ASSERT_EQ(OB_SUCCESS, ret);
 
   ret = ObTabletCreateDeleteHelper::check_and_get_tablet(key, tablet_handle, 1_s,

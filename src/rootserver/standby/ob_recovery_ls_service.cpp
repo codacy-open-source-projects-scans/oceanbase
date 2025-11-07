@@ -13,44 +13,19 @@
 #define USING_LOG_PREFIX RS
 #include "ob_recovery_ls_service.h"
 
-#include "lib/thread/threads.h"               //set_run_wrapper
-#include "lib/mysqlclient/ob_mysql_transaction.h"  //ObMySQLTransaction
-#include "lib/profile/ob_trace_id.h"
-#include "logservice/ob_log_base_header.h"          //ObLogBaseHeader
-#include "logservice/ob_log_handler.h"              //ObLogHandler
-#include "logservice/palf/log_entry.h"              //LogEntry
-#include "logservice/palf/log_define.h"
 #include "logservice/ob_log_service.h"//open_palf
 #ifdef OB_BUILD_LOG_STORAGE_COMPRESS
 #include "logservice/ob_log_compression.h"
 #endif
-#include "share/scn.h"//SCN
-#include "logservice/ob_garbage_collector.h"//ObGCLSLog
-#include "observer/ob_server_struct.h"              //GCTX
 #include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
 #include "rootserver/ob_ls_recovery_reportor.h" //ObLSRecoveryReportor
-#include "rootserver/ob_ls_service_helper.h"//ObTenantLSInfo, ObLSServiceHelper
-#include "rootserver/ob_balance_ls_primary_zone.h"
+#include "rootserver/ob_disaster_recovery_task_utils.h"//DisasterRecoveryUtils
 #include "src/share/balance/ob_balance_task_helper_operator.h"//insert_new_ls
-#include "rootserver/ob_create_standby_from_net_actor.h" // ObCreateStandbyFromNetActor
 #include "share/ls/ob_ls_life_manager.h"            //ObLSLifeManger
-#include "share/ls/ob_ls_operator.h"                //ObLSAttr
-#include "share/ls/ob_ls_recovery_stat_operator.h"  //ObLSRecoveryLSStatOperator
-#include "share/ob_errno.h"
-#include "share/ob_share_util.h"                           //ObShareUtil
-#include "share/schema/ob_multi_version_schema_service.h"  //ObMultiSchemaService
-#include "rootserver/standby/ob_standby_service.h" // ObStandbyService
-#include "share/ob_standby_upgrade.h"  // ObStandbyUpgrade
 #include "share/ob_upgrade_utils.h"  // ObUpgradeChecker
 #include "share/ob_global_stat_proxy.h" // ObGlobalStatProxy
-#include "storage/tx/ob_tx_log.h"                          //ObTxLogHeader
-#include "storage/tx_storage/ob_ls_service.h"              //ObLSService
-#include "storage/tx_storage/ob_ls_handle.h"  //ObLSHandle
-#include "storage/tx/ob_multi_data_source.h" //ObTxBufferNode
-#include "share/ob_log_restore_proxy.h"  // ObLogRestoreProxyUtil
-#include "share/ob_occam_time_guard.h"//ObTimeGuard
-#include "src/rootserver/ob_rs_event_history_table_operator.h"
 #include "rootserver/tenant_snapshot/ob_tenant_snapshot_util.h" // ObTenantSnapshotUtil
+#include "rootserver/ob_balance_ls_primary_zone.h" // ObBalanceLSPrimaryZone
 
 namespace oceanbase
 {
@@ -138,6 +113,8 @@ void ObRecoveryLSService::do_work()
       ObCurTraceId::init(GCONF.self_addr_);
       ObTenantInfoLoader *tenant_info_loader = MTL(ObTenantInfoLoader*);
       ObAllTenantInfo tenant_info;
+      omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+      idle_time_us = tenant_config.is_valid() ? tenant_config->_keepalive_interval : idle_time_us;
       //two thread for seed log and recovery_ls_manager
       if (!is_user_tenant(tenant_id_)) {
         ret = OB_ERR_UNEXPECTED;
@@ -190,7 +167,7 @@ int ObRecoveryLSService::process_thread0_(const ObAllTenantInfo &tenant_info)
 
   return ret;
 }
-
+ERRSIM_POINT_DEF(ERRSIM_RECOVERY_LS_THREAD1);
 int ObRecoveryLSService::process_thread1_(const ObAllTenantInfo &tenant_info,
      share::SCN &start_scn,
      palf::PalfBufferIterator &iterator)
@@ -203,6 +180,9 @@ int ObRecoveryLSService::process_thread1_(const ObAllTenantInfo &tenant_info,
   } else if (OB_UNLIKELY(!inited_) || OB_ISNULL(proxy_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret), K(inited_), KP(proxy_));
+  } else if (OB_UNLIKELY(ERRSIM_RECOVERY_LS_THREAD1 == -tenant_id_)) {
+    // do nothing
+    LOG_WARN("ERRSIM_RECOVERY_LS_THREAD1 opened", KR(ret), K(tenant_id_));
   } else {
     ObLSRecoveryStat ls_recovery_stat;
     ObLSRecoveryStatOperator ls_recovery;
@@ -1027,7 +1007,7 @@ int ObRecoveryLSService::process_ls_operator_in_trans_(
       }
     } else if (share::is_ls_create_pre_op(ls_attr.get_ls_operation_type())) {
       //create new ls;
-      if (OB_FAIL(create_new_ls_(ls_attr, sync_scn, tenant_info.get_switchover_status(), trans))) {
+      if (OB_FAIL(create_new_ls_(ls_attr, sync_scn, tenant_info.get_switchover_epoch(), trans))) {
         LOG_WARN("failed to create new ls", KR(ret), K(sync_scn), K(ls_attr), K(tenant_info));
       }
     } else if (share::is_ls_create_abort_op(ls_attr.get_ls_operation_type())) {
@@ -1106,14 +1086,13 @@ int ObRecoveryLSService::porcess_alter_ls_group_(const share::ObLSAttr &ls_attr,
 
 int ObRecoveryLSService::create_new_ls_(const share::ObLSAttr &ls_attr,
                                         const SCN &sync_scn,
-                                        const ObTenantSwitchoverStatus &switchover_status,
+                                        const int64_t switchover_epoch,
                                         common::ObMySQLTransaction &trans)
 {
   int ret = OB_SUCCESS;
-  if (!share::is_ls_create_pre_op(ls_attr.get_ls_operation_type())
-      || ! switchover_status.is_valid()) {
+  if (!share::is_ls_create_pre_op(ls_attr.get_ls_operation_type()) || OB_INVALID_VERSION == switchover_epoch) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", KR(ret), K(ls_attr), K(switchover_status));
+    LOG_WARN("invalid argument", KR(ret), K(ls_attr), K(switchover_epoch));
   } else {
     //create new ls;
     DEBUG_SYNC(BEFORE_RECOVER_USER_LS);
@@ -1135,9 +1114,8 @@ int ObRecoveryLSService::create_new_ls_(const share::ObLSAttr &ls_attr,
       ObLSFlag ls_flag = ls_attr.get_ls_flag();
       if (OB_FAIL(ObLSServiceHelper::create_new_ls_in_trans(ls_attr.get_ls_id(),
               ls_attr.get_ls_group_id(), ls_attr.get_create_scn(),
-              switchover_status, tenant_stat, trans, ls_flag, OB_INVALID_TENANT_ID/*source_tenant_id*/))) {
-        LOG_WARN("failed to add new ls status info", KR(ret), K(ls_attr), K(sync_scn),
-            K(tenant_stat), K(switchover_status));
+              switchover_epoch, tenant_stat, trans, ls_flag, OB_INVALID_TENANT_ID/*source_tenant_id*/))) {
+        LOG_WARN("failed to add new ls status info", KR(ret), K(ls_attr), K(sync_scn), K(tenant_stat));
       }
     }
     LOG_INFO("[LS_RECOVERY] create new ls", KR(ret), K(ls_attr));
@@ -1260,6 +1238,7 @@ int ObRecoveryLSService::process_ls_transfer_task_in_trans_(
 }
 
 //balance ls group and balance primary zone
+ERRSIM_POINT_DEF(ERRSIM_STANDBY_BALANCE);
 int ObRecoveryLSService::do_standby_balance_()
 {
   int ret = OB_SUCCESS;
@@ -1272,6 +1251,11 @@ int ObRecoveryLSService::do_standby_balance_()
     LOG_WARN("sql can't null", K(ret), K(proxy_));
   } else if (OB_FAIL(get_tenant_schema(tenant_id_, tenant_schema))) {
     LOG_WARN("failed to get tenant schema", KR(ret), K(tenant_id_));
+  } else if (OB_UNLIKELY(ERRSIM_STANDBY_BALANCE)) {
+    LOG_WARN("ERRSIM_STANDBY_BALANCE opened, do nothing", KR(ret), K(tenant_id_));
+  } else if (ObShareUtil::is_tenant_enable_rebalance(tenant_id_)
+      && OB_FAIL(ObBalanceLSPrimaryZone::try_adjust_user_ls_primary_zone(tenant_schema))) {
+    LOG_WARN("failed to adjust user ls primary zone", KR(ret), K(tenant_schema));
   } else {
     ObTenantLSInfo tenant_info(proxy_, &tenant_schema, tenant_id_);
     bool is_balanced = false;
@@ -1347,6 +1331,10 @@ int ObRecoveryLSService::try_do_ls_balance_task_(
       can_remove = true;
       if (OB_FAIL(do_ls_balance_alter_task_(ls_balance_task, trans))) {
         LOG_WARN("failed to do ls alter task", KR(ret), K(ls_balance_task));
+      } else if (OB_FAIL(DisasterRecoveryUtils::wakeup_local_service(gen_meta_tenant_id(tenant_id_)))) {
+        // dr service on leader of meta tenant 1 LS. it may not be local at the moment.
+        // to save resources, try to wake it up local, not guarante success.
+        LOG_WARN("fail to wake up", KR(ret));
       }
     } else if (ls_balance_task.get_task_op().is_transfer_end()) {
       if (OB_FAIL(ObLSServiceHelper::check_transfer_task_replay(
@@ -1442,7 +1430,8 @@ KR(ret), K(tenant_id_), K(tenant_info), K(ls_balance_task));
             K(ls_balance_task), K(transfer_scn));
       } else if (can_remove) {
         FLOG_INFO("ls all replica replay to newest, can remove", K(ls_balance_task));
-      } else if (REACH_TENANT_TIME_INTERVAL(10 * 1000 * 1000)) {
+      } else if (REACH_THREAD_TIME_INTERVAL(10 * 1000 * 1000)) {
+        // ignore ret
         // 10s
         LOG_WARN("can not remove ls balance task helper", K(ls_balance_task), K(tenant_info));
       }

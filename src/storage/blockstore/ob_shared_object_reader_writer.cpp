@@ -11,11 +11,8 @@
  */
 
 #define USING_LOG_PREFIX STORAGE
-#include "storage/blockstore/ob_shared_object_reader_writer.h"
-#include "storage/blocksstable/ob_block_manager.h"
-#include "observer/ob_server_struct.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/meta_mem/ob_tablet_handle.h"
+#include "ob_shared_object_reader_writer.h"
+#include "src/storage/ob_storage_struct.h"
 
 namespace oceanbase
 {
@@ -149,6 +146,13 @@ int ObSharedObjectsWriteCtx::advance_data_seq()
   int ret = OB_SUCCESS;
   if (ObStorageObjectType::SHARED_MAJOR_META_MACRO == next_opt_.object_type_) {
     next_opt_.ss_share_opt_.data_seq_++;
+  } else if (ObStorageObjectType::SHARED_TABLET_SUB_META == next_opt_.object_type_) {
+    if (UINT32_MAX == next_opt_.ss_tablet_sub_meta_opt_.data_seq_) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("write too many second meta_blocks", K(ret), K(next_opt_));
+    } else {
+      next_opt_.ss_tablet_sub_meta_opt_.data_seq_ = next_opt_.ss_tablet_sub_meta_opt_.data_seq_ + 1;
+    }
   }
   return ret;
 }
@@ -634,6 +638,7 @@ int ObSharedObjectLinkIter::read_next_block(ObSharedObjectReadHandle &shared_obj
   read_info.addr_ = cur_;
   read_info.ls_epoch_ = 0;/* ls_epoch for share storage */
   read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_DATA_READ);
+  read_info.io_timeout_ms_ = std::max(GCONF._data_storage_io_timeout / 1000, DEFAULT_IO_WAIT_TIME_MS);
   if (OB_FAIL(ObSharedObjectReaderWriter::async_read(read_info, shared_obj_handle))) {
     LOG_WARN("Fail to read block", K(ret), K(read_info));
   } else if (OB_FAIL(shared_obj_handle.wait())) {
@@ -775,13 +780,35 @@ void ObSharedObjectReaderWriter::reset()
   is_inited_ = false;
 }
 
+int callback_do_write_io(const ObSharedObjectWriteInfo &write_info)
+{
+  int ret = OB_SUCCESS;
+  if (!write_info.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid write info", K(ret), K(write_info));
+  } else if (nullptr != write_info.write_callback_ && OB_FAIL(write_info.write_callback_->do_write_io())) {
+    LOG_WARN("fail to start  write callback", K(ret));
+  }
+  return ret;
+}
+
+int callback_do_write_io(const ObIArray<ObSharedObjectWriteInfo> &write_infos)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < write_infos.count(); ++i) {
+    if (OB_FAIL(callback_do_write_io(write_infos.at(i)))) {
+      LOG_WARN("failed to start write callback", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObSharedObjectReaderWriter::async_write(
     const ObSharedObjectWriteInfo &write_info,
     const blocksstable::ObStorageObjectOpt &curr_opt,
     ObSharedObjectWriteHandle &shared_obj_handle)
 {
   int ret = OB_SUCCESS;
-  lib::ObMutexGuard guard(mutex_);
   ObSharedObjectWriteArgs write_args;
   ObMetaDiskAddr prev_addr;
   prev_addr.set_none_addr();
@@ -789,23 +816,29 @@ int ObSharedObjectReaderWriter::async_write(
   write_args.object_opt_ = curr_opt;
   ObSharedObjectHeader header;
   ObSharedObjectsWriteCtx tmp_write_ctx;
-
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("Not init", K(ret));
-  } else if (OB_UNLIKELY(!write_info.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arg", K(ret), K(write_info));
-  } else if (GCTX.is_shared_storage_mode() && OB_FAIL(do_switch(write_args.object_opt_))) {
-    LOG_WARN("fail to switch object for shared storage", K(ret), K(write_args));
+  {
+    lib::ObMutexGuard guard(mutex_);
+    if (IS_NOT_INIT) {
+      ret = OB_NOT_INIT;
+      LOG_WARN("Not init", K(ret));
+    } else if (OB_UNLIKELY(!write_info.is_valid())) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid arg", K(ret), K(write_info));
+    } else if (GCTX.is_shared_storage_mode() && OB_FAIL(do_switch(write_args.object_opt_))) {
+      LOG_WARN("fail to switch object for shared storage", K(ret), K(write_args));
+    }
+    if (FAILEDx(inner_write_block(
+        header,
+        write_info,
+        write_args,
+        shared_obj_handle,
+        tmp_write_ctx))) {
+      LOG_WARN("fail to write block", K(ret), K(write_info), K(write_args));
+    }
   }
-  if (FAILEDx(inner_write_block(
-      header,
-      write_info,
-      write_args,
-      shared_obj_handle,
-      tmp_write_ctx))) {
-    LOG_WARN("fail to write block", K(ret), K(write_info), K(write_args));
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(callback_do_write_io(write_info))) {
+    LOG_WARN("failed to start write callback", K(ret));
   }
   return ret;
 }
@@ -843,6 +876,11 @@ int ObSharedObjectReaderWriter::async_batch_write(
       }
     }
   }
+
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(callback_do_write_io(write_infos))) {
+    LOG_WARN("failed to start write callback", K(ret));
+  }
   return ret;
 }
 
@@ -852,32 +890,38 @@ int ObSharedObjectReaderWriter::async_link_write(
     ObSharedObjectLinkHandle &shared_obj_handle)
 {
   int ret = OB_SUCCESS;
-  lib::ObMutexGuard guard(mutex_);
-  ObSharedObjectWriteArgs write_args;
-  ObSharedObjectsWriteCtx write_ctx;
-  write_args.object_opt_ = curr_opt;
-  write_args.need_flush_ = true;
-  write_args.need_align_ = need_align_;
-  write_args.is_linked_ = true;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("Not init", K(ret));
-  } else if (OB_FAIL(shared_obj_handle.wait())) {
-    LOG_WARN("Fail to wait other blocks finish", K(ret), K(shared_obj_handle));
-  } else if (GCTX.is_shared_storage_mode() && OB_FAIL(do_switch(write_args.object_opt_))) {
-    LOG_WARN("fail to switch object for shared storage", K(ret), K(write_args));
-  }
+  {
+    lib::ObMutexGuard guard(mutex_);
+    ObSharedObjectWriteArgs write_args;
+    ObSharedObjectsWriteCtx write_ctx;
+    write_args.object_opt_ = curr_opt;
+    write_args.need_flush_ = true;
+    write_args.need_align_ = need_align_;
+    write_args.is_linked_ = true;
+    if (IS_NOT_INIT) {
+      ret = OB_NOT_INIT;
+      LOG_WARN("Not init", K(ret));
+    } else if (OB_FAIL(shared_obj_handle.wait())) {
+      LOG_WARN("Fail to wait other blocks finish", K(ret), K(shared_obj_handle));
+    } else if (GCTX.is_shared_storage_mode() && OB_FAIL(do_switch(write_args.object_opt_))) {
+      LOG_WARN("fail to switch object for shared storage", K(ret), K(write_args));
+    }
 
-  if (FAILEDx(inner_async_write(write_info, write_args, shared_obj_handle, write_ctx))) {
-    LOG_WARN("Fail to inner async write block", K(ret), K(write_info), K(write_args));
-  } else if (OB_FAIL(shared_obj_handle.write_ctx_.set_addr(write_ctx.addr_))) {
-    LOG_WARN("Fail to set addr to write ctx", K(ret), K(write_ctx));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < write_ctx.block_ids_.count(); ++i) {
-      if (OB_FAIL(shared_obj_handle.write_ctx_.add_object_id(write_ctx.block_ids_.at(i)))) {
-        LOG_WARN("Fail to add block id", K(ret), K(write_ctx));
+    if (FAILEDx(inner_async_write(write_info, write_args, shared_obj_handle, write_ctx))) {
+      LOG_WARN("Fail to inner async write block", K(ret), K(write_info), K(write_args));
+    } else if (OB_FAIL(shared_obj_handle.write_ctx_.set_addr(write_ctx.addr_))) {
+      LOG_WARN("Fail to set addr to write ctx", K(ret), K(write_ctx));
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < write_ctx.block_ids_.count(); ++i) {
+        if (OB_FAIL(shared_obj_handle.write_ctx_.add_object_id(write_ctx.block_ids_.at(i)))) {
+          LOG_WARN("Fail to add block id", K(ret), K(write_ctx));
+        }
       }
     }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(callback_do_write_io(write_info))) {
+    LOG_WARN("failed to satrt write callback", K(ret));
   }
   return ret;
 }
@@ -1048,7 +1092,7 @@ int ObSharedObjectReaderWriter::inner_write_block(
       object_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_WRITE);
       object_info.io_desc_.set_unsealed();
       object_info.io_desc_.set_sys_module_id(ObIOModule::SHARED_BLOCK_RW_IO);
-      object_info.ls_epoch_id_ = write_info.ls_epoch_;
+      object_info.set_ls_epoch_id(write_info.ls_epoch_);
 
       if (OB_FAIL(ret)) {
       } else if (OB_NOT_NULL(write_info.write_callback_) && need_flush) {
@@ -1174,7 +1218,7 @@ int ObSharedObjectReaderWriter::async_read(
   object_read_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_COMPACT_READ);
   object_read_info.io_timeout_ms_ = read_info.io_timeout_ms_;
 #ifdef OB_BUILD_SHARED_STORAGE
-  object_read_info.ls_epoch_id_ = read_info.ls_epoch_;
+  object_read_info.set_ls_epoch_id(read_info.ls_epoch_);
 #endif
   object_read_info.io_desc_.set_sys_module_id(ObIOModule::SHARED_BLOCK_RW_IO);
   object_read_info.io_callback_ = read_info.io_callback_;

@@ -21,20 +21,10 @@
 #define private public
 
 #include "lib/alloc/memory_dump.h"
-#include "storage/tablet/ob_tablet_persister.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/meta_mem/ob_tablet_map_key.h"
-#include "storage/meta_mem/ob_tablet_leak_checker.h"
-#include "storage/ls/ob_ls.h"
 #include "storage/schema_utils.h"
 #include "storage/mock_ob_log_handler.h"
 #include "storage/tablelock/ob_lock_memtable.h"
-#include "storage/tablet/ob_tablet_table_store_flag.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
-#include "storage/tablet/ob_tablet_status.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "storage/test_dml_common.h"
-#include "storage/slog_ckpt/ob_linked_macro_block_writer.h"
 
 namespace oceanbase
 {
@@ -56,11 +46,6 @@ namespace storage
 int ObIMemtable::get_ls_id(share::ObLSID &ls_id)
 {
   ls_id = share::ObLSID(1001);
-  return OB_SUCCESS;
-}
-
-int ObTablet::check_and_set_initial_state()
-{
   return OB_SUCCESS;
 }
 
@@ -261,6 +246,7 @@ void TestTenantMetaMemMgr::prepare_create_sstable_param()
   param_.occupy_size_ = 0;
   param_.ddl_scn_.set_min();
   param_.filled_tx_scn_.set_min();
+  param_.rec_scn_.set_min();
   param_.original_size_ = 0;
   param_.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   param_.encrypt_id_ = 0;
@@ -633,7 +619,8 @@ TEST_F(TestTenantMetaMemMgr, test_tablet)
 
   ObMetaDiskAddr old_addr;
   old_addr.set_none_addr();
-  ret = t3m_.compare_and_swap_tablet(key, old_addr, addr);
+  ObUpdateTabletPointerParam tablet_ptr_param;
+  ret = t3m_.compare_and_swap_tablet(key, old_addr, addr, tablet_ptr_param);
   ASSERT_EQ(common::OB_NOT_THE_OBJECT, ret);
   ASSERT_EQ(0, t3m_.tablet_buffer_pool_.inner_used_num_);
   ASSERT_EQ(1, t3m_.tablet_map_.map_.size());
@@ -733,10 +720,12 @@ TEST_F(TestTenantMetaMemMgr, test_wash_tablet)
   ret = tablet->init_for_first_time_creation(allocator_, ls_id_, tablet_id, tablet_id,
       create_scn, create_scn.get_val_for_tx(), create_tablet_schema, true/*need_create_empty_major_sstable*/,
       SCN::invalid_scn()/*clog_checkpoint_scn*/, SCN::invalid_scn()/*mds_checkpoint_scn*/,
-      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, &freezer);
+      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, &freezer);
   ASSERT_EQ(common::OB_SUCCESS, ret);
   ASSERT_EQ(1, tablet->get_ref());
-  const ObTabletPersisterParam persist_param(ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq());
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t tablet_meta_version = 0;
+  const ObTabletPersisterParam persist_param(data_version, ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq(), tablet_meta_version);
   ObTabletPersister persister(persist_param, ObCtxIds::DEFAULT_CTX_ID);
   ObSArray<MacroBlockId> shared_meta_id_arr;
 
@@ -768,7 +757,8 @@ TEST_F(TestTenantMetaMemMgr, test_wash_tablet)
 
   ObMetaDiskAddr none_addr;
   none_addr.set_none_addr();
-  ret = t3m_.compare_and_swap_tablet(key, addr, none_addr);
+  ObUpdateTabletPointerParam tablet_ptr_param;
+  ret = t3m_.compare_and_swap_tablet(key, addr, none_addr, tablet_ptr_param);
   ASSERT_EQ(common::OB_INVALID_ARGUMENT, ret);
   ASSERT_EQ(0, t3m_.tablet_buffer_pool_.inner_used_num_);
 
@@ -835,12 +825,14 @@ TEST_F(TestTenantMetaMemMgr, test_wash_inner_tablet)
   ret = tablet->init_for_first_time_creation(allocator_, ls_id_, tablet_id, tablet_id,
       create_scn, create_scn.get_val_for_tx(), create_tablet_schema,
       make_empty_co_sstable/*need_create_empty_major_sstable*/, share::SCN::invalid_scn()/*clog_checkpoint_scn*/, SCN::invalid_scn()/*mds_checkpoint_scn*/,
-      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, &freezer);
+      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, &freezer);
   ASSERT_EQ(common::OB_SUCCESS, ret);
   ASSERT_EQ(1, tablet->get_ref());
 
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t tablet_meta_version = 0;
   ObTabletHandle new_handle;
-  const ObTabletPersisterParam persist_param(ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq());
+  const ObTabletPersisterParam persist_param(data_version, ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq(), tablet_meta_version);
   ObTabletPersister persister(persist_param, ObCtxIds::DEFAULT_CTX_ID);
 
   ObSArray<MacroBlockId> shared_meta_id_arr;
@@ -869,7 +861,6 @@ TEST_F(TestTenantMetaMemMgr, test_wash_inner_tablet)
   ASSERT_NE(tmp_handle.get_obj(), new_handle.get_obj()); // get tablet allocated by allocator
   ASSERT_TRUE(tmp_handle.get_obj()->get_tablet_addr().is_block());
   ASSERT_EQ(tmp_handle.allocator_, tmp_handle.get_obj()->allocator_);
-  ASSERT_FALSE(tmp_handle.allow_copy_and_assign_);
   tmp_handle.reset();
 
   void *free_obj = nullptr;
@@ -885,7 +876,7 @@ TEST_F(TestTenantMetaMemMgr, test_wash_inner_tablet)
   ObMetaDiskAddr mem_addr;
   ret = mem_addr.set_mem_addr(0, 0);
   ASSERT_EQ(common::OB_SUCCESS, ret);
-  ret = t3m_.compare_and_swap_tablet(key, addr, mem_addr);
+  ret = t3m_.compare_and_swap_tablet(key, addr, mem_addr, param);
   ASSERT_EQ(common::OB_INVALID_ARGUMENT, ret);
 
   handle.reset();
@@ -950,12 +941,14 @@ TEST_F(TestTenantMetaMemMgr, test_wash_no_sstable_tablet)
       create_scn, create_scn.get_val_for_tx(), create_tablet_schema,
       make_empty_co_sstable/*need_create_empty_major_sstable*/, share::SCN::invalid_scn()/*clog_checkpoint_scn*/,
       share::SCN::invalid_scn()/*mds_checkpoint_scn*/,
-      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, &freezer);
+      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, &freezer);
   ASSERT_EQ(common::OB_SUCCESS, ret);
   ASSERT_EQ(1, tablet->get_ref());
 
   ObTabletHandle new_handle;
-  const ObTabletPersisterParam persist_param(ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq());
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t tablet_meta_version = 0;
+  const ObTabletPersisterParam persist_param(data_version, ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq(), tablet_meta_version);
   ObTabletPersister persister(persist_param, ObCtxIds::DEFAULT_CTX_ID);
   ObSArray<MacroBlockId> shared_meta_id_arr;
   ASSERT_EQ(common::OB_SUCCESS, t3m_.acquire_tablet_from_pool(ObTabletPoolType::TP_NORMAL, WashTabletPriority::WTP_HIGH, key, new_handle));
@@ -1036,7 +1029,7 @@ TEST_F(TestTenantMetaMemMgr, test_get_tablet_with_allocator)
   ASSERT_EQ(common::OB_SUCCESS, ret);
 
   ObTabletCreateSSTableParam param;
-  ret = ObTabletCreateDeleteHelper::build_create_sstable_param(create_tablet_schema, tablet_id, 100, param);
+  ret = param.init_for_empty_major_sstable(tablet_id, create_tablet_schema, 100, -1, false, false);
   ASSERT_EQ(common::OB_SUCCESS, ret);
 
   ret = ObTabletCreateDeleteHelper::create_sstable(param, allocator_, sstable);
@@ -1051,12 +1044,14 @@ TEST_F(TestTenantMetaMemMgr, test_get_tablet_with_allocator)
       create_scn, create_scn.get_val_for_tx(), create_tablet_schema,
       make_empty_co_sstable/*need_create_empty_major_sstable*/, share::SCN::invalid_scn()/*clog_checkpoint_scn*/,
       share::SCN::invalid_scn()/*mds_checkpoint_scn*/,
-      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/,false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, &freezer);
+      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/,false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, &freezer);
   ASSERT_EQ(common::OB_SUCCESS, ret);
   ASSERT_EQ(1, tablet->get_ref());
 
   ObTabletHandle new_handle;
-  const ObTabletPersisterParam persist_param(ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq());
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t tablet_meta_version = 0;
+  const ObTabletPersisterParam persist_param(data_version, ls_id_, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet->get_transfer_seq(), tablet_meta_version);
   ObTabletPersister persister(persist_param, ObCtxIds::DEFAULT_CTX_ID);
   ObSArray<MacroBlockId> shared_meta_id_arr;
   ASSERT_EQ(common::OB_SUCCESS, t3m_.acquire_tablet_from_pool(ObTabletPoolType::TP_NORMAL, WashTabletPriority::WTP_HIGH, key, new_handle));
@@ -1167,6 +1162,7 @@ TEST_F(TestTenantMetaMemMgr, test_wash_mem_tablet)
   param.occupy_size_ = 0;
   param.ddl_scn_.set_min();
   param.filled_tx_scn_.set_min();
+  param.rec_scn_.set_min();
   param.original_size_ = 0;
   param.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   param.encrypt_id_ = 0;
@@ -1185,7 +1181,7 @@ TEST_F(TestTenantMetaMemMgr, test_wash_mem_tablet)
       create_scn, create_scn.get_val_for_tx(), create_tablet_schema,
       make_empty_co_sstable/*need_create_empty_major_sstable*/, share::SCN::invalid_scn()/*clog_checkpoint_scn*/,
       share::SCN::invalid_scn()/*mds_checkpoint_scn*/,
-      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, &freezer);
+      false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/, false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, &freezer);
   ASSERT_EQ(common::OB_SUCCESS, ret);
   ASSERT_EQ(1, tablet->get_ref());
 
@@ -1214,7 +1210,7 @@ TEST_F(TestTenantMetaMemMgr, test_wash_mem_tablet)
 
   ObMetaDiskAddr none_addr;
   none_addr.set_none_addr();
-  ret = t3m_.compare_and_swap_tablet(key, addr, none_addr);
+  ret = t3m_.compare_and_swap_tablet(key, addr, none_addr, update_pointer_param);
   ASSERT_EQ(common::OB_INVALID_ARGUMENT, ret);
 
   handle.reset();
@@ -1294,7 +1290,6 @@ TEST_F(TestTenantMetaMemMgr, test_replace_tablet)
   ASSERT_EQ(tmp_handle.get_obj(), handle.get_obj()); // get full tablet
   ASSERT_TRUE(tmp_handle.get_obj()->get_tablet_addr().is_memory());
   ASSERT_EQ(handle.allocator_, tmp_handle.allocator_);
-  ASSERT_TRUE(tmp_handle.allow_copy_and_assign_);
   tmp_handle.reset();
 
   ObMetaDiskAddr addr;
@@ -1406,12 +1401,13 @@ TEST_F(TestTenantMetaMemMgr, test_tablet_wash_priority)
 
   ASSERT_TRUE(high_priority_handle.calc_wash_score(high_priority_handle.wash_priority_) > handle.calc_wash_score(handle.wash_priority_));
 
-  ObTabletHandle handle1(handle);
+  ObTabletHandle handle1;
+  handle1.assign(handle);
   ASSERT_TRUE(handle1.calc_wash_score(handle1.wash_priority_) < 0);
 
   ObTabletHandle handle2;
   ASSERT_TRUE(handle2.calc_wash_score(handle2.wash_priority_) == INT64_MIN);
-  handle2 = high_priority_handle;
+  handle2.set_wash_priority(WashTabletPriority::WTP_HIGH);
   ASSERT_TRUE(handle2.calc_wash_score(handle2.wash_priority_) > 0);
 }
 
@@ -1643,7 +1639,7 @@ TEST_F(TestTenantMetaMemMgr, test_leak_checker_copy)
     tb_handle_1.get_obj()->tablet_meta_.transfer_info_.transfer_seq_ = 0;
     ASSERT_EQ(MTL(ObTenantMetaMemMgr*)->leak_checker_.tb_ref_bucket_[index_1], 1);
     ObTabletHandle tb_handle_2;
-    tb_handle_2 = tb_handle_1;
+    tb_handle_2.assign(tb_handle_1);
     ASSERT_EQ(MTL(ObTenantMetaMemMgr*)->leak_checker_.tb_ref_bucket_[tb_handle_2.index_], 1);
     MTL(ObTenantMetaMemMgr *)->del_tablet(ObTabletMapKey(ls_id_, tablet_id_1));
   }

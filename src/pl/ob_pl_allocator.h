@@ -31,6 +31,9 @@ PL_MOD_DEF(OB_PL_RECORD, "PlTemp")
 PL_MOD_DEF(OB_PL_COLLECTION, "PlTemp")
 PL_MOD_DEF(OB_PL_PACKAGE_SYMBOL, "PlTemp")
 PL_MOD_DEF(OB_PL_BLOCK_EXPR, "PlTemp")
+PL_MOD_DEF(OB_PL_MULTISET, "PlMultiset")
+PL_MOD_DEF(OB_PL_TEXT_PROTOCOL_CONVERT, "PlTextProtocolConvert")
+PL_MOD_DEF(OB_PL_CODE_COVERAGE, "PlCodeCoverage")
 #endif
 
 
@@ -86,7 +89,8 @@ public:
     is_inited_(false),
     memattr_(ObMemAttr(MTL_ID(), "PlTemp", ObCtxIds::DEFAULT_CTX_ID)),
     parent_allocator_(parent_alloc),
-    allocator_(nullptr) {}
+    allocator_(nullptr),
+    use_malloc_(false) {}
 
   virtual ~ObPLAllocator1() {
     destroy();
@@ -124,6 +128,7 @@ public:
     }
     return total;
   }
+  const ObMemAttr &get_attr() { return memattr_; }
 
   TO_STRING_KV(K_(is_inited), K_(memattr));
 
@@ -133,6 +138,7 @@ private:
   common::ObIAllocator *parent_allocator_;
   common::ObBlockAllocMgr alloc_mgr_;
   common::ObIAllocator *allocator_;
+  bool use_malloc_;
 };
 
 }

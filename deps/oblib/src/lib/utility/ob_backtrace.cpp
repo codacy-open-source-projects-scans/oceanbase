@@ -12,16 +12,8 @@
 
 #define USING_LOG_PREFIX LIB
 
-#include "lib/utility/ob_backtrace.h"
-#include <stdio.h>
-#include <execinfo.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <string.h>
-#include "lib/utility/ob_defer.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/coro/co_var.h"
-#include "common/ob_common_utility.h"
+#include "ob_backtrace.h"
+#include "lib/utility/utility.h"
 
 namespace oceanbase
 {
@@ -50,9 +42,13 @@ int light_backtrace(void **buffer, int size, int64_t rbp)
   if (OB_LIKELY(OB_SUCCESS == get_stackattr(stack_addr, stack_size))) {
 #define addr_in_stack(addr) (addr >= (int64_t)stack_addr && addr < (int64_t)stack_addr + stack_size)
     while (rbp != 0 && rv < size) {
+#if defined(__aarch64__)
       if (!addr_in_stack(*(int64_t*)rbp) &&
           !FALSE_IT(rbp += 16) &&
           !addr_in_stack(*(int64_t*)rbp)) {
+#else
+      if (!addr_in_stack(*(int64_t*)rbp)) {
+#endif
         break;
       } else {
         int64_t return_addr = rbp + 8;

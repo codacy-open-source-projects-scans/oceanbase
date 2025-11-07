@@ -31,7 +31,7 @@ ObSetCommentHelper::ObSetCommentHelper(
   const uint64_t tenant_id,
   const obrpc::ObSetCommentArg &arg,
   obrpc::ObParallelDDLRes &res)
-  : ObDDLHelper(schema_service, tenant_id),
+  : ObDDLHelper(schema_service, tenant_id, "[paralle set comment]"),
   arg_(arg),
   res_(res),
   database_id_(OB_INVALID_ID),
@@ -57,55 +57,6 @@ int ObSetCommentHelper::check_inner_stat_()
   return ret;
 }
 
-int ObSetCommentHelper::execute()
-{
-  int ret = OB_SUCCESS;
-  RS_TRACE(parallel_ddl_begin);
-  if (OB_FAIL(check_inner_stat_())) {
-    LOG_WARN("fail to check inner stat", KR(ret));
-  } else if (OB_FAIL(start_ddl_trans_())) {
-    LOG_WARN("fail to start ddl trans", KR(ret));
-  } else if (OB_FAIL(lock_objects_())) {
-    LOG_WARN("fail to lock objects", KR(ret));
-  } else if (OB_FAIL(check_table_legitimacy_())) {
-    LOG_WARN("fail to check comment", KR(ret));
-  } else if (OB_FAIL(generate_schemas_())) {
-    LOG_WARN("fail to generate schemas", KR(ret));
-  } else if (OB_FAIL(calc_schema_version_cnt_())) {
-    LOG_WARN("fail to calc schema version cnt", KR(ret));
-  } else if (OB_FAIL(gen_task_id_and_schema_versions_())) {
-    LOG_WARN("fail to gen task id and schema versions", KR(ret));
-  } else if (OB_FAIL(alter_schema_())) {
-    LOG_WARN("fail to create schemas", KR(ret));
-  } else if (OB_FAIL(serialize_inc_schema_dict_())) {
-    LOG_WARN("fail to serialize inc schema dict", KR(ret));
-  } else if (OB_FAIL(wait_ddl_trans_())) {
-    LOG_WARN("fail to wait ddl trans", KR(ret));
-  }
-  if (OB_FAIL(end_ddl_trans_(ret))) { //won't overwrite ret
-    LOG_WARN("fail to end ddl trans", KR(ret));
-  } else {
-    ObSchemaVersionGenerator *tsi_generator = GET_TSI(TSISchemaVersionGenerator);
-    int64_t last_schema_version = OB_INVALID_VERSION;
-    int64_t end_schema_version = OB_INVALID_VERSION;
-    if (OB_ISNULL(tsi_generator)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("tsi generator is null", KR(ret));
-    } else if (OB_FAIL(tsi_generator->get_current_version(last_schema_version))) {
-      LOG_WARN("fail to get current version", KR(ret), K_(tenant_id), K_(arg));
-    } else if (OB_FAIL(tsi_generator->get_end_version(end_schema_version))) {
-      LOG_WARN("fail to get end version", KR(ret), K_(tenant_id), K_(arg));
-    } else if (OB_UNLIKELY(last_schema_version != end_schema_version)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("too much schema versions may be allocated", KR(ret), KPC(tsi_generator));
-    } else {
-      res_.schema_version_ = last_schema_version;
-    }
-  }
-  RS_TRACE(parallel_ddl_end);
-  FORCE_PRINT_TRACE(THE_RS_TRACE, "[parallel set comment]");
-  return ret;
-}
 
 int ObSetCommentHelper::lock_objects_()
 {
@@ -127,6 +78,9 @@ int ObSetCommentHelper::lock_objects_()
   RS_TRACE(lock_objects);
   if (FAILEDx(lock_for_common_ddl_())) { // online ddl lock & table lock
     LOG_WARN("fail to lock for common ddl", KR(ret));
+  } else if (OB_ISNULL(orig_table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("orig_table_schema_ is null", KR(ret));
   } else if (OB_UNLIKELY(database_id_ != orig_table_schema_->get_database_id())) {
     ret = OB_ERR_PARALLEL_DDL_CONFLICT;
     LOG_WARN("database_id_ is not equal to table schema's databse_id",
@@ -236,15 +190,17 @@ int ObSetCommentHelper::check_table_legitimacy_()
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "alter materialized view is");
   } else if (OB_UNLIKELY(orig_table_schema_->is_ctas_tmp_table())) {
     ret = OB_ERR_WRONG_OBJECT;
+    ObCStringHelper helper;
     LOG_USER_ERROR(OB_ERR_WRONG_OBJECT,
-    to_cstring(arg_.database_name_), to_cstring(arg_.table_name_), "BASE TABLE");
+    helper.convert(arg_.database_name_), helper.convert(arg_.table_name_), "BASE TABLE");
   } else if (OB_UNLIKELY((!orig_table_schema_->is_user_table()
                           && !orig_table_schema_->is_tmp_table()
                           && !orig_table_schema_->is_view_table()
                           && !orig_table_schema_->is_external_table()))) {
     ret = OB_ERR_WRONG_OBJECT;
+    ObCStringHelper helper;
     LOG_USER_ERROR(OB_ERR_WRONG_OBJECT,
-    to_cstring(arg_.database_name_), to_cstring(arg_.table_name_), "BASE TABLE");
+    helper.convert(arg_.database_name_), helper.convert(arg_.table_name_), "BASE TABLE");
   } else if (OB_UNLIKELY(orig_table_schema_->is_sys_view() && !GCONF.enable_sys_table_ddl)) {
     ret = OB_OP_NOT_ALLOW;
     LOG_WARN("comment on sys view is not allowed", KR(ret), K(orig_table_schema_->get_table_id()));
@@ -296,7 +252,7 @@ int ObSetCommentHelper::lock_for_common_ddl_()
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id_, tenant_data_version))) {
     LOG_WARN("get min data version failed", KR(ret), K_(tenant_id));
   } else {
-    if (OB_FAIL(ObDDLLock::lock_for_common_ddl_in_trans(*orig_table_schema_, false/*require_strict_binary_format*/,trans_))) {
+    if (OB_FAIL(ObDDLLock::lock_for_common_ddl_in_trans(*orig_table_schema_, false/*require_strict_binary_format*/,get_trans_()))) {
       LOG_WARN("fail to lock for common ddl", KR(ret));
     }
   }
@@ -309,11 +265,16 @@ int ObSetCommentHelper::generate_schemas_()
   int ret = OB_SUCCESS;
   if (OB_FAIL(check_inner_stat_())) {
     LOG_WARN("fail to check inner stat", KR(ret));
+  } else if (OB_FAIL(check_table_legitimacy_())) {
+    LOG_WARN("fail to check table legitimacy", KR(ret));
   } else if (OB_ISNULL(orig_table_schema_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("orig table schema is nullptr", KR(ret));
   } else if (OB_FAIL(ObSchemaUtils::alloc_schema(allocator_, *orig_table_schema_, new_table_schema_))) {
     LOG_WARN("fail to alloc schema", KR(ret));
+  } else if (OB_ISNULL(new_table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("new table schema is nullptr", KR(ret));
   } else {
     if (obrpc::ObSetCommentArg::COMMENT_TABLE == arg_.op_type_) {
       if (OB_FAIL(new_table_schema_->set_comment(arg_.table_comment_))) {
@@ -356,7 +317,7 @@ int ObSetCommentHelper::calc_schema_version_cnt_()
   return ret;
 }
 
-int ObSetCommentHelper::alter_schema_()
+int ObSetCommentHelper::operate_schemas_()
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
@@ -365,22 +326,27 @@ int ObSetCommentHelper::alter_schema_()
   const ObString *ddl_stmt_str = &arg_.ddl_stmt_str_;
   if (OB_FAIL(check_inner_stat_())) {
     LOG_WARN("fail to check inner stat", KR(ret));
+  } else if (OB_ISNULL(orig_table_schema_) || OB_ISNULL(new_table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("orig table schema or new table schema is null", KR(ret), KP(orig_table_schema_), KP(new_table_schema_));
   } else if (OB_ISNULL(schema_service_impl = schema_service_->get_schema_service())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema_service impl is null", KR(ret));
   } else if (OB_FAIL(schema_service_->gen_new_schema_version(tenant_id_, new_schema_version))) {
     LOG_WARN("fail to gen new schema version", KR(ret), K_(tenant_id));
   } else {
+    const bool need_del_stat = false;
     for (uint64_t column_idx = 0; OB_SUCC(ret) && column_idx < arg_.column_name_list_.size(); column_idx++) {
       new_column_schemas_.at(column_idx)->set_schema_version(new_schema_version);
       if (OB_FAIL(schema_service_impl->get_table_sql_service().update_single_column(
-                trans_, *orig_table_schema_, *new_table_schema_, *new_column_schemas_.at(column_idx), false /* record ddl operation*/))) {
+                get_trans_(), *orig_table_schema_, *new_table_schema_,
+                *new_column_schemas_.at(column_idx), false /* record ddl operation*/, need_del_stat))) {
         LOG_WARN("fail to update single column", KR(ret));
       }
     }
     new_table_schema_->set_schema_version(new_schema_version);
     if (FAILEDx(schema_service_impl->get_table_sql_service().only_update_table_options(
-                                                             trans_,
+                                                             get_trans_(),
                                                              *new_table_schema_,
                                                              OB_DDL_ALTER_TABLE,
                                                              ddl_stmt_str))) {
@@ -388,5 +354,42 @@ int ObSetCommentHelper::alter_schema_()
     }
   }
   RS_TRACE(alter_schemas);
+  return ret;
+}
+
+int ObSetCommentHelper::init_()
+{
+  int ret = OB_SUCCESS;
+  return ret;
+}
+
+int ObSetCommentHelper::construct_and_adjust_result_(int &return_ret)
+{
+  int ret = return_ret;
+  if (FAILEDx(check_inner_stat_())) {
+    LOG_WARN("fail to check inner stat", KR(ret));
+  } else {
+    ObSchemaVersionGenerator *tsi_generator = GET_TSI(TSISchemaVersionGenerator);
+    if (OB_ISNULL(tsi_generator)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("tsi schema version generator is null", KR(ret));
+    } else {
+      tsi_generator->get_current_version(res_.schema_version_);
+    }
+  }
+  return ret;
+}
+
+int ObSetCommentHelper::operation_before_commit_()
+{
+  int ret = OB_SUCCESS;
+  // do nothing
+  return ret;
+}
+
+int ObSetCommentHelper::clean_on_fail_commit_()
+{
+  int ret = OB_SUCCESS;
+  // do nothing
   return ret;
 }

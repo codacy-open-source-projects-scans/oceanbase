@@ -67,10 +67,54 @@ enum class ObJsonNodeType
   J_OYEARMONTH = 29, // yearMonthInterval string
   J_MYSQL_DATE = 30, // mysql date
   J_MYSQL_DATETIME = 31, // mysql datetime
+  J_SEMI_HETE_COL = 34, //  semistruct heterogeneous columns
+  J_SEMI_BIN = 35, //  semistruct bin data
   J_MAX_TYPE,
 
   J_ERROR = 200 // 14
 };
+
+OB_INLINE ObObjType json_type_to_obj_type(const  ObJsonNodeType json_type)
+{
+  const static ObObjType JSON_TYPE_TO_OBJ_TYPE[static_cast<int64_t>(ObJsonNodeType::J_MAX_TYPE) + 1] = {
+    ObNullType,                          // ObJsonNodeType::J_NULL 空类型
+    ObNumberType,                        // ObJsonNodeType::J_DECIMAL aka decimal/numeric
+    ObIntType,                           // ObJsonNodeType::J_INT int64
+    ObUInt64Type,                        // ObJsonNodeType::J_UINT uint64
+    ObDoubleType,                        // ObJsonNodeType::J_DOUBLE double-precision floating point
+    ObVarcharType,                       // ObJsonNodeType::J_STRING = 5,
+    ObMaxType,                           // ObJsonNodeType::J_OBJECT = 6,
+    ObMaxType,                           // ObJsonNodeType::J_ARRAY = 7,
+    ObTinyIntType,                       // ObJsonNodeType::J_BOOLEAN int8, aka mysql boolean type
+    ObDateType,                          // ObJsonNodeType::J_DATE = 9,
+    ObTimeType,                          // ObJsonNodeType::J_TIME = 10,
+    ObDateTimeType,                      // ObJsonNodeType::J_DATETIME = 11,
+    ObTimestampType,                     // ObJsonNodeType::J_TIMESTAMP = 12,
+    ObVarcharType,                       // ObJsonNodeType::J_OPAQUE = 13,
+    ObMaxType,                           // UNKONWN = 14,
+    ObFloatType,                         // ObJsonNodeType::J_OFLOAT = 15,
+    ObDoubleType,                        // ObJsonNodeType::J_ODOUBLE = 16,
+    ObNumberType,                        // ObJsonNodeType::J_ODECIMAL = 17,
+    ObIntType,                           // ObJsonNodeType::J_OINT = 18,
+    ObUInt64Type,                        // ObJsonNodeType::J_OLONG = 19,
+    ObVarcharType,                       // ObJsonNodeType::J_OBINARY = 20,
+    ObVarcharType,                       // ObJsonNodeType::J_OOID = 21,
+    ObVarcharType,                       // ObJsonNodeType::J_ORAWHEX = 21,
+    ObVarcharType,                       // ObJsonNodeType::J_ORAWID = 22,
+    ObMaxType,                           // ObJsonNodeType::J_ORACLEDATE = 24,
+    ObDateType,                          // ObJsonNodeType::J_ODATE = 25,
+    ObTimestampType,                     // ObJsonNodeType::J_OTIMESTAMP = 26,
+    ObMaxType,                           // ObJsonNodeType::J_OTIMESTAMPTZ = 27,
+    ObMaxType,                           // ObJsonNodeType::J_ODAYSECOND = 28,
+    ObMaxType,                           // ObJsonNodeType::J_OYEARMONTH = 29,
+    ObMySQLDateType,                     // ObJsonNodeType::J_MYSQL_DATE = 30,
+    ObMySQLDateTimeType,                 // ObJsonNodeType::J_MYSQL_DATETIME = 31,
+    ObMaxType,                           // ObJsonNodeType::J_SEMI_HETE_COL = 34,
+    ObMaxType,                           // ObJsonNodeType::J_MAX_TYPE
+  };
+  return JSON_TYPE_TO_OBJ_TYPE[static_cast<int64_t>(json_type)];
+}
+
 
 // sub-types of J_OPAQUE.
 enum class JsonOpaqueType
@@ -391,7 +435,9 @@ public:
   int to_double(double &value) const;
   int to_number(ObIAllocator *allocator, number::ObNumber &number) const;
   int to_datetime(int64_t &value, ObTimeConvertCtx *cvrt_ctx_t = nullptr) const;
+  int to_mdatetime(ObMySQLDateTime &value, ObTimeConvertCtx *cvrt_ctx_t = nullptr) const;
   int to_date(int32_t &value) const;
+  int to_mdate(ObMySQLDate &value, const ObDateSqlMode date_sql_mode) const;
   int to_otimestamp(common::ObOTimestampData &value, ObTimeConvertCtx *cvrt_ctx = nullptr) const;
   int to_time(int64_t &value) const;
   int to_bit(uint64_t &value) const;
@@ -900,6 +946,8 @@ private:
   int trans_to_boolean(ObIAllocator* allocator, ObString num_str, ObIJsonBase* &origin) const;
   int trans_to_date_timestamp(ObIAllocator* allocator, ObString num_str,
                               ObIJsonBase* &origin, bool is_date) const;
+  int trans_to_mdate(ObIAllocator* allocator, ObString num_str,
+                              ObIJsonBase* &origin) const;
   int trans_json_node (ObIAllocator* allocator, ObIJsonBase* &left, ObIJsonBase* &right) const;
   // Used to compare with multiple right_arg, when left_arg is the results found by the sub_path
   //
@@ -1082,6 +1130,7 @@ public:
                            uint32_t max_depth_config = 100);
   static int transform(ObIAllocator *allocator, ObIJsonBase *src,
                        ObJsonInType expect_type, ObIJsonBase *&out);
+  static int alloc_node(ObIAllocator &allocator, const ObJsonNodeType type, ObJsonNode *&j_node);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObJsonBaseFactory);
 };

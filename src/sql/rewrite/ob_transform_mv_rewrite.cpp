@@ -14,12 +14,7 @@
 #include "sql/rewrite/ob_transform_mv_rewrite.h"
 #include "sql/rewrite/ob_transform_pre_process.h"
 #include "sql/rewrite/ob_transform_mv_rewrite_prepare.h"
-#include "sql/rewrite/ob_equal_analysis.h"
-#include "sql/rewrite/ob_expand_aggregate_utils.h"
-#include "sql/resolver/dml/ob_select_resolver.h"
-#include "sql/resolver/expr/ob_raw_expr_wrap_enum_set.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "share/schema/ob_table_schema.h"
+#include "src/sql/optimizer/ob_log_plan.h"
 
 namespace oceanbase
 {
@@ -652,15 +647,18 @@ int ObTransformMVRewrite::check_join_compatibility(MvRewriteHelper &helper,
     ObSEArray<ObSEArray<ObRawExpr*,4>, 8> query_baserel_filters;
     ObSEArray<ObRelIds, 8> bushy_tree_infos;
     ObSEArray<ObRawExpr*, 4> new_or_quals;
+    ObSEArray<ObRawExpr*, 1> fake_push_subq_exprs;
     ObSEArray<TableDependInfo, 1> fake_depend_info; // WARNING query should not have depend info
     ObConflictDetectorGenerator generator(*ctx_->allocator_,
                                           *ctx_->expr_factory_,
                                           ctx_->session_info_,
                                           NULL,  /* onetime_copier */
-                                          true,  /* should_deduce_conds */
+                                          false, /* should_pushdown_const_filters */
                                           fake_depend_info,
+                                          fake_push_subq_exprs,
                                           bushy_tree_infos,
-                                          new_or_quals);
+                                          new_or_quals,
+                                          helper.query_stmt_->get_query_ctx());
     STOP_OPT_TRACE;
     if (OB_FAIL(helper.mv_info_.view_stmt_->get_from_tables(mv_from_tables))) {
       LOG_WARN("failed to get mv from table items", K(ret));
@@ -1944,6 +1942,8 @@ int ObTransformMVRewrite::check_compensation_preds_validity(MvRewriteHelper &hel
   } else if (helper.mv_compensation_preds_.empty()
              || !mv_stmt->has_group_by()) {
     // do nothing
+  } else if (mv_stmt->is_scala_group_by()) {
+    is_valid = false;
   } else if (OB_FAIL(ObRawExprUtils::extract_column_exprs(helper.mv_compensation_preds_, comp_col_exprs))) {
     LOG_WARN("failed to extract column exprs", K(ret));
   } else {
@@ -2369,11 +2369,15 @@ int ObTransformMVRewrite::inner_compute_expr_map(MvRewriteHelper &helper,
   } else if (query_expr->get_relation_ids().is_subset(helper.query_delta_table_)) {
     // column only appear in query, does not need to compute
     is_valid = true;
-  } else if (OB_FAIL(find_mv_select_expr(helper, query_expr, context, mv_select_expr))) {
+  } else if (!(helper.need_group_by_roll_up_ && query_expr->has_flag(CNT_AGG))
+             && OB_FAIL(find_mv_select_expr(helper, query_expr, context, mv_select_expr))) {
+    // for the query expr that contains aggregate functions and needs group
+    // by roll up rewrite, can NOT replace the entire expr directly, because
+    // we need to wrap the roll up aggregate for each aggregate function
     LOG_WARN("failed to find mv select expr", K(ret));
   } else if (NULL != mv_select_expr) {
     if (OB_FAIL(helper.query_expr_replacer_.add_replace_expr(query_expr, mv_select_expr))) {
-      LOG_WARN("failed to add replaceed expr", K(ret), KPC(query_expr), KPC(mv_select_expr));
+      LOG_WARN("failed to add replaced expr", K(ret), KPC(query_expr), KPC(mv_select_expr));
     } else {
       is_valid = true;
     }
@@ -2432,7 +2436,7 @@ int ObTransformMVRewrite::compute_agg_expr_map(MvRewriteHelper &helper,
   } else if (helper.need_group_by_roll_up_ && OB_FAIL(wrap_agg_roll_up_expr(query_expr, mv_select_expr))) {
     LOG_WARN("failed to wrap agg roll up expr", K(ret));
   } else if (OB_FAIL(helper.query_expr_replacer_.add_replace_expr(query_expr, mv_select_expr))) {
-    LOG_WARN("failed to add replaceed expr", K(ret), KPC(query_expr), KPC(mv_select_expr));
+    LOG_WARN("failed to add replaced expr", K(ret), KPC(query_expr), KPC(mv_select_expr));
   }
   return ret;
 }
@@ -2564,7 +2568,7 @@ int ObTransformMVRewrite::generate_rewrite_stmt_contain_mode(MvRewriteHelper &he
     LOG_WARN("failed to adjust mv item", K(ret));
   } else if (OB_FAIL(helper.query_stmt_->update_column_item_rel_id())) {
     LOG_WARN("failed to update column item rel id", K(ret));
-  } else if (OB_FAIL(helper.query_stmt_->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(helper.query_stmt_->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt", K(ret));
   } else {
     OPT_TRACE("generate rewrite stmt use", helper.mv_info_.mv_schema_->get_table_name(), ":", helper.query_stmt_);
@@ -2747,7 +2751,7 @@ int ObTransformMVRewrite::create_mv_column_item(MvRewriteHelper &helper)
       }
       // 3.2. do fill part expr for query_stmt_
       for (int64_t i = 0; OB_SUCC(ret) && i < mv_info.select_mv_stmt_->get_part_exprs().count(); ++i) {
-        ObDMLStmt::PartExprItem &part_item = mv_info.select_mv_stmt_->get_part_exprs().at(i);
+        PartExprItem &part_item = mv_info.select_mv_stmt_->get_part_exprs().at(i);
         ObRawExpr *part_expr = NULL;
         ObRawExpr *subpart_expr = NULL;
         if (OB_FAIL(part_expr_copier.copy_on_replace(part_item.part_expr_, part_expr))) {
@@ -3040,6 +3044,7 @@ int ObTransformMVRewrite::check_rewrite_expected(MvRewriteHelper &helper,
   ObDMLStmt *ori_stmt = &helper.ori_stmt_;
   ObSelectStmt *rewrite_stmt = helper.query_stmt_;
   is_expected = false;
+  bool partial_cost_check = false;
   if (OB_ISNULL(ctx_) || OB_ISNULL(ctx_->session_info_)
       || OB_ISNULL(parent_stmts_) || OB_ISNULL(ori_stmt) || OB_ISNULL(rewrite_stmt)) {
     ret = OB_ERR_UNEXPECTED;
@@ -3059,8 +3064,11 @@ int ObTransformMVRewrite::check_rewrite_expected(MvRewriteHelper &helper,
   } else if (!is_match_index) {
     is_expected = false;
     OPT_TRACE("condition does not match index, can not rewrite");
+  } else if (OB_FAIL(ObTransformUtils::partial_cost_eval_validity_check(*ctx_, *parent_stmts_, ori_stmt,
+                                                                        true, partial_cost_check))) {
+    LOG_WARN("failed to check partial cost eval validity", K(ret));
   } else if (OB_FAIL(accept_transform(*parent_stmts_, ori_stmt, rewrite_stmt,
-                                      !need_check_cost, false, accepted))) {
+                                      !need_check_cost, false, accepted, partial_cost_check))) {
     LOG_WARN("failed to accept transform", K(ret));
   } else if (!accepted) {
     is_expected = false;
@@ -3205,7 +3213,7 @@ bool ObTransformMVRewrite::MvRewriteCheckCtx::compare_const(const ObConstRawExpr
       ObPCConstParamInfo const_param_info;
       if (OB_FAIL(const_param_info.const_idx_.push_back(unkonwn_expr.get_value().get_unknown()))) {
         LOG_WARN("failed to push back element", K(ret));
-      } else if (OB_FAIL(const_param_info.const_params_.push_back(unkonwn_expr.get_result_type().get_param()))) {
+      } else if (OB_FAIL(const_param_info.const_params_.push_back(unkonwn_expr.get_param()))) {
         LOG_WARN("failed to psuh back param const value", K(ret));
       } else if (OB_FAIL(const_param_info_.push_back(const_param_info))) {
         LOG_WARN("failed to push back const param info", K(ret));

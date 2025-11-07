@@ -29,11 +29,12 @@ namespace common
 class ObOptTableStat;
 class ObOptColumnStat;
 struct BlockNumStat;
-
+struct SkipRateStat;
 typedef hash::ObHashMap<int64_t, BlockNumStat *, common::hash::NoPthreadDefendMode> PartitionIdBlockMap;
 typedef common::hash::ObHashMap<ObOptTableStat::Key, ObOptTableStat *, common::hash::NoPthreadDefendMode> TabStatIndMap;
 typedef common::hash::ObHashMap<ObOptColumnStat::Key, ObOptOSGColumnStat *, common::hash::NoPthreadDefendMode> OSGColStatIndMap;
 typedef common::hash::ObHashMap<ObOptColumnStat::Key, ObOptColumnStat *, common::hash::NoPthreadDefendMode> ColStatIndMap;
+typedef hash::ObHashMap<int64_t, SkipRateStat*, common::hash::NoPthreadDefendMode> PartitionIdSkipRateMap;
 
 enum StatOptionFlags
 {
@@ -57,11 +58,14 @@ enum StatOptionFlags
   OPT_HIST_EST_PERCENT = 1 << 17,
   OPT_HIST_BLOCK_SAMPLE = 1 << 18,
   OPT_AUTO_SAMPLE_ROW_COUNT = 1 << 19,
-  OPT_STAT_OPTION_ALL  = (1 << 20) -1
+  OPT_SKIP_RATE_SAMPLE_COUNT = 1 << 20,
+  OPT_STAT_OPTION_ALL  = (1 << 21) -1
 };
 const static double OPT_DEFAULT_STALE_PERCENT = 0.1;
 const static int64_t OPT_DEFAULT_STATS_RETENTION = 31;
 const static int64_t OPT_STATS_MAX_VALUE_CHAR_LEN = 128;
+
+const static double OPT_DEFAULT_AUTO_COLLECT_BATCH_SIZE = 16;
 const int64_t MAX_AUTO_GATHER_FULL_TABLE_ROWS = 100000000;
 const int64_t MAGIC_SAMPLE_SIZE = 5500;
 const int64_t MAGIC_MAX_AUTO_SAMPLE_SIZE = 22000;
@@ -77,12 +81,18 @@ const static int64_t DEFAULT_ASYNC_FULL_TABLE_SIZE = 10000000;
 const static int64_t DEFAULT_ASYNC_MIN_TABLE_SIZE = 10000;
 const static int64_t DEFAULT_ASYNC_STALE_MAX_TABLE_SIZE = 100000000;
 const static int64_t DEFAULT_ASYNC_MAX_SCAN_ROWCOUNT = 100000000;
-const static int64_t MINIMUM_OF_ASYNC_GATHER_STALE_RATIO = 2;
+const static double MINIMUM_OF_ASYNC_GATHER_STALE_RATIO = 0;
 const int64_t MAXIMUM_BLOCK_CNT_OF_ROW_SAMPLE_GATHER_HYBRID_HIST = 100000;
 const int64_t MAXIMUM_ROWS_OF_ROW_SAMPLE_GATHER_HYBRID_HIST = 10000000;
 const int64_t MINIMUM_BLOCK_CNT_OF_BLOCK_SAMPLE_HYBRID_HIST = 16;
 const static int64_t DEFAULT_AUTO_SAMPLE_ROW_COUNT = 0;
-const static int64_t MAX_GATHER_COLUMN_COUNT_PER_QUERY = 128;
+const static int64_t DEFAULT_ASYNC_SAMPLE_ROW_COUNT = 5000000;
+const static int64_t MAX_GATHER_COLUMN_COUNT_PER_QUERY_FOR_SMALL_TENANT = 24;
+
+const static int64_t MAX_GATHER_COLUMN_COUNT_PER_QUERY_FOR_LARGE_TENANT = 96;
+const static int64_t MAX_SKIP_RATE_SAMPLE_COUNT = 100000;
+
+const static int64_t DEFAULT_SKIP_RATE_SAMPLE_COUNT = 0;
 
 enum StatLevel
 {
@@ -127,16 +137,18 @@ enum ColumnAttrFlag
   IS_HIDDEN_COL     = 1 << 1,
   IS_UNIQUE_COL     = 1 << 2,
   IS_NOT_NULL_COL   = 1 << 3,
-  IS_TEXT_COL       = 1 << 4
+  IS_TEXT_COL       = 1 << 4,
+  IS_VIRTUAL_COL    = 1 << 5
 };
 
 enum ColumnGatherFlag
 {
-  NO_NEED_STAT          = 0,
-  VALID_OPT_COL         = 1,
-  NEED_BASIC_STAT       = 1 << 1,
-  NEED_AVG_LEN          = 1 << 2,
-  NEED_REFINE_MIN_MAX   = 1 << 3
+  NO_NEED_STAT            = 0,
+  VALID_OPT_COL           = 1,
+  NEED_BASIC_STAT         = 1 << 1,
+  NEED_AVG_LEN            = 1 << 2,
+  NEED_REFINE_MIN_MAX     = 1 << 3,
+  NEED_CS_REFINE_MIN_MAX  = 1 << 4
 };
 
 enum ObGranularityType
@@ -149,6 +161,12 @@ enum ObGranularityType
   GRANULARITY_AUTO,
   GRANULARITY_GLOBAL_AND_PARTITION,
   GRANULARITY_APPROX_GLOBAL_AND_PARTITION
+};
+
+enum ObNdvScaleAlgo {
+  NDV_SCALE_ALGO_DEFAULT = 0,
+  NDV_SCALE_ALGO_LINEAR = 1,
+  NDV_SCALE_ALGO_UNIQUE = 2,
 };
 
 struct BlockNumStat
@@ -166,8 +184,8 @@ struct BlockNumStat
   }
   int64_t tab_macro_cnt_;
   int64_t tab_micro_cnt_;
-  ObSEArray<int64_t, 1, common::ModulePageAllocator, true> cg_macro_cnt_arr_;
-  ObSEArray<int64_t, 1, common::ModulePageAllocator, true> cg_micro_cnt_arr_;
+  ObSEArray<int64_t, 32, common::ModulePageAllocator, true> cg_macro_cnt_arr_;
+  ObSEArray<int64_t, 32, common::ModulePageAllocator, true> cg_micro_cnt_arr_;
   int64_t sstable_row_cnt_;
   int64_t memtable_row_cnt_;
   TO_STRING_KV(K(tab_macro_cnt_),
@@ -176,6 +194,18 @@ struct BlockNumStat
                K(cg_micro_cnt_arr_),
                K(sstable_row_cnt_),
                K(memtable_row_cnt_));
+};
+
+struct SkipRateStat
+{
+  SkipRateStat() : cg_skip_rate_arr_(), skip_sample_cnt_arr_()
+  {
+    cg_skip_rate_arr_.set_attr(ObMemAttr(MTL_ID(), "SkipRateStat"));
+    skip_sample_cnt_arr_.set_attr(ObMemAttr(MTL_ID(), "SkipRateStat"));
+  }
+  ObSEArray<double, 32, common::ModulePageAllocator, true> cg_skip_rate_arr_;
+  ObSEArray<uint64_t, 32, common::ModulePageAllocator, true> skip_sample_cnt_arr_;
+  TO_STRING_KV(K(cg_skip_rate_arr_));
 };
 
 //TODO@jiangxiu.wt: improve the expression of PartInfo, use the map is better.
@@ -214,7 +244,8 @@ struct StatTable
     stale_percent_(0.0),
     partition_stat_infos_(),
     is_async_gather_(false),
-    async_partition_ids_()
+    async_partition_ids_(),
+    consecutive_failed_count_(0)
   {
     partition_stat_infos_.set_attr(lib::ObMemAttr(MTL_ID(), "StatTable"));
     async_partition_ids_.set_attr(lib::ObMemAttr(MTL_ID(), "StatTable"));
@@ -225,7 +256,8 @@ struct StatTable
     stale_percent_(0.0),
     partition_stat_infos_(),
     is_async_gather_(is_async_gather),
-    async_partition_ids_()
+    async_partition_ids_(),
+    consecutive_failed_count_(0)
   {
     partition_stat_infos_.set_attr(lib::ObMemAttr(MTL_ID(), "StatTable"));
     async_partition_ids_.set_attr(lib::ObMemAttr(MTL_ID(), "StatTable"));
@@ -244,23 +276,34 @@ struct StatTable
   ObArray<ObPartitionStatInfo> partition_stat_infos_;
   bool is_async_gather_;
   ObArray<int64_t> async_partition_ids_;
+
+  ObArray<uint64_t> async_tblet_ids_;
+  int64_t consecutive_failed_count_;
 };
 
 struct AsyncStatTable
 {
   AsyncStatTable() :
     table_id_(OB_INVALID_ID),
-    partition_ids_()
+    partition_ids_(),
+    tablet_ids_()
   {}
+
   AsyncStatTable(int64_t table_id) :
     table_id_(table_id),
-    partition_ids_()
+    partition_ids_(),
+    tablet_ids_()
   {}
   int assign(const AsyncStatTable &other);
+
   TO_STRING_KV(K_(table_id),
-               K_(partition_ids));
+               K_(partition_ids),
+               K_(tablet_ids));
   uint64_t table_id_;
-  ObArray<int64_t> partition_ids_;
+  ObSEArray<int64_t, 16> partition_ids_;
+
+  ObArray<uint64_t> tablet_ids_;
+
 };
 
 enum ObStatTableType {
@@ -421,20 +464,24 @@ struct ObColumnStatParam {
   inline bool is_index_column() const { return column_attribute_ & ColumnAttrFlag::IS_INDEX_COL; }
   inline bool is_hidden_column() const { return column_attribute_ & ColumnAttrFlag::IS_HIDDEN_COL; }
   inline bool is_unique_column() const { return column_attribute_ & ColumnAttrFlag::IS_UNIQUE_COL; }
+  inline bool is_virtual_column() const { return column_attribute_ & ColumnAttrFlag::IS_VIRTUAL_COL; }
+
   inline bool is_not_null_column() const { return column_attribute_ & ColumnAttrFlag::IS_NOT_NULL_COL; }
   inline bool is_text_column() const { return column_attribute_ & ColumnAttrFlag::IS_TEXT_COL; }
   inline void unset_text_column() { column_attribute_ &= ~ColumnAttrFlag::IS_TEXT_COL; }
+  inline void set_is_virtual_col() { column_attribute_ |= ColumnAttrFlag::IS_VIRTUAL_COL; }
   inline void set_valid_opt_col() { gather_flag_ |= ColumnGatherFlag::VALID_OPT_COL; }
   inline void set_need_basic_stat() { gather_flag_ |= ColumnGatherFlag::NEED_BASIC_STAT; }
   inline void set_need_avg_len() { gather_flag_ |= ColumnGatherFlag::NEED_AVG_LEN; }
   inline void set_need_refine_min_max() { gather_flag_ |= ColumnGatherFlag::NEED_REFINE_MIN_MAX; }
+  inline void set_need_cs_refine_min_max() { gather_flag_ |= ColumnGatherFlag::NEED_CS_REFINE_MIN_MAX; }
   inline bool is_valid_opt_col() const { return gather_flag_ & ColumnGatherFlag::VALID_OPT_COL; }
   inline bool need_basic_stat() const { return gather_flag_ & ColumnGatherFlag::NEED_BASIC_STAT; }
   inline bool need_avg_len() const { return gather_flag_ & ColumnGatherFlag::NEED_AVG_LEN; }
   inline bool need_col_stat() const { return gather_flag_ != ColumnGatherFlag::NO_NEED_STAT; }
   inline void unset_need_basic_stat() { gather_flag_ &= ~ColumnGatherFlag::NEED_BASIC_STAT; }
   inline bool need_refine_min_max() const { return gather_flag_ & ColumnGatherFlag::NEED_REFINE_MIN_MAX; }
-
+  inline bool need_cs_refine_min_max() const { return gather_flag_ & ColumnGatherFlag::NEED_CS_REFINE_MIN_MAX; }
   ObString column_name_;
   uint64_t column_id_;
   common::ObCollationType cs_type_;
@@ -446,9 +493,11 @@ struct ObColumnStatParam {
   int64_t gather_flag_;
   ObString index_name_;
   ObObjType column_type_;
+  ObNdvScaleAlgo ndv_scale_algo_;
 
   static bool is_valid_opt_col_type(const ObObjType type, bool is_online_stat = false);
   static bool is_valid_avglen_type(const ObObjType type);
+  static bool is_valid_refine_min_max_type(const ObObjType type);
   static const int64_t DEFAULT_HISTOGRAM_BUCKET_NUM;
 
   TO_STRING_KV(K_(column_name),
@@ -459,7 +508,8 @@ struct ObColumnStatParam {
                K_(column_attribute),
                K_(column_usage_flag),
                K_(gather_flag),
-               K_(index_name));
+               K_(index_name),
+               K_(ndv_scale_algo));
 };
 
 struct ObColumnGroupStatParam {
@@ -557,7 +607,9 @@ struct ObTableStatParam {
     consumer_group_id_(0),
     min_iops_(-1),
     max_iops_(-1),
-    weight_iops_(-1)
+    weight_iops_(-1),
+    skip_rate_sample_cnt_(DEFAULT_SKIP_RATE_SAMPLE_COUNT),
+    use_part_derive_global_(false)
   {}
 
   int assign(const ObTableStatParam &other);
@@ -643,6 +695,8 @@ struct ObTableStatParam {
   bool is_async_gather_;
   int64_t async_full_table_size_;
   const ObIArray<int64_t> *async_partition_ids_;
+
+  const ObIArray<uint64_t> *async_tablet_ids_;
   ObAnalyzeSampleInfo hist_sample_info_;
   bool is_auto_gather_;
   bool is_auto_sample_size_;
@@ -653,6 +707,9 @@ struct ObTableStatParam {
   int64_t min_iops_;
   int64_t max_iops_;
   int64_t weight_iops_;
+  int64_t skip_rate_sample_cnt_;
+
+  bool use_part_derive_global_;
 
   TO_STRING_KV(K(tenant_id_),
                K(db_name_),
@@ -709,7 +766,10 @@ struct ObTableStatParam {
                K(consumer_group_id_),
                K(min_iops_),
                K(max_iops_),
-               K(weight_iops_));
+               K(weight_iops_),
+               K(skip_rate_sample_cnt_),
+               K(use_part_derive_global_)
+               );
 };
 
 struct ObOptStatGatherParam {
@@ -747,7 +807,10 @@ struct ObOptStatGatherParam {
     data_table_id_(OB_INVALID_ID),
     is_global_index_(false),
     part_level_(share::schema::ObPartitionLevel::PARTITION_LEVEL_ZERO),
-    consumer_group_id_(0)
+    consumer_group_id_(0),
+    partition_id_skip_rate_map_(NULL),
+    all_column_params_(),
+    use_part_derive_global_(false)
   {}
   int assign(const ObOptStatGatherParam &other);
   int64_t get_need_gather_column() const;
@@ -785,6 +848,10 @@ struct ObOptStatGatherParam {
   bool is_global_index_;
   share::schema::ObPartitionLevel part_level_;
   int64_t consumer_group_id_;
+  const PartitionIdSkipRateMap *partition_id_skip_rate_map_;
+  ObSEArray<ObColumnStatParam, 4> all_column_params_;
+
+  bool use_part_derive_global_;
 
   TO_STRING_KV(K(tenant_id_),
                K(db_name_),
@@ -816,7 +883,9 @@ struct ObOptStatGatherParam {
                K(auto_sample_row_cnt_),
                K(data_table_id_),
                K(is_global_index_),
-               K(consumer_group_id_));
+               K(consumer_group_id_),
+               K(all_column_params_),
+               K(use_part_derive_global_));
 };
 
 struct ObOptStat
@@ -981,14 +1050,16 @@ struct ObPartitionStatInfo
     row_cnt_(0),
     is_stat_locked_(false),
     is_no_dml_modified_(false),
+    is_ban_(false),
     is_no_stale_(false)
   {}
 
-  ObPartitionStatInfo(int64_t partition_id, int64_t row_cnt, bool is_locked, bool is_no_dml_modified):
+  ObPartitionStatInfo(int64_t partition_id, int64_t row_cnt, bool is_locked, bool is_no_dml_modified, bool is_ban):
     partition_id_(partition_id),
     row_cnt_(row_cnt),
     is_stat_locked_(is_locked),
     is_no_dml_modified_(is_no_dml_modified),
+    is_ban_(is_ban),
     is_no_stale_(false)
   {}
 
@@ -996,13 +1067,16 @@ struct ObPartitionStatInfo
   int64_t row_cnt_;
   bool is_stat_locked_;
   bool is_no_dml_modified_;
+  bool is_ban_;
   bool is_no_stale_;
-  bool is_regather() const { return !is_stat_locked_ && !is_no_dml_modified_ && !is_no_stale_; }
+
+  bool is_regather() const { return !is_stat_locked_ && !is_no_dml_modified_ && !is_no_stale_ && !is_ban_; }
 
   TO_STRING_KV(K(partition_id_),
                K(row_cnt_),
                K(is_stat_locked_),
                K(is_no_dml_modified_),
+               K(is_ban_),
                K(is_no_stale_));
 };
 
@@ -1054,6 +1128,49 @@ public:
   TO_STRING_KV(K_(part_id), K_(tablet_id));
 };
 typedef common::hash::ObHashMap<ObObjectID, OSGPartInfo, common::hash::NoPthreadDefendMode> OSGPartMap;
+
+class AuditBaseItem
+{
+public:
+  AuditBaseItem() {}
+  virtual ~AuditBaseItem() {}
+
+  virtual int64_t get_cost_time() const = 0;
+
+  DECLARE_PURE_VIRTUAL_TO_STRING;
+};
+
+class ObOptStatGatherAudit
+{
+public:
+  static const int64_t MINIMAL_AUDIT_TIME = 500000;
+public:
+  ObOptStatGatherAudit(ObIAllocator &allocator)
+    : audit_items_(OB_MALLOC_NORMAL_BLOCK_SIZE, allocator),
+      failed_refine_parts_(OB_MALLOC_NORMAL_BLOCK_SIZE, allocator),
+      allocator_(allocator) {}
+  ~ObOptStatGatherAudit();
+
+  int add_failed_refine_parts(uint64_t part_id)
+  {
+    return failed_refine_parts_.push_back(part_id);
+  }
+
+  bool need_audit(int64_t cost_time) { return cost_time >= MINIMAL_AUDIT_TIME; }
+
+  int add_basic_estimate_audit(const ObIArray<PartInfo> & parts, bool is_index, int64_t cost_time);
+  int add_histogram_estimate_audit(uint64_t part_id, int64_t topk_cost, int64_t hybrid_cost);
+  int add_refine_estimate_audit(bool use_skip_index, uint64_t part_id, int64_t cost_time);
+  int add_flush_stats_audit(int64_t cost_time);
+  int add_flush_block_count_audit(int64_t cost_time);
+  int add_flush_skip_rate_audit(int64_t cost_time);
+  DECLARE_TO_STRING;
+private:
+  int64_t inner_to_string(const ObIArray<AuditBaseItem*> &items, char* buf, const int64_t buf_len) const;
+  ObSEArray<AuditBaseItem*, 4, ObIAllocator&> audit_items_;
+  ObSEArray<uint64_t, 4, ObIAllocator&> failed_refine_parts_;
+  ObIAllocator &allocator_;
+};
 
 }
 }

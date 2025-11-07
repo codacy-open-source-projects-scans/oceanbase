@@ -14,24 +14,16 @@
 
 #include "ob_admin_executor.h"
 #include "lib/net/ob_net_util.h"
-#include "share/ob_local_device.h"
 #include "share/ob_device_manager.h"
-#include "share/io/ob_io_define.h"
 #include "share/io/ob_io_manager.h"
-#include "share/config/ob_server_config.h"
-#include "share/ob_io_device_helper.h"
-#include "common/storage/ob_io_device.h"
-#include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "storage/blocksstable/ob_object_manager.h"
-#include "storage/blocksstable/ob_decode_resource_pool.h"
-#include "storage/slog/ob_storage_logger_manager.h"
-#include "observer/ob_server_struct.h"
 #include "storage/meta_store/ob_server_storage_meta_service.h"
 #include "storage/ob_file_system_router.h"
+#include "share/allocator/ob_shared_memory_allocator_mgr.h"
 
 namespace oceanbase
 {
 using namespace common;
+using namespace share;
 namespace tools
 {
 
@@ -42,12 +34,19 @@ ObAdminExecutor::ObAdminExecutor()
       config_mgr_(ObServerConfig::get_instance(), reload_config_)
 {
   // 设置MTL上下文
+
+  // 初始化MTL TxShare相关内存分配器
+  ObMemAttr mem_attr;
+  mem_attr.label_ = "OB_ADMIN";
+  ObSharedMemAllocMgr *shared_mem_alloc_mgr = OB_NEW(ObSharedMemAllocMgr, mem_attr.label_);
+  OB_ASSERT(OB_SUCCESS == shared_mem_alloc_mgr->init());
+  OB_ASSERT(OB_SUCCESS == shared_mem_alloc_mgr->start());
+  mock_server_tenant_.set(shared_mem_alloc_mgr);
+
   IGNORE_RETURN ObTimerService::get_instance().start();
   mock_server_tenant_.set(&ObTimerService::get_instance());
-  mock_server_tenant_.set(&blocksstable::ObDecodeResourcePool::get_instance());
   share::ObTenantEnv::set_tenant(&mock_server_tenant_);
   omt::ObTenantConfigMgr::get_instance().add_tenant_config(OB_SYS_TENANT_ID);
-
   storage_env_.data_dir_ = data_dir_;
   storage_env_.sstable_dir_ = sstable_dir_;
   storage_env_.default_block_size_ = 2 * 1024 * 1024;
@@ -79,7 +78,6 @@ ObAdminExecutor::ObAdminExecutor()
 
 ObAdminExecutor::~ObAdminExecutor()
 {
-  blocksstable::ObDecodeResourcePool::get_instance().destroy();
   ObIOManager::get_instance().stop();
   ObIOManager::get_instance().destroy();
   OB_STORAGE_OBJECT_MGR.stop();
@@ -107,7 +105,7 @@ int ObAdminExecutor::prepare_io()
 
   const int64_t async_io_thread_count = 8;
   const int64_t sync_io_thread_count = 2;
-  const int64_t max_io_depth = 256;
+  const int64_t max_io_depth = 512;
   ObTenantIOConfig tenant_io_config = ObTenantIOConfig::default_instance();
 
   if (OB_FAIL(ret)) {
@@ -144,9 +142,6 @@ int ObAdminExecutor::prepare_io()
 int ObAdminExecutor::prepare_decoder()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(blocksstable::ObDecodeResourcePool::get_instance().init())) {
-    LOG_WARN("fail to init decoder resource pool");
-  }
   return ret;
 }
 
@@ -219,6 +214,9 @@ int ObAdminExecutor::set_sts_credential_key(const char *sts_credential)
   } else {
     if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
       STORAGE_LOG(WARN, "fail to init device env", KR(ret));
+    } else if (OB_FAIL(ObObjectStorageInfo::register_cluster_state_mgr(
+                   &ObClusterStateBaseMgr::get_instance()))) {
+      STORAGE_LOG(WARN, "fail to register cluster version mgr", KR(ret));
     } else {
       omt::ObTenantConfigGuard tenant_config(TENANT_CONF(OB_SYS_TENANT_ID));
       if (OB_UNLIKELY(!tenant_config.is_valid())) {
@@ -232,6 +230,5 @@ int ObAdminExecutor::set_sts_credential_key(const char *sts_credential)
   }
   return ret;
 }
-
 }
 }

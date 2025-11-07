@@ -194,6 +194,9 @@ public:
   bool is_nested_conn();
   virtual void set_user_timeout(int64_t timeout) { user_timeout_ = timeout; }
   virtual int64_t get_user_timeout() const { return user_timeout_; }
+  virtual void set_for_sslog(bool v) { is_for_sslog_ = v; }
+  int try_acquire_query_lock();
+  void try_release_query_lock();
   void ref();
   // when ref count decrease to zero, revert connection to connection pool.
   void unref();
@@ -277,7 +280,14 @@ public:// for mds
                                  const char *buf,
                                  const int64_t buf_len,
                                  const transaction::ObRegisterMdsFlag &register_flag = transaction::ObRegisterMdsFlag());
-
+public:// for inner tablet with memtable
+  int execute_inner_tablet_write(
+      const uint64_t &tenant_id,
+      const share::ObLSID &ls_id,
+      const common::ObTabletID &tablet_id,
+      const char *buf,
+      const int64_t buf_len,
+      int64_t &affected_rows);
 public:
   static int process_record(sql::ObResultSet &result_set,
                             sql::ObSqlCtx &sql_ctx,
@@ -293,7 +303,9 @@ public:
                             bool has_tenant_resource,
                             const ObString &ps_sql,
                             bool is_from_pl = false,
-                            ObString *pl_exec_params = NULL);
+                            ObString *pl_exec_params = NULL,
+                            const bool is_for_sslog = false,
+                            pl::ObPLCursorInfo *cursor = nullptr);
   static int process_audit_record(sql::ObResultSet &result_set,
                                   sql::ObSqlCtx &sql_ctx,
                                   sql::ObSQLSessionInfo &session,
@@ -302,7 +314,8 @@ public:
                                   int64_t ps_stmt_id,
                                   bool has_tenant_resource,
                                   const ObString &ps_sql,
-                                  bool is_from_pl = false);
+                                  bool is_from_pl = false,
+                                  pl::ObPLCursorInfo *cursor = nullptr);
   static void record_stat(sql::ObSQLSessionInfo &session,
                           const sql::stmt::StmtType type,
                           const int64_t ret,
@@ -316,6 +329,7 @@ public:
   int64_t get_init_timestamp() const { return init_timestamp_; }
   int switch_tenant(const uint64_t tenant_id);
   bool is_local_execute(const int64_t cluster_id, const uint64_t tenant_id);
+  ObDiagnosticInfo *get_diagnostic_info() { return diagnostic_info_; }
 public:
   static const int64_t LOCK_RETRY_TIME = 1L * 1000 * 1000;
   static const int64_t TOO_MANY_REF_ALERT = 1024;
@@ -343,6 +357,8 @@ private:
   template <typename T>
   int process_final(const T &sql,
                     ObInnerSQLResult &res,
+                    sql::ObExecRecord &exec_record,
+                    sql::ObExecTimestamp &exec_timestamp,
                     int do_ret);
   // execute with retry
   int query(sqlclient::ObIExecutor &executor,
@@ -434,13 +450,18 @@ private:
   int64_t user_timeout_;
   sql::ObFreeSessionCtx free_session_ctx_;
   ObDiagnosticInfo *diagnostic_info_;
+  bool inner_sess_query_locked_;
+
+  // used for sslog
+  bool is_for_sslog_;
+
   DISABLE_COPY_ASSIGN(ObInnerSQLConnection);
 };
 
 class ObInnerSqlWaitGuard
 {
 public:
-  explicit ObInnerSqlWaitGuard(const bool is_inner_session, common::ObDiagnosticInfo *di);
+  explicit ObInnerSqlWaitGuard(const bool is_inner_session, common::ObDiagnosticInfo *di, sql::ObSQLSessionInfo *inner_session);
   ~ObInnerSqlWaitGuard();
 private:
   bool is_inner_session_;
@@ -450,7 +471,18 @@ private:
   bool need_record_;
   bool has_finish_switch_di_;
   int64_t prev_block_sessid_;
+  ObQueryRetryAshInfo *prev_info_;
 };
+
+class ObInnerSQLSessionGuard
+{
+public:
+  ObInnerSQLSessionGuard(sql::ObSQLSessionInfo *session);
+  ~ObInnerSQLSessionGuard();
+private:
+  sql::ObSQLSessionInfo *last_session_;
+};
+
 } // end of namespace observer
 } // end of namespace oceanbase
 

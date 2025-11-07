@@ -9,7 +9,6 @@
 // See the Mulan PubL v2 for more details.
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "storage/compaction/ob_tenant_status_cache.h"
-#include "lib/oblog/ob_log_module.h"
 #include "rootserver/ob_tenant_info_loader.h"
 #include "share/ob_server_struct.h"
 
@@ -19,23 +18,12 @@ using namespace share;
 namespace compaction
 {
 /********************************************ObTenantStatusCache impl******************************************/
-bool ObTenantStatusCache::is_skip_merge_tenant() const
-{
-  bool bret = true;
-  if (IS_INIT) {
-    const ObTenantRole::Role &role = MTL_GET_TENANT_ROLE_CACHE();
-    // remote tenant OR finish restore inner_table tenant
-    bret = is_remote_tenant_ || (during_restore_ && is_standby_tenant(role));
-  }
-  return bret;
-}
-
 int ObTenantStatusCache::during_restore(bool &during_restore) const
 {
   int ret = OB_SUCCESS;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    if (REACH_TENANT_TIME_INTERVAL(30_s)) {
+    if (REACH_THREAD_TIME_INTERVAL(30_s)) {
       LOG_INFO("not refresh valid tenant status", KR(ret), KPC(this));
     }
   } else {
@@ -104,7 +92,7 @@ int ObTenantStatusCache::inner_refresh_remote_tenant()
 int ObTenantStatusCache::inner_refresh_restore_status()
 {
   int ret = OB_SUCCESS;
-  if (REACH_TENANT_TIME_INTERVAL(REFRESH_TENANT_STATUS_INTERVAL)) {
+  if (REACH_THREAD_TIME_INTERVAL(REFRESH_TENANT_STATUS_INTERVAL)) {
     ObSchemaGetterGuard schema_guard;
     const ObSimpleTenantSchema *tenant_schema = nullptr;
     const uint64_t tenant_id = MTL_ID();
@@ -173,14 +161,9 @@ bool ObTenantStatusCache::enable_adaptive_compaction_with_cpu_load() const
   bool bret = enable_adaptive_compaction_;
   if (!bret || !enable_adaptive_merge_schedule()) {
     // do nothing
-#ifdef ENABLE_DEBUG_LOG
-  } else if (GCONF.enable_crazy_medium_compaction) {
-    bret = true;
-    LOG_DEBUG("set crazy medium, set enable_adaptive_compaction = true");
-#endif
   } else if (MTL(ObTenantTabletStatMgr *)->is_high_tenant_cpu_load()) {
     bret = false;
-    if (REACH_TENANT_TIME_INTERVAL(PRINT_LOG_INVERVAL)) {
+    if (REACH_THREAD_TIME_INTERVAL(PRINT_LOG_INVERVAL)) {
       FLOG_INFO("disable adaptive compaction due to the high load CPU", K(bret));
     }
   }

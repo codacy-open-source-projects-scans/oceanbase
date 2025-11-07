@@ -12,29 +12,12 @@
 
 // #define USING_LOG_PREFIX SQL_ENGINE
 #define USING_LOG_PREFIX COMMON
-#include <stdlib.h>
-#include <sys/wait.h>
-#include <iterator>
-#include <gtest/gtest.h>
 #include "test_op_engine.h"
-#include "src/observer/omt/ob_tenant_config_mgr.h"
-#include "sql/test_sql_utils.h"
-#include "lib/container/ob_array.h"
-#include "sql/ob_sql_init.h"
-#include "sql/plan_cache/ob_cache_object_factory.h"
-#include "observer/ob_req_time_service.h"
 #include "ob_fake_table_scan_vec_op.h"
-#include "share/io/ob_io_manager.h"
-#include "share/ob_simple_mem_limit_getter.h"
-#include "src/share/ob_local_device.h"
 #include "src/share/ob_device_manager.h"
 #include "src/storage/meta_store/ob_server_storage_meta_service.h"
-#include "src/storage/blocksstable/ob_block_manager.h"
 #include "src/storage/ob_file_system_router.h"
-#include "src/storage/blocksstable/ob_storage_cache_suite.h"
 #include "ob_test_config.h"
-#include <vector>
-#include <string>
 
 using namespace oceanbase::sql;
 namespace test
@@ -109,7 +92,7 @@ common::ObIODevice *TestOpEngine::get_device_inner()
 // copy from mittest/mtlenv/mock_tenant_module_env.h and unittest/storage/blocksstable/ob_data_file_prepare.h
 // refine some code
 // call prepare_io() for testing operators that needs to dump intermediate data
-int TestOpEngine::prepare_io(const string & test_data_name_suffix)
+int TestOpEngine::prepare_io(const std::string & test_data_name_suffix)
 {
   int ret = OB_SUCCESS;
 
@@ -557,7 +540,7 @@ int TestOpEngine::print_and_cmp_final_output(const ObBatchRows *brs, ObOperator 
     if (!brs->skip_->exist(i)) {
       for (int j = 0; j < root->get_spec().output_.count(); j++) {
         ObExpr *output_expr = root->get_spec().output_.at(j);
-        string result_str = get_data_by_datum_type(root, output_expr, root->eval_ctx_, i);
+        std::string result_str = get_data_by_datum_type(root, output_expr, root->eval_ctx_, i);
         output_line += result_str + " ";
 
         // compare whether is the same output
@@ -592,7 +575,7 @@ int TestOpEngine::print_to_file(const ObBatchRows *brs, ObOperator *root, const 
     if (!brs->skip_->exist(i)) {
       for (int j = 0; j < exprs.count(); j++) {
         ObExpr *expr = exprs.at(j);
-        string result_str = get_data_by_datum_type(root, expr, root->eval_ctx_, i);
+        std::string result_str = get_data_by_datum_type(root, expr, root->eval_ctx_, i);
         output_line += result_str;
         if (j != exprs.count() - 1) { output_line += ", "; }
       }

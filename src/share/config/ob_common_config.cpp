@@ -12,11 +12,9 @@
 
 #define USING_LOG_PREFIX SHARE
 
-#include "share/config/ob_server_config.h"
+#include "ob_common_config.h"
 #include "lib/container/ob_array_iterator.h"
-#include "lib/utility/ob_defer.h"
 #include "lib/utility/ob_sort.h"
-#include "common/ob_record_header.h"
 #include "observer/omt/ob_tenant_config_mgr.h"
 
 namespace oceanbase
@@ -299,7 +297,8 @@ int ObCommonConfig::add_extra_config_unsafe(const char *config_str,
   char *buf = NULL;
   char *saveptr = NULL;
   char *token = NULL;
-  bool split_by_comma = false;
+  const char *delimiters[] = {"\n", "|\n", ",\n"};
+  const char *delimiter = "\n";
 
   if (OB_ISNULL(config_str)) {
     ret = OB_ERR_UNEXPECTED;
@@ -313,10 +312,12 @@ int ObCommonConfig::add_extra_config_unsafe(const char *config_str,
   } else {
     MEMCPY(buf, config_str, config_str_length);
     buf[config_str_length] = '\0';
-    token = STRTOK_R(buf, "\n", &saveptr);
-    if (0 == STRLEN(saveptr)) {
-      token = STRTOK_R(buf, ",\n", &saveptr);
-      split_by_comma = true;
+    for (int i = 0; i < sizeof(delimiters)/sizeof(delimiters[0]); i++) {
+      token = STRTOK_R(buf, delimiters[i], &saveptr);
+      if (0 != STRLEN(saveptr)) {
+        delimiter = delimiters[i];
+        break;
+      }
     }
     const ObString external_kms_info_cfg(EXTERNAL_KMS_INFO);
     const ObString ssl_external_kms_info_cfg(SSL_EXTERNAL_KMS_INFO);
@@ -403,28 +404,62 @@ int ObCommonConfig::add_extra_config_unsafe(const char *config_str,
         func();
         break;
       }
-      token = (true == split_by_comma) ? STRTOK_R(NULL, ",\n", &saveptr) : STRTOK_R(NULL, "\n", &saveptr);
+      token = STRTOK_R(NULL, delimiter, &saveptr);
     }
     // reset
     MEMCPY(buf, config_str, config_str_length);
     buf[config_str_length] = '\0';
     saveptr = nullptr;
-    token = STRTOK_R(buf, "\n", &saveptr);
-    if (0 == STRLEN(saveptr)) {
-      token = STRTOK_R(buf, ",\n", &saveptr);
-      split_by_comma = true;
+    delimiter = "\n";
+    for (int i = 0; i < sizeof(delimiters)/sizeof(delimiters[0]); i++) {
+      token = STRTOK_R(buf, delimiters[i], &saveptr);
+      if (0 != STRLEN(saveptr)) {
+        delimiter = delimiters[i];
+        break;
+      }
     }
     while (OB_SUCC(ret) && OB_NOT_NULL(token)) {
       if (strncmp(token, "enable_production_mode:", 23) != 0) {
         func();
       }
-      token = (true == split_by_comma) ? STRTOK_R(NULL, ",\n", &saveptr) : STRTOK_R(NULL, "\n", &saveptr);
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+      constexpr char logservice_access_point_name[] = "logservice_access_point";
+      constexpr int64_t logservice_access_point_name_len = sizeof(logservice_access_point_name) - 1;
+      if (0 == strncmp(token, logservice_access_point_name, logservice_access_point_name_len)
+        && NULL != STRSTR(token, "://")) {
+        ret = OB_INVALID_CONFIG;
+        LOG_ERROR("logservice_access_point cannot be setted by -o", K(ret));
+      }
+#endif
+      token = STRTOK_R(NULL, delimiter, &saveptr);
     }
   }
 
   if (NULL != buf) {
     delete [] buf;
     buf = NULL;
+  }
+  return ret;
+}
+
+int ObCommonConfig::to_json_array(ObIAllocator &allocator, ObJsonArray &j_arr) const
+{
+  int ret = OB_SUCCESS;
+  for (ObConfigContainer::const_iterator it = container_.begin();
+      OB_SUCC(ret) && it != container_.end(); ++it) {
+    ObConfigItem *item = it->second;
+    ObJsonObject *j_obj = nullptr;
+    if (nullptr == item) {
+      ret = OB_ERR_NULL_VALUE;
+      OB_LOG(WARN, "config item is null", "name", it->first.str(), K(ret));
+    } else if (nullptr == (j_obj = OB_NEW(ObJsonObject, g_config_mem_attr, &allocator))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      OB_LOG(WARN, "create json object failed", K(ret));
+    } else if (OB_FAIL(item->to_json_obj(allocator, *j_obj))) {
+      OB_LOG(WARN, "convert config item to json object failed", "name", it->first.str(), K(ret));
+    } else if (OB_FAIL(j_arr.append(j_obj))) {
+      OB_LOG(WARN, "append json object to json array failed", "name", it->first.str(), K(ret));
+    } else {}
   }
   return ret;
 }

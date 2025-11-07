@@ -12,10 +12,7 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "share/ob_tablet_reorganize_history_table_operator.h"
-#include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "share/location_cache/ob_location_service.h"
-#include "observer/ob_server_struct.h"
-#include "lib/string/ob_sql_string.h"
 
 namespace oceanbase
 {
@@ -39,7 +36,7 @@ int ObTabletReorganizeHistoryTableOperator::check_tablet_has_reorganized(
     LOG_WARN("invalid argument", K(ret), K(tenant_id), K(tablet_id));
   } else {
     HEAP_VAR(ObMySQLProxy::ReadResult, res) {
-      ObMySQLResult *result = NULL;
+      sqlclient::ObMySQLResult *result = NULL;
       const uint64_t zero_tenant_id = 0;
       if (OB_FAIL(sql.assign_fmt(
         "select * from %s where tenant_id = %lu and src_tablet_id = %ld",
@@ -187,7 +184,7 @@ int ObTabletReorganizeHistoryTableOperator::get_split_tablet_pairs_by_dest(
     LOG_WARN("invalid argument", K(ret), K(tenant_id), K(tablet_id));
   } else {
     HEAP_VAR(ObMySQLProxy::ReadResult, res) {
-      ObMySQLResult *result = NULL;
+      sqlclient::ObMySQLResult *result = NULL;
       const uint64_t zero_tenant_id = 0;
       if (OB_FAIL(sql.assign_fmt(
         "select * from %s where tenant_id = %lu and dest_tablet_id = %ld",
@@ -293,7 +290,7 @@ int ObTabletReorganizeHistoryTableOperator::batch_insert(
   if (OB_FAIL(trans.start(&sql_proxy, tenant_id))) {
     LOG_WARN("failed to start trans", K(ret));
   } else {
-    if (OB_FAIL(inner_batch_insert_(trans, tenant_id, split_arg.src_tablet_id_, split_arg.dest_tablet_ids_, start_time, finish_time))) {
+    if (OB_FAIL(inner_batch_insert_(trans, tenant_id, split_arg.src_ls_id_, split_arg.src_tablet_id_, split_arg.dest_tablet_ids_, start_time, finish_time))) {
       LOG_WARN("failed to inner batch insert", K(ret));
     } else if (split_arg.src_local_index_tablet_ids_.count() != split_arg.dest_local_index_tablet_ids_.count()) {
       ret = OB_ERR_UNEXPECTED;
@@ -302,7 +299,7 @@ int ObTabletReorganizeHistoryTableOperator::batch_insert(
       ARRAY_FOREACH_X(split_arg.dest_local_index_tablet_ids_, idx, cnt, OB_SUCC(ret)) {
         const ObTabletID &src_tablet_id = split_arg.src_local_index_tablet_ids_.at(idx);
         const ObSArray<ObTabletID> &dest_tablet_ids = split_arg.dest_local_index_tablet_ids_.at(idx);
-        if (OB_FAIL(inner_batch_insert_(trans, tenant_id, src_tablet_id, dest_tablet_ids, start_time, finish_time))) {
+        if (OB_FAIL(inner_batch_insert_(trans, tenant_id, split_arg.src_ls_id_, src_tablet_id, dest_tablet_ids, start_time, finish_time))) {
           LOG_WARN("failed to inner batch insert", K(ret));
         }
       }
@@ -315,7 +312,7 @@ int ObTabletReorganizeHistoryTableOperator::batch_insert(
       ARRAY_FOREACH_X(split_arg.dest_lob_tablet_ids_, idx, cnt, OB_SUCC(ret)) {
         const ObTabletID &src_tablet_id = split_arg.src_lob_tablet_ids_.at(idx);
         const ObSArray<ObTabletID> &dest_tablet_ids = split_arg.dest_lob_tablet_ids_.at(idx);
-        if (OB_FAIL(inner_batch_insert_(trans, tenant_id, src_tablet_id, dest_tablet_ids, start_time, finish_time))) {
+        if (OB_FAIL(inner_batch_insert_(trans, tenant_id, split_arg.src_ls_id_, src_tablet_id, dest_tablet_ids, start_time, finish_time))) {
           LOG_WARN("failed to inner batch insert", K(ret));
         }
       }
@@ -333,6 +330,7 @@ int ObTabletReorganizeHistoryTableOperator::batch_insert(
 int ObTabletReorganizeHistoryTableOperator::inner_batch_insert_(
     ObISQLClient &sql_proxy,
     const uint64_t tenant_id,
+    const share::ObLSID src_ls_id,
     const ObTabletID &tablet_id,
     const ObSArray<ObTabletID> &dest_tablet_ids,
     const int64 start_time,
@@ -340,7 +338,7 @@ int ObTabletReorganizeHistoryTableOperator::inner_batch_insert_(
 {
   int ret = OB_SUCCESS;
   ObArray<ObTabletReorganizeRecord> records;
-  share::ObLSID ls_id;
+  share::ObLSID ls_id = src_ls_id;
   ObAddr leader_addr;
   ObLocationService *location_service = nullptr;
   const int64_t rpc_timeout = ObDDLUtil::get_default_ddl_rpc_timeout();
@@ -349,7 +347,7 @@ int ObTabletReorganizeHistoryTableOperator::inner_batch_insert_(
   if (OB_ISNULL(location_service = GCTX.location_service_)) {
     ret = OB_ERR_SYS;
     LOG_WARN("location_cache is null", K(ret));
-  } else if (OB_FAIL(ObDDLUtil::get_tablet_leader_addr(location_service,
+  } else if (!ls_id.is_valid() && OB_FAIL(ObDDLUtil::get_tablet_leader_addr(location_service,
             tenant_id, tablet_id, rpc_timeout, ls_id, leader_addr))) {
     LOG_WARN("get tablet leader addr failed", K(ret));
   }

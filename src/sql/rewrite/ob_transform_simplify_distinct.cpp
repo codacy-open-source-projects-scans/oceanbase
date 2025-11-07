@@ -14,7 +14,6 @@
 #include "sql/rewrite/ob_transform_simplify_distinct.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/rewrite/ob_transform_utils.h"
-#include "common/ob_smart_call.h"
 
 using namespace oceanbase::sql;
 
@@ -96,7 +95,7 @@ int ObTransformSimplifyDistinct::distinct_can_be_eliminated(ObSelectStmt *stmt, 
     // When there are `@var := ` assignment, don't eliminate distinct.
     OPT_TRACE("stmt has assignment or calc found rows");
   } else if (stmt->has_distinct() && !stmt->is_set_stmt() && stmt->get_from_item_size() > 0 &&
-             !stmt->has_rollup()) {
+             !stmt->has_rollup() && !stmt->has_grouping_sets()) {
     // Only try to eliminate DISTINCT for plain SELECT
     int64_t limit_count = 0;
     const ObRawExpr *limit_offset_expr = stmt->get_offset_expr();

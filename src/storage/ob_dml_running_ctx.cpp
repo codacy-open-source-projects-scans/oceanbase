@@ -13,16 +13,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/ob_dml_running_ctx.h"
-#include "lib/allocator/ob_allocator.h"
-#include "share/inner_table/ob_inner_table_schema_constants.h"
 #include "share/schema/ob_table_dml_param.h"
-#include "share/schema/ob_table_param.h"
-#include "storage/memtable/ob_memtable_interface.h"
-#include "storage/access/ob_dml_param.h"
 #include "storage/tablet/ob_tablet.h"
-#include "storage/tablet/ob_tablet_binding_helper.h"
-#include "storage/tablet/ob_tablet_split_mds_helper.h"
-#include "storage/ob_value_row_iterator.h"
 #include "storage/memtable/ob_memtable_context.h"
 
 namespace oceanbase
@@ -37,7 +29,7 @@ ObDMLRunningCtx::ObDMLRunningCtx(
     const ObDMLBaseParam &dml_param,
     common::ObIAllocator &allocator,
     const blocksstable::ObDmlFlag dml_flag,
-    bool is_need_row_datum_utils)
+    const bool is_need_check_old_row)
   : store_ctx_(store_ctx),
     dml_param_(dml_param),
     allocator_(allocator),
@@ -48,18 +40,20 @@ ObDMLRunningCtx::ObDMLRunningCtx(
     column_ids_(nullptr),
     datum_row_(),
     cmp_funcs_(),
-    is_old_row_valid_for_lob_(false),
-    is_need_check_old_row_(is_need_row_datum_utils),
+    is_need_check_old_row_(is_need_check_old_row),
     is_udf_(false),
+    has_lob_rowkey_(false),
     lob_dml_ctx_(),
+    main_table_rowkey_col_flag_(allocator),
     schema_guard_(share::schema::ObSchemaMgrItem::MOD_RELATIVE_TABLE),
-    is_need_row_datum_utils_(is_need_row_datum_utils),
     is_inited_(false)
 {
+  is_delete_insert_table_ = false;
 }
 
 ObDMLRunningCtx::~ObDMLRunningCtx()
 {
+  main_table_rowkey_col_flag_.reset();
 }
 
 int ObDMLRunningCtx::init(
@@ -147,11 +141,14 @@ int ObDMLRunningCtx::prepare_relative_table(
 {
   int ret = OB_SUCCESS;
   bool need_get_src_split_tables = false;
+  is_delete_insert_table_ = false;
   if (OB_FAIL(relative_table_.init(&schema, tablet_handle.get_obj()->get_tablet_meta().tablet_id_,
       schema.is_storage_index_table() && !schema.can_read_index()))) {
     LOG_WARN("fail to init relative_table_", K(ret), K(tablet_handle), K(schema.get_index_status()));
   } else if (OB_FAIL(relative_table_.tablet_iter_.set_tablet_handle(tablet_handle))) {
     LOG_WARN("fail to set tablet handle to iter", K(ret), K(relative_table_.tablet_iter_));
+  } else if (OB_FAIL(tablet_handle.get_obj()->check_is_delete_insert_table(is_delete_insert_table_))) {
+    LOG_WARN("fail to check is delete insert table", K(ret));
   } else if (OB_FAIL(relative_table_.tablet_iter_.refresh_read_tables_from_tablet(
       read_snapshot.get_val_for_tx(),
       relative_table_.allow_not_ready(),
@@ -159,6 +156,9 @@ int ObDMLRunningCtx::prepare_relative_table(
       true/*need_split_src_table*/,
       false/*need_split_dst_table*/))) {
     LOG_WARN("failed to get relative table read tables", K(ret));
+  } else if (schema.get_read_info().need_truncate_filter() &&
+      OB_FAIL(relative_table_.prepare_truncate_part_filter(allocator_, read_snapshot.get_val_for_tx()))) {
+    LOG_WARN("failed to prepare truncate part filter", K(ret));
   }
   return ret;
 }
@@ -177,6 +177,29 @@ int ObDMLRunningCtx::prepare_column_info(const common::ObIArray<uint64_t> &colum
     } else if (ObDmlFlag::DF_UPDATE == dml_flag_) {
       col_map_ = &(dml_param_.table_param_->get_col_map());
     }
+    if (OB_SUCC(ret)) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < relative_table_.get_rowkey_column_num(); ++i) {
+        if (col_descs_->at(i).col_type_.is_lob_storage()) {
+          has_lob_rowkey_ = true;
+          break;
+        }
+      }
+      if (relative_table_.is_index_table()) {
+        if (OB_FAIL(main_table_rowkey_col_flag_.init(col_descs_->count()))) {
+          LOG_WARN("fail to init main table rowkey column flag array", K(ret), K_(relative_table));
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < col_descs_->count(); ++i) {
+          bool is_main_table_rowkey_col = false;
+          const ObColumnParam *column = dml_param_.table_param_->get_data_table().get_column(col_descs_->at(i).col_id_);
+          if (OB_ISNULL(column)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("column is null", K(ret), K(i), KP(column), K(col_descs_->at(i)));
+          } else if (OB_FAIL(main_table_rowkey_col_flag_.push_back(column->is_data_table_rowkey()))) {
+            LOG_WARN("fail to push back", K(ret), K(i), KPC(column));
+          }
+        }
+      }
+    }
   }
   return ret;
 }
@@ -184,44 +207,28 @@ int ObDMLRunningCtx::prepare_column_info(const common::ObIArray<uint64_t> &colum
 int ObDMLRunningCtx::check_need_old_row_legitimacy()
 {
   int ret = OB_SUCCESS;
-  // TODO(jingxing): setting this to true
+  is_need_check_old_row_ = false;
+
   if (OB_FAIL(relative_table_.has_udf_column(is_need_check_old_row_))) {
     LOG_WARN("check has udf column failed", K(ret));
   } else if (is_need_check_old_row_) {
     is_udf_ = true;
-    ObTableStoreIterator &table_iter = *relative_table_.tablet_iter_.table_iter();
-    while (OB_SUCC(ret) && !is_need_check_old_row_) {
-      ObITable *table_ptr = nullptr;
-      if (OB_FAIL(table_iter.get_next(table_ptr))) {
-        if (OB_ITER_END != ret) {
-          LOG_WARN("get next table failed", K(ret));
-        }
-      } else if (OB_ISNULL(table_ptr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("error unexpected, table ptr must not be nullptr", K(ret));
-      } else {
-        is_need_check_old_row_ = table_ptr->is_major_sstable();
-      }
-    }
-  } else if (dml_param_.is_batch_stmt_ && !relative_table_.is_index_table()) {
-    //batch stmt execution dependency defensive check to check
-    //if the same row was modified multiple times
-    is_need_check_old_row_ = true;
-    ret = OB_E(EventTable::EN_INS_MULTI_VALUES_BATCH_OPT) OB_SUCCESS;
-    // no need to check old row, just for bmsql performance optimization
-    // TODO yuchen.ywc
-    if (OB_SUCCESS != ret) {
-      LOG_INFO("error sim when current statement is batch update", K(ret), K_(is_udf));
-      is_need_check_old_row_ = false;
-      ret = OB_SUCCESS;
-    }
   } else if (GCONF.enable_defensive_check()) {
     is_need_check_old_row_ = true;
-    if (relative_table_.is_index_table() && !relative_table_.can_read_index()) {
-      //index can not be read during building index, so does not check old index row
+    if ((relative_table_.is_index_table() && !relative_table_.can_read_index())
+        || dml_param_.is_main_table_in_fts_ddl_ ) {
+      // We should not check old row because domain row may be generated instead of scanned
+      // from domain table when:
+      // 1) index can not be read during building index
+      // 2) or schema shows index ready, but fts ddl is on going when dml start snapshot
       is_need_check_old_row_ = false;
     }
     if (ObDmlFlag::DF_LOCK == dml_flag_) {
+      is_need_check_old_row_ = false;
+    }
+    // skip old row check in foreign key check path
+    if (dml_param_.write_flag_.is_check_row_locked()) {
+      // SQL marks FK-check by setting check_row_locked in ObDMLService::init_dml_write_flag()
       is_need_check_old_row_ = false;
     }
   }

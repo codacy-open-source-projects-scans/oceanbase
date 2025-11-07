@@ -46,6 +46,8 @@ int ObTransformWinMagic::transform_one_stmt(common::ObIArray<ObParentDMLStmt> &p
     if (OB_ISNULL(stmt) || OB_ISNULL(stmt->get_query_ctx())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("stmt is null", K(ret), K(stmt));
+    } else if (stmt->get_stmt_type() == stmt::StmtType::T_MERGE) {
+      // do nothing
     } else if (OB_FAIL(get_view_to_trans(stmt, drill_down_idx, roll_up_idx, context, map_info, trans_tables))) {
       LOG_WARN("get view to trans failed", K(ret));
     } else if (drill_down_idx == -1 || roll_up_idx == -2) {
@@ -205,6 +207,7 @@ int ObTransformWinMagic::do_transform(common::ObIArray<ObParentDMLStmt> &parent_
   ObSEArray<ObSEArray<TableItem *, 4>, 4> trans_basic_tables;
   ObTryTransHelper try_trans_helper;
   const ObWinMagicHint *myhint = static_cast<const ObWinMagicHint*>(stmt->get_stmt_hint().get_normal_hint(T_WIN_MAGIC));
+  bool partial_cost_check = false;
   if (OB_ISNULL(stmt) || OB_ISNULL(stmt->get_query_ctx()) || OB_ISNULL(ctx_) ||
       OB_ISNULL(ctx_->stmt_factory_) || OB_ISNULL(ctx_->expr_factory_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -225,12 +228,17 @@ int ObTransformWinMagic::do_transform(common::ObIArray<ObParentDMLStmt> &parent_
     LOG_WARN("win magic do transform from type failed", K(ret));
   } else if (OB_FAIL(try_to_push_down_join(trans_stmt))) {
     LOG_WARN("try to push down join failed.", K(*trans_stmt));
+  } else if (OB_FAIL(ObTransformUtils::partial_cost_eval_validity_check(*ctx_, parent_stmts,
+                                                                        stmt, false,
+                                                                        partial_cost_check))) {
+    LOG_WARN("failed to check partial cost eval validity", K(ret));
   } else if (OB_FAIL(accept_transform(parent_stmts,
                                       stmt,
                                       trans_stmt,
                                       NULL != myhint && myhint->is_enable_hint(),
                                       false,
-                                      accepted))) {
+                                      accepted,
+                                      partial_cost_check))) {
     LOG_WARN("accept transform failed", K(ret));
   } else if (OB_FAIL(try_trans_helper.finish(accepted, stmt->get_query_ctx(), ctx_))) {
     LOG_WARN("failed to finish try trans helper", K(ret));
@@ -323,7 +331,7 @@ int ObTransformWinMagic::do_transform_from_type(ObDMLStmt *&stmt,
       LOG_WARN("failed to rebuild table hash", K(ret));
     } else if (OB_FAIL(drill_down_stmt->update_column_item_rel_id())) {
       LOG_WARN("failed to update column item relation id", K(ret));
-    } else if (OB_FAIL(stmt->formalize_stmt(ctx_->session_info_))) {
+    } else if (OB_FAIL(stmt->formalize_stmt(ctx_->session_info_, false))) {
       LOG_WARN("failed to formalize stmt info", K(ret));
     }
   }
@@ -334,7 +342,7 @@ int ObTransformWinMagic::adjust_transform_types(uint64_t &transform_types)
 {
   int ret = OB_SUCCESS;
   if (cost_based_trans_tried_) {
-    transform_types &= (~(1 << transformer_type_));
+    transform_types &= (~(1ULL << transformer_type_));
   }
   return ret;
 }
@@ -436,6 +444,7 @@ int ObTransformWinMagic::check_view_table_basic(ObSelectStmt *stmt, bool &is_val
             || stmt->is_set_stmt()
             || stmt->has_window_function()
             || stmt->has_rollup()
+            || stmt->has_grouping_sets()
             || stmt->get_table_size() < 1
             || stmt->get_user_var_size() > 0) {
     is_valid = false;
@@ -1154,7 +1163,7 @@ int ObTransformWinMagic::adjust_column_and_table(ObDMLStmt *main_stmt,
   }
 
   if (OB_FAIL(ret)) {
-  } else if (ObOptimizerUtil::remove_item(main_stmt->get_semi_infos(), rm_semi_infos)) {
+  } else if (OB_FAIL(ObOptimizerUtil::remove_item(main_stmt->get_semi_infos(), rm_semi_infos))) {
     LOG_WARN("failed to remove semi infos", K(ret));
   }
 
@@ -1430,7 +1439,7 @@ int ObTransformWinMagic::adjust_view_for_trans(ObDMLStmt *main_stmt,
   // push down table
   for (int64_t i = 0; OB_SUCC(ret) && i < roll_up_stmt->get_table_size(); i++) {
     TableItem *table = NULL;
-    ObSEArray<ObDMLStmt::PartExprItem, 4> part_exprs;
+    ObSEArray<PartExprItem, 4> part_exprs;
     if (OB_ISNULL(table = roll_up_stmt->get_table_item(i))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("table item is null", K(ret));
@@ -1512,6 +1521,13 @@ int ObTransformWinMagic::adjust_view_for_trans(ObDMLStmt *main_stmt,
                                                                      table_in_roll_up))) {
       LOG_WARN("failed to replace table info in semi infos", K(ret));
     }
+  }
+  if (OB_FAIL(ret)) {
+    //do nothing
+  } else if (OB_FAIL(ObTransformUtils::replace_table_in_semi_infos(main_stmt, transed_view_table, drill_down_table))) {
+    LOG_WARN("failed to replace table info in semi infos", K(ret));
+  } else if (OB_FAIL(ObTransformUtils::replace_table_in_semi_infos(main_stmt, transed_view_table, roll_up_table))) {
+    LOG_WARN("failed to replace table info in semi infos", K(ret));
   }
 
   if (OB_FAIL(ret)) {
@@ -1671,6 +1687,8 @@ int ObTransformWinMagic::change_agg_to_win_func(ObDMLStmt *main_stmt,
     } else if (OB_ISNULL(col_expr = col_in_transed->get_expr())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("col expr is null", K(ret));
+    } else if (has_exist_in_array(old_col, col_expr)) {
+      // do nothing
     } else if (FALSE_IT(type = (lib::is_oracle_mode() ? 
                (agg_expr->get_expr_type() == T_FUN_COUNT ? 
                                              T_FUN_SUM : agg_expr->get_expr_type()) : 
@@ -1776,6 +1794,7 @@ int ObTransformWinMagic::check_join_push_down(ObDMLStmt *main_stmt,
              view_table->ref_query_->has_limit() ||
              view_table->ref_query_->is_hierarchical_query() ||
              view_table->ref_query_->has_rollup() ||
+             view_table->ref_query_->has_grouping_sets() ||
              view_table->ref_query_->is_set_stmt() ||
              view_table->ref_query_->has_sequence() ||
              !view_table->ref_query_->has_window_function()) {
@@ -1964,7 +1983,7 @@ int ObTransformWinMagic::push_down_join(ObDMLStmt *main_stmt,
   int ret = OB_SUCCESS;
   ObSelectStmt *view_stmt = NULL;
   ObSEArray<ObRawExpr *, 4> renamed_cond;
-  ObSEArray<ObDMLStmt::PartExprItem,4> part_exprs;
+  ObSEArray<PartExprItem,4> part_exprs;
   ObSEArray<ObRawExpr *, 4> view_select_list;
   ObSEArray<ObRawExpr *, 4> view_column_list;
   ObSEArray<ObQueryRefRawExpr *, 4> query_refs;
@@ -2038,7 +2057,7 @@ int ObTransformWinMagic::push_down_join(ObDMLStmt *main_stmt,
     LOG_WARN("failed to rebuild table hash", K(ret));
   } else if (OB_FAIL(view_stmt->update_column_item_rel_id())) {
     LOG_WARN("failed to update column item relation id", K(ret));
-  } else if (OB_FAIL(main_stmt->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(main_stmt->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt info", K(ret));
   } else {
     LOG_DEBUG("push down join", K(*main_stmt));

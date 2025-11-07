@@ -36,7 +36,10 @@ static const double AGG_ROW_MODE_RATIO_THRESHOLD = 0.5;
 class ObCGAggCells : public ObAggGroupBase
 {
 public:
-  ObCGAggCells() : agg_cells_() {}
+  ObCGAggCells() : agg_cells_()
+  {
+    agg_cells_.set_attr(ObMemAttr(MTL_ID(), "PDAggStore"));
+  }
   virtual ~ObCGAggCells() { reset(); }
   void reset();
   bool check_finished() const;
@@ -47,9 +50,7 @@ public:
       const ObTableAccessContext *context,
       const int32_t col_idx,
       blocksstable::ObIMicroBlockReader *reader,
-      const int32_t *row_ids,
-      const int64_t row_count,
-      const bool reserve_memory) override;
+      const ObPushdownRowIdCtx &pd_row_id_ctx) override;
   int eval(blocksstable::ObStorageDatum &datum, const int64_t row_count) override;
   int fill_index_info(const blocksstable::ObMicroIndexInfo &index_info, const bool is_cg) override;
   OB_INLINE bool is_vec() const override { return false; }
@@ -96,6 +97,7 @@ public:
   virtual ~ObAggregatedStore();
   virtual void reset() override;
   virtual void reuse() override;
+  int reuse_for_refresh_table() override;
   int reuse_capacity(const int64_t capacity) override;
   virtual int init(const ObTableAccessParam &param, common::hash::ObHashSet<int32_t> *agg_col_mask = nullptr) override;
   int fill_index_info(const blocksstable::ObMicroIndexInfo &index_info, const bool is_cg) override;
@@ -122,7 +124,8 @@ public:
     //        !index_info.is_right_border();
     can_agg = filter_is_null() &&
               !agg_row_.check_need_access_data() &&
-              index_info.can_blockscan(agg_row_.has_lob_column_out()) &&
+              index_info.can_blockscan() &&
+              (!agg_row_.has_lob_column_out() || !index_info.has_lob_out_row()) &&
               !index_info.is_left_border() &&
               !index_info.is_right_border();
     return OB_SUCCESS;
@@ -130,6 +133,7 @@ public:
   // OB_INLINE void set_end() override { iter_end_flag_ = IterEndState::ITER_END; }
   int check_agg_in_row_mode(const ObTableIterParam &iter_param);
   bool has_data();
+  int set_ignore_eval_index_info(const bool ignore_eval_index_info) override;
   INHERIT_TO_STRING_KV("ObBlockBatchedRowStore", ObBlockBatchedRowStore, K_(agg_row), K_(agg_flat_row_mode));
 
 private:

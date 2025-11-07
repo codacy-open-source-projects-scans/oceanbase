@@ -11,7 +11,6 @@
  */
 
 #define USING_LOG_PREFIX LIB
-#include "lib/ob_errno.h"
 #include "lib/roaringbitmap/ob_rb_bin.h"
 #include "roaring/roaring_array.h"
 
@@ -225,7 +224,7 @@ int ObRoaringBin::contains(uint32_t value, bool &is_contains)
     ret = OB_NOT_INIT;
     LOG_WARN("ObRoaringBin is not inited", K(ret));
   } else if (OB_FALSE_IT(idx = this->key_advance_until(-1, key))){
-  } else if (key == this->get_key_at_index(idx)) {
+  } else if (idx < size_ && key == this->get_key_at_index(idx)) {
     uint8_t container_type = 0;
     roaring::api::container_s *container = nullptr;
     if (OB_FAIL(this->get_container_at_index(idx, container_type, container))) {
@@ -441,7 +440,7 @@ int ObRoaringBin::calc_andnot(ObRoaringBin *rb, ObStringBuffer &res_buf, uint64_
         if (OB_NOT_NULL(r_container)) {
           roaring::internal::container_free(r_container, r_container_type);
         }
-      } else {
+      } else if (l_key < r_key) {
         uint8_t res_container_type = 0;
         roaring::api::container_s *res_container = nullptr;
         int res_container_card = 0;
@@ -457,6 +456,9 @@ int ObRoaringBin::calc_andnot(ObRoaringBin *rb, ObStringBuffer &res_buf, uint64_
           roaring::internal::container_free(res_container, res_container_type);
         }
         l_idx++;
+      } else {
+        // l_key > r_key
+        r_idx = rb->key_advance_until(r_idx, l_key);
       }
     } // end while
     while (OB_SUCC(ret) && l_idx < size_) {
@@ -641,17 +643,17 @@ int32_t ObRoaringBin::key_advance_until(int32_t idx, uint16_t min)
 {
   int32_t res_idx = 0;
   int32_t lower = idx + 1;
-  if ((lower >= size_) || (this->get_card_at_index(lower) >= min)) {
+  if ((lower >= size_) || (this->get_key_at_index(lower) >= min)) {
     res_idx = lower;
   } else {
     int32_t spansize = 1;
-    while ((lower + spansize < size_) && (this->get_card_at_index(lower + spansize) < min)) {
+    while ((lower + spansize < size_) && (this->get_key_at_index(lower + spansize) < min)) {
       spansize *= 2;
     }
     int32_t upper = (lower + spansize < size_) ? lower + spansize : size_ - 1;
-    if (this->get_card_at_index(upper) == min) {
+    if (this->get_key_at_index(upper) == min) {
       res_idx = upper;
-    } else if (this->get_card_at_index(upper) < min) {
+    } else if (this->get_key_at_index(upper) < min) {
       // means keyscards_ has no item >= min
       res_idx = size_;
     } else {
@@ -659,9 +661,9 @@ int32_t ObRoaringBin::key_advance_until(int32_t idx, uint16_t min)
       int32_t mid = 0;
       while (lower + 1 != upper) {
         mid = (lower + upper) / 2;
-        if (this->get_card_at_index(mid) == min) {
+        if (this->get_key_at_index(mid) == min) {
           return mid;
-        } else if (this->get_card_at_index(mid) < min) {
+        } else if (this->get_key_at_index(mid) < min) {
           lower = mid;
         } else {
           upper = mid;
@@ -783,15 +785,13 @@ int ObRoaring64Bin::contains(uint64_t value, bool &is_contains)
   is_contains = false;
   uint32_t high32 = static_cast<uint32_t>(value >> 32);
   uint32_t low32 = static_cast<uint32_t>(value & 0xFFFFFFFF);
+  int32_t idx = 0;
   if (!this->is_inited()) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObRoaring64Bin is not inited", K(ret));
-  } else {
-    for (int i = 0; OB_SUCC(ret) && i < buckets_ && high32 <= high32_[i]; ++i) {
-      if (high32 == high32_[i] && OB_FAIL(roaring_bufs_[i]->contains(low32, is_contains))) {
-        LOG_WARN("fail to check value is_contains in ObRoaringBin", K(ret), K(i), K(low32));
-      }
-    }
+  } else if (OB_FALSE_IT(idx = this->high32_advance_until(-1, high32))){
+  } else if (idx < buckets_ && OB_FAIL(roaring_bufs_[idx]->contains(low32, is_contains))) {
+    LOG_WARN("fail to check value is_contains in ObRoaringBin", K(ret), K(idx), K(low32));
   }
   return ret;
 }
@@ -810,9 +810,9 @@ int ObRoaring64Bin::calc_and_cardinality(ObRoaring64Bin *rb, uint64_t &cardinali
       uint32_t l_high32 = high32_[l_idx];
       uint32_t r_high32 = rb->high32_[r_idx];
       if (l_high32 < r_high32) {
-        l_idx++;
+        l_idx = this->high32_advance_until(l_idx, r_high32);
       } else if (l_high32 > r_high32){
-        r_idx++;
+        r_idx = rb->high32_advance_until(r_idx, l_high32);
       } else {
         // l_high32 == r_high32
         uint64_t rb32_card = 0;
@@ -904,21 +904,24 @@ int ObRoaring64Bin::calc_andnot(ObRoaring64Bin *rb, ObStringBuffer &res_buf, uin
         }
         l_idx++;
         r_idx++;
-      } else {
+      } else if (l_high32 < r_high32){
         if (OB_FAIL(res_buf.append(reinterpret_cast<const char*>(&l_high32), sizeof(uint32_t)))) {
           LOG_WARN("fail to append high32", K(ret), K(l_idx), K(l_high32));
-        } else if (OB_FAIL(res_buf.append(roaring_bufs_[l_idx]->get_bin()))) {
+        } else if (OB_FAIL(res_buf.append(roaring_bufs_[l_idx]->get_bin_ptr(), roaring_bufs_[l_idx]->get_bin_length()))) {
           LOG_WARN("fail to append roaring_bin", K(ret), K(l_idx));
         }
         l_idx++;
         buckets++;
+      } else {
+        // l_high32 > r_high32
+        r_idx = rb->high32_advance_until(r_idx, l_high32);
       }
     } // end while
     while(OB_SUCC(ret) && l_idx < buckets_) {
       uint32_t l_high32 = high32_[l_idx];
       if (OB_FAIL(res_buf.append(reinterpret_cast<const char*>(&l_high32), sizeof(uint32_t)))) {
         LOG_WARN("fail to append high32", K(ret), K(l_idx), K(l_high32));
-      } else if (OB_FAIL(res_buf.append(roaring_bufs_[l_idx]->get_bin()))) {
+      } else if (OB_FAIL(res_buf.append(roaring_bufs_[l_idx]->get_bin_ptr(), roaring_bufs_[l_idx]->get_bin_length()))) {
         LOG_WARN("fail to append roaring _bin", K(ret), K(l_idx));
       }
       l_idx++;

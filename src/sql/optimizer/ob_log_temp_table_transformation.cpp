@@ -13,8 +13,6 @@
 #define USING_LOG_PREFIX SQL_OPT
 
 #include "ob_log_temp_table_transformation.h"
-#include "ob_opt_est_cost.h"
-#include "sql/optimizer/ob_log_plan.h"
 #include "sql/optimizer/ob_join_order.h"
 
 using namespace oceanbase;
@@ -116,10 +114,8 @@ int ObLogTempTableTransformation::compute_op_parallel_and_server_info()
     LOG_WARN("failed to assign server list", K(ret));
   } else {
     set_parallel(last_child->get_parallel());
+    set_available_parallel(last_child->get_available_parallel());
     set_server_cnt(last_child->get_server_cnt());
-    if (is_single()) {
-      set_available_parallel(last_child->get_available_parallel());
-    }
   }
   return ret;
 }

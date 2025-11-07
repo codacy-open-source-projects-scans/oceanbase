@@ -14,34 +14,7 @@ static bool MDS_FLUSHER_ALLOW_ALLOC = true;
 #include <gtest/gtest.h>
 #define private public
 #define protected public
-#include "lib/utility/utility.h"
-#include "storage/multi_data_source/compile_utility/mds_dummy_key.h"
-#include "share/ob_ls_id.h"
-#include "storage/multi_data_source/mds_writer.h"
-#include <thread>
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <exception>
-#include "lib/ob_errno.h"
-#include "share/ob_errno.h"
-#include "storage/multi_data_source/adapter_define/mds_dump_node.h"
-#include "lib/allocator/ob_malloc.h"
-#include "storage/multi_data_source/mds_node.h"
-#include "common/ob_clock_generator.h"
-#include "storage/multi_data_source/mds_row.h"
-#include "storage/multi_data_source/mds_unit.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/multi_data_source/mds_table_handler.h"
-#include "storage/tx/ob_trans_define.h"
-#include <algorithm>
-#include <numeric>
-#include "storage/multi_data_source/runtime_utility/mds_lock.h"
-#include "storage/tablet/ob_tablet_meta.h"
-#include "storage/multi_data_source/mds_table_mgr.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/multi_data_source/mds_table_order_flusher.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
 namespace oceanbase {
 namespace storage {
@@ -99,10 +72,17 @@ using namespace storage;
 using namespace mds;
 using namespace transaction;
 
+storage::ObLS FAKE_LS;
+storage::mds::ObMdsTableMgr FAKE_MDS_TABLE_MGR;
+
 class TestMdsTableFlush: public ::testing::Test
 {
 public:
-  TestMdsTableFlush() { ObMdsSchemaHelper::get_instance().init(); }
+  TestMdsTableFlush()
+  {
+    ObMdsSchemaHelper::get_instance().init();
+    FAKE_MDS_TABLE_MGR.ls_ = &FAKE_LS;
+  }
   virtual ~TestMdsTableFlush() {}
   virtual void SetUp() {
   }
@@ -112,7 +92,6 @@ private:
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(TestMdsTableFlush);
 };
-
 
 //                                                max_decided_scn:475
 //                                                     │
@@ -139,7 +118,7 @@ int construct_tested_mds_table(MdsTableHandle &handle) {
   for (int i = 0; i < 7; ++i) {
     v_ctx.push_back(new MdsCtx(MdsWriter(transaction::ObTransID(i))));
   }
-  if (OB_FAIL(handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111))) {
+  if (OB_FAIL(handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111))) {
   } else if (OB_FAIL(handle.set<ExampleUserData1>(1, *v_ctx[0]))) {
   } else if (FALSE_IT(v_ctx[0]->on_redo(mock_scn(50)))) {
   } else if (FALSE_IT(v_ctx[0]->on_commit(mock_scn(100), mock_scn(100)))) {
@@ -169,6 +148,7 @@ TEST_F(TestMdsTableFlush, normal_flush) {
   ASSERT_EQ(mock_scn(50), rec_scn);// 没转储的时候是最小的node的redo scn值
 
   // 第一次转储
+  handle.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
   ASSERT_EQ(OB_SUCCESS, handle.flush(mock_scn(1000), mock_scn(125)));// 因为max_decided_scn较小，所以会用125做flush
   bool is_flusing = false;
   ASSERT_EQ(OB_SUCCESS, handle.is_flushing(is_flusing));// 在flush流程中
@@ -255,6 +235,8 @@ TEST_F(TestMdsTableFlush, advance_rec_scn_consider_about_max_aborted_scn_on_mds_
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(3), ExampleUserData1(1), ctx);
   ctx.on_redo(mock_scn(474));
   ctx.on_abort(mock_scn(477));
+
+  handle.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
   ASSERT_EQ(OB_SUCCESS, handle.flush(mock_scn(475), MOCK_MAX_CONSEQUENT_CALLBACKED_SCN));
   ASSERT_EQ(OB_SUCCESS, handle.is_flushing(is_flusing));// 在flush流程中
   ASSERT_EQ(true, is_flusing);
@@ -289,7 +271,7 @@ TEST_F(TestMdsTableFlush, advance_rec_scn_consider_about_max_aborted_scn_on_mds_
 
 TEST_F(TestMdsTableFlush, flush_scn_decline1) {
   MdsTableHandle handle;
-  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MdsCtx ctx1(MdsWriter(transaction::ObTransID(1)));
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx1);
   ctx1.on_redo(mock_scn(10));
@@ -302,6 +284,8 @@ TEST_F(TestMdsTableFlush, flush_scn_decline1) {
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx3);
   ctx3.on_redo(mock_scn(29));
   ctx3.on_commit(mock_scn(40), mock_scn(40));
+
+  handle.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
   ASSERT_EQ(OB_SUCCESS, handle.flush(mock_scn(1000), mock_scn(35)));// finally will be 9
   share::SCN rec_scn;
   ASSERT_EQ(OB_SUCCESS, handle.get_rec_scn(rec_scn));
@@ -310,7 +294,7 @@ TEST_F(TestMdsTableFlush, flush_scn_decline1) {
 
 TEST_F(TestMdsTableFlush, flush_scn_decline2) {
   MdsTableHandle handle;
-  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MdsCtx ctx1(MdsWriter(transaction::ObTransID(1)));
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx1);
   ctx1.on_redo(mock_scn(10));
@@ -323,6 +307,8 @@ TEST_F(TestMdsTableFlush, flush_scn_decline2) {
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx3);
   ctx3.on_redo(mock_scn(29));
   ctx3.on_commit(mock_scn(40), mock_scn(40));
+
+  handle.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
   ASSERT_EQ(OB_SUCCESS, handle.flush(mock_scn(1000), mock_scn(35)));// finally will be 9
   share::SCN rec_scn;
   ASSERT_EQ(OB_SUCCESS, handle.get_rec_scn(rec_scn));

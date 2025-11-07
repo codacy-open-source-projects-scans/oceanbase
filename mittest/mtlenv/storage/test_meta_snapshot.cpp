@@ -10,8 +10,6 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
-#include <gmock/gmock.h>
 
 #define USING_LOG_PREFIX STORAGE
 
@@ -19,9 +17,6 @@
 #define private public
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "mittest/mtlenv/storage/blocksstable/ob_index_block_data_prepare.h"
-#include "storage/slog_ckpt/ob_tenant_meta_snapshot_handler.h"
-#include "storage/meta_store/ob_tenant_storage_meta_service.h"
-#include "storage/tablet/ob_tablet_persister.h"
 
 namespace oceanbase
 {
@@ -94,8 +89,10 @@ int TestMetaSnapshot::persist_tablet(ObTabletHandle &new_tablet_handle)
   } else if (OB_FAIL(meta_service->get_shared_object_reader_writer().switch_object(object_handle, default_opt))) {
     LOG_WARN("fail to switch shared meta block", K(ret));
   } else {
-    ObTabletPersisterParam persister_param(ls_id, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet_handle.get_obj()->get_transfer_seq());
-    if (OB_FAIL(ObTabletPersister::persist_and_transform_tablet(persister_param, *(tablet_handle.get_obj()), new_tablet_handle))) {
+    const uint64_t data_version = DATA_CURRENT_VERSION;
+    const int64_t tablet_meta_version = 0;
+    ObTabletPersisterParam persister_param(data_version, ls_id, ls_handle.get_ls()->get_ls_epoch(), tablet_id, tablet_handle.get_obj()->get_transfer_seq(), tablet_meta_version);
+    if (FAILEDx(ObTabletPersister::persist_and_transform_tablet(persister_param, *(tablet_handle.get_obj()), new_tablet_handle))) {
       LOG_WARN("fail to persist and transform tablet", K(ret), K(tablet_handle));
     } else if (OB_FAIL(new_tablet_handle.get_obj()->get_updating_tablet_pointer_param(param))) {
       LOG_WARN("fail to get updating tablet pointer parameters", K(ret));

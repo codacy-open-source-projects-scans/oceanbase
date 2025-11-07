@@ -16,12 +16,26 @@
 #include "share/ob_define.h"
 #include "share/aggregate/processor.h"
 
+// 本文件中有许多模版函数原本被定义在CPP中，【因为UNITY合并编译单元的作用，而通过了编译，但模版代码的实现需要在头文件中定义】，因此关闭UNITY后导致observer无法通过编译
+// 为解决关闭UNITY后的编译问题，将其挪至头文件中
+// 但本函数使用了OZ、CK宏，这两个宏内部的log打印使用了LOG_WARN，要求必须定义USING_LOG_PREFIX
+// 由于这里是头文件，这将导致非常棘手的问题：
+// 1. 如果在本头文件之前没有定义USING_LOG_PREFIX，则必须重新定义USING_LOG_PREFIX（但宏被定义在头文件中将造成污染）
+// 2. 如果是在本文件中新定义的USING_LOG_PREFIX，则需要被清理掉，防止污染被传播到其他.h以及cpp中
+// 因此这里判断USING_LOG_PREFIX是否已定义，若已定义则放弃重新定义（这意味着日志并不总是被以“SQL_ENG”标识打印），同时也定义特殊标识
+// 若发现定义特殊标识，则在预处理过程中执行宏清理动作
+// 整个逻辑相当trick，是为了尽量少的修改代码逻辑，代码owner后续需要整改这里的逻辑
+#ifndef USING_LOG_PREFIX
+#define MARK_MACRO_DEFINED_BY_WIN_EXPR_H
+#define USING_LOG_PREFIX SQL_ENG
+#endif
 namespace oceanbase
 {
 namespace sql
 {
 class ObCompactRow;
 class WinFuncColExpr;
+class WinFuncInfo;
 
 namespace winfunc
 {
@@ -65,9 +79,12 @@ struct RemovalInfo
 struct Frame
 {
   Frame(const int64_t head = -1, const int64_t tail = -1, bool is_accum_frame = false) :
-    head_(head), tail_(tail), is_accum_frame_(is_accum_frame)
+    head_(head), tail_(tail), is_accum_frame_(is_accum_frame), skip_cnt_(0)
   {}
-  Frame(const Frame &other): head_(other.head_), tail_(other.tail_), is_accum_frame_(other.is_accum_frame_) {}
+  Frame(const Frame &other) :
+    head_(other.head_), tail_(other.tail_), is_accum_frame_(other.is_accum_frame_),
+    skip_cnt_(other.skip_cnt_)
+  {}
   bool operator==(const Frame &other) const
   {
     return same_frame(*this, other);
@@ -128,12 +145,14 @@ struct Frame
   void reset()
   {
     head_ = tail_ = -1;
+    skip_cnt_ = 0;
   }
-  TO_STRING_KV(K(head_), K(tail_));
+  TO_STRING_KV(K(head_), K(tail_), K(is_accum_frame_), K(skip_cnt_));
 
   int64_t head_;
   int64_t tail_; // !!! not included
   bool is_accum_frame_;
+  int64_t skip_cnt_; // skipped rows in this frame
 };
 
 struct WinExprEvalCtx
@@ -141,8 +160,7 @@ struct WinExprEvalCtx
   WinExprEvalCtx(RowStore &input_rows, WinFuncColExpr &win_col, const int64_t tenant_id) :
     input_rows_(input_rows), win_col_(win_col),
     allocator_(ObModIds::OB_SQL_WINDOW_LOCAL, OB_MALLOC_NORMAL_BLOCK_SIZE, tenant_id,
-               ObCtxIds::WORK_AREA),
-    extra_(nullptr)
+               ObCtxIds::WORK_AREA)
   {}
 
   char *reserved_buf(int32_t len)
@@ -151,14 +169,12 @@ struct WinExprEvalCtx
   }
   ~WinExprEvalCtx()
   {
-    extra_ = nullptr;
     allocator_.reset();
   }
   RowStore &input_rows_;
   sql::WinFuncColExpr &win_col_;
   // used for tmp memory allocating during partition process.
   common::ObArenaAllocator allocator_;
-  void *extra_; // maybe useless
 };
 
 class IWinExpr
@@ -175,7 +191,7 @@ public:
                                 const int64_t part_end, const int64_t row_start,
                                 const int64_t row_end, const ObBitVector &skip) = 0;
   // used to generate extra ctx for expr evaluation
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) = 0;
+  virtual int generate_extra() = 0;
 
   virtual bool is_aggregate_expr() const = 0;
   virtual void destroy() = 0;
@@ -189,9 +205,9 @@ public:
   virtual int process_partition(WinExprEvalCtx &ctx, const int64_t part_start,
                                 const int64_t part_end, const int64_t row_start,
                                 const int64_t row_end, const ObBitVector &skip) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override
+  virtual int generate_extra() override
   {
-    return OB_NOT_IMPLEMENT;
+    return OB_SUCCESS;
   }
   virtual void destroy() override
   { // do nothing
@@ -213,6 +229,11 @@ protected:
   {
     ParamStatus() : flags_(0), int_val_(0)
     {}
+    void reset()
+    {
+      flags_ = 0;
+      int_val_ = 0;
+    }
     union
     {
       struct
@@ -250,7 +271,6 @@ public:
 
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                    char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
 private:
   int64_t rank_of_prev_row_;
 };
@@ -260,7 +280,6 @@ class RowNumber final: public NonAggrWinExpr
 public:
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                              char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
 };
 
 class Ntile final: public NonAggrWinExpr
@@ -268,15 +287,44 @@ class Ntile final: public NonAggrWinExpr
 public:
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                              char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
+  virtual int generate_extra() override;
+private:
+  ParamStatus param_status_;
 };
 
 class NthValue final: public NonAggrWinExpr
 {
 public:
+  NthValue()
+      : NonAggrWinExpr(), last_result_is_valid_(false),
+        last_result_is_null_(false), last_result_(nullptr),
+        last_result_size_(-1), last_result_capacity_(-1), last_frame_(),
+        param_index_(-1), reuse_count_(0), store_count_(0) {}
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                              char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
+  virtual int generate_extra() override;
+  virtual void destroy() override;
+private:
+  // -- optimize for first()/last() in half sliding window
+  // fast path for reuse last result
+  int may_reuse_last_result(
+    WinExprEvalCtx &ctx, const Frame& frame, const WinFuncInfo& wf_info, int nth_val,
+    bool& /* out */ may_reused, bool& /* out */ may_store);
+
+  // store current result for further usage
+  int store_result_for_reuse(WinExprEvalCtx &ctx, const char *src,
+                               int32_t len, const Frame &frame);
+  void store_null_for_reuse(const Frame& frame);
+
+  bool last_result_is_valid_;
+  bool last_result_is_null_;
+  char* last_result_;
+  int last_result_size_;
+  int last_result_capacity_;
+  Frame last_frame_;
+  int64_t param_index_;  // column index of param[0]
+  uint32_t reuse_count_;
+  uint32_t store_count_;
 };
 
 class LeadOrLag final: public NonAggrWinExpr
@@ -284,7 +332,6 @@ class LeadOrLag final: public NonAggrWinExpr
 public:
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                              char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
 };
 
 class CumeDist final: public NonAggrWinExpr
@@ -292,7 +339,6 @@ class CumeDist final: public NonAggrWinExpr
 public:
   virtual int process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
                              char *res, bool &is_null) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override;
 };
 
 class AggrExpr final: public WinExprWrapper<AggrExpr>
@@ -307,11 +353,6 @@ public:
   bool is_aggregate_expr() const override { return true; }
   virtual int collect_part_results(WinExprEvalCtx &ctx, const int64_t row_start,
                                    const int64_t row_end, const ObBitVector &skip) override;
-  virtual int generate_extra(ObIAllocator &allocator, void *&extra) override
-  {
-    return OB_SUCCESS;
-  }
-
   static int set_result_for_invalid_frame(WinExprEvalCtx &ctx, char *agg_row);
 
   virtual void destroy() override;
@@ -330,7 +371,95 @@ public:
   char *last_aggr_row_;
 };
 
+int cmp_prev_row(WinExprEvalCtx &ctx, const int64_t cur_idx, int &cmp_ret);
+
+ObObjType RankLikeExpr_process_window_helper(WinExprEvalCtx &ctx);
+template <ObItemType rank_op>
+int RankLikeExpr<rank_op>::process_window(WinExprEvalCtx &ctx, const Frame &frame,
+                                          const int64_t row_idx, char *res, bool &is_null)
+{
+  int ret = OB_SUCCESS;
+  bool equal_with_prev_row = false;
+  is_null = false;
+  if (row_idx != frame.head_) {
+    int cmp_ret = 0;
+    if (OB_FAIL(cmp_prev_row(ctx, row_idx, cmp_ret))) {
+      LOG_WARN("compare previous row failed", K(ret));
+    } else {
+      equal_with_prev_row = (cmp_ret == 0);
+    }
+  } else {
+    // reset rank
+    rank_of_prev_row_ = 0;
+  }
+  if (OB_SUCC(ret)) {
+    int64_t rank = -1;
+    if (equal_with_prev_row) {
+      rank = rank_of_prev_row_;
+    } else if (rank_op == T_WIN_FUN_RANK || rank_op == T_WIN_FUN_PERCENT_RANK) {
+      rank = row_idx - frame.head_ + 1;
+    } else if (rank_op == T_WIN_FUN_DENSE_RANK) {
+      rank = rank_of_prev_row_ + 1;
+    }
+    LOG_DEBUG("calculate rank result", K(rank_op), K(rank), K(frame));
+    if (rank_op == T_WIN_FUN_PERCENT_RANK) {
+      // if (ob_is_number_tc(ctx.win_col_.wf_info_.expr_->datum_meta_.type_)) {
+      if (ob_is_number_tc(RankLikeExpr_process_window_helper(ctx))) {
+        // in mysql mode, percent rank may return double
+        if (0 == frame.tail_ - frame.head_ - 1) {
+          number::ObNumber zero_nmb;
+          zero_nmb.set_zero();
+          MEMCPY(res, &(zero_nmb.d_), sizeof(ObNumberDesc));
+        } else {
+          number::ObNumber numerator;
+          number::ObNumber denominator;
+          number::ObNumber res_nmb;
+          ObNumStackAllocator<3> tmp_alloc;
+          if (OB_FAIL(numerator.from(rank - 1, tmp_alloc))) {
+            LOG_WARN("failed to build number from int64_t", K(ret));
+          } else if (OB_FAIL(denominator.from(frame.tail_ - frame.head_ - 1, tmp_alloc))) {
+            LOG_WARN("failed to build number from int64_t", K(ret));
+          } else if (OB_FAIL(numerator.div(denominator, res_nmb, tmp_alloc))) {
+            LOG_WARN("failed to div number", K(ret));
+          } else {
+            number::ObCompactNumber *res_cnum = reinterpret_cast<number::ObCompactNumber *>(res);
+            res_cnum->desc_ = res_nmb.d_;
+            MEMCPY(&(res_cnum->digits_[0]), res_nmb.get_digits(), sizeof(uint32_t) * res_nmb.d_.len_);
+          }
+        }
+      } else if (ObDoubleType == RankLikeExpr_process_window_helper(ctx)) {
+        if (0 == frame.tail_ - frame.head_ - 1) {
+          *reinterpret_cast<double *>(res) = 0;
+        } else {
+          double numerator = static_cast<double>(rank - 1);
+          double denominator= static_cast<double>(frame.tail_ - frame.head_ - 1);
+          *reinterpret_cast<double *>(res) = (numerator / denominator);
+        }
+      }
+    } else if (lib::is_oracle_mode()) {
+      number::ObNumber res_nmb;
+      ObNumStackAllocator<1> tmp_alloc;
+      if (OB_FAIL(res_nmb.from(rank, tmp_alloc))) {
+        LOG_WARN("failed to build number from int64_t", K(ret));
+      } else {
+        MEMCPY(res, &(res_nmb.d_), sizeof(ObNumberDesc));
+        MEMCPY(res + sizeof(ObNumberDesc), res_nmb.get_digits(),
+               sizeof(uint32_t) * res_nmb.d_.len_);
+      }
+    } else {
+      *reinterpret_cast<int64_t *>(res) = rank;
+    }
+    if (OB_SUCC(ret)) {
+      rank_of_prev_row_ = rank;
+    }
+  }
+  return ret;
+}
+
 } // end winfunc
 } // end sql
 } // end oceanbase
+#ifdef MARK_MACRO_DEFINED_BY_WIN_EXPR_H
+#undef USING_LOG_PREFIX
+#endif
 #endif // OCEANBASE_WINDOW_FUNCTION_EXPR_H_

@@ -11,13 +11,8 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include "sql/engine/px/datahub/components/ob_dh_barrier.h"
-#include "sql/engine/px/datahub/ob_dh_msg_ctx.h"
-#include "sql/engine/px/ob_dfo.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/px/datahub/ob_dh_msg.h"
 #include "sql/engine/px/datahub/components/ob_dh_winbuf.h"
-#include "sql/engine/basic/ob_chunk_datum_store.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -26,7 +21,7 @@ using namespace oceanbase::common;
 
 int ObWinbufPieceMsgListener::on_message(
     ObWinbufPieceMsgCtx &ctx,
-    common::ObIArray<ObPxSqcMeta *> &sqcs,
+    common::ObIArray<ObPxSqcMeta> &sqcs,
     const ObWinbufPieceMsg &pkt)
 {
   int ret = OB_SUCCESS;
@@ -93,14 +88,14 @@ int ObWinbufPieceMsgCtx::alloc_piece_msg_ctx(const ObWinbufPieceMsg &pkt,
   return ret;
 }
 
-int ObWinbufPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs)
+int ObWinbufPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta> &sqcs)
 {
   int ret = OB_SUCCESS;
   whole_msg_.is_datum_ = true;
   whole_msg_.op_id_ = op_id_;
   whole_msg_.is_empty_ = (!whole_msg_.datum_store_.is_inited());
   ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-    dtl::ObDtlChannel *ch = sqcs.at(idx)->get_qc_channel();
+    dtl::ObDtlChannel *ch = sqcs.at(idx).get_qc_channel();
     if (OB_ISNULL(ch)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("null expected", K(ret));
@@ -383,13 +378,13 @@ void SPWinFuncPXPieceMsgCtx::reset_resource()
   received_ = 0;
 }
 
-int SPWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs)
+int SPWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta> &sqcs)
 {
   int ret = OB_SUCCESS;
   whole_msg_.op_id_ = op_id_;
   whole_msg_.is_empty_ = (!whole_msg_.row_store_.is_inited());
   ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-    dtl::ObDtlChannel *ch = sqcs.at(idx)->get_qc_channel();
+    dtl::ObDtlChannel *ch = sqcs.at(idx).get_qc_channel();
     if (OB_ISNULL(ch)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null channel", K(ret), K(ch));
@@ -408,7 +403,7 @@ int SPWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs
 }
 
 int SPWinFuncPXPieceMsgListener::on_message(SPWinFuncPXPieceMsgCtx &ctx,
-                                            common::ObIArray<ObPxSqcMeta *> &sqcs,
+                                            common::ObIArray<ObPxSqcMeta> &sqcs,
                                             const SPWinFuncPXPieceMsg &pkt)
 {
   int ret = OB_SUCCESS;

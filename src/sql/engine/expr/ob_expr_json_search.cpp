@@ -12,11 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_json_search.h"
-#include "util/easy_string.h"
-#include "sql/engine/expr/ob_expr_util.h"
-#include "share/object/ob_obj_cast.h"
 #include "share/ob_json_access_utils.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "ob_expr_json_func_helper.h"
 #include "sql/engine/ob_exec_context.h"
 using namespace oceanbase::common;
@@ -380,6 +376,7 @@ int ObExprJsonSearch::eval_json_search(const ObExpr &expr, ObEvalCtx &ctx, ObDat
 
       for (uint64_t i = 4; OB_SUCC(ret) && !is_null && i < expr.arg_cnt_; i++) {        
         json_arg = expr.args_[i];
+        bool is_const = json_arg->is_const_expr();
         val_type = json_arg->datum_meta_.type_;
         if (OB_FAIL(temp_allocator.eval_arg(json_arg, ctx, json_datum))) {
           LOG_WARN("eval json arg failed", K(ret));
@@ -402,8 +399,8 @@ int ObExprJsonSearch::eval_json_search(const ObExpr &expr, ObEvalCtx &ctx, ObDat
                                                                     j_path_text,
                                                                     j_path_text))) {
             LOG_WARN("fail to convert string", K(ret));
-          } else if (OB_FAIL(ObJsonExprHelper::find_and_add_cache(path_cache, j_path,
-              j_path_text, i, true))) {
+          } else if (OB_FAIL(ObJsonExprHelper::find_and_add_cache(temp_allocator, path_cache, j_path,
+              j_path_text, i, true, is_const))) {
             LOG_WARN("parse text to path failed", K(j_path_text), K(ret));
           } else if (OB_FAIL(json_paths.push_back(j_path))) {
             LOG_WARN("push new path to vector failed", K(i), K(ret));

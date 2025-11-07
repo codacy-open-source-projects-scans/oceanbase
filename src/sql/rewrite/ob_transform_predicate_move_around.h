@@ -291,10 +291,32 @@ private:
   int pushdown_through_groupby(ObSelectStmt &stmt,
                                ObIArray<ObRawExpr *> &output_predicates);
 
+  int check_pushdown_through_groupby_validity(ObSelectStmt &stmt,
+                                          ObRawExpr *having_expr,
+                                          bool &is_valid);
+
+  int check_pushdown_through_rollup_validity(ObRawExpr *having_expr,
+                               const ObIArray<ObRawExpr *> &rollup_exprs,
+                               bool &is_valid);
+
   int deduce_param_cond_from_aggr_cond(ObItemType expr_type,
                                        ObRawExpr *first,
                                        ObRawExpr *second,
                                        ObRawExpr *&new_predicate);
+
+  int inner_add_split_in_exprs(ObRawExpr *in_expr,
+                               ObIArray<ObRawExpr *> &target_exprs,
+                               ObIArray<ObRawExpr *> &new_conds);
+
+  int create_new_op_expr_without_row(ObRawExpr *left_expr,
+                                     ObRawExpr *right_expr,
+                                     int split_expr_idx,
+                                     ObRawExpr *&new_op_expr);
+
+  int create_new_op_expr_with_row(ObRawExpr *left_expr,
+                                  ObRawExpr *right_expr,
+                                  const ObSqlBitSet <> &split_expr_set,
+                                  ObRawExpr *&new_op_expr);
 
   int split_or_having_expr(ObSelectStmt &stmt,
                           ObOpRawExpr &or_qual,
@@ -327,6 +349,10 @@ private:
                            bool &is_happened,
                            bool is_pullup = false);
   int check_need_transform_predicates(ObIArray<ObRawExpr *> &exprs, bool &is_needed);
+
+  int transform_other_predicates(ObIArray<ObRawExpr *> &input_preds,
+                                 ObIArray<ObRawExpr *> &target_exprs);
+
   int accept_outjoin_predicates(ObDMLStmt &stmt,
                                 ObIArray<ObRawExpr *> &conds,
                                 ObSqlBitSet <> &filter_table_set,
@@ -335,7 +361,8 @@ private:
   int accept_predicates(ObDMLStmt &stmt,
                         ObIArray<ObRawExpr *> &conds,
                         ObIArray<ObRawExpr *> &properties,
-                        ObIArray<ObRawExpr *> &new_conds);
+                        ObIArray<ObRawExpr *> &new_conds,
+                        const bool preserve_conds = false);
 
   int extract_generalized_column(ObRawExpr *expr,
                                  ObIArray<ObRawExpr *> &output);
@@ -396,6 +423,8 @@ private:
 
   int gather_basic_qualify_filter(ObSelectStmt &stmt, ObIArray<ObRawExpr*> &preds);
   int filter_lateral_correlated_preds(TableItem &table_item, ObIArray<ObRawExpr*> &preds);
+  void reset();
+
 private:
   typedef ObSEArray<ObRawExpr *, 4> PullupPreds;
   ObArenaAllocator allocator_;
@@ -404,6 +433,9 @@ private:
   ObSEArray<ObDMLStmt *, 8> transed_stmts_;
   ObSEArray<ObHint *, 4> applied_hints_;
   ObSEArray<ObSqlTempTableInfo *, 2> temp_table_infos_;
+  ObSEArray<ObRawExpr *, 4> null_constraints_;
+  ObSEArray<ObRawExpr *, 4> not_null_constraints_;
+  ObSEArray<ObPCParamEqualInfo, 4> equal_param_constraints_;
   bool real_happened_;
 };
 

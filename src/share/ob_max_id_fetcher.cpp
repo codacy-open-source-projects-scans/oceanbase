@@ -14,16 +14,6 @@
 
 #include "share/ob_max_id_fetcher.h"
 
-#include "lib/string/ob_sql_string.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "lib/mysqlclient/ob_isql_client.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "common/ob_zone.h"
-#include "common/object/ob_object.h"
-#include "share/inner_table/ob_inner_table_schema.h"
-#include "share/schema/ob_schema_utils.h"
-#include "share/ob_schema_status_proxy.h"
 #include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
 
@@ -85,7 +75,14 @@ const char *ObMaxIdFetcher::max_id_name_info_[OB_MAX_ID_TYPE][2] = {
   /* the following ObMaxIdType will be persisted. */
   { "ob_max_used_service_name_id", "max used service name id"},
   { "ob_max_used_storage_id", "max used storage id"},
-  { "ob_max_used_storage_op_id", "max used storage op id"}
+  { "ob_max_used_storage_op_id", "max used storage op id"},
+  { "ob_max_used_catalog_id", "max used catalog id"},
+  { "ob_max_used_ccl_rule_id", "max used ccl rule id"},
+  {"ob_max_used_external_resource_id", "max used external resources id"}, // OB_MAX_USED_EXTERNAL_RESOURCE_ID_TYPE will be changed to OB_MAX_USED_OBJECT_ID_TYPE and won't be persisted.
+  { "ob_max_used_location_id", "max used location id"},
+  { "ob_max_sensitive_rule_id", "max sensitive rule id"},
+  { "ob_max_used_ai_model_id", "max used ai model id"},
+  { "ob_max_used_ai_model_endpoint_id", "max used ai model endpoint id"}
 };
 
 lib::ObMutex ObMaxIdFetcher::mutex_bucket_[MAX_TENANT_MUTEX_BUCKET_CNT];
@@ -130,6 +127,7 @@ int ObMaxIdFetcher::convert_id_type(
     case OB_MAX_USED_LOCK_OWNER_ID_TYPE:
     case OB_MAX_USED_REWRITE_RULE_VERSION_TYPE:
     case OB_MAX_USED_SERVICE_NAME_ID_TYPE:
+    case OB_MAX_USED_AI_MODEL_ENDPOINT_ID_TYPE:
     case OB_MAX_USED_TTL_TASK_ID_TYPE: {
       dst = src;
       break;
@@ -162,7 +160,12 @@ int ObMaxIdFetcher::convert_id_type(
     case OB_MAX_USED_PARTITION_ID_TYPE:
     case OB_MAX_USED_RLS_POLICY_ID_TYPE:
     case OB_MAX_USED_RLS_GROUP_ID_TYPE:
-    case OB_MAX_USED_RLS_CONTEXT_ID_TYPE: {
+    case OB_MAX_USED_RLS_CONTEXT_ID_TYPE:
+    case OB_MAX_USED_CATALOG_ID_TYPE:
+    case OB_MAX_USED_EXTERNAL_RESOURCE_ID_TYPE:
+    case OB_MAX_USED_AI_MODEL_ID_TYPE:
+    case OB_MAX_USED_LOCATION_ID_TYPE:
+    case OB_MAX_USED_CCL_RULE_ID_TYPE: {
       dst = OB_MAX_USED_OBJECT_ID_TYPE;
       break;
     }
@@ -324,6 +327,8 @@ int ObMaxIdFetcher::fetch_new_max_id(const uint64_t tenant_id,
         case OB_MAX_USED_LS_GROUP_ID_TYPE:
         case OB_MAX_USED_REWRITE_RULE_VERSION_TYPE:
         case OB_MAX_USED_SERVICE_NAME_ID_TYPE:
+        case OB_MAX_USED_AI_MODEL_ID_TYPE:
+        case OB_MAX_USED_AI_MODEL_ENDPOINT_ID_TYPE:
         case OB_MAX_USED_TTL_TASK_ID_TYPE: {
           // won't check other id
           break;

@@ -14,10 +14,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_json_object.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/expr/ob_expr_cast.h"
 #include "share/ob_json_access_utils.h"
-#include "lib/hash/ob_hashset.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -195,7 +192,6 @@ int ObExprJsonObject::eval_json_object(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
   uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
   MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "JSONModule"));
   ObJsonObject j_obj(&temp_allocator);
   ObIJsonBase *j_base = &j_obj;
 
@@ -257,7 +253,6 @@ int ObExprJsonObject::eval_ora_json_object(const ObExpr &expr, ObEvalCtx &ctx, O
   ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
   uint64_t tenant_id = ObMultiModeExprHelper::get_tenant_id(ctx.exec_ctx_.get_my_session());
   MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator(), expr.type_, tenant_id, ret);
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "JSONModule"));
   ObJsonBuffer string_buffer(&temp_allocator);
   ObObjType val_type;
   ObCollationType value_cs_type;

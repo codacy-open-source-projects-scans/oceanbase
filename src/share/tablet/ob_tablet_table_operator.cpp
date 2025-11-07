@@ -13,14 +13,6 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "share/tablet/ob_tablet_table_operator.h"
-#include "share/ob_errno.h" // KR(ret)
-#include "share/inner_table/ob_inner_table_schema.h" // OB_ALL_TABLET_META_TABLE_TNAME
-#include "share/ob_dml_sql_splicer.h" // ObDMLSqlSplicer
-#include "lib/string/ob_sql_string.h" // ObSqlString
-#include "lib/mysqlclient/ob_mysql_transaction.h" // ObMySQLTransaction
-#include "lib/mysqlclient/ob_mysql_proxy.h" // ObMySqlProxy
-#include "share/ob_ls_id.h" // ObLSID
-#include "observer/omt/ob_tenant_timezone_mgr.h" // for OTTZ_MGR.get_tenant_tz
 #include "share/resource_manager/ob_cgroup_ctrl.h"
 namespace oceanbase
 {
@@ -747,8 +739,10 @@ int ObTabletTableOperator::fill_remove_dml_splicer_(
 int ObTabletTableOperator::remove_residual_tablet(
     ObISQLClient &sql_client,
     const uint64_t tenant_id,
+    const ObLSID &ls_id,
     const ObAddr &server,
     const int64_t limit,
+    const char *const table_name,
     int64_t &affected_rows)
 {
   int ret = OB_SUCCESS;
@@ -768,18 +762,34 @@ int ObTabletTableOperator::remove_residual_tablet(
   } else if (OB_UNLIKELY(!server.ip_to_string(ip, sizeof(ip)))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("convert server ip to string failed", KR(ret), K(server));
+  } else if (OB_ISNULL(table_name)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table name is null", KR(ret));
+  } else if (!ls_id.is_valid()) { // ls_id is invalid, means delete all ls in server here
+    if (OB_FAIL(sql.assign_fmt(
+        "DELETE FROM %s WHERE tenant_id = %lu AND svr_ip = '%s' AND svr_port = %d limit %ld",
+        table_name,
+        tenant_id,
+        ip,
+        server.get_port(),
+        limit))) {
+      LOG_WARN("assign sql string failed", KR(ret), K(sql), K(tenant_id), K(server), K(table_name));
+    }
   } else if (OB_FAIL(sql.assign_fmt(
-      "DELETE FROM %s WHERE tenant_id = %lu AND svr_ip = '%s' AND svr_port = %d limit %ld",
-      OB_ALL_TABLET_META_TABLE_TNAME,
+      "DELETE FROM %s WHERE tenant_id = %lu AND ls_id = %lu AND svr_ip = '%s' AND svr_port = %d LIMIT %ld",
+      table_name,
       tenant_id,
+      ls_id.id(),
       ip,
       server.get_port(),
       limit))) {
-    LOG_WARN("assign sql string failed", KR(ret), K(sql));
+    LOG_WARN("assign sql string failed", KR(ret), K(sql), K(tenant_id), K(ls_id), K(server), K(table_name));
+  }
+  if (OB_FAIL(ret)) {
   } else if (OB_FAIL(sql_client.write(sql_tenant_id, sql.ptr(), group_id_, affected_rows))) {
     LOG_WARN("execute sql failed", KR(ret), K(sql), K(sql_tenant_id));
   } else if (affected_rows > 0) {
-    LOG_INFO("finish to remove residual tablet", KR(ret), K(tenant_id), K(affected_rows));
+    LOG_INFO("finish to remove residual tablet", KR(ret), K(tenant_id), K(ls_id), K(server), K(affected_rows), K(table_name), K(sql));
   }
   return ret;
 }

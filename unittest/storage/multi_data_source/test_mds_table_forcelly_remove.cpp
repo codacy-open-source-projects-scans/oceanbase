@@ -14,34 +14,7 @@ static bool MDS_FLUSHER_ALLOW_ALLOC = true;
 #include <gtest/gtest.h>
 #define private public
 #define protected public
-#include "lib/utility/utility.h"
-#include "storage/multi_data_source/compile_utility/mds_dummy_key.h"
-#include "share/ob_ls_id.h"
-#include "storage/multi_data_source/mds_writer.h"
-#include <thread>
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <exception>
-#include "lib/ob_errno.h"
-#include "share/ob_errno.h"
-#include "storage/multi_data_source/adapter_define/mds_dump_node.h"
-#include "lib/allocator/ob_malloc.h"
-#include "storage/multi_data_source/mds_node.h"
-#include "common/ob_clock_generator.h"
-#include "storage/multi_data_source/mds_row.h"
-#include "storage/multi_data_source/mds_unit.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/multi_data_source/mds_table_handler.h"
-#include "storage/tx/ob_trans_define.h"
-#include <algorithm>
-#include <numeric>
-#include "storage/multi_data_source/runtime_utility/mds_lock.h"
-#include "storage/tablet/ob_tablet_meta.h"
-#include "storage/multi_data_source/mds_table_mgr.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/multi_data_source/mds_table_order_flusher.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
 namespace oceanbase {
 namespace storage {
@@ -109,7 +82,7 @@ private:
 
 TEST_F(TestMdsTableForcellyRemove, reset) {
   MdsTableHandle handle;
-  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MdsCtx ctx1(MdsWriter(transaction::ObTransID(1)));
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx1);
   ctx1.on_redo(mock_scn(10));
@@ -140,7 +113,7 @@ TEST_F(TestMdsTableForcellyRemove, reset) {
 
 TEST_F(TestMdsTableForcellyRemove, remove) {
   MdsTableHandle handle;
-  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, handle.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MdsCtx ctx1(MdsWriter(transaction::ObTransID(1)));
   handle.set<ExampleUserKey, ExampleUserData1>(ExampleUserKey(1), ExampleUserData1(1), ctx1);
   ctx1.on_redo(mock_scn(10));

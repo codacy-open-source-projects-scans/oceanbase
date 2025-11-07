@@ -13,21 +13,10 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_receive_op.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/px/ob_dfo.h"
-#include "sql/engine/px/ob_px_dtl_proc.h"
 #include "sql/dtl/ob_dtl_channel_group.h"
-#include "sql/dtl/ob_dtl_channel_loop.h"
 #include "sql/dtl/ob_dtl_rpc_channel.h"
-#include "sql/dtl/ob_dtl.h"
-#include "share/config/ob_server_config.h"
 #include "share/ob_rpc_share.h"
-#include "sql/engine/px/ob_px_scheduler.h"
-#include "sql/dtl/ob_dtl_interm_result_manager.h"
 #include "sql/engine/px/exchange/ob_px_ms_receive_op.h"
-#include "sql/engine/px/ob_sqc_ctx.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
 
 namespace oceanbase
@@ -107,7 +96,12 @@ ObPxReceiveOp::ObPxReceiveOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOp
     iter_end_(false),
     channel_linked_(false),
     task_channels_(),
-    row_reader_(get_spec().id_),
+    row_reader_(get_spec().id_, &(static_cast<const ObPxReceiveSpec &>(spec_).child_exprs_),
+      ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() >= CLUSTER_VERSION_4_3_3_0,
+      ((ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() >= MOCK_CLUSTER_VERSION_4_3_5_3 &&
+        ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() < CLUSTER_VERSION_4_4_0_0) ||
+      ctx_.get_physical_plan_ctx()->get_phy_plan()->get_min_cluster_version() >= CLUSTER_VERSION_4_4_1_0
+      )? &ctx_.get_allocator() : NULL),
     px_row_msg_proc_(&row_reader_),
     msg_loop_(op_monitor_info_),
     ts_cnt_(0),
@@ -367,7 +361,7 @@ int ObPxReceiveOp::inner_rescan()
       channel->reset_px_row_iterator();
       release_channel_ret = MTL(ObDTLIntermResultManager*)->erase_interm_result_info(key);
       if (release_channel_ret != common::OB_SUCCESS) {
-        LOG_WARN("fail to release recieve internal result", KR(release_channel_ret), K(ret));
+        LOG_WARN("fail to release receive internal result", KR(release_channel_ret), K(ret));
       }
     }
   }
@@ -530,7 +524,7 @@ int ObPxReceiveOp::erase_dtl_interm_result()
             ret = OB_SUCCESS;
             break;
           } else {
-            LOG_WARN("fail to release recieve internal result", K(ret), K(key));
+            LOG_WARN("fail to release receive internal result", K(ret), K(key));
           }
         }
       }
@@ -811,7 +805,7 @@ int ObPxFifoReceiveOp::fetch_rows(const int64_t row_cnt)
           ret = OB_TIMEOUT;
           LOG_WARN("get row from channel timeout", K(ret));
         } else {
-          ob_usleep<ObWaitEventIds::DTL_PROCESS_CHANNEL_SLEEP>(1 * 1000);
+          ob_usleep<ObWaitEventIds::WAIT_DTL_RECEIVE_RESPONSE>(1 * 1000, 0, 0, 0);
           int tmp_ret = ctx_.fast_check_status();
           if (OB_SUCCESS != tmp_ret) {
             LOG_WARN("wait to receive row interrupted", K(tmp_ret), K(ret));
@@ -933,6 +927,7 @@ int ObPxFifoReceiveOp::get_rows_from_channels_vec(const int64_t row_cnt, int64_t
       } else {
         got_row = true;
         brs_.size_ = read_rows;
+        brs_.all_rows_active_ = true;
       }
       break;
     }

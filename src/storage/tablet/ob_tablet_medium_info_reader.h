@@ -15,7 +15,7 @@
 
 #include "storage/multi_data_source/mds_table_handle.h"
 #include "storage/tablet/ob_tablet_dumped_medium_info.h"
-#include "storage/tablet/ob_mds_range_query_iterator.h"
+#include "storage/tablet/ob_mds_cl_range_query_iterator.h"
 #include "storage/multi_data_source/mds_table_iterator.h"
 
 namespace oceanbase
@@ -27,6 +27,11 @@ class ObTabletMediumInfoReader
 public:
   ObTabletMediumInfoReader();
   ~ObTabletMediumInfoReader();
+  static int get_medium_info_with_merge_version(
+      const int64_t merge_version,
+      const ObTablet &tablet,
+      common::ObIAllocator &allocator,
+      compaction::ObMediumCompactionInfo *&medium_info);
 public:
   int init(
       const ObTablet &tablet,
@@ -39,7 +44,6 @@ public:
       common::ObIAllocator &allocator,
       const compaction::ObMediumCompactionInfoKey &key,
       compaction::ObMediumCompactionInfo &medium_info);
-
   int get_min_medium_snapshot(
       const int64_t last_major_snapshot_version,
       int64_t &min_medium_snapshot);
@@ -49,7 +53,6 @@ public:
 private:
   bool is_inited_;
   common::ObArenaAllocator allocator_;
-  ObStoreCtx store_ctx_;
   ObMdsRangeQueryIterator<compaction::ObMediumCompactionInfoKey, compaction::ObMediumCompactionInfo> iter_;
 };
 } // namespace storage

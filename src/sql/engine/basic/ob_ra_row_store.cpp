@@ -13,10 +13,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_ra_row_store.h"
-#include "lib/container/ob_se_array_iterator.h"
 #include "storage/tmp_file/ob_tmp_file_manager.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "share/config/ob_server_config.h"
 
 
 namespace oceanbase
@@ -997,7 +994,6 @@ int ObRARowStore::read_file(void *buf, const int64_t size, const int64_t offset)
   if (OB_SUCC(ret) && size > 0) {
     tmp_file::ObTmpFileIOInfo io;
     io.fd_ = fd_;
-    io.dir_id_ = dir_id_;
     io.buf_ = static_cast<char *>(buf);
     io.size_ = size;
     io.io_desc_.set_wait_event(ObWaitEventIds::ROW_STORE_DISK_READ);

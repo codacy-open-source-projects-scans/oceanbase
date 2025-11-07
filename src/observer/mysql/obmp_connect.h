@@ -15,6 +15,7 @@
 
 #include "rpc/obmysql/packet/ompk_handshake_response.h"
 #include "observer/mysql/obmp_base.h"
+#include "rpc/obmysql/ob_i_cs_mem_pool.h"
 
 namespace oceanbase
 {
@@ -83,6 +84,7 @@ private:
   int check_client_property(ObSMConnection &conn);
   int check_common_property(ObSMConnection &conn, obmysql::ObMySQLCapabilityFlags &client_cap);
   int check_update_proxy_capability(ObSMConnection &conn) const;
+  int check_update_client_capability(uint64_t &cap) const;
   int check_user_cluster(const ObString &server_cluster, const int64_t server_cluster_id) const;
   int init_process_single_stmt(const sql::ObMultiStmtItem &multi_stmt_item,
                                sql::ObSQLSessionInfo &session,
@@ -124,9 +126,15 @@ private:
                                        const bool is_login_succ,
                                        bool &is_locked_now);
   bool is_connection_control_enabled(const uint64_t tenant_id);
-  int get_connection_control_stat(const uint64_t tenant_id, const int64_t current_failed_login_num,
-                                  const int64_t last_failed_login_timestamp,
-                                  bool &need_lock, bool &is_locked);
+  int get_connection_control_stat_mysql(const uint64_t tenant_id,
+                                        const int64_t current_failed_login_num,
+                                        const int64_t last_failed_login_timestamp,
+                                        bool &is_locked);
+  int is_need_lock_user_mysql(const uint64_t tenant_id,
+                              const int64_t current_failed_login_num,
+                              const int64_t last_failed_login_timestamp,
+                              bool &need_lock);
+
 
   int unlock_user_if_time_is_up(const uint64_t tenant_id,
                                 share::schema::ObSchemaGetterGuard &schema_guard,
@@ -151,6 +159,8 @@ private:
   int set_service_name(const uint64_t tenant_id, sql::ObSQLSessionInfo &session,
       const ObString &service_name, const bool failover_mode);
   int get_proxy_user_name(ObString &real_user);
+  int execute_trigger(const uint64_t tenant_id,
+                      sql::ObSQLSessionInfo &session);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMPConnect);
   obmysql::OMPKHandshakeResponse hsr_;

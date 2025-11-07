@@ -37,6 +37,8 @@
 #include "log_io_task_cb_utils.h"
 #include "palf_options.h"
 #include "palf_iterator.h"
+#include "log_net_service.h"
+#include "logservice/ipalf/ipalf_config_change_handle.h"
 
 namespace oceanbase
 {
@@ -49,9 +51,7 @@ namespace palf
 {
 class FlushLogCbCtx;
 class ObMemberChangeCtx;
-class LSN;
 class FetchLogEngine;
-class FlushLogCbCtx;
 class TruncateLogCbCtx;
 class FlushMetaCbCtx;
 class LogIOFlushLogTask;
@@ -63,6 +63,8 @@ class LogIOWorker;
 class LogSharedQueueTh;
 class LogRpc;
 class IPalfEnvImpl;
+class LogEngine;
+class LogCache;
 
 struct PalfStat {
   OB_UNIS_VERSION(1);
@@ -214,24 +216,19 @@ public:
 };
 
 // 日志服务的接口类，logservice以外的模块使用日志服务，只允许调用IPalfHandleImpl的接口
-class IPalfHandleImpl : public common::LinkHashValue<LSKey>
+class IPalfHandleImpl : public common::LinkHashValue<LSKey>, public ipalf::IPalfConfigChangeHandler
 {
 public:
-  IPalfHandleImpl() {};
-  virtual ~IPalfHandleImpl() {};
+  IPalfHandleImpl() {}
+  virtual ~IPalfHandleImpl() {}
 public:
   virtual bool check_can_be_used() const = 0;
-
-  // after creating palf successfully, set initial memberlist(can only be called once)
-  //
-  // @param [in] member_list, paxos memberlist
-  // @param [in] paxos_replica_num, number of paxos replicas
-  // @param [in] learner_list, learner_list
-  //
-  // @return :TODO
+  // virtual int set_initial_member_list(const common::ObMemberList &member_list,
+  //                                     const int64_t paxos_replica_num,
+  //                                     const common::GlobalLearnerList &learner_list) = 0;
   virtual int set_initial_member_list(const common::ObMemberList &member_list,
-                                      const int64_t paxos_replica_num,
-                                      const common::GlobalLearnerList &learner_list) = 0;
+                                    const int64_t paxos_replica_num,
+                                    const common::GlobalLearnerList &learner_list) = 0;
 #ifdef OB_BUILD_ARBITRATION
   // after creating palf which includes arbitration replica successfully,
   // set initial memberlist(can only be called once)
@@ -309,161 +306,9 @@ public:
   //  OB_NOT_MASTER : 本副本当前不是leader，无法接受切主请求
   virtual int change_leader_to(const common::ObAddr &dest_addr) = 0;
 
-  virtual int get_global_learner_list(common::GlobalLearnerList &learner_list) const = 0;
-  virtual int get_paxos_member_list(common::ObMemberList &member_list, int64_t &paxos_replica_num) const = 0;
-  virtual int get_config_version(LogConfigVersion &config_version) const = 0;
-  virtual int get_paxos_member_list_and_learner_list(common::ObMemberList &member_list,
-                                                     int64_t &paxos_replica_num,
-                                                     common::GlobalLearnerList &learner_list) const = 0;
-  virtual int get_stable_membership(LogConfigVersion &config_version,
-                                    common::ObMemberList &member_list,
-                                    int64_t &paxos_replica_num,
-                                    common::GlobalLearnerList &learner_list) const = 0;
   virtual int get_election_leader(common::ObAddr &addr) const = 0;
   virtual int get_parent(common::ObAddr &parent) const = 0;
 
-  // @brief: a special config change interface, change replica number of paxos group
-  // @param[in] common::ObMemberList: current memberlist, for pre-check
-  // @param[in] const int64_t curr_replica_num: current replica num, for pre-check
-  // @param[in] const int64_t new_replica_num: new replica num
-  // @param[in] const int64_t timeout_us: timeout, us
-  // @return
-  // - OB_SUCCESS: change_replica_num successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: change_replica_num timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int change_replica_num(const common::ObMemberList &member_list,
-                                 const int64_t curr_replica_num,
-                                 const int64_t new_replica_num,
-                                 const int64_t timeout_us) = 0;
-  // @brief: force set self as single replica.
-  virtual int force_set_as_single_replica() = 0;
-
-  // @brief, add a member into paxos group
-  // @param[in] common::ObMember &member: member which will be added
-  // @param[in] const int64_t new_replica_num: replica number of paxos group after adding 'member'
-  // @param[in] const int64_t timeout_us: add member timeout, us
-  // @return
-  // - OB_SUCCESS: add member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: add member timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int add_member(const common::ObMember &member,
-                        const int64_t new_replica_num,
-                        const LogConfigVersion &config_version,
-                        const int64_t timeout_us) = 0;
-
-  // @brief, remove a member from paxos group
-  // @param[in] common::ObMember &member: member which will be removed
-  // @param[in] const int64_t new_replica_num: replica number of paxos group after removing 'member'
-  // @param[in] const int64_t timeout_us: remove member timeout, us
-  // @return
-  // - OB_SUCCESS: remove member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: remove member timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int remove_member(const common::ObMember &member,
-                            const int64_t new_replica_num,
-                            const int64_t timeout_us) = 0;
-
-  // @brief, replace old_member with new_member
-  // @param[in] const common::ObMember &added_member: member will be added
-  // @param[in] const common::ObMember &removed_member: member will be removed
-  // @param[in] const LogConfigVersion &config_version: config_version for leader checking
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS: replace member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: replace member timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int replace_member(const common::ObMember &added_member,
-                             const common::ObMember &removed_member,
-                             const LogConfigVersion &config_version,
-                             const int64_t timeout_us) = 0;
-
-  // @brief: add a learner(read only replica) in this clsuter
-  // @param[in] const common::ObMember &added_learner: learner will be added
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: add_learner timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  virtual int add_learner(const common::ObMember &added_learner, const int64_t timeout_us) = 0;
-
-  // @brief: remove a learner(read only replica) in this clsuter
-  // @param[in] const common::ObMember &removed_learner: learner will be removed
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: remove_learner timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  virtual int remove_learner(const common::ObMember &removed_learner, const int64_t timeout_us) = 0;
-
-  // @brief: switch a learner(read only replica) to acceptor(full replica) in this clsuter
-  // @param[in] const common::ObMember &learner: learner will be switched to acceptor
-  // @param[in] const int64_t new_replica_num: replica number of paxos group after switching
-  //            learner to acceptor (similar to add_member)
-  // @param[in] const LogConfigVersion &config_version: config_version for leader checking
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: switch_learner_to_acceptor timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  virtual int switch_learner_to_acceptor(const common::ObMember &learner,
-                                         const int64_t new_replica_num,
-                                         const LogConfigVersion &config_version,
-                                         const int64_t timeout_us) = 0;
-
-  // @brief: switch an acceptor(full replica) to learner(read only replica) in this clsuter
-  // @param[in] const common::ObMember &member: acceptor will be switched to learner
-  // @param[in] const int64_t new_replica_num: replica number of paxos group after switching
-  //            acceptor to learner (similar to remove_member)
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS
-  // - OB_INVALID_ARGUMENT: invalid argument
-  // - OB_TIMEOUT: switch_acceptor_to_learner timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  virtual int switch_acceptor_to_learner(const common::ObMember &member,
-                                         const int64_t new_replica_num,
-                                         const int64_t timeout_us) = 0;
-
-  // @brief, replace removed_learners with added_learners
-  // @param[in] const common::ObMemberList &added_learners: learners will be added
-  // @param[in] const common::ObMemberList &removed_learners: learners will be removed
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS: replace learner successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: replace learner timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int replace_learners(const common::ObMemberList &added_learners,
-                               const common::ObMemberList &removed_learners,
-                               const int64_t timeout_us) = 0;
-
-  // @brief, replace removed_member with learner
-  // @param[in] const common::ObMember &added_member: member will be added
-  // @param[in] const common::ObMember &removed_member: member will be removed
-  // @param[in] const LogConfigVersion &config_version: config_version for leader checking
-  // @param[in] const int64_t timeout_us
-  // @return
-  // - OB_SUCCESS: replace member successfully
-  // - OB_INVALID_ARGUMENT: invalid argumemt or not supported config change
-  // - OB_TIMEOUT: replace member timeout
-  // - OB_NOT_MASTER: not leader or rolechange during membership changing
-  // - other: bug
-  virtual int replace_member_with_learner(const common::ObMember &added_member,
-                                          const common::ObMember &removed_member,
-                                          const LogConfigVersion &config_version,
-                                          const int64_t timeout_us) = 0;
 #ifdef OB_BUILD_ARBITRATION
   // @brief, add an arbitration member to paxos group
   // @param[in] common::ObMember &member: arbitration member which will be added
@@ -794,6 +639,11 @@ public:
                        LogIOContext &io_ctx) = 0;
   virtual int try_handle_next_submit_log() = 0;
   virtual int fill_cache_when_slide(const LSN &read_begin_lsn, const int64_t in_read_size) = 0;
+  virtual int get_io_statistic_info(int64_t &last_working_time,
+                                    int64_t &last_write_size,
+                                    int64_t &accum_write_size,
+                                    int64_t &accum_write_count,
+                                    int64_t &accum_write_rt) const = 0;
   DECLARE_PURE_VIRTUAL_TO_STRING;
 };
 
@@ -878,6 +728,8 @@ public:
   int get_election_leader(common::ObAddr &addr) const;
   int get_parent(common::ObAddr &parent) const;
   int force_set_as_single_replica() override final;
+  int force_set_member_list(const common::ObMemberList &member_list,
+                            const int64_t new_replica_num) override final;
   int change_replica_num(const common::ObMemberList &member_list,
                          const int64_t curr_replica_num,
                          const int64_t new_replica_num,
@@ -1158,6 +1010,11 @@ public:
 
   int diagnose(PalfDiagnoseInfo &diagnose_info) const;
   int update_palf_stat() override final;
+  int get_io_statistic_info(int64_t &last_working_time,
+                            int64_t &last_write_size,
+                            int64_t &accum_write_size,
+                            int64_t &accum_write_count,
+                            int64_t &accum_write_rt) const override final;
   TO_STRING_KV(K_(palf_id), K_(self), K_(has_set_deleted));
 
 private:
@@ -1281,6 +1138,9 @@ private:
                                     const bool is_rebuild);
   int get_election_leader_without_lock_(ObAddr &addr) const;
   int update_self_region_();
+  int force_set_member_list_(const common::ObMemberList &new_member_list, const int64_t new_replica_num);
+  int inc_config_version(int64_t timeout_us) override final;
+
   // ========================= flashback ==============================
   int can_do_flashback_(const int64_t mode_version,
                         const share::SCN &flashback_scn,
@@ -1308,6 +1168,7 @@ private:
   void report_set_initial_member_list_(const int64_t paxos_replica_num, const common::ObMemberList &member_list);
   void report_set_initial_member_list_with_arb_(const int64_t paxos_replica_num, const common::ObMemberList &member_list, const common::ObMember &arb_member);
   void report_force_set_as_single_replica_(const int64_t prev_replica_num, const int64_t curr_replica_num, const ObMember &member);
+  void report_force_set_member_list(const int64_t prev_replica_num, const int64_t curr_replica_num, const common::ObMemberList &member_list);
   void report_change_replica_num_(const int64_t prev_replica_num, const int64_t curr_replica_num, const common::ObMemberList &member_list);
   void report_add_member_(const int64_t prev_replica_num, const int64_t curr_replica_num, const common::ObMember &added_member);
   void report_remove_member_(const int64_t prev_replica_num, const int64_t curr_replica_num, const common::ObMember &removed_member);

@@ -12,16 +12,12 @@
 
 #define USING_LOG_PREFIX CLIENT
 #include "ob_table.h"
-#include "share/ob_errno.h"
-#include "lib/utility/ob_unify_serialize.h"
-#include "rpc/obrpc/ob_rpc_packet.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "ob_table_object.h"
-#include "observer/table/ob_htable_utils.h"
+#include "observer/table/utils/ob_htable_utils.h"
 
 using namespace oceanbase::table;
 using namespace oceanbase::common;
-using namespace oceanbase::share;
 
 int ObTableSingleOpEntity::construct_column_names(const ObTableBitMap &names_bit_map,
                                                   const ObIArray<ObString> &dictionary,
@@ -282,16 +278,21 @@ int ObITableEntity::add_retrieve_property(const ObString &prop_name)
 
 ////////////////////////////////////////////////////////////////
 ObTableEntity::ObTableEntity()
-{}
+{
+  rowkey_.set_attr(ObMemAttr(MTL_ID(), "TblEntRk"));
+  properties_names_.set_attr(ObMemAttr(MTL_ID(), "TblEntPropN"));
+  properties_values_.set_attr(ObMemAttr(MTL_ID(), "TblEntPropV"));
+}
 
 ObTableEntity::~ObTableEntity()
 {}
 
 void ObTableEntity::reset()
 {
-    rowkey_.reset();
-    properties_names_.reset();
-    properties_values_.reset();
+  rowkey_.reset();
+  properties_names_.reset();
+  properties_values_.reset();
+  tablet_id_.reset();
 }
 
 int ObTableEntity::construct_names_bitmap(const ObITableEntity &req_entity)
@@ -362,6 +363,15 @@ int ObTableEntity::add_rowkey_value(const ObObj &value)
   return rowkey_.push_back(value);
 }
 
+int ObTableEntity::add_rowkey_name(const ObString &name)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(rowkey_names_.push_back(name))) {
+    LOG_WARN("failed to add prop name", K(ret), K(name));
+  }
+  return ret;
+}
+
 int ObTableEntity::get_rowkey_value(int64_t idx, ObObj &value) const
 {
   return rowkey_.at(idx, value);
@@ -378,6 +388,21 @@ int ObTableEntity::set_rowkey(const ObRowkey &rowkey)
       LOG_WARN("failed to push back rowkey", K(ret), K(i));
     }
   } // end for
+  return ret;
+}
+
+int ObTableEntity::set_rowkey(const ObString &rowkey_name, const ObObj &rowkey_obj) {
+  int ret = OB_SUCCESS;
+  if (rowkey_name.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("rowkey name should not be empty string", K(ret), K(rowkey_name));
+  } else {
+    if (OB_FAIL(rowkey_names_.push_back(rowkey_name))) {
+      LOG_WARN("failed to add prop name", K(ret), K(rowkey_name));
+    } else if (OB_FAIL(rowkey_.push_back(rowkey_obj))) {
+      LOG_WARN("failed to add prop value", K(ret), K(rowkey_obj));
+    }
+  }
   return ret;
 }
 
@@ -439,6 +464,7 @@ int ObTableEntity::get_property(const ObString &prop_name, ObObj &prop_value) co
       prop_value = properties_values_.at(idx);
     } else {
       ret = OB_SEARCH_NOT_FOUND;
+      LOG_DEBUG("property name not exists in properties", K(ret), K(prop_name));
     }
   }
   return ret;
@@ -488,11 +514,13 @@ int ObTableEntity::get_properties_names(ObIArray<ObString> &properties_names) co
   return ret;
 }
 
-int ObTableEntity::get_properties_values(ObIArray<ObObj> &properties_values) const
+int ObTableEntity::get_properties_values(ObIArray<ObObj*> &properties_values) const
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(properties_values.assign(properties_values_))) {
-    LOG_WARN("failed to assign properties values array", K(ret));
+  for (int i = 0; OB_SUCC(ret) && i < properties_values_.count(); ++i) {
+    if (OB_FAIL(properties_values.push_back(const_cast<ObObj*>(&properties_values_[i])))) {
+      LOG_WARN("fail to push back properties values", K(ret));
+    }
   }
   return ret;
 }
@@ -1002,10 +1030,15 @@ int ObTableResult::assign(const ObTableResult &other)
   return OB_SUCCESS;
 }
 
+void ObTableResult::set_errno(int err) {
+  errno_ = err;
+}
+
 ////////////////////////////////////////////////////////////////
 ObTableOperationResult::ObTableOperationResult()
     :operation_type_(ObTableOperationType::GET),
      entity_(NULL),
+     insertup_old_row_(nullptr),
      affected_rows_(0),
      flags_(0)
 {}
@@ -1014,9 +1047,12 @@ void ObTableOperationResult::reset()
 {
   ObTableResult::reset();
   operation_type_ = ObTableOperationType::GET;
-  entity_->reset();
+  if (entity_ != nullptr) {
+    entity_->reset();
+  }
   affected_rows_ = 0;
   flags_ = 0;
+  insertup_old_row_ = nullptr;
 }
 
 int ObTableOperationResult::get_entity(const ObITableEntity *&entity) const
@@ -1065,7 +1101,8 @@ OB_SERIALIZE_MEMBER((ObTableOperationResult, ObTableResult),
                     operation_type_, *entity_, affected_rows_);
 
 int ObTableOperationResult::deep_copy(common::ObIAllocator &allocator,
-                                      ObITableEntityFactory &entity_factory, const ObTableOperationResult &other)
+                                      ObITableEntityFactory &entity_factory,
+                                      const ObTableOperationResult &other)
 {
   int ret = OB_SUCCESS;
   const ObITableEntity *src_entity = NULL;
@@ -1154,6 +1191,8 @@ void ObTableQuery::reset()
   batch_size_ = -1;
   max_result_size_ = -1;
   htable_filter_.reset();
+  tablet_ids_.reset();
+  flag_ = 0;
 }
 
 bool ObTableQuery::is_valid() const
@@ -1278,13 +1317,17 @@ uint64_t ObTableQuery::get_checksum() const
     const uint64_t htable_filter_checksum = htable_filter_.get_checksum();
     checksum = ob_crc64(checksum, &htable_filter_checksum, sizeof(htable_filter_checksum));
   }
+  checksum = ob_crc64(checksum, &flag_, sizeof(flag_));
   return checksum;
 }
 
 int ObTableQuery::deep_copy(ObIAllocator &allocator, ObTableQuery &dst) const
 {
   int ret = OB_SUCCESS;
-
+  if (this == &dst) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("attempted to deep copy the object to itself", K(ret));
+  }
   // key_ranges_
   for (int64_t i = 0; OB_SUCC(ret) && i < key_ranges_.count(); i++) {
     const ObNewRange &src_range = key_ranges_.at(i);
@@ -1343,6 +1386,8 @@ int ObTableQuery::deep_copy(ObIAllocator &allocator, ObTableQuery &dst) const
     dst.scan_order_ = scan_order_;
     dst.batch_size_ = batch_size_;
     dst.max_result_size_ = max_result_size_;
+    dst.tablet_ids_ = tablet_ids_;
+    dst.flag_ = flag_;
   }
   return ret;
 }
@@ -1486,7 +1531,8 @@ OB_UNIS_DEF_SERIALIZE(ObTableQuery,
                       htable_filter_,
                       scan_range_columns_,
                       aggregations_,
-                      ob_params_);
+                      ob_params_,
+                      flag_);
 
 OB_UNIS_DEF_SERIALIZE_SIZE(ObTableQuery,
                            key_ranges_,
@@ -1501,7 +1547,8 @@ OB_UNIS_DEF_SERIALIZE_SIZE(ObTableQuery,
                            htable_filter_,
                            scan_range_columns_,
                            aggregations_,
-                           ob_params_);
+                           ob_params_,
+                           flag_);
 
 OB_DEF_DESERIALIZE(ObTableQuery,)
 {
@@ -1548,7 +1595,8 @@ OB_DEF_DESERIALIZE(ObTableQuery,)
                 htable_filter_,
                 scan_range_columns_,
                 aggregations_,
-                ob_params_
+                ob_params_,
+                flag_
                 );
   }
   return ret;
@@ -1677,12 +1725,26 @@ OB_DEF_DESERIALIZE(ObTableSingleOpQuery, )
             LOG_WARN("fail to deep copy range", K(ret));
           } else if (OB_FAIL(key_ranges_.push_back(key_range))) {
             LOG_WARN("fail to add key range to array", K(ret));
+          } else {
+            ob_params_.set_allocator(deserialize_allocator_);
           }
         }
       }
     }
     if (OB_SUCC(ret) && pos < data_len) {
       LST_DO_CODE(OB_UNIS_DECODE, filter_string_);
+    }
+    if (OB_SUCC(ret) && pos < data_len) {
+      LST_DO_CODE(OB_UNIS_DECODE, select_columns_);
+    }
+    if (OB_SUCC(ret) && pos < data_len) {
+      LST_DO_CODE(OB_UNIS_DECODE, scan_order_);
+    }
+    if (OB_SUCC(ret) && pos < data_len) {
+      LST_DO_CODE(OB_UNIS_DECODE, htable_filter_);
+    }
+    if (OB_SUCC(ret) && pos < data_len) {
+      LST_DO_CODE(OB_UNIS_DECODE, ob_params_);
     }
   }
 
@@ -1696,12 +1758,16 @@ ObTableEntityIterator::~ObTableEntityIterator()
 const char* const ObHTableConstants::ROWKEY_CNAME = "K";
 const char* const ObHTableConstants::CQ_CNAME = "Q";
 const char* const ObHTableConstants::VERSION_CNAME = "T";
+const char* const ObHTableConstants::SEQ_CNAME = "S";
 const char* const ObHTableConstants::VALUE_CNAME = "V";
+const char* const ObHTableConstants::TTL_CNAME = "TTL";
 
 const ObString ObHTableConstants::ROWKEY_CNAME_STR = ObString::make_string(ROWKEY_CNAME);
 const ObString ObHTableConstants::CQ_CNAME_STR = ObString::make_string(CQ_CNAME);
 const ObString ObHTableConstants::VERSION_CNAME_STR = ObString::make_string(VERSION_CNAME);
+const ObString ObHTableConstants::SEQ_CNAME_STR = ObString::make_string(SEQ_CNAME);
 const ObString ObHTableConstants::VALUE_CNAME_STR = ObString::make_string(VALUE_CNAME);
+const ObString ObHTableConstants::TTL_CNAME_STR = ObString::make_string(TTL_CNAME);
 
 ObHTableFilter::ObHTableFilter()
     :is_valid_(false),
@@ -1948,6 +2014,39 @@ void ObTableQueryResult::rewind()
   buf_.get_position() = 0;
 }
 
+int ObTableQueryResult::get_htable_all_entity(ObIArray<const ObITableEntity*> &entities)
+{
+  int ret = OB_SUCCESS;
+  curr_idx_ = 0;
+  buf_.free();
+  while (OB_SUCC(ret) && curr_idx_ < row_count_) {
+    ObITableEntity *entity = nullptr;
+    if (OB_ISNULL(entity = OB_NEWx(ObTableEntity, &allocator_))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc entity", K(ret));
+    } else {
+      ObObj value;
+      const int64_t N = properties_names_.count();
+      for (int i = 0; OB_SUCC(ret) && i < N; ++i) {
+        if (OB_FAIL(value.deserialize(buf_.get_data(), buf_.get_capacity(), buf_.get_position()))) {
+          LOG_WARN("failed to deserialize obj", K(ret), K_(buf));
+        } else if (i < ObHTableConstants::HTABLE_ROWKEY_SIZE) {
+          if (OB_FAIL(entity->set_rowkey_value(i, value))) {
+            LOG_WARN("failed to set entity rowkey value", K(ret), K(i), K(value));
+          }
+        } else if (OB_FAIL(entity->set_property(properties_names_.at(i), value))) {
+          LOG_WARN("failed to set entity property", K(ret), K(i), K(value));
+        }
+      }
+    }
+    if (OB_SUCC(ret)) {
+      curr_idx_++;
+      entities.push_back(entity);
+    }
+  }
+  return ret;
+}
+
 int ObTableQueryResult::get_next_entity(const ObITableEntity *&entity)
 {
   int ret = OB_SUCCESS;
@@ -2024,6 +2123,23 @@ int ObTableQueryResult::deep_copy_property_names(const ObIArray<ObString> &other
   for (int64_t i = 0; OB_SUCC(ret) && i < other.count(); i++) {
     if (OB_FAIL(ob_write_string(prop_name_allocator_, other.at(i), properties_names_.at(i)))) {
       LOG_WARN("failed to write string", K(ret), K(other.at(i)));
+    }
+  }
+
+  return ret;
+}
+
+int ObTableQueryResult::append_property_names(const ObIArray<ObString> &property_names)
+{
+  int ret = OB_SUCCESS;
+  int curr_count = properties_names_.count();
+  if (OB_FAIL(properties_names_.prepare_allocate(curr_count + property_names.count()))) {
+    LOG_WARN("failed to prepare allocate properties names", K(ret), K(property_names));
+  }
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < property_names.count(); i++) {
+    if (OB_FAIL(ob_write_string(prop_name_allocator_, property_names.at(i), properties_names_.at(curr_count + i)))) {
+      LOG_WARN("failed to write string", K(ret), K(property_names.at(i)));
     }
   }
 
@@ -2141,6 +2257,16 @@ int ObTableQueryResult::add_row(const ObNewRow &row)
     ++row_count_;
   }
 
+  return ret;
+}
+
+int ObTableQueryResult::add_one_row_for_exist_only(const common::ObNewRow &row, ObString family_name) {
+  int ret = OB_SUCCESS;
+  reset();
+  if (OB_FAIL(add_row(row))) {
+    LOG_WARN("failed to add row", K(ret));
+  }
+  UNUSED(family_name);
   return ret;
 }
 
@@ -2311,12 +2437,13 @@ OB_DEF_DESERIALIZE(ObTableQueryResult)
 ////////////////////////////////////////////////////////////////
 ObTableQueryIterableResult::ObTableQueryIterableResult()
   : ObTableQueryIterableResultBase(),
-    current_(0)
+    current_(0),
+    need_append_family_(true)
   {
   }
 
 
-void ObTableQueryIterableResult::reset_except_property()
+void ObTableQueryIterableResult::reset()
 {
   row_count_ = 0;
   allocator_.reset();
@@ -2333,7 +2460,7 @@ int ObTableQueryIterableResult::add_all_row(ObTableQueryDListResult &other)
       LOG_WARN("fail to copy_row ", K(ret), K(row));
     } else {
       ObString family_name = row->get_family();
-      if (OB_FAIL(append_family(copy_row, family_name))) {
+      if (need_append_family_ && OB_FAIL(append_family(copy_row, family_name))) {
         LOG_WARN("fail to append family to row", K(ret), K(copy_row));
       } else if (OB_FAIL(rows_.push_back(copy_row))) {
         LOG_WARN("fail to push_back to rows", K(ret));
@@ -2346,6 +2473,15 @@ int ObTableQueryIterableResult::add_all_row(ObTableQueryDListResult &other)
     ret = OB_SUCCESS;
   }
 
+  return ret;
+}
+
+int ObTableQueryIterableResult::add_one_row_for_exist_only(const common::ObNewRow &row, ObString family_name) {
+  int ret = OB_SUCCESS;
+  reset();
+  if (OB_FAIL(add_row(row, family_name))) {
+    LOG_WARN("failed to add row", K(ret), K(family_name));
+  }
   return ret;
 }
 
@@ -2382,8 +2518,34 @@ int ObTableQueryIterableResult::add_row(const common::ObNewRow &row, ObString fa
     ObNewRow copy_row;
     if (OB_FAIL(ob_write_row(allocator_, new_row, copy_row))) {
       LOG_WARN("fail to copy row", K(ret), K(new_row));
-    } else if (OB_FAIL(append_family(copy_row, family_name))) {
+    } else if (need_append_family_ && OB_FAIL(append_family(copy_row, family_name))) {
       LOG_WARN("fail to append family to row", K(ret), K(copy_row));
+    } else if (OB_FAIL(rows_.push_back(copy_row))) {
+      LOG_WARN("fail to push back to array", K(ret));
+    } else {
+      row_count_++;
+    }
+  }
+
+  return ret;
+}
+
+int ObTableQueryIterableResult::add_row(const common::ObNewRow &row)
+{
+  int ret = OB_SUCCESS;
+
+  // construct new row
+  ObNewRow new_row = row;
+  const int64_t lob_storage_count = get_lob_storage_count(new_row);
+  if (lob_storage_count != 0) {
+    if (OB_FAIL(transform_lob_cell(new_row, lob_storage_count))) {
+      LOG_WARN("fail to switch lob cell", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObNewRow copy_row;
+    if (OB_FAIL(ob_write_row(allocator_, new_row, copy_row))) {
+      LOG_WARN("fail to copy row", K(ret), K(new_row));
     } else if (OB_FAIL(rows_.push_back(copy_row))) {
       LOG_WARN("fail to push back to array", K(ret));
     } else {
@@ -2453,6 +2615,49 @@ int ObTableQueryDListResult::add_row(const common::ObNewRow &row, ObString famil
         LOG_WARN("fail to alloc ObHTableCellEntity buffer", K(ret));
       } else {
         cell_entity->set_family(family_name);
+        ObCellNode *new_node = nullptr;
+        if (OB_ISNULL(new_node = OB_NEWx(ObCellNode, (&allocator_), cell_entity))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("fail to alloc ObHTableCellEntity buffer", K(ret));
+        } else {
+          if (cell_list_.add_first(new_node)) {
+            ++row_count_;
+          } else {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("fail to add new_node to cell_list", K(ret));
+          }
+        }
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObTableQueryDListResult::add_row(const common::ObNewRow &row)
+{
+  int ret = OB_SUCCESS;
+  // construct new row
+  ObNewRow new_row = row;
+  const int64_t lob_storage_count = get_lob_storage_count(new_row);
+  if (lob_storage_count != 0) {
+    if (OB_FAIL(transform_lob_cell(new_row, lob_storage_count))) {
+      LOG_WARN("fail to swtich lob cell", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObNewRow *copy_row = nullptr;
+    if (OB_ISNULL(copy_row = OB_NEWx(ObNewRow, (&allocator_)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc ObNewRow buffer", K(ret));
+    } else if (OB_FAIL(ob_write_row(allocator_, new_row, *copy_row))) {
+      LOG_WARN("fail to copy row", K(ret), K(new_row));
+    } else {
+      ObHTableCellEntity *cell_entity = nullptr;
+      if (OB_ISNULL(cell_entity = OB_NEWx(ObHTableCellEntity, (&allocator_), copy_row))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("fail to alloc ObHTableCellEntity buffer", K(ret));
+      } else {
         ObCellNode *new_node = nullptr;
         if (OB_ISNULL(new_node = OB_NEWx(ObCellNode, (&allocator_), cell_entity))) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -2628,6 +2833,16 @@ int ObTableApiCredential::hash(uint64_t &hash_val, uint64_t seed /*= 0*/) const
   return OB_SUCCESS;
 }
 
+void ObTableApiCredential::reset()
+{
+  cluster_id_ = 0;
+  tenant_id_ = 0;
+  user_id_ = 0;
+  database_id_ = 0;
+  expire_ts_ = 0;
+  hash_val_ = 0;
+}
+
 ////////////////////////////////////////////////////////////////
 int ObTableAggregation::deep_copy(ObIAllocator &allocator, ObTableAggregation &dst) const
 {
@@ -2691,6 +2906,7 @@ OB_DEF_DESERIALIZE(ObTableTabletOp,)
       single_op.set_dictionary(all_rowkey_names_, all_properties_names_);
       single_op.set_is_same_properties_names(is_ls_same_properties_names_);
       OB_UNIS_DECODE(single_op);
+      single_op.set_index(i);
     }  // end for
   }
 
@@ -2704,11 +2920,32 @@ ObTableTabletOp::ObTableTabletOp(const ObTableTabletOp &other)
   this->single_ops_ = other.single_ops_;
 }
 
+void ObTableTabletOp::shaddow_copy_without_op(const ObTableTabletOp &other)
+{
+  this->tablet_id_ = other.tablet_id_;
+  this->option_flag_ = other.option_flag_;
+  this->deserialize_alloc_ = other.deserialize_alloc_;
+  this->all_rowkey_names_ = other.all_rowkey_names_;
+  this->all_properties_names_ = other.all_properties_names_;
+  this->is_ls_same_properties_names_ = other.is_ls_same_properties_names_;
+}
+
 void ObTableLSOp::reset()
 {
   tablet_ops_.reset();
-  ls_id_ = ObLSID::INVALID_LS_ID;
+  ls_id_ = share::ObLSID::INVALID_LS_ID;
   option_flag_ = 0;
+}
+
+void ObTableLSOp::shaddow_copy_without_op(const ObTableLSOp &other)
+{
+  this->ls_id_ = other.ls_id_;
+  this->table_name_ = other.table_name_;
+  this->table_id_ = other.table_id_;
+  this->rowkey_names_ = other.rowkey_names_;
+  this->properties_names_ = other.properties_names_;
+  this->option_flag_ = other.option_flag_;
+  this->deserialize_alloc_ = other.deserialize_alloc_;
 }
 
 OB_UNIS_DEF_SERIALIZE(ObTableLSOp,
@@ -2824,6 +3061,7 @@ OB_DEF_DESERIALIZE(ObTableSingleOp, )
       for (int64_t i = 0; OB_SUCC(ret) && i < entities_size; ++i) {
         ObTableSingleOpEntity &op_entity = entities_.at(i);
         op_entity.set_dictionary(all_rowkey_names_, all_properties_names_);
+        op_entity.set_allocator(deserialize_alloc_);
         op_entity.set_is_same_properties_names(is_same_properties_names_);
         OB_UNIS_DECODE(op_entity);
       }
@@ -2838,6 +3076,7 @@ void ObTableSingleOp::reset()
   flag_ = 0;
   op_query_ = nullptr;
   entities_.reset();
+  index_ = -1;
 }
 
 int ObTableSingleOpQAM::set_mutations(const ObTableSingleOp &single_op)
@@ -2878,9 +3117,9 @@ uint64_t ObTableSingleOp::get_checksum()
 
 void ObTableSingleOpEntity::reset()
 {
-    rowkey_names_bp_.clear();
-    properties_names_bp_.clear();
-    ObTableEntity::reset();
+  rowkey_names_bp_.clear();
+  properties_names_bp_.clear();
+  ObTableEntity::reset();
 }
 
 int ObTableSingleOpEntity::deep_copy(common::ObIAllocator &allocator, const ObITableEntity &other)
@@ -3493,6 +3732,25 @@ int ObHBaseParams::deep_copy(ObIAllocator &allocator, ObKVParamsBase *hbase_para
   return ret;
 }
 
+OB_SERIALIZE_MEMBER_SIMPLE(ObFTSParam,
+                           search_text_);
+
+int ObFTSParam::deep_copy( ObIAllocator &allocator, ObKVParamsBase *fts_params) const
+{
+  int ret = OB_SUCCESS;
+  if (fts_params == nullptr || fts_params->get_param_type() != ParamType::FTS) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected hbase adress", K(ret), KPC(fts_params));
+  } else {
+    ObFTSParam *param = static_cast<ObFTSParam*>(fts_params);
+    ObString &search_text = param->get_search_text();
+    if (OB_FAIL(ob_write_string(allocator, search_text_, search_text))) {
+      LOG_WARN("fail to deep copy search text", K(ret), K(search_text_));
+    }
+  }
+  return ret;
+}
+
 OB_DEF_DESERIALIZE(ObKVParams)
 {
   int ret = OB_SUCCESS;
@@ -3506,6 +3764,10 @@ OB_DEF_DESERIALIZE(ObKVParams)
         }
       } else if (param_type == static_cast<int8_t>(ParamType::Redis)) {
         if (OB_FAIL(alloc_ob_params(ParamType::Redis, ob_params_))) {
+          RPC_WARN("alloc ob_params_ memory failed", K(ret));
+        }
+      } else if (param_type == static_cast<int8_t>(ParamType::FTS)) {
+        if (OB_FAIL(alloc_ob_params(ParamType::FTS, ob_params_))) {
           RPC_WARN("alloc ob_params_ memory failed", K(ret));
         }
       } else {
@@ -3554,7 +3816,7 @@ int ObKVParams::deep_copy(ObIAllocator &allocator, ObKVParams &ob_params) const
   return ret;
 }
 
-int ObKVParams::init_ob_params_for_hfilter(const ObHBaseParams*& params) const
+int ObKVParams::get_hbase_params(const ObHBaseParams*& params) const
 {
   int ret = OB_SUCCESS;
   if (ob_params_->get_param_type() != ParamType::HBase) {
@@ -3569,3 +3831,556 @@ int ObKVParams::init_ob_params_for_hfilter(const ObHBaseParams*& params) const
   }
   return ret;
 }
+
+////////////////////////////////////////////////////////////////
+OB_SERIALIZE_MEMBER(ObRedisResult, ret_, msg_);
+
+int ObRedisResult::assign(const ObRedisResult &other)
+{
+  int ret = OB_SUCCESS;
+  ret_ = other.ret_;
+  if (OB_FAIL(ob_write_string(*allocator_, other.msg_, msg_))) {
+    LOG_WARN("fail to copy redis msg", K(other.msg_), K(msg_));
+  }
+  return ret;
+}
+
+int ObRedisResult::set_ret(int arg_ret, const ObString &redis_msg, bool need_deep_copy /* = false*/)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(allocator_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("invalid null allocator", K(ret));
+  } else if (need_deep_copy) {
+    if (OB_FAIL(ob_write_string(*allocator_, redis_msg, msg_))) {
+      LOG_WARN("fail to copy redis msg", K(ret), K(redis_msg));
+    }
+  }
+  ret_ = (arg_ret == OB_SUCCESS) ? ret : arg_ret;
+
+  if (OB_FAIL(ret_)) {
+    set_err(ret_);
+  }
+  return ret;
+}
+
+int ObRedisResult::set_err(int err)
+{
+  int ret = OB_SUCCESS;
+  ret_ = err;
+  common::ObWarningBuffer *wb = common::ob_get_tsi_warning_buffer();
+  if (OB_ISNULL(allocator_)) {
+    ret = OB_ERR_NULL_VALUE;
+    LOG_WARN("invalid null allocator", K(ret));
+  } else if (OB_NOT_NULL(wb)) {
+    char *err_msg = nullptr;
+    if (OB_ISNULL(err_msg = reinterpret_cast<char*>(allocator_->alloc(common::OB_MAX_ERROR_MSG_LEN)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc memory", K(ret), K(common::OB_MAX_ERROR_MSG_LEN));
+    } else {
+      int n = snprintf(err_msg, common::OB_MAX_ERROR_MSG_LEN, "%s", wb->get_err_msg());
+      if (n < 0 || n > common::OB_MAX_ERROR_MSG_LEN) {
+        ret = OB_BUF_NOT_ENOUGH;
+        LOG_WARN("snprintf error or buf not enough", KR(ret), K(n));
+      } else {
+        msg_.assign(err_msg, n);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObRedisResult::convert_to_table_op_result(ObTableOperationResult &result)
+{
+  int ret = OB_SUCCESS;
+  if (ret_ == OB_SUCCESS) {
+    ObTableEntity *res_entity = static_cast<ObTableEntity *>(result.get_entity());
+    ObObj obj;
+    if (OB_ISNULL(res_entity)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("res_entity is null", K(ret));
+    } else if (OB_FALSE_IT(obj.set_varchar(msg_))) {
+    } else if (OB_FAIL(res_entity->set_property(ObRedisUtil::REDIS_PROPERTY_NAME, obj))) {
+      LOG_WARN("fail to set property", K(ret), K(msg_));
+    }
+  }
+
+  result.set_err(ret == OB_SUCCESS ? ret_ : ret);
+  result.set_type(ObTableOperationType::REDIS);
+
+  return ret;
+}
+
+OB_DEF_DESERIALIZE(ObHCell)
+{
+  int ret = OB_SUCCESS;
+  int64_t cell_num = 0;
+  OB_UNIS_DECODE(cell_num);
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(objs_.prepare_allocate(cell_num + 1))) {
+      LOG_WARN("fail to prepare allocate objs", K(ret), K(cell_num));
+    } else {
+      // [Q T V (TTL)]
+      ObObj &Q = objs_[ObHTableConstants::COL_IDX_Q];
+      ObObj &T = objs_[ObHTableConstants::COL_IDX_T];
+      ObObj &V = objs_[ObHTableConstants::COL_IDX_V];
+      if (OB_FAIL(ObTableSerialUtil::deserialize(buf, data_len, pos, Q))) {
+        LOG_WARN("fail to deserialize Q object", K(ret), K(buf), K(data_len), K(pos));
+      } else if (OB_FAIL(ObTableSerialUtil::deserialize(buf, data_len, pos, T))) {
+        LOG_WARN("fail to deserialize T object", K(ret), K(buf), K(data_len), K(pos));
+      } else if (OB_FAIL(ObTableSerialUtil::deserialize(buf, data_len, pos, V))) {
+        LOG_WARN("fail to deserialize V object", K(ret), K(buf), K(data_len), K(pos));
+      }
+      if (OB_SUCC(ret) && cell_num == 4) {
+        ObObj &TTL = objs_[ObHTableConstants::COL_IDX_TTL];
+        if (OB_FAIL(ObTableSerialUtil::deserialize(buf, data_len, pos, TTL))) {
+          LOG_WARN("fail to deserialize V object", K(ret), K(buf), K(data_len), K(pos));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+OB_DEF_SERIALIZE(ObHCell)
+{
+  int ret = OB_SUCCESS;
+  OB_UNIS_ENCODE(objs_.count());
+  for (int i = 0; OB_SUCC(ret) && i < objs_.count(); ++i) {
+    OB_UNIS_ENCODE(objs_.at(i));
+  }
+  return ret;
+}
+
+OB_DEF_SERIALIZE_SIZE(ObHCell)
+{
+  int64_t len = 0;
+  int ret = OB_SUCCESS;
+  OB_UNIS_ADD_LEN(objs_.count());
+  for (int i = 0; OB_SUCC(ret) && i < objs_.count(); ++i) {
+    OB_UNIS_ADD_LEN(objs_.at(i));
+  }
+  return len;
+}
+
+OB_DEF_DESERIALIZE(ObHCfRows)
+{
+   /*
+    [2][4][0]...
+    [1] [3] [2] ...
+    [QTV(TTL)] [QTV(TTL)][QTV(TTL)][QTV(TTL)] [QTV(TTL)][QTV(TTL)]
+  */
+  int ret = OB_SUCCESS;
+  // decode real_table_name_
+  OB_UNIS_DECODE(real_table_name_);
+  if (OB_SUCC(ret) && (OB_ISNULL(keys_) || OB_ISNULL(deserialize_alloc_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("keys or deserialize_alloc_ is null", K(ret));
+  }
+  if (OB_SUCC(ret)) {
+    ObFixedArray<int64_t, ObIAllocator> key_idx;
+    key_idx.set_allocator(deserialize_alloc_);
+    ObFixedArray<int64_t, ObIAllocator> cell_num_array;
+    cell_num_array.set_allocator(deserialize_alloc_);
+    // decode key_index, [2, 4, 0, ...]
+    int64_t key_idx_num = 0;
+    OB_UNIS_DECODE(key_idx_num);
+    if (OB_SUCC(ret)) {
+      if (OB_FAIL(key_idx.prepare_allocate(key_idx_num))) {
+        LOG_WARN("fail to prepare allocate key index", K(ret));
+      }
+      int64_t idx = 0;
+      for (int i = 0; OB_SUCC(ret) && i < key_idx_num; ++i) {
+        OB_UNIS_DECODE(idx);
+        key_idx.at(i) = idx;
+      }
+      if (OB_SUCC(ret)) {
+        // encode cell_num_array, [1, 3, 2, ...]
+        int64_t cell_num_array_size = 0;
+        int64_t cell_num = 0;
+        OB_UNIS_DECODE(cell_num_array_size);
+        if (OB_SUCC(ret)) {
+          if (OB_FAIL(cell_num_array.prepare_allocate(cell_num_array_size))) {
+            LOG_WARN("fail to prepare allocate cell num array", K(ret), K(cell_num_array_size));
+          }
+          for (int i = 0; OB_SUCC(ret) && i < cell_num_array_size; ++i) {
+            OB_UNIS_DECODE(cell_num);
+            cell_num_array.at(i) = cell_num;
+          }
+          if (OB_SUCC(ret)) {
+            // decode cell and construct ObHCfRow
+            if (key_idx_num != cell_num_array_size) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("the size of key index array does not equal to cell num array", K(ret), K(key_idx_num), K(cell_num_array_size));
+            } else if (OB_FAIL(rows_.prepare_allocate(key_idx_num))) {
+              LOG_WARN("fail to prepare allocate rows", K(ret), K(key_idx_num));
+            } else {
+              for (int i = 0; OB_SUCC(ret) && i < key_idx_num; ++i) {
+                int64_t first_timestamp = 0;
+                cell_num = cell_num_array.at(i);
+                idx = key_idx.at(i);
+                ObObj &k_obj = keys_->at(idx);
+                ObHCfRow &cf_row = rows_.at(i);
+                cf_row.cells_.set_allocator(deserialize_alloc_);
+                cf_row.real_table_name_ = real_table_name_;
+                cf_row.key_index_ = idx;
+                cf_row.is_same_timestamp_ = true;
+                if (OB_FAIL(cf_row.cells_.prepare_allocate(cell_num))) {
+                  LOG_WARN("fail to prepare allocate cells", K(ret), K(idx), K(real_table_name_), K(cell_num));
+                }
+                for (int j = 0; OB_SUCC(ret) && j < cell_num; ++j) {
+                  ObHCell &cell = cf_row.cells_.at(j);
+                  cell.set_allocator(deserialize_alloc_);
+                  OB_UNIS_DECODE(cell);
+                  if (OB_SUCC(ret)) {
+                    if (OB_FAIL(cell.set_rowkey_value(ObHTableConstants::COL_IDX_K, k_obj))) {
+                      LOG_WARN("fail to set rowkey value", K(ret), K(k_obj), K(cell));
+                    } else {
+                      ObObj *T = cell.get_cell_obj(ObHTableConstants::COL_IDX_T);
+                      if (OB_ISNULL(T)) {
+                        ret = OB_ERR_UNEXPECTED;
+                        LOG_WARN("T is null", K(ret));
+                      } else if (T->get_int() == ObHTableConstants::LATEST_TIMESTAMP) {
+                        T->set_int(now_ms_);
+                      }
+                      if (OB_SUCC(ret)) {
+                        if (j == 0) {
+                          first_timestamp = T->get_int();
+                        }
+                        if (T->get_int() != first_timestamp) {
+                          cf_row.is_same_timestamp_ = false;
+                        }
+                      }
+                    }
+                  }
+                }
+              } // end for
+            }
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+OB_DEF_SERIALIZE(ObHCfRows)
+{
+  int ret = OB_SUCCESS;
+  OB_UNIS_ENCODE(real_table_name_);
+  return ret;
+}
+
+OB_DEF_SERIALIZE_SIZE(ObHCfRows)
+{
+  int64_t len = 0;
+  OB_UNIS_ADD_LEN(real_table_name_);
+  return len;
+}
+
+OB_DEF_SERIALIZE(ObHBaseCellResult)
+{
+  int ret = OB_SUCCESS;
+  LST_DO_CODE(OB_UNIS_ENCODE, key_index_, properties_values_.count());
+  if (OB_SUCC(ret)) {
+    for (int i = 0; OB_SUCC(ret) && i < properties_values_.count(); ++i) {
+      OB_UNIS_ENCODE(properties_values_.at(i));
+    }
+  }
+  return ret;
+}
+
+OB_DEF_SERIALIZE_SIZE(ObHBaseCellResult)
+{
+  int64_t len = 0;
+  int ret = OB_SUCCESS;
+  LST_DO_CODE(OB_UNIS_ADD_LEN, key_index_, properties_values_.count());
+  if (OB_SUCC(ret)) {
+    for (int i = 0; OB_SUCC(ret) && i < properties_values_.count(); ++i) {
+      OB_UNIS_ADD_LEN(properties_values_.at(i));
+    }
+  }
+  return len;
+}
+
+OB_DEF_DESERIALIZE(ObHBaseCellResult,)
+{
+  int ret = OB_SUCCESS;
+  OB_UNIS_DECODE(key_index_);
+  if (OB_SUCC(ret)) {
+    int64_t properties_len = 0;
+    OB_UNIS_DECODE(properties_len);
+    for (int i = 0; OB_SUCC(ret) && i < properties_len; ++i) {
+      ObObj val;
+      OB_UNIS_DECODE(val);
+      if (OB_FAIL(properties_values_.push_back(val))) {
+        LOG_WARN("fail to push back properties value", K(ret), K(val));
+      }
+    }
+  }
+  return ret;
+}
+
+ObTableEntityType ObHCell::get_entity_type() const
+{
+  return ObTableEntityType::ET_HKV_V2;
+}
+
+void ObHCell::reset()
+{
+  objs_.reset();
+  tablet_id_.reset();
+}
+
+int ObHCell::set_rowkey(const ObRowkey &rowkey)
+{
+  int ret = OB_SUCCESS;
+  if (rowkey.get_obj_cnt() != ObHTableConstants::HTABLE_ROWKEY_SIZE) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("rowkey size is not equal to CELL_OBJS_SIZE", K(ret), K(rowkey.get_obj_cnt()));
+  } else {
+    for (int64_t i = 0; i < ObHTableConstants::HTABLE_ROWKEY_SIZE; ++i) {
+      objs_[i] = rowkey.get_obj_ptr()[i];
+    }
+  }
+  return ret;
+}
+
+int ObHCell::set_rowkey(const ObITableEntity &other)
+{
+  int ret = OB_SUCCESS;
+  if (other.get_entity_type() != ObTableEntityType::ET_HKV_V2) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("other is not ObHCell", K(ret), K(other.get_entity_type()));
+  } else if (OB_FAIL(set_rowkey(static_cast<const ObHCell &>(other)))) {
+    LOG_WARN("failed to set rowkey", K(ret));
+  }
+  return ret;
+}
+
+int ObHCell::set_rowkey_value(int64_t idx, const ObObj &value)
+{
+  int ret = OB_SUCCESS;
+  if (idx < 0 || idx >= ObHTableConstants::HTABLE_ROWKEY_SIZE) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("idx is out of range", K(ret), K(idx));
+  } else {
+    objs_[idx] = value;
+  }
+  return ret;
+}
+
+int ObHCell::add_rowkey_value(const ObObj &value)
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to add_rowkey_value", K(ret));
+  return ret;
+}
+
+int64_t ObHCell::get_rowkey_size() const
+{
+  return ObHTableConstants::HTABLE_ROWKEY_SIZE;
+}
+
+int ObHCell::get_rowkey_value(int64_t idx, ObObj &value) const
+{
+  int ret = OB_SUCCESS;
+  if (idx < 0 || idx >= ObHTableConstants::HTABLE_ROWKEY_SIZE) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("idx is out of range", K(ret), K(idx));
+  } else {
+    value = objs_[idx];
+  }
+  return ret;
+}
+
+ObRowkey ObHCell::get_rowkey() const
+{
+  ObRowkey rowkey(const_cast<ObObj*>(&objs_[0]), ObHTableConstants::HTABLE_ROWKEY_SIZE);
+  return rowkey;
+}
+
+int64_t ObHCell::hash_rowkey() const
+{
+  uint64_t hash_val = 0;
+  for (int64_t i = 0; i < ObHTableConstants::HTABLE_ROWKEY_SIZE; ++i) {
+    objs_[i].hash(hash_val, hash_val);
+  }
+  return hash_val;
+}
+
+int ObHCell::set_property(const ObString &prop_name, const ObObj &prop_value)
+{
+  int ret = OB_SUCCESS;
+  if (prop_name.case_compare(ObHTableConstants::VALUE_CNAME) == 0) {
+    objs_[ObHTableConstants::COL_IDX_V] = prop_value;
+  } else if (prop_name.case_compare(ObHTableConstants::TTL_CNAME) == 0) {
+    if (objs_.count() <= ObHTableConstants::COL_IDX_TTL) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_WARN("current table schema has no cell TTL field", K(ret), K(prop_name));
+    } else {
+      objs_[ObHTableConstants::COL_IDX_TTL] = prop_value;
+    }
+  } else {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("not supported this property name", K(ret), K(prop_name));
+  }
+  return ret;
+}
+
+int ObHCell::get_property(const ObString &prop_name, ObObj &prop_value) const
+{
+  int ret = OB_SUCCESS;
+  if (prop_name.case_compare(ObHTableConstants::VALUE_CNAME) == 0) {
+    prop_value = objs_[ObHTableConstants::COL_IDX_V];
+  } else if (prop_name.case_compare(ObHTableConstants::TTL_CNAME) == 0) {
+    if (objs_.count() <= ObHTableConstants::COL_IDX_TTL) {
+      ret = OB_ERR_BAD_FIELD_ERROR;
+      LOG_WARN("current table schema has no cell TTL field", K(ret), K(prop_name));
+    } else {
+      prop_value = objs_[ObHTableConstants::COL_IDX_TTL];
+    }
+  } else {
+    ret = OB_SEARCH_NOT_FOUND;
+  }
+  return ret;
+}
+
+int ObHCell::get_properties(ObIArray<std::pair<ObString, ObObj> > &properties) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(properties.push_back(std::make_pair(ObHTableConstants::VALUE_CNAME, objs_[ObHTableConstants::COL_IDX_V])))) {
+    LOG_WARN("failed to push back property", K(ret));
+  }
+  if (objs_.count() > ObHTableConstants::COL_IDX_TTL) {
+    if (OB_FAIL(properties.push_back(std::make_pair(ObHTableConstants::TTL_CNAME, objs_[ObHTableConstants::COL_IDX_TTL])))) {
+      LOG_WARN("failed to push back property", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObHCell::get_properties_names(ObIArray<ObString> &properties) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(properties.push_back(ObHTableConstants::VALUE_CNAME))) {
+    LOG_WARN("failed to push back property", K(ret));
+  }
+  if (objs_.count() > ObHTableConstants::COL_IDX_TTL) {
+    if (OB_FAIL(properties.push_back(ObHTableConstants::TTL_CNAME))) {
+      LOG_WARN("failed to push back property", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObHCell::get_properties_values(ObIArray<ObObj*> &properties_values) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(properties_values.push_back(const_cast<ObObj*>(&objs_[ObHTableConstants::COL_IDX_V])))) {
+    LOG_WARN("failed to push back property", K(ret));
+  }
+  if (objs_.count() > ObHTableConstants::COL_IDX_TTL) {
+    if (OB_FAIL(properties_values.push_back(const_cast<ObObj*>(&objs_[ObHTableConstants::COL_IDX_TTL])))) {
+      LOG_WARN("failed to push back property", K(ret));
+    }
+  }
+  return ret;
+}
+
+const ObObj &ObHCell::get_properties_value(int64_t idx) const
+{
+  int ret = OB_SUCCESS;
+  if (idx == ObHTableConstants::COL_IDX_V) {
+    return objs_[ObHTableConstants::COL_IDX_V];
+  } else if (idx == ObHTableConstants::COL_IDX_TTL) {
+    if (objs_.count() > ObHTableConstants::COL_IDX_TTL) {
+      return objs_[ObHTableConstants::COL_IDX_TTL];
+    }
+  }
+  ret = OB_SIZE_OVERFLOW; // no way to inform
+  LOG_WARN("idx size overflow objs_ array", K(ret), K(idx), K(objs_.count()));
+  return objs_[ObHTableConstants::COL_IDX_V];
+}
+
+int64_t ObHCell::get_properties_count() const
+{
+  return (objs_.count() - ObHTableConstants::HTABLE_ROWKEY_SIZE);
+}
+
+void ObHCell::set_dictionary(const ObIArray<ObString> *all_rowkey_names, const ObIArray<ObString> *all_properties_names)
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport set_dictionary", K(ret));
+  return;
+}
+
+void ObHCell::set_is_same_properties_names(bool is_same_properties_names)
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport", K(ret));
+  return;
+}
+
+int ObHCell::construct_names_bitmap(const ObITableEntity& req_entity)
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to construct_names_bitmap", K(ret));
+  return ret;
+}
+
+const ObTableBitMap *ObHCell::get_rowkey_names_bitmap() const
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to get_rowkey_names_bitmap", K(ret));
+  return nullptr;
+}
+
+const ObTableBitMap *ObHCell::get_properties_names_bitmap() const
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to get_properties_names_bitmap", K(ret));
+  return nullptr;
+}
+
+const ObIArray<ObString>* ObHCell::get_all_rowkey_names() const
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to get_all_rowkey_names", K(ret));
+  return nullptr;
+}
+
+const ObIArray<ObString>* ObHCell::get_all_properties_names() const
+{
+  int ret = OB_NOT_IMPLEMENT;
+  LOG_WARN("not surpport to get_all_properties_names", K(ret));
+  return nullptr;
+}
+
+ObTabletID ObHCell::get_tablet_id() const
+{
+  return tablet_id_;
+}
+
+void ObHCell::set_tablet_id(common::ObTabletID tablet_id)
+{
+  tablet_id_ = tablet_id;
+}
+
+int ObHCell::get_cell_obj(int64_t idx, ObObj &obj) const
+{
+  int ret = OB_SUCCESS;
+  if (idx < 0 || idx >= objs_.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("idx is out of range", K(ret), K(idx));
+  } else {
+    obj = objs_[idx];
+  }
+  return ret;
+}
+OB_SERIALIZE_MEMBER(ObTableMetaRequest,
+                     credential_,
+                     meta_type_,
+                     data_);
+
+OB_SERIALIZE_MEMBER((ObTableMetaResponse, ObTableResult), data_);

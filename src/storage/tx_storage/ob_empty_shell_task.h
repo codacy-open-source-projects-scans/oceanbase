@@ -49,7 +49,7 @@ public:
 private:
   void set_stop() { ATOMIC_STORE(&stopped_, true); }
   void set_start() { ATOMIC_STORE(&stopped_, false); }
-  bool is_finish() { obsys::ObWLockGuard lock(wait_lock_, false); return lock.acquired(); }
+  bool is_finish() { obsys::ObWLockGuard<> lock(wait_lock_, false); return lock.acquired(); }
   int check_candidate_tablet_(const ObTablet &tablet, bool &can_become_shell, bool &need_retry);
   int check_tablet_from_aborted_tx_(const ObTablet &tablet, bool &can_become_shell, bool &need_retry);
   int get_empty_shell_tablet_ids(common::ObTabletIDArray &empty_shell_tablet_ids, bool &need_retry);
@@ -63,9 +63,13 @@ private:
   int check_transfer_out_deleted_tablet_(const ObTablet &tablet, const ObTabletCreateDeleteMdsUserData &user_data, bool &can, bool &need_retry);
 
   static int get_readable_scn(share::SCN &readable_scn);
+#ifdef OB_BUILD_SHARED_STORAGE
+  int get_ss_checkpoint_scn_(
+    share::SCN &ss_checkpoint_scn);
+#endif
 
 public:
-  obsys::ObRWLock wait_lock_;
+  obsys::ObRWLock<> wait_lock_;
 
 private:
   storage::ObLS *ls_;

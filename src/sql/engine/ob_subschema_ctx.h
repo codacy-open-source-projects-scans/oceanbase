@@ -16,6 +16,7 @@
 #include "lib/oblog/ob_log_module.h"
 #include "lib/udt/ob_collection_type.h"
 #include "common/ob_field.h"
+#include "lib/enumset/ob_enum_set_meta.h"
 
 namespace oceanbase
 {
@@ -119,7 +120,7 @@ class ObSubSchemaReverseKey
             && other.str_signature_ == this->str_signature_);
   }
 
-  TO_STRING_KV(K_(type), K_(signature));
+  TO_STRING_KV(K_(type), K_(signature), K_(str_signature));
   ObSubSchemaType type_;
   uint64_t signature_;
   ObString str_signature_;

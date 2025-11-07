@@ -13,13 +13,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
-#include "storage/tx_storage/ob_ls_map.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_defs.h"
 #include "storage/tenant_snapshot/ob_tenant_snapshot_task.h"
 #include "storage/tenant_snapshot/ob_tenant_snapshot_service.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_mgr.h"
-#include "storage/tenant_snapshot/ob_tenant_snapshot_meta_table.h"
 namespace oceanbase
 {
 namespace storage
@@ -145,7 +140,7 @@ int ObTenantSnapshotCreateDag::fill_dag_key(char *buf, const int64_t buf_len) co
   return ret;
 }
 
-int64_t ObTenantSnapshotCreateDag::hash() const
+uint64_t ObTenantSnapshotCreateDag::hash() const
 {
   int64_t ptr = reinterpret_cast<int64_t>(this);
   return common::murmurhash(&ptr, sizeof(ptr), 0);
@@ -339,7 +334,7 @@ int ObTenantSnapshotGCDag::fill_dag_key(char *buf, const int64_t buf_len) const
   return ret;
 }
 
-int64_t ObTenantSnapshotGCDag::hash() const
+uint64_t ObTenantSnapshotGCDag::hash() const
 {
   int64_t ptr = reinterpret_cast<int64_t>(this);
   return common::murmurhash(&ptr, sizeof(ptr), 0);

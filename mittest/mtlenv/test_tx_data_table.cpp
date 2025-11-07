@@ -13,27 +13,14 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
 
 #define protected public
 #define private public
 #define UNITTEST
 
-#include <iostream>
-#include <thread>
-#include "lib/oblog/ob_log.h"
-#include "storage/ls/ob_freezer.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/ls/ob_ls_tablet_service.h"
-#include "storage/ls/ob_ls_tx_service.h"
-#include "storage/tx_table/ob_tx_data_memtable_mgr.h"
-#include "storage/tx_table/ob_tx_data_table.h"
-#include "storage/tx_table/ob_tx_table_iterator.h"
-#include "storage/checkpoint/ob_data_checkpoint.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "mtlenv/mock_tenant_module_env.h"
 
-#include "storage/blocksstable/ob_datum_row.h"
 #undef private
 #undef protected
 
@@ -358,7 +345,9 @@ void TestTxDataTable::init_memtable_mgr_(ObTxDataMemtableMgr *memtable_mgr)
 {
   ASSERT_NE(nullptr, memtable_mgr);
   memtable_mgr->set_freezer(&tx_data_table_.freezer_);
-  ASSERT_EQ(OB_SUCCESS, memtable_mgr->create_memtable(CreateMemtableArg(1, SCN::min_scn(), SCN::min_scn(), false, false)));
+  CreateMemtableArg arg;
+  arg.schema_version_ = 1;
+  ASSERT_EQ(OB_SUCCESS, memtable_mgr->create_memtable(arg));
   ASSERT_EQ(1, memtable_mgr->get_memtable_count_());
 }
 
@@ -647,7 +636,9 @@ void TestTxDataTable::do_repeat_insert_test() {
   ObTxDataMemtableMgr *memtable_mgr = tx_data_table_.get_memtable_mgr_();
   ASSERT_NE(nullptr, memtable_mgr);
   memtable_mgr->set_freezer(&tx_data_table_.freezer_);
-  ASSERT_EQ(OB_SUCCESS, memtable_mgr->create_memtable(CreateMemtableArg(1, SCN::min_scn(), SCN::min_scn(), false, false)));
+  CreateMemtableArg arg;
+  arg.schema_version_ = 1;
+  ASSERT_EQ(OB_SUCCESS, memtable_mgr->create_memtable(arg));
   ASSERT_EQ(1, memtable_mgr->get_memtable_count_());
 
   insert_start_scn.convert_for_logservice(ObTimeUtil::current_time_ns());

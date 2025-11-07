@@ -12,14 +12,11 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_backup_data_table_operator.h"
-#include "share/inner_table/ob_inner_table_schema.h"
-#include "observer/ob_sql_client_decorator.h"
-#include "lib/string/ob_sql_string.h"
-#include "common/ob_smart_var.h"
-#include "share/config/ob_server_config.h"
+#include "src/share/inner_table/ob_inner_table_schema_constants.h"
 #include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "share/ob_share_util.h"
-#include "lib/ob_define.h"
+#include "share/backup/ob_tenant_archive_mgr.h"
+#include "share/backup/ob_archive_store.h"
+#include "share/backup/ob_archive_persist_helper.h"
 
 namespace oceanbase
 { 
@@ -164,7 +161,7 @@ int ObBackupSetFileOperator::get_backup_set_files(
 {
   int ret = OB_SUCCESS;
   ObSqlString sql;
-  if(!is_valid_tenant_id(tenant_id)) {
+  if (!is_valid_tenant_id(tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tenant_id));
   } else {
@@ -195,7 +192,8 @@ int ObBackupSetFileOperator::get_backup_set_files_specified_dest(
 {
   int ret = OB_SUCCESS;
   ObSqlString sql;
-  if(!is_valid_tenant_id(tenant_id)) {
+  backup_set_infos.reset();
+  if (!is_valid_tenant_id(tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tenant_id));
   } else {
@@ -239,6 +237,123 @@ int ObBackupSetFileOperator::parse_backup_set_info_result_(
       LOG_WARN("[DATA_BACKUP]failed to push back job", K(ret), K(backup_set_desc));
     }
   }
+  return ret;
+}
+
+
+int ObBackupSetFileOperator::get_oldest_full_backup_set(
+    common::ObISQLClient &proxy,
+    const uint64_t tenant_id,
+    const char *backup_path_str,
+    ObBackupSetFileDesc &oldest_backup_desc)
+{
+  int ret = OB_SUCCESS;
+  oldest_backup_desc.reset();
+  if (OB_FAIL(get_boundary_full_backup_set_(proxy, tenant_id, backup_path_str, false /* oldest */, oldest_backup_desc))) {
+    LOG_WARN("failed to get oldest full backup set", K(ret), K(tenant_id), K(backup_path_str));
+  }
+  return ret;
+}
+
+int ObBackupSetFileOperator::get_boundary_full_backup_set_(
+    common::ObISQLClient &proxy,
+    const uint64_t tenant_id,
+    const char *backup_path_str,
+    const bool get_latest, // true: get latest, false: get oldest
+    ObBackupSetFileDesc &boundary_desc)
+{
+  int ret = OB_SUCCESS;
+  boundary_desc.reset();
+  ObSqlString sql;
+  if (OB_INVALID_TENANT_ID == tenant_id || NULL == backup_path_str) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(tenant_id), KP(backup_path_str));
+  } else if (OB_FAIL(sql.assign_fmt(
+               "SELECT * FROM %s WHERE %s = %lu AND path = '%s' "
+               "AND backup_type = 'FULL' AND status = 'SUCCESS' AND file_status = 'AVAILABLE' "
+               "ORDER BY start_ts %s LIMIT 1",
+               OB_ALL_BACKUP_SET_FILES_TNAME, OB_STR_TENANT_ID, tenant_id, backup_path_str,
+               get_latest ? "DESC" : "ASC"))) {
+    LOG_WARN("failed to assign fmt", K(ret));
+  } else {
+    HEAP_VAR(ObMySQLProxy::ReadResult, res) {
+      ObMySQLResult *result = NULL;
+      if (OB_FAIL(proxy.read(res, get_exec_tenant_id(tenant_id), sql.ptr()))) {
+        LOG_WARN("failed to exec sql", K(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("result is null", K(ret), K(sql));
+      } else if (OB_FAIL(result->next())) {
+        if (OB_ITER_END == ret) {
+          ret = OB_ENTRY_NOT_EXIST;
+          LOG_WARN("no valid full backup set found", K(ret), K(sql));
+        } else {
+          LOG_WARN("failed to get next result", K(ret), K(sql));
+        }
+      } else if (OB_FAIL(do_parse_backup_set_(*result, boundary_desc))) {
+        LOG_WARN("failed to parse backup set", K(ret), K(sql));
+      } else if (OB_SUCC(result->next())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("LIMIT 1 query returned more than one row, unexpected", K(ret), K(sql));
+      } else if (OB_ITER_END != ret) {
+        LOG_WARN("failed to get next result", K(ret), K(sql));
+      } else {
+        ret = OB_SUCCESS;
+      }
+    }
+  }
+  LOG_INFO("get boundary full backup set", K(ret), K(sql), K(boundary_desc));
+  return ret;
+}
+
+int ObBackupSetFileOperator::get_latest_full_backup_set_with_limit(
+    common::ObISQLClient &proxy,
+    const uint64_t tenant_id,
+    const char *backup_path_str,
+    const int64_t backup_set_id_limit,
+    ObBackupSetFileDesc &latest_backup_desc)
+{
+  int ret = OB_SUCCESS;
+  latest_backup_desc.reset();
+  ObSqlString sql;
+  if (OB_INVALID_TENANT_ID == tenant_id || NULL == backup_path_str) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(tenant_id), KP(backup_path_str));
+  } else if (OB_FAIL(sql.assign_fmt(
+               "SELECT * FROM %s WHERE %s = %lu AND path = '%s' "
+               "AND backup_type = 'FULL' AND status = 'SUCCESS' AND file_status = 'AVAILABLE' "
+               "AND backup_set_id < %ld ORDER BY %s DESC LIMIT 1",
+               OB_ALL_BACKUP_SET_FILES_TNAME, OB_STR_TENANT_ID, tenant_id,
+               backup_path_str, backup_set_id_limit, OB_STR_BACKUP_SET_ID))) {
+    LOG_WARN("failed to assign fmt", K(ret));
+  } else {
+    HEAP_VAR(ObMySQLProxy::ReadResult, res) {
+      ObMySQLResult *result = NULL;
+      if (OB_FAIL(proxy.read(res, get_exec_tenant_id(tenant_id), sql.ptr()))) {
+        LOG_WARN("failed to exec sql", K(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("result is null", K(ret), K(sql));
+      } else if (OB_FAIL(result->next())) {
+        if (OB_ITER_END == ret) {
+          ret = OB_ENTRY_NOT_EXIST;
+          LOG_WARN("no valid full backup set found with limit", K(ret), K(sql), K(backup_set_id_limit));
+        } else {
+          LOG_WARN("failed to get next result", K(ret), K(sql));
+        }
+      } else if (OB_FAIL(do_parse_backup_set_(*result, latest_backup_desc))) {
+        LOG_WARN("failed to parse backup set", K(ret), K(sql));
+      } else if (OB_SUCC(result->next())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("LIMIT 1 query returned more than one row, unexpected", K(ret), K(sql));
+      } else if (OB_ITER_END != ret) {
+        LOG_WARN("failed to get next result", K(ret), K(sql));
+      } else {
+        ret = OB_SUCCESS;
+      }
+    }
+  }
+  LOG_INFO("get latest full backup set with limit", K(ret), K(sql), K(latest_backup_desc), K(backup_set_id_limit));
   return ret;
 }
 
@@ -363,6 +478,7 @@ int ObBackupSetFileOperator::do_parse_backup_set_(ObMySQLResult &result, ObBacku
   EXTRACT_INT_FIELD_MYSQL(result, OB_STR_PREV_FULL_BACKUP_SET_ID, backup_set_desc.prev_full_backup_set_id_, int64_t);
   EXTRACT_INT_FIELD_MYSQL(result, OB_STR_PREV_INC_BACKUP_SET_ID, backup_set_desc.prev_inc_backup_set_id_, int64_t);
   EXTRACT_INT_FIELD_MYSQL(result, OB_STR_START_TS, backup_set_desc.start_time_, int64_t);
+  EXTRACT_INT_FIELD_MYSQL(result, OB_STR_END_TS, backup_set_desc.end_time_, int64_t);
   EXTRACT_INT_FIELD_MYSQL(result, OB_STR_RESULT, backup_set_desc.result_, int);
   EXTRACT_UINT_FIELD_MYSQL(result, OB_STR_START_REPLAY_SCN, start_replay_scn, uint64_t);
   EXTRACT_INT_FIELD_MYSQL(result, OB_STR_DATA_TURN_ID, backup_set_desc.data_turn_id_, int64_t); 
@@ -2437,13 +2553,16 @@ int ObBackupSkippedTabletOperator::move_skip_tablet_to_his(
   return ret;
 }
 
-int ObBackupMViewOperator::get_all_major_compaction_mview_dep_tablet_list(common::ObMySQLProxy &proxy,
-                                                                          const uint64_t tenant_id,
-                                                                          const share::SCN &snapshot,
-                                                                          common::ObIArray<common::ObTabletID> &tablet_list)
+int ObBackupMViewOperator::get_all_major_compaction_mview_dep_tablet_list(
+    common::ObMySQLProxy &proxy,
+    const uint64_t tenant_id,
+    const share::SCN &snapshot,
+    common::ObIArray<common::ObTabletID> &tablet_list,
+    common::ObIArray<share::SCN> &tablet_mview_dep_scn_list)
 {
   int ret = OB_SUCCESS;
   tablet_list.reset();
+  tablet_mview_dep_scn_list.reset();
   ObSqlString sql;
   int64_t affected_rows = -1;
   if (OB_INVALID_TENANT_ID == tenant_id || !snapshot.is_valid()) {
@@ -2452,12 +2571,11 @@ int ObBackupMViewOperator::get_all_major_compaction_mview_dep_tablet_list(common
   } else {
     HEAP_VAR(ObMySQLProxy::ReadResult, res) {
       ObMySQLResult *result = NULL;
-      if (OB_FAIL(sql.assign_fmt("select tablet_id from %s as of snapshot %ld where table_id in ("
-          " select p_obj from %s as of snapshot %ld"
-          " where mview_id in (select mview_id from %s as of snapshot %ld where refresh_mode=%ld) "
-          " union all "
-          " select data_table_id from %s as of snapshot %ld"
-          " where table_id in (select mview_id from %s as of snapshot %ld where refresh_mode=%ld))",
+      if (OB_FAIL(sql.assign_fmt("select t1.tablet_id tablet_id,t2.major_version major_version from %s as of snapshot %ld t1"
+            " join (select p_obj table_id,cast(min(case when b.last_refresh_type>0 then b.last_refresh_scn else 0 end) as unsigned) major_version from %s as of snapshot %ld a"
+            " join %s as of snapshot %ld b on a.mview_id=b.mview_id where b.refresh_mode=%ld group by p_obj"
+            " union all (select a.data_table_id table_id,b.last_refresh_scn major_version from %s as of snapshot %ld a"
+            " join %s as of snapshot %ld b on a.table_id=b.mview_id and b.refresh_mode=%ld)) t2 on t1.table_id=t2.table_id",
           OB_ALL_TABLET_TO_LS_TNAME, snapshot.get_val_for_inner_table_field(),
           OB_ALL_MVIEW_DEP_TNAME, snapshot.get_val_for_inner_table_field(),
           OB_ALL_MVIEW_TNAME, snapshot.get_val_for_inner_table_field(), schema::ObMVRefreshMode::MAJOR_COMPACTION,
@@ -2480,9 +2598,16 @@ int ObBackupMViewOperator::get_all_major_compaction_mview_dep_tablet_list(common
             }
           } else {
             int64_t tablet_id = -1;
+            uint64_t scn_val = -1;
+            share::SCN major_scn;
             EXTRACT_INT_FIELD_MYSQL(*result, OB_STR_TABLET_ID, tablet_id, int64_t);
+            EXTRACT_UINT_FIELD_MYSQL(*result, "major_version", scn_val, uint64_t);
             if (FAILEDx(tablet_list.push_back(ObTabletID(tablet_id)))) {
               LOG_WARN("failed to push back", K(ret), K(tablet_id));
+            } else if (OB_FAIL(major_scn.convert_for_inner_table_field(scn_val))) {
+              LOG_WARN("failed to convert for inner table field", K(ret));
+            } else if (OB_FAIL(tablet_mview_dep_scn_list.push_back(major_scn))) {
+              LOG_WARN("failed to push back", K(ret), K(major_scn));
             }
           }
         }

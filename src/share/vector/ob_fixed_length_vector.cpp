@@ -12,7 +12,6 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "share/vector/ob_fixed_length_vector.h"
-#include "lib/wide_integer/ob_wide_integer.h"
 
 namespace oceanbase
 {
@@ -36,7 +35,7 @@ int ObFixedLengthVector<ValueType, BasicOp>::murmur_hash(BATCH_EVAL_HASH_ARGS) c
 }
 
 template<typename ValueType, typename BasicOp>
-int ObFixedLengthVector<ValueType, BasicOp>::murmur_hash_v3(BATCH_EVAL_HASH_ARGS) const
+OB_INLINE int ObFixedLengthVector<ValueType, BasicOp>::murmur_hash_v3(BATCH_EVAL_HASH_ARGS) const
 {
   BatchHashResIter hash_iter(hash_values);
   return VecOpUtil::template hash_dispatch<ObMurmurHash, true, BatchHashResIter>(
@@ -48,8 +47,8 @@ int ObFixedLengthVector<ValueType, BasicOp>::murmur_hash_v3_for_one_row(EVAL_HAS
 {
   RowHashResIter hash_iter(&hash_value);
   sql::EvalBound bound(batch_size, batch_idx, batch_idx + 1, true);
-  char mock_skip_data[1] = {0};
-  sql::ObBitVector &skip = *sql::to_bit_vector(mock_skip_data);
+  int64_t mock_skip_data = 0;
+  sql::ObBitVector &skip = *sql::to_bit_vector(&mock_skip_data);
   return VecOpUtil::template hash_dispatch<ObMurmurHash, true, RowHashResIter>(
     hash_iter, expr.obj_meta_, *this, skip, bound, &seed, false);
 }
@@ -217,6 +216,9 @@ template class ObFixedLengthVector<int64_t, VectorBasicOp<VEC_TC_DEC_INT64>>;
 template class ObFixedLengthVector<int128_t, VectorBasicOp<VEC_TC_DEC_INT128>>;
 template class ObFixedLengthVector<int256_t, VectorBasicOp<VEC_TC_DEC_INT256>>;
 template class ObFixedLengthVector<int512_t, VectorBasicOp<VEC_TC_DEC_INT512>>;
+template class ObFixedLengthVector<int64_t, VectorBasicOp<VEC_TC_MYSQL_DATETIME>>;
+template class ObFixedLengthVector<int32_t, VectorBasicOp<VEC_TC_MYSQL_DATE>>;
+
 
 } // end namespace common
 } // end namespace oceanbase

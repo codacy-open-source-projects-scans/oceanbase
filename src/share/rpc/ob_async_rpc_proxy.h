@@ -143,6 +143,8 @@ public:
   const common::ObIArray<const RpcResult *> &get_results() const { return results_; }
   int receive_response();
 
+  int64_t get_response_count();
+  bool check_has_error_result() const;
   int check_return_cnt(const int64_t return_cnt) const;
 private:
   int call_rpc(const common::ObAddr &server, const int64_t timeout, const int64_t cluster_id,
@@ -483,6 +485,13 @@ int ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::wait(
 }
 
 template<ObRpcPacketCode PC, typename RpcArg, typename RpcResult, typename Func, typename RpcProxy>
+int64_t ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::get_response_count()
+{
+  common::ObThreadCondGuard guard(cond_);
+  return response_count_;
+}
+
+template<ObRpcPacketCode PC, typename RpcArg, typename RpcResult, typename Func, typename RpcProxy>
 int ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::receive_response()
 {
   int ret = common::OB_SUCCESS;
@@ -500,6 +509,20 @@ int ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::receive_response()
     }
   }
   return ret;
+}
+
+template<ObRpcPacketCode PC, typename RpcArg, typename RpcResult, typename Func, typename RpcProxy>
+bool ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::check_has_error_result() const
+{
+  bool has_error = false;
+  const ObAsyncCB<PC, ObAsyncRpcProxy, RpcProxy> *cb = cb_list_.get_first();
+  const ObAsyncCB<PC, ObAsyncRpcProxy, RpcProxy> *next = NULL;
+  while (!has_error && cb != cb_list_.get_header() && OB_NOT_NULL(cb)) {
+    next = cb->get_next();
+    has_error = (cb->get_ret_code() != OB_SUCCESS);
+    cb = next;
+  }
+  return has_error;
 }
 
 template<ObRpcPacketCode PC, typename RpcArg, typename RpcResult, typename Func, typename RpcProxy>
@@ -523,6 +546,11 @@ int ObAsyncRpcProxy<PC, RpcArg, RpcResult, Func, RpcProxy>::check_return_cnt(
 #define RPC_F(code, arg, result, name) \
   typedef obrpc::ObAsyncRpcProxy<code, arg, result, \
     int (obrpc::ObSrvRpcProxy::*)(const arg &, obrpc::ObSrvRpcProxy::AsyncCB<code> *, const obrpc::ObRpcOpts &), obrpc::ObSrvRpcProxy> name
+
+// the async rpc for ObCommonRpcProxy
+#define RPC_RS(code, arg, result, name) \
+  typedef obrpc::ObAsyncRpcProxy<code, arg, result, \
+    int (obrpc::ObCommonRpcProxy::*)(const arg &, obrpc::ObCommonRpcProxy::AsyncCB<code> *, const obrpc::ObRpcOpts &), obrpc::ObCommonRpcProxy> name
 
 
 }//end namespace obrpc

@@ -45,7 +45,8 @@ public:
     new_rowid_expr_(NULL),
     trans_info_expr_(NULL),
     related_index_ids_(),
-    fk_lookup_part_id_expr_()
+    fk_lookup_part_id_expr_(),
+    is_vec_hnsw_index_vid_opt_(false)
   {
   }
   inline void reset()
@@ -76,6 +77,7 @@ public:
     trans_info_expr_ = NULL,
     related_index_ids_.reset();
     fk_lookup_part_id_expr_.reset();
+    is_vec_hnsw_index_vid_opt_ = false;
   }
   int64_t to_explain_string(char *buf, int64_t buf_len, ExplainType type) const;
   int init_assignment_info(const ObAssignments &assignments,
@@ -176,6 +178,8 @@ public:
 
   common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> fk_lookup_part_id_expr_;
 
+  bool is_vec_hnsw_index_vid_opt_;
+
   TO_STRING_KV(K_(table_id),
                K_(ref_table_id),
                K_(loc_table_id),
@@ -193,7 +197,8 @@ public:
                K_(is_update_part_key),
                K_(is_update_primary_key),
                K_(distinct_algo),
-               K_(related_index_ids));
+               K_(related_index_ids),
+               K_(is_vec_hnsw_index_vid_opt));
 };
 
 class ObDelUpdLogPlan;
@@ -203,6 +208,7 @@ public:
   ObLogDelUpd(ObDelUpdLogPlan &plan);
   virtual ~ObLogDelUpd() = default;
   int assign_dml_infos(const ObIArray<IndexDMLInfo *> &index_dml_infos);
+  int add_index_dml_info(IndexDMLInfo *index_dml_info);
 
   int add_table_columns_to_ctx(ObAllocExprContext &ctx,
                                const ObIArray<IndexDMLInfo> &index_dml_infos);
@@ -339,6 +345,13 @@ public:
   virtual int check_use_child_ordering(bool &used, int64_t &inherit_child_ordering_index)override;
   void set_das_dop(int64_t dop) { das_dop_ = dop; }
   int64_t get_das_dop() { return das_dop_; }
+  virtual int op_is_update_pk_with_dop(bool &is_update)
+  {
+    is_update = false;
+    return OB_SUCCESS;
+  }
+  int check_fts_docid_expr(const ObColumnRefRawExpr *expr, const uint64_t table_id, bool &need_column_ref_expr);
+
 protected:
   virtual int generate_rowid_expr_for_trigger() = 0;
   virtual int generate_part_id_expr_for_foreign_key(ObIArray<ObRawExpr*> &all_exprs) = 0;

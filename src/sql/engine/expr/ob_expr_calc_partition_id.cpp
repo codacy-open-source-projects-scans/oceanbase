@@ -12,11 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_calc_partition_id.h"
-#include "sql/code_generator/ob_static_engine_expr_cg.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_func_part_hash.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
 #include "share/vector/expr_cmp_func.h"
 
 namespace oceanbase
@@ -120,7 +117,7 @@ int ObExprCalcPartitionBase::cg_expr(ObExprCGCtx &expr_cg_ctx,
                                    ObExpr &rt_expr) const
 {
   int ret = OB_SUCCESS;
-  ObTableID ref_table_id = reinterpret_cast<ObTableID>(raw_expr.get_extra());
+  ObTableID ref_table_id = reinterpret_cast<ObTableID>(raw_expr.get_ref_table_id());
   CalcPartitionBaseInfo *calc_part_info = NULL;
   const ObTableSchema *table_schema = NULL;
   OptRouteType opt_route = OPT_ROUTE_NONE;
@@ -244,8 +241,18 @@ int ObExprCalcPartitionBase::cg_expr(ObExprCGCtx &expr_cg_ctx,
           if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_5_0) {
             fallback = true;
           } else {
-            rt_expr.eval_vector_func_ =
+            ObPartition * const* part_array = table_schema->get_part_array();
+            if (OB_ISNULL(part_array) || OB_ISNULL(part_array[0]) ||
+                OB_ISNULL(part_array[0]->get_high_bound_val().get_obj_ptr())) {
+                ret = OB_INVALID_ARGUMENT;
+                LOG_WARN("partition_array is null", K(ret));
+            } else if (part_expr->obj_meta_.get_type() !=
+                part_array[0]->get_high_bound_val().get_obj_ptr()->get_meta().get_type()) {
+              fallback = true;
+            } else {
+              rt_expr.eval_vector_func_ =
                 ObExprCalcPartitionBase::fast_calc_partition_level_one_vector;
+            }
           }
         } else if (table_schema->is_list_part()) {
           if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_5_0) {
@@ -256,8 +263,25 @@ int ObExprCalcPartitionBase::cg_expr(ObExprCGCtx &expr_cg_ctx,
             if (ob_is_json(part_expr_type) || ob_is_urowid(part_expr_type)) {
               fallback = true;
             } else {
-              rt_expr.eval_vector_func_ =
-                    ObExprCalcPartitionBase::fast_calc_partition_level_one_vector;
+              ObPartition * const* part_array = table_schema->get_part_array();
+              if (OB_ISNULL(part_array) || OB_ISNULL(part_array[0])) {
+                  ret = OB_INVALID_ARGUMENT;
+                  LOG_WARN("partition_array is null", K(ret));
+              } else {
+                const ObIArray<common::ObNewRow> &list_row_values =
+                    part_array[0]->get_list_row_values();
+                ObObj *list_part_obj = list_row_values.at(0).cells_;
+                if (OB_ISNULL(list_part_obj)) {
+                  ret = OB_INVALID_ARGUMENT;
+                  LOG_WARN("list_part_obj is null", K(ret));
+                } else if (part_expr->obj_meta_.get_type() !=
+                           list_part_obj->get_meta().get_type()) {
+                  fallback = true;
+                } else {
+                  rt_expr.eval_vector_func_ =
+                      ObExprCalcPartitionBase::fast_calc_partition_level_one_vector;
+                }
+              }
             }
           }
         } else {
@@ -852,6 +876,10 @@ int ObExprCalcPartitionBase::calc_partition_level_one_vector(const ObExpr &expr,
                                  part_expr->obj_meta_,
                                  part_expr->obj_datum_map_))) {
           LOG_WARN("convert datum to obj failed", K(ret));
+        } else if (func_value.is_outrow_lob()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "outrow lob as partition key");
+          LOG_WARN("outrow lob as partition key is not supported", K(ret));
         } else {
           result = func_value;
           if (PARTITION_FUNC_TYPE_HASH == part_type) {
@@ -1051,6 +1079,51 @@ int ObExprCalcPartitionBase::calc_part_and_tablet_id(const ObExpr *calc_part_id,
   return ret;
 }
 
+int ObExprCalcPartitionBase::calc_part_and_subpart_and_tablet_id(const ObExpr *calc_part_id,
+                                                     ObEvalCtx &eval_ctx,
+                                                     ObObjectID &partition_id,
+                                                     ObObjectID &first_partition_id,
+                                                     ObTabletID &tablet_id)
+{
+  int ret = OB_SUCCESS;
+  ObDatum *partition_id_datum = NULL;
+  if (OB_FAIL(calc_part_and_tablet_id(calc_part_id, eval_ctx, partition_id, tablet_id))) {
+    LOG_WARN("failed to calc_part_and_tablet_id", K(ret));
+  } else {
+    // get first partition_id from table schema by partition_id
+    CalcPartitionBaseInfo *calc_part_info = NULL;
+    calc_part_info = reinterpret_cast<CalcPartitionBaseInfo *>(calc_part_id->extra_info_);
+    if (OB_ISNULL(calc_part_info)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (calc_part_info->part_level_ == PARTITION_LEVEL_TWO &&
+               calc_part_info->calc_id_type_ == CALC_PARTITION_TABLET_ID){
+      // if table is part level two, only get partition_id(sub_partitionid)
+      // need get first partition id from table schema here
+      const ObTableSchema *table_schema = NULL;
+      const ObPartition *part = NULL;
+      const ObSubPartition *subpart = nullptr;
+      if (OB_ISNULL(eval_ctx.exec_ctx_.get_sql_ctx())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null sql_ctx", K(ret));
+      } else if (OB_FAIL(eval_ctx.exec_ctx_.get_sql_ctx()->schema_guard_->get_table_schema(
+          MTL_ID(), calc_part_info->ref_table_id_, table_schema))) {
+        LOG_WARN("get table schema failed", K(ret));
+      } else if (OB_ISNULL(table_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null table_schema", K(ret));
+      } else if (OB_FAIL(table_schema->get_subpartition_by_sub_part_id(partition_id, part, subpart))) {
+        LOG_WARN("fail to get partition", K(ret), K(partition_id));
+      } else if (OB_ISNULL(part)) {
+        ret = OB_ENTRY_NOT_EXIST;
+        LOG_WARN("fail to get partition", K(ret), K(partition_id));
+      } else {
+        first_partition_id = part->get_part_id();
+      }
+    }
+  }
+  return ret;
+}
+
 int ObExprCalcPartitionBase::build_row(ObEvalCtx &ctx,
                                        ObIAllocator &allocator,
                                        const ObExpr &expr,
@@ -1197,6 +1270,10 @@ int ObExprCalcPartitionBase::calc_partition_id(const ObExpr &part_expr,
                                      part_expr.obj_meta_,
                                      part_expr.obj_datum_map_))) {
       LOG_WARN("convert datum to obj failed", K(ret));
+    } else if (func_value.is_outrow_lob()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "outrow lob as partition key");
+      LOG_WARN("outrow lob as partition key is not supported", K(ret));
     } else {
       result = func_value;
       if (PARTITION_FUNC_TYPE_HASH == part_type) {
@@ -1473,6 +1550,26 @@ int ObExprCalcPartitionBase::set_first_part_id(ObExecContext &ctx, const ObExpr 
       LOG_WARN("create expr op ctx failed", K(ret));
     } else {
       calc_part_ctx->first_part_id_ = first_part_id;
+    }
+  }
+  return ret;
+}
+
+int ObExprCalcPartitionBase::update_part_id_calc_type_for_upgrade(
+    ObExecContext &ctx,
+    const ObExpr &expr,
+    PartitionIdCalcType calc_type)
+{
+  int ret = OB_SUCCESS;
+  uint64_t expr_ctx_id = static_cast<uint64_t>(expr.expr_ctx_id_);
+  if (ObExpr::INVALID_EXP_CTX_ID == expr_ctx_id) {
+    // 混跑要动态改partition_id_calc_type，434以下不会设置这个expr_ctx_id_
+    CalcPartitionBaseInfo *calc_part_info = reinterpret_cast<CalcPartitionBaseInfo *>(expr.extra_info_);
+    if (OB_ISNULL(calc_part_info)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("extra info is null", K(ret));
+    } else {
+      calc_part_info->partition_id_calc_type_ = calc_type;
     }
   }
   return ret;

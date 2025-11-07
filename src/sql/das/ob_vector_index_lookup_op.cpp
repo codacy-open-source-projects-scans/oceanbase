@@ -10,17 +10,12 @@
  * See the Mulan PubL v2 for more details.
  */
 #define USING_LOG_PREFIX SQL_DAS
-#include "sql/das/ob_das_scan_op.h"
 #include "sql/das/ob_das_ir_define.h"
 #include "sql/das/ob_das_vec_define.h"
 #include "sql/das/ob_vector_index_lookup_op.h"
 #include "sql/das/ob_das_utils.h"
-#include "sql/engine/ob_exec_context.h"
-#include "storage/access/ob_dml_param.h"
 #include "src/sql/engine/expr/ob_expr_lob_utils.h"
-#include "src/share/vector_index/ob_vector_index_util.h"
 #include "src/storage/access/ob_table_scan_iterator.h"
-#include "src/share/schema/ob_tenant_schema_service.h"
 
 namespace oceanbase
 {
@@ -436,6 +431,7 @@ int ObVectorIndexLookupOp::set_lookup_vid_key()
   int ret = OB_SUCCESS;
   ObNewRange doc_id_range;
   ObRowkey doc_id_rowkey(&doc_id_key_obj_, 1);
+  doc_id_scan_param_.key_ranges_.reuse();
   uint64_t ref_table_id = doc_id_lookup_ctdef_->ref_table_id_;
   if (OB_FAIL(doc_id_range.build_range(ref_table_id, doc_id_rowkey))) {
     LOG_WARN("build vid lookup range failed", K(ret));
@@ -538,6 +534,7 @@ int ObVectorIndexLookupOp::set_lookup_vid_keys(ObNewRow *row, int64_t size)
   } else {
     ObEvalCtx::BatchInfoScopeGuard batch_info_guard(*vec_eval_ctx_);
     batch_info_guard.set_batch_size(size);
+    doc_id_scan_param_.key_ranges_.reuse();
     for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
       batch_info_guard.set_batch_idx(i);
       ObRowkey doc_id_rowkey(&(row->get_cell(i)), 1);
@@ -685,7 +682,7 @@ int ObVectorIndexLookupOp::prepare_state(const ObVidAdaLookupStatus& cur_state,
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("failed to get vectors.", K(ret));
       }
-
+      doc_id_scan_param_.key_ranges_.reuse();
       for (int i = 0; OB_SUCC(ret) && i < vec_cnt; i++) {
         ObRowkey vid_id_rowkey(&(vids[i + ada_ctx.get_curr_idx()]), 1);
         if (OB_FAIL(set_lookup_vid_key(vid_id_rowkey))) {
@@ -848,7 +845,7 @@ int ObVectorIndexLookupOp::call_pva_interface(const ObVidAdaLookupStatus& cur_st
       ObVectorQueryConditions query_cond;
       if (OB_FAIL(set_vector_query_condition(query_cond))) {
         LOG_WARN("fail to set query condition.", K(ret));
-      } else if (OB_FAIL(adaptor.query_result(&ada_ctx, &query_cond, adaptor_vid_iter_))) {
+      } else if (OB_FAIL(adaptor.query_result(ls_id_, &ada_ctx, &query_cond, adaptor_vid_iter_))) {
         LOG_WARN("fail to query result.", K(ret));
       }
       break;
@@ -1136,7 +1133,7 @@ int ObVectorIndexLookupOp::do_aux_table_lookup()
     doc_id_scan_param_.need_switch_param_ = false;
     // init doc_id -> rowkey table iterator as rowkey iter
     if (OB_FAIL(set_doc_id_idx_lookup_param(
-        doc_id_lookup_ctdef_, doc_id_lookup_rtdef_, doc_id_scan_param_, doc_id_idx_tablet_id_, ls_id_))) {
+        doc_id_lookup_ctdef_, doc_id_lookup_rtdef_, doc_id_scan_param_, domain_id_idx_tablet_id_, ls_id_))) {
       LOG_WARN("failed to init vid lookup scan param", K(ret));
     } else if (OB_FAIL(tsc_service.table_scan(doc_id_scan_param_, rowkey_iter_))) {
       if (OB_SNAPSHOT_DISCARDED == ret && scan_param_.fb_snapshot_.is_valid()) {
@@ -1147,13 +1144,13 @@ int ObVectorIndexLookupOp::do_aux_table_lookup()
     }
   } else {
     const ObTabletID &scan_tablet_id = doc_id_scan_param_.tablet_id_;
-    doc_id_scan_param_.need_switch_param_ = scan_tablet_id.is_valid() && (doc_id_idx_tablet_id_ != scan_tablet_id);
-    doc_id_scan_param_.tablet_id_ = doc_id_idx_tablet_id_;
+    doc_id_scan_param_.need_switch_param_ = scan_tablet_id.is_valid() && (domain_id_idx_tablet_id_ != scan_tablet_id);
+    doc_id_scan_param_.tablet_id_ = domain_id_idx_tablet_id_;
     doc_id_scan_param_.ls_id_ = ls_id_;
     if (OB_FAIL(tsc_service.reuse_scan_iter(doc_id_scan_param_.need_switch_param_, rowkey_iter_))) {
       LOG_WARN("failed to reuse vid iterator", K(ret));
     } else if (OB_FAIL(tsc_service.table_rescan(doc_id_scan_param_, rowkey_iter_))) {
-      LOG_WARN("failed to rescan vid rowkey table", K(ret), K_(doc_id_idx_tablet_id), K(scan_tablet_id));
+      LOG_WARN("failed to rescan vid rowkey table", K(ret), K_(domain_id_idx_tablet_id), K(scan_tablet_id));
     }
   }
   return ret;

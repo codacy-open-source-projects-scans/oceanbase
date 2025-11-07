@@ -207,13 +207,15 @@ public:
   int read_super_block(storage::ObServerSuperBlock &super_block, ObSuperBlockBufferHolder &buf_holder);
   int write_super_block(const storage::ObServerSuperBlock &super_block, ObSuperBlockBufferHolder &buf_holder);
 
+  int64_t get_pending_free_macro_block_count() const;
   int64_t get_free_macro_block_count() const;
   int64_t get_used_macro_block_count() const;
   int64_t get_max_macro_block_count(int64_t reserved_size) const;
   int64_t get_total_block_size() const;
-  int get_all_macro_ids(ObArray<MacroBlockId> &ids_array);
+  int get_limited_iter_macro_ids(ObArray<MacroBlockId> &ids_array, int max_iteration);
 
   int check_macro_block_free(const MacroBlockId &macro_id, bool &is_free) const;
+  int get_macro_block_ref_cnt(const MacroBlockId &macro_id, int64_t &ref_cnt) const;
   int get_bad_block_infos(common::ObIArray<ObBadBlockInfo> &bad_block_infos);
   int report_bad_block(
       const MacroBlockId &macro_block_id,
@@ -269,6 +271,24 @@ private:
   private:
     int ret_code_;
     common::ObIArray<MacroBlockId> &block_ids_;
+  };
+
+  class LimitedIterGetBlockFunctor final
+  {
+  public:
+    LimitedIterGetBlockFunctor(common::ObIArray<MacroBlockId> &block_ids, int64_t max_iteration)
+        : ret_code_(common::OB_SUCCESS), block_ids_(block_ids), max_iteration_(max_iteration)
+    {}
+    ~LimitedIterGetBlockFunctor() = default;
+
+    bool operator()(const MacroBlockId &key, const BlockInfo &value);
+    int get_ret_code() const
+    {
+      return ret_code_;
+    }
+    int ret_code_;
+    common::ObIArray<MacroBlockId> &block_ids_;
+    int64_t max_iteration_;
   };
 
 private:
@@ -400,6 +420,7 @@ private:
       MacroBlkIdMap &mark_info,
       common::hash::ObHashSet<MacroBlockId, common::hash::NoPthreadDefendMode> &macro_id_set,
       ObMacroBlockMarkerStatus &tmp_status);
+  int calc_ext_disk_cache_blocks(ObMacroBlockMarkerStatus &tmp_status);
   int do_sweep(MacroBlkIdMap &mark_info);
   int sweep_one_block(const MacroBlockId& macro_id);
 
@@ -504,6 +525,9 @@ private:
 
   bool is_inited_;
   bool is_started_;
+
+  // for external table disk cache eviction
+  int64_t pending_free_count_ CACHE_ALIGNED;
 };
 
 class ObServerBlockManager : public ObBlockManager

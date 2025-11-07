@@ -13,21 +13,9 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
 #include "mtlenv/mock_tenant_module_env.h"
-#include "common/log/ob_log_cursor.h"
-#include "storage/meta_store/ob_tenant_storage_meta_service.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/meta_mem/ob_tablet_handle.h"
-#include "storage/tablet/ob_tablet_persister.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/init_basic_struct.h"
 #include "storage/test_tablet_helper.h"
 #include "storage/test_dml_common.h"
-#include "lib/oblog/ob_log.h"
-#include "share/ob_force_print_log.h"
 
 namespace oceanbase
 {
@@ -110,7 +98,7 @@ TEST_F(TestWriteTabletSlog, basic)
   ASSERT_NE(nullptr, ls);
 
   // advance the replay start cursor
-  ASSERT_EQ(OB_SUCCESS, MTL(ObTenantStorageMetaService*)->get_active_cursor(replay_start_cursor));
+  ASSERT_EQ(OB_SUCCESS, MTL(ObTenantStorageMetaService*)->slogger_.get_active_cursor(replay_start_cursor));
 
   // create tablet and write slog
   ObTabletID tablet_id(1001);
@@ -125,18 +113,22 @@ TEST_F(TestWriteTabletSlog, basic)
   ASSERT_EQ(OB_SUCCESS, ls->get_tablet(tablet_id, tablet_handle));
   ObTablet *tablet = tablet_handle.get_obj();
   ObTabletCreateDeleteMdsUserData user_data;
-  ASSERT_EQ(OB_SUCCESS, tablet->get_latest_committed(user_data));
+  ASSERT_EQ(OB_SUCCESS, tablet->get_latest_committed_tablet_status(user_data));
   ASSERT_EQ(ObTabletStatus::NORMAL, user_data.tablet_status_.status_);
 
   // persist and transform tablet
   const ObTabletMapKey key(ls_id, tablet_id);
   ObTabletHandle new_tablet_hdl;
-  const ObTabletPersisterParam param(ls_id, ls->get_ls_epoch(), tablet_id, 0 /*transfer_seq*/);
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  const int64_t tablet_meta_version = 0;
+  const ObTabletPersisterParam param(data_version, ls_id, ls->get_ls_epoch(), tablet_id, 0 /*transfer_seq*/, tablet_meta_version);
   ASSERT_EQ(OB_SUCCESS, ObTabletPersister::persist_and_transform_tablet(param, *tablet, new_tablet_hdl));
 
   // write create tablet slog
-  ObMetaDiskAddr disk_addr = new_tablet_hdl.get_obj()->tablet_addr_;
-  ASSERT_EQ(OB_SUCCESS, TENANT_STORAGE_META_PERSISTER.update_tablet(ls_id, ls->get_ls_epoch(), tablet_id, disk_addr));
+  ObUpdateTabletPointerParam tablet_ptr_param;
+  tablet_ptr_param.resident_info_.addr_ = new_tablet_hdl.get_obj()->tablet_addr_;
+  tablet_ptr_param.resident_info_.attr_.iter_attr_.valid_ = true;
+  ASSERT_EQ(OB_SUCCESS, TENANT_STORAGE_META_SERVICE.update_tablet(ls_id, ls->get_ls_epoch(), tablet_id, tablet_ptr_param));
 
   // remove tablet without writing slog
   ASSERT_EQ(OB_SUCCESS, ls->ls_tablet_svr_.inner_remove_tablet(ls_id, tablet_id));
@@ -147,11 +139,11 @@ TEST_F(TestWriteTabletSlog, basic)
   ObTenantSuperBlock super_block = tenant->get_super_block();
   super_block.replay_start_point_ = replay_start_cursor;
 
-  ObTenantStorageMetaReplayer &replayer = MTL(ObTenantStorageMetaService*)->get_replayer();
+  ObTenantCheckpointSlogHandler &replayer = MTL(ObTenantStorageMetaService*)->ckpt_slog_handler_;
   if (!GCTX.is_shared_storage_mode()) {
     // the slogger has started when mtl start, start_replay will call start_log() again,
     // this error does not affect the accuracy of the replay result
-    ASSERT_EQ(OB_INIT_TWICE, replayer.start_replay(super_block));
+    ASSERT_EQ(OB_INIT_TWICE, replayer.replay_checkpoint_and_slog(super_block));
   } else {
     // TODO(fenggu.yh) add test for shared-storage
   }

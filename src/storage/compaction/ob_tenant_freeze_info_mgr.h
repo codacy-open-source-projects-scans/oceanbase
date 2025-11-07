@@ -16,7 +16,6 @@
 #include <stdint.h>
 
 #include "lib/allocator/ob_slice_alloc.h"
-#include "lib/hash/ob_hashset.h"
 #include "lib/lock/ob_tc_rwlock.h"
 #include "lib/task/ob_timer.h"
 #include "share/ob_freeze_info_manager.h"
@@ -47,6 +46,8 @@ struct ObStorageSnapshotInfo
     SNAPSHOT_ON_TABLET,
     SNAPSHOT_FOR_LS_RESERVED,
     SNAPSHOT_FOR_MIN_MEDIUM,
+    SNAPSHOT_FOR_SPLIT,
+    SNAPSHOT_FOR_SS_GC,
     SNAPSHOT_MAX,
   };
   ObStorageSnapshotInfo();
@@ -105,20 +106,18 @@ public:
 
   int64_t get_latest_frozen_version();
 
-  int get_freeze_info_behind_major_snapshot(const int64_t major_snapshot, common::ObIArray<share::ObFreezeInfo> &freeze_infos);
+  int get_freeze_info_behind_major_snapshot(const int64_t major_snapshot, const bool include_equal, common::ObIArray<share::ObFreezeInfo> &freeze_infos);
   int get_freeze_info_by_snapshot_version(const int64_t snapshot_version, share::ObFreezeInfo &freeze_info);
-  // get first freeze info larger than snapshot
-  int get_freeze_info_behind_snapshot_version(const int64_t snapshot_version, share::ObFreezeInfo &freeze_info);
   int get_lower_bound_freeze_info_before_snapshot_version(const int64_t snapshot_version, share::ObFreezeInfo &freeze_info);
 
   int get_neighbour_major_freeze(const int64_t snapshot_version, NeighbourFreezeInfo &info);
 
   int64_t get_min_reserved_snapshot_for_tx();
-  void set_global_broadcast_scn(const share::SCN &global_broadcast_scn) { global_broadcast_scn_ = global_broadcast_scn; }
   int get_min_reserved_snapshot(
       const ObTabletID &tablet_id,
       const int64_t merged_version,
-      ObStorageSnapshotInfo &snapshot_info);
+      ObStorageSnapshotInfo &snapshot_info,
+      const bool skip_undo_retention = false);
 
   int get_min_dependent_freeze_info(share::ObFreezeInfo &freeze_info);
   int64_t get_snapshot_gc_ts();
@@ -193,7 +192,6 @@ private:
   common::RWLock lock_;
   int64_t cur_idx_;
   int64_t last_change_ts_;
-  share::SCN global_broadcast_scn_;
   uint64_t tenant_id_;
   int tg_id_;
   bool inited_;

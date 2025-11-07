@@ -24,7 +24,6 @@
 #include "storage/blocksstable/cs_encoding/ob_column_encoding_struct.h"
 #include "storage/blocksstable/cs_encoding/ob_micro_block_cs_decoder.h"
 #include "storage/blocksstable/cs_encoding/ob_micro_block_cs_encoder.h"
-#include "storage/blocksstable/ob_decode_resource_pool.h"
 #include "storage/ob_i_store.h"
 #include <gtest/gtest.h>
 #include "sql/engine/basic/ob_pushdown_filter.h"
@@ -45,10 +44,7 @@ class ObCSEncodingTestBase
 public:
   ObCSEncodingTestBase(): tenant_ctx_(500)
   {
-    decode_res_pool_ = new(allocator_.alloc(sizeof(ObDecodeResourcePool))) ObDecodeResourcePool;
-    tenant_ctx_.set(decode_res_pool_);
     share::ObTenantEnv::set_tenant(&tenant_ctx_);
-    decode_res_pool_->init();
   }
   virtual ~ObCSEncodingTestBase() {}
   int prepare(const ObObjType *col_types, const int64_t rowkey_cnt, const int64_t column_cnt,
@@ -90,7 +86,6 @@ protected:
   common::ObArray<share::schema::ObColDesc> col_descs_;
   int64_t column_cnt_;
   share::ObTenantBase tenant_ctx_;
-  ObDecodeResourcePool *decode_res_pool_;
 };
 
 int ObCSEncodingTestBase::prepare(const ObObjType *col_types, const int64_t rowkey_cnt,
@@ -179,7 +174,8 @@ int ObCSEncodingTestBase::prepare(const ObObjType *col_types, const int64_t rowk
     ctx_.rowkey_column_cnt_ = rowkey_cnt;
     ctx_.column_cnt_ = column_cnt;
     ctx_.col_descs_ = &col_descs_;
-    ctx_.major_working_cluster_version_ = cal_version(4, 1, 0, 0);
+    //ctx_.major_working_cluster_version_ = cal_version(4, 1, 0, 0);
+    ctx_.major_working_cluster_version_ = cal_version(4, 4, 1, 0);
     ctx_.row_store_type_ = common::CS_ENCODING_ROW_STORE;
     ctx_.compressor_type_ = compressor_type;
     ctx_.need_calc_column_chksum_ = true;
@@ -288,9 +284,10 @@ int ObCSEncodingTestBase::full_transform_check_row(const ObMicroBlockHeader *hea
     if (OB_SUCC(ret) && check_by_get) {
       ObCSEncodeBlockGetReader get_reader;
       ObDatumRowkey rowkey;
+      ObMicroBlockAddr block_addr;
       for(int32_t i = 0; i < row_cnt; ++i) {
         rowkey.assign(row_arr[i].storage_datums_, ctx_.rowkey_column_cnt_);
-        if (OB_FAIL(get_reader.get_row(full_transformed_data, rowkey, read_info_, row))) {
+        if (OB_FAIL(get_reader.get_row(block_addr, full_transformed_data, rowkey, read_info_, row))) {
           LOG_WARN("fail to get row", K(ret), K(rowkey));
         }
         for (int64_t j = 0; OB_SUCC(ret) && j < ctx_.column_cnt_; ++j) {
@@ -340,7 +337,7 @@ int ObCSEncodingTestBase::check_decode_vector(ObMicroBlockCSDecoder &decoder,
             VEC_TC_FIXED_DOUBLE, VEC_TC_DATETIME, VEC_TC_DATE, VEC_TC_TIME, VEC_TC_YEAR, VEC_TC_UNKNOWN,
             VEC_TC_BIT, VEC_TC_ENUM_SET, VEC_TC_TIMESTAMP_TZ, VEC_TC_TIMESTAMP_TINY, VEC_TC_INTERVAL_YM,
             VEC_TC_INTERVAL_DS, VEC_TC_DEC_INT32, VEC_TC_DEC_INT64, VEC_TC_DEC_INT128, VEC_TC_DEC_INT256,
-            VEC_TC_DEC_INT512};
+            VEC_TC_DEC_INT512, VEC_TC_MYSQL_DATETIME, VEC_TC_MYSQL_DATE};
         VecValueTypeClass *vec = std::find(std::begin(fixed_tc_arr), std::end(fixed_tc_arr), vec_tc);
         if (vec == std::end(fixed_tc_arr)) {
           need_test_column = false;
@@ -382,7 +379,7 @@ int ObCSEncodingTestBase::check_decode_vector(ObMicroBlockCSDecoder &decoder,
         }
 
         for (int64_t vec_idx = 0;  OB_SUCC(ret) && vec_idx < row_cnt; ++vec_idx) {
-          if (false == VectorDecodeTestUtil::verify_vector_and_datum_match(
+          if (false == VectorDecodeTestUtil::verify_vector_and_datum_match_nop(
               *vector_ctx.get_vector(), vec_idx, row_arr[vec_idx].storage_datums_[col_idx])) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("decode vector result mismatch",
@@ -449,9 +446,10 @@ int ObCSEncodingTestBase::part_transform_check_row(const ObMicroBlockHeader *hea
     if (OB_SUCC(ret) && check_by_get) {
       ObCSEncodeBlockGetReader get_reader;
       ObDatumRowkey rowkey;
+      ObMicroBlockAddr block_addr;
       for(int32_t i = 0; i < row_cnt; ++i) {
         rowkey.assign(row_arr[i].storage_datums_, ctx_.rowkey_column_cnt_);
-        if (OB_FAIL(get_reader.get_row(part_transformed_data, rowkey, read_info, row))) {
+        if (OB_FAIL(get_reader.get_row(block_addr, part_transformed_data, rowkey, read_info, row))) {
           LOG_WARN("fail to get row", K(ret), K(rowkey));
         }
         for (int64_t j = 0; OB_SUCC(ret) && j < storage_cols_index.count(); ++j) {

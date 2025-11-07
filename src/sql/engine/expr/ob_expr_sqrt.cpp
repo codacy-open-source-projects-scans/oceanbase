@@ -12,11 +12,6 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_expr_sqrt.h"
-#include <cmath>
-#include <type_traits>
-#include "share/object/ob_obj_cast.h"
-#include "objit/common/ob_item_type.h"
-//#include "sql/engine/expr/ob_expr_promotion_util.h"
 #include "sql/session/ob_sql_session_info.h"
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -288,7 +283,7 @@ int ObExprSqrt::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
 {
   int ret = OB_SUCCESS;
   UNUSED(expr_cg_ctx);
-  rt_expr.extra_ = raw_expr.get_extra();
+  rt_expr.extra_ = raw_expr.get_aggr_type();
   if (OB_UNLIKELY(1 != rt_expr.arg_cnt_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid arg_cnt_ of expr", K(ret), K(rt_expr));

@@ -37,10 +37,7 @@ public:
     : das_factory_(CURRENT_CONTEXT->get_arena_allocator()),
       exec_ctx_(CURRENT_CONTEXT->get_arena_allocator(), gctx.session_mgr_),
       frame_info_(CURRENT_CONTEXT->get_arena_allocator()),
-      das_remote_info_(),
-      is_enable_sqlstat_(false),
-      sqlstat_key_(),
-      sqlstat_record_()
+      das_remote_info_()
   {
     RpcProcessor::set_preserve_recv_data();
   }
@@ -61,11 +58,8 @@ protected:
   ObExprFrameInfo frame_info_;
   share::schema::ObSchemaGetterGuard schema_guard_;
   ObDASRemoteInfo das_remote_info_;
-  bool is_enable_sqlstat_;
-  ObSqlStatRecordKey sqlstat_key_;
-  ObExecutingSqlStatRecord sqlstat_record_;
   //tsc monitor info
-  int64_t monitor_val_[4];
+  int64_t monitor_val_[10];
   ObTSCMonitorInfo tsc_monitor_info_;
 };
 
@@ -117,7 +111,11 @@ class ObRpcDasAsyncAccessCallBack
 {
 public:
   ObRpcDasAsyncAccessCallBack(ObDasAsyncRpcCallBackContext *context, ObDASTaskFactory *factory)
-      : context_(context)
+      : is_processed_(false),
+        is_timeout_(false),
+        is_invalid_(false),
+        is_visited_(false),
+        context_(context)
   {
     // we need das_factory to allocate task op result on receiving rpc response.
     result_.set_das_factory(factory);
@@ -125,6 +123,12 @@ public:
   ~ObRpcDasAsyncAccessCallBack() = default;
   void on_timeout() override;
   void on_invalid() override;
+  void set_visited(bool value) { is_visited_ = value; }
+  bool is_visited() const { return is_visited_; }
+  void set_invalid(bool value) { is_invalid_ = value; }
+  bool is_invalid() const { return is_invalid_; }
+  bool is_timeout() const { return is_timeout_; }
+  bool is_processed() const { return is_processed_; }
   void set_args(const Request &arg);
   oceanbase::rpc::frame::ObReqTransport::AsyncCB *clone(
       const oceanbase::rpc::frame::SPAlloc &alloc) const;
@@ -136,6 +140,10 @@ public:
   common::ObIAllocator &get_result_alloc() { return context_->get_alloc(); }
   ObDasAsyncRpcCallBackContext *get_async_cb_context() { return context_; };
 private:
+  bool is_processed_;
+  bool is_timeout_;
+  bool is_invalid_;
+  bool is_visited_;
   ObDasAsyncRpcCallBackContext *context_;
 };
 
@@ -144,8 +152,10 @@ class ObDASSyncFetchP : public ObDASSyncFetchResRpcProcessor
 public:
   ObDASSyncFetchP() {}
   ~ObDASSyncFetchP() {}
+  virtual int before_process();
   virtual int process() override;
   virtual int after_process(int error_code);
+  virtual void cleanup() override;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObDASSyncFetchP);
 };

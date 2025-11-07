@@ -10,15 +10,12 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "ob_local_device.h"
 #include <sys/vfs.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include <linux/falloc.h>
-#include "share/ob_local_device.h"
-#include "share/ob_errno.h"
-#include "share/config/ob_server_config.h"
 #include "share/ob_resource_limit.h"
-#include "storage/blocksstable/ob_block_sstable_struct.h"
 #include "storage/slog/ob_storage_logger_manager.h"
 #include "lib/ash/ob_active_session_guard.h"
 #include "storage/meta_store/ob_server_storage_meta_service.h"
@@ -1264,7 +1261,7 @@ int64_t ObLocalDevice::get_max_block_size(int64_t reserved_size) const
     SHARE_LOG(WARN, "Failed to get disk space", K(ret), K(sstable_dir_));
   } else {
     const int64_t free_space = std::max(0L, (int64_t)(svfs.f_bavail * svfs.f_bsize));
-    const int64_t max_file_size = block_file_size_ + free_space - reserved_size;
+    const int64_t max_file_size = std::max(block_file_size_, block_file_size_ + free_space - reserved_size);
     /* when datafile_maxsize is large than current datafile_size, we should return
        the Maximun left space that can be extend. */
     if (max_file_size > config_max_file_size) {

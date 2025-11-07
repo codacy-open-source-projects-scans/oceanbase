@@ -38,15 +38,14 @@ public:
       const uint64_t tenant_id,
       const bool is_enabled,
       common::ObMySQLTransaction &trans);
-private:
-  static int check_flush_ncomp_dll_job_exists(ObMySQLTransaction &trans,
+  static int check_job_exists(ObMySQLTransaction &trans,
                                               const uint64_t tenant_id,
                                               const ObString &job_name,
                                               bool &is_job_exists);
   static int get_job_id(const uint64_t tenant_id,
                         ObMySQLTransaction &trans,
                         int64_t &job_id);
-  static int get_job_action(ObSqlString &job_action);
+  static int get_job_action(const schema::ObSysVariableSchema &sys_variable, ObSqlString &job_action);
   static int create_flush_ncomp_dll_job_common(const schema::ObSysVariableSchema &sys_variable,
                                                 const uint64_t tenant_id,
                                                 const bool is_enabled,

@@ -12,22 +12,7 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "observer/mysql/obmp_reset_connection.h"
-#include "rpc/obmysql/obsm_struct.h"
-#include "observer/mysql/ob_mysql_end_trans_cb.h"
-#include "lib/string/ob_sql_string.h"
-#include "rpc/obmysql/ob_mysql_util.h"
-#include "rpc/obmysql/packet/ompk_ok.h"
-//#include "share/schema/ob_schema_getter_guard.h"
-//#include "share/schema/ob_schema_getter_guard.h"
-#include "share/schema/ob_schema_struct.h"
-#include "share/schema/ob_multi_version_schema_service.h"
 #include "sql/ob_sql.h"
-#include "sql/ob_end_trans_callback.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/parser/ob_parser.h"
-#include "sql/parser/ob_parser_utils.h"
-#include "sql/session/ob_basic_session_info.h"
 #include "storage/tablelock/ob_table_lock_live_detector.h"
 #include "observer/mysql/obmp_stmt_send_piece_data.h"
 
@@ -70,7 +55,7 @@ int ObMPResetConnection::process()
     const ObMySQLRawPacket &pkt = reinterpret_cast<const ObMySQLRawPacket&>(req_->get_packet());
     session->update_last_active_time();
     session->set_query_start_time(ObTimeUtility::current_time());
-    LOG_DEBUG("begin reset connection. ", K(session->get_sessid()), K(session->get_effective_tenant_id()));
+    LOG_TRACE("begin reset connection. ", K(session->get_server_sid()), K(session->get_effective_tenant_id()));
     tenant_id = session->get_effective_tenant_id();
     session->set_txn_free_route(pkt.txn_free_route());
     if (OB_FAIL(process_extra_info(*session, pkt, need_response_error))) {
@@ -87,8 +72,8 @@ int ObMPResetConnection::process()
       LOG_WARN("load system variables failed", K(ret));
     } else if (OB_FAIL(session->update_database_variables(&schema_guard))) {
       OB_LOG(WARN, "failed to update database variables", K(ret));
-    } else if (OB_FAIL(update_proxy_sys_vars(*session))) {
-      LOG_WARN("update_proxy_sys_vars failed", K(ret));
+    } else if (OB_FAIL(update_proxy_and_client_sys_vars(*session))) {
+      LOG_WARN("update_proxy_and_client_sys_vars failed", K(ret));
     } else if (OB_FAIL(update_charset_sys_vars(*conn, *session))) {
       LOG_WARN("fail to update charset sys vars", K(ret));
     } else if (OB_FAIL(session->get_query_timeout(query_timeout))) {
@@ -208,10 +193,11 @@ int ObMPResetConnection::process()
 
     // 9. Releases locks acquired with GET_LOCK().
     if (OB_SUCC(ret)) {
-      ObTableLockOwnerID raw_owner_id;
-      if (OB_FAIL(raw_owner_id.convert_from_client_sessid(session->get_client_sessid(), session->get_client_create_time()))) {
+      ObTableLockOwnerID owner_id;
+      if (OB_FAIL(owner_id.convert_from_client_sessid(session->get_sid(),
+                                                      session->get_client_create_time()))) {
         LOG_WARN("failed to convert from client sessid", K(ret));
-      } else if (OB_FAIL(ObTableLockDetector::remove_lock_by_owner_id(raw_owner_id.raw_value()))) {
+      } else if (OB_FAIL(ObTableLockDetector::remove_lock_by_owner_id(owner_id))) {
         LOG_WARN("failed to remove lock by owner id", K(ret));
       }
     }
@@ -222,6 +208,7 @@ int ObMPResetConnection::process()
 #ifdef OB_BUILD_ORACLE_PL
       session->reset_pl_debugger_resource();
       session->reset_pl_profiler_resource();
+      session->reset_pl_code_coverage_resource();
 #endif
 
       // 10.2 非分布式需要的话，分布式也需要，用于清理package的全局变量值
@@ -275,10 +262,14 @@ int ObMPResetConnection::process()
     if (NULL == session) {
       LOG_WARN("will disconnect connection", K(ret), K(need_disconnect));
     } else {
-      LOG_WARN("will disconnect connection", K(ret), K(session->get_sessid()),
+      LOG_WARN("will disconnect connection", K(ret), K(session->get_server_sid()),
                K(need_disconnect));
     }
     force_disconnect();
+  }
+  int tmp_ret = OB_SUCCESS;
+  if (OB_NOT_NULL(session)) {
+    tmp_ret = do_after_process(*session, false/*async_resp_used*/);
   }
 
   THIS_WORKER.set_session(NULL);

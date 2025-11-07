@@ -16,15 +16,17 @@
 static void* imap_fetch(int id);
 struct QStat
 {
-  QStat(): count_(0), bytes_(0), delay_(0) {}
+  QStat(): count_(0), bytes_(0), delay_(0), canceled_(0) {}
   void inc(QStat& that) {
     count_ += that.count_;
     bytes_ += that.bytes_;
     delay_ += that.delay_;
+    canceled_ += that.canceled_;
   }
   int64_t count_;
   int64_t bytes_;
   int64_t delay_;
+  int64_t canceled_;
 };
 
 class IQD
@@ -70,7 +72,8 @@ public:
       if (due_ts_ < ts_lower_limit) {
         due_ts_ = ts_lower_limit;
       }
-      due_ts_ += (get_cost(req) * 1000000000LL)/limit_per_sec_;
+      int64_t inc_ts = get_cost(req) * 1000000000LL/limit_per_sec_;
+      ATOMIC_FAA(&due_ts_, inc_ts);
     }
     return due_ts_;
   }
@@ -94,7 +97,7 @@ public:
   void print_limiters_per_sec(StrFormat& f) {
     char b[256];
     for (int i = 0; i < MAX_LIMITER_COUNT && limiter_[i]; i++) {
-      f.append(" %s:%s", limiter_[i]->get_name(), format_bytes(b, sizeof(b), limiter_[i]->get_limit_per_sec()));
+      f.append(" %llu,%s:%s", limiter_[i]->get_storage_key(), limiter_[i]->get_name(), format_bytes(b, sizeof(b), limiter_[i]->get_limit_per_sec()));
     }
   }
   void add_limit(Limiter* limiter) {
@@ -225,6 +228,9 @@ public:
     stat_.count_ += 1;
     stat_.bytes_ += req->bytes_;
     stat_.delay_ += refresh_ns_ - req->start_ns_;
+    if (req->is_canceled()) {
+      stat_.canceled_ += req->bytes_;
+    }
   }
 public:
   static IQDisc* ready2qdisc(TCDLink* p) { return structof(p, IQDisc, ready_dlink_); }
@@ -264,17 +270,20 @@ public:
         candinate_req_ = NULL;
         candinate_is_reserved_ = false;
         int64_t next_active_ts = 0;
-        if ((next_active_ts =  desc_->limiter_.recalc_next_active_ns(quick_top())) > cur_ns) {
-          if (next_active_ts != INT64_MAX) {
-            on_over_quota(next_active_ts);
-          }
-        } else if (NULL == (candinate_req_ = do_refresh_candinate(cur_ns))) {
+        if (NULL == (candinate_req_ = do_refresh_candinate(cur_ns))) {
         } else if ((next_active_ts = desc_->reserver_.recalc_next_active_ns(nullptr)) > cur_ns) {
           if (next_active_ts != INT64_MAX) {
             on_over_reserve(next_active_ts);
           }
         } else {
           candinate_is_reserved_ = true;
+        }
+        if (candinate_is_reserved_) {
+        } else if ((next_active_ts =  desc_->limiter_.recalc_next_active_ns(quick_top())) > cur_ns) {
+          candinate_req_ = nullptr;
+          if (next_active_ts != INT64_MAX) {
+            on_over_quota(next_active_ts);
+          }
         }
         IQDisc* parent = get_parent();
         if (NULL != parent) {
@@ -304,8 +313,10 @@ public:
     if (req) {
       cur_vast_ += calc_req_st(req);
       inc_stat(req);
-      desc_->limiter_.inc_due_ns(req);
-      desc_->reserver_.inc_due_ns(req);
+      if (!req->is_canceled()) {
+        desc_->limiter_.inc_due_ns(req);
+        desc_->reserver_.inc_due_ns(req);
+      }
       IQDisc* parent = get_parent();
       if (parent) {
         parent->add_to_dirty_list(this);
@@ -357,6 +368,9 @@ protected:
       q->ready_dlink_.next_ = NULL;
     }
     if (q->refresh_candinate(cur_ns)) {
+      if (q->candinate_is_reserved_ == true) {
+        candinate_is_reserved_ = true;
+      }
       sort_ready_child(q);
     }
   }
@@ -463,6 +477,23 @@ public:
     TCLink* first = over_quota_list_.next_;
     return (first != &over_quota_list_)? IQDisc::OverQuota2Qdisc(first)->next_active_ts_: INT64_MAX;
   }
+  void wake_overquota_req(TCLink* wakel) {
+    TCLink* over_h = &over_quota_list_;
+    TCLink* pre = over_h;
+    TCLink* over_cur = over_h->next_;
+    while (over_h != over_cur) {
+      if (over_cur == wakel) {
+        IQDisc* over_q = IQDisc::OverQuota2Qdisc(over_cur);
+        link_del(pre, over_cur);
+        over_cur->next_ = NULL;
+        over_q->mark_dirty(NULL);
+        break;
+      } else {
+        pre = over_cur;
+        over_cur = over_cur->next_;
+      }
+    }
+  }
   void inspect_over_quota_qdisc(int64_t cur_ns) {
     TCLink* h = &over_quota_list_;
     TCLink* cur = NULL;
@@ -499,7 +530,7 @@ public:
     TCLink* first = over_reserve_list_.next_;
     return (first != &over_reserve_list_)? IQDisc::OverReserve2Qdisc(first)->next_active_ts_: INT64_MAX;
   }
-  void inspect_over_reserve_qdisc(int64_t cur_ns) {
+  void inspect_over_reserve_qdisc(int64_t cur_ns, OverQuotaList& over_quota_list) {
     TCLink* h = &over_reserve_list_;
     TCLink* cur = NULL;
     while(h != (cur = h->next_)) {
@@ -507,6 +538,21 @@ public:
       if (q->next_active_ts_ > cur_ns) {
         break;
       } else {
+        TCLink* over_h = &(over_quota_list.over_quota_list_);
+        TCLink* pre = over_h;
+        TCLink* over_cur = over_h->next_;
+        while (over_h != over_cur) {
+          if (over_cur == cur) {
+            IQDisc* over_q = IQDisc::OverQuota2Qdisc(over_cur);
+            link_del(pre, over_cur);
+            over_cur->next_ = NULL;
+            over_q->mark_dirty(NULL);
+            break;
+          } else {
+            pre = over_cur;
+            over_cur = over_cur->next_;
+          }
+        }
         link_del(h, cur);
         cur->next_ = NULL;
         if ((q->next_active_ts_ =  q->desc_->reserver_.recalc_next_active_ns(nullptr)) > cur_ns
@@ -564,6 +610,9 @@ public:
   void sort_over_reserve_qdisc(IQDisc* child) {
     over_reserve_list_.sort_over_reserve_qdisc(child);
   }
+  void wake_overquota_req(TCLink* wake_q) {
+    over_quota_list_.wake_overquota_req(wake_q);
+  }
   int submit_req(TCRequest* req) {
     req->start_ns_ = tc_get_ns();
     req_queue_.push(&req->link_);
@@ -576,8 +625,9 @@ public:
     if (handle_req_queue() > 0) {
       next_active_ns = 0;
     }
+
     over_quota_list_.inspect_over_quota_qdisc(cur_ns - QUOTA_BATCH_MS * 1000 * 1000);
-    over_reserve_list_.inspect_over_reserve_qdisc(cur_ns - RESERVE_BATCH_MS * 1000 * 1000);
+    over_reserve_list_.inspect_over_reserve_qdisc(cur_ns - RESERVE_BATCH_MS * 1000 * 1000, over_quota_list_);
     if (!is_root_over_quota() && refresh_candinate(cur_ns)) {
       req = pop();
     }
@@ -642,6 +692,7 @@ private:
       BufferQueue* qdisc = (typeof(qdisc))create_path_and_fetch_leaf(req->qid_, chan_id_);
       if (qdisc) {
         qdisc->push(req);
+        wake_overquota_req(h);
       } else {
         fallback_queue_.push(&req->link_);
       }

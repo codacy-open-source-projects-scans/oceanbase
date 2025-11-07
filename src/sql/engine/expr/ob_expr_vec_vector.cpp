@@ -13,9 +13,6 @@
 #define USING_LOG_PREFIX COMMON
 
 #include "sql/engine/expr/ob_expr_vec_vector.h"
-#include "lib/udt/ob_collection_type.h"
-#include "lib/udt/ob_array_type.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "sql/engine/ob_exec_context.h"
 
@@ -44,11 +41,16 @@ int ObExprVecVector::calc_result_typeN(ObExprResType &type,
   if (OB_ISNULL(exec_ctx)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("exec ctx is null", K(ret));
-  } else if (OB_FAIL(exec_ctx->get_subschema_id_by_collection_elem_type(ObNestedType::OB_VECTOR_TYPE,
-                                                                        elem_type, subschema_id))) {
-    LOG_WARN("failed to get collection subschema id", K(ret));
+  } else if (param_num != 1) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid param num", K(ret), K(param_num));
+  } else if (!types[0].is_null() && !types[0].is_collection_sql_type()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid input types", K(ret), K(types[0]));
+  } else if (types[0].is_null()) {
+    type.is_null();
   } else {
-    type.set_collection(subschema_id);
+    type.set_collection(types[0].get_subschema_id());
   }
   return ret;
 }

@@ -11,19 +11,11 @@
  */
 
 #include <gtest/gtest.h>
-#include <thread>
 #define private public
 #define protected public
-#include "storage/tx/ob_committer_define.h"
-#include "storage/tx/ob_multi_data_source.h"
-#include "storage/tx/ob_trans_define.h"
-#include "storage/tx/ob_trans_part_ctx.h"
-#include "storage/tx/ob_trans_service.h"
 #define USING_LOG_PREFIX TRANS
-#include "../mock_utils/async_util.h"
 #include "test_tx_dsl.h"
 #include "tx_node.h"
-#include "share/allocator/ob_shared_memory_allocator_mgr.h"
 namespace oceanbase
 {
 using namespace ::testing;
@@ -37,7 +29,7 @@ namespace share {
 ObMdsThrottleGuard::~ObMdsThrottleGuard() {}
 ObTxDataThrottleGuard::~ObTxDataThrottleGuard() {}
 
-int ObTenantTxDataAllocator::init(const char *label)
+int ObTenantTxDataAllocator::init(const char *label, TxShareThrottleTool* throttle_tool)
 {
   int ret = OB_SUCCESS;
   ObMemAttr mem_attr;
@@ -162,7 +154,7 @@ public:
   {                                                                                                \
     ObLSTxCtxMgr *ls_tx_ctx_mgr1 = nullptr;                                                        \
     ASSERT_EQ(OB_SUCCESS, node->txs_.tx_ctx_mgr_.get_ls_tx_ctx_mgr(node->ls_id_, ls_tx_ctx_mgr1)); \
-    ls_tx_ctx_mgr1->get_retain_ctx_mgr().try_gc_retain_ctx(&node->mock_ls_);                       \
+    ls_tx_ctx_mgr1->get_retain_ctx_mgr().try_gc_retain_ctx(&node->fake_ls_);                       \
     ASSERT_EQ(OB_SUCCESS, node->txs_.tx_ctx_mgr_.revert_ls_tx_ctx_mgr(ls_tx_ctx_mgr1));            \
   }
 

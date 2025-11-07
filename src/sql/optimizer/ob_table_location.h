@@ -130,7 +130,8 @@ public:
     FUNC_VALUE,
     COLUMN_VALUE,
     PRE_RANGE_GRAPH,
-    LIST_VALUE
+    LIST_VALUE,
+    GATHER_STAT
   };
 
   ObPartLocCalcNode (common::ObIAllocator &allocator): node_type_(INVALID), allocator_(allocator)
@@ -314,6 +315,26 @@ public:
   common::ObFixedArray<ValueItemExpr*, common::ObIAllocator> vies_;
 };
 
+struct ObPLGatherStatNode : public ObPartLocCalcNode
+{
+  OB_UNIS_VERSION_V(1);
+public:
+  ObPLGatherStatNode(common::ObIAllocator &allocator)
+    : ObPartLocCalcNode(allocator)
+  {
+    set_node_type(GATHER_STAT);
+  }
+
+  virtual ~ObPLGatherStatNode()
+  { }
+  virtual int deep_copy(common::ObIAllocator &allocator,
+                        common::ObIArray<ObPartLocCalcNode*> &calc_nodes,
+                        ObPartLocCalcNode *&other) const;
+  virtual int add_part_calc_node(common::ObIArray<ObPartLocCalcNode*> &calc_nodes);
+
+  ValueItemExpr vie_;
+};
+
 struct ObListPartMapKey {
   common::ObNewRow row_;
 
@@ -479,11 +500,6 @@ public:
     common::ObIAllocator &allocator_;
   };
 
-  int get_location_type(
-      const common::ObAddr &server,
-      const ObCandiTabletLocIArray &phy_part_loc_info_list,
-      ObTableLocationType &location_type) const;
-
   //get virtual talbe partition ids or fake id. ref_table_id should be partitioned virtual table
   //@param [in] ref_table_id partitioned virtual table
   //@param [out] partition ids. all partition ids
@@ -533,8 +549,8 @@ public:
     has_dynamic_exec_param_(false),
     is_valid_temporal_part_range_(false),
     is_valid_temporal_subpart_range_(false),
-    is_part_range_get_(false),
-    is_subpart_range_get_(false),
+    is_part_range_precise_get_(false),
+    is_subpart_range_precise_get_(false),
     is_non_partition_optimized_(false),
     tablet_id_(ObTabletID::INVALID_TABLET_ID),
     object_id_(OB_INVALID_ID),
@@ -584,8 +600,8 @@ public:
     has_dynamic_exec_param_(false),
     is_valid_temporal_part_range_(false),
     is_valid_temporal_subpart_range_(false),
-    is_part_range_get_(false),
-    is_subpart_range_get_(false),
+    is_part_range_precise_get_(false),
+    is_subpart_range_precise_get_(false),
     is_non_partition_optimized_(false),
     tablet_id_(ObTabletID::INVALID_TABLET_ID),
     object_id_(OB_INVALID_ID),
@@ -596,10 +612,6 @@ public:
   {
   }
   virtual ~ObTableLocation() { reset(); }
-
-  ObTableLocation(const ObTableLocation &other);
-
-  ObTableLocation &operator=(const ObTableLocation &other);
 
   int assign(const ObTableLocation &other);
 
@@ -636,7 +648,8 @@ public:
            const common::ObDataTypeCastParams &dtc_params,
            const bool is_dml_table,
            common::ObIArray<ObRawExpr*> *sort_exprs = NULL);
-  int init(const share::schema::ObTableSchema *table_schema,
+  int init(ObSchemaGetterGuard &schema_guard,
+           const share::schema::ObTableSchema *table_schema,
            const ObDMLStmt &stmt,
            ObExecContext *exec_ctx,
            const common::ObIArray<ObRawExpr*> &filter_exprs,
@@ -826,8 +839,8 @@ public:
   inline bool is_part_or_subpart_all_partition() const
   {
     return (part_level_ == share::schema::PARTITION_LEVEL_ZERO) ||
-           (part_level_ == share::schema::PARTITION_LEVEL_ONE && (part_get_all_ || !is_part_range_get_)) ||
-           (part_level_ == share::schema::PARTITION_LEVEL_TWO && (subpart_get_all_ || part_get_all_ || !is_part_range_get_ || !is_subpart_range_get_));
+           (part_level_ == share::schema::PARTITION_LEVEL_ONE && (part_get_all_ || !is_part_range_precise_get_)) ||
+           (part_level_ == share::schema::PARTITION_LEVEL_TWO && (subpart_get_all_ || part_get_all_ || !is_part_range_precise_get_ || !is_subpart_range_precise_get_));
   }
 
   inline bool is_column_list_part(share::schema::ObPartitionFuncType part_type, bool is_col_expr)
@@ -838,9 +851,9 @@ public:
   void set_has_dynamic_exec_param(bool flag) {  has_dynamic_exec_param_ = flag; }
   bool get_has_dynamic_exec_param() const {  return has_dynamic_exec_param_; }
 
-  int pruning_single_partition(int64_t partition_id,
+  int pruning_single_partition(int64_t tablet_id,
       ObExecContext &exec_ctx, bool &pruning,
-      common::ObIArray<int64_t> &partition_ids);
+      common::ObIArray<ObTabletID> &tablet_ids);
 
   int init_table_location_with_column_ids(ObSqlSchemaGuard &schema_guard,
                                           uint64_t table_id,
@@ -853,6 +866,8 @@ public:
   {
     check_no_partition_ = check;
   }
+
+  static bool can_use_table_location(share::ObLakeTableFormat format);
   TO_STRING_KV(K_(loc_meta),
                K_(part_projector),
                K_(has_dynamic_exec_param),
@@ -1047,12 +1062,13 @@ private:
                              const common::ObIArray<ObRawExpr*> &filter_exprs,
                              ObPartLocCalcNode *&res_node,
                              bool &get_all,
-                             bool &is_range_get,
+                             bool &is_precise_get,
                              const common::ObDataTypeCastParams &dtc_params,
                              ObExecContext *exec_ctx,
                              ObQueryCtx *query_ctx,
                              const bool is_in_range_optimization_enabled,
-                             const bool use_new_query_range);
+                             const bool use_new_query_range,
+                             const ObTableSchema *table_schema);
 
   int analyze_filter(const common::ObIArray<ColumnItem> &partition_columns,
                      const ObRawExpr *partition_expr,
@@ -1079,14 +1095,14 @@ private:
                                const ObIArray<ObRawExpr*> &filter_exprs,
                                bool &always_true,
                                ObPartLocCalcNode *&calc_node,
-                               ObExecContext *exec_ctx);
+                               ObExecContext *exec_ctx,
+                               const ObTableSchema* table_schema);
 
   int extract_eq_op(ObExecContext *exec_ctx,
                     const ObRawExpr *l_expr,
                     const ObRawExpr *r_expr,
                     const uint64_t column_id,
                     const ObRawExpr *partition_expr,
-                    const ObExprResType &res_type,
                     bool &cnt_func_expr,
                     bool &always_true,
                     ObPartLocCalcNode *&calc_node);
@@ -1170,7 +1186,8 @@ private:
                              bool &get_all,
                              bool &is_range_get,
                              const bool is_in_range_optimization_enabled,
-                             const bool use_new_query_range);
+                             const bool use_new_query_range,
+                             const ObTableSchema *table_schema);
 
   int calc_partition_ids_by_in_expr(
                    ObExecContext &exec_ctx,
@@ -1236,11 +1253,28 @@ private:
       ObIArray<ObObjectID> &partition_ids,
       const ObDataTypeCastParams &dtc_params,
       const ObIArray<ObObjectID> *part_ids) const;
+
+  int try_get_gather_stat_partition_info(ObExecContext *exec_ctx,
+                                         uint64_t ref_table_id,
+                                         const ObIArray<ObRawExpr*> &filter_exprs,
+                                         ObPartLocCalcNode *&calc_node,
+                                         ObPartLocCalcNode *&subcalc_node);
+  int calc_gather_stat_partition_ids(ObExecContext &exec_ctx,
+                                     ObDASTabletMapper &tablet_mapper,
+                                     const ParamStore &params,
+                                     const ObPLGatherStatNode *calc_node,
+                                     ObIArray<ObTabletID> &tablet_ids,
+                                     ObIArray<ObObjectID> &partition_ids,
+                                     const ObDataTypeCastParams &dtc_params,
+                                     const ObIArray<ObObjectID> *part_ids) const;
+
 public:
   inline const ObIArray<common::ObObjectID> &get_part_hint_ids() const
   {
     return part_hint_ids_;
   }
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObTableLocation);
 private:
   bool inited_;
   bool is_partitioned_;
@@ -1288,8 +1322,8 @@ private:
   //mysql enable partition pruning by query range if part expr is temporal func like year(date)
   bool is_valid_temporal_part_range_;
   bool is_valid_temporal_subpart_range_;
-  bool is_part_range_get_;
-  bool is_subpart_range_get_;
+  bool is_part_range_precise_get_;
+  bool is_subpart_range_precise_get_;
 
   bool is_non_partition_optimized_;
   ObTabletID tablet_id_;

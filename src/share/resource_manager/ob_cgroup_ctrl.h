@@ -30,12 +30,18 @@ namespace share
 {
 class ObGroupName;
 class ObTenantBase;
+class ObResourcePlanManager;
 
 typedef enum  : uint64_t {
   DEFAULT = 0,
   CRITICAL = 1 << 0,
   INVALID = UINT64_MAX
 } group_flags_t;
+
+typedef enum  : uint64_t {
+  NORMAL_EXPAND = 0,
+  QUICK_EXPAND
+} group_expand_mode_t;
 
 enum ObCgId
 {
@@ -48,12 +54,13 @@ enum ObCgId
 class ObCgInfo
 {
 public:
-  ObCgInfo() : name_(nullptr), is_critical_(false), worker_concurrency_(1) {}
+  ObCgInfo() : name_(nullptr), is_critical_(false), worker_concurrency_(1), is_quick_expand_(false) {}
   void set_name(const char *name) { name_ = name; }
-  void set_args(group_flags_t flags = group_flags_t::DEFAULT, uint64_t worker_concurrency = 1)
+  void set_args(group_flags_t flags = group_flags_t::DEFAULT, uint64_t worker_concurrency = 1, group_expand_mode_t expand_mode = group_expand_mode_t::NORMAL_EXPAND)
   {
     set_flags(flags);
     set_worker_concurrency(worker_concurrency);
+    set_expand_mode(expand_mode);
   }
   void set_flags(group_flags_t flags = group_flags_t::DEFAULT)
   {
@@ -66,9 +73,16 @@ public:
     }
   }
   void set_worker_concurrency(uint64_t worker_concurrency = 1) { worker_concurrency_ = worker_concurrency; }
+  void set_expand_mode(group_expand_mode_t expand_mode = group_expand_mode_t::NORMAL_EXPAND)
+  {
+    if (expand_mode == group_expand_mode_t::QUICK_EXPAND) {
+      is_quick_expand_ = true;
+    }
+  }
   const char *name_;
   bool is_critical_;
   uint64_t worker_concurrency_;
+  bool is_quick_expand_;
 };
 
 class ObCgSet
@@ -107,6 +121,15 @@ public:
       is_group_critical = group_infos_[id].is_critical_;
     }
     return is_group_critical;
+  }
+
+  bool is_group_quick_expand(int64_t id) const
+  {
+    bool is_group_quick_expand = false;
+    if (id >= 0 && id < OBCG_MAXNUM) {
+      is_group_quick_expand = group_infos_[id].is_quick_expand_;
+    }
+    return is_group_quick_expand;
   }
 
   static ObCgSet &instance()
@@ -158,6 +181,7 @@ public:
   int regist_observer_to_cgroup(const char * cgroup_dir);
   bool check_cgroup_status();
   static int check_cgroup_root_dir();
+  static int check_pid_in_procs();
   void destroy();
   bool is_valid() { return valid_; }
 
@@ -207,6 +231,7 @@ private:
 private:
   friend class oceanbase::omt::ObTenant;
   friend class oceanbase::share::ObTenantBase;
+  friend class oceanbase::share::ObResourcePlanManager;
   friend int oceanbase::lib::SET_GROUP_ID(uint64_t group_id, bool is_background);
   int add_self_to_cgroup_(const uint64_t tenant_id, const uint64_t group_id = OBCG_DEFAULT, const bool is_background = false);
   int add_thread_to_cgroup_(const int64_t tid,const uint64_t tenant_id, const uint64_t group_id = OBCG_DEFAULT, const bool is_background = false);
@@ -219,7 +244,7 @@ private:
   int recursion_remove_group_(const char *curr_path, bool if_remove_top = true);
   int recursion_process_group_(const char *curr_path, DirProcessor *processor_ptr, bool is_top_dir = false);
   int remove_cgroup_(const uint64_t tenant_id, const uint64_t group_id = OB_INVALID_GROUP_ID, const bool is_background = false);
-  static int remove_dir_(const char *curr_dir, bool is_delete_group = false);
+  static int remove_dir_(const char *curr_dir);
   static int get_cgroup_config_(const char *group_path, const char *config_name, char *config_value);
   static int set_cgroup_config_(const char *group_path, const char *config_name, char *config_value);
   int set_cpu_shares_(const uint64_t tenant_id, const double cpu, const uint64_t group_id = OB_INVALID_GROUP_ID, const bool is_background = false);

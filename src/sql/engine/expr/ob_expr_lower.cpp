@@ -16,14 +16,9 @@
 #include <immintrin.h>
 #endif
 
-#include <string.h>
 #include "sql/engine/expr/ob_expr_lower.h"
-#include "share/object/ob_obj_cast.h"
-#include "objit/common/ob_item_type.h"
-//#include "sql/engine/expr/ob_expr_promotion_util.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "storage/blocksstable/encoding/ob_encoding_query_util.h"
 
 namespace oceanbase {
 using namespace common;
@@ -433,7 +428,7 @@ int ObExprLowerUpper::calc_common(const ObExpr &expr, ObEvalCtx &ctx,
                && buf_size > 0
                && (state = src_iter.get_next_block(src_block_data)) == TEXTSTRING_ITER_NEXT) {
           int32_t out_len = calc_common_inner(buf,
-                                              buf_size,
+                                              multiply == 1 ? src_block_data.length() : buf_size,
                                               src_block_data,
                                               cs_type,
                                               lower);
@@ -630,7 +625,7 @@ int ObExprLowerUpper::vector_lower_upper(VECTOR_EVAL_FUNC_ARG_DECL, common::ObCo
                 out_len = src_block_data.length();
               } else {
                 out_len = calc_common_inner(buf,
-                                            buf_size,
+                                            multiply == 1 ? src_block_data.length() : buf_size,
                                             src_block_data,
                                             cs_type,
                                             IsLower);

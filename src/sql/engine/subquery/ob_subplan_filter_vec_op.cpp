@@ -94,10 +94,21 @@ int ObSubPlanFilterVecOp::rescan()
   drive_iter_.reset();
 
   if (!MY_SPEC.enable_das_group_rescan_) {
+    // call each child's rescan when not batch rescan
     for (int32_t i = 1; OB_SUCC(ret) && i < child_cnt_; ++i) {
       if (OB_FAIL(children_[i]->rescan())) {
         LOG_WARN("rescan child operator failed", K(ret),
                  "op", op_name(), "child", children_[i]->op_name());
+      }
+    }
+  } else {
+    for (int32_t i = 1; OB_SUCC(ret) && i < child_cnt_; ++i) {
+      if (MY_SPEC.init_plan_idxs_.has_member(i) || MY_SPEC.one_time_idxs_.has_member(i)) {
+        // rescan for init plan and onetime expr when batch rescan
+        if (OB_FAIL(children_[i]->rescan())) {
+          LOG_WARN("rescan child operator failed", K(ret),
+                  "op", op_name(), "child", children_[i]->op_name());
+        }
       }
     }
   }
@@ -118,8 +129,6 @@ int ObSubPlanFilterVecOp::rescan()
   }
 
   if (OB_SUCC(ret)) {
-    // reset onetime exprs for each spf rescan
-    ResetOneTimeExprGuard guard(*this);
     if (OB_FAIL(prepare_onetime_exprs())) {
       LOG_WARN("prepare onetime exprs failed", K(ret));
     } else if (OB_FAIL(drive_iter_.rescan_left())) { // use drive_iter_ to rescan drive child operator of SPF
@@ -194,7 +203,10 @@ int ObSubPlanFilterVecOp::init_subplan_iters()
             LOG_WARN("failed to init hash map for idx", K(i), K(ret));
           } else if (OB_FAIL(iter->init_probe_row(MY_SPEC.exec_param_array_[i - 1].count()))) {
             LOG_WARN("failed to init probe row", K(ret));
-          } else if (children_[i]->is_vectorized() && OB_FAIL(iter->init_batch_rows_holder(children_[i]->get_spec().output_, children_[i]->get_eval_ctx()))) {
+          }
+        }
+        if (OB_SUCC(ret)) {
+          if (children_[i]->is_vectorized() && OB_FAIL(iter->init_batch_rows_holder(children_[i]->get_spec().output_, children_[i]->get_eval_ctx()))) {
             LOG_WARN("failed to init batch rows holder", K(ret));
           }
         }
@@ -245,6 +257,7 @@ int ObSubPlanFilterVecOp::inner_get_next_batch(const int64_t max_row_cnt)
   }
 
   clear_evaluated_flag();
+  DASGroupScanMarkGuard mark_guard(ctx_.get_das_ctx(), MY_SPEC.enable_das_group_rescan_);
   while (OB_SUCC(ret) && !iter_end_) {
     const ObBatchRows *child_brs = NULL;
     set_param_null();
@@ -343,8 +356,8 @@ int ObSubPlanFilterVecOp::prepare_onetime_exprs_inner()
   int ret = OB_SUCCESS;
   ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
   for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.onetime_exprs_.count(); ++i) {
-    char mock_skip_data[1] = {0};
-    sql::ObBitVector &skip = *sql::to_bit_vector(mock_skip_data);
+    int64_t mock_skip_data = 0;
+    sql::ObBitVector &skip = *sql::to_bit_vector(&mock_skip_data);
     const ObDynamicParamSetter &setter = MY_SPEC.onetime_exprs_.at(i);
     if (OB_FAIL(setter.set_dynamic_param_vec2(eval_ctx_, skip))) {
       LOG_WARN("failed to prepare onetime expr", K(ret), K(i));

@@ -135,14 +135,16 @@ public:
 
   // extra_serialize_ == 1 : is implicit cast
   void set_implicit_cast(bool v) { extra_serialize_ =  v ? 1 : 0; }
+  virtual bool need_rt_ctx() const override { return true; }
 
   static int eval_cast_multiset(const sql::ObExpr &expr,
                                 sql::ObEvalCtx &ctx,
                                 sql::ObDatum &res_datum);
   static int get_cast_type(const bool enable_decimal_int,
-                           const ObExprResType param_type2,
+                           const ObExprResType &param_type2,
                            const ObCastMode cast_mode,
-                           ObExprResType &dst_type);
+                           const ObExprTypeCtx &type_ctx,
+                           ObRawExprResType &dst_type);
   DECLARE_SET_LOCAL_SESSION_VARS;
 private:
   int get_explicit_cast_cm(const ObExprResType &src_type,

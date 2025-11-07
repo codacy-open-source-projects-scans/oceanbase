@@ -14,9 +14,6 @@
 
 #include "observer/table/ttl/ob_tenant_ttl_manager.h"
 #include "share/ob_max_id_fetcher.h"
-#include "share/table/ob_ttl_util.h"
-#include "lib/oblog/ob_log_module.h"
-#include "share/table/ob_table_config_util.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -83,6 +80,7 @@ int ObClearTTLHistoryTask::init(const uint64_t tenant_id, common::ObMySQLProxy &
   } else {
     sql_proxy_ = &sql_proxy;
     tenant_id_ = tenant_id;
+    disable_timeout_check();
     is_inited_ = true;
   }
   return ret;
@@ -797,8 +795,10 @@ int ObTTLTaskScheduler::check_all_tablet_finished(bool &all_finished)
         } else if (OB_ISNULL(table_schema)) {
           ret = OB_TABLE_NOT_EXIST;
           LOG_WARN("table schema is null", KR(ret), K(table_id));
-        } else if (OB_FAIL(ObTTLUtil::check_is_ttl_table(*table_schema, is_ttl_table))) {
-          LOG_WARN("fail to check is ttl table", KR(ret));
+        } else if (OB_FAIL(ObTTLUtil::check_is_normal_ttl_table(*table_schema, is_ttl_table))) {
+          LOG_ERROR("fail to check is ttl table", KR(ret), K(table_schema->get_table_name()));
+          // skip this error table to prevent one table from causing TTL unavailability.
+          ret = OB_SUCCESS; // ignore error
         } else if (is_ttl_table) {
           ObArray<ObTabletID> tablet_ids;
           if (OB_FAIL(table_schema->get_tablet_ids(tablet_ids))) {
@@ -878,6 +878,7 @@ int ObTTLAllTaskScheduler::init(const uint64_t tenant_id, ObMySQLProxy &sql_prox
   } else if (OB_FAIL(alloc_and_init_scheduler<ObTTLHRowkeyTaskScheduler>(tenant_id, sql_proxy))) {
     LOG_WARN("fail to alloc and init hbase rowkey ttl task scheduler", K(ret), K(tenant_id));
   } else {
+    disable_timeout_check();
     is_inited_ = true;
   }
   return ret;

@@ -13,9 +13,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/expr/ob_expr_pl_get_cursor_attr.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
 #include "sql/engine/ob_exec_context.h"
-#include "pl/ob_pl_type.h"
 
 namespace oceanbase
 {
@@ -211,11 +209,15 @@ int ObExprPLGetCursorAttr::calc_pl_get_cursor_attr(
     if (info->pl_cursor_info_.is_explicit_cursor()) {
       CK (ObExtendType == datum_meta.type_);
       OX (datum->to_obj(obj, obj_meta));
-      if (OB_SUCC(ret)
-          && obj.get_meta().get_extend_type() != pl::PL_CURSOR_TYPE
-          && obj.get_meta().get_extend_type() != pl::PL_REF_CURSOR_TYPE) {
-        ret = OB_ERR_CURSOR_ATTR_APPLY;
-        LOG_WARN("cursor attribute may not applied to non-cursor", K(ret), K(obj.get_meta()));
+      if (OB_SUCC(ret)) {
+        if (obj.is_null()) {
+          // do nothing, null cursor is legal...
+        } else if (!obj.is_ext()
+                    || (obj.get_meta().get_extend_type() != pl::PL_CURSOR_TYPE
+                        && obj.get_meta().get_extend_type() != pl::PL_REF_CURSOR_TYPE)) {
+          ret = OB_ERR_CURSOR_ATTR_APPLY;
+          LOG_WARN("cursor attribute may not applied to non-cursor", K(ret), K(obj.get_meta()));
+        }
       }
       OX (cursor = reinterpret_cast<const pl::ObPLCursorInfo*>(obj.get_ext()));
     } else {

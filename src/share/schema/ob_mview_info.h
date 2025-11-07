@@ -61,6 +61,10 @@ public:
   DEFINE_GETTER_AND_SETTER(int64_t, last_refresh_time);
   DEFINE_STRING_GETTER_AND_SETTER(last_refresh_trace_id);
   DEFINE_GETTER_AND_SETTER(int64_t, schema_version);
+  DEFINE_GETTER_AND_SETTER(int64_t, refresh_dop);
+  DEFINE_GETTER_AND_SETTER(uint64_t, data_sync_scn);
+  DEFINE_GETTER_AND_SETTER(bool, is_synced);
+  DEFINE_GETTER_AND_SETTER(ObMVNestedRefreshMode, nested_refresh_mode);
 
 #undef DEFINE_GETTER_AND_SETTER
 #undef DEFINE_STRING_GETTER_AND_SETTER
@@ -97,6 +101,8 @@ public:
                                                       const uint64_t tenant_id, bool &contains);
   static int contains_major_refresh_mview(ObISQLClient &sql_client,
                                           const uint64_t tenant_id, bool &contains);
+  static int update_mview_data_sync_scn(ObISQLClient &sql_client, uint64_t tenant_id,
+                                        ObMViewInfo &mview_info, const uint64_t refresh_scn);
   TO_STRING_KV(K_(tenant_id),
                K_(mview_id),
                K_(build_mode),
@@ -110,7 +116,11 @@ public:
                K_(last_refresh_date),
                K_(last_refresh_time),
                K_(last_refresh_trace_id),
-               K_(schema_version));
+               K_(schema_version),
+               K_(refresh_dop),
+               K_(data_sync_scn),
+               K_(is_synced),
+               K_(nested_refresh_mode));
 
 public:
   static constexpr char *MVIEW_REFRESH_JOB_PREFIX = const_cast<char *>("MVIEW_REFRESH$J_");
@@ -130,6 +140,10 @@ private:
   int64_t last_refresh_time_;
   ObString last_refresh_trace_id_;
   int64_t schema_version_;
+  int64_t refresh_dop_;
+  uint64_t data_sync_scn_;
+  bool is_synced_;
+  ObMVNestedRefreshMode nested_refresh_mode_;
 };
 
 } // namespace schema

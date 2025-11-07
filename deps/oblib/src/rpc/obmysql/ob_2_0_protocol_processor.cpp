@@ -14,11 +14,7 @@
 
 #include "rpc/obmysql/ob_2_0_protocol_processor.h"
 #include "rpc/obmysql/ob_mysql_util.h"
-#include "rpc/obmysql/ob_mysql_request_utils.h"
-#include "rpc/obmysql/ob_2_0_protocol_struct.h"
 #include "lib/checksum/ob_crc16.h"
-#include "lib/checksum/ob_crc64.h"
-#include "common/object/ob_object.h"
 #include "rpc/obmysql/obsm_struct.h"
 #include "lib/compress/zlib/ob_zlib_compressor.h"
 
@@ -371,7 +367,7 @@ int Ob20ProtocolProcessor::decode_new_extra_info(const Ob20ProtocolHeader &hdr,
           OB_LOG(WARN,"failed to get extra_info", K(ret), KP(buf));
         } else if (FALSE_IT(pos -= sizeof(int16_t))) {
           // do nothing, reset pos to original
-        } else if (extra_id <= OBP20_PROXY_MAX_TYPE && extra_id >= OBP20_SVR_END) {
+        } else if (extra_id <= OBP20_PROXY_MAX_TYPE || extra_id >= OBP20_SVR_END) {
           // invalid extra_id, skip it
         } else if (OB_ISNULL(svr_decoders_[extra_id-OBP20_PROXY_MAX_TYPE-1])) {
           ret = OB_ERR_UNEXPECTED;

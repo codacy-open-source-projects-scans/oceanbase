@@ -30,8 +30,8 @@
  *   - the callable object' copy contruct action is very heavy, which can not be accepted.
  *
  * Memory usage:
- *   - ObFunction<Ret(Args...)> object has constant size: 64 Bytes in common.
- *   - if the stored callable object's size not more than SMALL_OBJ_MAX_SIZE(40 Bytes in common) By-
+ *   - ObFunction<Ret(Args...)> object has constant size: 128 Bytes in common.
+ *   - if the stored callable object's size not more than SMALL_OBJ_MAX_SIZE(112 Bytes in common) By-
  *     tes, it will be stored in ObFunction's inner buffer, no extra memory will be allocated.
  *   - if the stored callable object's size more than SMALL_OBJ_MAX_SIZE Bytes, it will be stored in
  *     heap memory.
@@ -84,6 +84,7 @@
 #include "lib/oblog/ob_log_module.h"
 #include "lib/utility/ob_print_utils.h"
 #include "lib/allocator/ob_allocator.h"
+#include "lib/allocator/ob_vslice_alloc.h"
 
 namespace oceanbase
 {
@@ -118,15 +119,20 @@ struct DebugRecorder {
 #endif
 
 struct DefaultFunctionAllocator : public ObIAllocator {
+public:
+  DefaultFunctionAllocator()
+  {
+    lib::ObMemAttr attr(OB_SERVER_TENANT_ID, "ObFunction");
+    SET_USE_500(attr);
+    vslice_allocator_.init(OB_MALLOC_BIG_BLOCK_SIZE, default_blk_alloc, attr);
+  }
   void *alloc(const int64_t size) override {
 #ifdef UNITTEST_DEBUG
     total_alive_num++;
 #endif
-    static lib::ObMemAttr attr(OB_SERVER_TENANT_ID, "ObFunction");
-    SET_USE_500(attr);
-    return ob_malloc(size, attr);
+    return vslice_allocator_.alloc(size);
   }
-  void* alloc(const int64_t size, const ObMemAttr &attr) override {
+  void *alloc(const int64_t size, const ObMemAttr &attr) override {
     UNUSED(attr);
     return alloc(size);
   }
@@ -134,7 +140,7 @@ struct DefaultFunctionAllocator : public ObIAllocator {
 #ifdef UNITTEST_DEBUG
     total_alive_num--;
 #endif
-    ob_free(ptr);
+    vslice_allocator_.free(ptr);
   }
 #ifdef UNITTEST_DEBUG
   int total_alive_num = 0;
@@ -143,11 +149,15 @@ struct DefaultFunctionAllocator : public ObIAllocator {
     static DefaultFunctionAllocator default_allocator;
     return default_allocator;
   }
+
+public:
+  common::ObVSliceAlloc vslice_allocator_;
 };
 
-// sizeof(ObFunction<*>) will be 64 bytes, and inner buffer will be 48 bytes.
-// cause there is a vtable ptr, so when sizeof(Fn) <= 40 bytes, no extra memory will be allocated.
-static const int64_t SMALL_OBJ_MAX_SIZE = 64 - sizeof(void*) - sizeof(ObIAllocator &);
+// sizeof(ObFunction<*>) will be ~128 bytes, and inner buffer will be 112 bytes.
+// cause there is a vtable ptr, so when sizeof(Fn) <= ~104 bytes, no extra memory will be allocated.
+// SMALL_OBJ_MAX_SIZE = 128 - sizeof(void*) - sizeof(ObIAllocator &) = 112 bytes (on 64-bit systems)
+static const int64_t SMALL_OBJ_MAX_SIZE = 128 - sizeof(void*) - sizeof(ObIAllocator &);
 }// namespace function
 
 #define RECORDER function::DebugRecorder::get_instance()
@@ -283,6 +293,10 @@ public:
   // function operator
   Ret operator()(Args ...args) const {
     assert(nullptr != base_);
+    if (nullptr == base_) {
+      OCCAM_LOG_RET(ERROR, common::OB_ALLOCATE_MEMORY_FAILED, "copy user function failed", K(ret));
+      return Ret();
+    }
     return base_->invoke(std::forward<Args>(args)...);
   }
 

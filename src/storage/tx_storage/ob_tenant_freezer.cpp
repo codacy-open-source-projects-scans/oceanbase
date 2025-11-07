@@ -12,20 +12,13 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "lib/utility/utility.h"
-#include "lib/oblog/ob_log.h"
+#include "ob_tenant_freezer.h"
 #include "observer/ob_srv_network_frame.h"
-#include "observer/omt/ob_tenant_config_mgr.h"  // ObTenantConfigGuard
 #include "rootserver/freeze/ob_major_freeze_helper.h"
 #include "share/allocator/ob_shared_memory_allocator_mgr.h"
-#include "share/config/ob_server_config.h"
-#include "share/ob_share_util.h"
-#include "share/rc/ob_tenant_module_init_ctx.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/tx_storage/ob_ls_handle.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx_storage/ob_tenant_freezer.h"
 #include "storage/multi_data_source/runtime_utility/mds_tenant_service.h"
+#include "observer/ob_server_event_history_table_operator.h"
 
 namespace oceanbase
 {
@@ -277,12 +270,13 @@ bool ObTenantFreezer::memstore_remain_memory_is_exhausting()
   return memstore_remain_memory_is_exhausting_cache_.value_;
 }
 
-int ObTenantFreezer::ls_freeze_data_(ObLS *ls, const bool is_sync, const int64_t abs_timeout_ts)
+int ObTenantFreezer::ls_freeze_data_(ObLS *ls)
 {
   int ret = OB_SUCCESS;
   const int64_t SLEEP_TS = 1000 * 1000; // 1s
-  int64_t current_ts = 0;
+  const int64_t abs_timeout_ts = ObClockGenerator::getClock() + TENANT_FREEZE_RETRY_TIME_US;
   int64_t retry_times = 0;
+  const bool is_sync = true;
   bool is_timeout = false;
   bool need_retry = false;
   // wait and retry if there is a freeze is doing
@@ -366,9 +360,7 @@ int ObTenantFreezer::tenant_freeze_data_()
     for (; OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
       // wait until this ls freeze finished to make sure not freeze frequently because
       // of this ls freeze stuck.
-      const bool is_sync = true;
-      const int64_t abs_timeout_ts = 0;
-      if (OB_FAIL(ls_freeze_data_(ls, is_sync, abs_timeout_ts))) {
+      if (OB_FAIL(ls_freeze_data_(ls))) {
         if (OB_SUCCESS == first_fail_ret) {
           first_fail_ret = ret;
         }
@@ -415,6 +407,8 @@ int ObTenantFreezer::tenant_freeze(const ObFreezeSourceFlag source)
   } else if (OB_ISNULL(iter = guard.get_ptr())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("iter is NULL", K(ret));
+  } else if (OB_FAIL(set_tenant_freezing_())) {
+    LOG_WARN("set tenant freeze failed", K(ret));
   } else {
     for (; OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
       if (OB_TMP_FAIL(ls_freeze_all_unit_(ls, abs_timeout_ts, source))) {
@@ -428,6 +422,9 @@ int ObTenantFreezer::tenant_freeze(const ObFreezeSourceFlag source)
 
   if (OB_SUCC(ret)) {
     freezer_stat_.add_freeze_event();
+  }
+  if (OB_TMP_FAIL(unset_tenant_freezing_(OB_FAIL(ret)))) {
+    LOG_WARN("unset tenant freeze failed", KR(tmp_ret));
   }
 
   LOG_INFO("tenant_freeze finished", KR(ret), K(abs_timeout_ts));
@@ -563,6 +560,7 @@ int ObTenantFreezer::check_and_freeze_tx_data_()
   int64_t tx_data_mem_limit = total_memory * ObTenantTxDataAllocator::TX_DATA_LIMIT_PERCENTAGE / 100;
 
   static int skip_count = 0;
+  bool need_re_freeze = false;
   if (true == ATOMIC_LOAD(&is_freezing_tx_data_)) {
     // skip freeze when there is another self freeze task is running
     if (++skip_count > 10) {
@@ -573,9 +571,9 @@ int ObTenantFreezer::check_and_freeze_tx_data_()
                    K(skip_count),
                    K(cost_time));
     }
-  } else if (OB_FAIL(get_tenant_tx_data_mem_used_(frozen_tx_data_mem_used, active_tx_data_mem_used))) {
+  } else if (OB_FAIL(get_tx_data_info_for_freeze_(frozen_tx_data_mem_used, active_tx_data_mem_used, need_re_freeze))) {
     LOG_WARN("[TenantFreezer] get tenant tx data mem used failed.", KR(ret));
-  } else if (active_tx_data_mem_used > self_freeze_trigger_memory) {
+  } else if (need_re_freeze || active_tx_data_mem_used > self_freeze_trigger_memory) {
     // trigger tx data self freeze
     if (OB_FAIL(post_tx_data_freeze_request_())) {
       LOG_WARN("[TenantFreezer] fail to do tx data self freeze", KR(ret), K(tenant_info_.tenant_id_));
@@ -589,8 +587,8 @@ int ObTenantFreezer::check_and_freeze_tx_data_()
     int tmp_ret = OB_SUCCESS;
     if (frozen_tx_data_mem_used + active_tx_data_mem_used > tx_data_mem_limit) {
       LOG_INFO("tx data use too much memory!!!", STATISTIC_PRINT_MACRO);
-    } else if (OB_TMP_FAIL(get_tenant_tx_data_mem_used_(
-                   frozen_tx_data_mem_used, active_tx_data_mem_used, true /*for_statistic_print*/))) {
+    } else if (OB_FAIL(get_tx_data_info_for_freeze_(
+                   frozen_tx_data_mem_used, active_tx_data_mem_used, need_re_freeze, true /*for_statistic_print*/))) {
       LOG_INFO("print statistic failed");
     } else {
       LOG_INFO("TxData Memory Statistic : ", STATISTIC_PRINT_MACRO);
@@ -599,6 +597,53 @@ int ObTenantFreezer::check_and_freeze_tx_data_()
   return ret;
 }
 #undef STATISTIC_PRINT_MACRO
+
+int ObTenantFreezer::get_tx_data_info_for_freeze_(int64_t &tenant_tx_data_frozen_mem_used,
+                                                  int64_t &tenant_tx_data_active_mem_used,
+                                                  bool &need_re_freeze,
+                                                  bool for_statistic_print)
+{
+  int ret = OB_SUCCESS;
+  tenant_tx_data_frozen_mem_used = 0;
+  tenant_tx_data_active_mem_used = 0;
+  common::ObSharedGuard<ObLSIterator> iter;
+  ObLSService *ls_srv = MTL(ObLSService *);
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("[TenantFreezer] tenant freezer not inited", KR(ret));
+  } else if (OB_FAIL(ls_srv->get_ls_iter(iter, ObLSGetMod::TXSTORAGE_MOD))) {
+    LOG_WARN("[TenantFreezer] fail to get log stream iterator", KR(ret));
+  } else {
+    ObLS *ls = nullptr;
+    int ls_cnt = 0;
+    for (; OB_SUCC(ret) && OB_SUCC(iter->get_next(ls)); ++ls_cnt) {
+      int tmp_ret = OB_SUCCESS;
+      int64_t ls_tx_data_frozen_mem_used = 0;
+      int64_t ls_tx_data_active_mem_used = 0;
+      if (!for_statistic_print && OB_NOT_NULL(ls) && ls->tx_table_need_re_freeze()) {
+        need_re_freeze = true;
+        break;
+      }
+
+      if (OB_TMP_FAIL(get_ls_tx_data_memory_info_(
+              ls, ls_tx_data_frozen_mem_used, ls_tx_data_active_mem_used, for_statistic_print))) {
+        LOG_WARN("[TenantFreezer] fail to get tx data mem used in one ls", KR(ret), K(ls->get_ls_id()));
+      } else {
+        tenant_tx_data_frozen_mem_used += ls_tx_data_frozen_mem_used;
+        tenant_tx_data_active_mem_used += ls_tx_data_active_mem_used;
+      }
+    }
+
+    if (ret == OB_ITER_END) {
+      ret = OB_SUCCESS;
+      if (0 == ls_cnt) {
+        LOG_WARN("[TenantFreezer] no logstream", KR(ret), K(ls_cnt), K(tenant_info_));
+      }
+    }
+  }
+  return ret;
+}
 
 int ObTenantFreezer::get_tenant_tx_data_mem_used_(int64_t &tenant_tx_data_frozen_mem_used,
                                                   int64_t &tenant_tx_data_active_mem_used,
@@ -747,6 +792,8 @@ int ObTenantFreezer::do_freeze_diagnose()
 
       (void)freezer_stat_.print_activity_metrics();
       (void)freezer_history_.add_activity_metric(freezer_stat_);
+
+      (void)report_freezer_source_events();
     }
 
     freezer_stat_.last_captured_timestamp_ = current_time;
@@ -754,6 +801,59 @@ int ObTenantFreezer::do_freeze_diagnose()
   }
 
   return ret;
+}
+
+void ObTenantFreezer::record_freezer_source_event(const ObLSID &ls_id,
+                                                  const ObFreezeSourceFlag source)
+{
+  if (is_valid_freeze_source((source))) {
+    ATOMIC_AAF(&freezer_stat_.captured_source_times_[static_cast<int64_t>(source)], 1);
+    STORAGE_LOG(INFO, "[Freezer] freeze from source", K(ls_id), "freeze_source", obj_to_cstring(source));
+  }
+}
+
+void ObTenantFreezer::report_freezer_source_events()
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+
+  TRANS_LOG(INFO, "[TENANT_FREEZER_EVENT] print freeze source");
+  char server_event_value[MAX_ROOTSERVICE_EVENT_VALUE_LENGTH] = {0};
+
+  ret = common::databuff_printf(server_event_value,
+                                MAX_ROOTSERVICE_EVENT_VALUE_LENGTH,
+                                pos,
+                                "[");
+
+  for (int64_t i = 0; OB_SUCC(ret) && i < MAX_FREEZE_SOURCE_TYPE_COUNT; i++) {
+    if (is_valid_freeze_source((ObFreezeSourceFlag(i)))) {
+      int64_t captured_source_times = ATOMIC_LOAD(&(freezer_stat_.captured_source_times_[i]));
+      TRANS_LOG(INFO, "[TENANT_FREEZER_EVENT] print source", K(i),
+                "source_type", obj_to_cstring(ObFreezeSourceFlag(i)),
+                K(captured_source_times));
+      ret = common::databuff_printf(server_event_value,
+                                    MAX_ROOTSERVICE_EVENT_VALUE_LENGTH,
+                                    pos,
+                                    "%s: %ld; ",
+                                    obj_to_cstring(ObFreezeSourceFlag(i)),
+                                    captured_source_times);
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+      ret = common::databuff_printf(server_event_value,
+                                    MAX_ROOTSERVICE_EVENT_VALUE_LENGTH,
+                                    pos,
+                                    "]");
+  }
+
+  if (OB_SUCC(ret)) {
+    SERVER_EVENT_ADD("freezer", "freeze_source_statistics",
+                     "tenant_id", MTL_ID(),
+                     "source_statistics", server_event_value);
+  } else {
+    TRANS_LOG(WARN, "[TENANT_FREEZER_EVENT] print source failed", K(ret));
+  }
 }
 
 int ObTenantFreezer::check_and_do_freeze()
@@ -905,7 +1005,7 @@ int ObTenantFreezer::set_tenant_mem_limit(const int64_t lower_limit,
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[TenantFreezer] invalid argument", KR(ret), K(lower_limit), K(upper_limit));
   } else {
-    const int64_t freeze_trigger_percentage = get_freeze_trigger_percentage_();
+    const int64_t freeze_trigger_percentage = get_freeze_trigger_percentage();
     const int64_t memstore_limit_percent = get_memstore_limit_percentage_();
     if (memstore_limit_percent > 100 ||
         memstore_limit_percent <= 0 ||
@@ -973,6 +1073,7 @@ bool ObTenantFreezer::is_replay_pending_log_too_large(const int64_t pending_size
   int64_t total_memstore_used = 0;
   int64_t memstore_limit = 0;
   int64_t unused = 0;
+  int64_t throttle_trigger_percentage = 0;
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("[TenantFreezer] tenant manager not init", KR(ret));
@@ -981,14 +1082,48 @@ bool ObTenantFreezer::is_replay_pending_log_too_large(const int64_t pending_size
                                               unused,
                                               memstore_limit,
                                               unused,
+                                              throttle_trigger_percentage,
                                               false/* not force refresh */))) {
     LOG_WARN("get tenant memstore condition failed", K(ret));
   } else {
-    int64_t memstore_left = memstore_limit - total_memstore_used - REPLAY_RESERVE_MEMSTORE_BYTES;
-    memstore_left = (memstore_left > 0 ? memstore_left : 0);
-    memstore_left >>= 5; // Estimate the size of memstore based on 32 times expansion.
-                         // 16 times for replay and 16 times for replay
-    bool_ret = (pending_size >= memstore_left);
+    const int64_t throttle_trigger = memstore_limit * throttle_trigger_percentage / 100;
+    int64_t throttle_range_clog_pending_limit = 0;
+    int64_t normal_range_clog_pending_limit = 0;
+
+    // If current memtable usage is below throttle threshold, calculate both normal and throttle ranges
+    // Otherwise, only calculate throttle range CLOG capacity
+    if (total_memstore_used < throttle_trigger) {
+      // Normal range uses 32x amplification factor (32MB memtable : 1MB CLOG)
+      normal_range_clog_pending_limit = (throttle_trigger - total_memstore_used) >> 5;
+      throttle_range_clog_pending_limit = memstore_limit - REPLAY_RESERVE_MEMSTORE_BYTES - throttle_trigger;
+    } else {
+      normal_range_clog_pending_limit = 0;
+      throttle_range_clog_pending_limit = memstore_limit - REPLAY_RESERVE_MEMSTORE_BYTES - total_memstore_used;
+    }
+
+    // Throttle range uses larger amplification (64x) to reduce memory explosion risk (64MB memtable : 1MB CLOG)
+    if (throttle_range_clog_pending_limit > 0) {
+      throttle_range_clog_pending_limit >>= 6;
+    } else {
+      throttle_range_clog_pending_limit = 0;
+    }
+
+    bool_ret = (pending_size >= (normal_range_clog_pending_limit + throttle_range_clog_pending_limit));
+    if (bool_ret && TC_REACH_TIME_INTERVAL(1_s)) {
+      LOG_INFO("CLOG pending size in task queue exceeds limit",
+               "Memtable Limit(MB)",
+               memstore_limit / 1024 / 1024,
+               "Memtable Used(MB)",
+               total_memstore_used / 1024 / 1024,
+               "Throttle Trigger(MB)",
+               throttle_trigger / 1024 / 1024,
+               "Already Pending Clog Size(MB)",
+               pending_size / 1024 / 1024,
+               "Normal Range Clog Pending Size(MB)",
+               normal_range_clog_pending_limit / 1024 / 1024,
+               "Throttle Range Clog Pending Size(MB)",
+               throttle_range_clog_pending_limit / 1024 / 1024);
+    }
   }
   return bool_ret;
 }
@@ -1001,6 +1136,8 @@ int ObTenantFreezer::get_tenant_memstore_used(int64_t &total_memstore_used,
   int64_t unused_memstore_freeze_trigger = 0;
   int64_t unused_memstore_limit = 0;
   int64_t unused_freeze_cnt = 0;
+  int64_t unused_throttle_trigger = 0;
+
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("[TenantFreezer] tenant manager not init", KR(ret));
@@ -1009,6 +1146,7 @@ int ObTenantFreezer::get_tenant_memstore_used(int64_t &total_memstore_used,
                                                unused_memstore_freeze_trigger,
                                                unused_memstore_limit,
                                                unused_freeze_cnt,
+                                               unused_throttle_trigger,
                                                force_refresh))) {
     LOG_WARN("get tenant memstore used failed", K(ret));
   }
@@ -1020,6 +1158,7 @@ int ObTenantFreezer::get_tenant_memstore_cond(int64_t &active_memstore_used,
                                               int64_t &memstore_freeze_trigger,
                                               int64_t &memstore_limit,
                                               int64_t &freeze_cnt,
+                                              int64_t &throttle_trigger_percentage,
                                               const bool force_refresh)
 {
   int ret = OB_SUCCESS;
@@ -1031,6 +1170,7 @@ int ObTenantFreezer::get_tenant_memstore_cond(int64_t &active_memstore_used,
                                                memstore_freeze_trigger,
                                                memstore_limit,
                                                freeze_cnt,
+                                               throttle_trigger_percentage,
                                                force_refresh))) {
     LOG_WARN("get tenant memstore used failed", K(ret));
   }
@@ -1043,6 +1183,7 @@ int ObTenantFreezer::get_tenant_memstore_cond_(
     int64_t &memstore_freeze_trigger,
     int64_t &memstore_limit,
     int64_t &freeze_cnt,
+    int64_t &throttle_trigger_percentage,
     const bool force_refresh)
 {
   int ret = OB_SUCCESS;
@@ -1054,6 +1195,7 @@ int ObTenantFreezer::get_tenant_memstore_cond_(
   RLOCAL(int64_t, last_memstore_freeze_trigger);
   RLOCAL(int64_t, last_memstore_limit);
   RLOCAL(int64_t, last_freeze_cnt);
+  RLOCAL(int64_t, last_throttle_trigger_percentage);
   ObTenantFreezeCtx ctx;
 
   active_memstore_used = 0;
@@ -1068,6 +1210,7 @@ int ObTenantFreezer::get_tenant_memstore_cond_(
     memstore_freeze_trigger = last_memstore_freeze_trigger;
     memstore_limit = last_memstore_limit;
     freeze_cnt = last_freeze_cnt;
+    throttle_trigger_percentage = last_throttle_trigger_percentage;
   } else {
     const uint64_t tenant_id = MTL_ID();
     if (false == tenant_info_.is_loaded_) {
@@ -1084,6 +1227,7 @@ int ObTenantFreezer::get_tenant_memstore_cond_(
       total_memstore_used = ctx.total_memstore_used_;
       memstore_freeze_trigger = ctx.memstore_freeze_trigger_ + ctx.max_cached_memstore_size_;
       freeze_cnt = tenant_info_.freeze_cnt_;
+      throttle_trigger_percentage = get_throttle_trigger_percentage_();
 
       // cache the result
       last_refresh_timestamp = current_time;
@@ -1092,6 +1236,7 @@ int ObTenantFreezer::get_tenant_memstore_cond_(
       last_memstore_freeze_trigger = memstore_freeze_trigger;
       last_memstore_limit = memstore_limit;
       last_freeze_cnt = freeze_cnt;
+      last_throttle_trigger_percentage = throttle_trigger_percentage;
     }
   }
   return ret;
@@ -1238,7 +1383,7 @@ int ObTenantFreezer::get_freeze_trigger_(ObTenantFreezeCtx &ctx)
     min = MIN(mem_memstore_limit, max_mem_memstore_can_get_now);
   }
 
-  memstore_freeze_trigger = min / 100 * get_freeze_trigger_percentage_();
+  memstore_freeze_trigger = min / 100 * get_freeze_trigger_percentage();
 
   // result
   ctx.max_mem_memstore_can_get_now_ = max_mem_memstore_can_get_now;
@@ -1345,7 +1490,7 @@ bool ObTenantFreezer::tenant_need_major_freeze()
   return bool_ret;
 }
 
-int64_t ObTenantFreezer::get_freeze_trigger_percentage_()
+int64_t ObTenantFreezer::get_freeze_trigger_percentage()
 {
   static const int64_t DEFAULT_FREEZE_TRIGGER_PERCENTAGE = 20;
   int64_t percent = DEFAULT_FREEZE_TRIGGER_PERCENTAGE;
@@ -1385,6 +1530,17 @@ int64_t ObTenantFreezer::get_memstore_limit_percentage_()
     } else {
       percent = LARGE_MEMSTORE_LIMIT_PERCENTAGE;
     }
+  }
+  return percent;
+}
+
+int64_t ObTenantFreezer::get_throttle_trigger_percentage_()
+{
+  static const int64_t DEFAULT_THROTTLE_TRIGGER_PERCENTAGE = 60;
+  int64_t percent = DEFAULT_THROTTLE_TRIGGER_PERCENTAGE;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+  if (tenant_config.is_valid()) {
+    percent = tenant_config->writing_throttling_trigger_percentage;
   }
   return percent;
 }
@@ -1452,7 +1608,7 @@ int ObTenantFreezer::rpc_callback()
 int ObTenantFreezer::reload_config()
 {
   int ret = OB_SUCCESS;
-  const int64_t freeze_trigger_percentage = get_freeze_trigger_percentage_();
+  const int64_t freeze_trigger_percentage = get_freeze_trigger_percentage();
   const int64_t memstore_limit_percent = get_memstore_limit_percentage_();
   if (!is_inited_) {
     ret = OB_NOT_INIT;
@@ -1721,6 +1877,17 @@ void ObTenantFreezer::get_freezer_stat_from_history(int64_t pos, ObTenantFreezer
                                    % ObTenantFreezerStatHistory::MAX_HISTORY_LENGTH];
 }
 
+int ObTenantFreezer::update_frozen_scn(const int64_t frozen_scn)
+{
+  int ret = OB_SUCCESS;
+  if (!tenant_info_.is_loaded_) {
+    // do nothing
+  } else if (OB_FAIL(tenant_info_.update_frozen_scn(frozen_scn))) {
+    LOG_WARN("update frozen scn failed", K(ret), K(frozen_scn));
+  }
+  return ret;
+}
+
 ObTenantFreezerStat::ObFreezerMergeType ObTenantFreezerStat::switch_to_freezer_merge_type(const compaction::ObMergeType type)
 {
   ObFreezerMergeType ret_merge_type = ObFreezerMergeType::UNNECESSARY_TYPE;
@@ -1775,6 +1942,10 @@ void ObTenantFreezerStat::reset(int64_t retire_clock)
     ATOMIC_SET(&(captured_merge_times_[i]), 0);
   }
 
+  for (int64_t i = 0; i < MAX_FREEZE_SOURCE_TYPE_COUNT; i++) {
+    ATOMIC_SET(&(captured_source_times_[i]), 0);
+  }
+
   ATOMIC_SET(&last_captured_retire_clock_, retire_clock);
 }
 
@@ -1785,6 +1956,10 @@ void ObTenantFreezerStat::refresh()
   for (int64_t i = 0; i < ObFreezerMergeType::MAX_MERGE_TYPE; i++) {
     ATOMIC_SET(&(captured_merge_time_cost_[i]), 0);
     ATOMIC_SET(&(captured_merge_times_[i]), 0);
+  }
+
+  for (int64_t i = 0; i < MAX_FREEZE_SOURCE_TYPE_COUNT; i++) {
+    ATOMIC_SET(&(captured_source_times_[i]), 0);
   }
 }
 
@@ -1827,6 +2002,10 @@ void ObTenantFreezerStat::assign(const ObTenantFreezerStat stat)
   for (int64_t i = 0; i < ObFreezerMergeType::MAX_MERGE_TYPE; i++) {
     captured_merge_time_cost_[i] = stat.captured_merge_time_cost_[i];
     captured_merge_times_[i] = stat.captured_merge_times_[i];
+  }
+
+  for (int64_t i = 0; i < MAX_FREEZE_SOURCE_TYPE_COUNT; i++) {
+    captured_source_times_[i] = stat.captured_source_times_[i];
   }
 
   last_captured_retire_clock_ = stat.last_captured_retire_clock_;

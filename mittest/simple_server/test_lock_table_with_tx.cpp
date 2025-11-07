@@ -22,12 +22,7 @@
 #include "env/ob_simple_server_restart_helper.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tablelock/ob_lock_memtable.h"
-#include "logservice/ob_log_base_type.h"
-#include "mtlenv/tablelock/table_lock_tx_common_env.h"
-#include "storage/tx_storage/ob_ls_handle.h" //ObLSHandle
-#include "share/schema/ob_schema_getter_guard.h"
 #include "storage/tablelock/ob_table_lock_service.h"
-#include "share/ob_ls_id.h"
 
 static const char *TEST_FILE_NAME = "test_lock_table_with_tx";
 static const char *BORN_CASE_NAME = "ObLockTableBeforeRestartTest";
@@ -155,11 +150,11 @@ TEST_F(ObLockTableBeforeRestartTest, test_commit_log)
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   ObTableLockOwnerID OWNER_ONE;
-  OWNER_ONE.convert_from_value(1);
+  OWNER_ONE.convert_from_value(static_cast<ObLockOwnerType>(0), 1);
   uint64_t table_id = 0;
   ObTableLockMode lock_mode = EXCLUSIVE;
   ObTableLockOwnerID lock_owner;
-  lock_owner.convert_from_value(0);
+  lock_owner.convert_from_value(static_cast<ObLockOwnerType>(0), 0);
   ObLS *ls = nullptr;
   ObLockMemtable *lock_memtable = nullptr;
   ObCheckpointExecutor *checkpoint_executor = nullptr;

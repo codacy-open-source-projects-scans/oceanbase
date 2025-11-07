@@ -14,33 +14,10 @@
 
 #include "sql/engine/px/ob_px_scheduler.h"
 #include "sql/engine/px/ob_dfo_scheduler.h"
-#include "sql/engine/px/ob_dfo_mgr.h"
-#include "lib/random/ob_random.h"
-#include "share/ob_rpc_share.h"
-#include "share/schema/ob_part_mgr_util.h"
-#include "sql/ob_sql.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/dtl/ob_dtl_channel_group.h"
-#include "sql/dtl/ob_dtl_channel_loop.h"
-#include "sql/dtl/ob_dtl_msg_type.h"
-#include "sql/dtl/ob_dtl.h"
-#include "sql/dtl/ob_dtl_task.h"
-#include "sql/dtl/ob_op_metric.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/px/ob_px_dtl_msg.h"
-#include "sql/engine/px/ob_px_dtl_proc.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/px/ob_px_interruption.h"
-#include "share/config/ob_server_config.h"
-#include "sql/engine/px/ob_px_sqc_async_proxy.h"
-#include "sql/engine/px/datahub/ob_dh_dtl_proc.h"
-#include "sql/engine/px/datahub/components/ob_dh_rollup_key.h"
 #include "sql/engine/px/datahub/components/ob_dh_winbuf.h"
-#include "sql/engine/px/datahub/components/ob_dh_sample.h"
-#include "sql/engine/px/ob_px_sqc_proxy.h"
-#include "storage/tx/ob_trans_service.h"
 #include "share/detect/ob_detect_manager_utils.h"
 #include "sql/engine/join/ob_join_filter_op.h"
+#include "src/sql/engine/px/datahub/components/ob_dh_join_filter_count_row.h"
 
 namespace oceanbase
 {
@@ -65,7 +42,6 @@ public:
   int on_piece_msg(ObPxCoordInfo &coord_info, ObExecContext &ctx, const PieceMsg &pkt)
   {
     int ret = OB_SUCCESS;
-    ObArray<ObPxSqcMeta *> sqcs;
     ObDfo *source_dfo = nullptr;
     ObDfo *target_dfo = nullptr;
     ObPieceMsgCtx *piece_ctx = nullptr;
@@ -96,9 +72,8 @@ public:
 
     if (OB_SUCC(ret)) {
       typename PieceMsg::PieceMsgCtx *ctx = static_cast<typename PieceMsg::PieceMsgCtx *>(piece_ctx);
-      if (OB_FAIL(target_dfo->get_sqcs(sqcs))) {
-        LOG_WARN("fail get qc-sqc channel for QC", K(ret));
-      } else if (OB_FAIL(PieceMsg::PieceMsgListener::on_message(*ctx, sqcs, pkt))) {
+      ObIArray<ObPxSqcMeta> &sqcs = target_dfo->get_sqcs();
+      if (OB_FAIL(PieceMsg::PieceMsgListener::on_message(*ctx, sqcs, pkt))) {
         LOG_WARN("fail process piece msg", K(pkt), K(ret));
       }
     }
@@ -181,8 +156,6 @@ int ObPxMsgProc::on_sqc_init_msg(ObExecContext &ctx, const ObPxInitSqcResultMsg 
     } else if (pkt.task_count_ <= 0) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("task count returned by sqc invalid. expect 1 or more", K(pkt), K(ret));
-    } else if (OB_FAIL(sqc->get_partitions_info().assign(pkt.tablets_info_))) {
-      LOG_WARN("Failed to assign partitions info", K(ret));
     } else {
       sqc->set_task_count(pkt.task_count_);
       sqc->set_thread_inited(true);
@@ -193,27 +166,20 @@ int ObPxMsgProc::on_sqc_init_msg(ObExecContext &ctx, const ObPxInitSqcResultMsg 
   }
 
   if (OB_SUCC(ret)) {
-    ObArray<ObPxSqcMeta *> sqcs;
-    if (OB_FAIL(edge->get_sqcs(sqcs))) {
-      LOG_WARN("fail get qc-sqc channel for QC", K(ret));
-    } else {
-      bool sqc_threads_inited = true;
-      ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-        ObPxSqcMeta *sqc = sqcs.at(idx);
-        if (OB_ISNULL(sqc)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("NULL unexpected sqc", K(ret));
-        } else if (!sqc->is_thread_inited()) {
-          sqc_threads_inited = false;
-          break;
-        }
+    const ObIArray<ObPxSqcMeta> &sqcs = edge->get_sqcs();
+    bool sqc_threads_inited = true;
+    ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
+      const ObPxSqcMeta &sqc = sqcs.at(idx);
+      if (!sqc.is_thread_inited()) {
+        sqc_threads_inited = false;
+        break;
       }
-      if (OB_SUCC(ret) && sqc_threads_inited) {
-        LOG_TRACE("on_sqc_init_msg: all sqc returned task count. ready to do on_sqc_threads_inited",
-                  K(*edge));
-        edge->set_thread_inited(true);
-        ret = scheduler_->on_sqc_threads_inited(ctx, *edge);
-      }
+    }
+    if (OB_SUCC(ret) && sqc_threads_inited) {
+      LOG_TRACE("on_sqc_init_msg: all sqc returned task count. ready to do on_sqc_threads_inited",
+                K(*edge));
+      edge->set_thread_inited(true);
+      ret = scheduler_->on_sqc_threads_inited(ctx, *edge);
     }
   }
 
@@ -327,10 +293,16 @@ int ObPxMsgProc::process_sqc_finish_msg_once(ObExecContext &ctx, const ObPxFinis
     LOG_WARN("fail merge result", K(ret),
              "packet_trans_result", pkt.get_trans_result(),
              "tx_desc", *session->get_tx_desc());
+  } else if (pkt.get_trans_result().get_touched_ls().count() > 0
+             && OB_FAIL(session->get_trans_result()
+                        .add_touched_ls(pkt.get_trans_result().get_touched_ls()))) {
+    LOG_WARN("fail add touched ls for tx", K(ret),
+             "touched_ls", pkt.get_trans_result().get_touched_ls());
   } else {
     LOG_TRACE("on_sqc_finish_msg trans_result",
               "packet_trans_result", pkt.get_trans_result(),
-              "tx_desc", *session->get_tx_desc());
+              "tx_desc", *session->get_tx_desc(),
+              "tx_result", session->get_trans_result());
   }
   if (OB_FAIL(ret)) {
   } else if (common::OB_INVALID_ID != pkt.temp_table_id_) {
@@ -350,7 +322,7 @@ int ObPxMsgProc::process_sqc_finish_msg_once(ObExecContext &ctx, const ObPxFinis
       int ecode = EventTable::EN_PX_SLOW_PROCESS_SQC_FINISH_MSG;
       if (OB_SUCCESS != ecode && OB_SUCC(ret)) {
         LOG_WARN("qc slow process sqc finish msg by desgin", K(ret));
-        usleep(100 * 1000L);
+        ob_usleep(100 * 1000L);
       }
 #endif
       int set_finish_ret = edge->get_detect_cb()->atomic_set_finished(sqc->get_sqc_addr());
@@ -379,30 +351,23 @@ int ObPxMsgProc::process_sqc_finish_msg_once(ObExecContext &ctx, const ObPxFinis
   }
   // mark dfo finished if all sqcs in this dfo is finished
   if (OB_SUCC(ret)) {
-    ObArray<ObPxSqcMeta *> sqcs;
-    if (OB_FAIL(edge->get_sqcs(sqcs))) {
-      LOG_WARN("fail get qc-sqc channel for QC", K(ret));
-    } else {
-      bool sqc_threads_finish = true;
-      int64_t dfo_used_worker_count = 0;
-      ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-        ObPxSqcMeta *sqc = sqcs.at(idx);
-        if (OB_ISNULL(sqc)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("NULL unexpected sqc", K(ret));
-        } else if (!sqc->is_thread_finish()) {
-          sqc_threads_finish = false;
-          break;
-        } else {
-          // the value 1 is accounted for sqc thread
-          dfo_used_worker_count += sqc->get_task_count();
-        }
+    ObIArray<ObPxSqcMeta> &sqcs = edge->get_sqcs();
+    bool sqc_threads_finish = true;
+    int64_t dfo_used_worker_count = 0;
+    ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
+      ObPxSqcMeta &sqc = sqcs.at(idx);
+      if (!sqc.is_thread_finish()) {
+        sqc_threads_finish = false;
+        break;
+      } else {
+        // the value 1 is accounted for sqc thread
+        dfo_used_worker_count += sqc.get_task_count();
       }
-      if (OB_SUCC(ret) && sqc_threads_finish) {
-        edge->set_thread_finish(true);
-        edge->set_used_worker_count(dfo_used_worker_count);
-        LOG_TRACE("[MSG] dfo finish", K(*edge));
-      }
+    }
+    if (OB_SUCC(ret) && sqc_threads_finish) {
+      edge->set_thread_finish(true);
+      edge->set_used_worker_count(dfo_used_worker_count);
+      LOG_TRACE("[MSG] dfo finish", K(*edge));
     }
   }
 
@@ -631,27 +596,20 @@ int ObPxTerminateMsgProc::on_sqc_init_msg(ObExecContext &ctx, const ObPxInitSqcR
   }
 
   if (OB_SUCC(ret)) {
-    ObArray<ObPxSqcMeta *> sqcs;
-    if (OB_FAIL(edge->get_sqcs(sqcs))) {
-      LOG_WARN("fail get qc-sqc channel for QC", K(ret));
-    } else {
-      bool sqc_threads_inited = true;
-      ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-        ObPxSqcMeta *sqc = sqcs.at(idx);
-        if (OB_ISNULL(sqc)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("NULL unexpected sqc", K(ret));
-        } else if (!sqc->is_thread_inited()) {
-          sqc_threads_inited = false;
-          break;
-        }
+    const ObIArray<ObPxSqcMeta> &sqcs = edge->get_sqcs();
+    bool sqc_threads_inited = true;
+    ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
+      const ObPxSqcMeta &sqc = sqcs.at(idx);
+      if (!sqc.is_thread_inited()) {
+        sqc_threads_inited = false;
+        break;
       }
-      if (OB_SUCC(ret) && sqc_threads_inited) {
-        LOG_TRACE("sqc terminate msg: all sqc returned task count. ready to do on_sqc_threads_inited",
-                  K(*edge));
-        // 标记dfo已经完整启动了
-        edge->set_thread_inited(true);
-      }
+    }
+    if (OB_SUCC(ret) && sqc_threads_inited) {
+      LOG_TRACE("sqc terminate msg: all sqc returned task count. ready to do on_sqc_threads_inited",
+                K(*edge));
+      // 标记dfo已经完整启动了
+      edge->set_thread_inited(true);
     }
   }
 
@@ -677,6 +635,11 @@ int ObPxTerminateMsgProc::on_sqc_finish_msg(ObExecContext &ctx, const ObPxFinish
     LOG_WARN("fail report tx result", K(ret),
              "packet_trans_result", pkt.get_trans_result(),
              "tx_desc", *session->get_tx_desc());
+  } else if (pkt.get_trans_result().get_touched_ls().count() > 0
+             && OB_FAIL(session->get_trans_result()
+                        .add_touched_ls(pkt.get_trans_result().get_touched_ls()))) {
+    LOG_WARN("fail add touched ls for tx", K(ret),
+             "touched_ls", pkt.get_trans_result().get_touched_ls());
   } else {
     LOG_TRACE("on_sqc_finish_msg trans_result",
               "packet_trans_result", pkt.get_trans_result(),
@@ -709,30 +672,23 @@ int ObPxTerminateMsgProc::on_sqc_finish_msg(ObExecContext &ctx, const ObPxFinish
   }
 
   if (OB_SUCC(ret)) {
-    ObArray<ObPxSqcMeta *> sqcs;
-    if (OB_FAIL(edge->get_sqcs(sqcs))) {
-      LOG_WARN("fail get qc-sqc channel for QC", K(ret));
-    } else {
-      bool sqc_threads_finish = true;
-      int64_t dfo_used_worker_count = 0;
-      ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
-        ObPxSqcMeta *sqc = sqcs.at(idx);
-        if (OB_ISNULL(sqc)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("NULL unexpected sqc", K(ret));
-        } else if (!sqc->is_thread_finish()) {
-          sqc_threads_finish = false;
-          break;
-        } else {
-          // the value 1 is accounted for sqc thread
-          dfo_used_worker_count += sqc->get_task_count();
-        }
+   const ObIArray<ObPxSqcMeta> &sqcs = edge->get_sqcs();
+    bool sqc_threads_finish = true;
+    int64_t dfo_used_worker_count = 0;
+    ARRAY_FOREACH_X(sqcs, idx, cnt, OB_SUCC(ret)) {
+      const ObPxSqcMeta &sqc = sqcs.at(idx);
+      if (!sqc.is_thread_finish()) {
+        sqc_threads_finish = false;
+        break;
+      } else {
+        // the value 1 is accounted for sqc thread
+        dfo_used_worker_count += sqc.get_task_count();
       }
-      if (OB_SUCC(ret) && sqc_threads_finish) {
-        edge->set_thread_finish(true);
-        edge->set_used_worker_count(dfo_used_worker_count);
-        LOG_TRACE("terminate msg : dfo finish", K(*edge));
-      }
+    }
+    if (OB_SUCC(ret) && sqc_threads_finish) {
+      edge->set_thread_finish(true);
+      edge->set_used_worker_count(dfo_used_worker_count);
+      LOG_TRACE("terminate msg : dfo finish", K(*edge));
     }
   }
 

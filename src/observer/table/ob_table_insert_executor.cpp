@@ -13,7 +13,6 @@
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_insert_executor.h"
 #include "ob_table_cg_service.h"
-#include "sql/engine/dml/ob_dml_service.h"
 
 using namespace oceanbase::sql;
 
@@ -126,7 +125,7 @@ int ObTableApiInsertExecutor::get_next_row()
   return ret;
 }
 
-int ObTableApiInsertExecutor::process_single_operation(const ObTableEntity *entity)
+int ObTableApiInsertExecutor::process_single_operation(const ObITableEntity *entity)
 {
   int ret = OB_SUCCESS;
   // clean all rt_exprs evaluated flag before each operation refresh value
@@ -154,12 +153,12 @@ int ObTableApiInsertExecutor::process_single_operation(const ObTableEntity *enti
 int ObTableApiInsertExecutor::get_next_row_from_child()
 {
   int ret = OB_SUCCESS;
-  const ObIArray<ObTableOperation> *ops = tb_ctx_.get_batch_operation();
-  bool is_batch = (OB_NOT_NULL(ops) && !tb_ctx_.is_htable()) || (OB_NOT_NULL(ops) && tb_ctx_.is_client_use_put());
+  const ObIArray<const ObITableEntity*> *batch_entities = tb_ctx_.get_batch_entities();
+  bool is_batch = batch_entities != nullptr;
 
   // single operation
   if (!is_batch) {
-    const ObTableEntity *entity = static_cast<const ObTableEntity *>(tb_ctx_.get_entity());
+    const ObITableEntity *entity = tb_ctx_.get_entity();
     if (cur_idx_ >= 1) {
       ret = OB_ITER_END;
     } else if (OB_FAIL(process_single_operation(entity))) {
@@ -169,18 +168,23 @@ int ObTableApiInsertExecutor::get_next_row_from_child()
     }
   } else { // batch operation
     const ObIArray<ObTabletID> *tablet_ids = tb_ctx_.get_batch_tablet_ids();
-    if (cur_idx_ >= ops->count()) {
+    if (cur_idx_ >= batch_entities->count()) {
       ret = OB_ITER_END;
     } else {
-      const ObTableEntity *entity = static_cast<const ObTableEntity *>(&ops->at(cur_idx_).entity());
-      if (OB_NOT_NULL(tablet_ids)) {
-        if (OB_UNLIKELY(tablet_ids->count() != ops->count())) {
+      const ObITableEntity *entity = batch_entities->at(cur_idx_);
+      if (OB_ISNULL(entity)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("entity is NULL", K(ret), K(cur_idx_));
+      } else if (tb_ctx_.is_multi_tablets()) {
+        if (OB_UNLIKELY(tablet_ids->count() != batch_entities->count())) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("use multi tablets batch but tablet ids is not equal to ops", K(tablet_ids->count()), K(ops->count()));
+          LOG_WARN("use multi tablets batch but tablet ids is not equal to ops", K(tablet_ids->count()), K(batch_entities->count()));
         } else {
-          ObTabletID tablet_id= tablet_ids->at(cur_idx_);
+          ObTabletID tablet_id = tablet_ids->at(cur_idx_);
           tb_ctx_.set_tablet_id(tablet_id);
         }
+      } else if (entity->get_entity_type() == ObTableEntityType::ET_HKV_V2) { // for tmp use
+        tb_ctx_.set_tablet_id(entity->get_tablet_id());
       }
 
       if (OB_FAIL(ret)) {

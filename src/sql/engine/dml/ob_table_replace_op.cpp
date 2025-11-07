@@ -10,20 +10,11 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "share/ob_fts_index_builder_util.h"
 #define USING_LOG_PREFIX SQL_ENG
-#include "common/ob_smart_call.h"
 #include "sql/engine/dml/ob_table_replace_op.h"
-#include "share/ob_autoincrement_service.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/ob_exec_context.h"
-#include "lib/utility/ob_tracepoint.h"
 #include "sql/engine/dml/ob_dml_service.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
 #include "sql/das/ob_das_insert_op.h"
-#include "sql/das/ob_data_access_service.h"
-#include "sql/engine/dml/ob_trigger_handler.h"
-#include "sql/engine/dml/ob_fk_checker.h"
 #include "share/ob_ls_id.h"
 
 namespace oceanbase
@@ -55,6 +46,7 @@ OB_DEF_SERIALIZE(ObTableReplaceSpec)
   OB_UNIS_ENCODE(has_global_unique_index_);
   OB_UNIS_ENCODE(all_saved_exprs_);
   OB_UNIS_ENCODE(doc_id_col_id_);
+  OB_UNIS_ENCODE(hidden_ck_col_id_);
   return ret;
 }
 
@@ -80,6 +72,7 @@ OB_DEF_DESERIALIZE(ObTableReplaceSpec)
   OB_UNIS_DECODE(has_global_unique_index_);
   OB_UNIS_DECODE(all_saved_exprs_);
   OB_UNIS_DECODE(doc_id_col_id_);
+  OB_UNIS_DECODE(hidden_ck_col_id_);
   return ret;
 }
 
@@ -102,6 +95,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableReplaceSpec)
   OB_UNIS_ADD_LEN(has_global_unique_index_);
   OB_UNIS_ADD_LEN(all_saved_exprs_);
   OB_UNIS_ADD_LEN(doc_id_col_id_);
+  OB_UNIS_ADD_LEN(hidden_ck_col_id_);
   return len;
 }
 
@@ -234,7 +228,7 @@ OB_INLINE int ObTableReplaceOp::init_replace_rtdef()
     OZ(ObDMLService::init_ins_rtdef(dml_rtctx_, ins_rtdef, *ins_ctdef, trigger_clear_exprs_, fk_checkers_));
     OZ(ObDMLService::init_del_rtdef(dml_rtctx_, del_rtdef, *del_ctdef));
     if (OB_SUCC(ret)) {
-      ins_rtdef.das_rtdef_.table_loc_->is_writing_ = true;
+      ins_rtdef.das_rtdef_.table_loc_->is_writing_ = !(ins_ctdef->is_single_value_);
     }
   }
   return ret;
@@ -494,7 +488,20 @@ int ObTableReplaceOp::fetch_conflict_rowkey(int64_t replace_row_cnt)
     }
   }
 
-  if (gts_state_ == USE_PARTITION_SNAPSHOT_STATE) {
+  while (OB_SUCC(ret) && !task_iter.is_end()) {
+    // 不需要clear rowkey表达式的eval_flag，因为主键使用的是column_ref表达式，不存在eval_fun
+    if (OB_FAIL(get_next_conflict_rowkey(task_iter))) {
+      if (OB_ITER_END != ret) {
+        LOG_WARN("fail to get next conflict rowkey from das_result", K(ret));
+      }
+    } else if (OB_FAIL(conflict_checker_.build_primary_table_lookup_das_task(conflict_checker_.eval_ctx_))) {
+      LOG_WARN("fail to build lookup_das_task", K(ret));
+    }
+  }
+  ret = (ret == OB_ITER_END ? OB_SUCCESS : ret);
+
+  if (OB_FAIL(ret)) {
+  } else if (gts_state_ == USE_PARTITION_SNAPSHOT_STATE) {
     DASTaskIter task_iter = dml_rtctx_.das_ref_.begin_task_iter();
     while (OB_SUCC(ret) && !task_iter.is_end()) {
       ObDASInsertOp *ins_op = static_cast<ObDASInsertOp*>(*task_iter);
@@ -511,18 +518,32 @@ int ObTableReplaceOp::fetch_conflict_rowkey(int64_t replace_row_cnt)
         }
       ++task_iter;
     }
-  }
-  while (OB_SUCC(ret) && !task_iter.is_end()) {
-    // 不需要clear rowkey表达式的eval_flag，因为主键使用的是column_ref表达式，不存在eval_fun
-    if (OB_FAIL(get_next_conflict_rowkey(task_iter))) {
-      if (OB_ITER_END != ret) {
-        LOG_WARN("fail to get next conflict rowkey from das_result", K(ret));
+  } else if (gts_state_ == WITH_UNIQUE_GLOBAL_INDEX_STATE) {
+    bool refresh_snapshot = false;
+    share::ObLSID try_exec_ls_id;
+    share::ObLSID lookup_ls_id;
+    if (!dml_rtctx_.das_ref_.check_tasks_same_ls_and_is_local(try_exec_ls_id)) {
+      LOG_TRACE("tablets in different ls_id when try insert", K(ctx_.get_das_ctx().get_snapshot()));
+    } else if (!conflict_checker_.das_ref_.check_tasks_same_ls_and_is_local(lookup_ls_id)) {
+      refresh_snapshot = true;
+      LOG_TRACE("tablets in different ls_id when lookup get conflicted row", K(ctx_.get_das_ctx().get_snapshot()));
+    } else if ((OB_UNLIKELY(try_exec_ls_id != lookup_ls_id))) {
+      refresh_snapshot = true;
+      LOG_TRACE("tablets in ls_id of try execution are different with lookup", K(ctx_.get_das_ctx().get_snapshot()));
+    }
+    if (refresh_snapshot) {
+      ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx_);
+      ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(ctx_);
+      if (OB_FAIL(ObSqlTransControl::get_read_snapshot(my_session,
+                                                       plan_ctx,
+                                                       ctx_.get_das_ctx().get_snapshot()))) {
+        LOG_WARN("fail to get global read snapshot", K(ret));
+      } else {
+        gts_state_ = GTE_GTS_STATE;
+        LOG_TRACE("get new snapshot", K(ctx_.get_das_ctx().get_snapshot()));
       }
-    } else if (OB_FAIL(conflict_checker_.build_primary_table_lookup_das_task())) {
-      LOG_WARN("fail to build lookup_das_task", K(ret));
     }
   }
-  ret = (ret == OB_ITER_END ? OB_SUCCESS : ret);
   return ret;
 }
 
@@ -659,6 +680,9 @@ int ObTableReplaceOp::do_replace_into()
       LOG_WARN("try insert is not duplicated, failed to process foreign key handle", K(ret));
     } else if (!check_is_duplicated()) {
       LOG_DEBUG("try insert is not duplicated", K(ret));
+    }
+    GET_DIAGNOSTIC_INFO->get_ash_stat().in_duplicate_conflict_resolve_=true;
+    if (OB_FAIL(ret) || !check_is_duplicated()) {
     } else if (OB_FAIL(fetch_conflict_rowkey(replace_row_store_.get_row_cnt()))) {
       LOG_WARN("fail to fetch conflict row", K(ret));
     } else if (OB_FAIL(reset_das_env())) {
@@ -678,7 +702,7 @@ int ObTableReplaceOp::do_replace_into()
     } else if (OB_FAIL(ObDMLService::handle_after_row_processing(this, &dml_modify_rows_))) {
       LOG_WARN("try insert is duplicated, failed to process foreign key handle", K(ret));
     }
-
+    GET_DIAGNOSTIC_INFO->get_ash_stat().in_duplicate_conflict_resolve_=false;
     if (OB_SUCC(ret) && !is_iter_end) {
       // 只有还有下一个batch时才需要做reuse，如果没有下一个batch，close和destroy中会释放内存
       // 前边逻辑执行成功，这一批batch成功完成replace, reuse环境, 准备下一个batch
@@ -717,6 +741,8 @@ int ObTableReplaceOp::replace_conflict_row_cache()
   ObInsRtDef &ins_rtdef = replace_rtdef.ins_rtdef_;
   ObDelRtDef &del_rtdef = replace_rtdef.del_rtdef_;
   const ObChunkDatumStore::StoredRow *stored_row = NULL;
+  ObSQLSessionInfo *my_session = GET_MY_SESSION(ctx_);
+  ObAuditRecordData &audit_record = my_session->get_raw_audit_record();
 
   NG_TRACE_TIMES(2, replace_start_shuff);
   if (OB_FAIL(replace_row_store_.begin(replace_row_iter))) {
@@ -767,6 +793,7 @@ int ObTableReplaceOp::replace_conflict_row_cache()
       }
       if (OB_SUCC(ret)) {
         modify_row.old_row_ = const_cast<ObChunkDatumStore::StoredRow *>(delete_row);
+        audit_record.insert_update_or_replace_duplicate_row_count_++;
         if (need_after_row_process(del_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
           LOG_WARN("failed to push dml modify row to modified row list", K(ret));
         }
@@ -1028,10 +1055,13 @@ int ObTableReplaceOp::check_values(bool &is_equal,
     const UIntFixedArray &column_ids = MY_SPEC.replace_ctdefs_.at(0)->ins_ctdef_->column_ids_;
     CK(new_row.at(i)->basic_funcs_->null_first_cmp_ == old_row.at(i)->basic_funcs_->null_first_cmp_);
     if (OB_SUCC(ret)) {
+      ObDocIDType type = ObDocIDUtils::get_type_by_col_id(MY_SPEC.doc_id_col_id_);
       if (share::schema::ObColumnSchemaV2::is_hidden_pk_column_id(column_ids[i])) {
-        //隐藏主键列不处理
-      } else if (MY_SPEC.doc_id_col_id_ == column_ids[i]) {
-        // skip doc id
+        // 隐藏主键列不处理
+      } else if ((type == ObDocIDType::TABLET_SEQUENCE) && (MY_SPEC.doc_id_col_id_ == column_ids[i])) {
+        // skip doc id (only for current doc id)
+      } else if (MY_SPEC.hidden_ck_col_id_ == column_ids[i]) {
+        // skip hidden clustering(sort) key
       } else {
         const ObDatum &insert_datum = replace_row->cells()[i];
         const ObDatum &del_datum = delete_row->cells()[i];
@@ -1039,6 +1069,7 @@ int ObTableReplaceOp::check_values(bool &is_equal,
           LOG_WARN("compare failed", K(ret));
         } else if (0 != cmp_ret) {
           is_equal = false;
+          break;
         }
       }
     }

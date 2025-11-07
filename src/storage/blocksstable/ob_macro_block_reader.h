@@ -21,6 +21,7 @@
 #include "ob_imicro_block_reader.h"
 #include "ob_micro_block_encryption.h"
 #include "storage/blocksstable/ob_sstable_printer.h"
+#include "storage/blocksstable/ob_simplified_sstable_macro_block_header.h"
 namespace oceanbase
 {
 namespace common
@@ -85,6 +86,15 @@ public:
       const ObSSTableMacroBlockHeader &block_header,
       const char *buf,
       const int64_t size,
+      const bool need_deep_copy,
+      const char *&uncomp_buf,
+      int64_t &uncomp_size,
+      bool &is_compressed);
+  int decrypt_and_decompress_data(
+      const ObSimplifiedSSTableMacroBlockHeader &block_header,
+      const char *buf,
+      const int64_t size,
+      const bool need_deep_copy,
       const char *&uncomp_buf,
       int64_t &uncomp_size,
       bool &is_compressed);
@@ -151,7 +161,7 @@ public:
   ObSSTableDataBlockReader();
   virtual ~ObSSTableDataBlockReader();
 
-  int init(const char *data, const int64_t size, const bool hex_print = false, FILE *fd = NULL);
+  int init(const char *data, const int64_t size, const int64_t hex_length, const bool hex_print = false, FILE *fd = NULL);
   void reset();
   int dump(const uint64_t tablet_id, const int64_t scn);
 private:
@@ -202,6 +212,7 @@ private:
   bool is_inited_;
   int64_t column_type_array_cnt_;
   ObSSTablePrinter printer_;
+  int64_t print_hex_length_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSSTableDataBlockReader);
 };

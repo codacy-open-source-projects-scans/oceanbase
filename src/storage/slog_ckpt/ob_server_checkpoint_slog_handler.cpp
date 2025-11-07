@@ -12,21 +12,19 @@
 
 #define USING_LOG_PREFIX STORAGE
 
+#include "observer/omt/ob_tenant.h"
+#include "share/rc/ob_tenant_base.h"
+#include "observer/ob_server_event_history_table_operator.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_slog_handler.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_reader.h"
 #include "storage/slog_ckpt/ob_server_checkpoint_writer.h"
 #include "storage/meta_store/ob_tenant_storage_meta_service.h"
-#include "storage/ob_super_block_struct.h"
-#include "observer/ob_server_struct.h"
-#include "observer/omt/ob_multi_tenant.h"
-#include "observer/omt/ob_tenant.h"
-#include "storage/slog/ob_storage_log_replayer.h"
-#include "storage/slog/ob_storage_log.h"
-#include "storage/slog/ob_storage_logger_manager.h"
-#include "storage/slog/ob_storage_logger.h"
-#include "observer/ob_server_event_history_table_operator.h"
-#include "storage/blocksstable/ob_object_manager.h"
 #include "storage/meta_store/ob_server_storage_meta_service.h"
+#include "storage/meta_store/ob_storage_meta_io_util.h"
+#include "storage/tx_storage/ob_tablet_gc_service.h"
+#ifdef OB_BUILD_SHARED_STORAGE
+#include "storage/shared_storage/ob_file_manager.h"
+#endif
 
 namespace oceanbase
 {
@@ -68,7 +66,7 @@ int ObServerCheckpointSlogHandler::init(ObStorageLogger *server_slogger)
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObServerCheckpointSlogHandler has inited", K(ret));
-  } else if (OB_FAIL(task_timer_.set_run_wrapper(MTL_CTX()))) {
+  } else if (OB_FAIL(task_timer_.set_run_wrapper_with_ret(MTL_CTX()))) {
     LOG_WARN("fail to set timer's run wrapper", K(ret));
   } else if (OB_FAIL(task_timer_.init("ServerCkptSlogHandler"))) {
     LOG_WARN("fail to init task timer", K(ret));
@@ -85,19 +83,9 @@ int ObServerCheckpointSlogHandler::init(ObStorageLogger *server_slogger)
 int ObServerCheckpointSlogHandler::start()
 {
   int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(task_timer_.start())) { // start checkpoint task after finsh replay slog
-    LOG_WARN("fail to start task timer", K(ret));
-  }
-  return ret;
-}
-
-int ObServerCheckpointSlogHandler::start_replay(TENANT_META_MAP &tenant_meta_map)
-{
-  int ret = OB_SUCCESS;
-
+  const int64_t MAX_TENANT_CNT = 512;
+  const char* MEM_LABEL = "SvrStoreMetaReplayer";
+  TENANT_META_MAP tenant_meta_map;
   const ObServerSuperBlock &super_block = OB_STORAGE_OBJECT_MGR.get_server_super_block();
   ObLogCursor replay_finish_point;
   if (IS_NOT_INIT) {
@@ -106,32 +94,23 @@ int ObServerCheckpointSlogHandler::start_replay(TENANT_META_MAP &tenant_meta_map
   } else if (OB_UNLIKELY(!super_block.is_valid())) {
     ret = OB_ERR_SYS;
     LOG_WARN("super block is invalid", K(ret), K(super_block));
+  } else if (OB_FAIL(tenant_meta_map.create(MAX_TENANT_CNT, MEM_LABEL, MEM_LABEL))) {
+    LOG_WARN("create tenant meta map fail", K(ret));
   } else {
     tenant_meta_map_for_replay_ = &tenant_meta_map;
-
     if (OB_FAIL(read_checkpoint(super_block))) {
       LOG_WARN("fail to read_checkpoint", K(ret));
     } else if (OB_FAIL(replay_server_slog(super_block.body_.replay_start_point_, replay_finish_point))) {
       LOG_WARN("fail to replay_sever_slog", K(ret), K(super_block));
     } else if (OB_FAIL(server_slogger_->start_log(replay_finish_point))) {
       LOG_WARN("fail to start slog", K(ret));
+    } else if (OB_FAIL(apply_replay_result(tenant_meta_map))) {
+      LOG_WARN("fail to apply replay result", K(ret));
+    } else if (OB_FAIL(task_timer_.start())) { // start checkpoint task after finsh replay slog
+      LOG_WARN("fail to start task timer", K(ret));
+    } else {
+      tenant_meta_map_for_replay_ = nullptr;
     }
-  }
-  return ret;
-}
-
-int ObServerCheckpointSlogHandler::do_post_replay_work()
-{
-  int ret = OB_SUCCESS;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(OB_SERVER_BLOCK_MGR.first_mark_device())) { // mark must after finish replay slog
-    LOG_WARN("fail to first mark device", K(ret));
-  } else if (OB_FAIL(try_write_checkpoint_for_compat())) {
-    LOG_WARN("fail to try write checkpoint for compat", K(ret));
-  } else {
-    tenant_meta_map_for_replay_ = nullptr;
   }
   return ret;
 }
@@ -152,48 +131,6 @@ void ObServerCheckpointSlogHandler::destroy()
   task_timer_.destroy();
 }
 
-int ObServerCheckpointSlogHandler::try_write_checkpoint_for_compat()
-{
-  int ret = OB_SUCCESS;
-  common::ObArray<omt::ObTenantMeta> tenant_metas;
-  omt::ObMultiTenant *omt = GCTX.omt_;
-  if (OB_ISNULL(omt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected error, omt is nullptr", K(ret));
-  } else if (OB_FAIL(omt->get_tenant_metas_for_ckpt(tenant_metas))) {
-    LOG_WARN("fail to get tenant metas", K(ret), KP(omt));
-  } else {
-    bool need_svr_ckpt = false;
-    for (int64_t i = 0; OB_SUCC(ret) && i < tenant_metas.size(); ++i) {
-      ObTenantSuperBlock &super_block = tenant_metas.at(i).super_block_;
-      if (!super_block.is_old_version()) {
-        // nothing to do.
-      } else {
-        MTL_SWITCH(super_block.tenant_id_) {
-          if (OB_FAIL(MTL(ObTenantStorageMetaService*)->write_checkpoint(true/*is_force*/))) {
-            LOG_WARN("fail to write tenant slog checkpoint", K(ret));
-          } else {
-            // we don't write checkpoint or update super_block for hidden tenant
-            // so it is necessary to update version here
-            if (super_block.is_hidden_) {
-              super_block.version_ = ObTenantSuperBlock::TENANT_SUPER_BLOCK_VERSION;
-              omt::ObTenant *tenant = static_cast<omt::ObTenant*>(share::ObTenantEnv::get_tenant());
-              tenant->set_tenant_super_block(super_block);
-            }
-            need_svr_ckpt = true;
-          }
-        }
-      }
-    }
-    if (OB_SUCC(ret)) {
-      if (need_svr_ckpt && OB_FAIL(write_checkpoint(true/*is_force*/))) {
-        LOG_WARN("fail to write server checkpoint", K(ret));
-      }
-    }
-  }
-  return ret;
-}
-
 int ObServerCheckpointSlogHandler::read_checkpoint(const ObServerSuperBlock &super_block)
 {
   int ret = OB_SUCCESS;
@@ -212,14 +149,37 @@ int ObServerCheckpointSlogHandler::read_checkpoint(const ObServerSuperBlock &sup
 int ObServerCheckpointSlogHandler::set_meta_block_list(ObIArray<MacroBlockId> &meta_block_list)
 {
   int ret = OB_SUCCESS;
-  TCWLockGuard guard(lock_);
-  if (OB_FAIL(server_meta_block_handle_.add_macro_blocks(meta_block_list))) {
-    LOG_WARN("fail to add_macro_blocks", K(ret));
+  if (!GCTX.is_shared_storage_mode()) {
+    TCWLockGuard guard(lock_);
+    if (OB_FAIL(server_meta_block_handle_.add_macro_blocks(meta_block_list))) {
+      LOG_WARN("fail to add_macro_blocks", K(ret));
+    }
+  } else {
+    int64_t min_file_id = INT64_MAX;
+    int64_t max_file_id = INT64_MIN;
+    for (int64_t i = 0; OB_SUCC(ret) && i < meta_block_list.count(); ++i) {
+      const MacroBlockId &macro_id = meta_block_list.at(i);
+      if (macro_id.fourth_id() > max_file_id) {
+        max_file_id = macro_id.fourth_id();
+      }
+      if (macro_id.fourth_id() < min_file_id) {
+        min_file_id = macro_id.fourth_id();
+      }
+    }
+    if (OB_SUCC(ret)) {
+      if (0 == meta_block_list.count()) { // nothing to do
+      } else if (OB_UNLIKELY(max_file_id < min_file_id || min_file_id < 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected error, min/max file id is invalid", K(ret), K(min_file_id), K(max_file_id));
+      } else {
+        OB_STORAGE_OBJECT_MGR.set_min_max_file_id_in_server_super_block(min_file_id, max_file_id);
+      }
+    }
   }
   return ret;
 }
 
-int ObServerCheckpointSlogHandler::get_meta_block_list(ObIArray<MacroBlockId> &meta_block_list)
+int ObServerCheckpointSlogHandler::get_meta_block_list(ObIArray<MacroBlockId> &meta_block_list) const
 {
   int ret = OB_SUCCESS;
   TCRLockGuard guard(lock_);
@@ -652,29 +612,50 @@ int ObServerCheckpointSlogHandler::replay_over()
 int ObServerCheckpointSlogHandler::write_checkpoint(bool is_force)
 {
   int ret = OB_SUCCESS;
+    int tmp_ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else {
+    bool is_writing_checkpoint_set = false;
+    while (!ATOMIC_BCAS(&is_writing_checkpoint_, false, true)) {
+      if (REACH_TIME_INTERVAL(10 * 1000 * 1000)) { // 10s
+        LOG_INFO("wait until last checkpoint finished");
+      }
+      ob_usleep(100 * 1000); // 100ms
+    }
+    is_writing_checkpoint_set = true;
+    if (OB_FAIL(gc_checkpoint_file())) {
+      LOG_WARN("fail to gc checkpoint file", K(ret));
+    } else if (OB_FAIL(inner_write_checkpoint(is_force))) {
+      LOG_WARN("fail to write checkpoint", K(ret), K(is_force));
+    }
+    // Regard the checkpoint is written successfully or not, gc the checkpoint file.
+    if (OB_TMP_FAIL(gc_checkpoint_file())) {
+      LOG_WARN("fail to gc checkpoint file", K(ret), K(tmp_ret));
+    }
+    if (is_writing_checkpoint_set) {
+      ATOMIC_STORE(&is_writing_checkpoint_, false);
+    }
+  }
+  return ret;
+}
 
+int ObServerCheckpointSlogHandler::inner_write_checkpoint(bool is_force)
+{
+  int ret = OB_SUCCESS;
   static int64_t last_write_time_ = 0;
   static ObLogCursor last_slog_cursor_;
 
   ObLogCursor cur_cursor;
   int64_t alert_interval = ObWriteCheckpointTask::FAIL_WRITE_CHECKPOINT_ALERT_INTERVAL;
   int64_t min_interval = ObWriteCheckpointTask::RETRY_WRITE_CHECKPOINT_MIN_INTERVAL;
-  bool is_writing_checkpoint_set = false;
   const int64_t start_time = ObTimeUtility::current_time();
   int64_t cost_time = 0;
-
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  } else if(!ATOMIC_BCAS(&is_writing_checkpoint_, false, true)) {
-    ret = OB_NEED_WAIT;
-    LOG_WARN("is writing checkpoint, need wait", K(ret));
-  } else {
-    is_writing_checkpoint_set = true;
-  }
-  if (OB_FAIL(ret)) {
-    // do nothing
   } else if (OB_FAIL(server_slogger_->get_active_cursor(cur_cursor))) {
     LOG_WARN("get server slog current cursor fail", K(ret));
   } else if (OB_UNLIKELY(!cur_cursor.is_valid())) {
@@ -688,7 +669,7 @@ int ObServerCheckpointSlogHandler::write_checkpoint(bool is_force)
       LOG_WARN("fail to init ObServerCheckpointWriter", K(ret));
     } else if (OB_FAIL(server_ckpt_writer.write_checkpoint(cur_cursor))) {
       LOG_WARN("failt to write server checkpoint", K(ret));
-    } else if (OB_FAIL(set_meta_block_list(server_ckpt_writer.get_meta_block_list()))) {
+    } else if (!GCTX.is_shared_storage_mode() && OB_FAIL(set_meta_block_list(server_ckpt_writer.get_meta_block_list()))) {
       LOG_WARN("fail to set meta block list", K(ret));
     } else {
       last_write_time_ = start_time;
@@ -701,11 +682,202 @@ int ObServerCheckpointSlogHandler::write_checkpoint(bool is_force)
     LOG_INFO("finish write server checkpoint", K(ret), K(last_slog_cursor_), K(cur_cursor),
         K_(last_write_time), K(start_time), K(is_force), K(cost_time));
   }
+  return ret;
+}
 
-  if (is_writing_checkpoint_set) {
-    ATOMIC_STORE(&is_writing_checkpoint_, false);
+int ObServerCheckpointSlogHandler::gc_checkpoint_file()
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObServerCheckpointSlogHandler not init", K(ret));
+  } else if (!GCTX.is_shared_storage_mode()) {
+    // nothing to do
+  } else {
+    const ObServerSuperBlock &super_block = OB_STORAGE_OBJECT_MGR.get_server_super_block();
+    if (OB_FAIL(gc_min_checkpoint_file(super_block.min_file_id_))) {
+      LOG_WARN("fail to gc min checkpoint file", K(ret), K(super_block));
+    } else if (OB_FAIL(gc_max_checkpoint_file(super_block.max_file_id_))) {
+      LOG_WARN("fail to gc max checkpoint file", K(ret), K(super_block));
+    }
+  }
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::gc_min_checkpoint_file(const int64_t min_file_id)
+{
+  int ret = OB_SUCCESS;
+#ifdef OB_BUILD_SHARED_STORAGE
+  int64_t min_exist_file_id = min_file_id - 1;
+  bool is_exist = true;
+  for (; OB_SUCC(ret) && min_exist_file_id >= 0; --min_exist_file_id) {
+    ObStorageObjectOpt opt;
+    opt.set_private_ckpt_opt(OB_SERVER_TENANT_ID, 0/*tenant epoch id*/, min_exist_file_id);
+    if (OB_FAIL(ObStorageMetaIOUtil::check_meta_existence(opt, 0/*do not need ls_epoch*/, is_exist))) {
+      LOG_WARN("fail to check slog checkpoint file exist", K(ret), K(opt));
+    } else if (!is_exist) {
+      ++min_exist_file_id;
+      break;
+    }
+  }
+  for (; OB_SUCC(ret) && min_exist_file_id >= 0 && min_exist_file_id < min_file_id; ++min_exist_file_id) {
+    MacroBlockId macro_id;
+    ObStorageObjectOpt opt;
+    opt.set_private_ckpt_opt(OB_SERVER_TENANT_ID, 0/*tenant epoch id*/, min_exist_file_id);
+    if (OB_FAIL(OB_STORAGE_OBJECT_MGR.ss_get_object_id(opt, macro_id))) {
+      LOG_WARN("fail to get object id", K(ret), K(opt), K(macro_id));
+    } else if (OB_FAIL(OB_SERVER_FILE_MGR.delete_file(macro_id, 0/*do not need ls_epoch*/))) {
+      LOG_WARN("fail to delete file", K(ret), K(macro_id));
+    }
+  }
+#endif
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::gc_max_checkpoint_file(const int64_t max_file_id)
+{
+  int ret = OB_SUCCESS;
+#ifdef OB_BUILD_SHARED_STORAGE
+  int64_t max_exist_file_id = max_file_id + 1;
+  bool is_exist = true;
+  for (; OB_SUCC(ret) && max_exist_file_id < INT64_MAX; ++max_exist_file_id) {
+    ObStorageObjectOpt opt;
+    opt.set_private_ckpt_opt(OB_SERVER_TENANT_ID, 0/*tenant epoch id*/, max_exist_file_id);
+    if (OB_FAIL(ObStorageMetaIOUtil::check_meta_existence(opt, 0/*do not need ls_epoch*/, is_exist))) {
+      LOG_WARN("fail to check slog checkpoint file exist", K(ret), K(opt));
+    } else if (!is_exist) {
+      --max_exist_file_id;
+      break;
+    }
+  }
+  for (; OB_SUCC(ret) && max_exist_file_id < INT64_MAX && max_exist_file_id > max_file_id; --max_exist_file_id) {
+    MacroBlockId macro_id;
+    ObStorageObjectOpt opt;
+    opt.set_private_ckpt_opt(OB_SERVER_TENANT_ID, 0/*tenant epoch id*/, max_exist_file_id);
+    if (OB_FAIL(OB_STORAGE_OBJECT_MGR.ss_get_object_id(opt, macro_id))) {
+      LOG_WARN("fail to get object id", K(ret), K(opt), K(macro_id));
+    } else if (OB_FAIL(OB_SERVER_FILE_MGR.delete_file(macro_id, 0/*do not need ls_epoch*/))) {
+      LOG_WARN("fail to delete file", K(ret), K(macro_id));
+    }
+  }
+#endif
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::apply_replay_result(const TENANT_META_MAP &tenant_meta_map)
+{
+  int ret = OB_SUCCESS;
+  int64_t tenant_count = tenant_meta_map.size();
+  for (TENANT_META_MAP::const_iterator iter = tenant_meta_map.begin();
+      OB_SUCC(ret) && iter !=  tenant_meta_map.end(); iter++) {
+    const omt::ObTenantMeta &tenant_meta = iter->second;
+    ObTenantCreateStatus create_status = tenant_meta.create_status_;
+    const uint64_t tenant_id = iter->first;
+
+    FLOG_INFO("replay tenant result", K(tenant_id), K(tenant_meta));
+
+    switch (create_status) {
+      case ObTenantCreateStatus::CREATING : {
+        if (OB_FAIL(handle_tenant_creating(tenant_id, tenant_meta))) {
+          LOG_ERROR("fail to handle tenant creating", K(ret), K(tenant_meta));
+        }
+        break;
+      }
+      case ObTenantCreateStatus::CREATED : {
+        if (OB_FAIL(handle_tenant_create_commit(tenant_meta))) {
+          LOG_ERROR("fail to handle tenant create commit", K(ret), K(tenant_meta));
+        }
+        break;
+      }
+      case ObTenantCreateStatus::DELETING : {
+        if (OB_FAIL(handle_tenant_deleting(tenant_id, tenant_meta))) {
+          LOG_ERROR("fail to handle tenant deleting", K(ret), K(tenant_meta));
+        }
+        break;
+      }
+      case ObTenantCreateStatus::DELETED :
+      case ObTenantCreateStatus::CREATE_ABORT :
+        break;
+
+      default:
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("tenant create status error", K(ret), K(tenant_meta));
+        break;
+    }
   }
 
+  if (OB_SUCC(ret) && 0 != tenant_count) {
+    GCTX.omt_->set_synced();
+  }
+
+  LOG_INFO("finish replay create tenants", K(ret), K(tenant_count));
+
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::handle_tenant_creating(
+    const uint64_t tenant_id, const omt::ObTenantMeta &tenant_meta)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(SERVER_STORAGE_META_SERVICE.clear_tenant_log_dir(tenant_id))) {
+    LOG_ERROR("fail to clear persistent data", K(ret), K(tenant_id));
+  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.abort_create_tenant(tenant_id, tenant_meta.epoch_))) {
+    LOG_ERROR("fail to ab", K(ret), K(tenant_id));
+  }
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::handle_tenant_create_commit(const omt::ObTenantMeta &tenant_meta)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = tenant_meta.unit_.tenant_id_;
+#ifdef OB_BUILD_SHARED_STORAGE
+  if (OB_FAIL(ret)) {
+  } else if (GCTX.is_shared_storage_mode()) {
+    // when restart observer, need update_hidden_sys_data_disk_config_size value from sys_tenant_unit_meta
+    if (OB_SYS_TENANT_ID == tenant_id) {
+      const int64_t hidden_sys_data_disk_config_size = tenant_meta.unit_.hidden_sys_data_disk_config_size_;
+      if (OB_FAIL(OB_SERVER_DISK_SPACE_MGR.update_hidden_sys_data_disk_config_size(hidden_sys_data_disk_config_size))) {
+        LOG_WARN("fail to update default hidden sys data_disk_size", KR(ret), K(hidden_sys_data_disk_config_size));
+      }
+    }
+  }
+#endif
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(GCTX.omt_->create_tenant(tenant_meta, false/* write_slog */))) {
+    LOG_ERROR("fail to replay create tenant", K(ret), K(tenant_meta));
+  }
+#ifdef OB_BUILD_SHARED_STORAGE
+  if (OB_FAIL(ret)) {
+  } else if (GCTX.is_shared_storage_mode()) {
+    MTL_SWITCH(tenant_id) {
+      // for macro check in observer start
+      MTL(checkpoint::ObTabletGCService*)->set_observer_start_macro_block_id_trigger();
+    }
+    // when restart observer, if current sys tenant is hidden, hidden_sys_data_disk_size is hidden_sys_data_disk_config_size
+    const bool is_hidden = tenant_meta.super_block_.is_hidden_;
+    if ((OB_SYS_TENANT_ID == tenant_id) && is_hidden) {
+      const int64_t hidden_sys_data_disk_size = tenant_meta.unit_.config_.data_disk_size();
+      if (OB_FAIL(OB_SERVER_DISK_SPACE_MGR.update_hidden_sys_data_disk_size(hidden_sys_data_disk_size))) {
+        LOG_WARN("fail to update hidden sys data disk size", KR(ret), K(hidden_sys_data_disk_size));
+      }
+    }
+  }
+#endif
+
+  return ret;
+}
+
+int ObServerCheckpointSlogHandler::handle_tenant_deleting(
+    const uint64_t tenant_id,
+    const omt::ObTenantMeta &tenant_meta)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(SERVER_STORAGE_META_SERVICE.clear_tenant_log_dir(tenant_id))) {
+    LOG_ERROR("fail to clear tenant log dir", K(ret), K(tenant_id));
+  } else if (OB_FAIL(SERVER_STORAGE_META_SERVICE.commit_delete_tenant(tenant_id, tenant_meta.epoch_))) {
+    LOG_ERROR("fail to commit delete tenant", K(ret), K(tenant_id));
+  }
   return ret;
 }
 

@@ -14,8 +14,6 @@
 #include "sql/resolver/dcl/ob_create_user_resolver.h"
 #include "sql/resolver/ddl/ob_database_resolver.h"
 #include "sql/resolver/dcl/ob_set_password_resolver.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "objit/common/ob_item_type.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -107,6 +105,7 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
 
           ObString password;
           ObString need_enc_str = ObString::make_string("NO");
+          bool need_enc = true;
           if (OB_SUCC(ret)) {
             if (user_name.empty()) {
               ret = OB_CANNOT_USER;
@@ -122,7 +121,7 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
             } else {
               password.assign_ptr(user_pass->children_[1]->str_value_,
                                   static_cast<int32_t>(user_pass->children_[1]->str_len_));
-              bool need_enc = (1 == user_pass->children_[2]->value_);
+              need_enc = (1 == user_pass->children_[2]->value_);
               if (need_enc) {
                 need_enc_str = ObString::make_string("YES");
               } else {
@@ -153,7 +152,7 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
             }
           }
           create_user_stmt->set_profile_id(profile_id);  //只有oracle模式profile id是有效的
-          if (OB_SUCC(ret)) {
+          if (OB_SUCC(ret) && need_enc) {
             if (!lib::is_oracle_mode() && OB_FAIL(check_password_strength(password))) {
               LOG_WARN("password don't satisfied current policy", K(ret));
             } else if (lib::is_oracle_mode() && OB_FAIL(check_oracle_password_strength(
@@ -168,6 +167,14 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
             if (user_name.length() > OB_MAX_USER_NAME_LENGTH) {
               ret = OB_WRONG_USER_NAME_LENGTH;
               LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr());
+            } else if (password.length() > OB_MAX_PASSWORD_LENGTH) {
+              if (lib::is_oracle_mode()) {
+                ret = OB_ERR_MISSING_OR_INVALID_PASSWORD;
+                LOG_USER_ERROR(OB_ERR_MISSING_OR_INVALID_PASSWORD);
+              } else {
+                ret = OB_NOT_SUPPORTED;
+                LOG_USER_ERROR(OB_NOT_SUPPORTED, "create a user with an excessively long password");
+              }
             } else if (OB_FAIL(create_user_stmt->add_user(user_name, host_name, password, need_enc_str))) {
               LOG_WARN("Failed to add user to ObCreateUserStmt", K(user_name), K(host_name), K(password), K(ret));
             } else {

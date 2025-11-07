@@ -10,21 +10,13 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
 #define protected public
 #define private public
 #include "sql/test_sql_utils.h"
-#include "lib/utility/ob_test_util.h"
-#include "sql/rewrite/ob_query_range.h"
 #include "sql/ob_sql_init.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "common/ob_clock_generator.h"
-#include "lib/json/ob_json_print_utils.h"
-#include "lib/geo/ob_s2adapter.h"
 #define private public
 #include "observer/ob_server.h"
 #undef private
-#include <fstream>
 #undef protected
 #undef private
 using namespace oceanbase;
@@ -59,7 +51,9 @@ public:
     ctx.connection_charset_ = CHARSET_UTF8MB4;
     ctx.param_list_ = params;
     ObSQLSessionInfo session;
+    session.effective_tenant_id_ = 1;
     ctx.session_info_ = &session;
+    LinkExecCtxGuard link_guard(session, exec_ctx_);
 
     EXPECT_TRUE(OB_SUCCESS == oceanbase::ObPreProcessSysVars::init_sys_var());
     EXPECT_TRUE(OB_SUCCESS == session.test_init(0, 0, 0, NULL));
@@ -137,7 +131,9 @@ public:
     ctx.dest_collation_ = con_type;
     ctx.param_list_ = &params;
     ObSQLSessionInfo session;
+    session.effective_tenant_id_ = 1;
     ctx.session_info_ = &session;
+    LinkExecCtxGuard link_guard(session, exec_ctx_);
 
     EXPECT_TRUE(OB_SUCCESS == oceanbase::ObPreProcessSysVars::init_sys_var());
     EXPECT_TRUE(OB_SUCCESS == session.test_init(0, 0, 0, NULL));
@@ -244,12 +240,14 @@ public:
     } else {
       OK(dec_query_range1.get_tablet_ranges(allocator, exec_ctx_, ranges, all_single_value_ranges, NULL));
     }
+    helper.reset();
     _OB_LOG(INFO, "ranges: %s, except_range: %s", helper.convert(ranges), except_range);
 
     ASSERT_EQ(0, strcmp(helper.convert(ranges), except_range));
     EXPECT_EQ(all_single_value_ranges, except_all_single_value_ranges);
 
     ranges.reset();
+    helper.reset();
     all_single_value_ranges = true;
     OK(dec_query_range2.get_tablet_ranges(ranges, all_single_value_ranges, dtc_params));
     _OB_LOG(DEBUG, "ranges: %s, except_range: %s", helper.convert(ranges), except_range);
@@ -257,6 +255,7 @@ public:
     EXPECT_EQ(all_single_value_ranges, except_all_single_value_ranges);
 
     ranges.reset();
+    helper.reset();
     all_single_value_ranges = true;
     ObArray<ObRawExpr*> and_exprs;
     split_and_condition(expr, and_exprs);
@@ -1034,16 +1033,16 @@ TEST_F(ObQueryRangeTest, range_column_with_triple_key)
 //  resolve_condition(triple_range_columns_, "(a, d) in ((? , ?)) or (a, d) = (?, ?)", condition, &params);
 //  OK(query_range.preliminary_extract_query_range(triple_range_columns_, condition, dtc_params, &exec_ctx_));
 //
-//  _OB_LOG(INFO, "XXXX %s", to_cstring(query_range));
-//  _OB_LOG(INFO, "XXXX params: %s", to_cstring(params));
+//  _OB_LOG(INFO, "XXXX %s", helper.convert(query_range));
+//  _OB_LOG(INFO, "XXXX params: %s", helper.convert(params));
 //  OK(query_range.final_extract_query_range(exec_ctx_, dtc_params));
-//  _OB_LOG(INFO, "XXXX final: %s", to_cstring(query_range));
+//  _OB_LOG(INFO, "XXXX final: %s", helper.convert(query_range));
 //
 //  ObQueryRangeArray ranges;
 //  bool all_single_value_ranges = true;
 //
 //  OK(query_range.get_tablet_ranges(ranges, all_single_value_ranges, dtc_params));
-//  _OB_LOG(INFO, "ranges: %s", to_cstring(ranges));
+//  _OB_LOG(INFO, "ranges: %s", helper.convert(ranges));
 ////  ASSERT_EQ(1, ranges.count());
 ////  int64_t value = 0;
 ////
@@ -1324,7 +1323,7 @@ int main(int argc, char **argv)
   init_sql_factories();
   system("rm -rf test_query_range.log*");
   OB_LOGGER.set_file_name("test_query_range.log", true);
-  OB_LOGGER.set_log_level("TRACE");
+  OB_LOGGER.set_log_level("WARN");
   int ret = 0;
   ContextParam param;
   param.set_mem_attr(1001, "QueryRange", ObCtxIds::WORK_AREA)

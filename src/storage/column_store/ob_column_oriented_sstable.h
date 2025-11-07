@@ -53,6 +53,7 @@ public:
   TO_STRING_KV(KPC_(sstable), K_(meta_handle));
 private:
   friend class ObCOSSTableV2;
+  friend class ObIncMajorDDLAggregateCOSSTable;
   ObStorageMetaHandle meta_handle_; // keep the lifetime of cg sstable
   blocksstable::ObSSTable *sstable_;
 };
@@ -167,9 +168,12 @@ public:
 
   bool is_row_store_only_co_table() const { return is_cgs_empty_co_ && is_all_cg_base(); }
   bool is_cgs_empty_co_table() const { return is_cgs_empty_co_; }
-  int fill_cg_sstables(const common::ObIArray<ObITable *> &cg_tables);
+  int fill_cg_sstables(
+      const common::ObIArray<ObITable *> &cg_tables,
+      const int64_t new_progressive_merge_step = OB_INVALID_INDEX_INT64 /*only used for co merge*/);
+  int set_progressive_merge_step(const int64_t progressive_merge_step);
   OB_INLINE const ObCOSSTableMeta &get_cs_meta() const { return cs_meta_; }
-  OB_INLINE bool is_all_cg_base() const { return ObCOSSTableBaseType::ALL_CG_TYPE == base_type_; }
+  OB_INLINE bool is_all_cg_base() const override final { return ObCOSSTableBaseType::ALL_CG_TYPE == base_type_; }
   OB_INLINE bool is_rowkey_cg_base() const { return ObCOSSTableBaseType::ROWKEY_CG_TYPE == base_type_; }
   OB_INLINE bool is_inited() const { return is_cgs_empty_co_table() || is_cs_valid(); }
   OB_INLINE bool is_cs_valid() const {
@@ -178,14 +182,14 @@ public:
         && key_.column_group_idx_ < cs_meta_.column_group_cnt_;
   }
   int64_t get_data_checksum() const override;
-  int fetch_cg_sstable(
+  virtual int fetch_cg_sstable(
       const uint32_t cg_idx,
       ObSSTableWrapper &cg_wrapper) const;
-  int get_cg_sstable(const uint32_t cg_idx, ObSSTableWrapper &cg_wrapper) const;
-  int get_all_tables(common::ObIArray<ObSSTableWrapper> &table_wrappers) const;
+  virtual int get_cg_sstable(const uint32_t cg_idx, ObSSTableWrapper &cg_wrapper) const;
+  virtual int get_all_tables(common::ObIArray<ObSSTableWrapper> &table_wrappers) const;
 
-  virtual int64_t get_serialize_size() const override;
-  virtual int serialize(char *buf, const int64_t buf_len, int64_t &pos) const override;
+  virtual int64_t get_serialize_size(const uint64_t data_version) const override;
+  virtual int serialize(const uint64_t data_version, char *buf, const int64_t buf_len, int64_t &pos) const override;
   virtual int deserialize(
       common::ObArenaAllocator &allocator,
       const char *buf,
@@ -196,8 +200,8 @@ public:
       common::ObArenaAllocator &allocator,
       const common::ObIArray<ObMetaDiskAddr> &cg_addrs,
       ObCOSSTableV2 *&co_sstable);
-  virtual int serialize_full_table(char *buf, const int64_t buf_len, int64_t &pos) const override;
-  virtual int64_t get_full_serialize_size() const override;
+  virtual int serialize_full_table(const uint64_t data_version, char *buf, const int64_t buf_len, int64_t &pos) const override;
+  virtual int64_t get_full_serialize_size(const uint64_t data_version) const override;
 
   virtual int deep_copy(char *buf, const int64_t buf_len, ObIStorageMetaObj *&value) const override;
   virtual int64_t get_deep_copy_size() const override
@@ -223,7 +227,8 @@ public:
       ObTableAccessContext &context,
       ObICGIterator *&cg_iter,
       const bool is_projector /* remove later, needed to be used in projector */,
-      const bool project_single_row);
+      const bool project_single_row,
+      ObIAllocator* iter_alloc = nullptr /* use this to alloc cg_iter if is not null */);
   virtual int get(
       const storage::ObTableIterParam &param,
       storage::ObTableAccessContext &context,

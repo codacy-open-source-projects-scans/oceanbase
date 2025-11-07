@@ -10,25 +10,78 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
 #define USING_LOG_PREFIX SERVER
 #define protected public
 #define private public
 #define UNITTEST
 
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "share/object_storage/ob_device_config_mgr.h"
-#include "close_modules/shared_storage/storage/shared_storage/ob_private_block_gc_task.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "close_modules/shared_storage/storage/shared_storage/ob_dir_manager.h"
-#include "share/ob_io_device_helper.h"
-#include "close_modules/shared_storage/storage/shared_storage/ob_public_block_gc_service.h"
 #include "sensitive_test/object_storage/object_storage_authorization_info.h"
 #include "mittest/simple_server/env/ob_simple_cluster_test_base.h"
 #include "mittest/shared_storage/clean_residual_data.h"
 #include "storage/init_basic_struct.h"
 #include "rootserver/ob_ls_recovery_reportor.h"
-#include "storage/shared_storage/ob_file_op.h"
+#include "unittest/storage/sslog/test_mock_palf_kv.h"
+#include "close_modules/shared_storage/storage/incremental/sslog/ob_i_sslog_proxy.h"
+#include "close_modules/shared_storage/storage/incremental/sslog/ob_sslog_kv_proxy.h"
+
+namespace oceanbase
+{
+OB_MOCK_PALF_KV_FOR_REPLACE_SYS_TENANT
+namespace sslog
+{
+
+oceanbase::unittest::ObMockPalfKV PALF_KV;
+
+int get_sslog_table_guard(const ObSSLogTableType type,
+                          const int64_t tenant_id,
+                          ObSSLogProxyGuard &guard)
+{
+  int ret = OB_SUCCESS;
+
+  switch (type)
+  {
+    case ObSSLogTableType::SSLOG_TABLE: {
+      void *proxy = share::mtl_malloc(sizeof(ObSSLogTableProxy), "ObSSLogTable");
+      if (nullptr == proxy) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        ObSSLogTableProxy *sslog_table_proxy = new (proxy) ObSSLogTableProxy(tenant_id);
+        if (OB_FAIL(sslog_table_proxy->init())) {
+          SSLOG_LOG(WARN, "fail to inint", K(ret));
+        } else {
+          guard.set_sslog_proxy((ObISSLogProxy *)proxy);
+        }
+      }
+      break;
+    }
+    case ObSSLogTableType::SSLOG_PALF_KV: {
+      void *proxy = share::mtl_malloc(sizeof(ObSSLogKVProxy), "ObSSLogTable");
+      if (nullptr == proxy) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+      } else {
+        ObSSLogKVProxy *sslog_kv_proxy = new (proxy) ObSSLogKVProxy(&PALF_KV);
+        // if (OB_FAIL(sslog_kv_proxy->init(GCONF.cluster_id, tenant_id))) {
+        //   SSLOG_LOG(WARN, "init palf kv failed", K(ret));
+        // } else {
+          guard.set_sslog_proxy((ObISSLogProxy *)proxy);
+        // }
+      }
+      break;
+    }
+    default: {
+      ret = OB_INVALID_ARGUMENT;
+      SSLOG_LOG(WARN, "invalid sslog type", K(type));
+      break;
+    }
+  }
+
+  return ret;
+}
+} // namespace sslog
+} // namespace oceanbase
+
 
 namespace oceanbase
 {
@@ -73,6 +126,63 @@ int ObCheckDirEmptOp::func(const dirent *entry)
   return OB_ERR_EXIST_OBJECT;
 }
 
+class ObSharedMajorMacroListOp : public ObBaseDirEntryOperator
+{
+public:
+  explicit ObSharedMajorMacroListOp(const ObMacroType macro_type)
+    : macro_type_(macro_type), file_list_()
+  {
+    file_list_.set_attr(ObMemAttr(MTL_ID(), "ListMajorMacro"));
+  }
+  virtual int func(const dirent *entry) override
+  {
+    int ret = OB_SUCCESS;
+    int64_t macro_seq = 0;
+    bool is_match = false;
+    char format[512] = {0};
+    if (OB_ISNULL(entry)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid entry", KR(ret));
+    } else if (ObMacroType::DATA_MACRO == macro_type_) {
+      if (OB_FAIL(databuff_printf(format, sizeof(format), "%s%%ld.T%hhu", SEQ_KEY_STR,
+                                  ObStorageObjectType::SHARED_MAJOR_DATA_MACRO))) {
+        LOG_WARN("fail to databuff printf", KR(ret));
+      } else if (OB_UNLIKELY(1 != sscanf(entry->d_name, format, &macro_seq))) {
+        // do nothing, only print log
+        LOG_WARN("unexpected path", K(entry->d_name));
+      } else {
+        is_match = true;
+      }
+    } else if (ObMacroType::META_MACRO == macro_type_) {
+      if (OB_FAIL(databuff_printf(format, sizeof(format), "%s%%ld.T%hhu", SEQ_KEY_STR,
+                                  ObStorageObjectType::SHARED_MAJOR_META_MACRO))) {
+        LOG_WARN("fail to databuff printf", KR(ret));
+      } else if (OB_UNLIKELY(1 != sscanf(entry->d_name, format, &macro_seq))) {
+        // do nothing, only print log
+        LOG_WARN("unexpected path", K(entry->d_name));
+      } else {
+        is_match = true;
+      }
+    }
+    if (OB_SUCC(ret) && is_match) {
+      if (OB_UNLIKELY(macro_seq < 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected error", KR(ret), K(macro_seq));
+      } else {
+        if (OB_FAIL(file_list_.push_back(macro_seq))) {
+          LOG_WARN("failed to push back", KR(ret), K(macro_seq));
+        }
+      }
+    }
+    return ret;
+  }
+  TO_STRING_KV(K_(file_list));
+public:
+  static const int64_t OB_DEFAULT_ARRAY_CAPACITY = 128;
+  ObMacroType macro_type_;
+  ObSEArray<int64_t, OB_DEFAULT_ARRAY_CAPACITY> file_list_;
+};
+
 class ObSharedStorageTest : public ObSimpleClusterTestBase
 {
 public:
@@ -89,7 +199,8 @@ public:
   void wait_minor_finish();
   void wait_tablet_gc_finish();
   void get_tablet_version(
-      int64_t &tablet_version);
+      int64_t &tablet_version,
+      int64_t &last_gc_version);
   void set_ls_and_tablet_id_for_run_ctx();
   void wait_ls_gc_finish(
       const ObLSID &ls_id,
@@ -118,11 +229,23 @@ TEST_F(ObSharedStorageTest, observer_start)
 
 TEST_F(ObSharedStorageTest, add_tenant)
 {
-  ASSERT_EQ(OB_SUCCESS, create_tenant("tt1", "5G", "10G", false, 10));
-  ASSERT_EQ(OB_SUCCESS, get_tenant_id(RunCtx.tenant_id_));
+  int cnt = 0;
+  int ret = OB_SUCCESS;
+  while (cnt < 1000) {
+    ob_usleep(10 * 1000);
+    if (OB_FAIL(create_tenant("tt1", "5G", "10G", false, 10))) {
+      TRANS_LOG(WARN, "create_tenant fail", K(ret));
+    } else if (OB_FAIL(get_tenant_id(RunCtx.tenant_id_))) {
+      TRANS_LOG(WARN, "get tenant id fail", K(ret));
+    } else if (OB_FAIL(get_curr_simple_server().init_sql_proxy2())) {
+      TRANS_LOG(WARN, "init sql proxy fail", K(ret));
+    } else {
+      break;
+    }
+    cnt++;
+  }
+  ASSERT_EQ(OB_SUCCESS, ret);
   ASSERT_NE(0, RunCtx.tenant_id_);
-  ASSERT_EQ(OB_SUCCESS, get_curr_simple_server().init_sql_proxy2());
-
 }
 
 TEST_F(ObSharedStorageTest, test_tablet_gc_for_private_dir)
@@ -131,24 +254,31 @@ TEST_F(ObSharedStorageTest, test_tablet_gc_for_private_dir)
   ASSERT_EQ(OB_SUCCESS, tguard.switch_to(RunCtx.tenant_id_));
   ObSqlString sql;
   int64_t affected_rows = 0;
-  int64_t tablet_version1;
-  int64_t tablet_version2;
-  int64_t tablet_version3;
+  int64_t tablet_version1 = -1;
+  int64_t tablet_version2 = -1;
+  int64_t tablet_version3 = -1;
+  int64_t last_gc_version1 = -1;
+  int64_t last_gc_version2 = -1;
+  int64_t last_gc_version3 = -1;
   EXE_SQL("create table test_table (a int)");
   LOG_INFO("create_table finish");
 
   set_ls_and_tablet_id_for_run_ctx();
 
 
-  get_tablet_version(tablet_version1);
+  get_tablet_version(tablet_version1, last_gc_version1);
   EXE_SQL("insert into test_table values (1)");
   LOG_INFO("insert data finish");
+  ASSERT_GE(last_gc_version1, -1);
+  ASSERT_LT(last_gc_version1, tablet_version1);
 
   EXE_SQL("alter system minor freeze tenant tt1;");
   wait_minor_finish();
-  get_tablet_version(tablet_version2);
+  get_tablet_version(tablet_version2, last_gc_version2);
   LOG_INFO("get tablet version", K(tablet_version1), K(tablet_version2));
   ASSERT_LT(tablet_version1, tablet_version2);
+  ASSERT_GE(last_gc_version2, -1);
+  ASSERT_LT(last_gc_version2, tablet_version2);
 
 
   EXE_SQL("insert into test_table values (1)");
@@ -157,9 +287,11 @@ TEST_F(ObSharedStorageTest, test_tablet_gc_for_private_dir)
   EXE_SQL("alter system minor freeze tenant tt1;");
   wait_minor_finish();
 
-  get_tablet_version(tablet_version3);
+  get_tablet_version(tablet_version3, last_gc_version3);
   LOG_INFO("get tablet version", K(tablet_version2), K(tablet_version3));
   ASSERT_LT(tablet_version2, tablet_version3);
+  ASSERT_GE(last_gc_version3, -1);
+  ASSERT_LT(last_gc_version3, tablet_version3);
 
   check_block_for_private_dir(tablet_version3);
 
@@ -183,7 +315,7 @@ TEST_F(ObSharedStorageTest, test_ls_abort)
   ObLS *ls = handle.get_ls();
   ASSERT_NE(nullptr, ls);
   ASSERT_EQ(OB_SUCCESS, ls->offline());
-  ASSERT_EQ(OB_SUCCESS, TENANT_STORAGE_META_PERSISTER.abort_create_ls(ls->get_ls_id(), ls->get_ls_epoch()));
+  ASSERT_EQ(OB_SUCCESS, TENANT_STORAGE_META_SERVICE.abort_create_ls(ls->get_ls_id(), ls->get_ls_epoch()));
   wait_ls_gc_finish(ls->get_ls_id(), ls->get_ls_epoch());
 }
 
@@ -290,23 +422,30 @@ TEST_F(ObSharedStorageTest, end)
 }
 
 void ObSharedStorageTest::get_tablet_version(
-      int64_t &tablet_version)
+      int64_t &tablet_version,
+      int64_t &last_gc_version)
 {
   ObArray<int64_t> tablet_versions;
   bool is_old_version_empty = false;
   int64_t current_tablet_version = -1;
   int64_t current_tablet_trans_seq = -1;
+  uintptr_t tablet_fingerprint = 0;
   do {
-    ASSERT_EQ(OB_SUCCESS, MTL(ObTenantMetaMemMgr*)->get_current_version_for_tablet(RunCtx.ls_id_, RunCtx.tablet_id_, current_tablet_version, current_tablet_trans_seq, is_old_version_empty));
+    ASSERT_EQ(OB_SUCCESS, MTL(ObTenantMetaMemMgr*)->get_current_version_for_tablet(RunCtx.ls_id_, RunCtx.tablet_id_, current_tablet_version, last_gc_version, current_tablet_trans_seq, tablet_fingerprint, is_old_version_empty));
     ASSERT_NE(-1, current_tablet_version);
+    ASSERT_GE(last_gc_version, -1);
+    ASSERT_LT(last_gc_version, current_tablet_version);
     if (!is_old_version_empty) continue;
 
-    ObPrivateBlockGCHandler handler(RunCtx.ls_id_, RunCtx.ls_epoch_, RunCtx.tablet_id_, current_tablet_version, current_tablet_trans_seq);
-    LOG_INFO("wait old tablet version delete", K(current_tablet_version), K(is_old_version_empty), K(RunCtx.ls_id_), K(RunCtx.ls_epoch_), K(handler));
+    ObPrivateBlockGCHandler handler(RunCtx.ls_id_, RunCtx.ls_epoch_, RunCtx.tablet_id_, current_tablet_version, last_gc_version, current_tablet_trans_seq, tablet_fingerprint);
+    LOG_INFO("wait old tablet version delete", K(current_tablet_version), K(last_gc_version), K(is_old_version_empty), K(RunCtx.ls_id_), K(RunCtx.ls_epoch_), K(handler));
     ASSERT_EQ(OB_SUCCESS, handler.list_tablet_meta_version(tablet_versions));
     usleep(100 * 1000);
   } while (1 != tablet_versions.count());
-  tablet_version = tablet_versions.at(0);
+  tablet_version = -1;
+  for (int64_t i = 0; i < tablet_versions.count(); ++i) {
+    tablet_version = max(tablet_version, tablet_versions.at(i));
+  }
 }
 
 void ObSharedStorageTest::wait_tablet_gc_finish()
@@ -327,41 +466,11 @@ void ObSharedStorageTest::wait_tablet_gc_finish()
   } while (is_exist);
 }
 
-void ObSharedStorageTest::check_block_for_shared_dir()
-{
-
-  ObPublicBlockGCHandler handler(RunCtx.tablet_id_);
-  ObArray<blocksstable::MacroBlockId> block_ids_in_tablet;
-  ObArray<blocksstable::MacroBlockId> unuse_block_ids;
-  ObArray<blocksstable::MacroBlockId> block_ids_in_dir;
-  ObArray<blocksstable::MacroBlockId> empty_block_ids;
-  ObArray<int64_t> tablet_meta_versions;
-  GCTabletOP op_for_result;
-
-  do {
-    ASSERT_EQ(OB_SUCCESS, handler.list_tablet_meta_version(tablet_meta_versions));
-    LOG_INFO("tablet meta versions", K(tablet_meta_versions));
-  } while (1 != tablet_meta_versions.count());
-
-  int64_t tablet_version = tablet_meta_versions.at(0);
-
-  ASSERT_EQ(OB_SUCCESS, handler.get_blocks_for_tablet(tablet_version, block_ids_in_tablet));
-  ASSERT_EQ(OB_SUCCESS, op_for_result(block_ids_in_tablet, unuse_block_ids));
-
-  MacroBlockCheckOP op_for_check(op_for_result.result_block_id_set_, 0, UINT64_MAX - 1);
-  ASSERT_EQ(OB_SUCCESS, get_block_ids_from_dir(RunCtx.tablet_id_, ObMacroType::DATA_MACRO, block_ids_in_dir));
-  ASSERT_EQ(OB_SUCCESS, get_block_ids_from_dir(RunCtx.tablet_id_, ObMacroType::META_MACRO, block_ids_in_dir));
-  ASSERT_EQ(OB_SUCCESS, op_for_check(block_ids_in_dir, empty_block_ids));
-  LOG_INFO("check block", K(tablet_meta_versions), K(tablet_version), K(empty_block_ids), K(block_ids_in_tablet), K(block_ids_in_dir));
-  ASSERT_EQ(block_ids_in_tablet.count(), block_ids_in_dir.count());
-  ASSERT_EQ(0, empty_block_ids.count());
-}
-
 void ObSharedStorageTest::check_block_for_private_dir(
     const int64_t tablet_version)
 {
 
-  ObPrivateBlockGCHandler handler(RunCtx.ls_id_, RunCtx.ls_epoch_, RunCtx.tablet_id_, tablet_version, 0 /*transfer_seq*/);
+  ObPrivateBlockGCHandler handler(RunCtx.ls_id_, RunCtx.ls_epoch_, RunCtx.tablet_id_, tablet_version, -1/*last_gc_version*/, 0 /*transfer_seq*/, 0/*tablet_fingerprint*/);
   ObArray<blocksstable::MacroBlockId> block_ids_in_tablet;
   ObArray<blocksstable::MacroBlockId> unuse_block_ids;
   ObArray<blocksstable::MacroBlockId> block_ids_in_dir;
@@ -373,11 +482,11 @@ void ObSharedStorageTest::check_block_for_private_dir(
   ASSERT_EQ(OB_SUCCESS, handler.list_tablet_meta_version(tablet_meta_versions));
   ASSERT_EQ(1, tablet_meta_versions.count());
 
-  ASSERT_EQ(OB_SUCCESS, handler.get_blocks_for_tablet(tablet_version, block_ids_in_tablet));
+  ASSERT_EQ(OB_SUCCESS, handler.get_blocks_for_tablet(tablet_version, false/*is_shared*/, block_ids_in_tablet));
   ASSERT_EQ(OB_SUCCESS, handler.get_block_ids_from_dir(block_ids_in_dir));
   ASSERT_EQ(block_ids_in_tablet.count(), block_ids_in_dir.count());
   ASSERT_EQ(OB_SUCCESS, op_for_block_ids_in_tablet_result(block_ids_in_tablet, unuse_block_ids));
-  MacroBlockCheckOP op_for_check(op_for_block_ids_in_tablet_result.result_block_id_set_, 0, UINT64_MAX - 1);
+  PrivateMacroBlockCheckOP op_for_check(op_for_block_ids_in_tablet_result.result_block_id_set_, 0, UINT64_MAX - 1);
   ASSERT_EQ(OB_SUCCESS, op_for_check(block_ids_in_dir, empty_block_ids));
   ASSERT_EQ(0, empty_block_ids.count());
 
@@ -390,14 +499,14 @@ int ObSharedStorageTest::get_block_ids_from_dir(
     ObIArray<blocksstable::MacroBlockId> &block_ids)
 {
   int ret = OB_SUCCESS;
-  ObSingleNumFileListOp shared_macro_op;
+  ObSharedMajorMacroListOp shared_macro_op(macro_type);
   char shared_macro_path[storage::ObServerFileManager::OB_MAX_FILE_PATH_LENGTH] = {0};
   const int64_t cluster_id = GCONF.cluster_id;
   char *object_storage_root_dir = nullptr;
   if (OB_FAIL(OB_DIR_MGR.get_object_storage_root_dir(object_storage_root_dir))) {
     LOG_WARN("fail to get object storage root dir", KR(ret), K(object_storage_root_dir));
-  // cluster_id/tenant_id/tablet/tablet_id/major/sstable/cg_id/data or meta
-  } else if (OB_FAIL(databuff_printf(shared_macro_path, sizeof(shared_macro_path), "%s/%s_%ld/%s_%lu/%s/%ld/%s/%s/cg_0/%s",
+  // cluster_id/tenant_id/tablet/tablet_id/reorganization_scn/major/sstable/cg_id/data or meta
+  } else if (OB_FAIL(databuff_printf(shared_macro_path, sizeof(shared_macro_path), "%s/%s_%ld/%s_%lu/%s/%ld/0/%s/%s/cg_0/%s",
                                      object_storage_root_dir, CLUSTER_DIR_STR,
                                      cluster_id, TENANT_DIR_STR, MTL_ID(), TABLET_DIR_STR,
                                      tablet_id.id(), MAJOR_DIR_STR, SHARED_TABLET_SSTABLE_DIR_STR,

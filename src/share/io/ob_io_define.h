@@ -25,8 +25,9 @@
 #include "lib/tc/ob_tc.h"
 #include "lib/worker.h"
 #include "share/resource_manager/ob_resource_plan_info.h"
+#include "storage/ob_storage_checked_object_base.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/micro_cache/ob_ss_micro_cache_common_meta.h"
+#include "storage/shared_storage/micro_cache/ob_ss_physical_block_info.h"
 #include "storage/shared_storage/ob_ss_fd_cache_struct.h"
 #endif
 
@@ -50,7 +51,7 @@ class ObObjectDevice;
 static constexpr int64_t CLOCK_IDLE_THRESHOLD_US = 100 * 1000L;  // 100ms
 static constexpr int64_t DEFAULT_IO_WAIT_TIME_MS = 5000L;        // 5s
 static constexpr int64_t MAX_IO_WAIT_TIME_MS = 300L * 1000L;     // 5min
-static constexpr int64_t GROUP_START_NUM = 3L;
+static constexpr int64_t GROUP_START_NUM = 1L;
 static constexpr int64_t DEFAULT_IO_WAIT_TIME_US = 5000L * 1000L;  // 5s
 static constexpr int64_t MAX_DETECT_READ_WARN_TIMES = 10L;
 static constexpr int64_t MAX_DETECT_READ_ERROR_TIMES = 100L;
@@ -97,12 +98,13 @@ enum ObIOModule {
   SSTABLE_MACRO_BLOCK_WRITE_IO,
   CLOG_WRITE_IO,
   CLOG_READ_IO,
+  INC_ATOMIC_PROTOCOL_IO,
+  INC_SSTABLE_UPLOAD_IO,
   // end
   SYS_MODULE_END_ID
 };
 
 const int64_t SYS_MODULE_CNT = SYS_MODULE_END_ID - SYS_MODULE_START_ID;
-static constexpr char BACKGROUND_CGROUP[] = "background";
 
 const char *get_io_sys_group_name(ObIOModule module);
 struct ObIOFlag final
@@ -156,9 +158,18 @@ public:
   void set_need_close_dev_and_fd();
   void set_no_need_close_dev_and_fd();
   bool is_need_close_dev_and_fd() const;
+  void set_buffered_read(const bool is_buffered_read = true);
+  bool is_buffered_read() const;
+  void set_preread();
+  void set_no_preread();
+  bool is_preread() const;
+  void set_ss_private_dir();
+  void set_ss_public_dir();
+  bool is_ss_private_dir() const;
+  bool is_ss_public_dir() const;
   TO_STRING_KV("mode", common::get_io_mode_string(static_cast<ObIOMode>(mode_)), K(group_id_), K(func_type_),
       K(wait_event_id_), K(is_sync_), K(is_unlimited_), K(is_detect_), K(is_write_through_), K(is_sealed_),
-      K(is_time_detect_), K(need_close_dev_and_fd_), K(reserved_));
+      K(is_time_detect_), K(need_close_dev_and_fd_), K(is_preread_), K(is_buffered_read_), K(reserved_));
 
 private:
   friend struct ObIOResult;
@@ -182,6 +193,9 @@ private:
   // does not need to close device and fd. object storage block io uses ObObjectDevice, which
   // needs to close device and fd.
   static constexpr int64_t IO_CLOSE_DEV_AND_FD_BIT = 1;
+  static constexpr int64_t IO_BUFFERED_READ_BIT = 1; // indicate read mode of the io
+  static constexpr int64_t IO_PREREAD_FLAG_BIT = 1;
+  static constexpr int64_t IO_SS_DIR_TYPE_BIT = 4; // indicate the type of ss dir, 0: not ss dir, 1: private, 2: public
   static constexpr int64_t IO_RESERVED_BIT = 64 - IO_MODE_BIT
                                                 - IO_WAIT_EVENT_BIT
                                                 - IO_SYNC_FLAG_BIT
@@ -190,9 +204,12 @@ private:
                                                 - IO_WRITE_THROUGH_BIT
                                                 - IO_SEALED_FLAG_BIT
                                                 - IO_TIME_DETECT_FLAG_BIT
-                                                - IO_CLOSE_DEV_AND_FD_BIT;
+                                                - IO_CLOSE_DEV_AND_FD_BIT
+                                                - IO_BUFFERED_READ_BIT
+                                                - IO_PREREAD_FLAG_BIT
+                                                - IO_SS_DIR_TYPE_BIT;
 
-  union {
+  union { // FARM COMPAT WHITELIST
     int64_t flag_;
     struct {
       int64_t mode_ : IO_MODE_BIT;
@@ -205,46 +222,14 @@ private:
       bool is_sealed_ : IO_SEALED_FLAG_BIT;
       bool is_time_detect_ : IO_TIME_DETECT_FLAG_BIT;
       bool need_close_dev_and_fd_ : IO_CLOSE_DEV_AND_FD_BIT;
+      bool is_buffered_read_ : IO_BUFFERED_READ_BIT;
+      bool is_preread_ : IO_PREREAD_FLAG_BIT;
+      uint8_t ss_dir_type_ : IO_SS_DIR_TYPE_BIT;
       int64_t reserved_ : IO_RESERVED_BIT;
     };
   };
   uint64_t group_id_;
   uint64_t sys_module_id_;
-};
-
-template <typename T, typename U>
-class ObIOObjectPool final
-{
-public:
-  ObIOObjectPool();
-  ~ObIOObjectPool();
-  int init(const int64_t count, ObIAllocator &allocator);
-  void destroy();
-  int alloc(T *&ptr);
-  int recycle(T *ptr);
-  bool contain(T *ptr);
-  int64_t get_block_size() const
-  {
-    return obj_size_;
-  }
-  int64_t get_capacity() const
-  {
-    return capacity_;
-  }
-  int64_t get_free_cnt() const
-  {
-    return free_count_;
-  }
-  TO_STRING_KV(K(is_inited_), K(obj_size_), K(capacity_), K(free_count_), KP(allocator_), KP(start_ptr_));
-
-private:
-  bool is_inited_;
-  int64_t obj_size_;
-  int64_t capacity_;
-  int64_t free_count_;
-  ObIAllocator *allocator_;
-  ObFixedQueue<T> pool_;
-  char *start_ptr_;
 };
 
 // different io callback types enqueue different io callback thread queue
@@ -263,7 +248,11 @@ enum class ObIOCallbackType : uint8_t {
   TEST_CALLBACK = 11, // just for unittest
   SS_TMP_FILE_CALLBACK = 12,
   TMP_CACHED_READ_CALLBACK = 13,
-  MAX_CALLBACK_TYPE = 14
+  INC_UPLOAD_ASYNC_MACRO_READ_CALLBACK = 14,
+  EXTERNAL_DATA_LOAD_FROM_REMOTE_CALLBACK = 15,
+  EXTERNAL_DATA_CACHED_READ_CALLBACK = 16,
+  EX_CACHED_READ_CALLBACK = 17,
+  MAX_CALLBACK_TYPE = 18
 };
 
 bool is_atomic_write_callback(const ObIOCallbackType type);
@@ -285,6 +274,7 @@ public:
   {
     return type_;
   }
+  virtual const char *get_cb_name() const = 0;
   DECLARE_PURE_VIRTUAL_TO_STRING;
 
 protected:
@@ -348,11 +338,14 @@ public:
   ObSSIOInfo &operator=(const ObSSIOInfo &other);
 
 public:
-  storage::ObSSPhysicalBlockHandle phy_block_handle_;  // hold ref_cnt
+  storage::ObSSPhyBlockHandle phy_block_handle_;  // hold ref_cnt
   storage::ObSSFdCacheHandle fd_cache_handle_;
   int64_t tmp_file_valid_length_;
+  uint64_t effective_tablet_id_; // indicate effective tablet id about partition split
+  bool is_write_cache_; // indicate write or read macro cache
 
-  INHERIT_TO_STRING_KV("SNIOInfo", ObSNIOInfo, K_(phy_block_handle), K_(fd_cache_handle),  K_(tmp_file_valid_length));
+  INHERIT_TO_STRING_KV("SNIOInfo", ObSNIOInfo, K_(phy_block_handle), K_(fd_cache_handle),
+                       K_(tmp_file_valid_length), K_(effective_tablet_id), K_(is_write_cache));
 };
 #endif
 
@@ -536,7 +529,9 @@ public:
   ObIOGroupKey get_group_key() const;
   uint64_t get_sys_module_id() const;
   bool is_sys_module() const;
+  bool is_canceled() const { return is_canceled_; }
   int64_t get_data_size() const;
+  int64_t get_user_io_size() const;
   uint64_t get_io_usage_index();
   uint64_t get_tenant_id() const;
   void inc_ref(const char *msg = nullptr);
@@ -569,7 +564,7 @@ private:
   bool is_finished_;
   bool is_canceled_;
   bool has_estimated_;
-  bool is_object_device_req_;
+  bool is_limit_net_bandwidth_req_;
   volatile int32_t result_ref_cnt_; //for io_result and io_handle
   volatile int32_t out_ref_cnt_; //for io_handle
   int64_t complete_size_;
@@ -589,7 +584,7 @@ public:
   ObIORetCode ret_code_;
 };
 
-class ObIORequest : public common::ObDLinkBase<ObIORequest>
+class ObIORequest : public common::ObDLinkBase<ObIORequest>, public TCRequestOwner
 {
 public:
   ObIORequest();
@@ -601,12 +596,15 @@ public:
   virtual void reset();
   void free();
   void set_result(ObIOResult &io_result);
-  bool is_canceled();
   int64_t timeout_ts() const;
   int64_t get_data_size() const;
   ObIOGroupKey get_group_key() const;
   uint64_t get_sys_module_id() const;
   bool is_sys_module() const;
+  oceanbase::share::ObFunctionType get_func_type() const;
+  bool is_local_clog_io() const;
+  bool is_local_clog_not_isolated();
+  bool is_limit_net_bandwidth_req() const;
   char *calc_io_buf();  // calc the aligned io_buf of raw_buf_, which interact with the operating system
   const ObIOFlag &get_flag() const;
   ObIOMode get_mode() const; // 2 mode
@@ -619,15 +617,17 @@ public:
   int prepare(char *next_buffer = nullptr, int64_t next_size = 0, int64_t next_offset = 0);
   int recycle_buffer();
   int re_prepare();
+  int retry_io();
   int try_alloc_buf_until_timeout(char *&io_buf);
   bool can_callback() const;
   void free_io_buffer();
   void inc_ref(const char *msg = nullptr);
   void dec_ref(const char *msg = nullptr);
+  bool is_canceled() const;
 
   int64_t get_remained_io_timeout_us();
 
-  TO_STRING_KV(K(is_inited_), K(tenant_id_), KP(control_block_), K(ref_cnt_), KP(raw_buf_), K(fd_),
+  TO_STRING_KV(K(is_inited_), K(tenant_id_), KP(control_block_), K(ref_cnt_), KP(raw_buf_), K(fd_), K(is_limit_net_bandwidth_req()),
                K(trace_id_), K(retry_count_), K(tenant_io_mgr_), K_(storage_accesser),
                KPC(io_result_), K_(part_id));
 private:
@@ -708,7 +708,7 @@ public:
   IOReqList req_list_;
 };
 
-class ObIOHandle final
+class ObIOHandle final : public storage::ObStorageCheckedObjectBase
 {
 public:
   ObIOHandle();
@@ -726,6 +726,7 @@ public:
   int wait(const int64_t wait_timeout_ms = UINT64_MAX);
   const char *get_buffer();
   int64_t get_data_size() const;
+  int64_t get_user_io_size() const;
   int64_t get_rt() const;
   int get_fs_errno(int &io_errno) const;
   void reset();
@@ -736,7 +737,9 @@ public:
   int check_is_finished(bool &is_finished);
   void clear_io_callback();
   ObIOCallback *get_io_callback();
-  TO_STRING_KV("io_result", to_cstring(result_));
+  bool need_trace() const;
+  storage::ObStorageCheckID get_check_id() const { return storage::ObStorageCheckID::IO_HANDLE; }
+  TO_STRING_KV("io_result", result_);
 
 private:
   void estimate();
@@ -751,6 +754,7 @@ public:
   struct UnitConfig
   {
     UnitConfig();
+    UnitConfig(const share::ObUnitConfig &unit_config);
     bool is_valid() const;
     TO_STRING_KV(K_(min_iops), K_(max_iops), K_(weight), K_(max_net_bandwidth), K_(net_bandwidth_weight));
     int64_t min_iops_;
@@ -779,9 +783,23 @@ public:
     ObIOMode mode_;
   };
 
+  struct ParamConfig
+  {
+  public:
+    ParamConfig();
+    ~ParamConfig();
+    bool is_valid() const;
+    TO_STRING_KV(K_(memory_limit), K_(callback_thread_count), K_(enable_io_tracer), K_(object_storage_io_timeout_ms));
+
+  public:
+    int64_t memory_limit_;
+    int64_t callback_thread_count_;
+    bool enable_io_tracer_;
+    int64_t object_storage_io_timeout_ms_;
+  };
+
 public:
   ObTenantIOConfig();
-  explicit ObTenantIOConfig(const share::ObUnitConfig &unit_config);
   ~ObTenantIOConfig();
   void destroy();
   static const ObTenantIOConfig &default_instance();
@@ -795,19 +813,18 @@ public:
   int64_t to_string(char *buf, const int64_t buf_len) const;
 
 public:
-  int64_t memory_limit_;
-  int64_t callback_thread_count_;
   UnitConfig unit_config_;
-  ObSEArray<GroupConfig, GROUP_START_NUM * 3> group_configs_;
+  typedef ObSEArray<GroupConfig, GROUP_START_NUM * (static_cast<uint64_t>(ObIOMode::MAX_MODE) + 1)> ObIOGroupConfigArray;
+  ObIOGroupConfigArray group_configs_;
   bool group_config_change_;
-  bool enable_io_tracer_;
-  int64_t object_storage_io_timeout_ms_;
+  ParamConfig param_config_;
 };
 
 struct ObAtomIOClock final
 {
   ObAtomIOClock() : iops_(0), last_ns_(0)
   {}
+  void atom_update_reserve(const int64_t current_ts, const double iops_scale, int64_t &deadline_ts);
   void atom_update(const int64_t current_ts, const double iops_scale, int64_t &deadline_ts);
   void compare_and_update(const int64_t current_ts, const double iops_scale, int64_t &deadline_ts);
   void reset();
@@ -878,137 +895,6 @@ private:
       &ObPhyQueue::proportion_pos_>
       ready_heap_;
 };
-
-template <typename T, typename U>
-ObIOObjectPool<T, U>::ObIOObjectPool()
-    : is_inited_(false), obj_size_(0), capacity_(0), free_count_(0), allocator_(nullptr), start_ptr_(nullptr)
-{
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-}
-
-template <typename T, typename U>
-ObIOObjectPool<T, U>::~ObIOObjectPool()
-{
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  destroy();
-}
-
-template <typename T, typename U>
-int ObIOObjectPool<T, U>::init(const int64_t count, ObIAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  int64_t size = sizeof(U);
-  if (OB_UNLIKELY(is_inited_)) {
-    ret = OB_INIT_TWICE;
-    COMMON_LOG(WARN, "init twice", K(ret), K(is_inited_));
-  } else if (OB_UNLIKELY(count <= 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "invalid argument", K(ret), K(count));
-  } else {
-    obj_size_ = size;
-    allocator_ = &allocator;
-    capacity_ = count;
-  }
-
-  if (OB_FAIL(ret)) {
-    // do nothing
-  } else if (OB_FAIL(pool_.init(capacity_, allocator_))) {
-    COMMON_LOG(WARN, "fail to init memory pool", K(ret));
-  } else if (OB_ISNULL(start_ptr_ = reinterpret_cast<char *>(allocator_->alloc(capacity_ * size)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    COMMON_LOG(WARN, "fail to allocate IOobj memory", K(ret), K(capacity_), K(size));
-  } else {
-    void *buf = nullptr;
-    for (int64_t i = 0; OB_SUCC(ret) && i < capacity_; ++i) {
-      buf = start_ptr_ + i * size;
-      U *u = nullptr;
-      u = new (reinterpret_cast<U *>(buf)) U;
-      if (OB_FAIL(u->basic_init())) {
-        COMMON_LOG(WARN, "basic init failed", K(ret), K(i));
-      } else if (OB_FAIL(pool_.push(u))) {
-        COMMON_LOG(WARN, "fail to push IOobj block to pool", K(ret));
-      }
-    }
-  }
-
-  if (OB_SUCC(ret)) {
-    free_count_ = capacity_;
-    is_inited_ = true;
-  } else {
-    destroy();
-  }
-  return ret;
-}
-
-template <typename T, typename U>
-void ObIOObjectPool<T, U>::destroy()
-{
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  is_inited_ = false;
-  free_count_ = 0;
-  pool_.destroy();
-
-  if (nullptr != allocator_) {
-    if (nullptr != start_ptr_) {
-      allocator_->free(start_ptr_);
-      start_ptr_ = nullptr;
-    }
-  }
-  allocator_ = nullptr;
-}
-
-template <typename T, typename U>
-int ObIOObjectPool<T, U>::alloc(T *&ptr)
-{
-  int ret = OB_SUCCESS;
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  ptr = nullptr;
-  T *ret_ptr = nullptr;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    COMMON_LOG(WARN, "not init", K(ret));
-  } else if (OB_FAIL(pool_.pop(ret_ptr))) {
-    if (OB_ENTRY_NOT_EXIST != ret) {
-      COMMON_LOG(WARN, "fail to pop IOobj", K(ret), K(capacity_), K(obj_size_));
-    }
-  } else {
-    ATOMIC_DEC(&free_count_);
-    ptr = ret_ptr;
-  }
-  return ret;
-}
-
-template <typename T, typename U>
-int ObIOObjectPool<T, U>::recycle(T *ptr)
-{
-  int ret = OB_SUCCESS;
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  const int64_t idx = ((char *)ptr - start_ptr_) / obj_size_;
-  if (OB_UNLIKELY(!is_inited_)) {
-    ret = OB_NOT_INIT;
-    COMMON_LOG(WARN, "not init", K(ret));
-  } else if (nullptr == ptr || idx < 0 || idx >= capacity_) {
-    ret = OB_INVALID_ARGUMENT;
-    COMMON_LOG(WARN, "invalid argument", K(ret), K(idx), KP(ptr));
-  } else {
-    if (OB_FAIL(pool_.push(ptr))) {
-      COMMON_LOG(WARN, "fail to push IOobj", K(ret), K(capacity_), K(obj_size_));
-    } else {
-      ATOMIC_INC(&free_count_);
-    }
-  }
-  return ret;
-}
-
-template <typename T, typename U>
-bool ObIOObjectPool<T, U>::contain(T *ptr)
-{
-  static_assert(std::is_base_of<T, U>::value, "U must be T or subclass of T");
-  bool bret = (uint64_t)ptr > 0 && ((char *)ptr >= start_ptr_) &&
-              ((char *)ptr < start_ptr_ + (capacity_ * obj_size_)) && (((char *)ptr - start_ptr_) % obj_size_ == 0);
-  return bret;
-}
 
 }  // namespace common
 }  // namespace oceanbase

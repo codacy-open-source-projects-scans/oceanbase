@@ -1,7 +1,7 @@
 add_subdirectory(compress)
 add_subdirectory(restore)
 
-ob_set_subtarget(oblib_lib ALONE
+ob_set_subtarget(oblib_lib_extra ALONE
   timezone/ob_timezone_util.cpp
   geo/ob_geo_func_difference.cpp
   geo/ob_geo_func_covered_by.cpp
@@ -10,7 +10,8 @@ ob_set_subtarget(oblib_lib ALONE
   geo/ob_geo_func_touches.cpp
   geo/ob_geo_func_equals.cpp
   geo/ob_geo_func_intersects.cpp
-  geo/ob_geo_func_symdifference.cpp
+  geo/ob_geo_func_symdifference1.cpp
+  geo/ob_geo_func_symdifference2.cpp
   geo/ob_geo_func_distance.cpp
   geo/ob_geo_func_crosses.cpp
   geo/ob_geo_func_overlaps.cpp
@@ -20,25 +21,49 @@ ob_set_subtarget(oblib_lib ALONE
 ob_set_subtarget(oblib_lib charset
   charset/ob_ctype_bin.cc
   charset/ob_ctype.cc
+  charset/ob_ctype_gb18030_tab.cpp
   charset/ob_ctype_gb18030.cc
+  charset/ob_ctype_gbk_tab.cpp
   charset/ob_ctype_gbk.cc
+  charset/ob_ctype_latin1_tab.cpp
   charset/ob_ctype_latin1.cc
+  charset/ob_ctype_ascii_tab.cpp
+  charset/ob_ctype_gb2312_tab.cpp
+  charset/ob_ctype_gb2312.cc
   charset/ob_ctype_ascii.cc
+  charset/ob_ctype_tis620_tab.cpp
   charset/ob_ctype_tis620.cc
   charset/ob_ctype_mb.cc
   charset/ob_ctype_simple.cc
   charset/ob_ctype_uca.cc
   charset/ob_ctype_utf8.cc
   charset/ob_ctype_utf16.cc
+  charset/ob_ctype_ujis_tab.cpp
+  charset/ob_ctype_ujis.cc
+  charset/ob_ctype_euckr_tab.cpp
+  charset/ob_ctype_euckr.cc
+  charset/ob_ctype_eucjpms_tab.cpp
+  charset/ob_ctype_eucjpms.cc
+  charset/ob_ctype_cp932_tab.cpp
+  charset/ob_ctype_cp932.cc
   charset/ob_dtoa.cc
   charset/uca900_ja_tbls.cc
   charset/uca900_zh_tbls.cc
   charset/uca900_zh2_tbls.cc
   charset/uca900_zh3_tbls.cc
   charset/ob_charset.cpp
+  charset/ob_ctype_sjis_tab.cpp
   charset/ob_ctype_sjis.cc
+  charset/ob_ctype_big5_tab.cpp
   charset/ob_ctype_big5.cc
+  charset/ob_ctype_hkscs_tab.cpp
+  charset/ob_ctype_hkscs31_tab.cpp
   charset/ob_ctype_hkscs.cc
+  charset/ob_ctype_dec8_tab.cpp
+  charset/ob_ctype_cp850_tab.cpp
+  charset/ob_ctype_hp8_tab.cpp
+  charset/ob_ctype_macroman_tab.cpp
+  charset/ob_ctype_swe7_tab.cpp
   charset/ob_ctype_extra.cc
 )
 
@@ -245,7 +270,11 @@ ob_set_subtarget(oblib_lib common_mixed
   udt/ob_udt_type.cpp
   udt/ob_collection_type.cpp
   udt/ob_array_type.cpp
+  udt/ob_array_binary.cpp
+  udt/ob_array_nested.cpp
   udt/ob_array_utils.cpp
+  udt/ob_vector_type.cpp
+  udt/ob_map_type.cpp
   xml/ob_mul_mode_reader.cpp
   xml/ob_xml.cpp
   xml/ob_xml_parser.cpp
@@ -262,6 +291,11 @@ ob_set_subtarget(oblib_lib common_mixed
   locale/ob_locale_type.cc
   locale/ob_locale.cpp
   enumset/ob_enum_set_meta.cpp
+  jni_env/ob_java_helper.cpp
+  jni_env/ob_java_env.cpp
+  jni_env/ob_java_native_method.cpp
+  jni_env/ob_jni_connector.cpp
+  other/recursion.cpp
 )
 
 ob_set_subtarget(oblib_lib lock
@@ -347,6 +381,7 @@ ob_set_subtarget(oblib_lib utility
   utility/ob_proto_trans_util.cpp
   utility/ob_unify_serialize.cpp
   utility/ob_rpc_authentication_utility.cpp
+  utility/ob_hyperloglog.cpp
 )
 
 ob_set_subtarget(oblib_lib ash
@@ -364,9 +399,11 @@ ob_set_subtarget(oblib_lib vtoa
 
 ob_set_subtarget(oblib_lib ob_vector_util
   vector/ob_vector_util.cpp
+  vector/ob_vsag_adaptor.cpp
 )
 
 ob_lib_add_target(oblib_lib)
+ob_lib_add_target(oblib_lib_extra without_pass)
 
 ob_set_subtarget(oblib_lib_bitmap common
   container/ob_bitmap.cpp
@@ -395,6 +432,7 @@ ob_set_subtarget(ob_malloc_object_list common_alloc
   resource/achunk_mgr.cpp
   resource/ob_resource_mgr.cpp
   resource/ob_resource_limiter.cpp
+  resource/ob_affinity_ctrl.cpp
   allocator/ob_allocator_v2.cpp
   allocator/ob_block_alloc_mgr.cpp
   allocator/ob_concurrent_fifo_allocator.cpp
@@ -413,7 +451,7 @@ ob_set_subtarget(ob_malloc_object_list common_alloc
 )
 
 ob_add_new_object_target(ob_malloc_object ob_malloc_object_list)
-target_link_libraries(ob_malloc_object oblib_base_base_base)
+target_link_libraries(ob_malloc_object oblib_base_without_pass)
 if (ENABLE_SANITY)
   if (${ARCHITECTURE} STREQUAL "x86_64" OR ${ARCHITECTURE} STREQUAL "aarch64")
     target_link_libraries(ob_malloc_object ${DEVTOOLS_DIR}/lib64/libsanity.a)
@@ -440,9 +478,8 @@ if(OB_BUILD_CLOSE_MODULES)
   )
 endif()
 
-if(CPP_STANDARD_20)
-  target_compile_options(oblib_lib PUBLIC -D_GLIBCXX_USE_CXX11_ABI=0)
-endif()
+target_compile_options(oblib_lib PUBLIC -D_GLIBCXX_USE_CXX11_ABI=0)
+
 target_link_libraries(oblib_lib
   PUBLIC ob_malloc compress restore
   ${DEP_DIR}/lib/libxml2.a
@@ -459,7 +496,6 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fopenmp")
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
   target_link_libraries(oblib_lib
     PUBLIC
-    libob_vsag_static.a
     libcpuinfo.a
     libsimd.a
     libvsag_static.a
@@ -469,11 +505,13 @@ if(CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
     libquadmath_static.a
     libgomp_static.a
     libroaring.a
+    libantlr4-runtime.a
+    libantlr4-autogen.a
+    libfmt.a
   )
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
   target_link_libraries(oblib_lib
     PUBLIC
-    libob_vsag_static.a
     libcpuinfo.a
     libsimd.a
     libvsag_static.a
@@ -482,6 +520,9 @@ elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     libgfortran_static.a
     libgomp_static.a
     libroaring.a
+    libantlr4-runtime.a
+    libantlr4-autogen.a
+    libfmt.a
   )
 else()
     message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")

@@ -151,7 +151,7 @@ class ObIHashPartInfrastructure
 public:
   using HpGroupAggrFunc = std::function<int64_t ()>;
   ObIHashPartInfrastructure(int64_t tenant_id, lib::MemoryContext &mem_context) :
-    tenant_id_(tenant_id), mem_context_(mem_context), alloc_(nullptr), arena_alloc_(nullptr),
+    tenant_id_(tenant_id), mem_context_(mem_context), alloc_(nullptr),
     preprocess_part_(), left_part_list_(), right_part_list_(), rewind_part_list_(),
     left_part_map_(), right_part_map_(), io_event_observer_(nullptr), sql_mem_processor_(nullptr),
     sort_collations_(nullptr), eval_ctx_(nullptr), cur_left_part_(nullptr),
@@ -523,8 +523,9 @@ protected:
     int64_t avg_mem_bound = get_each_slice_avg_size(sql_mem_processor_->get_mem_bound());
     avg_mem_bound = avg_mem_bound > MIN_MEM_BOUND ? avg_mem_bound : MIN_MEM_BOUND;
     SQL_ENG_LOG(TRACE, "check need dump", K(period_row_cnt_), K(est_part_cnt_), K(slice_cnt),
-      K(avg_mem_bound), K(sql_mem_processor_->get_mem_bound()));
-    return (avg_mem_bound <= est_part_cnt_ * BLOCK_SIZE + get_mem_used()) && (period_row_cnt_ > MIN_PERIOD_ROW_CNT);
+      K(avg_mem_bound), K(sql_mem_processor_->get_mem_bound()), K(get_hash_table_mem_used()));
+    return (avg_mem_bound <= est_part_cnt_ * BLOCK_SIZE + get_mem_used() + 2 * get_hash_table_mem_used())
+            && (period_row_cnt_ > MIN_PERIOD_ROW_CNT);
   }
 
   int64_t get_mem_used() { return (nullptr == mem_context_) ? 0 : mem_context_->used();}
@@ -553,7 +554,6 @@ protected:
   uint64_t tenant_id_;
   lib::MemoryContext &mem_context_;
   common::ObIAllocator *alloc_;
-  common::ObArenaAllocator *arena_alloc_;
   ObIntraPartition preprocess_part_;
   common::ObDList<ObIntraPartition> left_part_list_;
   common::ObDList<ObIntraPartition> right_part_list_;
@@ -607,6 +607,8 @@ protected:
   bool has_dump_preprocess_part_;
   HpGroupAggrFunc total_mem_used_func_;
   HpGroupAggrFunc slice_cnt_func_;
+  const ObCompactRow **store_rows_ = nullptr;
+  int store_rows_size_ = 0;
 };
 
 template<typename HashBucket>

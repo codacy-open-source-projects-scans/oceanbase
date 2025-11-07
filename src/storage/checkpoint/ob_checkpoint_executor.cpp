@@ -12,12 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/ls/ob_ls.h"
-#include "storage/checkpoint/ob_checkpoint_executor.h"
+#include "ob_checkpoint_executor.h"
 #include "storage/tx_storage/ob_checkpoint_service.h"
-#include "storage/checkpoint/ob_data_checkpoint.h"
-#include "share/ob_force_print_log.h"
-#include "logservice/ob_log_base_type.h"
 #include "logservice/ob_log_service.h"
 #include "observer/ob_server_event_history_table_operator.h"
 
@@ -31,34 +27,43 @@ namespace checkpoint
 {
 
 ObCheckpointExecutor::ObCheckpointExecutor()
-    : rwlock_(common::ObLatchIds::CLOG_CKPT_RWLOCK),
+    : ls_(nullptr),
+      loghandler_(nullptr),
+      rwlock_(common::ObLatchIds::CLOG_CKPT_RWLOCK),
       update_checkpoint_enabled_(false),
       reuse_recycle_scn_times_(0),
       prev_clog_checkpoint_lsn_(),
       prev_recycle_scn_(),
       update_clog_checkpoint_times_(0),
       last_add_server_history_time_(0)
+#ifdef OB_BUILD_SHARED_STORAGE
+      ,
+      ckpt_change_record_()
+#endif
 {
-  reset();
+  MEMSET(handlers_, 0, sizeof(ObICheckpointSubHandler *) * ObLogBaseType::MAX_LOG_BASE_TYPE);
 }
 
 ObCheckpointExecutor::~ObCheckpointExecutor()
-{
-  reset();
-}
-
-void ObCheckpointExecutor::reset()
 {
   for (int i = 0; i < ObLogBaseType::MAX_LOG_BASE_TYPE; i++) {
     handlers_[i] = NULL;
   }
   ls_ = NULL;
   loghandler_ = NULL;
+  reset();
+}
+
+void ObCheckpointExecutor::reset()
+{
   reuse_recycle_scn_times_ = 0;
   prev_clog_checkpoint_lsn_.reset();
   prev_recycle_scn_.set_invalid();
   update_clog_checkpoint_times_ = 0;
   last_add_server_history_time_ = 0;
+#ifdef OB_BUILD_SHARED_STORAGE
+  ckpt_change_record_.reset();
+#endif
 }
 
 int ObCheckpointExecutor::register_handler(const ObLogBaseType &type,
@@ -115,6 +120,7 @@ void ObCheckpointExecutor::offline()
 {
   WLockGuard guard(rwlock_);
   update_checkpoint_enabled_ = false;
+  reset();
 }
 
 void ObCheckpointExecutor::get_min_rec_scn(int &log_type, SCN &min_rec_scn) const
@@ -168,21 +174,28 @@ int ObCheckpointExecutor::update_clog_checkpoint()
   RLockGuard guard(rwlock_);
   if (update_checkpoint_enabled_) {
     ObFreezer *freezer = ls_->get_freezer();
+    const share::ObLSID ls_id = ls_->get_ls_id();
     if (OB_NOT_NULL(freezer)) {
-      SCN checkpoint_scn;
-      checkpoint_scn.set_max();
-      if (OB_FAIL(freezer->get_max_consequent_callbacked_scn(checkpoint_scn))) {
-        STORAGE_LOG(WARN, "get_max_consequent_callbacked_scn failed", K(ret), K(freezer->get_ls_id()));
+      SCN max_decided_scn;
+      if (OB_FAIL(freezer->get_max_consequent_callbacked_scn(max_decided_scn))) {
+        STORAGE_LOG(WARN, "get_max_consequent_callbacked_scn failed", K(ret), K(ls_id));
       } else {
         // used to record which handler provide the smallest rec_scn
         int min_rec_scn_service_type_index = 0;
         const int64_t buf_len = common::MAX_SERVICE_TYPE_BUF_LENGTH;
         char service_type[buf_len];
+        SCN checkpoint_scn = max_decided_scn;
         get_min_rec_scn(min_rec_scn_service_type_index, checkpoint_scn);
         get_min_rec_scn_service_type_by_index_(min_rec_scn_service_type_index, service_type, buf_len);
 
+#ifdef OB_BUILD_SHARED_STORAGE
+        if (GCTX.is_shared_storage_mode()) {
+          // here we can check if checkpoint is quickly changed because ss mode do advance_checkpoint each 10 minutes
+          (void)ObCkptUtil::check_ckpt_changed(false /*is_ss_ckpt*/, ls_id, checkpoint_scn, ckpt_change_record_);
+        }
+#endif
+
         const SCN checkpoint_scn_in_ls_meta = ls_->get_clog_checkpoint_scn();
-        const share::ObLSID ls_id = ls_->get_ls_id();
         LSN clog_checkpoint_lsn;
         if (checkpoint_scn == checkpoint_scn_in_ls_meta) {
           STORAGE_LOG(INFO, "[CHECKPOINT] clog checkpoint no change", K(checkpoint_scn),
@@ -211,7 +224,10 @@ int ObCheckpointExecutor::update_clog_checkpoint()
         } else {
           update_clog_checkpoint_times_++;
           FLOG_INFO("[CHECKPOINT] update clog checkpoint successfully",
-                    K(clog_checkpoint_lsn), K(checkpoint_scn), K(ls_id),
+                    K(max_decided_scn),
+                    K(clog_checkpoint_lsn),
+                    K(checkpoint_scn),
+                    K(ls_id),
                     K(service_type));
         }
         add_server_event_history_for_update_clog_checkpoint(checkpoint_scn, service_type);

@@ -70,6 +70,11 @@ add_executable(ob_admin
   io_device/ob_admin_test_io_device_executor.cpp
   io_device/ob_admin_test_object_storage_interface.cpp
 
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality.h
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality.cpp
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality_scene.cpp
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality_task_handler.cpp
+
   #trx_tool/ob_admin_trx_executor.h
   #trx_tool/ob_admin_trx_executor.cpp
 
@@ -79,6 +84,7 @@ add_executable(ob_admin
   log_tool/ob_admin_log_tool_executor.cpp
   ${ob_admin_tde_files}
   ${ob_admin_shared_storage_files}
+  sql_tool/ob_admin_uncompress_plan_executor.cpp
   )
 
 else()
@@ -142,6 +148,11 @@ add_executable(ob_admin
   io_device/ob_admin_test_io_device_executor.cpp
   io_device/ob_admin_test_object_storage_interface.cpp
 
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality.h
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality.cpp
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality_scene.cpp
+  object_storage_driver_quality/ob_admin_object_storage_driver_quality_task_handler.cpp
+
   #trx_tool/ob_admin_trx_executor.h
   #trx_tool/ob_admin_trx_executor.cpp
 
@@ -151,6 +162,7 @@ add_executable(ob_admin
   log_tool/ob_admin_log_tool_executor.cpp
   ${ob_admin_tde_files}
   ${ob_admin_shared_storage_files}
+  sql_tool/ob_admin_uncompress_plan_executor.cpp
   )
 
 endif()
@@ -166,7 +178,8 @@ target_link_libraries(ob_admin
   ${ob_close_modules_static_name}
   -Wl,--end-group
   -static-libgcc
-  -static-libstdc++)
+  -static-libstdc++
+  malloc_hook)
 
 if(ENABLE_THIN_LTO AND USE_LTO_CACHE)
   add_dependencies(ob_admin observer)

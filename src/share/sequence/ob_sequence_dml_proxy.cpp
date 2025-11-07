@@ -12,23 +12,8 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_sequence_dml_proxy.h"
-#include "lib/string/ob_string.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/mysqlclient/ob_isql_client.h"
-#include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "lib/number/ob_number_v2.h"
-#include "common/ob_timeout_ctx.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/schema/ob_schema_struct.h"
 #include "share/sequence/ob_sequence_cache.h"
-#include "share/sequence/ob_sequence_option_builder.h"
-#include "share/schema/ob_schema_service.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_schema_service_sql_impl.h"
-#include "share/ob_schema_status_proxy.h"
-#include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
 
 using namespace oceanbase::common;
@@ -100,7 +85,8 @@ int ObSequenceDMLProxy::next_batch(
     const int64_t schema_version,
     const share::ObSequenceOption &option,
     SequenceCacheNode &cache_range,
-    ObSequenceCacheItem &old_cache)
+    ObSequenceCacheItem &old_cache,
+    bool &wrap_around)
 {
   int ret = OB_SUCCESS;
   const char *tname = OB_ALL_SEQUENCE_VALUE_TNAME;
@@ -119,6 +105,7 @@ int ObSequenceDMLProxy::next_batch(
   bool order_flag = option.get_order_flag();
   bool cycle_flag = option.get_cycle_flag();
   ObSequenceCacheOrderMode cache_order_mode = option.get_cache_order_mode();
+  wrap_around = false;
 
   if (true == order_flag && OLD_ACTION == cache_order_mode) {
     // When the version is lower than 4.2.3, the cache order mode default cache size is 1 and the
@@ -185,6 +172,10 @@ int ObSequenceDMLProxy::next_batch(
           ret = (OB_SUCCESS == ret ? OB_ERR_UNEXPECTED : ret);
         } else {
           ret = OB_SUCCESS;
+          if (cycle_flag && !order_flag && cache_size > static_cast<int64_t>(1)) {
+            wrap_around = increment_by > static_cast<int64_t>(0) ? next_value == min_value :
+                                                                   next_value == max_value;
+          }
         }
       }
     }
@@ -360,7 +351,8 @@ int ObSequenceDMLProxy::prefetch_next_batch(
     const int64_t schema_version,
     const share::ObSequenceOption &option,
     SequenceCacheNode &cache_range,
-    ObSequenceCacheItem &old_cache)
+    ObSequenceCacheItem &old_cache,
+    bool &wrap_around)
 {
   int ret = OB_SUCCESS;
   // set timeout for prefetch
@@ -372,7 +364,8 @@ int ObSequenceDMLProxy::prefetch_next_batch(
                                 schema_version,
                                 option,
                                 cache_range,
-                                old_cache))) {
+                                old_cache,
+                                wrap_around))) {
     LOG_WARN("fail prefetch sequence batch",
              K(tenant_id), K(sequence_id), K(option), K(ret));
   }

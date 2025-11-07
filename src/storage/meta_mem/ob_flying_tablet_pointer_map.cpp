@@ -12,12 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/meta_mem/ob_flying_tablet_pointer_map.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/meta_store/ob_storage_meta_io_util.h"
-#include "storage/blocksstable/ob_object_manager.h"
+#include "ob_flying_tablet_pointer_map.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/meta_store/ob_tenant_storage_meta_service.h"
 
 namespace oceanbase
 {
@@ -74,7 +70,7 @@ int ObFlyingTabletPointerMap::check_exist(
 {
   int ret = common::OB_SUCCESS;
   ObInnerTPHandlePtr handle_ptr;
-  ObTabletPointer *t_ptr = nullptr;
+  ObTabletBasePointer *t_ptr = nullptr;
   is_exist = false;
   uint64_t hash_val = 0;
   if (OB_UNLIKELY(!is_inited_)) {
@@ -138,14 +134,17 @@ int ObFlyingTabletPointerMap::inner_erase_(const ObDieingTabletMapKey &key)
     ret = common::OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(key));
   } else {
+    ObTabletPointer *tablet_ptr = nullptr;
     common::ObBucketHashWLockGuard lock_guard(bucket_lock_, key.hash());
     if (OB_ISNULL(handle_ptr = map_.get(key))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to get from map", K(ret), K(key));
-    } else if (!handle_ptr->get_resource_ptr()->need_remove_from_flying_()) {
+    } else if (OB_ISNULL(tablet_ptr = handle_ptr->get_tablet_pointer())) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("tablet_pointer should not be erased when tablet has been referred",
-        K(ret), KP(handle_ptr->get_resource_ptr()), KPC(handle_ptr->get_resource_ptr()) );
+      LOG_WARN("unexpected error, tablet pointer is nullptr", K(ret), KPC(handle_ptr));
+    } else if (!tablet_ptr->need_remove_from_flying()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("tablet_pointer should not be erased when tablet has been referred", K(ret), KPC(tablet_ptr));
     } else if (OB_FAIL(map_.erase_refactored(key))) {
       LOG_WARN("fail to erase from map", K(ret));
     }

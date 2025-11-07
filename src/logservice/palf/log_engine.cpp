@@ -12,24 +12,9 @@
 
 #define USING_LOG_PREFIX PALF
 #include "log_engine.h"
-#include "lib/lock/ob_spin_lock.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/utility/ob_macro_utils.h"                 // For UNUSED
-#include "lib/oblog/ob_log_module.h"                    // PALF_LOG
-#include "share/ob_errno.h"                             // ERRNO
-#include "share/rc/ob_tenant_base.h"                    // mtl_malloc
 #include "share/allocator/ob_tenant_mutil_allocator.h"  // ObILogAllocator
-#include "log_io_task_cb_utils.h"                       // LogFlushCbCtx...
-#include "log_io_task.h"                                // LogIOTask
 #include "log_io_worker.h"                              // LogIOWorker
-#include "log_reader_utils.h"                           // ReadBuf
 #include "log_shared_task.h"                            // LogSharedTask
-#include "log_writer_utils.h"                           // LogWriteBuf
-#include "lsn.h"                                        // LSN
-#include "log_meta_entry.h"                             // LogMetaEntry
-#include "log_group_entry_header.h"                     // LogGroupEntryHeader
-#include "log_define.h"
 
 namespace oceanbase
 {
@@ -1923,6 +1908,22 @@ int LogEngine::check_config_meta_size(const LogConfigMeta &config_meta) const
       PALF_LOG(WARN, "check_config_meta_size failed", K(ret), K_(palf_id),
           K(log_meta_entry_header_len), K(log_meta_body_len), K(config_meta));
     }
+  }
+  return ret;
+}
+
+int LogEngine::get_io_statistic_info(int64_t &last_working_time,
+                                     int64_t &last_write_size,
+                                     int64_t &accum_write_size,
+                                     int64_t &accum_write_count,
+                                     int64_t &accum_write_rt) const
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+  } else {
+    ret = log_storage_.get_io_statistic_info(last_working_time,
+        last_write_size, accum_write_size, accum_write_count, accum_write_rt);
   }
   return ret;
 }

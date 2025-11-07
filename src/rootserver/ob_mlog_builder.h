@@ -51,6 +51,7 @@ private:
                                common::ObRowDesc &row_desc,
                                const share::schema::ObTableSchema &base_table_schema);
     int add_base_table_pk_columns(common::ObRowDesc &row_desc,
+                                  share::schema::ObSchemaGetterGuard &schema_guard,
                                   const share::schema::ObTableSchema &base_table_schema);
     int add_base_table_part_key_columns(common::ObRowDesc &row_desc,
                                         const share::schema::ObTableSchema &base_table_schema);
@@ -77,7 +78,8 @@ private:
                       const obrpc::ObCreateMLogArg &create_mlog_arg,
                       const share::schema::ObTableSchema &base_table_schema,
                       share::schema::ObTableSchema &mlog_schema);
-  int set_table_columns(const obrpc::ObCreateMLogArg &create_mlog_arg,
+  int set_table_columns(ObSchemaGetterGuard &schema_guard,
+                        const obrpc::ObCreateMLogArg &create_mlog_arg,
                         const share::schema::ObTableSchema &base_table_schema,
                         share::schema::ObTableSchema &mlog_schema);
   int set_table_options(const obrpc::ObCreateMLogArg &create_mlog_arg,

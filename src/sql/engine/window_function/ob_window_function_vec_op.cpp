@@ -11,13 +11,8 @@
  */
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "lib/utility/ob_print_utils.h"
-#include "lib/utility/ob_sort.h"
 #include "ob_window_function_vec_op.h"
-#include "share/aggregate/iaggregate.h"
-#include "share/aggregate/processor.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
-#include "sql/engine/px/datahub/components/ob_dh_winbuf.h"
 
 #define SWAP_STORES(left, right)                                                                   \
   do {                                                                                             \
@@ -733,10 +728,11 @@ int ObWindowFunctionVecOp::init()
       void *win_col_buf = nullptr, *pby_row_mapped_value_buf = nullptr;
       WinFuncColExpr *win_col = nullptr;
       int64_t agg_col_id = wf_idx - 1;
-      if (OB_ISNULL(win_col_buf = local_allocator_->alloc(sizeof(WinFuncColExpr)))) {
+      if (OB_SUCC(ret)
+          && OB_ISNULL(win_col_buf = local_allocator_->alloc(sizeof(WinFuncColExpr)))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("allocate memory failed", K(ret));
-      } else {
+      } else if (OB_SUCC(ret)) {
         win_col = new (win_col_buf) WinFuncColExpr(wf_info, *this, wf_idx);
         win_col->pby_row_mapped_idxes_ = reinterpret_cast<int32_t *>(pby_row_mapped_value_buf);
         switch (wf_info.func_type_) {
@@ -786,7 +782,11 @@ int ObWindowFunctionVecOp::init()
         case T_FUN_ORA_JSON_ARRAYAGG:
         case T_FUN_ORA_JSON_OBJECTAGG:
         case T_FUN_ORA_XMLAGG:
-        case T_FUNC_SYS_ARRAY_AGG: {
+        case T_FUNC_SYS_ARRAY_AGG:
+        case T_FUN_SYS_RB_OR_CARDINALITY_AGG:
+        case T_FUN_SYS_RB_AND_CARDINALITY_AGG:
+        case T_FUN_ARG_MAX:
+        case T_FUN_ARG_MIN: {
           aggregate::IAggregate *agg_func = nullptr;
           winfunc::AggrExpr *aggr_expr = nullptr;
           if (OB_FAIL(alloc_expr<winfunc::AggrExpr>(*local_allocator_, aggr_expr))) {
@@ -2114,6 +2114,8 @@ int ObWindowFunctionVecOp::output_stored_rows(const int64_t out_processed_cnt,
                       VEC_TC_FIXED_DOUBLE,
                       VEC_TC_DATETIME,
                       VEC_TC_DATE,
+                      VEC_TC_MYSQL_DATETIME,
+                      VEC_TC_MYSQL_DATE,
                       VEC_TC_TIME,
                       VEC_TC_YEAR,
                       VEC_TC_BIT,
@@ -2178,12 +2180,12 @@ int ObWindowFunctionVecOp::compute_wf_values(WinFuncColExpr *end, int64_t &check
               *wf_skip       = batch_ctx_.calc_wf_skip_;
   ObDataBuffer backup_alloc((char *)batch_ctx_.all_exprs_backup_buf_, batch_ctx_.all_exprs_backup_buf_len_);
   ObVectorsResultHolder tmp_holder(&backup_alloc);
-  int64_t saved_batch_size = 0;
+  int64_t saved_batch_size = 0, max_part_size = 0;
   FOREACH_WINCOL(end) {
-    saved_batch_size = std::max(input_stores_.cur_->count() - it->part_first_row_idx_, saved_batch_size);
+    max_part_size = std::max(input_stores_.cur_->count() - it->part_first_row_idx_, saved_batch_size);
   }
-  saved_batch_size = std::min(saved_batch_size, MY_SPEC.max_batch_size_);
-  if (OB_FAIL(tmp_holder.init(get_all_expr(), eval_ctx_))) {
+  saved_batch_size = std::min(max_part_size, MY_SPEC.max_batch_size_);
+  if (OB_FAIL(tmp_holder.init_for_actual_rows(get_all_expr(), saved_batch_size, eval_ctx_))) {
     LOG_WARN("init tmp result holder failed", K(ret));
   } else if (OB_FAIL(tmp_holder.save(saved_batch_size))) {
     LOG_WARN("save vector resule failed", K(ret));
@@ -2228,7 +2230,7 @@ int ObWindowFunctionVecOp::compute_wf_values(WinFuncColExpr *end, int64_t &check
                    K(*input_stores_.cur_));
         } else if (OB_FAIL(it->reset_for_partition(batch_size, *wf_skip))) {
           LOG_WARN("reset for partition failed", K(ret));
-        } else if (it->wf_info_.can_push_down_ && MY_SPEC.is_push_down()) {
+        } else if (MY_SPEC.is_push_down()) {
           if (OB_FAIL(
                 detect_nullres_or_pushdown_rows(*it, *nullres_skip, *pushdown_skip, *wf_skip))) {
             // step.2 find nullres rows and bypass-pushdown rows
@@ -2299,7 +2301,13 @@ int ObWindowFunctionVecOp::set_null_results_of_wf(WinFuncColExpr &wf, const int6
   case common::VEC_DISCRETE:
   case common::VEC_CONTINUOUS: {
     ObBitmapNullVectorBase *data = static_cast<ObBitmapNullVectorBase *>(wf_expr->get_vector(eval_ctx_));
-    data->get_nulls()->bit_not(nullres_skip, batch_size);
+    for (int i = 0; i < batch_size; i++) {
+      if (nullres_skip.at(i)) {
+        continue;
+      } else {
+        data->set_null(i);
+      }
+    }
     break;
   }
   case common::VEC_UNIFORM: {
@@ -3479,6 +3487,7 @@ int WinFuncColExpr::init_aggregate_ctx(const int64_t tenant_id)
     } else if (FALSE_IT(agg_expr->aggr_processor_->set_support_fast_single_row_agg(true))) {
     } else if (FALSE_IT(agg_expr->aggr_processor_->set_hp_infras_mgr(&op_.hp_infras_mgr_))) {
     } else if (FALSE_IT(agg_ctx_ = agg_expr->aggr_processor_->get_rt_ctx())) {
+    } else if (FALSE_IT(agg_expr->aggr_processor_->set_in_window_func())) {
     } else if (FALSE_IT(aggr_row_buf_sz = op_.spec_.max_batch_size_ * agg_ctx_->row_meta().row_size_)) {
       // do nothing
     } else if (OB_ISNULL(aggr_row_buf = local_allocator.alloc(aggr_row_buf_sz))) {

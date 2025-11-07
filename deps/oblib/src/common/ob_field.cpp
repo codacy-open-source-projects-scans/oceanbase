@@ -13,8 +13,6 @@
 #define USING_LOG_PREFIX COMMON
 
 #include "ob_field.h"
-#include "lib/timezone/ob_time_convert.h"
-#include "common/ob_common_utility.h"
 #include "rpc/obmysql/ob_mysql_global.h"
 
 namespace oceanbase
@@ -250,6 +248,7 @@ int ObField::update_field_mb_length()
       length_ = number::ObNumber::MAX_PRECISION - number::ObNumber::MIN_SCALE;
       break;
     case ObDateTimeTC:
+    case ObMySQLDateTimeTC:
       length_ = DATETIME_MIN_LENGTH + OB_MAX_DATETIME_PRECISION;
       break;
     case ObOTimestampTC: {
@@ -278,6 +277,7 @@ int ObField::update_field_mb_length()
     case ObStringTC:
     case ObRawTC:
     case ObDateTC:
+    case ObMySQLDateTC:
     case ObYearTC:
     case ObNullTC:
     case ObJsonTC:
@@ -311,6 +311,7 @@ int ObField::get_field_mb_length(const ObObjType type,
       }
       break;
     case ObDateTC:
+    case ObMySQLDateTC:
       length = DATE_MIN_LENGTH;
       break;
     case ObYearTC:
@@ -380,6 +381,7 @@ int ObField::get_field_mb_length(const ObObjType type,
       length = accuracy.get_length();
       break;
     case ObDateTimeTC:
+    case ObMySQLDateTimeTC:
       length = DATETIME_MIN_LENGTH + ((accuracy.get_scale() > 0) ? (1 + accuracy.get_scale()) : 0); /* 1 represents the decimal point in 12:12:12.3333 */
       break;
     case ObOTimestampTC:

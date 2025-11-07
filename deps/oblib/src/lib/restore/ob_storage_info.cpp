@@ -14,10 +14,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_storage_info.h"
-#include "ob_storage.h"
-#include "share/backup/ob_backup_struct.h"
 #include "share/object_storage/ob_object_storage_struct.h"
-#include "lib/utility/utility.h"
 #include "lib/json/ob_json.h"
 #include "lib/restore/hmac_signature.h"
 #include "lib/string/ob_string.h"
@@ -26,6 +23,7 @@ namespace oceanbase
 
 namespace common
 {
+ObClusterEnableObdalConfigBase *cluster_enable_obdal_config = nullptr;
 const char *OB_STORAGE_CHECKSUM_TYPE_STR[] = {CHECKSUM_TYPE_NO_CHECKSUM, CHECKSUM_TYPE_MD5, CHECKSUM_TYPE_CRC32};
 
 const char *get_storage_checksum_type_str(const ObStorageChecksumType &type)
@@ -36,6 +34,35 @@ const char *get_storage_checksum_type_str(const ObStorageChecksumType &type)
     str = OB_STORAGE_CHECKSUM_TYPE_STR[type];
   }
   return str;
+}
+
+int get_storage_checksum_type(const char *checksum_type_str, ObStorageChecksumType &checksum_type)
+{
+  int ret = OB_SUCCESS;
+  checksum_type = OB_STORAGE_CHECKSUM_MAX_TYPE;
+  if (OB_ISNULL(checksum_type_str)) {
+    ret = OB_INVALID_ARGUMENT;
+    OB_LOG(WARN, "invalid args", K(ret), KP(checksum_type_str));
+  } else if (0 == strcmp(checksum_type_str, CHECKSUM_TYPE_NO_CHECKSUM)) {
+    checksum_type = OB_NO_CHECKSUM_ALGO;
+  } else if (0 == strcmp(checksum_type_str, CHECKSUM_TYPE_MD5)) {
+    checksum_type = OB_MD5_ALGO;
+  } else if (0 == strcmp(checksum_type_str, CHECKSUM_TYPE_CRC32)) {
+    checksum_type = OB_CRC32_ALGO;
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+    OB_LOG(WARN, "invalid args", K(ret), K(checksum_type_str));
+  }
+  return ret;
+}
+
+bool is_use_obdal()
+{
+  if (OB_NOT_NULL(cluster_enable_obdal_config)) {
+    return cluster_enable_obdal_config->is_enable_obdal();
+  } else {
+    return false;
+  }
 }
 
 //***********************ObSTSToken***************************
@@ -149,21 +176,26 @@ int ObObjectStorageCredential::assign(const ObObjectStorageCredential &credentia
   return ret;
 }
 
+/*-------------------------------- ObStorageAccount --------------------------------*/
+ObStorageAccount::ObStorageAccount()
+{
+  reset();
+}
+
+void ObStorageAccount::reset()
+{
+  is_valid_ = false;
+  MEMSET(endpoint_, 0, sizeof(endpoint_));
+  MEMSET(access_id_, 0, sizeof(access_id_));
+  MEMSET(access_key_, 0, sizeof(access_key_));
+  delete_mode_ = ObStorageDeleteMode::STORAGE_DELETE_MODE;
+  sts_token_.reset();
+}
+
 //***********************ObObjectStorageInfo***************************
 ObObjectStorageInfo::ObObjectStorageInfo()
-  : delete_mode_(ObStorageDeleteMode::STORAGE_DELETE_MODE),
-    device_type_(ObStorageType::OB_STORAGE_MAX_TYPE),
-    checksum_type_(ObStorageChecksumType::OB_NO_CHECKSUM_ALGO),
-    is_assume_role_mode_(false)
 {
-  endpoint_[0] = '\0';
-  access_id_[0] = '\0';
-  access_key_[0] = '\0';
-  extension_[0] = '\0';
-  max_iops_ = 0;
-  max_bandwidth_ = 0;
-  role_arn_[0] = '\0';
-  external_id_[0] = '\0';
+  reset();
 }
 
 ObObjectStorageInfo::~ObObjectStorageInfo()
@@ -173,16 +205,21 @@ ObObjectStorageInfo::~ObObjectStorageInfo()
 
 void ObObjectStorageInfo::reset()
 {
-  delete_mode_ = ObStorageDeleteMode::STORAGE_DELETE_MODE;
   device_type_ = ObStorageType::OB_STORAGE_MAX_TYPE;
   checksum_type_ = ObStorageChecksumType::OB_NO_CHECKSUM_ALGO;
+  addressing_model_ = ObStorageAddressingModel::OB_VIRTUAL_HOSTED_STYLE;
+  delete_mode_ = ObStorageDeleteMode::STORAGE_DELETE_MODE;
+  region_[0] = '\0';
   endpoint_[0] = '\0';
   access_id_[0] = '\0';
   access_key_[0] = '\0';
   extension_[0] = '\0';
+  max_iops_ = 0;
+  max_bandwidth_ = 0;
   role_arn_[0] = '\0';
   external_id_[0] = '\0';
   is_assume_role_mode_ = false;
+  enable_worm_ = false;
 }
 
 bool ObObjectStorageInfo::is_valid() const
@@ -204,6 +241,7 @@ int64_t ObObjectStorageInfo::hash() const
   hash_value = murmurhash(role_arn_, static_cast<int32_t>(strlen(role_arn_)), hash_value);
   hash_value = murmurhash(external_id_, static_cast<int32_t>(strlen(external_id_)), hash_value);
   hash_value = murmurhash(&is_assume_role_mode_, static_cast<int32_t>(sizeof(is_assume_role_mode_)), hash_value);
+  hash_value = murmurhash(&enable_worm_, static_cast<int32_t>(sizeof(enable_worm_)), hash_value);
   return hash_value;
 }
 
@@ -219,7 +257,8 @@ bool ObObjectStorageInfo::operator ==(const ObObjectStorageInfo &storage_info) c
       && (0 == STRCMP(external_id_, storage_info.external_id_))
       && is_assume_role_mode_ == storage_info.is_assume_role_mode_
       && max_iops_ == storage_info.max_iops_
-      && max_bandwidth_ == storage_info.max_bandwidth_;
+      && max_bandwidth_ == storage_info.max_bandwidth_
+      && enable_worm_ == storage_info.enable_worm_;
 }
 
 bool ObObjectStorageInfo::operator !=(const ObObjectStorageInfo &storage_info) const
@@ -246,7 +285,7 @@ int ObObjectStorageInfo::reset_access_id_and_access_key(
   if (OB_NOT_NULL(access_key)) {
     int64_t pos = 0;
     if (FAILEDx(databuff_printf(access_key_, OB_MAX_BACKUP_ACCESSKEY_LENGTH, pos, "%s%s", ACCESS_KEY, access_key))) {
-      LOG_WARN("failed to databuff printf", K(ret), KCSTRING(access_key));
+      LOG_WARN("failed to databuff printf", K(ret));
     }
   }
   return ret;
@@ -257,16 +296,21 @@ bool ObObjectStorageInfo::is_assume_role_mode() const
   return is_assume_role_mode_;
 }
 
-ObClusterVersionBaseMgr *ObObjectStorageInfo::cluster_version_mgr_ = nullptr;
-int ObObjectStorageInfo::register_cluster_version_mgr(ObClusterVersionBaseMgr *cluster_version_mgr)
+bool ObObjectStorageInfo::is_enable_worm() const
+{
+  return enable_worm_;
+}
+
+ObClusterStateBaseMgr *ObObjectStorageInfo::cluster_state_mgr_ = nullptr;
+int ObObjectStorageInfo::register_cluster_state_mgr(ObClusterStateBaseMgr *cluster_version_mgr)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(cluster_version_mgr)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("cluster_version_mgr is null", K(ret));
   } else {
-    cluster_version_mgr_ = cluster_version_mgr;
-    LOG_INFO("register_cluster_version_mgr", K(ret), KP_(cluster_version_mgr));
+    cluster_state_mgr_ = cluster_version_mgr;
+    LOG_INFO("register cluster_version_mgr successfully", K(ret), KP_(cluster_state_mgr));
   }
   return ret;
 }
@@ -292,32 +336,41 @@ const char *ObObjectStorageInfo::get_checksum_type_str() const
 }
 
 // oss:host=xxxx&access_id=xxx&access_key=xxx
-// cos:host=xxxx&access_id=xxx&access_key=xxxappid=xxx
 // s3:host=xxxx&access_id=xxx&access_key=xxx&s3_region=xxx
+// hdfs:krb5conf=xxx&principal=xxx&keytab=xxx&ticket_cache_path=xxx
 int ObObjectStorageInfo::set(const common::ObStorageType device_type, const char *storage_info)
 {
   bool has_needed_extension = false;
   int ret = OB_SUCCESS;
+  reset();
   if (is_valid()) {
     ret = OB_INIT_TWICE;
     LOG_WARN("storage info init twice", K(ret));
-  } else if (OB_ISNULL(storage_info) || strlen(storage_info) >= OB_MAX_BACKUP_STORAGE_INFO_LENGTH) {
+  } else if (FALSE_IT(device_type_ = device_type)){
+  } else if (OB_ISNULL(storage_info) || strlen(storage_info) == 0) {
+    // when device_type is file or hdfs, storage_info can be empty
+    if (OB_STORAGE_FILE != device_type_ && OB_STORAGE_HDFS != device_type_) {
+      ret = OB_INVALID_BACKUP_DEST;
+      LOG_WARN("storage info is invalid", K(ret), KP(storage_info));
+    }
+  } else if (strlen(storage_info) >= OB_MAX_BACKUP_STORAGE_INFO_LENGTH) {
     ret = OB_INVALID_BACKUP_DEST;
     LOG_WARN("storage info is invalid", K(ret), KP(storage_info));
-  } else if (FALSE_IT(device_type_ = device_type)) {
-  } else if (0 == strlen(storage_info)) {
-    if (OB_STORAGE_FILE != device_type_) {
-      ret = OB_INVALID_BACKUP_DEST;
-      LOG_WARN("storage info is empty", K(ret), K_(device_type));
+  } else {
+    if (OB_STORAGE_AZBLOB == device_type_) {
+      if (OB_ISNULL(cluster_state_mgr_)) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("cluster_version_mgr is null", K(ret), KP(cluster_state_mgr_));
+      } else if (OB_FAIL(cluster_state_mgr_->is_supported_azblob_version())) {
+        LOG_WARN("azblob version is not supported", K(ret), K(device_type));
+      }
     }
-  } else if (OB_FAIL(parse_storage_info_(storage_info, has_needed_extension))) {
-    LOG_WARN("parse storage info failed", K(ret), KP(storage_info), K_(device_type));
-  } else if (OB_STORAGE_COS == device_type && !has_needed_extension) {
-    ret = OB_INVALID_BACKUP_DEST;
-    LOG_WARN("invalid cos info, appid do not allow to be empty", K(ret), K_(extension));
-  } else if (OB_FAIL(validate_arguments())) {
-    ret = OB_INVALID_BACKUP_DEST;
-    LOG_WARN("invalid arguments after parse storage info", K(ret), KPC(this));
+
+    if (FAILEDx(parse_storage_info_(storage_info, has_needed_extension))) {
+      LOG_WARN("parse storage info failed", K(ret), KP(storage_info), K_(device_type));
+    } else if (OB_FAIL(validate_arguments())) {
+      LOG_WARN("invalid arguments after parse storage info", K(ret), KPC(this));
+    }
   }
 
   if (OB_FAIL(ret)) {
@@ -332,7 +385,7 @@ int ObObjectStorageInfo::validate_arguments() const
   if (OB_UNLIKELY(!ObObjectStorageInfo::is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid argument", K(ret), K(device_type_));
-  } else if (OB_STORAGE_FILE != device_type_) {
+  } else if (OB_STORAGE_FILE != device_type_ && OB_STORAGE_HDFS != device_type_) {
     if (OB_UNLIKELY(0 == strlen(endpoint_))) {
       ret = OB_INVALID_BACKUP_DEST;
       LOG_WARN("backup device is not nfs, endpoint do not allow to be empty", K(ret),
@@ -360,6 +413,19 @@ int ObObjectStorageInfo::validate_arguments() const
           K_(device_type), K_(endpoint), K_(access_id), KP_(access_key), KP_(role_arn), KP_(external_id));
     }
   }
+  if (OB_SUCC(ret) && enable_worm_) {
+    if (OB_UNLIKELY(!(OB_MD5_ALGO == checksum_type_ && OB_STORAGE_OSS == device_type_))) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("device or checksum type don't support enable_worm", K(ret), KPC(this));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED,
+          "Only OSS and checksum_type=md5 support setting enable_worm, other devices or checksum types are");
+    } else if (OB_UNLIKELY(is_use_obdal())) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("using obdal mode don't support enable_worm", K(ret), KPC(this));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "setting enable_worm=true when using obdal is");
+    }
+  }
+
   return ret;
 }
 
@@ -387,6 +453,7 @@ int ObObjectStorageInfo::parse_storage_info_(const char *storage_info, bool &has
     char *token = NULL;
     char *saved_ptr = NULL;
     int64_t info_len = strlen(storage_info);
+    bool has_checksum_type = false;
 
     MEMCPY(tmp, storage_info, info_len);
     tmp[info_len] = '\0';
@@ -399,6 +466,8 @@ int ObObjectStorageInfo::parse_storage_info_(const char *storage_info, bool &has
         if (OB_UNLIKELY(OB_STORAGE_S3 != device_type_)) {
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("only s3 protocol can set s3_region", K(ret), K(token), K(device_type_));
+        } else if (OB_FAIL(set_storage_info_field_(token, region_, sizeof(region_)))) {
+          LOG_WARN("faield to set region", K(ret), K(token));
         } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
           LOG_WARN("failed to set region", K(ret), K(token));
         }
@@ -444,39 +513,40 @@ int ObObjectStorageInfo::parse_storage_info_(const char *storage_info, bool &has
             LOG_INFO("parse bandwidth value", K(buf), K(value));
           }
         }
-      } else if (0 == strncmp(APPID, token, strlen(APPID))) {
-        has_needed_extension = (OB_STORAGE_COS == device_type_);
-        if (OB_UNLIKELY(OB_STORAGE_COS != device_type_)) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("only cos protocol can appid", K(ret), K(token), K(device_type_));
-        } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
-          LOG_WARN("failed to set appid", K(ret), K(token));
-        }
       } else if (0 == strncmp(DELETE_MODE, token, strlen(DELETE_MODE))) {
         if (OB_STORAGE_FILE == device_type_) {
           ret = OB_INVALID_BACKUP_DEST;
           OB_LOG(WARN, "OB_STORAGE_FILE don't support delete mode yet",
             K(ret), K_(device_type), K(token));
-        } else if (OB_FAIL(check_delete_mode_(token + strlen(DELETE_MODE)))) {
+        } else if (OB_FAIL(set_delete_mode_(token + strlen(DELETE_MODE)))) {
           OB_LOG(WARN, "failed to check delete mode", K(ret), K(token));
         } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
           LOG_WARN("failed to set delete mode", K(ret), K(token));
         }
       } else if (0 == strncmp(ADDRESSING_MODEL, token, strlen(ADDRESSING_MODEL))) {
-        if (OB_FAIL(check_addressing_model_(token + strlen(ADDRESSING_MODEL)))) {
+        if (OB_FAIL(set_addressing_model_(token + strlen(ADDRESSING_MODEL)))) {
           OB_LOG(WARN, "failed to check addressing model", K(ret), K(token));
         } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
           LOG_WARN("failed to set addressing model", K(ret), K(token));
         }
       } else if (0 == strncmp(CHECKSUM_TYPE, token, strlen(CHECKSUM_TYPE))) {
+        has_checksum_type = true;
         const char *checksum_type_str = token + strlen(CHECKSUM_TYPE);
         if (OB_FAIL(set_checksum_type_(checksum_type_str))) {
           OB_LOG(WARN, "fail to set checksum type", K(ret), K(checksum_type_str));
         } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
           LOG_WARN("fail to set checksum type into extension", K(ret), K(token));
         }
+      } else if (0 == strncmp(ENABLE_WORM, token, strlen(ENABLE_WORM))) {
+        if (OB_FAIL(set_enable_worm_(token + strlen(ENABLE_WORM)))) {
+          LOG_WARN("failed to check enable worm", K(ret), K(token));
+        } else if (OB_FAIL(set_storage_info_field_(token, extension_, sizeof(extension_)))) {
+          LOG_WARN("failed to set enable worm", K(ret), K(token));
+        }
       } else if (0 == strncmp(ROLE_ARN, token, strlen(ROLE_ARN))) {
-        if (ObStorageType::OB_STORAGE_FILE == device_type_) {
+        if (ObStorageType::OB_STORAGE_FILE == device_type_
+            || ObStorageType::OB_STORAGE_AZBLOB == device_type_
+            || is_use_obdal()) {
           ret = OB_INVALID_BACKUP_DEST;
           LOG_WARN("OB_STORAGE_FILE don't support assume role yet",
               K(ret), K_(device_type), KP(token));
@@ -495,13 +565,22 @@ int ObObjectStorageInfo::parse_storage_info_(const char *storage_info, bool &has
       }
     }
 
+    if (OB_SUCC(ret)) {
+      if (!has_checksum_type && cluster_state_mgr_ != nullptr && cluster_state_mgr_->is_shared_storage_mode()) {
+        // do not update extension_ because it only contains what the user has provided.
+        if (OB_FAIL(set_checksum_type_(CHECKSUM_TYPE_MD5))) {
+          OB_LOG(WARN, "failed to set default checksum type in shared storage mode", K(ret), K(CHECKSUM_TYPE_MD5));
+        }
+      }
+    }
+
     // If access by assume role, try to get temporary ak/sk into cache to speed up access
     if (OB_SUCC(ret)) {
       if (strlen(role_arn_) > strlen(ROLE_ARN)) {
-        if (OB_ISNULL(cluster_version_mgr_)) {
+        if (OB_ISNULL(cluster_state_mgr_)) {
           ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("cluster version mgr is null", K(ret), KP(cluster_version_mgr_));
-        } else if (OB_FAIL(cluster_version_mgr_->is_supported_assume_version())) {
+          LOG_WARN("cluster version mgr is null", K(ret), KP(cluster_state_mgr_));
+        } else if (OB_FAIL(cluster_state_mgr_->is_supported_assume_version())) {
           LOG_WARN("The current version does not support the assume role", K(ret), KPC(this));
         } else {
           is_assume_role_mode_ = true;
@@ -516,8 +595,32 @@ int ObObjectStorageInfo::parse_storage_info_(const char *storage_info, bool &has
   }
   return ret;
 }
-//TODO(shifagndan): define delete mode as enum
-int ObObjectStorageInfo::check_delete_mode_(const char *delete_mode)
+
+int ObObjectStorageInfo::set_enable_worm_(const char *enable_worm)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(cluster_state_mgr_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("cluster version mgr is null", K(ret), KP(cluster_state_mgr_));
+  } else if (OB_FAIL(cluster_state_mgr_->is_supported_enable_worm_version())) {
+    LOG_WARN("The current version does not support enable worm", K(ret), KPC(this));
+  } else if (OB_ISNULL(enable_worm)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", K(ret), KP(enable_worm));
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "set eanble_worm. eanble_worm must be true or false");
+  } else if (0 == strcmp(enable_worm, "true")) {
+    enable_worm_ = true;
+  } else if (0 == strcmp(enable_worm, "false")) {
+    enable_worm_ = false;
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("enable worm argument is invalid", K(ret), K(enable_worm));
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "set eanble_worm. eanble_worm must be true or false");
+  }
+  return ret;
+}
+
+int ObObjectStorageInfo::set_delete_mode_(const char *delete_mode)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(delete_mode)) {
@@ -534,14 +637,17 @@ int ObObjectStorageInfo::check_delete_mode_(const char *delete_mode)
   return ret;
 }
 
-int ObObjectStorageInfo::check_addressing_model_(const char *addressing_model) const
+int ObObjectStorageInfo::set_addressing_model_(const char *addressing_model)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(addressing_model)) {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "invalid args", K(ret), KP(addressing_model));
-  } else if (0 != strcmp(addressing_model, ADDRESSING_MODEL_VIRTUAL_HOSTED_STYLE)
-      && 0 != strcmp(addressing_model, ADDRESSING_MODEL_PATH_STYLE)) {
+  } else if (0 == strcmp(addressing_model, ADDRESSING_MODEL_VIRTUAL_HOSTED_STYLE)) {
+    addressing_model_ = OB_VIRTUAL_HOSTED_STYLE;
+  } else if (0 == strcmp(addressing_model, ADDRESSING_MODEL_PATH_STYLE)) {
+    addressing_model_ = OB_PATH_STYLE;
+  } else {
     ret = OB_INVALID_ARGUMENT;
     OB_LOG(WARN, "addressing model is invalid", K(ret), K(addressing_model));
   }
@@ -554,17 +660,36 @@ bool is_oss_supported_checksum(const ObStorageChecksumType checksum_type)
       || checksum_type == ObStorageChecksumType::OB_MD5_ALGO;
 }
 
-bool is_cos_supported_checksum(const ObStorageChecksumType checksum_type)
-{
-  return checksum_type == ObStorageChecksumType::OB_NO_CHECKSUM_ALGO
-      || checksum_type == ObStorageChecksumType::OB_MD5_ALGO;
-}
-
 bool is_s3_supported_checksum(const ObStorageChecksumType checksum_type)
 {
   return checksum_type == ObStorageChecksumType::OB_CRC32_ALGO
       || checksum_type == ObStorageChecksumType::OB_MD5_ALGO
       || checksum_type == ObStorageChecksumType::OB_NO_CHECKSUM_ALGO;
+}
+
+bool is_obdal_supported_checksum(const ObStorageType storage_type, const ObStorageChecksumType checksum_type)
+{
+  bool ret = true;
+  if (storage_type == OB_STORAGE_S3) {
+    if (checksum_type != ObStorageChecksumType::OB_MD5_ALGO
+        && checksum_type != ObStorageChecksumType::OB_CRC32_ALGO
+        && checksum_type != ObStorageChecksumType::OB_NO_CHECKSUM_ALGO) {
+      ret = false;
+    }
+  } else if (storage_type == OB_STORAGE_OSS) {
+    if (checksum_type != ObStorageChecksumType::OB_MD5_ALGO
+        && checksum_type != ObStorageChecksumType::OB_NO_CHECKSUM_ALGO) {
+      ret = false;
+    }
+  } else if (storage_type == OB_STORAGE_AZBLOB) {
+    if (checksum_type != ObStorageChecksumType::OB_MD5_ALGO
+        && checksum_type != ObStorageChecksumType::OB_NO_CHECKSUM_ALGO) {
+      ret = false;
+    }
+  } else {
+    ret = false;
+  }
+  return ret;
 }
 
 int ObObjectStorageInfo::set_checksum_type_(const char *checksum_type_str)
@@ -589,10 +714,6 @@ int ObObjectStorageInfo::set_checksum_type_(const char *checksum_type_str)
     ret = OB_CHECKSUM_TYPE_NOT_SUPPORTED;
     OB_LOG(WARN, "not supported checksum type for oss",
         K(ret), K_(device_type), K(checksum_type_str), K_(checksum_type));
-  } else if (OB_UNLIKELY(OB_STORAGE_COS == device_type_ && !is_cos_supported_checksum(checksum_type_))) {
-    ret = OB_CHECKSUM_TYPE_NOT_SUPPORTED;
-    OB_LOG(WARN, "not supported checksum type for cos",
-        K(ret), K_(device_type), K(checksum_type_str), K_(checksum_type));
   } else if (OB_UNLIKELY(OB_STORAGE_S3 == device_type_ && !is_s3_supported_checksum(checksum_type_))) {
     ret = OB_CHECKSUM_TYPE_NOT_SUPPORTED;
     OB_LOG(WARN, "not supported checksum type for s3",
@@ -615,7 +736,7 @@ int ObObjectStorageInfo::set_storage_info_field_(const char *info, char *field, 
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("info is too long ", K(ret), K(info_len), K(length));
     } else if (pos > 0 && OB_FAIL(databuff_printf(field, length, pos, "&"))) {
-      // cos:host=xxxx&access_id=xxx&access_key=xxxappid=xxx&delete_mode=xxx
+      // cos:host=xxxx&access_id=xxx&access_key=xxx&appid=xxx&delete_mode=xxx
       // extension_ may contain both appid and delete_mode
       // so delimiter '&' should be included
       LOG_WARN("failed to add delimiter to storage info field", K(ret), K(pos), KP(field), K(length));
@@ -632,6 +753,7 @@ int ObObjectStorageInfo::assign(const ObObjectStorageInfo &storage_info)
   delete_mode_ = storage_info.delete_mode_;
   device_type_ = storage_info.device_type_;
   checksum_type_ = storage_info.checksum_type_;
+  MEMCPY(region_, storage_info.region_, sizeof(region_));
   MEMCPY(endpoint_, storage_info.endpoint_, sizeof(endpoint_));
   MEMCPY(access_id_, storage_info.access_id_, sizeof(access_id_));
   MEMCPY(access_key_, storage_info.access_key_, sizeof(access_key_));
@@ -641,7 +763,15 @@ int ObObjectStorageInfo::assign(const ObObjectStorageInfo &storage_info)
   MEMCPY(role_arn_, storage_info.role_arn_, sizeof(role_arn_));
   MEMCPY(external_id_, storage_info.external_id_, sizeof(external_id_));
   is_assume_role_mode_ = storage_info.is_assume_role_mode_;
+  enable_worm_ = storage_info.enable_worm_;
   return ret;
+}
+
+int ObObjectStorageInfo::clone(
+    common::ObIAllocator &allocator,
+    ObObjectStorageInfo *&storage_info) const
+{
+  return clone_impl_<ObObjectStorageInfo>(allocator, *this, storage_info);
 }
 
 int ObObjectStorageInfo::get_info_str_(char *storage_info, const int64_t info_len) const
@@ -655,7 +785,8 @@ int ObObjectStorageInfo::get_info_str_(char *storage_info, const int64_t info_le
   } else if (OB_ISNULL(storage_info) || OB_UNLIKELY(info_len <= 0)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", K(ret), KP(storage_info), K(info_len));
-  } else if (OB_STORAGE_FILE != device_type_ && !is_assume_role_mode_) {
+  } else if (OB_STORAGE_FILE != device_type_ &&
+             OB_STORAGE_HDFS != device_type_ && !is_assume_role_mode_) {
     // Access object storage by ak/sk
     if (OB_FAIL(get_access_key_(key, sizeof(key)))) {
       LOG_WARN("failed to get access key", K(ret));
@@ -717,8 +848,6 @@ int ObObjectStorageInfo::get_storage_info_str(char *storage_info, const int64_t 
   return ret;
 }
 
-// This function is used to obtain storage_info_str containing ak/sk,
-// regardless of whether the access_mode is assume_role mode or access_id mode
 int ObObjectStorageInfo::get_authorization_str(
     char *authorization_str, const int64_t authorization_str_len, ObSTSToken &sts_token) const
 {
@@ -753,8 +882,47 @@ int ObObjectStorageInfo::get_authorization_str(
   return ret;
 }
 
-// Note: delete_mode_ redundantly stores a copy in extension. thus, device map key
-// includes extension_ is enough, and has no need to include delete_mode_.
+int ObObjectStorageInfo::to_account(ObStorageAccount &account) const
+{
+  int ret = OB_SUCCESS;
+  account.reset();
+  if (OB_UNLIKELY(!is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("storage info is invalid", K(ret), K(device_type_), KPC(this));
+  } else if (OB_FAIL(ob_set_field(endpoint_ + strlen(HOST), account.endpoint_, sizeof(account.endpoint_)))) {
+    OB_LOG(WARN, "failed to set endpoint", K(ret), K(endpoint_));
+  } else if (is_assume_role_mode_) {
+    // access by assume role
+    ObObjectStorageCredential credential;
+    if (OB_FAIL(ObDeviceCredentialMgr::get_instance().get_credential(*this, credential))) {
+      OB_LOG(WARN, "failed to get credential", K(ret), KPC(this), K(credential));
+    } else if (OB_FAIL(ob_set_field(credential.access_id_ + strlen(ACCESS_ID), account.access_id_, sizeof(account.access_id_)))) {
+      OB_LOG(WARN, "failed to set access_id", K(ret), K(access_id_));
+    } else if (OB_FAIL(ob_set_field(credential.access_key_ + strlen(ACCESS_KEY), account.access_key_, sizeof(account.access_key_)))) {
+      OB_LOG(WARN, "failed to set access_key", K(ret), K(access_key_));
+    } else if (OB_FAIL(account.sts_token_.assign(credential.sts_token_))) {
+      OB_LOG(WARN, "failed to set sts_token_", K(ret), K(account.sts_token_), K(credential.sts_token_));
+    }
+  } else {
+    if (OB_FAIL(ob_set_field(access_id_ + strlen(ACCESS_ID), account.access_id_, sizeof(account.access_id_)))) {
+      OB_LOG(WARN, "failed to set access_id", K(ret), K(access_id_));
+    } else if (OB_FAIL(ob_set_field(access_key_ + strlen(ACCESS_KEY), account.access_key_, sizeof(account.access_key_)))) {
+      OB_LOG(WARN, "failed to set access_key", K(ret), K(access_key_));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    account.delete_mode_ = delete_mode_;
+    account.is_valid_ = true;
+  }
+  return ret;
+}
+
+bool ObObjectStorageInfo::is_write_with_if_match() const
+{
+  return cluster_state_mgr_ != nullptr && cluster_state_mgr_->is_write_with_if_match();
+}
+
 int ObObjectStorageInfo::get_device_map_key_str(char *key_str, const int64_t len) const
 {
   int ret = OB_SUCCESS;
@@ -767,9 +935,10 @@ int ObObjectStorageInfo::get_device_map_key_str(char *key_str, const int64_t len
   } else if (is_assume_role_mode_) {
     // access by assume_role
     int64_t pos = 0;
-    if (OB_FAIL(databuff_printf(key_str, len, pos, "%u&%u&%s&%s&%s",
-            static_cast<uint32_t>(device_type_), static_cast<uint32_t>(checksum_type_), endpoint_,
-            role_arn_, extension_))) {
+    if (OB_FAIL(databuff_printf(key_str, len, pos, "%u&%u&%u&%s&%s&%s",
+            static_cast<uint32_t>(device_type_), static_cast<uint32_t>(checksum_type_),
+            static_cast<uint8_t>(is_use_obdal()),
+            endpoint_, role_arn_, extension_))) {
       LOG_WARN("failed to set key str with assume role", K(ret), K(len), K(pos), KPC(this));
     } else if (strlen(external_id_) > strlen(EXTERNAL_ID)) {
       if (OB_FAIL(databuff_printf(key_str, len, pos, "&%s", external_id_))) {
@@ -778,8 +947,9 @@ int ObObjectStorageInfo::get_device_map_key_str(char *key_str, const int64_t len
     }
   }
   // access by access_id
-  else if (OB_FAIL(databuff_printf(key_str, len, "%u&%u&%s&%s&%s&%s",
+  else if (OB_FAIL(databuff_printf(key_str, len, "%u&%u&%u&%s&%s&%s&%s",
                static_cast<uint32_t>(device_type_), static_cast<uint32_t>(checksum_type_),
+               static_cast<uint8_t>(is_use_obdal()),
                endpoint_, access_id_, access_key_, extension_))) {
     LOG_WARN("failed to set key str with access_id", K(ret), K(len), KPC(this));
   }
@@ -792,18 +962,18 @@ int64_t ObObjectStorageInfo::get_device_map_key_len() const
 {
   // ObStorageType and ObStorageChecksumType are uint8_t, but static_cast to uint32_t in get_device_map_key_str.
   // therefore, ObStorageType and ObStorageChecksumType each occupies up to 10 characters.
-  // 10(one ObStorageType) + 10(one ObStorageChecksumType) + 5(five '&') + 1(one '\0') = 26.
-  // reserve some free space, increase 26 to 30.
+  // 10(one ObStorageType) + 10(one ObStorageChecksumType) + 3(one bool type use_obdal) + 6(six '&') + 1(one '\0') = 30.
+  // reserve some free space, increase 30 to 35.
   int64_t len = 0;
   if (is_assume_role_mode_) {
     // When accessing by assume_role, the length of key_str is also need reversed free space.
-    len = STRLEN(endpoint_) + STRLEN(role_arn_) + STRLEN(extension_) + 30;
+    len = STRLEN(endpoint_) + STRLEN(role_arn_) + STRLEN(extension_) + 35;
     // external_id is optional
     if (STRLEN(external_id_) > STRLEN(EXTERNAL_ID)) {
       len += STRLEN(external_id_);
     }
   } else {
-    len = STRLEN(endpoint_) + STRLEN(access_id_) + STRLEN(access_key_) + STRLEN(extension_) + 30;
+    len = STRLEN(endpoint_) + STRLEN(access_id_) + STRLEN(access_key_) + STRLEN(extension_) + 35;
   }
   return len;
 }

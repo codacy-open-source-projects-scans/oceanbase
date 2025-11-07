@@ -13,12 +13,8 @@
 #define USING_LOG_PREFIX SHARE_PT
 
 #include "share/ls/ob_ls_info.h"      // for decalrations of functions in this cpp
-#include "share/config/ob_server_config.h"            // for KR(), common::ob_error_name(x)
 #include "share/ls/ob_ls_replica_filter.h" // ObLSReplicaFilter
-#include "share/ob_share_util.h"           // ObShareUtils
 #include "share/ob_all_server_tracer.h"    // SVR_TRACER
-#include "lib/string/ob_sql_string.h"      // ObSqlString
-#include "lib/utility/utility.h" // split_on()
 
 namespace oceanbase
 {
@@ -490,19 +486,34 @@ int ObLSReplica::member_list2text(
 
 int ObLSReplica::parse_addr_from_learner_string_(
     const ObString &input_string,
-    int64_t &the_count_of_colon_already_parsed,
-    ObAddr &learner_addr)
+    ObAddr &learner_addr,
+    ObString &remained_string)
 {
   int ret = OB_SUCCESS;
   int64_t input_string_length = input_string.length();
   learner_addr.reset();
+  remained_string.reset();
   int64_t learner_addr_length = 0;
-  the_count_of_colon_already_parsed = 0;
   ObSqlString learner_addr_string("LearnerStr");
   // ipv4 format: a.b.c.d:port:timestamp:flag,..
   // ipv6 format: [a:b:c:d:e:f:g:h]:port:timestamp:flag,...
   // for ipv4, we can directly find learner_addr_string before the second ':'
   // for ipv6, we have to find learner_addr_string before the second ':' at the begining of ']'
+  // ATTENTION:
+  //   for ipv6, "[a:b:c:d:e:f:g:h]:port:timestamp:flag" is basic format,
+  //   if some parts in a-h is 0 and these parts all next to each other,
+  //   it can be in a short format by replacing these 0 parts by '::',
+  //   for example:
+  //      "[a:b:0:0:0:f:g:h]:port:timestamp:flag"
+  //      is equal to "[a:b::f:g:h]:port:timestamp:flag"
+  //   ObAddr.parse_from_string() can handle both basic format and short format,
+  //   so we just need to input parts before port when calling ObAddr.parse_from_string()
+  //   BUT unfortunately, split_on(':') can not handle short format, input string will be wrongly splited.
+  //   for example:
+  //      split_on("a:b::c:d:e", ':', output_array) could return array like this:
+  //      output_array: ['a', 'b', ':c:d:e']
+  //   Considering '::' counld only be showed up in addr part, we return remained_string without addr,
+  //   let later process avoid parsing '::' by using split_on(':').
   if (OB_UNLIKELY(input_string.empty())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret));
@@ -511,8 +522,6 @@ int ObLSReplica::parse_addr_from_learner_string_(
     while (OB_SUCC(ret) && learner_addr_length < input_string_length) {
       if (0 == input_string.ptr()[learner_addr_length] - ']') {
         break;
-      } else if (0 == input_string.ptr()[learner_addr_length] - ':') {
-        the_count_of_colon_already_parsed++;
       }
       learner_addr_length++;
     }
@@ -524,18 +533,17 @@ int ObLSReplica::parse_addr_from_learner_string_(
   } else if (learner_addr_length >= input_string_length) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(learner_addr_length),
-             K(input_string_length), K(input_string), K(the_count_of_colon_already_parsed));
+             K(input_string_length), K(input_string));
   } else {
     int64_t colon_num = 0;
     while (OB_SUCC(ret) && learner_addr_length < input_string_length) {
       if (0 == input_string.ptr()[learner_addr_length] - ':') {
         colon_num++;
-        the_count_of_colon_already_parsed++;
         if (2 == colon_num) {
           // find the end of learner addr string
           if (OB_FAIL(learner_addr_string.append(input_string.ptr(), learner_addr_length))) {
             LOG_WARN("fail to construct learner addr string", KR(ret),
-                     K(input_string), K(learner_addr_length), K(the_count_of_colon_already_parsed));
+                     K(input_string), K(learner_addr_length));
           } else {
             break;
           }
@@ -553,7 +561,12 @@ int ObLSReplica::parse_addr_from_learner_string_(
     LOG_WARN("invalid argument", KR(ret), K(input_string), K(learner_addr_length), K(learner_addr_string));
   } else if (OB_FAIL(learner_addr.parse_from_string(learner_addr_string.string()))) {
     LOG_WARN("fail to parse addr from string", KR(ret), K(input_string), K(input_string_length),
-             K(learner_addr_string), K(learner_addr_length), K(the_count_of_colon_already_parsed));
+             K(learner_addr_string), K(learner_addr_length));
+  } else if (OB_UNLIKELY(input_string.length() <= learner_addr_length + 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(input_string), "input_string_length", input_string.length(), K(learner_addr_length));
+  } else {
+    remained_string.assign_ptr(input_string.ptr() + learner_addr_length + 1, input_string.length() - learner_addr_length - 1);
   }
   return ret;
 }
@@ -601,42 +614,48 @@ int ObLSReplica::text2learner_list(const char *text, GlobalLearnerList &learner_
        *  ipv4 format: a.b.c.d:port:timestamp:flag,...
        *  ipv6 format: [a:b:c:d:e:f:g:h]:port:timestamp:flag,...
        */
-      int64_t the_count_of_colon_already_parsed = 0;
       // 1. parse ip:port
       ObAddr learner_addr;
+      ObString remained_part_without_addr;
       if (OB_FAIL(parse_addr_from_learner_string_(
                       learner_string_array.at(learner_index),
-                      the_count_of_colon_already_parsed,
-                      learner_addr))) {
+                      learner_addr,
+                      remained_part_without_addr))) {
         LOG_WARN("fail to parse learner addr from string", KR(ret),
                  K(learner_index), K(learner_string_array));
       }
 
-      // 2. split learner addr string by ':'
+      // 2. split remained learner addr string by ':'
+      //    if string has '::', then split_on(':') will wrongly splited
+      //    '::' could only show up in addr with ipv6 format
+      //    remained_part_without_addr should not contain '::'
       ObArray<ObString> learner_sub_string_array;
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(split_on(learner_string_array.at(learner_index), ':', learner_sub_string_array))) {
-        LOG_WARN("fail to split learner string", KR(ret),
-                 K(learner_string_array), K(learner_sub_string_array));
-      } else if (OB_UNLIKELY(the_count_of_colon_already_parsed >= learner_sub_string_array.count())) {
+      } else if (OB_UNLIKELY(0 >= remained_part_without_addr.length())) {
         ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
-                 "array_count", learner_sub_string_array.count(),
-                 K(learner_string_array), K(learner_index));
+        LOG_WARN("invalid argument", KR(ret), K(remained_part_without_addr));
+      } else if (OB_FAIL(split_on(remained_part_without_addr, ':', learner_sub_string_array))) {
+        LOG_WARN("fail to split string", KR(ret), K(remained_part_without_addr));
+      } else if (OB_UNLIKELY(0 >= learner_sub_string_array.count())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid argument, should at least have timestamp string", KR(ret),
+                 K(learner_string_array), K(learner_index), K(learner_addr),
+                 K(remained_part_without_addr), K(learner_sub_string_array));
       }
 
-      // 3. skip the_count_of_colon_already_parsed and parse timestamp
+      // 3. parse timestamp
+      int64_t sub_array_index = 0;
       int64_t timestamp_val = 0;
       if (OB_FAIL(ret)) {
-      } else if (OB_UNLIKELY(the_count_of_colon_already_parsed >= learner_sub_string_array.count())) {
+      } else if (OB_UNLIKELY(sub_array_index >= learner_sub_string_array.count())) {
         ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
+        LOG_WARN("invalid argument", KR(ret), K(sub_array_index),
                  "array_count", learner_sub_string_array.count(),
                  K(learner_sub_string_array));
-      } else if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(the_count_of_colon_already_parsed), timestamp_val))) {
-        LOG_WARN("fail to extract timestamp from string", KR(ret), K(learner_sub_string_array), K(the_count_of_colon_already_parsed));
+      } else if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(sub_array_index), timestamp_val))) {
+        LOG_WARN("fail to extract timestamp from string", KR(ret), K(learner_sub_string_array), K(sub_array_index));
       } else {
-        the_count_of_colon_already_parsed++;
+        sub_array_index++;
       }
 
       // 4. parse flag if needed
@@ -646,19 +665,19 @@ int ObLSReplica::text2learner_list(const char *text, GlobalLearnerList &learner_
       // We have to deal with the compatible problem here to parse learner with flag or just ignore flag substring.
       int64_t flag_val = 0;
       if (OB_FAIL(ret)) {
-      } else if (the_count_of_colon_already_parsed < learner_sub_string_array.count()) {
-        if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(the_count_of_colon_already_parsed), flag_val))) {
-          LOG_WARN("fail to extract flag from string", KR(ret), K(learner_sub_string_array), K(the_count_of_colon_already_parsed));
+      } else if (sub_array_index < learner_sub_string_array.count()) {
+        if (OB_FAIL(parsing_int_from_string_(learner_sub_string_array.at(sub_array_index), flag_val))) {
+          LOG_WARN("fail to extract flag from string", KR(ret), K(learner_sub_string_array), K(sub_array_index));
         } else {
-          the_count_of_colon_already_parsed++;
+          sub_array_index++;
         }
       }
 
       // 5. make sure no remain parts
       if (OB_FAIL(ret)) {
-      } else if (the_count_of_colon_already_parsed < learner_sub_string_array.count()) {
+      } else if (sub_array_index < learner_sub_string_array.count()) {
         ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("invalid argument", KR(ret), K(the_count_of_colon_already_parsed),
+        LOG_WARN("invalid argument", KR(ret), K(sub_array_index),
                  "array_count", learner_sub_string_array.count(),
                  K(learner_sub_string_array));
       }
@@ -672,6 +691,8 @@ int ObLSReplica::text2learner_list(const char *text, GlobalLearnerList &learner_
           LOG_WARN("push back learner failed", KR(ret), K(learner_to_add));
         }
       }
+      LOG_TRACE("finish parse single learner", KR(ret), K(learner_string_array), K(learner_index), K(learner_addr),
+                K(remained_part_without_addr), K(learner_sub_string_array), K(timestamp_val), K(flag_val));
     }
   }
   return ret;
@@ -970,7 +991,147 @@ int ObLSInfo::composite_with(const ObLSInfo &other)
   return ret;
 }
 
-// TODO: make sure the actions of this function
+int ObLSInfo::rectify_in_member_or_learner_list_flag_and_timestamp_(
+    ObLSReplica *&replica,
+    const ObLSReplica::MemberList *member_list,
+    const common::GlobalLearnerList *learner_list,
+    ObMember &learner,
+    bool &in_leader_member_list,
+    bool &in_leader_learner_list)
+{
+  int ret = OB_SUCCESS;
+  int64_t in_member_time_us = 0;
+  if (OB_ISNULL(replica)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(replica));
+  } else {
+    if (OB_NOT_NULL(member_list)) {
+      ARRAY_FOREACH_X(*member_list, idx, cnt, !in_leader_member_list) {
+        if (replica->get_server() == member_list->at(idx)) {
+          in_leader_member_list = true;
+          in_member_time_us = member_list->at(idx).get_timestamp();
+        }
+      }
+    }
+    if (OB_NOT_NULL(learner_list) && learner_list->contains(replica->get_server())) {
+      in_leader_learner_list = true;
+      if (OB_FAIL(learner_list->get_learner_by_addr(replica->get_server(), learner))) {
+        LOG_WARN("fail to get learner by addr", KR(ret), KP(learner_list), KPC(replica));
+      } else {
+        in_member_time_us = learner.get_timestamp();
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(in_leader_member_list && in_leader_learner_list)) {
+      ret = OB_STATE_NOT_MATCH;
+      LOG_WARN("replica can not both in member_list and learner_list", KR(ret),
+               K(in_leader_member_list), K(in_leader_learner_list), KP(member_list), KP(learner_list));
+    } else {
+      replica->update_in_member_list_status(in_leader_member_list, in_member_time_us);
+      replica->update_in_learner_list_status(in_leader_learner_list, in_member_time_us);
+    }
+  }
+  return ret;
+}
+
+int ObLSInfo::rectify_replica_type_(
+    ObLSReplica *&replica,
+    const bool in_leader_learner_list)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(replica)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(replica));
+  } else if (REPLICA_TYPE_COLUMNSTORE == replica->get_replica_type()) {
+    // for C-replica:
+    //   If replica tye is column store, do not change replica type,
+    //   because C-replica has different read logic with F/R-replicas.
+    //   If replica is column stored but reported as F-replica,
+    //   sql should fail and error is returned to user.
+    //   But there exists a bad case:
+    //     If replica type in meta_table is C-replica but actually
+    //     it already existed in member_list(maybe new replica type
+    //     has not reported yet), this F-replica could be wrongly
+    //     regarded as C-replica.
+    //   We can not avoid this case, because informations in meta table
+    //   is not updated immediately. We just rectify replica type according
+    //   to informations recorded in meta table at that moment.
+    LOG_TRACE("replica type is column store, do not change replica type", KPC(replica));
+  } else if (REPLICA_TYPE_FULL == replica->get_replica_type()
+             || REPLICA_TYPE_READONLY == replica->get_replica_type()) {
+    // for F/R-replica:
+    //   Both R-replica and F-replica has same F-replica type stored in ls meta.
+    //   Replica type is reported according to learner_list and member_list locally.
+    //   We should rectify replica_type according to member_list and learner_list by leader.
+    if (in_leader_learner_list) {
+      replica->set_replica_type(REPLICA_TYPE_READONLY);
+    } else {
+      replica->set_replica_type(REPLICA_TYPE_FULL);
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid replica type", KR(ret), KPC(replica));
+  }
+  return ret;
+}
+
+int ObLSInfo::rectify_replica_status_(
+    ObLSReplica *&replica,
+    const bool in_leader_member_list,
+    const bool in_leader_learner_list,
+    const ObMember &learner)
+{
+  // rectify replica_status_
+  // follow these rules below:
+  // (1) paxos replicas (FULL),NORMAL when in leader's member_list otherwise offline.
+  // (2) non_paxos replicas (READONLY),NORMAL when in leader's learner_list otherwise offline
+  // (3) if non_paxos replicas are deleted by partition service, status in meta table is set to REPLICA_STATUS_OFFLINE,
+  //     then set replica_status to REPLICA_STATUS_OFFLINE
+  // (4) COLUMNSTORE replica, if not in learner list or columnstore-flag is false,
+  //     then set replica_status to REPLICA_STATUS_OFFLINE
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(replica)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), KP(replica));
+  } else if (REPLICA_STATUS_OFFLINE == replica->get_replica_status()) {
+    // do nothing
+    LOG_TRACE("replica already offline", KPC(replica));
+  } else if (REPLICA_TYPE_COLUMNSTORE == replica->get_replica_type()) {
+    if (in_leader_member_list) {
+      replica->set_replica_status(REPLICA_STATUS_OFFLINE);
+      LOG_INFO("C-replica type but in member_list, set replica status to offline",
+               KPC(replica), K(in_leader_member_list));
+    } else if (!in_leader_learner_list) {
+      replica->set_replica_status(REPLICA_STATUS_OFFLINE);
+      LOG_INFO("C-replica type but not in learner list, set replica status to offline",
+               KPC(replica), K(in_leader_learner_list));
+    } else if (!learner.is_columnstore()) {
+      replica->set_replica_status(REPLICA_STATUS_OFFLINE);
+      LOG_INFO("C-replica type but without C-flag in leanrer list, set replica status to offline",
+               KPC(replica), K(learner));
+    } else {
+      replica->set_replica_status(REPLICA_STATUS_NORMAL);
+    }
+  } else if (REPLICA_TYPE_FULL == replica->get_replica_type()
+             || REPLICA_TYPE_READONLY == replica->get_replica_type()) {
+    if (OB_UNLIKELY(learner.is_columnstore())) {
+      replica->set_replica_status(REPLICA_STATUS_OFFLINE);
+      LOG_INFO("replica type not C-replica but with C-flag in learner_list",
+               KPC(replica), K(learner));
+    } else if (in_leader_member_list || in_leader_learner_list) {
+      replica->set_replica_status(REPLICA_STATUS_NORMAL);
+    } else {
+      replica->set_replica_status(REPLICA_STATUS_OFFLINE);
+      LOG_INFO("replica not in learner or member list, set replica status to offline",
+               KPC(replica), K(in_leader_member_list), K(in_leader_learner_list));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected replica type", KR(ret), KPC(replica));
+  }
+  return ret;
+}
+
 int ObLSInfo::update_replica_status()
 {
   int ret = OB_SUCCESS;
@@ -980,68 +1141,61 @@ int ObLSInfo::update_replica_status()
   } else {
     const ObLSReplica::MemberList *member_list = NULL;
     const common::GlobalLearnerList *learner_list = NULL;
+    // find leader's reported member_list and learner_list
     FOREACH_CNT_X(r, replicas_, OB_ISNULL(member_list) && OB_SUCCESS == ret) {
       if (r->is_strong_leader()) {
         member_list = &r->get_member_list();
         learner_list = &r->get_learner_list();
       }
     }
-
+    // rectify informations of every replicas
     FOREACH_CNT_X(r, replicas_, OB_SUCCESS == ret) {
       bool in_leader_member_list = (OB_ISNULL(member_list)
         && ObReplicaTypeCheck::is_paxos_replica_V2(r->get_replica_type()));
-      int64_t in_member_time_us = 0;
       bool in_leader_learner_list = false;
       ObMember learner;
-      // rectify replica_type_
-      const ObReplicaType replica_type_before_rectify = r->get_replica_type();
-      if (OB_NOT_NULL(learner_list) && learner_list->contains(r->get_server())) {
-        in_leader_learner_list = true;
-        if (OB_FAIL(learner_list->get_learner_by_addr(r->get_server(), learner))) {
-          LOG_WARN("fail to get learner by addr", KR(ret));
-        } else {
-          in_member_time_us = learner.get_timestamp();
-          if (learner.is_columnstore()) {
-            r->set_replica_type(REPLICA_TYPE_COLUMNSTORE);
-          } else {
-            r->set_replica_type(REPLICA_TYPE_READONLY);
-          }
-        }
-      } else {
-        r->set_replica_type(REPLICA_TYPE_FULL);
+      if (OB_FAIL(rectify_in_member_or_learner_list_flag_and_timestamp_(
+                      r, member_list, learner_list, learner, in_leader_member_list, in_leader_learner_list))) {
+        LOG_WARN("fail to rectify in_leader or in_learner member_list and timestamp", KR(ret), KPC(r),
+                 KP(member_list), KP(learner_list), K(learner), K(in_leader_member_list), K(in_leader_learner_list));
+      } else if (OB_FAIL(rectify_replica_type_(r, in_leader_learner_list))) {
+        LOG_WARN("fail to rectify replica type", KR(ret), KPC(r), K(in_leader_learner_list));
+      } else if (OB_FAIL(rectify_replica_status_(r, in_leader_member_list, in_leader_learner_list, learner))) {
+        LOG_WARN("fail to rectify replica status", KR(ret), KPC(r), K(in_leader_learner_list), K(learner));
       }
-      // rectify in_member_list_ and in_member_list_time_
-      if (OB_NOT_NULL(member_list)) {
-        ARRAY_FOREACH_X(*member_list, idx, cnt, !in_leader_member_list) {
-          if (r->get_server() == member_list->at(idx)) {
-            in_leader_member_list = true;
-            in_member_time_us = member_list->at(idx).get_timestamp();
-          }
+    }
+  }
+  if (FAILEDx(filter_sslog_replica_())) {
+    LOG_WARN("fail to filter sslog replica", KR(ret));
+  }
+  return ret;
+}
+
+int ObLSInfo::filter_sslog_replica_()
+{
+  /*
+    There must be an R replica(or F) of sslog on each tenant's unit, which responsible by sslog service timer.
+    disaster recovery, unit migration, unit num changes and empty server checker and other modules will ignore
+    the sslog R replica, only focus on the F replica. In disaster recovery, only handle tasks such as migration and add of F replicas,
+    not handle dr tasks for R replicas. In unit migration ends checker (also unit num changes finish checker and empty server checker)
+     will ignore sslog R replicas.
+
+    Here clear the leader's learner_list while clearing the R replica, the reason for doing this is: if only cleaning the R replica in the
+    replica array and keep the learner_list of the leader, disaster recovery will consider this as an abnormal situation(only in member or learner list).
+    Meanwhile, unit migration ends checker (also unit num changes finish checker and empty server checker) may also check the learner list,
+    we don't want to see such member.
+  */
+  int ret = OB_SUCCESS;
+  if (is_tenant_sslog_ls(tenant_id_, ls_id_)) {
+    ObSSLOGReplicaFilter sslog_filter;
+    if (OB_FAIL(filter(sslog_filter))) {
+      LOG_WARN("fail to filter sslog replica", KR(ret), "ls_info", *this);
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < replicas_.count(); ++i) {
+        if (replicas_.at(i).is_strong_leader()) {
+          replicas_.at(i).reset_learner_list();
+          break;
         }
-      }
-      r->update_in_member_list_status(in_leader_member_list, in_member_time_us);
-      r->update_in_learner_list_status(in_leader_learner_list, in_member_time_us);
-      // rectify replica_status_
-      // follow these rules below:
-      // 1 paxos replicas (FULL),NORMAL when in leader's member_list otherwise offline.
-      // 2 non_paxos replicas (READONLY),NORMAL when in leader's learner_list otherwise offline
-      // 3 if non_paxos replicas are deleted by partition service, status in meta table is set to REPLICA_STATUS_OFFLINE,
-      //    then set replica_status to REPLICA_STATUS_OFFLINE
-      // 4 COLUMNSTORE replica, if not in learner list or columnstore-flag is false,
-      //    then set replica_status to REPLICA_STATUS_OFFLINE
-      if (REPLICA_STATUS_OFFLINE == r->get_replica_status()) {
-        // do nothing
-      } else if (REPLICA_TYPE_COLUMNSTORE == replica_type_before_rectify
-                 && REPLICA_TYPE_COLUMNSTORE != r->get_replica_type()) {
-        // we set replica_type according to leader's member/learner_list, but need to log a warning.
-        LOG_WARN("replica_type before rectify is COLUMNSTORE, "
-                 "but not match with leader's member_list and learner_list",
-                 K(replica_type_before_rectify), K(member_list), K(learner_list), KPC(r));
-        r->set_replica_status(REPLICA_STATUS_OFFLINE);
-      } else if (in_leader_member_list || in_leader_learner_list) {
-        r->set_replica_status(REPLICA_STATUS_NORMAL);
-      } else {
-        r->set_replica_status(REPLICA_STATUS_OFFLINE);
       }
     }
   }

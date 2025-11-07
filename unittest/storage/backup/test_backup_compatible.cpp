@@ -14,8 +14,6 @@
 #define USING_LOG_PREFIX STORAGE
 #include <gtest/gtest.h>
 #include "test_backup.h"
-#include "storage/backup/ob_backup_data_struct.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
 #define private public
 #define protected public
 
@@ -125,6 +123,7 @@ void prepare_migration_sstable_param(ObMigrationSSTableParam &mig_param)
   sstable_meta.basic_meta_.max_merged_trans_version_ = 0;
   sstable_meta.basic_meta_.ddl_scn_.set_min();
   sstable_meta.basic_meta_.filled_tx_scn_.set_min();
+  sstable_meta.basic_meta_.rec_scn_.set_min();
   sstable_meta.basic_meta_.contain_uncommitted_row_ = 0;
   sstable_meta.data_root_info_.addr_ = addr;
   sstable_meta.basic_meta_.root_row_store_type_ = ObRowStoreType::ENCODING_ROW_STORE;

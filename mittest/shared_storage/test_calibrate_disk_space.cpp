@@ -11,18 +11,13 @@
  */
 #define USING_LOG_PREFIX STORAGETEST
 
-#include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <sys/vfs.h>
-#include <sys/types.h>
 #include <gmock/gmock.h>
 #define protected public
 #define private public
 #include "mittest/mtlenv/mock_tenant_module_env.h"
 #include "mittest/shared_storage/clean_residual_data.h"
-#include "storage/shared_storage/ob_ss_reader_writer.h"
-#include "storage/shared_storage/ob_file_manager.h"
 #include "storage/tmp_file/ob_tmp_file_manager.h"
+#include "storage/shared_storage/ob_ss_object_access_util.h"
 #undef private
 #undef protected
 
@@ -170,7 +165,7 @@ void TestCalibrateDisk::prepare(const int64_t segment_id_pos)
   write_info.buffer_ = write_buf;
   write_info.offset_ = 0;
   write_info.size_ = file_size_;
-  write_info.tmp_file_valid_length_ = file_size_;
+  write_info.set_tmp_file_valid_length(file_size_);
   write_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   write_info.mtl_tenant_id_ = MTL_ID();
 
@@ -183,9 +178,7 @@ void TestCalibrateDisk::prepare(const int64_t segment_id_pos)
     ASSERT_TRUE(macro_id.is_valid());
     ObStorageObjectHandle write_object_handle;
     ASSERT_EQ(OB_SUCCESS, write_object_handle.set_macro_block_id(macro_id));
-    ObTenantFileManager* tenant_file_mgr = MTL(ObTenantFileManager*);
-    ASSERT_NE(nullptr, tenant_file_mgr);
-    ASSERT_EQ(OB_SUCCESS, tenant_file_mgr->append_file(write_info, write_object_handle));
+    ASSERT_EQ(OB_SUCCESS, ObSSObjectAccessUtil::append_file(write_info, write_object_handle));
   }
 }
 
@@ -199,6 +192,7 @@ void TestCalibrateDisk::write_dir()
   write_info.buffer_ = write_buf;
   write_info.offset_ = 0;
   write_info.size_ = file_size_;
+  write_info.set_tmp_file_valid_length(file_size_);
   write_info.io_timeout_ms_ = DEFAULT_IO_WAIT_TIME_MS;
   write_info.mtl_tenant_id_ = MTL_ID();
 
@@ -211,9 +205,7 @@ void TestCalibrateDisk::write_dir()
     ASSERT_TRUE(macro_id.is_valid());
     ObStorageObjectHandle write_object_handle;
     ASSERT_EQ(OB_SUCCESS, write_object_handle.set_macro_block_id(macro_id));
-    ObTenantFileManager* tenant_file_mgr = MTL(ObTenantFileManager*);
-    ASSERT_NE(nullptr, tenant_file_mgr);
-    ASSERT_EQ(OB_SUCCESS, tenant_file_mgr->append_file(write_info, write_object_handle));
+    ASSERT_EQ(OB_SUCCESS, ObSSObjectAccessUtil::append_file(write_info, write_object_handle));
   }
 }
 
@@ -221,7 +213,8 @@ TEST_F(TestCalibrateDisk, calibrate_and_write_file)
 {
   ObTenantDiskSpaceManager* tenant_disk_space_mgr = MTL(ObTenantDiskSpaceManager*);
   int64_t total_disk_size = 20L * 1024L * 1024L * 1024L; // 20GB
-  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size));
+  bool succ_resize = false;
+  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size, succ_resize));
   ASSERT_EQ(total_disk_size, tenant_disk_space_mgr->get_total_disk_size());
 
   // prepare file
@@ -245,7 +238,8 @@ TEST_F(TestCalibrateDisk, calibrate_and_delete_file)
 {
   ObTenantDiskSpaceManager* tenant_disk_space_mgr = MTL(ObTenantDiskSpaceManager*);
   int64_t total_disk_size = 20L * 1024L * 1024L * 1024L; // 20GB
-  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size));
+  bool succ_resize = false;
+  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size, succ_resize));
   ASSERT_EQ(total_disk_size, tenant_disk_space_mgr->get_total_disk_size());
 
   // need calibrate disk space before calibrate_and_delete_file test,
@@ -281,7 +275,8 @@ TEST_F(TestCalibrateDisk, calibrate_and_delete_dir)
 {
   ObTenantDiskSpaceManager* tenant_disk_space_mgr = MTL(ObTenantDiskSpaceManager*);
   int64_t total_disk_size = 20L * 1024L * 1024L * 1024L; // 20GB
-  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size));
+  bool succ_resize = false;
+  ASSERT_EQ(OB_SUCCESS, tenant_disk_space_mgr->resize_total_disk_size(total_disk_size, succ_resize));
   ASSERT_EQ(total_disk_size, tenant_disk_space_mgr->get_total_disk_size());
 
   // prepare file

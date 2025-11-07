@@ -80,6 +80,9 @@ const char *const OB_STR_STORAGE_OP_INFO = "op_info";
 const char *const OB_STR_STORAGE_DEST_ENCRYPT_INFO = "encrypt_info";
 const char *const OB_STR_STORAGE_DEST_AUTHORIZATION = "authorization";
 const char *const OB_STR_STORAGE_DEST_EXTENSION = "extension";
+const char *const OB_STR_STORAGE_SHARED_DATA = "Shared Data";
+const char *const OB_STR_STORAGE_TABLE_DATA = "Table Data";
+const char *const OB_STR_STORAGE_TMP_DATA = "Tmp Data";
 
 typedef common::ObFixedLengthString<OB_MAX_BACKUP_DEST_LENGTH> ObStoragePathString;
 typedef common::ObFixedLengthString<OB_MAX_BACKUP_AUTHORIZATION_LENGTH> ObStorageAccessinfoString;
@@ -190,6 +193,7 @@ public:
   void reset();
   ObStorageDestAttr &operator=(const ObStorageDestAttr &dest_attr);
   bool is_valid() const;
+  int change_checksum_type(const ObStorageChecksumType &checksum_type);
 
   TO_STRING_KV(K_(path), K_(endpoint), K_(authorization), K_(extension));
   char path_[OB_MAX_BACKUP_PATH_LENGTH];

@@ -89,7 +89,15 @@ public:
 
   int generate_scan_ctdef(ObLogInsert &op,
                           const IndexDMLInfo &index_dml_info,
-                          ObDASScanCtDef &scan_ctdef);
+                          ObDASScanCtDef &scan_ctdef,
+                          bool do_in_filter_opt = false);
+
+  int generate_index_scan_ctdef(ObLogDelUpd &op,
+                                const IndexDMLInfo &ins_index_dml_info,
+                                const IndexDMLInfo &upd_index_dml_info,
+                                ExprFixedArray &unique_key_conv_exprs,
+                                ExprFixedArray &unique_index_rowkey_exprs,
+                                ObDASScanCtDef *&scan_ctdef);
 
   int generate_err_log_ctdef(const ObErrLogDefine &err_log_define,
                              ObErrLogCtDef &err_log_ins_ctdef);
@@ -114,9 +122,11 @@ public:
   int get_table_rowkey_exprs(const IndexDMLInfo &index_dml_info,
                              ObIArray<ObRawExpr*> &rowkey_exprs);
 
-  int check_is_heap_table(ObLogicalOperator &op,
-                          uint64_t ref_table_id,
-                          bool &is_heap_table);
+  int check_is_heap_table_or_cluster_by_table(ObLogicalOperator &op,
+                                              uint64_t ref_table_id,
+                                              bool &is_heap_table,
+                                              bool &is_cluster_by_table);
+  int get_column_ref_base_cid(const ObLogicalOperator &op, const ObColumnRefRawExpr *col, uint64_t &base_cid);
 
 private:
   int generate_dml_column_ids(const ObLogicalOperator &op,
@@ -248,7 +258,6 @@ private:
                             uint64_t tenant_id,
                             ObDASDMLBaseCtDef &das_dml_ctdef);
 
-  int get_column_ref_base_cid(const ObLogicalOperator &op, const ObColumnRefRawExpr *col, uint64_t &base_cid);
   int get_table_schema_version(const ObLogicalOperator &op, uint64_t table_id, int64_t &schema_version);
   int generate_das_dml_ctdef(ObLogDelUpd &op,
                              common::ObTableID index_tid,
@@ -319,8 +328,10 @@ private:
   int add_all_column_infos(ObLogDelUpd &op,
                            const common::ObIArray<ObColumnRefRawExpr*> &columns,
                            bool is_heap_table,
+                           bool is_cluster_by_table,
                            ColContentFixedArray &column_infos);
   int convert_upd_assign_infos(bool is_heap_table,
+                               bool is_cluster_by_table,
                                const IndexDMLInfo &index_dml_info,
                                ColContentFixedArray &assign_infos);
   int convert_check_constraint(ObLogDelUpd &log_op,
@@ -395,41 +406,47 @@ private:
                                  DASInsCtDefArray &ins_ctdefs);
   int generate_access_exprs(const common::ObIArray<ObColumnRefRawExpr*> &columns,
                             const ObLogicalOperator &op,
-                            const bool need_doc_id,
-                            const uint64_t doc_id_col_id,
-                            const bool need_vec_vid,
-                            const uint64_t vec_vid_col_id,
+                            const ObIArray<uint64_t>& domain_id_col_ids,
                             common::ObIArray<ObRawExpr*> &access_exprs,
-                            common::ObIArray<ObRawExpr*> &doc_id_expr,
-                            common::ObIArray<ObRawExpr*> &vec_vid_expr);
-  int generate_scan_with_doc_id_ctdef_if_need(ObLogInsert &op,
-                                              const IndexDMLInfo &index_dml_info,
-                                              ObDASScanCtDef &scan_ctdef,
-                                              ObDASAttachSpec &attach_spec);
-  int generate_rowkey_doc_ctdef(ObLogInsert &op,
-                                const IndexDMLInfo &index_dml_info,
-                                ObDASAttachSpec &attach_spec,
-                                ObDASScanCtDef *&rowkey_doc_scan_ctdef);
-  int generate_rowkey_doc_access_expr(const common::ObIArray<ObColumnRefRawExpr *> &columns,
-                                      const ObTableSchema &rowkey_doc,
-                                      ObDASScanCtDef *ctdef);
-  int check_need_doc_id_merge_iter(ObLogicalOperator &op,
-                                   const uint64_t ref_table_id,
-                                   bool &need_doc_id_merge_iter);
-  int generate_scan_with_vec_vid_ctdef_if_need(ObLogInsert &op,
-                                              const IndexDMLInfo &index_dml_info,
-                                              ObDASScanCtDef &scan_ctdef,
-                                              ObDASAttachSpec &attach_spec);
-  int generate_rowkey_vid_ctdef(ObLogInsert &op,
-                                const IndexDMLInfo &index_dml_info,
-                                ObDASAttachSpec &attach_spec,
-                                ObDASScanCtDef *&rowkey_vid_scan_ctdef);
-  int generate_rowkey_vid_access_expr(const common::ObIArray<ObColumnRefRawExpr *> &columns,
-                                      const ObTableSchema &rowkey_vid,
-                                      ObDASScanCtDef *ctdef);
-  int check_need_vec_vid_merge_iter(ObLogicalOperator &op,
-                                   const uint64_t ref_table_id,
-                                   bool &need_vec_vid_merge_iter);
+                            common::ObIArray<ObRawExpr*> &domain_id_raw_expr);
+  int generate_scan_with_domain_id_ctdef_if_need(ObLogInsert &op,
+                                                 const IndexDMLInfo &index_dml_info,
+                                                 ObDASScanCtDef &scan_ctdef,
+                                                 ObDASAttachSpec &attach_spec);
+  int generate_rowkey_domain_ctdef(ObLogInsert &op,
+                                   const IndexDMLInfo &index_dml_info,
+                                   uint64_t domain_tid,
+                                   ObDASAttachSpec &attach_spec,
+                                   ObDASScanCtDef *&rowkey_domain_scan_ctdef);
+  int generate_rowkey_domain_access_expr(ObLogInsert &op,
+                                         const common::ObIArray<ObColumnRefRawExpr *> &columns,
+                                         const ObTableSchema &rowkey_domain,
+                                         ObDASScanCtDef *ctdef);
+  int check_need_domain_id_merge_iter(const common::ObIArray<ObColumnRefRawExpr*> &columns,
+                                      ObLogicalOperator &op,
+                                      const uint64_t ref_table_id,
+                                      ObIArray<int64_t> &need_domain_id_merge_iter,
+                                      ObIArray<uint64_t> &domain_tids);
+  int get_domain_index_col_ids(const common::ObIArray<int64_t>& domain_types,
+                               const common::ObIArray<uint64_t>& domain_tids,
+                               const ObTableSchema *table_schema,
+                               ObSqlSchemaGuard *schema_guard,
+                               common::ObIArray<DomainIdxs>& domain_id_col_ids,
+                               common::ObIArray<uint64_t> &flatten_domain_id_col_ids);
+  int generate_scan_with_doc_id_ctdef(ObLogInsert &op,
+                                      const IndexDMLInfo &index_dml_info,
+                                      const uint64_t rowkey_domain_tid,
+                                      ObDASScanCtDef &scan_ctdef,
+                                      ObDASAttachSpec &attach_spec);
+  int generate_scan_with_vec_vid_ctdef(ObLogInsert &op,
+                                       const IndexDMLInfo &index_dml_info,
+                                       const uint64_t rowkey_domain_tid,
+                                       ObDASScanCtDef &scan_ctdef,
+                                       ObDASAttachSpec &attach_spec);
+  int check_is_main_table_in_fts_ddl(ObLogicalOperator &op,
+                                     const uint64_t table_id,
+                                     const IndexDMLInfo &index_dml_info,
+                                     ObDASDMLBaseCtDef &das_dml_ctdef);
 private:
   int need_fire_update_event(const ObTableSchema &table_schema,
                             const ObString &update_events,
@@ -437,6 +454,10 @@ private:
                             const ObSQLSessionInfo &session,
                             ObIAllocator &allocator,
                             bool &need_fire);
+  int get_first_unique_index_tid(ObLogicalOperator &op,
+                                  const IndexDMLInfo &primary_index_dml_info,
+                                  uint64_t &unique_index_tid);
+
 #ifdef OB_BUILD_TDE_SECURITY
   int init_encrypt_metas_(const share::schema::ObTableSchema *table_schema,
                           share::schema::ObSchemaGetterGuard *guard,
@@ -446,6 +467,7 @@ private:
                                ObIArray<transaction::ObEncryptMetaCache>&meta_array);
 #endif
   int generate_table_loc_meta(const IndexDMLInfo &index_dml_info, ObDASTableLocMeta &loc_meta);
+
 private:
   ObStaticEngineCG &cg_;
 };

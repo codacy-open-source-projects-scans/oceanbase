@@ -25,8 +25,6 @@
 #include "ob_multiple_merge.h"
 #include "ob_multiple_multi_scan_merge.h"
 #include "ob_multiple_scan_merge.h"
-#include "ob_multiple_skip_scan_merge.h"
-#include "ob_multiple_multi_skip_scan_merge.h"
 #include "ob_single_merge.h"
 #include "ob_multiple_mview_merge.h"
 #include "storage/tx_storage/ob_access_service.h"
@@ -45,8 +43,9 @@ class ObISampleIterator;
 class ObMemtableRowSampleIterator;
 class ObRowSampleIterator;
 class ObBlockSampleIterator;
+class ObDDLBlockSampleIterator;
 
-class ObTableScanIterator : public common::ObNewRowIterator
+class ObTableScanIterator : public common::ObNewRowIterator, public ObStorageCheckedObjectBase
 {
 public:
   ObTableScanIterator();
@@ -66,6 +65,8 @@ public:
   // A offline ls will disable replay status and kill all part_ctx on the follower.
   // We can not read the uncommitted data which has not replay commit log yet.
   int check_ls_offline_after_read();
+  bool need_trace() const;
+  ObStorageCheckID get_check_id() const { return ObStorageCheckID::STORAGE_ITER; }
 public:
   static constexpr int64_t RP_MAX_FREE_LIST_NUM = 1024;
   static constexpr const char LABEL[] = "RPTableScanIter";
@@ -106,7 +107,6 @@ private:
   ObMultipleGetMerge *get_merge_;
   ObMultipleScanMerge *scan_merge_;
   ObMultipleMultiScanMerge *multi_scan_merge_;
-  ObMultipleSkipScanMerge *skip_scan_merge_;
   ObMemtableRowSampleIterator *memtable_row_sample_iterator_;
   ObRowSampleIterator *row_sample_iterator_;
   ObBlockSampleIterator *block_sample_iterator_; // TODO: @yuanzhe refactor
@@ -123,6 +123,8 @@ private:
   ObSEArray<ObDatumRange, 1> sample_ranges_;
   CachedIteratorNode *cached_iter_node_;
   ObQueryRowIterator **cached_iter_;
+  ObDDLBlockSampleIterator *ddl_block_sample_iterator_;
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableScanIterator);
 };

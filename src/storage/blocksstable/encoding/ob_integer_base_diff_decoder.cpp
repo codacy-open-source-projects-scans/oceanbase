@@ -14,9 +14,6 @@
 
 #include "ob_integer_base_diff_decoder.h"
 #include "ob_encoding_query_util.h"
-#include "storage/blocksstable/ob_block_sstable_struct.h"
-#include "ob_bit_stream.h"
-#include "ob_integer_array.h"
 
 namespace oceanbase
 {
@@ -249,6 +246,7 @@ int ObIntegerBaseDiffDecoder::decode_vector(
         break;
       }
       case VEC_TC_DATE:
+      case VEC_TC_MYSQL_DATE:
       case VEC_TC_DEC_INT32: {
         // int32_t
         FILL_VECTOR_FUNC(ObFixedLengthFormat<int32_t>, decoder_ctx.has_extend_value());
@@ -256,6 +254,7 @@ int ObIntegerBaseDiffDecoder::decode_vector(
       }
       case VEC_TC_INTEGER:
       case VEC_TC_DATETIME:
+      case VEC_TC_MYSQL_DATETIME:
       case VEC_TC_TIME:
       case VEC_TC_UNKNOWN:
       case VEC_TC_INTERVAL_YM:

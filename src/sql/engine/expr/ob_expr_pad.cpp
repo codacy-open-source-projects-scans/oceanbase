@@ -14,7 +14,6 @@
 
 #include "sql/engine/expr/ob_expr_pad.h"
 #include "sql/engine/expr/ob_expr_lrpad.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 using namespace oceanbase::common;
 
@@ -160,9 +159,8 @@ int ObExprPad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
 {
   int ret = OB_SUCCESS;
   UNUSED(expr_cg_ctx);
-  UNUSED(raw_expr);
   rt_expr.eval_func_ = calc_pad_expr;
-  rt_expr.extra_ = raw_expr.get_extra();
+  rt_expr.extra_ = raw_expr.get_used_in_column_conv();
   return ret;
 }
 

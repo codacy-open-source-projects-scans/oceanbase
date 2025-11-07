@@ -28,6 +28,7 @@
 #include "logservice/palf/lsn.h"
 #include "share/scn.h"
 #include "lib/utility/ob_unify_serialize.h"
+#include "storage/tablelock/ob_table_lock_common.h"
 //#include <cstdint>
 
 #define OB_TX_MDS_LOG_USE_BIT_SEGMENT_BUF
@@ -94,6 +95,8 @@ enum class ObTxLogType : int64_t
   TX_START_WORKING_LOG = 0x100000,
   // BigSegment log
   TX_BIG_SEGMENT_LOG = 0x200000,
+  // direct load inc major
+  TX_DIRECT_LOAD_INC_MAJOR_LOG = 0x400000,
   TX_LOG_TYPE_LIMIT
 };
 
@@ -149,7 +152,9 @@ static const ObTxLogType TX_LOG_TYPE_MASK = (ObTxLogType::TX_REDO_LOG |
                                              ObTxLogType::TX_COMMIT_LOG |
                                              ObTxLogType::TX_ABORT_LOG |
                                              ObTxLogType::TX_CLEAR_LOG |
-                                             ObTxLogType::TX_START_WORKING_LOG);
+                                             ObTxLogType::TX_START_WORKING_LOG |
+                                             ObTxLogType::TX_BIG_SEGMENT_LOG |
+                                             ObTxLogType::TX_DIRECT_LOAD_INC_MAJOR_LOG);
 
 class ObTxLogTypeChecker {
 public:
@@ -158,7 +163,8 @@ public:
     return ObTxLogType::TX_REDO_LOG == log_type || ObTxLogType::TX_RECORD_LOG == log_type
            || ObTxLogType::TX_ROLLBACK_TO_LOG == log_type
            || ObTxLogType::TX_MULTI_DATA_SOURCE_LOG == log_type
-           || ObTxLogType::TX_DIRECT_LOAD_INC_LOG == log_type;
+           || ObTxLogType::TX_DIRECT_LOAD_INC_LOG == log_type
+           || ObTxLogType::TX_DIRECT_LOAD_INC_MAJOR_LOG == log_type;
   }
   static bool is_state_log(const ObTxLogType log_type)
   {
@@ -174,6 +180,10 @@ public:
   static bool is_ls_log(const ObTxLogType log_type)
   {
     return ObTxLogType::TX_START_WORKING_LOG == log_type;
+  }
+  static bool is_mds_log(const ObTxLogType log_type)
+  {
+    return ObTxLogType::TX_MULTI_DATA_SOURCE_LOG == log_type;
   }
   static bool can_be_spilt(const ObTxLogType log_type)
   {
@@ -632,13 +642,23 @@ public:
 
 #endif
 
-private:
+protected:
   ObTxSerCompatByte compat_bytes_;
 
   DirectLoadIncLogType ddl_log_type_;
 
   ObTxDLIncLogBuf &log_buf_;
   // ObDDLRedoLog &ddl_redo_log_;
+  ObDDLIncLogBasic batch_key_;
+};
+
+class ObTxDirectLoadIncMajorLog : public ObTxDirectLoadIncLog
+{
+public:
+  static const ObTxLogType LOG_TYPE;
+  ObTxDirectLoadIncMajorLog(const ObTxDirectLoadIncLog::ConstructArg &arg)
+      : ObTxDirectLoadIncLog(arg)
+  {}
 };
 
 class ObTxActiveInfoLogTempRef {
@@ -1424,7 +1444,7 @@ private:
   {
     int ret = OB_ALLOCATE_MEMORY_FAILED;
     char *ptr = NULL;
-    if (OB_ISNULL(ptr = static_cast<char *>(ob_malloc(NORMAL_LOG_BUF_SIZE, "NORMAL_CLOG_BUF")))) {
+    if (OB_ISNULL(ptr = static_cast<char *>(share::mtl_malloc(NORMAL_LOG_BUF_SIZE, "NORMAL_CLOG_BUF")))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       TRANS_LOG(WARN, "alloc clog normal buffer failed", K(ret));
     }
@@ -1434,7 +1454,7 @@ private:
   {
     int ret = OB_ALLOCATE_MEMORY_FAILED;
     char *ptr = NULL;
-    if (OB_ISNULL(ptr = static_cast<char *>(ob_malloc(BIG_LOG_BUF_SIZE, "BIG_CLOG_BUF")))) {
+    if (OB_ISNULL(ptr = static_cast<char *>(share::mtl_malloc(BIG_LOG_BUF_SIZE, "BIG_CLOG_BUF")))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       TRANS_LOG(WARN, "alloc clog big buffer failed", K(ret));
     }
@@ -1443,11 +1463,11 @@ private:
   void free_buf_(char *buf)
   {
     if (OB_NOT_NULL(buf)) {
-      ob_free(buf);
+      share::mtl_free(buf);
     }
   }
 public:
-  static const int64_t MIN_LOG_BUF_SIZE = 2048;
+  static const int64_t MIN_LOG_BUF_SIZE = 4096;
   static const int64_t NORMAL_LOG_BUF_SIZE = common::OB_MAX_LOG_ALLOWED_SIZE;
   static const int64_t BIG_LOG_BUF_SIZE = palf::MAX_LOG_BODY_SIZE;
   STATIC_ASSERT((BIG_LOG_BUF_SIZE > 3 * 1024 * 1024 && BIG_LOG_BUF_SIZE < 4 * 1024 * 1024), "unexpected big log buf size");

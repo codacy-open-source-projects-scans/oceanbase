@@ -14,7 +14,6 @@
 
 #include "ob_expr_extra_info_factory.h"
 #include "sql/engine/expr/ob_expr_autoinc_nextval.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
 #include "sql/engine/expr/ob_expr_type_to_str.h"
 #include "sql/engine/expr/ob_expr_dll_udf.h"
 #include "sql/engine/expr/ob_expr_collection_construct.h"
@@ -22,9 +21,8 @@
 #include "sql/engine/expr/ob_expr_subquery_ref.h"
 #include "sql/engine/expr/ob_expr_pl_get_cursor_attr.h"
 #include "sql/engine/expr/ob_expr_pl_integer_checker.h"
-#include "sql/engine/expr/ob_expr_udf.h"
+#include "sql/engine/expr/ob_expr_udf/ob_expr_udf.h"
 #include "sql/engine/expr/ob_expr_object_construct.h"
-#include "sql/engine/expr/ob_expr_multiset.h"
 #include "sql/engine/expr/ob_expr_coll_pred.h"
 #include "sql/engine/expr/ob_expr_output_pack.h"
 #include "sql/engine/expr/ob_expr_plsql_variable.h"
@@ -35,10 +33,10 @@
 #include "sql/engine/expr/ob_expr_lrpad.h"
 #include "sql/engine/expr/ob_expr_last_refresh_scn.h"
 #include "sql/engine/expr/ob_expr_json_schema_valid.h"
-#include "sql/engine/expr/ob_expr_json_schema_validation_report.h"
 #include "sql/engine/expr/ob_expr_json_utils.h"
 #include "sql/engine/expr/ob_expr_get_path.h"
 #include "sql/engine/expr/ob_expr_array_map.h"
+#include "sql/engine/expr/ob_expr_ai/ob_ai_func.h"
 
 namespace oceanbase
 {
@@ -118,6 +116,12 @@ void ObExprExtraInfoFactory::register_expr_extra_infos()
   REG_EXTRA_INFO(T_FUN_SYS_JSON_QUERY, ObExprJsonQueryParamInfo);
   REG_EXTRA_INFO(T_PSEUDO_EXTERNAL_FILE_COL, ObDataAccessPathExtraInfo);
   REG_EXTRA_INFO(T_FUNC_SYS_ARRAY_MAP, ObExprArrayMapInfo);
+  REG_EXTRA_INFO(T_FUNC_SYS_ARRAY_FIRST, ObExprArrayMapInfo);
+  REG_EXTRA_INFO(T_FUNC_SYS_ARRAY_SORTBY, ObExprArrayMapInfo);
+  REG_EXTRA_INFO(T_FUNC_SYS_ARRAY_FILTER, ObExprArrayMapInfo);
+  REG_EXTRA_INFO(T_FUN_SYS_AI_COMPLETE, ObAIFuncExprInfo);
+  REG_EXTRA_INFO(T_FUN_SYS_AI_EMBED, ObAIFuncExprInfo);
+  REG_EXTRA_INFO(T_FUN_SYS_AI_RERANK, ObAIFuncExprInfo);
 }
 
 } // end namespace sql

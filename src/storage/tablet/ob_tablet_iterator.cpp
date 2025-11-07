@@ -13,14 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/tablet/ob_tablet_iterator.h"
-#include "share/rc/ob_tenant_base.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/ls/ob_ls_tablet_service.h"
-#include "storage/meta_mem/ob_meta_obj_struct.h"
-#include "storage/meta_mem/ob_tablet_handle.h"
-#include "storage/meta_mem/ob_tablet_map_key.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/tablet/ob_tablet_multi_source_data.h"
 
 namespace oceanbase
 {
@@ -70,7 +63,6 @@ int ObLSTabletIterator::get_next_tablet(ObTabletHandle &handle)
             && OB_TABLET_NOT_EXIST != ret) {
           LOG_WARN("fail to get tablet", K(ret), K(idx_), K(tablet_id), K_(mode));
         } else {
-          handle.set_wash_priority(WashTabletPriority::WTP_LOW);
           ++idx_;
         }
       }
@@ -288,7 +280,6 @@ int ObLSTabletFastIter::get_next_tablet(ObTabletHandle &handle)
             ++idx_;
           }
         } else {
-          handle.set_wash_priority(WashTabletPriority::WTP_LOW);
           ++idx_;
         }
       }

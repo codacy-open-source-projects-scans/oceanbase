@@ -12,14 +12,7 @@
 
 #define USING_LOG_PREFIX  TRANS
 
-#include "share/inner_table/ob_inner_table_schema_constants.h"  // OB_ALL_WEAK_READ_SERVICE_TNAME
-#include "lib/mysqlclient/ob_mysql_result.h"                    // ObMySQLResult
-#include "lib/stat/ob_latch_define.h"
 #include "ob_weak_read_util.h"
-#include "rpc/obrpc/ob_rpc_net_handler.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx_storage/ob_ls_map.h"
-#include "storage/tx_storage/ob_ls_handle.h"
 #include "storage/tx/ob_ts_mgr.h"
 #include "logservice/ob_log_service.h"
 
@@ -499,7 +492,7 @@ int ObTenantWeakReadClusterService::get_cluster_version(SCN &version, SCN &min_v
   int ret = OB_SUCCESS;
   static const int64_t GET_CLUSTER_VERSION_RDLOCK_TIMEOUT = 100;
   SCN ret_version;
-  int64_t rdlock_wait_time = GET_CLUSTER_VERSION_RDLOCK_TIMEOUT;
+  int64_t rdlock_wait_time = ObTimeUtility::current_time() + GET_CLUSTER_VERSION_RDLOCK_TIMEOUT;
 
   // Lock wait time is necessary to prevent 'deadlock'
   //
@@ -1014,7 +1007,7 @@ int ObTenantWeakReadClusterService::update_server_version(const common::ObAddr &
   int ret = OB_SUCCESS;
   int64_t cur_leader_epoch = 0;
   bool is_new_server = false;
-  int64_t rdlock_wait_time = PROCESS_CLUSTER_HEARTBEAT_RPC_RDLOCK_TIMEOUT;
+  int64_t rdlock_wait_time = PROCESS_CLUSTER_HEARTBEAT_RPC_RDLOCK_TIMEOUT + ObTimeUtility::current_time();
 
   // rpc worker can not hang, overtime should be set
   // bug:

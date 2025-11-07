@@ -13,12 +13,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <cstdio>
-#include <gtest/gtest.h>
-#include <signal.h>
 #define private public
-#include "lib/allocator/ob_qsync.h"
-#include "logservice/ob_ls_adapter.h"
 #include "env/ob_simple_log_cluster_env.h"
 #undef private
 
@@ -90,6 +85,8 @@ public:
     CLOG_LOG(INFO, "on_failure", K(log_id_));
     return OB_SUCCESS;
   }
+
+  const char *get_cb_name() const override { return "MockAppendCb"; }
 
   void init(const int64_t log_id,
             MockLSAdapter *ls_adapter)

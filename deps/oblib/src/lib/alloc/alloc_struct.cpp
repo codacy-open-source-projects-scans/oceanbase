@@ -11,11 +11,7 @@
  */
 
 #include "lib/alloc/alloc_struct.h"
-#include "lib/ob_define.h"
-#include "lib/allocator/ob_mod_define.h"
-#include "lib/coro/co_var.h"
 #include "lib/oblog/ob_log.h"
-#include "lib/utility/ob_fast_convert.h"
 
 namespace oceanbase
 {
@@ -24,26 +20,24 @@ using namespace common;
 
 namespace lib
 {
-thread_local ObMemAttr ObMallocHookAttrGuard::tl_mem_attr(OB_SERVER_TENANT_ID,
-                                                          "glibc_malloc",
-                                                          ObCtxIds::GLIBC);
-
 static bool g_memleak_light_backtrace_enabled = false;
 
 uint32_t ObMemVersionNode::global_version = 0;
 __thread bool ObMemVersionNode::tl_ignore_node = true;
 __thread ObMemVersionNode* ObMemVersionNode::tl_node = NULL;
 
-ObMallocHookAttrGuard::ObMallocHookAttrGuard(const ObMemAttr& attr)
-  : old_attr_(tl_mem_attr)
+ObMallocHookAttrGuard::ObMallocHookAttrGuard(const ObMemAttr& attr, const bool use_500)
+  : old_attr_(get_tl_mem_attr()), old_use_500_(get_tl_use_500())
 {
-  tl_mem_attr = attr;
-  tl_mem_attr.ctx_id_ = ObCtxIds::GLIBC;
+  get_tl_mem_attr() = attr;
+  get_tl_mem_attr().ctx_id_ = ObCtxIds::GLIBC;
+  get_tl_use_500() = use_500;
 }
 
 ObMallocHookAttrGuard::~ObMallocHookAttrGuard()
 {
-  tl_mem_attr = old_attr_;
+  get_tl_mem_attr() = old_attr_;
+  get_tl_use_500() = old_use_500_;
 }
 
 bool ObLabel::operator==(const ObLabel &other) const

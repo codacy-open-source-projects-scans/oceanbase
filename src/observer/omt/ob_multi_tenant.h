@@ -120,7 +120,7 @@ public:
 #ifdef OB_BUILD_SHARED_STORAGE
   int update_tenant_data_disk_size(const uint64_t tenant_id,
                                     const int64_t new_data_disk_size);
-  int update_safe_time_config();
+  int update_ss_garbage_collection_service_config();
 #endif
   int modify_tenant_io(const uint64_t tenant_id, const share::ObUnitConfig &unit_config);
   int update_tenant_config(uint64_t tenant_id);
@@ -130,7 +130,7 @@ public:
   int update_checkpoint_diagnose_config();
   int update_tenant_audit_log_config();
   int update_tenant_query_response_time_flush_config();
-  int start_kv_group_commit_timer();
+  int get_tenant_unsafe(const uint64_t tenant_id, ObTenant *&tenant) const;
   int get_tenant(const uint64_t tenant_id, ObTenant *&tenant) const;
   int get_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
   int get_active_tenant_with_tenant_lock(const uint64_t tenant_id, common::ObLDHandle &handle, ObTenant *&tenant) const;
@@ -155,6 +155,7 @@ public:
   int get_tenant_cpu_usage(const uint64_t tenant_id, double &usage) const;
   int get_tenant_worker_time(const uint64_t tenant_id, int64_t &worker_time) const;
   int get_tenant_cpu_time(const uint64_t tenant_id, int64_t &rusage_time) const;
+  int get_tenant_group_cpu_time(const uint64_t tenant_id, uint64_t group_id, int64_t &cpu_time);
   int get_tenant_cpu(
       const uint64_t tenant_id,
       double &min_cpu, double &max_cpu) const;
@@ -173,10 +174,11 @@ public:
 
   void set_workers_per_cpu(int64_t v);
   int check_if_unit_id_exist(const uint64_t unit_id, bool &exist);
+  int inc_tenant_ddl_count(const uint64_t tenant_id, const int64_t cpu_quota_concurrency);
+  int dec_tenant_ddl_count(const uint64_t tenant_id);
 
 protected:
   void run1();
-  int get_tenant_unsafe(const uint64_t tenant_id, ObTenant *&tenant) const;
   int construct_meta_for_hidden_sys(ObTenantMeta &meta);
   int construct_meta_for_virtual_tenant(const uint64_t tenant_id,
                                         const double min_cpu,

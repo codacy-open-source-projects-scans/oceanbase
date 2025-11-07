@@ -134,10 +134,12 @@ public:
                        common::ObObj &obj,
                        int64_t &init_size) const;
   virtual int serialize(share::schema::ObSchemaGetterGuard &schema_guard,
+                       const sql::ObSQLSessionInfo &session,
                        const common::ObTimeZoneInfo *tz_info, obmysql::MYSQL_PROTOCOL_TYPE type,
                        char *&src, char *dst, const int64_t dst_len, int64_t &dst_pos) const;
   virtual int deserialize(share::schema::ObSchemaGetterGuard &schema_guard,
                        common::ObIAllocator &allocator,
+                       sql::ObSQLSessionInfo *session,
                        const common::ObCharsetType charset,
                        const common::ObCollationType cs_type,
                        const common::ObCollationType ncs_type,
@@ -152,6 +154,8 @@ public:
   static int deep_copy_obj(
     ObIAllocator &allocator, const ObObj &src, ObObj &dst, bool need_new_allocator = true, bool ignore_del_element = false);
   static int destruct_objparam(ObIAllocator &alloc, ObObj &src, sql::ObSQLSessionInfo *session = nullptr, bool direct_use_alloc = false);
+  static int reset_composite(ObObj &value, sql::ObSQLSessionInfo *session);
+  static int reset_record(ObObj &src, sql::ObSQLSessionInfo *session);
   static int destruct_obj(ObObj &src, sql::ObSQLSessionInfo *session = NULL, bool keep_composite_attr = false);
   static int alloc_sub_composite(ObObj &dest_element, ObIAllocator &allocator);
   static int alloc_for_second_level_composite(ObObj &src, ObIAllocator &allocator);
@@ -189,7 +193,8 @@ public:
                                    char *dst,
                                    const int64_t dst_len,
                                    int64_t &dst_pos,
-                                   bool &has_serialized) const;
+                                   bool &has_serialized,
+                                   const sql::ObSQLSessionInfo &session) const;
 
   VIRTUAL_TO_STRING_KV(K_(type), K_(user_type_id), K_(type_name));
 protected:
@@ -244,10 +249,12 @@ public:
 
   virtual int get_size(ObPLTypeSize type, int64_t &size) const;
   virtual int serialize(share::schema::ObSchemaGetterGuard &schema_guard,
+                       const sql::ObSQLSessionInfo &session,
                        const common::ObTimeZoneInfo *tz_info, obmysql::MYSQL_PROTOCOL_TYPE type,
                        char *&src, char *dst, const int64_t dst_len, int64_t &dst_pos) const;
   virtual int deserialize(share::schema::ObSchemaGetterGuard &schema_guard,
                           common::ObIAllocator &allocator,
+                          sql::ObSQLSessionInfo *session,
                           const common::ObCharsetType charset,
                           const common::ObCollationType cs_type,
                           const common::ObCollationType ncs_type,
@@ -404,9 +411,15 @@ public:
 
   int deep_copy(
     common::ObIAllocator &alloc, const ObRecordType &other, bool shaow_copy = true);
+  int deep_copy(
+    ObPLEnumSetCtx &enum_set_ctx, common::ObIAllocator &alloc, const ObRecordType &other, bool shaow_copy = true);
+
 
   int add_record_member(
     const common::ObString &record_name, const ObPLDataType &record_type,
+    int64_t default_idx = OB_INVALID_INDEX, sql::ObRawExpr *default_raw_expr = NULL, bool need_check_dup = false);
+  int add_record_member(
+    ObPLEnumSetCtx &enum_set_ctx, const common::ObString &record_name, const ObPLDataType &record_type,
     int64_t default_idx = OB_INVALID_INDEX, sql::ObRawExpr *default_raw_expr = NULL);
 
   int add_record_member(const ObRecordMember &record);
@@ -426,6 +439,7 @@ public:
   const ObRecordMember *get_record_member(int64_t index) const;
 
   int is_compatble(const ObRecordType &other, bool &is_comp) const;
+  int check_record_cursor_member() const;
   int record_members_init(common::ObIAllocator *alloc, int64_t size);
   void reset_record_member() { record_members_.reset(); }
 
@@ -508,10 +522,12 @@ public:
                        common::ObObj &obj,
                        int64_t &init_size) const;
   virtual int serialize(share::schema::ObSchemaGetterGuard &schema_guard,
+                       const sql::ObSQLSessionInfo &session,
                        const common::ObTimeZoneInfo *tz_info, obmysql::MYSQL_PROTOCOL_TYPE type,
                        char *&src, char *dst, const int64_t dst_len, int64_t &dst_pos) const;
   virtual int deserialize(share::schema::ObSchemaGetterGuard &schema_guard,
                        common::ObIAllocator &allocator,
+                       sql::ObSQLSessionInfo *session,
                        const common::ObCharsetType charset,
                        const common::ObCollationType cs_type,
                        const common::ObCollationType ncs_type,
@@ -572,6 +588,7 @@ public:
                                         const ObPLINS &ns,
                                         jit::ObLLVMValue &allocator,
                                         jit::ObLLVMValue &dest) const;
+  virtual int convert(ObPLResolveCtx &ctx, ObObj *&src, ObObj *&dst) const;
 };
 #endif
 //---------- for ObCollectionType ----------
@@ -608,6 +625,9 @@ public:
   int deep_copy(common::ObIAllocator &alloc, const ObCollectionType &other);
 
   int get_init_size(int64_t &size) const;
+  int convert_anonymous_array(ObPLResolveCtx &ctx,
+                              ObObj *&src,
+                              ObObj *&dest) const;
 
 public:
   virtual int generate_construct(ObPLCodeGenerator &generator,
@@ -664,10 +684,12 @@ public:
                        common::ObObj &obj,
                        int64_t &init_size) const;
   virtual int serialize(share::schema::ObSchemaGetterGuard &schema_guard,
+                       const sql::ObSQLSessionInfo &session,
                        const common::ObTimeZoneInfo *tz_info, obmysql::MYSQL_PROTOCOL_TYPE type,
                        char *&src, char *dst, const int64_t dst_len, int64_t &dst_pos) const;
   virtual int deserialize(share::schema::ObSchemaGetterGuard &schema_guard,
                        common::ObIAllocator &allocator,
+                       sql::ObSQLSessionInfo *session,
                        const common::ObCharsetType charset,
                        const common::ObCollationType cs_type,
                        const common::ObCollationType ncs_type,
@@ -736,10 +758,12 @@ public:
                        common::ObObj &obj,
                        int64_t &init_size) const;
   virtual int serialize(share::schema::ObSchemaGetterGuard &schema_guard,
+                       const sql::ObSQLSessionInfo &session,
                        const common::ObTimeZoneInfo *tz_info, obmysql::MYSQL_PROTOCOL_TYPE type,
                        char *&src, char *dst, const int64_t dst_len, int64_t &dst_pos) const;
   virtual int deserialize(share::schema::ObSchemaGetterGuard &schema_guard,
                        common::ObIAllocator &allocator,
+                       sql::ObSQLSessionInfo *session,
                        const common::ObCharsetType charset,
                        const common::ObCollationType cs_type,
                        const common::ObCollationType ncs_type,
@@ -1038,6 +1062,7 @@ public:
 #define IDX_COLLECTION_FIRST 6
 #define IDX_COLLECTION_LAST 7
 #define IDX_COLLECTION_DATA 8
+#define IDX_COLLECTION_INNER_CAPACITY 9
 class ObPLCollection : public ObPLComposite
 {
 public:
@@ -1055,7 +1080,8 @@ public:
       count_(OB_INVALID_COUNT),
       first_(OB_INVALID_INDEX),
       last_(OB_INVALID_INDEX),
-      data_(NULL) {}
+      data_(NULL),
+      inner_capacity_(0) {}
   common::ObIAllocator *get_coll_allocator();
   int init_allocator(common::ObIAllocator &allocator, bool need_new_allocator);
   inline const ObElemDesc &get_element_desc() const { return element_; }
@@ -1068,7 +1094,9 @@ public:
   inline int64_t get_column_count() const { return element_.field_cnt_; }
   inline void set_column_count(int64_t count) { element_.field_cnt_ = static_cast<int32_t>(count); }
   int64_t get_first();
+  inline int64_t get_pure_first() { return PL_ASSOCIATIVE_ARRAY_TYPE == type_ ? first_ : get_first(); }
   inline void set_first(int64_t first) { first_ = first; }
+  inline int64_t get_pure_last() { return PL_ASSOCIATIVE_ARRAY_TYPE == type_ ? last_ : get_last(); }
   int64_t get_last();
   inline void set_last(int64_t last) { last_ = last; }
   inline const ObObj *get_data() const { return data_; }
@@ -1076,7 +1104,7 @@ public:
   inline bool is_not_null() const { return element_.not_null_; }
   inline void set_element_pl_type(ObPLType type) { element_.type_ = type; }
   inline ObObj *get_data() { return data_; }
-  inline void set_data(ObObj* data) { data_ = data; }
+  inline void set_data(ObObj* data, int64_t capacity) { data_ = data; inner_capacity_ = capacity; }
   inline bool is_of_composite() { return element_.get_meta_type().is_ext(); }
   inline void set_inited() { count_ = 0; }
   inline bool is_inited() const { return count_ != -1; }
@@ -1100,7 +1128,9 @@ public:
   static uint32_t last_offset_bits() { return offsetof(ObPLCollection, last_) * 8; }
   static uint32_t data_offset_bits() { return offsetof(ObPLCollection, data_) * 8; }
   void print() const;
-  int deep_copy(ObPLCollection *src, common::ObIAllocator *allocator, bool ignore_del_element = false);
+  int deep_copy(ObPLCollection *src,
+                common::ObIAllocator *allocator,
+                bool ignore_del_element = false);
   int assign(ObPLCollection *src, ObIAllocator *allocator);
   int64_t get_init_size() const
   {
@@ -1124,8 +1154,11 @@ public:
   int prior(int64_t idx, ObObj &result);
   int exist(int64_t idx, ObObj &result);
 
+  int64_t get_inner_capacity() { return inner_capacity_; }
+  void set_inner_capacity(int64_t capacity) { inner_capacity_ = capacity; }
+
   TO_STRING_KV(
-    KP_(allocator), K_(type), K_(element), K_(count), K_(first), K_(last), K_(data));
+    KP_(allocator), K_(type), K_(element), K_(count), K_(inner_capacity), K_(first), K_(last), K_(data));
 
 protected:
   ObElemDesc element_;
@@ -1133,6 +1166,7 @@ protected:
   int64_t first_; //Collection首元素下标，因为用户可以访问该属性，所以从1开始
   int64_t last_; //Collection末元素下标
   ObObj *data_;
+  int64_t inner_capacity_;
 };
 
 #ifdef OB_BUILD_ORACLE_PL
@@ -1148,8 +1182,8 @@ private:
 };
 #endif
 
-#define IDX_ASSOCARRAY_KEY 9
-#define IDX_ASSOCARRAY_SORT 10
+#define IDX_ASSOCARRAY_KEY 10
+#define IDX_ASSOCARRAY_SORT 11
 
 #ifdef OB_BUILD_ORACLE_PL
 class ObPLAssocArray : public ObPLCollection
@@ -1192,6 +1226,7 @@ public:
   {
     return sizeof(ObPLAssocArray);
   }
+  int update_first_last(int64_t new_update);
   int update_first();
   int update_last();
   int64_t get_first();
@@ -1212,14 +1247,23 @@ public:
   int prior(int64_t idx, ObObj &result);
   int exist(int64_t idx, ObObj &result);
 
+  int compare_key(const ObObj &key1, const ObObj &key2, int &comp_ret);
+  int search_key(const ObObj &key, int64_t &index, int64_t &search_end, int64_t sort_count);
+  int insert_sort(const ObObj &key, int64_t key_position, int64_t &sort_position, int64_t sort_count);
+  int reserve_assoc_key();
+  static int rebuild_sort(ObObj &obj);
+  int rebuild_sort();
+  int get_compatible_sort(ObIAllocator &allocator, int64_t *&compatible_sort);
+
   TO_STRING_KV(KP_(allocator), K_(type), K_(count), K_(first), K_(last), KP_(data), KP_(key), KP_(sort));
+
 private:
   common::ObObj *key_;
   int64_t *sort_; //每一个元素的sort属性存储的是排序在自己后面元素的下标，从0开始
 };
 #endif
 
-#define IDX_VARRAY_CAPACITY 9
+#define IDX_VARRAY_CAPACITY 10
 #ifdef OB_BUILD_ORACLE_PL
 class ObPLVArray : public ObPLNestedTable
 {

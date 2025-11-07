@@ -15,9 +15,6 @@
 #include "storage/tx_storage/ob_access_service.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tablelock/ob_table_lock_service.h"
-#include "storage/tablelock/ob_table_lock_rpc_struct.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/tx/ob_clog_encrypt_info.h" // TODO: remove with old trans interface
 #include "storage/tx/ob_trans_service.h"
 
 namespace oceanbase
@@ -61,7 +58,8 @@ int check_exist(const ObLockTaskBatchRequest<T> &arg,
   mds::TwoPhaseCommitState unused_trans_stat;// will be removed later
   share::SCN unused_trans_version;// will be removed later
   if (ObTableLockTaskType::LOCK_ALONE_TABLET == arg.task_type_ ||
-      ObTableLockTaskType::UNLOCK_ALONE_TABLET == arg.task_type_) {
+      ObTableLockTaskType::UNLOCK_ALONE_TABLET == arg.task_type_ ||
+      ObTableLockTaskType::ADD_LOCK_INTO_QUEUE_WITHOUT_CHECK == arg.task_type_) {
     // alone tablet does not check exist
   } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
@@ -71,7 +69,7 @@ int check_exist(const ObLockTaskBatchRequest<T> &arg,
                                     0,
                                     ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
     LOG_WARN("get tablet with timeout failed", K(ret), "ls_id", ls->get_ls_id(), K(tablet_id));
-  } else if (OB_FAIL(tablet_handle.get_obj()->get_latest(
+  } else if (OB_FAIL(tablet_handle.get_obj()->get_latest_tablet_status(
       data, unused_writer, unused_trans_stat, unused_trans_version))) {
     if (OB_EMPTY_RESULT == ret) {
       // tablet is creating
@@ -284,6 +282,11 @@ int ObBatchLockTaskP::process()
         ret = BATCH_PROCESS(arg_, pre_check_lock, result_);
         break;
       }
+      case ObTableLockTaskType::ADD_LOCK_INTO_QUEUE:
+      case ObTableLockTaskType::ADD_LOCK_INTO_QUEUE_WITHOUT_CHECK: {
+        ret = BATCH_PROCESS(arg_, add_lock_into_queue, result_);
+        break;
+      }
       case ObTableLockTaskType::LOCK_TABLE:
       case ObTableLockTaskType::LOCK_PARTITION:
       case ObTableLockTaskType::LOCK_SUBPARTITION:
@@ -490,10 +493,7 @@ int ObOutTransLockTableP::process()
 {
   int ret = OB_SUCCESS;
   ObTableLockService *table_lock_service = MTL(ObTableLockService *);
-  if (OB_FAIL(table_lock_service->lock_table(arg_.table_id_,
-                                            arg_.lock_mode_,
-                                            arg_.lock_owner_,
-                                            arg_.timeout_us_))) {
+  if (OB_FAIL(table_lock_service->lock_table(arg_.table_id_, arg_.lock_mode_, arg_.lock_owner_, arg_.timeout_us_))) {
     LOG_WARN("lock_table failed", K(ret), K(arg_));
   }
   return ret;

@@ -13,22 +13,13 @@
 #define USING_LOG_PREFIX LIB
 
 #include "thread.h"
-#include "threads.h"
-#include <pthread.h>
-#include <sys/syscall.h>
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log.h"
-#include "lib/ob_running_mode.h"
-#include "lib/allocator/ob_page_manager.h"
 #include "lib/rc/context.h"
-#include "lib/thread_local/ob_tsi_factory.h"
 #include "lib/thread/protected_stack_allocator.h"
-#include "lib/utility/ob_defer.h"
 #include "lib/utility/ob_hang_fatal_error.h"
-#include "lib/utility/ob_tracepoint.h"
 #include "lib/signal/ob_signal_struct.h"
 #include "lib/ash/ob_active_session_guard.h"
 #include "lib/stat/ob_session_stat.h"
+#include "lib/resource/ob_affinity_ctrl.h"
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -37,10 +28,12 @@ thread_local int64_t Thread::loop_ts_ = 0;
 thread_local pthread_t Thread::thread_joined_ = 0;
 thread_local int64_t Thread::sleep_us_ = 0;
 thread_local int64_t Thread::blocking_ts_ = 0;
+thread_local bool Thread::is_doing_ddl_ = false;
 thread_local ObAddr Thread::rpc_dest_addr_;
 thread_local obrpc::ObRpcPacketCode Thread::pcode_ = obrpc::ObRpcPacketCode::OB_INVALID_RPC_CODE;
 thread_local uint8_t Thread::wait_event_ = 0;
 thread_local Thread* Thread::current_thread_ = nullptr;
+thread_local int64_t Thread::event_no_ = 0;
 int64_t Thread::total_thread_count_ = 0;
 
 Thread &Thread::current()
@@ -49,7 +42,8 @@ Thread &Thread::current()
   return *current_thread_;
 }
 
-Thread::Thread(Threads *threads, int64_t idx, int64_t stack_size)
+Thread::Thread(Threads *threads, int64_t idx, int64_t stack_size,
+                int32_t numa_node, uint64_t thread_group_id)
     : pth_(0),
       threads_(threads),
       idx_(idx),
@@ -63,8 +57,12 @@ Thread::Thread(Threads *threads, int64_t idx, int64_t stack_size)
       tid_before_stop_(0),
       tid_(0),
       thread_list_node_(this),
+      group_list_node_(this),
       cpu_time_(0),
-      create_ret_(OB_NOT_RUNNING)
+      group_cpu_time_(0),
+      create_ret_(OB_NOT_RUNNING),
+      numa_node_(numa_node),
+      thread_group_id_(thread_group_id)
 {}
 
 Thread::~Thread()
@@ -76,6 +74,7 @@ int Thread::start()
 {
   int ret = OB_SUCCESS;
   const int64_t count = ATOMIC_FAA(&total_thread_count_, 1);
+  ObNumaNodeGuard numa_guard(numa_node_);
   if (count >= get_max_thread_num() - OB_RESERVED_THREAD_NUM) {
     ATOMIC_FAA(&total_thread_count_, -1);
     ret = OB_SIZE_OVERFLOW;
@@ -170,6 +169,9 @@ uint64_t Thread::get_tenant_id() const
 
 void Thread::run()
 {
+  if (OB_NUMA_SHARED_INDEX != numa_node_) {
+    AFFINITY_CTRL.thread_bind_to_node(numa_node_);
+  }
   IRunWrapper *run_wrapper_ = threads_->get_run_wrapper();
   if (OB_NOT_NULL(run_wrapper_)) {
     {
@@ -246,7 +248,7 @@ int Thread::try_wait()
     int pret = 0;
     if (0 != (pret = pthread_tryjoin_np(pth_, nullptr))) {
       ret = OB_EAGAIN;
-      LOG_WARN("pthread_tryjoin_np failed", K(pret), K(errno), K(ret));
+      LOG_WARN("pthread_tryjoin_np failed", K(pret), K(errno), K(ret), K(oceanbase::lib::Thread::tid_));
     } else {
       destroy_stack();
     }
@@ -387,7 +389,7 @@ int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
     if ((fd = ::open(stat_path, O_RDONLY)) < 0) {
       ret = OB_IO_ERROR;
       LOG_WARN("open file error", K((const char *)stat_path), K(errno), KERRMSG, K(ret));
-    } else if ((read_size = read(fd, stat_content, MAX_LINE_LENGTH)) < 0) {
+    } else if ((read_size = read(fd, stat_content, MAX_LINE_LENGTH - 1)) < 0) {
       ret = OB_IO_ERROR;
       LOG_WARN("read file error",
           K((const char *)stat_path),
@@ -397,7 +399,8 @@ int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
           KERRMSG,
           K(ret));
     } else {
-      // do nothing
+      // make sure stat_content is null terminated
+      stat_content[read_size] = '\0';
     }
     if (fd >= 0) {
       close(fd);
@@ -423,6 +426,70 @@ int Thread::get_cpu_time_inc(int64_t &cpu_time_inc)
     }
     cpu_time_inc = cpu_time - cpu_time_;
     cpu_time_ = cpu_time;
+  }
+  return ret;
+}
+
+int Thread::get_group_cpu_time_inc(int64_t &cpu_time_inc)
+{
+  int ret = OB_SUCCESS;
+  const pid_t pid = getpid();
+  const int64_t tid = tid_;
+  int64_t cpu_time = 0;
+  cpu_time_inc = 0;
+
+  int fd = -1;
+  int64_t read_size = -1;
+  int32_t PATH_BUFSIZE = 512;
+  int32_t MAX_LINE_LENGTH = 1024;
+  int32_t VALUE_BUFSIZE = 32;
+  char stat_path[PATH_BUFSIZE];
+  char stat_content[MAX_LINE_LENGTH];
+
+  if (tid == 0) {
+    ret = OB_NOT_INIT;
+  } else {
+    snprintf(stat_path, PATH_BUFSIZE, "/proc/%d/task/%ld/stat", pid, tid);
+    if ((fd = ::open(stat_path, O_RDONLY)) < 0) {
+      ret = OB_IO_ERROR;
+      LOG_WARN("open file error", K((const char *)stat_path), K(errno), KERRMSG, K(ret));
+    } else if ((read_size = read(fd, stat_content, MAX_LINE_LENGTH - 1)) < 0) {
+      ret = OB_IO_ERROR;
+      LOG_WARN("read file error",
+          K((const char *)stat_path),
+          K((const char *)stat_content),
+          K(ret),
+          K(errno),
+          KERRMSG,
+          K(ret));
+    } else {
+      // make sure stat_content is null terminated
+      stat_content[read_size] = '\0';
+    }
+    if (fd >= 0) {
+      close(fd);
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    const int USER_TIME_FIELD_INDEX = 13;
+    const int SYSTEM_TIME_FIELD_INDEX = 14;
+    int field_index = 0;
+    char *save_ptr = nullptr;
+    char *field_ptr = strtok_r(stat_content, " ", &save_ptr);
+    while (field_ptr != NULL) {
+      if (field_index == USER_TIME_FIELD_INDEX) {
+        cpu_time += strtoul(field_ptr, NULL, 10) * 1000000 / sysconf(_SC_CLK_TCK);
+      }
+      if (field_index == SYSTEM_TIME_FIELD_INDEX) {
+        cpu_time += strtoul(field_ptr, NULL, 10) * 1000000 / sysconf(_SC_CLK_TCK);
+        break;
+      }
+      field_ptr = strtok_r(NULL, " ", &save_ptr);
+      field_index++;
+    }
+    cpu_time_inc = cpu_time - group_cpu_time_;
+    group_cpu_time_ = cpu_time;
   }
   return ret;
 }

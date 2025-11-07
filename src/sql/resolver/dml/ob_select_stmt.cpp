@@ -12,18 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "sql/resolver/ob_schema_checker.h"
 #include "sql/resolver/expr/ob_shared_expr_resolver.h"
-#include "sql/rewrite/ob_transform_utils.h"
-#include "sql/engine/expr/ob_expr_operator.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/ob_sql_context.h"
 #include "sql/optimizer/ob_optimizer_util.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/utility/utility.h"
-#include "common/ob_smart_call.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -46,7 +36,6 @@ int SelectItem::deep_copy(ObIRawExprCopier &expr_copier,
     esc_str_flag_ = other.esc_str_flag_;
     need_check_dup_name_ = other.need_check_dup_name_;
     implicit_filled_ = other.implicit_filled_;
-    is_unpivot_mocked_column_ = other.is_unpivot_mocked_column_;
     is_implicit_added_ = other.is_implicit_added_;
     is_hidden_rowid_ = other.is_hidden_rowid_;
   }
@@ -132,11 +121,32 @@ int ObSelectStmt::check_table_be_modified(uint64_t ref_table_id, bool& is_exists
 bool ObSelectStmt::has_distinct_or_concat_agg() const
 {
   bool has = false;
+  has = has_concat_agg();
   for (int64_t i = 0; !has && i < get_aggr_item_size(); ++i) {
     const ObAggFunRawExpr *aggr = get_aggr_item(i);
     if (NULL != aggr) {
-      has = aggr->is_param_distinct() ||
-            T_FUN_GROUP_CONCAT == aggr->get_expr_type();
+      has = aggr->is_param_distinct();
+    }
+  }
+  return has;
+}
+
+bool ObSelectStmt::has_concat_agg() const
+{
+  bool has = false;
+  for (int i = 0; !has && i < get_aggr_item_size(); i++) {
+    const ObAggFunRawExpr *aggr = get_aggr_item(i);
+    if (NULL != aggr) {
+      // Consistent with the has_group_concat_ flag in ObAggregateProcessor.
+      has = T_FUN_GROUP_CONCAT == aggr->get_expr_type() ||
+            T_FUN_KEEP_WM_CONCAT == aggr->get_expr_type() ||
+            T_FUN_WM_CONCAT == aggr->get_expr_type() ||
+            T_FUN_JSON_ARRAYAGG == aggr->get_expr_type() ||
+            T_FUN_ORA_JSON_ARRAYAGG == aggr->get_expr_type() ||
+            T_FUN_JSON_OBJECTAGG == aggr->get_expr_type() ||
+            T_FUN_ORA_JSON_OBJECTAGG == aggr->get_expr_type() ||
+            T_FUN_ORA_XMLAGG == aggr->get_expr_type() ||
+            T_FUNC_SYS_ARRAY_AGG == aggr->get_expr_type();
     }
   }
   return has;
@@ -267,6 +277,9 @@ int ObSelectStmt::assign(const ObSelectStmt &other)
     is_expanded_mview_ = other.is_expanded_mview_;
     is_select_straight_join_ = other.is_select_straight_join_;
     is_implicit_distinct_ = false; // it is a property from upper stmt, do not copy
+    is_oracle_compat_groupby_ = other.is_oracle_compat_groupby_;
+    is_recursive_union_branch_ = other.is_recursive_union_branch_;
+    for_update_cursor_table_id_ = other.for_update_cursor_table_id_;
   }
   return ret;
 }
@@ -364,6 +377,8 @@ int ObSelectStmt::deep_copy_stmt_struct(ObIAllocator &allocator,
     is_expanded_mview_ = other.is_expanded_mview_;
     is_select_straight_join_ = other.is_select_straight_join_;
     is_implicit_distinct_ = false; // it is a property from upper stmt, do not copy
+    is_oracle_compat_groupby_ = other.is_oracle_compat_groupby_;
+    is_recursive_union_branch_ = other.is_recursive_union_branch_;
     // copy insert into statement
     if (OB_SUCC(ret) && NULL != other.into_item_) {
       ObSelectIntoItem *temp_into_item = NULL;
@@ -388,7 +403,7 @@ int ObSelectStmt::create_select_list_for_set_stmt(ObRawExprFactory &expr_factory
 {
   int ret = OB_SUCCESS;
   SelectItem new_select_item;
-  ObExprResType res_type;
+  ObRawExprResType res_type;
   ObSelectStmt *child_stmt = NULL;
   if (OB_ISNULL(child_stmt = get_set_query(0))) {
     ret = OB_ERR_UNEXPECTED;
@@ -581,6 +596,9 @@ ObSelectStmt::ObSelectStmt()
   is_expanded_mview_ = false;
   is_select_straight_join_ = false;
   is_implicit_distinct_ = false;
+  is_oracle_compat_groupby_ = false;
+  is_recursive_union_branch_ = false;
+  for_update_cursor_table_id_ = OB_INVALID_ID;
 }
 
 ObSelectStmt::~ObSelectStmt()
@@ -744,7 +762,6 @@ int ObSelectStmt::do_to_string(char *buf, const int64_t buf_len, int64_t &pos) c
     } else {
       J_KV(
            N_STMT_TYPE, stmt_type_,
-           K_(transpose_item),
            N_TABLE, table_items_,
            N_JOINED_TABLE, joined_tables_,
            N_SEMI_INFO, semi_infos_,
@@ -976,7 +993,8 @@ bool ObSelectStmt::is_spj() const
            || is_contains_assignment()
            || has_window_function()
            || has_sequence()
-           || is_hierarchical_query());
+           || is_hierarchical_query()
+           || is_unpivot_select());
   if (!bret) {
     // do nothing
   } else if (OB_FAIL(has_rownum(has_rownum_expr))) {
@@ -1003,7 +1021,8 @@ bool ObSelectStmt::is_spjg() const
            || is_contains_assignment()
            || has_window_function()
            || has_sequence()
-           || is_hierarchical_query());
+           || is_hierarchical_query()
+           || is_unpivot_select());
   if (!bret) {
     // do nothing
   } else if (OB_FAIL(has_rownum(has_rownum_expr))) {
@@ -1015,15 +1034,12 @@ bool ObSelectStmt::is_spjg() const
   return bret;
 }
 
-int ObSelectStmt::get_select_exprs(ObIArray<ObRawExpr*> &select_exprs,
-    const bool is_for_outout/* = false*/)
+int ObSelectStmt::get_select_exprs(ObIArray<ObRawExpr*> &select_exprs)
 {
   int ret = OB_SUCCESS;
   ObRawExpr *expr = NULL;
   for (int64_t i = 0; OB_SUCC(ret) && i < select_items_.count(); ++i) {
-    if (is_for_outout && select_items_.at(i).is_unpivot_mocked_column_) {
-      //continue
-    } else if (OB_ISNULL(expr = select_items_.at(i).expr_)) {
+    if (OB_ISNULL(expr = select_items_.at(i).expr_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("null select expr", K(ret));
     } else if (OB_FAIL(select_exprs.push_back(expr))) {
@@ -1033,16 +1049,13 @@ int ObSelectStmt::get_select_exprs(ObIArray<ObRawExpr*> &select_exprs,
   return ret;
 }
 
-int ObSelectStmt::get_select_exprs(ObIArray<ObRawExpr*> &select_exprs,
-    const bool is_for_outout/* = false*/) const
+int ObSelectStmt::get_select_exprs(ObIArray<ObRawExpr*> &select_exprs) const
 {
   int ret = OB_SUCCESS;
   ObRawExpr *expr = NULL;
   LOG_DEBUG("before get_select_exprs", K(select_items_), K(table_items_), K(lbt()));
   for (int64_t i = 0; OB_SUCC(ret) && i < select_items_.count(); ++i) {
-    if (is_for_outout && select_items_.at(i).is_unpivot_mocked_column_) {
-      //continue
-    } else if (OB_ISNULL(expr = select_items_.at(i).expr_)) {
+    if (OB_ISNULL(expr = select_items_.at(i).expr_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("null select expr", K(ret));
     } else if (OB_FAIL(select_exprs.push_back(expr))) {
@@ -1174,6 +1187,8 @@ int ObGroupingSetsItem::assign(const ObGroupingSetsItem& other)
     LOG_WARN("failed to assign", K(ret));
   } else if (OB_FAIL(cube_items_.assign(other.cube_items_))) {
     LOG_WARN("failed to assign", K(ret));
+  } else if (OB_FAIL(pruned_grouping_set_ids_.assign(other.pruned_grouping_set_ids_))) {
+    LOG_WARN("failed to assign", K(ret));
   } else {/*do nothing*/}
   return ret;
 }
@@ -1206,6 +1221,10 @@ int ObGroupingSetsItem::deep_copy(ObIRawExprCopier &expr_copier,
     } else if (OB_FAIL(cube_items_.push_back(cube_item))) {
       LOG_WARN("failed to push back cube item", K(ret));
     } else {/* do nothing */}
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(pruned_grouping_set_ids_.assign(other.pruned_grouping_set_ids_))) {
+    LOG_WARN("failed to assign", K(ret));
   }
   return ret;
 }
@@ -1540,7 +1559,8 @@ int ObSelectStmt::check_is_simple_lock_stmt(bool &is_valid) const
       !is_contains_assignment() &&
       !has_window_function() &&
       !has_sequence() &&
-      !is_hierarchical_query()) {
+      !is_hierarchical_query() &&
+      !is_unpivot_select()) {
     bool contain_lock_expr = false;
     for (int64_t i = 0; !contain_lock_expr && i < select_items_.count(); i ++) {
       if (OB_FAIL(ObRawExprUtils::check_contain_lock_exprs(select_items_.at(i).expr_, contain_lock_expr))) {
@@ -1589,7 +1609,7 @@ int ObSelectStmt::check_from_dup_insensitive(bool &is_from_dup_insens) const
   bool is_dup_insens_aggr = false;
   is_from_dup_insens = false;
   // basic validity check
-  if (is_set_stmt() || is_hierarchical_query()) {
+  if (is_set_stmt() || is_hierarchical_query() || is_unpivot_select()) {
     is_valid = false;
   } else if (OB_FAIL(check_relation_exprs_deterministic(is_valid))) {
     LOG_WARN("failed to check relation exprs deterministic", K(ret));

@@ -19,6 +19,7 @@ namespace oceanbase
 {
 namespace storage
 {
+struct ObDMLRunningCtx;
 
 struct ObLobDataInsertTask
 {
@@ -51,7 +52,7 @@ struct ObLobTabletDmlCtx
 
   ~ObLobTabletDmlCtx();
 
-  bool is_all_task_done() const { return  insert_data_info_.count() != 0; }
+  bool is_all_task_done() const { return  insert_data_info_.count() == 0; }
 
   int64_t task_count() const { return insert_data_info_.count(); }
 
@@ -76,7 +77,6 @@ public:
       ObTabletHandle &tablet_handle,
       ObDMLRunningCtx &run_ctx,
       blocksstable::ObDatumRow &row,
-      const ObColDesc &column,
       const int16_t row_idx,
       const int16_t col_idx,
       blocksstable::ObStorageDatum &datum);
@@ -84,7 +84,6 @@ public:
   static int process_lob_column_after_insert(
       ObDMLRunningCtx &run_ctx,
       blocksstable::ObDatumRow &row,
-      const ObColDesc &column,
       ObLobDataInsertTask &info);
 
   // update
@@ -93,7 +92,6 @@ public:
       blocksstable::ObDatumRow &old_row,
       blocksstable::ObDatumRow &new_row,
       const bool data_tbl_rowkey_change,
-      const ObColDesc &column,
       const int16_t row_idx,
       const int16_t col_idx,
       blocksstable::ObStorageDatum &old_datum,
@@ -104,13 +102,12 @@ public:
       blocksstable::ObDatumRow &old_row,
       blocksstable::ObDatumRow &new_row,
       const bool data_tbl_rowkey_change,
-      const ObColDesc &column,
       ObLobDataInsertTask &info);
 
   static int insert_lob_col(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
-      const ObColDesc &column,
+      const int16_t col_idx,
       blocksstable::ObStorageDatum &datum,
       ObLobAccessParam *del_param,
       ObString &disk_locator_data,
@@ -119,7 +116,7 @@ public:
   static int delete_lob_col(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
-      const ObColDesc &column,
+      const int16_t col_idx,
       blocksstable::ObStorageDatum &datum,
       ObLobCommon *&lob_common,
       ObLobAccessParam &lob_param,
@@ -129,7 +126,7 @@ public:
       blocksstable::ObDatumRow &old_row,
       blocksstable::ObDatumRow &new_row,
       bool data_tbl_rowkey_change,
-      const ObColDesc &column,
+      const int16_t col_idx,
       blocksstable::ObStorageDatum &old_datum,
       blocksstable::ObStorageDatum &new_datum);
 
@@ -137,24 +134,27 @@ public:
   static int process_delta_lob(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
-      const ObColDesc &column,
+      const int16_t col_idx,
       blocksstable::ObStorageDatum &old_datum,
       ObLobLocatorV2 &delta_lob,
       blocksstable::ObStorageDatum &datum);
 
-private:
+  static int register_ext_info_commit_cb(
+      ObDMLRunningCtx &run_ctx,
+      const ObColDesc &column,
+      ObDatum &col_data);
 
+private:
   static int build_common_lob_param_for_dml(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
-      const ObColDesc &column,
+      const int16_t col_idx,
       ObString &disk_lob_locator,
       ObLobAccessParam &lob_param);
 
   static int prepare_lob_write(
       ObDMLRunningCtx &run_ctx,
       const blocksstable::ObDatumRow &data_row,
-      const ObColDesc &column,
       const int16_t row_idx,
       const int16_t col_idx,
       ObString &old_disk_locator,
@@ -165,7 +165,8 @@ private:
       ObDMLRunningCtx &run_ctx,
       const ObColDesc &column,
       ObDatum &col_data,
-      ObObj &ext_info_data);
+      ObObj &ext_info_data,
+      const ObExtInfoLogHeader &header);
   static int register_ext_info_commit_cb(
       ObDMLRunningCtx &run_ctx,
       const ObColDesc &column,
@@ -176,6 +177,20 @@ private:
       ObDMLRunningCtx &run_ctx,
       const ObColDesc &column,
       ObLobAccessParam &lob_param);
+
+public:
+  static int handle_valid_old_outrow_lob_value(
+      const bool is_total_quantity_log,
+      ObLobCommon* old_lob_common,
+      ObLobCommon* new_lob_common);
+  static int is_support_ext_info_log(ObDMLRunningCtx &run_ctx, bool &is_support);
+  static int set_lob_data_outrow_ctx_op(ObLobCommon* lob_common, ObLobDataOutRowCtx::OpType ty);
+
+private:
+  static int is_disable_record_outrow_lob_in_clog_(bool &disable_record_outrow_lob_in_clog);
+  static int is_disable_version_(bool &is_below);
+  static int copy_seq_no_(ObLobCommon* old_lob_common, ObLobCommon* new_lob_common);
+
 };
 
 }  // end namespace storage

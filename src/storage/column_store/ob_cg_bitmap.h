@@ -14,12 +14,23 @@
 
 #include "lib/container/ob_bitmap.h"
 #include "storage/column_store/ob_column_store_util.h"
-
+#include "src/sql/engine/basic/ob_pushdown_filter.h"
 namespace oceanbase
 {
 using namespace common;
 namespace storage
 {
+
+static const int32_t DEFAULT_CS_BATCH_ROW_COUNT = 1024;
+static int32_t default_cs_batch_row_ids_[DEFAULT_CS_BATCH_ROW_COUNT];
+static int32_t default_cs_batch_reverse_row_ids_[DEFAULT_CS_BATCH_ROW_COUNT];
+static void  __attribute__((constructor)) init_row_cs_ids_array()
+{
+  for (int32_t i = 0; i < DEFAULT_CS_BATCH_ROW_COUNT; i++) {
+    default_cs_batch_row_ids_[i] = i;
+    default_cs_batch_reverse_row_ids_[i] = DEFAULT_CS_BATCH_ROW_COUNT - i - 1;
+  }
+}
 
 class ObCGBitmap
 {
@@ -176,9 +187,9 @@ public:
         (filter_constant_type_.is_uncertain() && bitmap_.is_all_false());
   }
 
-  OB_INLINE int bit_and(const ObCGBitmap &right);
+  int bit_and(const ObCGBitmap &right);
 
-  OB_INLINE int bit_or(const ObCGBitmap &right);
+  int bit_or(const ObCGBitmap &right);
 
   OB_INLINE int bit_not()
   {
@@ -267,6 +278,9 @@ public:
                   const ObCSRange &data_range,
                   const int64_t batch_size,
                   const bool is_reverse);
+  int get_next_valid_idx_directly(const int64_t row_id,
+                                  int64_t &offset) const;
+  int bit_and(const ObBitmap &right);
   TO_STRING_KV(K_(is_reverse_scan), K_(start_row_id), K_(max_filter_constant_id),
                K_(filter_constant_type), K_(bitmap));
 private:

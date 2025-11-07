@@ -13,23 +13,15 @@
 #ifndef OB_BUILD_TDE_SECURITY
 
 #define USING_LOG_PREFIX SHARE
-#include "share/ob_encryption_util.h"
 #include <openssl/md4.h>
 #include <openssl/md5.h>
 #include <openssl/sha.h>
-#include "share/ob_encryption_struct.h"
-#include "lib/alloc/alloc_assist.h"
-#include "share/ob_errno.h"
-#include "lib/atomic/atomic128.h"
-#include "lib/string/ob_string.h"
-#include "lib/random/ob_random.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "observer/ob_server_struct.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
+#include "sql/session/ob_sql_session_info.h"
 
 namespace oceanbase
 {
 using namespace common;
+using namespace sql;
 namespace share
 {
 
@@ -422,7 +414,7 @@ bool ObEncryptionUtil::is_ecb_mode(const ObCipherOpMode opmode)
          (opmode == ObCipherOpMode::ob_sm4_ecb);
 }
 
-int ObEncryptionUtil::get_cipher_op_mode(ObCipherOpMode &op_mode, ObSQLSessionInfo *session)
+int ObEncryptionUtil::get_cipher_op_mode(ObCipherOpMode &op_mode, const ObSQLSessionInfo *session)
 {
   int ret = OB_SUCCESS;
   int64_t encryption = -1;

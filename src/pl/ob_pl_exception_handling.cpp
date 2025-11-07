@@ -15,9 +15,6 @@
 #ifdef OB_BUILD_ORACLE_PL
 #include "pl/ob_pl_call_stack_trace.h"
 #endif
-#include "share/ob_errno.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/oblog/ob_log_module.h"
 
 namespace oceanbase
 {
@@ -124,18 +121,19 @@ ObPLException::ObPLException(int64_t error_code)
 }
 
 #ifdef OB_BUILD_ORACLE_PL
-int ObPLEH::eh_adjust_call_stack(ObPLContext &pl_ctx, uint64_t location, int err_code)
+int ObPLEH::eh_adjust_call_stack(ObPLContext *pl_ctx, uint64_t location, int err_code)
 {
   int ret = OB_SUCCESS;
   int64_t stack_depth = 0;
-  if (lib::is_oracle_mode() && OB_NOT_NULL(pl_ctx.get_call_stack_trace())) {
-    CK ((stack_depth = pl_ctx.get_exec_stack().count()) > 0);
-    CK (OB_NOT_NULL(pl_ctx.get_exec_stack().at(stack_depth - 1)));
-    OX (pl_ctx.get_exec_stack().at(stack_depth - 1)->set_loc(location));
-    OZ (pl_ctx.get_call_stack_trace()->format_exception_stack(err_code, pl_ctx.get_exec_stack()));
+  if (lib::is_oracle_mode() && OB_NOT_NULL(pl_ctx) && OB_NOT_NULL(pl_ctx->get_call_stack_trace())) {
+    CK ((stack_depth = pl_ctx->get_exec_stack().count()) > 0);
+    CK (OB_NOT_NULL(pl_ctx->get_exec_stack().at(stack_depth - 1)));
+    OX (pl_ctx->get_exec_stack().at(stack_depth - 1)->set_loc(location));
+    OZ (pl_ctx->get_call_stack_trace()->format_exception_stack(err_code, pl_ctx->get_exec_stack()));
   }
   return ret;
 }
+
 #endif
 
 ObUnwindException *ObPLEH::eh_create_exception(int64_t pl_context,
@@ -155,7 +153,7 @@ ObUnwindException *ObPLEH::eh_create_exception(int64_t pl_context,
     CK (pl_ctx->get_exec_stack().count() > 0);
     CK (OB_NOT_NULL(frame = pl_ctx->get_exec_stack().at(0)));
     CK (frame->is_top_call());
-    CK (OB_NOT_NULL(pl_allocator = &(frame->get_exec_ctx().expr_alloc_)));
+    CK (OB_NOT_NULL(pl_allocator = frame->get_exec_ctx().get_top_expr_allocator()));
     if (OB_FAIL(ret)) {
     } else if (OB_ALLOCATE_MEMORY_FAILED == value->error_code_) {
       unwind = &pre_reserved_e.body_;
@@ -192,7 +190,7 @@ ObUnwindException *ObPLEH::eh_create_exception(int64_t pl_context,
 
 #ifdef OB_BUILD_ORACLE_PL
     CK (OB_NOT_NULL(pl_ctx));
-    OZ (eh_adjust_call_stack(*pl_ctx, loc,
+    OZ (eh_adjust_call_stack(pl_ctx, loc,
       value->error_code_ < 0
         ? value->error_code_
         :(value->error_code_ & ~(UINT64_MAX << OB_PACKAGE_ID_SHIFT))));
@@ -471,12 +469,23 @@ bool ObPLEH::is_internal_error(int error_code)
     || OB_ERR_UNEXPECTED == error_code
     || OB_ALLOCATE_MEMORY_FAILED == error_code
     || OB_ERR_DEFENSIVE_CHECK == error_code
-    || OB_TRANS_XA_BRANCH_FAIL == error_code
     || OB_TRANS_SQL_SEQUENCE_ILLEGAL == error_code
     || OB_ERR_SESSION_INTERRUPTED == error_code
     || OB_ERR_QUERY_INTERRUPTED == error_code
     || OB_TIMEOUT == error_code
-    || OB_EAGAIN == error_code;
+    || OB_TRANS_STMT_TIMEOUT == error_code
+    || OB_EAGAIN == error_code
+    || OB_NOT_MASTER == error_code
+    || OB_SNAPSHOT_DISCARDED == error_code
+    // transaction relative
+    || OB_TRANS_ROLLBACKED == error_code
+    || OB_TRANS_NEED_ROLLBACK == error_code
+    || OB_TRANS_HAS_DECIDED == error_code
+    || OB_TRANS_TIMEOUT == error_code
+    || OB_TRANS_KILLED == error_code
+    || OB_TRANS_CTX_NOT_EXIST == error_code
+    || OB_TRANS_IS_EXITING == error_code
+    || OB_TRANS_XA_BRANCH_FAIL == error_code;
 }
 
 ObPLConditionType ObPLEH::eh_classify_exception(const char *sql_state)

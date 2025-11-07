@@ -12,9 +12,6 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "storage/backup/ob_backup_data_store.h"
-#include "share/backup/ob_backup_io_adapter.h"
-#include "lib/restore/ob_storage.h"
-#include "lib/oblog/ob_log_module.h"
 #ifdef OB_BUILD_TDE_SECURITY
 #include "share/ob_master_key_getter.h"
 #endif
@@ -339,21 +336,26 @@ bool ObBackupTableListMetaInfoDesc::is_valid() const
  *-----------------------------ObBackupMajorCompactionMViewDepTabletListDesc-----------------------
  */
 
-OB_SERIALIZE_MEMBER(ObBackupMajorCompactionMViewDepTabletListDesc, tablet_id_list_);
+OB_SERIALIZE_MEMBER(ObBackupMajorCompactionMViewDepTabletListDesc, tablet_id_list_, mview_dep_scn_list_);
 
 ObBackupMajorCompactionMViewDepTabletListDesc::ObBackupMajorCompactionMViewDepTabletListDesc()
   : ObExternBackupDataDesc(ObBackupFileType::BACKUP_MVIEW_DEP_TABLET_LIST_FILE, FILE_VERSION),
-    tablet_id_list_() {}
+    tablet_id_list_(),
+    mview_dep_scn_list_() {}
 
 bool ObBackupMajorCompactionMViewDepTabletListDesc::is_valid() const
 {
   int ret = OB_SUCCESS;
   bool bret = true;
-  ARRAY_FOREACH(tablet_id_list_, i) {
-    const ObTabletID &tablet_id = tablet_id_list_.at(i);
-    if (!tablet_id.is_valid()) {
-      bret = false;
-      break;
+  if (tablet_id_list_.count() != mview_dep_scn_list_.count()) {
+    bret = false;
+  } else {
+    ARRAY_FOREACH(tablet_id_list_, i) {
+      const ObTabletID &tablet_id = tablet_id_list_.at(i);
+      if (!tablet_id.is_valid()) {
+        bret = false;
+        break;
+      }
     }
   }
   return bret;
@@ -383,8 +385,7 @@ int ObBackupSetFilter::func(const dirent *entry)
   const char *end_success_str = "end_success";
   const char *backup_set_str = "backup_set";
   const char *find_pos = nullptr;
-  if (backup_set_name_array_.count() >= OB_MAX_BACKUP_SET_NUM) { // list upper limit //TODO(zeyong) add new error code
-  } else if (!bs_placeholder_name.prefix_match(backup_set_str)) {
+  if (!bs_placeholder_name.prefix_match(backup_set_str)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid backup set dier prefix", K(ret), K(bs_placeholder_name));
   } else if (OB_ISNULL(find_pos = STRSTR(bs_placeholder_name.ptr(), end_success_str))) {
@@ -795,7 +796,12 @@ int ObBackupDataStore::write_tenant_locality_info(const ObExternTenantLocalityIn
   } else if (OB_FAIL(full_path.assign(path.get_obstr()))) {
     LOG_WARN("fail to assign full path", K(ret));
   } else if (OB_FAIL(write_single_file(full_path, locality_info))) {
-    LOG_WARN("fail to write single file", K(ret));
+    if (OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH == ret && backup_set_dest_.is_enable_worm()) {
+      // if set enable_worm=true, ignore error code OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to write single file", K(ret));
+    }
   } 
 
   return ret;
@@ -834,7 +840,12 @@ int ObBackupDataStore::write_tenant_param_info(const ObExternParamInfoDesc &tena
   } else if (OB_FAIL(full_path.assign(path.get_obstr()))) {
     LOG_WARN("fail to assign full path", K(ret));
   } else if (OB_FAIL(write_single_file(full_path, tenant_param_info))) {
-    LOG_WARN("fail to write single file", K(ret));
+    if (OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH == ret && backup_set_dest_.is_enable_worm()) {
+      // if set enable_worm=true, ignore error code OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to write single file", K(ret));
+    }
   }
 
   return ret;
@@ -874,7 +885,12 @@ int ObBackupDataStore::write_tenant_diagnose_info(const ObExternTenantDiagnoseIn
   } else if (OB_FAIL(full_path.assign(path.get_obstr()))) {
     LOG_WARN("fail to assign full path", K(ret));
   } else if (OB_FAIL(write_single_file(full_path, diagnose_info))) {
-    LOG_WARN("fail to write single file", K(ret));
+    if (OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH == ret && backup_set_dest_.is_enable_worm()) {
+      // if set enable_worm=true, ignore error code OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to write single file", K(ret));
+    }
   } 
 
   return ret;
@@ -905,6 +921,7 @@ int ObBackupDataStore::write_backup_set_info(const ObExternBackupSetInfoDesc &ba
   
   ObBackupPathString full_path;
   share::ObBackupPath path;
+  storage::ObExternBackupSetInfoDesc backup_set_info_remote;
 
   if (!is_init()) {
     ret = OB_NOT_INIT;
@@ -915,8 +932,7 @@ int ObBackupDataStore::write_backup_set_info(const ObExternBackupSetInfoDesc &ba
     LOG_WARN("fail to assign full path", K(ret));
   } else if (OB_FAIL(write_single_file(full_path, backup_set_info))) {
     LOG_WARN("fail to write single file", K(ret));
-  } 
-
+  }
   return ret;
 }
 
@@ -1298,13 +1314,13 @@ int ObBackupDataStore::do_get_backup_set_array_(const common::ObString &passwd_a
         backup_set_desc.min_restore_scn_ = backup_set_file.min_restore_scn_;
         backup_set_desc.total_bytes_ = backup_set_file.stats_.output_bytes_;
         if (OB_FAIL(backup_set_map.get_refactored(backup_set_file.prev_full_backup_set_id_, value))) {
-          if (OB_ENTRY_NOT_EXIST == ret) {
+          if (OB_HASH_NOT_EXIST == ret) {
             ret = OB_SUCCESS;
           } else {
             LOG_WARN("fail to get refactored", K(ret), K(backup_set_file));
           }
         } else if (OB_FAIL(backup_set_map.get_refactored(backup_set_file.prev_inc_backup_set_id_, value))) {
-          if (OB_ENTRY_NOT_EXIST == ret) {
+          if (OB_HASH_NOT_EXIST == ret) {
             ret = OB_SUCCESS;
           } else {
             LOG_WARN("fail to get refactored", K(ret), K(backup_set_file));

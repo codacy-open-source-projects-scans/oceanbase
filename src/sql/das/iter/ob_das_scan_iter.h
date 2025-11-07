@@ -14,6 +14,7 @@
 #define OBDEV_SRC_SQL_DAS_ITER_OB_DAS_SCAN_ITER_H_
 
 #include "sql/das/iter/ob_das_iter.h"
+#include "sql/das/ob_das_scan_op.h"
 namespace oceanbase
 {
 namespace common {
@@ -63,6 +64,11 @@ public:
   virtual int rescan() override;
   virtual void clear_evaluated_flag() override;
 
+  virtual int set_scan_rowkey(ObEvalCtx *eval_ctx,
+                              const ObIArray<ObExpr *> &rowkey_exprs,
+                              const ObDASScanCtDef *lookup_ctdef,
+                              ObIAllocator *alloc,
+                              int64_t group_id) override;
 protected:
   virtual int inner_init(ObDASIterParam &param) override;
   virtual int inner_reuse() override;

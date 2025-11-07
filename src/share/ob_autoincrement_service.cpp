@@ -13,23 +13,6 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "share/ob_autoincrement_service.h"
-#include <algorithm>
-#include <stdint.h>
-#include "lib/worker.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/time/ob_time_utility.h"
-#include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "lib/ash/ob_active_session_guard.h"
-#include "share/inner_table/ob_inner_table_schema.h"
-#include "share/partition_table/ob_partition_location.h"
-#include "share/config/ob_server_config.h"
-#include "share/schema/ob_table_schema.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/schema/ob_schema_utils.h"
-#include "share/ob_schema_status_proxy.h"
-#include "observer/ob_server_struct.h"
 #include "observer/ob_sql_client_decorator.h"
 #include "lib/ash/ob_active_session_guard.h"
 #include "lib/wait_event/ob_inner_sql_wait_type.h"
@@ -802,6 +785,9 @@ int ObAutoincrementService::calculate_idempotent_autoinc_val_for_ddl(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(autoinc_param),
              K(table_all_slice_count), K(table_level_slice_idx), K(slice_row_idx));
+  } else if (autoinc_param->global_value_to_sync_ >= UINT64_MAX) {
+    ret = OB_ERR_REACH_AUTOINC_MAX;
+    LOG_WARN("autoinc reach max", K(ret), K(autoinc_param->global_value_to_sync_));
   } else {
     const int64_t range_id = slice_row_idx / autoinc_range_interval;
     const int64_t row_id_in_range = slice_row_idx % autoinc_range_interval;
@@ -809,11 +795,19 @@ int ObAutoincrementService::calculate_idempotent_autoinc_val_for_ddl(
     // for now, only `offset` param is supported, `increment` param is not supported
     const uint64_t offset = autoinc_param->autoinc_offset_;
     const uint64_t max_value = get_max_value(column_type);
-    autoinc_value =
+    if (1 == table_all_slice_count) {
+      // if generate in only one thread, calc next value by prev value and increment step to compat MySQL
+      autoinc_value = OB_UNLIKELY(0 == slice_row_idx) ? offset : min(autoinc_param->global_value_to_sync_ + autoinc_param->autoinc_increment_, max_value);
+    } else {
+      autoinc_value =
         min(offset + table_level_slice_idx * autoinc_range_interval +
                 (table_all_slice_count * range_id * autoinc_range_interval) + row_id_in_range,
             max_value);
+    }
     autoinc_param->global_value_to_sync_ = max(autoinc_param->global_value_to_sync_, autoinc_value);
+    LOG_TRACE("ddl calc idem autoinc value", K(ret), K(autoinc_value),
+        K(table_all_slice_count), K(table_level_slice_idx), K(slice_row_idx), K(autoinc_range_interval),
+        K(autoinc_param->value_to_sync_), K(autoinc_param->global_value_to_sync_), K(autoinc_param->autoinc_increment_), K(offset));
   }
 
   return ret;

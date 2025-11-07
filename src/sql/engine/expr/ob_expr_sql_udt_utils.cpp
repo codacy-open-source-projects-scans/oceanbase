@@ -12,14 +12,8 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include "lib/ob_errno.h"
-#include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_sql_udt_utils.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "pl/ob_pl.h"
-#include "pl/ob_pl_user_type.h"
 #include "src/pl/ob_pl_resolver.h"
-#include "lib/udt/ob_array_type.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -893,7 +887,7 @@ int ObSqlUdtUtils::convert_collection_to_string(ObObj &coll_obj, const ObSqlColl
   } else {
     if (OB_FAIL(arr_obj->init(coll_data))) {
       LOG_WARN("failed to init array", K(ret));
-    } else if (OB_FAIL(arr_obj->print(arr_type->element_type_, buf))) {
+    } else if (OB_FAIL(arr_obj->print(buf))) {
       LOG_WARN("failed to format array", K(ret));
     } else {
       res_str.assign_ptr(buf.ptr(), buf.length());
@@ -1103,7 +1097,7 @@ int ObSqlUdtUtils::cast_sql_udt_varray_to_pl_varray(sql::ObExecContext *exec_ctx
     ObObj *varray_objs = NULL;
     uint64_t element_count = varray_handler.get_varray_element_count();
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObSPIService::spi_set_collection(0, NULL, alloc, *coll, element_count))) {
+    } else if (OB_FAIL(ObSPIService::spi_set_collection(0, NULL, *coll, element_count))) {
       LOG_WARN("failed to allocate memory for pl collection", K(ret), K(coll));
     } else if (OB_ISNULL(varray_objs = coll->get_data())) {
       ret = OB_ERR_UNEXPECTED;
@@ -1132,17 +1126,16 @@ int ObSqlUdtUtils::cast_sql_udt_varray_to_pl_varray(sql::ObExecContext *exec_ctx
     }
 
     // is nested varray needs add to pl ctx? may not needed for obobj cast
-    if (OB_SUCC(ret)) {
-      res_obj.set_extend(reinterpret_cast<int64_t>(coll), coll->get_type());
-      if (OB_NOT_NULL(coll->get_allocator())) {
-        if (OB_ISNULL(exec_ctx->get_pl_ctx())) {
-          if (OB_FAIL(exec_ctx->init_pl_ctx() || OB_ISNULL(exec_ctx->get_pl_ctx()))) {
-            LOG_ERROR("fail to init pl ctx", K(ret));
-          }
+    OX (res_obj.set_extend(reinterpret_cast<int64_t>(coll), coll->get_type()));
+    if (OB_NOT_NULL(coll) && OB_NOT_NULL(coll->get_allocator())) {
+      if (OB_ISNULL(exec_ctx->get_pl_ctx())) {
+        if (OB_FAIL(exec_ctx->init_pl_ctx() || OB_ISNULL(exec_ctx->get_pl_ctx()))) {
+          LOG_ERROR("fail to init pl ctx", K(ret));
         }
-        if (OB_SUCC(ret) && OB_FAIL(exec_ctx->get_pl_ctx()->add(res_obj))) {
-          LOG_ERROR("fail to collect pl collection allocator, may be exist memory issue", K(ret));
-        }
+      }
+      if (OB_SUCC(ret) && OB_FAIL(exec_ctx->get_pl_ctx()->add(res_obj))) {
+        int tmp = pl::ObUserDefinedType::destruct_obj(res_obj, nullptr);
+        LOG_WARN("fail to collect pl collection allocator, try to free memory", K(ret), K(tmp));
       }
     }
   }
@@ -1251,9 +1244,9 @@ int ObSqlUdtUtils::cast_sql_udt_attributes_to_pl_record(sql::ObExecContext *exec
         OZ (deep_copy_obj(*record->get_allocator(), obj, record->get_element()[i]));
       }
     }
-    res_obj.set_extend(reinterpret_cast<int64_t>(record),
-                        pl::PL_RECORD_TYPE, pl::ObRecordType::get_init_size(top_level_attr_count));
-    if (OB_NOT_NULL(record->get_allocator())) {
+    OX (res_obj.set_extend(reinterpret_cast<int64_t>(record),
+                        pl::PL_RECORD_TYPE, pl::ObRecordType::get_init_size(top_level_attr_count)));
+    if (OB_NOT_NULL(record) && OB_NOT_NULL(record->get_allocator())) {
       int tmp_ret = OB_SUCCESS;
       if (OB_ISNULL(exec_ctx->get_pl_ctx())) {
         tmp_ret = exec_ctx->init_pl_ctx();
@@ -1262,7 +1255,8 @@ int ObSqlUdtUtils::cast_sql_udt_attributes_to_pl_record(sql::ObExecContext *exec
         tmp_ret = exec_ctx->get_pl_ctx()->add(res_obj);
       }
       if (OB_SUCCESS != tmp_ret) {
-        LOG_ERROR("fail to collect pl collection allocator, may be exist memory issue", K(tmp_ret));
+        int tmp = pl::ObUserDefinedType::destruct_obj(res_obj, nullptr);
+        LOG_WARN("fail to collect pl collection allocator, try to free memory", K(tmp_ret), K(tmp));
       }
       ret = OB_SUCCESS == ret ? tmp_ret : ret;
     }

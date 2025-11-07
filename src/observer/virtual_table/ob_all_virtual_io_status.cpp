@@ -12,7 +12,8 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "observer/virtual_table/ob_all_virtual_io_status.h"
-#include "src/share/io/ob_io_define.h"
+#include "src/share/ob_server_struct.h"
+#include "share/io/ob_io_manager.h"
 
 namespace oceanbase
 {
@@ -389,7 +390,7 @@ int ObAllVirtualIOQuota::record_user_group(const uint64_t tenant_id, ObIOUsage &
     const int64_t MODE_COUNT = static_cast<int64_t>(ObIOMode::MAX_MODE) + 1;
     const int64_t GROUP_MODE_CNT = static_cast<int64_t>(ObIOGroupMode::MODECNT);
     io_usage.calculate_io_usage();
-    const ObSEArray<ObIOUsageInfo, GROUP_START_NUM> &info = io_usage.get_io_usage();
+    const ObIOUsageInfoArray &info = io_usage.get_io_usage();
     uint64_t group_config_index = 0;
     int tmp_ret = OB_SUCCESS;
     for (int64_t i = 0; i < info.count(); ++i) {
@@ -458,7 +459,7 @@ int ObAllVirtualIOQuota::record_sys_group(const uint64_t tenant_id, ObIOUsage &s
     const int64_t MODE_COUNT = static_cast<int64_t>(ObIOMode::MAX_MODE) + 1;
     const int64_t GROUP_MODE_CNT = static_cast<int64_t>(ObIOGroupMode::MODECNT);
     sys_io_usage.calculate_io_usage();
-    const ObSEArray<ObIOUsageInfo, GROUP_START_NUM> &info = sys_io_usage.get_io_usage();
+    const ObIOUsageInfoArray &info = sys_io_usage.get_io_usage();
     int tmp_ret = OB_SUCCESS;
     uint64_t group_config_index = 0;
     for (uint64_t i = 0; i < info.count(); ++i) {
@@ -874,8 +875,7 @@ int ObAllVirtualGroupIOStat::record_user_group_io_status(const int64_t tenant_id
     } else {
       int tmp_ret = OB_SUCCESS;
       const ObTenantIOConfig io_config = io_manager->get_io_config();
-      io_usage.calculate_io_usage();
-      const ObSEArray<ObIOUsageInfo, GROUP_START_NUM> &info = io_usage.get_io_usage();
+      const ObIOUsageInfoArray &info = io_usage.get_io_usage();
       const int64_t MODE_COUNT = static_cast<int64_t>(ObIOMode::MAX_MODE) + 1;
       const int64_t GROUP_MODE_CNT = static_cast<int64_t>(ObIOGroupMode::MODECNT);
       uint64_t local_group_config_index = 0;
@@ -933,7 +933,8 @@ int ObAllVirtualGroupIOStat::record_user_group_io_status(const int64_t tenant_id
             read_item.real_iops_ = info.at(local_read_index).avg_iops_;
             read_item.real_net_bandwidth_ = info.at(remote_read_index).avg_iops_ *
                                             info.at(remote_read_index).avg_byte_;
-
+            read_item.norm_iops_ = oceanbase::common::get_norm_iops(
+                info.at(local_read_index).avg_byte_, info.at(local_read_index).avg_iops_, ObIOMode::READ);
             if (OB_FAIL(convert_bandwidth_format(read_item.max_net_bandwidth_,
                                                  read_item.max_net_bandwidth_display_))) {
               LOG_WARN("convert bandwidth format failed", K(ret), K(read_item));
@@ -962,7 +963,8 @@ int ObAllVirtualGroupIOStat::record_user_group_io_status(const int64_t tenant_id
               write_item.real_iops_ = info.at(local_write_index).avg_iops_;
               write_item.real_net_bandwidth_ = info.at(remote_write_index).avg_iops_ *
                                                info.at(remote_write_index).avg_byte_;
-
+              write_item.norm_iops_ = oceanbase::common::get_norm_iops(
+                  info.at(local_write_index).avg_byte_, info.at(local_write_index).avg_iops_, ObIOMode::WRITE);
               if (OB_FAIL(convert_bandwidth_format(write_item.max_net_bandwidth_,
                                                    write_item.max_net_bandwidth_display_))) {
                 LOG_WARN("convert bandwidth format failed", K(ret), K(write_item));
@@ -999,7 +1001,7 @@ int ObAllVirtualGroupIOStat::record_sys_group_io_status(const int64_t tenant_id,
       LOG_WARN("assign io usage failed", K(ret));
     } else {
       sys_io_usage.calculate_io_usage();
-      const ObSEArray<ObIOUsageInfo, GROUP_START_NUM> &info = sys_io_usage.get_io_usage();
+      const ObIOUsageInfoArray &info = sys_io_usage.get_io_usage();
       int tmp_ret = OB_SUCCESS;
       uint64_t group_config_index = 0;
 
@@ -1035,6 +1037,8 @@ int ObAllVirtualGroupIOStat::record_sys_group_io_status(const int64_t tenant_id,
             read_item.real_iops_ = static_cast<int64_t>(info.at(local_read_index).avg_iops_);
             read_item.real_net_bandwidth_ = static_cast<int64_t>(info.at(remote_read_index).avg_iops_) *
                                             static_cast<int64_t>(info.at(remote_read_index).avg_byte_);
+            read_item.norm_iops_ = oceanbase::common::get_norm_iops(
+                info.at(local_read_index).avg_byte_, info.at(local_read_index).avg_iops_, ObIOMode::READ);
             if (OB_FAIL(convert_bandwidth_format(read_item.max_net_bandwidth_,
                                                  read_item.max_net_bandwidth_display_))) {
                 LOG_WARN("convert bandwidth format failed", K(ret), K(read_item));
@@ -1062,6 +1066,8 @@ int ObAllVirtualGroupIOStat::record_sys_group_io_status(const int64_t tenant_id,
               write_item.real_iops_ = static_cast<int64_t>(info.at(local_write_index).avg_iops_);
               write_item.real_net_bandwidth_ = static_cast<int64_t>(info.at(remote_write_index).avg_iops_) *
                                                static_cast<int64_t>(info.at(remote_write_index).avg_byte_);
+              write_item.norm_iops_ = oceanbase::common::get_norm_iops(
+                  info.at(local_write_index).avg_byte_, info.at(local_write_index).avg_iops_, ObIOMode::WRITE);
               if (OB_FAIL(convert_bandwidth_format(write_item.max_net_bandwidth_,
                                                    write_item.max_net_bandwidth_display_))) {
                   LOG_WARN("convert bandwidth format failed", K(ret), K(write_item));
@@ -1157,6 +1163,10 @@ int ObAllVirtualGroupIOStat::inner_get_next_row(common::ObNewRow *&row)
         }
         case MIN_IOPS: {
           cells[i].set_int(item.min_iops_);
+          break;
+        }
+        case NORM_IOPS: {
+          cells[i].set_int(item.norm_iops_);
           break;
         }
         case REAL_IOPS: {

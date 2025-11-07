@@ -44,7 +44,7 @@ int ObExprPrivSTGeoHash::calc_result_typeN(
     LOG_USER_ERROR(OB_ERR_PARAM_SIZE, fun_name.length(), fun_name.ptr());
   } else {
     ObObjType type_geom = types[0].get_type();
-    if (!ob_is_geometry(type_geom) && !ob_is_string_type(type_geom) && !ob_is_null(type_geom)) {
+    if (!ob_is_geometry(type_geom)) {
       ret = OB_ERR_GIS_INVALID_DATA;
       LOG_USER_ERROR(OB_ERR_GIS_INVALID_DATA, N_PRIV_ST_GEOHASH);
       LOG_WARN("invalid geometry type", K(ret), K(type_geom));
@@ -326,7 +326,15 @@ int ObExprPrivSTGeoHash::eval_priv_st_geohash(const ObExpr &expr, ObEvalCtx &ctx
   } else if (OB_FAIL(calc_geohash(gbox, precision, geohash_buf))) {
     LOG_WARN("fail to calculate geohash", K(ret));
   } else {
-    res.set_string(geohash_buf.ptr(), geohash_buf.length());
+    ObExprStrResAlloc res_alloc(expr, ctx);
+    char *res_buf = (char *)res_alloc.alloc(geohash_buf.length());
+    if (OB_ISNULL(res_buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("result buffer allocation failed", K(ret), K(geohash_buf.length()));
+    } else {
+      MEMCPY(res_buf, geohash_buf.ptr(), geohash_buf.length());
+      res.set_string(res_buf, geohash_buf.length());
+    }
   }
 
   return ret;

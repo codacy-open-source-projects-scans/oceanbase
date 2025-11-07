@@ -12,22 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_OPT
 #include "ob_log_group_by.h"
-#include "lib/allocator/page_arena.h"
-#include "sql/resolver/expr/ob_raw_expr_replacer.h"
-#include "ob_log_operator_factory.h"
-#include "ob_log_exchange.h"
-#include "ob_log_sort.h"
-#include "ob_log_topk.h"
-#include "ob_log_material.h"
 #include "ob_log_table_scan.h"
-#include "ob_optimizer_context.h"
-#include "ob_optimizer_util.h"
-#include "ob_opt_est_cost.h"
-#include "ob_select_log_plan.h"
-#include "common/ob_smart_call.h"
-#include "ob_opt_selectivity.h"
-#include "ob_log_operator_factory.h"
-#include "sql/optimizer/ob_join_order.h"
 #include "sql/rewrite/ob_transform_utils.h"
 
 using namespace oceanbase;
@@ -66,13 +51,36 @@ int ObRollupAdaptiveInfo::assign(const ObRollupAdaptiveInfo &info)
   return ret;
 }
 
-int ObHashRollupInfo::assign(const ObHashRollupInfo &info)
+int ObHashRollupInfo::assign(const ObHashRollupInfo &other)
 {
   int ret = OB_SUCCESS;
-  rollup_grouping_id_ = info.rollup_grouping_id_;
-  expand_exprs_ = info.expand_exprs_;
-  gby_exprs_ = info.gby_exprs_;
-  dup_expr_pairs_ = info.dup_expr_pairs_;
+  if (OB_FAIL(expand_exprs_.assign(other.expand_exprs_))) {
+    LOG_WARN("assign array failed", K(ret));
+  } else if (OB_FAIL(gby_exprs_.assign(other.gby_exprs_))) {
+    LOG_WARN("assign array failed", K(ret));
+  } else if (OB_FAIL(dup_expr_pairs_.assign(other.dup_expr_pairs_))) {
+    LOG_WARN("assign array failed", K(ret));
+  } else if (OB_FAIL(replaced_agg_pairs_.assign(other.replaced_agg_pairs_))) {
+    LOG_WARN("assign array failed", K(ret));
+  } else {
+    rollup_grouping_id_ = other.rollup_grouping_id_;
+  }
+  return ret;
+}
+int ObGroupingSetInfo::assign(const ObGroupingSetInfo &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(common_group_exprs_.assign(other.common_group_exprs_))
+      || OB_FAIL(group_exprs_.assign(other.group_exprs_))
+      || OB_FAIL(group_dirs_.assign(other.group_dirs_))
+      || OB_FAIL(groupset_exprs_.assign(other.groupset_exprs_))
+      || OB_FAIL(pruned_groupset_exprs_.assign(other.pruned_groupset_exprs_))
+      || OB_FAIL(dup_expr_pairs_.assign(other.dup_expr_pairs_))
+      || OB_FAIL(replaced_agg_pairs_.assign(other.replaced_agg_pairs_))) {
+    LOG_WARN("assign array failed", K(ret));
+  } else {
+    grouping_set_id_ = other.grouping_set_id_;
+  }
   return ret;
 }
 
@@ -104,7 +112,8 @@ int ObLogGroupBy::get_explain_name_internal(char *buf,
   }
 
   if (OB_SUCC(ret) && from_pivot_) {
-    ret = BUF_PRINTF(" PIVOT");
+    // Don't mark this for now, and add it after specific optimization is done.
+    // ret = BUF_PRINTF(" PIVOT");
   }
 
   if (OB_FAIL(ret)) {
@@ -149,7 +158,29 @@ int ObLogGroupBy::get_group_rollup_exprs(common::ObIArray<ObRawExpr *> &group_ro
   } else { /*do nothing*/ }
   return ret;
 }
-
+int ObLogGroupBy::is_duplicate_insensitive_aggregation(bool & is_duplicate_insensitive)
+{
+  int ret = OB_SUCCESS;
+  // iterate over all aggregations
+  is_duplicate_insensitive = true;
+  for (int64_t i = 0; OB_SUCC(ret) && is_duplicate_insensitive && i < aggr_exprs_.count(); ++i) {
+    ObAggFunRawExpr *aggr_expr = static_cast<ObAggFunRawExpr *>(aggr_exprs_.at(i));
+    ObItemType aggr_type = aggr_expr->get_expr_type();
+    if (OB_ISNULL(aggr_expr) || OB_UNLIKELY(!aggr_expr->is_aggr_expr())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid aggr expr", K(ret));
+    } else if (aggr_expr->is_param_distinct()) {
+      // any distinct is duplicate insensitive
+      // do nothing
+    } else if (aggr_expr->get_order_items().count() == 0 &&
+               (aggr_type == T_FUN_MIN || aggr_type == T_FUN_MAX)) {
+      // max min is duplicate insensitive
+    } else {
+      is_duplicate_insensitive = false;
+    }
+  }
+  return ret;
+}
 int ObLogGroupBy::get_op_exprs(ObIArray<ObRawExpr*> &all_exprs)
 {
   int ret = OB_SUCCESS;
@@ -519,6 +550,26 @@ int ObLogGroupBy::inner_replace_op_exprs(ObRawExprReplacer &replacer)
   return ret;
 }
 
+int ObLogGroupBy::unwrap_cast_for_aggr_expr()
+{
+  int ret = OB_SUCCESS;
+  // unwrap cast for aggr expr
+  for (int64_t i = 0; OB_SUCC(ret) && i < aggr_exprs_.count(); i++) {
+    ObRawExpr *aggr_expr = aggr_exprs_.at(i);
+    if (OB_ISNULL(aggr_expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("aggr_expr is null", K(ret));
+    } else if (aggr_expr->get_expr_type() == T_FUN_SYS_CAST &&
+               aggr_expr->get_param_count() > 0 &&
+               aggr_expr->has_flag(IS_INNER_ADDED_EXPR)) {
+      // if param 0 is inner added aggr, unwrap cast
+      aggr_exprs_.at(i) = aggr_expr->get_param_expr(0);
+    } else {
+    }
+  }
+  return ret;
+}
+
 int ObLogGroupBy::print_outline_data(PlanText &plan_text)
 {
   int ret = OB_SUCCESS;
@@ -547,32 +598,18 @@ int ObLogGroupBy::print_outline_data(PlanText &plan_text)
         LOG_WARN("failed to print hint", K(ret), K(hint));
       }
     }
-    /*
-      if hash rollup with partition wise, we need hash shuffle after partition wise grouping,
-      =======================================================================                                                                                                                                         |
-      |ID|OPERATOR                           |NAME    |EST.ROWS|EST.TIME(us)|                                                                                                                                         |
-      -----------------------------------------------------------------------                                                                                                                                         |
-      |0 |PX COORDINATOR MERGE SORT          |        |11      |50          |                                                                                                                                         |
-      |1 |└─EXCHANGE OUT DISTR               |:EX10001|11      |40          |                                                                                                                                         |
-      |2 |  └─SORT                           |        |11      |33          |                                                                                                                                         |
-      |3 |    └─HASH GROUP BY                |        |11      |33          |                                                                                                                                         |
-      |4 |      └─EXCHANGE IN DISTR          |        |18      |31          |                                                                                                                                         |
-      |5 |        └─EXCHANGE OUT DISTR (HASH)|:EX10000|18      |26          |                                                                                                                                         |
-      |6 |          └─PX PARTITION ITERATOR  |        |18      |14          |                                                                                                                                         |
-      |7 |            └─HASH GROUP BY        |        |18      |14          |                                                                                                                                         |
-      |8 |              └─EXPANSION          |        |21      |11          |                                                                                                                                         |
-      |9 |                └─TABLE FULL SCAN  |LYQ_TEST|11      |11          |                                                                                                                                         |
-      =======================================================================
-
-      dist method can't set to HASH, otherwise, we can't reproduce partition wise plan out of outline data
-    */
-    if (OB_SUCC(ret) && T_DISTRIBUTE_BASIC != dist_method_) {
+    if (OB_SUCC(ret) && DIST_BASIC_METHOD != get_dist_method()) {
       ObPQHint hint(T_PQ_GBY_HINT);
       hint.set_qb_name(qb_name);
-      if (hash_rollup_info_.valid() && is_partition_wise() && dist_method_ == T_DISTRIBUTE_HASH) {
+      hint.set_parallel(gby_dop_);
+      if (DIST_PULL_TO_LOCAL == get_dist_method()) {
+        hint.set_dist_method(T_DISTRIBUTE_LOCAL);
+      } else if (DIST_HASH_HASH == get_dist_method()) {
+        hint.set_dist_method(T_DISTRIBUTE_HASH);
+      } else if (DIST_HASH_HASH_LOCAL == get_dist_method()) {
+        hint.set_dist_method(T_DISTRIBUTE_HASH_LOCAL);
+      } else if (DIST_PARTITION_WISE == get_dist_method()) {
         hint.set_dist_method(T_DISTRIBUTE_NONE);
-      } else {
-        hint.set_dist_method(dist_method_);
       }
       if (OB_FAIL(hint.print_hint(plan_text))) {
         LOG_WARN("failed to print hint", K(ret), K(hint));
@@ -586,6 +623,18 @@ int ObLogGroupBy::print_used_hint(PlanText &plan_text)
 {
   int ret = OB_SUCCESS;
   const ObHint *hint = NULL;
+  ObItemType dist_method = T_INVALID;
+  if (DIST_BASIC_METHOD == get_dist_method()) {
+    dist_method = T_DISTRIBUTE_BASIC;
+  } else if (DIST_PULL_TO_LOCAL == get_dist_method()) {
+    dist_method = T_DISTRIBUTE_LOCAL;
+  } else if (DIST_HASH_HASH == get_dist_method()) {
+    dist_method = T_DISTRIBUTE_HASH;
+  } else if (DIST_HASH_HASH_LOCAL == get_dist_method()) {
+    dist_method = T_DISTRIBUTE_HASH_LOCAL;
+  } else if (DIST_PARTITION_WISE == get_dist_method()) {
+    dist_method = T_DISTRIBUTE_NONE;
+  }
   if (is_push_down()) {
     /* print outline in top group by */
   } else if (OB_ISNULL(get_plan())) {
@@ -601,7 +650,7 @@ int ObLogGroupBy::print_used_hint(PlanText &plan_text)
              && OB_FAIL(hint->print_hint(plan_text))) {
     LOG_WARN("failed to print used hint for group by", K(ret), K(*hint));
   } else if (NULL != (hint = get_plan()->get_log_plan_hint().get_normal_hint(T_PQ_GBY_HINT))
-             && static_cast<const ObPQHint*>(hint)->is_dist_method_match(dist_method_)
+             && static_cast<const ObPQHint*>(hint)->is_dist_method_match(dist_method)
              && OB_FAIL(hint->print_hint(plan_text))) {
     LOG_WARN("failed to print used hint for group by", K(ret), K(*hint));
   }

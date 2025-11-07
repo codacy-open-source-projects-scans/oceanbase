@@ -9,38 +9,19 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
+#define USING_LOG_PREFIX SERVER
 
-#include "share/interrupt/ob_interrupt_rpc_proxy.h"
 #include "observer/ob_srv_xlator.h"
 
-#include "share/ob_tenant_mgr.h"
-#include "share/schema/ob_schema_service_rpc_proxy.h"
 #include "share/ratelimit/ob_rl_rpc.h"
-#include "rpc/ob_request.h"
-#include "rpc/obmysql/ob_mysql_packet.h"
-#include "share/rpc/ob_batch_processor.h"
-#include "share/rpc/ob_blacklist_req_processor.h"
-#include "share/rpc/ob_blacklist_resp_processor.h"
 #include "share/deadlock/ob_deadlock_detector_rpc.h"
-#include "sql/executor/ob_executor_rpc_processor.h"
-#include "sql/engine/cmd/ob_kill_executor.h"
-#include "sql/engine/cmd/ob_load_data_rpc.h"
 #include "sql/engine/px/ob_px_rpc_processor.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_process.h"
 #include "sql/das/ob_das_id_rpc.h"
-#include "sql/dtl/ob_dtl_rpc_processor.h"
 #include "storage/tablelock/ob_table_lock_rpc_processor.h"
-#include "sql/engine/px/ob_px_bloom_filter.h"
-#include "storage/tx/ob_trans_rpc.h"
-#include "storage/tx/ob_gts_rpc.h"
 #include "storage/tx/ob_gti_rpc.h"
-#include "storage/tx/ob_dup_table_rpc.h"
-#include "storage/tx/ob_ts_response_handler.h"
 #include "storage/tx/wrs/ob_weak_read_service_rpc_define.h"  // weak_read_service
-#include "observer/ob_rpc_processor_simple.h"
-#include "observer/ob_srv_task.h"
 
-#include "observer/table/ob_table_rpc_processor.h"
 #include "observer/table/ob_table_execute_processor.h"
 #include "observer/table/ob_table_batch_execute_processor.h"
 #include "observer/table/ob_table_query_processor.h"
@@ -49,9 +30,12 @@
 #include "observer/table/ob_table_direct_load_processor.h"
 #include "observer/table/ob_table_ls_execute_processor.h"
 #include "observer/table/ob_redis_execute_processor.h"
+#include "observer/table/ob_redis_execute_processor_v2.h"
+#include "observer/table/ob_hbase_execute_processor.h"
+#include "observer/table/ob_table_meta_processor.h"
+#include "observer/table/common/ob_table_query_session_id_rpc.h"
 #include "storage/ob_storage_rpc.h"
 
-#include "logservice/restoreservice/ob_log_restore_rpc_define.h"
 #include "rootserver/freeze/ob_major_freeze_rpc_define.h"        // ObTenantMajorFreezeP
 #include "storage/tx/ob_xa_rpc.h"
 
@@ -101,7 +85,9 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObAddDiskP, gctx_);
   RPC_PROCESSOR(ObDropDiskP, gctx_);
   RPC_PROCESSOR(ObForceSetServerListP, gctx_);
+  RPC_PROCESSOR(ObCheckServerAliveP, gctx_);
 #ifdef OB_BUILD_TDE_SECURITY
+  RPC_PROCESSOR(ObSetMasterKeyP, gctx_);
   RPC_PROCESSOR(ObGetMasterKeyP, gctx_);
   RPC_PROCESSOR(ObRestoreKeyP, gctx_);
   RPC_PROCESSOR(ObSetRootKeyP, gctx_);
@@ -126,6 +112,7 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObTabletLocationReceiveP, gctx_);
   RPC_PROCESSOR(ObForceSetTenantLogDiskP, gctx_);
   RPC_PROCESSOR(ObForceDumpServerUsageP, gctx_);
+  RPC_PROCESSOR(ObAdminForceDropLonelyLobAuxTableP, gctx_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_migrator(ObSrvRpcXlator *xlator) {
@@ -157,6 +144,7 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(ObFetchLSMemberListP);
   RPC_PROCESSOR(ObFetchSSTableMacroInfoP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObStorageFetchLSViewP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObFetchSSTableMacroIdInfoP, gctx_.bandwidth_throttle_);
 
   // restore
   RPC_PROCESSOR(ObNotifyRestoreTabletsP, gctx_.bandwidth_throttle_);
@@ -166,8 +154,8 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
   //transfer
   RPC_PROCESSOR(ObCheckStartTransferTabletsP);
   RPC_PROCESSOR(ObGetLSActiveTransCountP, gctx_.bandwidth_throttle_);
-  RPC_PROCESSOR(ObGetTransferStartScnP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObFetchLSReplayScnP);
+  RPC_PROCESSOR(ObGetTransferStartScnP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObCheckTransferTabletsBackfillP);
   RPC_PROCESSOR(ObStorageGetConfigVersionAndTransferScnP);
   RPC_PROCESSOR(ObStorageSubmitTxLogP, gctx_.bandwidth_throttle_);
@@ -187,7 +175,16 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
   RPC_PROCESSOR(ObFetchMicroBlockP, gctx_.bandwidth_throttle_);
   RPC_PROCESSOR(ObGetMicroBlockCacheInfoP);
   RPC_PROCESSOR(ObGetMigrationCacheJobInfoP);
+  RPC_PROCESSOR(ObNotifySSWriterDoBackfillP);
+  RPC_PROCESSOR(ObCheckTransferOutTabletStatusP);
+  RPC_PROCESSOR(ObHAGetLocalCacheInfoP);
+  RPC_PROCESSOR(ObHAGetCacheJobInfoP);
+  RPC_PROCESSOR(ObGetLocalCacheKeyP);
+  RPC_PROCESSOR(ObFetchLocalCacheBlockP, gctx_.bandwidth_throttle_);
 #endif
+
+  //rebuild tablet
+  RPC_PROCESSOR(ObRebuildTabletSSTableInfoP, gctx_.bandwidth_throttle_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
@@ -223,6 +220,10 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObTenantTTLP, gctx_);
   RPC_PROCESSOR(ObTableLSExecuteP, gctx_);
   RPC_PROCESSOR(ObRedisExecuteP, gctx_);
+  RPC_PROCESSOR(ObRedisExecuteV2P, gctx_);
+  RPC_PROCESSOR(ObHbaseExecuteP, gctx_);
+  RPC_PROCESSOR(ObTableMetaP, gctx_);
+  RPC_PROCESSOR(ObTableSessIDP);
 
   // HA GTS
   RPC_PROCESSOR(ObHaGtsPingRequestP, gctx_);
@@ -298,6 +299,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObServerCancelEvolveTaskP, gctx_);
   RPC_PROCESSOR(ObLoadBaselineP, gctx_);
   RPC_PROCESSOR(ObLoadBaselineV2P, gctx_);
+  RPC_PROCESSOR(ObServerSyncBaselineP, gctx_);
 #endif
 
   //sql optimizer estimate tablet block count
@@ -311,6 +313,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObRpcGetLSReplayedScnP, gctx_);
   RPC_PROCESSOR(ObUpdateTenantInfoCacheP, gctx_);
   RPC_PROCESSOR(ObRefreshServiceNameP, gctx_);
+  RPC_PROCESSOR(ObClearFetchedLogCacheP, gctx_);
 
   RPC_PROCESSOR(ObSyncRewriteRulesP, gctx_);
 
@@ -355,4 +358,10 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObGAISBroadcastAutoIncCacheP);
   // kill query client session
   RPC_PROCESSOR(ObKillQueryClientSessionP, gctx_);
+
+  //sql optimizer estimate skip rate
+  RPC_PROCESSOR(ObEstimateSkipRateP, gctx_);
+
+  // dump data_dict
+  RPC_PROCESSOR(ObRPcTriggerDumpDataDictP, gctx_);
 }

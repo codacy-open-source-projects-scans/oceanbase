@@ -50,6 +50,7 @@ class ObTxStartWorkingLog;
 class ObITxLogAdapter;
 class ObTxCreateArg;
 class ObLSTxCtxIterator;
+class ObTxLogCbPoolMgr;
 }
 
 namespace storage
@@ -102,7 +103,8 @@ public:
   int get_read_store_ctx(const transaction::ObTxReadSnapshot &snapshot,
                          const bool read_latest,
                          const int64_t lock_timeout,
-                         ObStoreCtx &store_ctx) const;
+                         ObStoreCtx &store_ctx,
+                         transaction::ObTxDesc *tx_desc = NULL) const;
   int get_read_store_ctx(const share::SCN &snapshot_version,
                          const int64_t lock_timeout,
                          ObStoreCtx &store_ctx) const;
@@ -211,6 +213,7 @@ public:
   int check_in_leader_serving_state(bool& bool_ret);
   int set_max_replay_commit_version(share::SCN commit_version);
   transaction::ObTxRetainCtxMgr *get_retain_ctx_mgr();
+  transaction::ObTxLogCbPoolMgr *get_log_cb_pool_mgr();
 
   // check tx ls blocked
   int check_tx_blocked(bool &tx_blocked) const;

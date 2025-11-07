@@ -357,6 +357,8 @@ public:
     : ref_action_(share::schema::ACTION_INVALID),
       database_name_(),
       table_name_(),
+      foreign_key_database_name_(),
+      foreign_key_name_(),
       columns_(),
       is_self_ref_(false),
       table_id_(0),
@@ -368,6 +370,8 @@ public:
     : ref_action_(share::schema::ACTION_INVALID),
       database_name_(),
       table_name_(),
+      foreign_key_database_name_(),
+      foreign_key_name_(),
       columns_(alloc),
       is_self_ref_(false),
       table_id_(0),
@@ -379,14 +383,18 @@ public:
     ref_action_ = share::schema::ACTION_INVALID;
     database_name_.reset();
     table_name_.reset();
+    foreign_key_database_name_.reset();
+    foreign_key_name_.reset();
     table_id_ = OB_INVALID_ID;
     columns_.reset();
   }
-  TO_STRING_KV(K_(ref_action), K_(database_name), K_(table_name), K_(columns), K_(is_self_ref), K_(table_id));
+  TO_STRING_KV(K_(ref_action), K_(database_name), K_(table_name), K_(foreign_key_database_name), K_(foreign_key_name), K_(columns), K_(is_self_ref), K_(table_id));
 public:
   share::schema::ObReferenceAction ref_action_;
   common::ObString database_name_;
   common::ObString table_name_;
+  common::ObString foreign_key_database_name_;
+  common::ObString foreign_key_name_;
   common::ObFixedArray<ObForeignKeyColumn, common::ObIAllocator> columns_;
   bool is_self_ref_;
   // the index table id of unique index for parent key, used to build das task to scan index table
@@ -469,9 +477,11 @@ public:
                        K_(full_row),
                        K_(view_check_exprs),
                        K_(is_primary_index),
-                       K_(is_heap_table),
+                       K_(is_table_without_pk),
                        K_(has_instead_of_trigger),
-                       KPC_(trans_info_expr));
+                       KPC_(trans_info_expr),
+                       K_(is_vec_hnsw_index_vid_opt),
+                       K_(is_table_with_clustering_key));
 
   ObDMLOpType dml_type_;
   ExprFixedArray check_cst_exprs_;
@@ -492,9 +502,11 @@ public:
   ObErrLogCtDef error_logging_ctdef_;
   ExprFixedArray view_check_exprs_;
   bool is_primary_index_;
-  bool is_heap_table_;
+  bool is_table_without_pk_;
   bool has_instead_of_trigger_;
   ObExpr *trans_info_expr_;
+  bool is_table_with_clustering_key_;
+  bool is_vec_hnsw_index_vid_opt_;
 protected:
   ObDMLBaseCtDef(common::ObIAllocator &alloc,
                  ObDASDMLBaseCtDef &das_base_ctdef,
@@ -511,9 +523,11 @@ protected:
       error_logging_ctdef_(alloc),
       view_check_exprs_(alloc),
       is_primary_index_(false),
-      is_heap_table_(false),
+      is_table_without_pk_(false),
       has_instead_of_trigger_(false),
-      trans_info_expr_(nullptr)
+      trans_info_expr_(nullptr),
+      is_table_with_clustering_key_(false),
+      is_vec_hnsw_index_vid_opt_(false)
   { }
 };
 
@@ -632,6 +646,7 @@ public:
     : ObDMLBaseCtDef(alloc, dupd_ctdef_, DAS_OP_TABLE_UPDATE),
       dupd_ctdef_(alloc),
       need_check_filter_null_(false),
+      need_check_table_cycle_(false),
       distinct_algo_(T_DISTINCT_NONE),
       assign_columns_(alloc),
       ddel_ctdef_(nullptr),
@@ -647,6 +662,7 @@ public:
   INHERIT_TO_STRING_KV("ObDMLBaseCtDef", ObDMLBaseCtDef,
                        K_(dupd_ctdef),
                        K_(need_check_filter_null),
+                       K_(need_check_table_cycle),
                        K_(distinct_algo),
                        K_(assign_columns),
                        K_(distinct_key),
@@ -660,6 +676,8 @@ public:
                        K_(related_ins_ctdefs));
   ObDASUpdCtDef dupd_ctdef_;
   bool need_check_filter_null_;
+  // need_check_table_cycle_ is true if the fk cascade update may cause a cycle reference.
+  bool need_check_table_cycle_;
   DistinctType distinct_algo_;
   ColContentFixedArray assign_columns_;
   //if update target column involve the partition key,
@@ -689,6 +707,7 @@ public:
       dlock_rtdef_(nullptr),
       primary_rtdef_(nullptr),
       is_row_changed_(false),
+      has_table_cycle_(false),
       found_rows_(0),
       related_upd_rtdefs_(),
       related_del_rtdefs_(),
@@ -721,6 +740,7 @@ public:
                        KPC_(dins_rtdef),
                        KPC_(dlock_rtdef),
                        K_(is_row_changed),
+                       K_(has_table_cycle),
                        K_(found_rows),
                        K_(related_upd_rtdefs),
                        K_(related_del_rtdefs),
@@ -732,6 +752,7 @@ public:
   ObDASLockRtDef *dlock_rtdef_;
   ObUpdRtDef *primary_rtdef_; //reference the data table's rtdef
   bool is_row_changed_;
+  bool has_table_cycle_;
   int64_t found_rows_;
   DASUpdRtDefArray related_upd_rtdefs_;
   DASDelRtDefArray related_del_rtdefs_;
@@ -962,14 +983,31 @@ public:
     : ins_ctdef_(NULL),
       upd_ctdef_(NULL),
       is_upd_rowkey_(false),
+      do_opt_path_(false),
+      do_index_lookup_(false),
+      unique_key_conv_exprs_(alloc),
+      unique_index_rowkey_exprs_(alloc),
+      das_index_scan_ctdef_(NULL),
+      lookup_ctdef_for_batch_(NULL),
       alloc_(alloc)
   { }
   TO_STRING_KV(KPC_(ins_ctdef),
                KPC_(upd_ctdef),
-               K_(is_upd_rowkey))
+               K_(das_index_scan_ctdef),
+               K_(lookup_ctdef_for_batch),
+               K_(is_upd_rowkey),
+               K_(do_opt_path))
   ObInsCtDef *ins_ctdef_;
   ObUpdCtDef *upd_ctdef_;
   bool is_upd_rowkey_;
+
+  /* for opt path */
+  bool do_opt_path_;                         // is do opt path
+  bool do_index_lookup_;                     // is do index lookup
+  ExprFixedArray unique_key_conv_exprs_;     // index unique conv exprs
+  ExprFixedArray unique_index_rowkey_exprs_; // index unique rowkey exprs
+  ObDASScanCtDef *das_index_scan_ctdef_;     // scan the unique index table
+  ObDASScanCtDef *lookup_ctdef_for_batch_;   // lookup data table by batch
   common::ObIAllocator &alloc_;
 };
 
@@ -1101,6 +1139,11 @@ public:
             dml_rtdef_(dml_rtdef),
             dml_event_(dml_event)
   {}
+
+  TO_STRING_KV(KPC_(new_row),
+               KPC_(old_row),
+               KPC_(full_row),
+               K_(dml_event));
   ObChunkDatumStore::StoredRow *new_row_;
   ObChunkDatumStore::StoredRow *old_row_;
   ObChunkDatumStore::StoredRow *full_row_;

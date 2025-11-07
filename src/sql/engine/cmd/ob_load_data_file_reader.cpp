@@ -16,13 +16,12 @@
 #include "share/ob_device_manager.h"
 #include "share/backup/ob_backup_io_adapter.h"
 #include "rpc/obmysql/ob_i_cs_mem_pool.h"
-#include "rpc/obmysql/ob_mysql_packet.h"
 #include "rpc/obmysql/packet/ompk_local_infile.h"
-#include "share/io/ob_io_manager.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "lib/compress/zstd_1_3_8/ob_zstd_wrapper.h"
 #include "lib/compress/ob_compress_util.h"
 #include "share/table/ob_table_load_define.h"
+#include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase
 {
@@ -270,7 +269,7 @@ int ObRandomOSSReader::open(const share::ObBackupStorageInfo &storage_info, cons
     ret = OB_INIT_TWICE;
     LOG_WARN("ObRandomOSSReader init twice", KR(ret), KP(this));
   } else if (OB_FAIL(
-        util.get_and_init_device(device_handle_, &storage_info, filename, ObStorageIdMod(table::OB_STORAGE_ID_DDL, ObStorageUsedMod::STORAGE_USED_DDL)))) {
+        util.get_and_init_device(device_handle_, &storage_info, filename, ObStorageIdMod::get_default_ddl_id_mod()))) {
     LOG_WARN("fail to get device manager", KR(ret), K(filename));
   } else if (OB_FAIL(util.set_access_type(&iod_opts, false, 1))) {
     LOG_WARN("fail to set access type", KR(ret));
@@ -296,7 +295,7 @@ int ObRandomOSSReader::read(char *buf, int64_t count, int64_t &read_size)
   int ret = OB_SUCCESS;
   ObBackupIoAdapter io_adapter;
   ObIOHandle io_handle;
-  CONSUMER_GROUP_FUNC_GUARD(ObFunctionType::PRIO_IMPORT);
+  CONSUMER_GROUP_FUNC_GUARD(share::ObFunctionType::PRIO_IMPORT);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObRandomOSSReader not init", KR(ret), KP(this));
@@ -394,8 +393,12 @@ ObPacketStreamFileReader::~ObPacketStreamFileReader()
       timeout_ts_ = ObTimeUtility::current_time() + wait_timeout;
     }
   }
+  LOG_INFO("load data local file reader exit", K(ret), K(eof_), K(timeout_ts_), K(ObTimeUtility::current_time()));
+  if (!eof_ && OB_NOT_NULL(session_) && OB_NOT_NULL(session_->get_cur_exec_ctx())) {
+    session_->get_cur_exec_ctx()->set_need_disconnect(true);
+    LOG_WARN("we'll close the connection as we can't read all of the file content", K(eof_));
+  }
   arena_allocator_.reset();
-  LOG_INFO("load data local file reader exit");
 }
 
 int ObPacketStreamFileReader::open(const ObString &filename,
@@ -502,7 +505,7 @@ int ObPacketStreamFileReader::receive_packet()
       // sleep can reduce cpu usage while the network is not so good.
       // We need not worry about the speed while the speed of load data core is lower than
       // file receiver's.
-      usleep(100 * 1000); // 100 ms
+      ob_usleep(100 * 1000); // 100 ms
       ret = packet_handle_->read_packet(mem_pool, pkt);
       cached_packet_ = static_cast<obmysql::ObMySQLRawPacket *>(pkt);
     }

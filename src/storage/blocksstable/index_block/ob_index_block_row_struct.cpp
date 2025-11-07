@@ -12,8 +12,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "common/row/ob_row.h"
-#include "storage/blocksstable/ob_block_sstable_struct.h"
 #include "storage/blocksstable/ob_data_store_desc.h"
 #include "ob_index_block_row_struct.h"
 
@@ -26,24 +24,113 @@ namespace blocksstable
 {
 
 ObIndexBlockRowDesc::ObIndexBlockRowDesc()
-  : data_store_desc_(nullptr), aggregated_row_(nullptr), row_key_(), macro_id_(),
-    logic_micro_id_(), shared_data_macro_id_(), data_checksum_(0), block_offset_(0),
-    row_count_(0), row_count_delta_(0), max_merged_trans_version_(0), block_size_(0),
-    macro_block_count_(0), micro_block_count_(0), row_offset_(0),
-    is_deleted_(false), contain_uncommitted_row_(false), is_data_block_(false),
-    is_secondary_meta_(false), is_macro_node_(false), has_string_out_row_(false), has_lob_out_row_(false),
-    is_last_row_last_flag_(false), is_serialized_agg_row_(false), is_clustered_index_(false)
+  : compressor_type_(common::ObCompressorType::INVALID_COMPRESSOR),
+    row_store_type_(common::ObRowStoreType::MAX_ROW_STORE),
+    schema_version_(0),
+    master_key_id_(0),
+    encrypt_id_(0),
+    major_working_cluster_version_(0),
+    encrypt_key_(),
+    end_scn_(),
+    merge_type_(compaction::ObMergeType::INVALID_MERGE_TYPE),
+    aggregated_row_(nullptr),
+    row_key_(),
+    macro_id_(),
+    logic_micro_id_(),
+    shared_data_macro_id_(),
+    data_checksum_(0),
+    block_offset_(0),
+    row_count_(0),
+    row_count_delta_(0),
+    max_merged_trans_version_(0),
+    block_size_(0),
+    macro_block_count_(0),
+    micro_block_count_(0),
+    row_offset_(0),
+    is_deleted_(false),
+    contain_uncommitted_row_(false),
+    is_data_block_(false),
+    is_secondary_meta_(false),
+    is_macro_node_(false),
+    has_string_out_row_(false),
+    has_lob_out_row_(false),
+    is_last_row_last_flag_(false),
+    is_first_row_first_flag_(false),
+    is_serialized_agg_row_(false),
+    is_clustered_index_(false),
+    has_macro_block_bloom_filter_(false)
 {
 }
 
 ObIndexBlockRowDesc::ObIndexBlockRowDesc(const ObDataStoreDesc &data_store_desc)
-  : data_store_desc_(&data_store_desc), aggregated_row_(nullptr), row_key_(), macro_id_(),
-    logic_micro_id_(), shared_data_macro_id_(), data_checksum_(0), block_offset_(0), row_count_(0), row_count_delta_(0), max_merged_trans_version_(0),
-    block_size_(0), macro_block_count_(0), micro_block_count_(0), row_offset_(0),
-    is_deleted_(false), contain_uncommitted_row_(false), is_data_block_(false),
-    is_secondary_meta_(false), is_macro_node_(false), has_string_out_row_(false), has_lob_out_row_(false),
-    is_last_row_last_flag_(false), is_serialized_agg_row_(false), is_clustered_index_(false)
+  : compressor_type_(common::ObCompressorType::INVALID_COMPRESSOR),
+    row_store_type_(common::ObRowStoreType::MAX_ROW_STORE),
+    schema_version_(0),
+    master_key_id_(0),
+    encrypt_id_(0),
+    encrypt_key_(),
+    end_scn_(),
+    merge_type_(compaction::ObMergeType::INVALID_MERGE_TYPE),
+    aggregated_row_(nullptr),
+    row_key_(),
+    macro_id_(),
+    logic_micro_id_(),
+    shared_data_macro_id_(),
+    data_checksum_(0),
+    block_offset_(0),
+    row_count_(0),
+    row_count_delta_(0),
+    max_merged_trans_version_(0),
+    block_size_(0),
+    macro_block_count_(0),
+    micro_block_count_(0),
+    row_offset_(0),
+    is_deleted_(false),
+    contain_uncommitted_row_(false),
+    is_data_block_(false),
+    is_secondary_meta_(false),
+    is_macro_node_(false),
+    has_string_out_row_(false),
+    has_lob_out_row_(false),
+    is_last_row_last_flag_(false),
+    is_first_row_first_flag_(false),
+    is_serialized_agg_row_(false),
+    is_clustered_index_(false),
+    has_macro_block_bloom_filter_(false)
 {
+  compressor_type_ = data_store_desc.get_compressor_type();
+  row_store_type_ = data_store_desc.get_row_store_type();
+  schema_version_ = data_store_desc.get_schema_version();
+  master_key_id_ = data_store_desc.get_master_key_id();
+  encrypt_id_ = data_store_desc.get_encrypt_id();
+  MEMCPY(encrypt_key_, data_store_desc.get_encrypt_key(), sizeof(encrypt_key_));
+  end_scn_ = data_store_desc.get_end_scn();
+  merge_type_ = data_store_desc.get_merge_type();
+  major_working_cluster_version_ = data_store_desc.get_major_working_cluster_version();
+}
+
+int ObIndexBlockRowDesc::set_end_scn_by_snapshot_version(const int64_t snapshot_version)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(end_scn_.convert_for_tx(snapshot_version))) {
+    LOG_WARN("fail to convert for tx", K(ret), K(snapshot_version));
+  }
+  return ret;
+}
+
+bool ObIndexBlockRowDesc::is_valid() const
+{
+  bool ret = true;
+  if (OB_UNLIKELY((is_macro_node_ && macro_block_count_ != 1)        /*data macro row*/
+                  || (is_data_block_ && micro_block_count_ != 1)     /*any leaf row*/
+                  || (is_secondary_meta_ && macro_block_count_ != 0) /*sec meta leaf row*/
+                  || (compressor_type_ == common::ObCompressorType::INVALID_COMPRESSOR)
+                  || (row_store_type_ == common::ObRowStoreType::MAX_ROW_STORE)
+                  || (!end_scn_.is_valid())
+                  || (merge_type_ == compaction::ObMergeType::INVALID_MERGE_TYPE))) {
+    ret = false;
+  }
+  return ret;
 }
 
 int ObIndexBlockRowDesc::init(const ObDataStoreDesc &data_store_desc,
@@ -54,20 +141,20 @@ int ObIndexBlockRowDesc::init(const ObDataStoreDesc &data_store_desc,
   const ObIndexBlockRowHeader *index_row_header = nullptr;
   const ObIndexBlockRowMinorMetaInfo *index_row_meta = nullptr;
   const int64_t rowkey_column_count = data_store_desc.get_rowkey_column_count();
-  data_store_desc_ = &data_store_desc;
   if (OB_FAIL(row_key_.assign(index_row.storage_datums_, rowkey_column_count))) {
     STORAGE_LOG(WARN, "fail to assign src rowkey", K(ret), K(rowkey_column_count), K(index_row));
   } else if (OB_FAIL(idx_row_parser.get_header(index_row_header))){
     STORAGE_LOG(WARN, "fail to get index row header", K(ret), K(idx_row_parser));
   } else {
-    ObDataStoreDesc *non_const_data_store_desc = const_cast<ObDataStoreDesc *>(data_store_desc_);
-    ObStaticDataStoreDesc *static_desc = non_const_data_store_desc->static_desc_;
-    non_const_data_store_desc->row_store_type_ = index_row_header->get_row_store_type();
-    static_desc->compressor_type_ = index_row_header->get_compressor_type();
-    static_desc->master_key_id_ = index_row_header->get_master_key_id();
-    static_desc->encrypt_id_ = index_row_header->get_encrypt_id();
-    MEMCPY(static_desc->encrypt_key_, index_row_header->get_encrypt_key(), sizeof(static_desc->encrypt_key_));
-    static_desc->schema_version_ = index_row_header->get_schema_version();
+    set_merge_type(data_store_desc.get_merge_type());
+    set_end_scn(data_store_desc.get_end_scn());
+    set_major_working_cluster_version(data_store_desc.get_major_working_cluster_version());
+    set_row_store_type(index_row_header->get_row_store_type());
+    set_compressor_type(index_row_header->get_compressor_type());
+    set_master_key_id(index_row_header->get_encrypt_id());
+    set_encrypt_id(index_row_header->get_encrypt_id());
+    set_encrypt_key(index_row_header->get_encrypt_key());
+    set_schema_version(index_row_header->get_schema_version());
 
     is_secondary_meta_ = false;
     is_macro_node_ = true;
@@ -83,23 +170,22 @@ int ObIndexBlockRowDesc::init(const ObDataStoreDesc &data_store_desc,
     has_lob_out_row_ = !index_row_header->all_lob_in_row_;
     row_offset_ = idx_row_parser.get_row_offset();
     is_serialized_agg_row_ = false;
+    is_last_row_last_flag_ = index_row_header->is_last_row_last_flag_;
+    is_first_row_first_flag_ = index_row_header->is_first_row_first_flag_;
 
     const char *agg_row_buf = nullptr;
     int64_t agg_buf_size = 0;
-    if (!data_store_desc.is_major_or_meta_merge_type()) {
-      if (OB_FAIL(idx_row_parser.get_minor_meta(index_row_meta))) {
-        STORAGE_LOG(WARN, "fail to get minor meta", K(ret), K(idx_row_parser));
-      } else {
+    if (OB_FAIL(idx_row_parser.parse_minor_meta_and_agg_row(index_row_meta, agg_row_buf, agg_buf_size))) {
+      STORAGE_LOG(WARN, "fail to parse minor meta and agg row", K(ret), K(idx_row_parser));
+    } else {
+      if (nullptr != index_row_meta) {
         max_merged_trans_version_ = index_row_meta->max_merged_trans_version_;
         row_count_delta_ = index_row_meta->row_count_delta_;
       }
-    } else if (!index_row_header->is_major_node() || !index_row_header->is_pre_aggregated()) {
-      // Do not have aggregate data
-    } else if (OB_FAIL(idx_row_parser.get_agg_row(agg_row_buf, agg_buf_size))) {
-      STORAGE_LOG(WARN, "Fail to get aggregate", K(ret));
-    } else {
-      serialized_agg_row_buf_ = agg_row_buf;
-      is_serialized_agg_row_ = true;
+      if (nullptr != agg_row_buf) {
+        serialized_agg_row_buf_ = agg_row_buf;
+        is_serialized_agg_row_ = true;
+      }
     }
   }
   return ret;
@@ -116,21 +202,21 @@ ObIndexBlockRowHeader::ObIndexBlockRowHeader()
     macro_block_count_(0), micro_block_count_(0),
     macro_id_fourth_id_(0), logic_micro_id_(), data_checksum_(0)
 {
-  version_ = INDEX_BLOCK_HEADER_V2;
+  version_ = INDEX_BLOCK_HEADER_V3;
   set_has_logic_micro_id();
 }
 
 void ObIndexBlockRowHeader::reset()
 {
   MEMSET(this, 0, sizeof(*this));
-  version_ = INDEX_BLOCK_HEADER_V2;
+  version_ = INDEX_BLOCK_HEADER_V3;
   set_has_logic_micro_id();
 }
 
 int ObIndexBlockRowHeader::set_macro_id(const MacroBlockId &macro_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(version_ != INDEX_BLOCK_HEADER_V2)) {
+  if (OB_UNLIKELY(version_ != INDEX_BLOCK_HEADER_V2 && version_ != INDEX_BLOCK_HEADER_V3)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("unexpected index row header version", K(ret), KPC(this), K(macro_id));
   } else {
@@ -244,7 +330,10 @@ int ObIndexBlockRowBuilder::build_row(const ObIndexBlockRowDesc &desc, const ObD
   } else if (OB_FAIL(set_rowkey(desc))) {
     LOG_WARN("Fail to set rowkey", K(ret));
   } else if (nullptr != desc.aggregated_row_ && !desc.is_serialized_agg_row_
-      && OB_FAIL(agg_writer.init(data_desc_->get_agg_meta_array(), *desc.aggregated_row_, index_data_allocator_))) {
+      && OB_FAIL(agg_writer.init(data_desc_->get_agg_meta_array(),
+                                 *desc.aggregated_row_,
+                                 data_desc_->get_major_working_cluster_version(),
+                                 index_data_allocator_))) {
     LOG_WARN("Fail to init aggregate row writer", K(ret), K(desc), KPC(row));
   } else if (OB_FAIL(calc_data_size(desc, agg_writer, data_size))) {
     LOG_WARN("Fail to calculate row data size", K(ret));
@@ -308,12 +397,18 @@ int ObIndexBlockRowBuilder::calc_data_size(
     LOG_WARN("Invalid index block row description", K(ret), K(desc));
   } else if (desc.is_secondary_meta_) {
     size = sizeof(ObIndexBlockRowHeader);
-    if (desc.get_data_store_desc()->is_major_or_meta_merge_type()) {
+    if (desc.is_major_or_meta_merge_type()) {
       size += sizeof(int64_t); // add row offset for major sstable
     }
-  } else if (desc.get_data_store_desc()->is_major_or_meta_merge_type()) {
-    size = sizeof(ObIndexBlockRowHeader);
-    size += sizeof(int64_t); // add row offset for major sstable
+  } else {
+    if (desc.get_major_working_cluster_version() >= DATA_VERSION_4_4_1_0 || !desc.is_major_or_meta_merge_type()) {
+      size = sizeof(ObIndexBlockRowHeader) + sizeof(ObIndexBlockRowMinorMetaInfo);
+    } else {
+      size = sizeof(ObIndexBlockRowHeader);
+    }
+    if (desc.is_major_or_meta_merge_type()) {
+      size += sizeof(int64_t); // add row offset for major sstable
+    }
     if (nullptr != desc.aggregated_row_) {
       if (desc.is_serialized_agg_row_) {
         const ObAggRowHeader *agg_header = reinterpret_cast<const ObAggRowHeader *>(desc.serialized_agg_row_buf_);
@@ -327,8 +422,6 @@ int ObIndexBlockRowBuilder::calc_data_size(
         size += agg_writer.get_serialize_data_size();
       }
     }
-  } else {
-    size = sizeof(ObIndexBlockRowHeader) + sizeof(ObIndexBlockRowMinorMetaInfo);
   }
   return ret;
 }
@@ -341,15 +434,17 @@ int ObIndexBlockRowBuilder::append_header_and_meta(const ObIndexBlockRowDesc &de
     LOG_WARN("write pos for buffer should be zero when write header", K(ret), K_(write_pos));
   } else {
     header_ = reinterpret_cast<ObIndexBlockRowHeader *>(data_buf_);
-    header_->version_ = ObIndexBlockRowHeader::INDEX_BLOCK_HEADER_V2;
-    header_->row_store_type_ = static_cast<uint8_t>(desc.get_data_store_desc()->get_row_store_type());
-    header_->compressor_type_ = static_cast<uint8_t>(desc.get_data_store_desc()->get_compressor_type());
+    header_->version_ =
+      desc.get_major_working_cluster_version() >= DATA_VERSION_4_4_1_0 ? ObIndexBlockRowHeader::INDEX_BLOCK_HEADER_V3 : ObIndexBlockRowHeader::INDEX_BLOCK_HEADER_V2;
+    header_->row_store_type_ = static_cast<uint8_t>(desc.get_row_store_type());
+    header_->compressor_type_ = static_cast<uint8_t>(desc.get_compressor_type());
     // This micro block is a index tree micro block or a meta tree micro block
     header_->is_data_index_ = !desc.is_secondary_meta_;
     header_->is_data_block_ = desc.is_data_block_;
     header_->is_leaf_block_ = desc.is_macro_node_;
     header_->is_macro_node_ = desc.is_macro_node_;
-    header_->is_major_node_ = desc.get_data_store_desc()->is_major_or_meta_merge_type();
+    header_->has_macro_block_bloom_filter_ = desc.has_macro_block_bloom_filter_;
+    header_->is_major_node_ = desc.is_major_or_meta_merge_type();
     header_->has_string_out_row_ = desc.has_string_out_row_;
     header_->all_lob_in_row_ = !desc.has_lob_out_row_;
     header_->is_pre_aggregated_ = nullptr != desc.aggregated_row_;
@@ -363,11 +458,13 @@ int ObIndexBlockRowBuilder::append_header_and_meta(const ObIndexBlockRowDesc &de
     header_->block_size_ = desc.block_size_;
     header_->macro_block_count_ = desc.macro_block_count_;
     header_->micro_block_count_ = desc.micro_block_count_;
-    header_->master_key_id_ = desc.get_data_store_desc()->get_master_key_id();
-    header_->encrypt_id_ = desc.get_data_store_desc()->get_encrypt_id();
-    MEMCPY(header_->encrypt_key_, desc.get_data_store_desc()->get_encrypt_key(), sizeof(header_->encrypt_key_));
-    header_->schema_version_ = desc.get_data_store_desc()->get_schema_version();
+    header_->master_key_id_ = desc.get_master_key_id();
+    header_->encrypt_id_ = desc.get_encrypt_id();
+    MEMCPY(header_->encrypt_key_, desc.get_encrypt_key(), sizeof(header_->encrypt_key_));
+    header_->schema_version_ = desc.get_schema_version();
     header_->row_count_ = desc.row_count_;
+    header_->is_last_row_last_flag_ = desc.is_last_row_last_flag_;
+    header_->is_first_row_first_flag_ = desc.is_first_row_first_flag_;
     write_pos_ += sizeof(ObIndexBlockRowHeader);
 
     // Set macro id to special value (DEFAULT_IDX_ROW_MACRO_ID) for index micro
@@ -378,24 +475,32 @@ int ObIndexBlockRowBuilder::append_header_and_meta(const ObIndexBlockRowDesc &de
         LOG_WARN("fail to set macro id to DEFAULT", K(ret), K(desc), K(buf_size));
       }
     } else {
-      if (OB_FAIL(header_->set_macro_id(desc.macro_id_))) {
+      if (!desc.macro_id_.is_valid()) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("macro id should be valid", K(ret), K(desc.macro_id_), K(desc.is_secondary_meta_),
+                                            K(desc.is_clustered_index_), K(lbt()));
+      } else if (OB_FAIL(header_->set_macro_id(desc.macro_id_))) {
         LOG_WARN("fail to set macro id", K(ret), K(desc), K(buf_size));
       }
     }
 
     if (OB_FAIL(ret)) {
-    } else if (header_->is_data_index() && !header_->is_major_node()) {
-      ObIndexBlockRowMinorMetaInfo *minor_meta
-          = reinterpret_cast<ObIndexBlockRowMinorMetaInfo *>(data_buf_ + write_pos_);
-      minor_meta->snapshot_version_ = desc.get_data_store_desc()->get_end_scn().get_val_for_tx();
-      header_->contain_uncommitted_row_ = desc.contain_uncommitted_row_;
-      minor_meta->max_merged_trans_version_ = desc.max_merged_trans_version_;
-      minor_meta->row_count_delta_ = desc.row_count_delta_;
-      write_pos_ += sizeof(ObIndexBlockRowMinorMetaInfo);
-    } else if (header_->is_major_node()) {
-      // we add row_offset for index rows of all major sstables(including secondary meta tree)
-      if (OB_FAIL(serialization::encode_i64(data_buf_, buf_size, write_pos_, desc.row_offset_))) {
-        LOG_WARN("fail to encode row offset", K(ret), K(buf_size), K_(write_pos));
+    } else {
+      if (header_->is_data_index() &&
+          (ObIndexBlockRowHeader::INDEX_BLOCK_HEADER_V3 == header_->version_ || !header_->is_major_node())) {
+        ObIndexBlockRowMinorMetaInfo *minor_meta
+            = reinterpret_cast<ObIndexBlockRowMinorMetaInfo *>(data_buf_ + write_pos_);
+        minor_meta->snapshot_version_ = desc.get_end_scn().get_val_for_tx();
+        header_->contain_uncommitted_row_ = desc.contain_uncommitted_row_;
+        minor_meta->max_merged_trans_version_ = desc.max_merged_trans_version_;
+        minor_meta->row_count_delta_ = desc.row_count_delta_;
+        write_pos_ += sizeof(ObIndexBlockRowMinorMetaInfo);
+      }
+      if (header_->is_major_node()) {
+        // we add row_offset for index rows of all major sstables(including secondary meta tree)
+        if (OB_FAIL(serialization::encode_i64(data_buf_, buf_size, write_pos_, desc.row_offset_))) {
+          LOG_WARN("fail to encode row offset", K(ret), K(buf_size), K_(write_pos));
+        }
       }
     }
 
@@ -473,6 +578,7 @@ int ObIndexBlockRowParser::init(const char *data_buf, const int64_t data_len)
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Unexpected null data buffer for index block row data", K(ret));
   } else {
+    int64_t pos = 0;
     header_ = reinterpret_cast<const ObIndexBlockRowHeader *>(data_buf);
     const int64_t header_size = header_->get_serialize_size();
     if (OB_UNLIKELY(!header_->is_valid())) {
@@ -484,15 +590,20 @@ int ObIndexBlockRowParser::init(const char *data_buf, const int64_t data_len)
       LOG_WARN("data_len less than header size", K(ret), KP(data_buf), K(data_len), K(header_size));
     } else if (!header_->is_data_index()) {
       // Init finished
-    } else if (!header_->is_major_node()) {
-      const int64_t minor_meta_offset = header_size;
-      minor_meta_info_ = reinterpret_cast<const ObIndexBlockRowMinorMetaInfo *>(
-          data_buf + minor_meta_offset);
     } else {
-      // Major node
       int64_t pos = header_size;
-      if (data_len > pos && OB_FAIL(serialization::decode_i64(data_buf, data_len, pos, &row_offset_))) {
-        LOG_WARN("Fail to decode row offset column", K(ret), K(data_len), K(pos));
+      if (header_->is_minor_meta_info_valid()) {
+        minor_meta_info_ = reinterpret_cast<const ObIndexBlockRowMinorMetaInfo *>(
+            data_buf + pos);
+        pos += sizeof(ObIndexBlockRowMinorMetaInfo);
+      }
+      if (header_->is_major_node()) {
+        // Major node
+        if (data_len > pos && OB_FAIL(serialization::decode_i64(data_buf, data_len, pos, &row_offset_))) {
+          LOG_WARN("Fail to decode row offset column", K(ret), K(data_len), K(pos));
+        }
+      }
+      if (OB_FAIL(ret)) {
       } else if (header_->is_pre_aggregated()) {
         const ObAggRowHeader *agg_row_header = reinterpret_cast<const ObAggRowHeader *>(data_buf + pos);
         if (OB_UNLIKELY(!agg_row_header->is_valid())) {
@@ -528,9 +639,9 @@ int ObIndexBlockRowParser::get_minor_meta(const ObIndexBlockRowMinorMetaInfo *&m
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("Not inited", K(ret));
-  } else if (OB_UNLIKELY(!header_->is_data_index() || header_->is_major_node())) {
+  } else if (OB_UNLIKELY(!header_->is_minor_meta_info_valid())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("This is not a row for minor sstable data", K(ret), KP_(header));
+    LOG_WARN("This is not a row for minor sstable data", K(ret), KPC(header_));
   } else {
     meta = minor_meta_info_;
   }
@@ -543,12 +654,34 @@ int ObIndexBlockRowParser::get_agg_row(const char *&row_buf, int64_t &buf_size) 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("Not inited", K(ret));
-  } else if (OB_UNLIKELY(!header_->is_major_node() || !header_->is_pre_aggregated())) {
+  } else if (OB_UNLIKELY(!header_->is_pre_aggregated())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Not a index row with preaggregated data", K(ret), KPC(header_));
   } else {
     row_buf = pre_agg_row_buf_;
     buf_size = reinterpret_cast<const ObAggRowHeader *>(row_buf)->length_;
+  }
+  return ret;
+}
+
+int ObIndexBlockRowParser::parse_minor_meta_and_agg_row(
+    const ObIndexBlockRowMinorMetaInfo *&meta,
+    const char *&agg_row_buf,
+    int64_t &agg_buf_size) const
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("Not inited", K(ret));
+  } else if (header_->is_minor_meta_info_valid()) {
+    meta = minor_meta_info_;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (!header_->is_pre_aggregated()) {
+    // Do not have aggregate data
+  } else {
+    agg_row_buf = pre_agg_row_buf_;
+    agg_buf_size = reinterpret_cast<const ObAggRowHeader *>(agg_row_buf)->length_;
   }
   return ret;
 }
@@ -582,19 +715,19 @@ int ObIndexBlockRowParser::is_macro_node(bool &is_macro_node) const
 int64_t ObIndexBlockRowParser::get_snapshot_version() const
 {
   OB_ASSERT(is_inited_);
-  return header_->is_major_node() ? 0 : minor_meta_info_->snapshot_version_;
+  return nullptr == minor_meta_info_ ? 0 : minor_meta_info_->snapshot_version_;
 }
 
 int64_t ObIndexBlockRowParser::get_max_merged_trans_version() const
 {
   OB_ASSERT(is_inited_);
-  return header_->is_major_node() ? 0 : minor_meta_info_->max_merged_trans_version_;
+  return nullptr == minor_meta_info_ ? 0 : minor_meta_info_->max_merged_trans_version_;
 }
 
 int64_t ObIndexBlockRowParser::get_row_count_delta() const
 {
   OB_ASSERT(is_inited_);
-  return header_->is_major_node() ? 0 : minor_meta_info_->row_count_delta_;
+  return nullptr == minor_meta_info_ ? 0 : minor_meta_info_->row_count_delta_;
 }
 
 }//end namespace blocksstable

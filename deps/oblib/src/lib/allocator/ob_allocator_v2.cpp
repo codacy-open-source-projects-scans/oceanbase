@@ -11,9 +11,8 @@
  */
 
 #include "lib/allocator/ob_allocator_v2.h"
-#include "lib/alloc/alloc_failed_reason.h"
-#include "lib/alloc/memory_sanity.h"
 #include "lib/allocator/ob_mem_leak_checker.h"
+#include "lib/resource/ob_affinity_ctrl.h"
 
 using namespace oceanbase::lib;
 namespace oceanbase
@@ -35,35 +34,18 @@ void *ObAllocator::alloc(const int64_t size, const ObMemAttr &attr)
       inner_attr.label_ = attr.label_;
     }
     auto ta = lib::ObMallocAllocator::get_instance()->get_tenant_ctx_allocator(inner_attr.tenant_id_,
-                                                                                inner_attr.ctx_id_);
-    ObjectSet *os = NULL;
+                                                                                inner_attr.ctx_id_,
+                                                                                inner_attr.numa_id_);
     if (OB_LIKELY(NULL != ta)) {
-      os = &os_;
+      ptr = ObTenantCtxAllocator::common_realloc(NULL, size, inner_attr, *(ta.ref_allocator()), os_);
     } else if (FORCE_MALLOC_FOR_ABSENT_TENANT()) {
       inner_attr.tenant_id_ = OB_SERVER_TENANT_ID;
       ta = lib::ObMallocAllocator::get_instance()->get_tenant_ctx_allocator(inner_attr.tenant_id_,
-                                                                            inner_attr.ctx_id_);
-      os = &nos_;
+                                                                            inner_attr.ctx_id_,
+                                                                            inner_attr.numa_id_);
+      ptr = ObTenantCtxAllocator::common_realloc(NULL, size, inner_attr, *(ta.ref_allocator()), nos_);
     }
-    if (NULL != ta) {
-      class Wrapper : public lib::IObjectMgr {
-      public:
-        Wrapper(ObjectSet &os)
-          : os_(os)
-        {}
-        AObject *realloc_object(AObject *obj,  const uint64_t size, const ObMemAttr &attr)
-        {
-          return os_.realloc_object(obj, size, attr);
-        }
-        void free_object(AObject *obj)
-        {
-          os_.free_object(obj);
-        }
-      private:
-        ObjectSet& os_;
-      } os_wrapper(*os);
-      ptr = ObTenantCtxAllocator::common_realloc(NULL, size, inner_attr, *(ta.ref_allocator()), os_wrapper);
-    }
+
   }
   return ptr;
 }
@@ -122,7 +104,7 @@ void ObParallelAllocator::free(void *ptr)
     lib::ABlock *block = obj->block();
     abort_unless(block);
     abort_unless(block->is_valid());
-    ObjectSet *os = block->obj_set_;
+    ObjectSet *os = (ObjectSet*)block->obj_set_;
     // The locking process is driven by obj_set
     os->free_object(obj);
   }

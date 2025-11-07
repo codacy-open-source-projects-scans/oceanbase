@@ -141,7 +141,7 @@ public:
       const share::schema::ObTenantSchema &tenant_schema,
       const share::ObLSArray &ls_array);
   // For incremental data update
-  int incremental_data_update(const ObDictTenantMeta &new_tenant_meta);
+  int incremental_data_update(const ObDictTenantMeta &new_tenant_meta, const bool update_tenant_name = true);
   int incremental_data_update(const share::ObLSAttr &ls_attr);
 
 public:
@@ -155,6 +155,11 @@ public:
   OB_INLINE uint64_t get_tenant_id() const { return tenant_id_; }
   OB_INLINE void set_tenant_id(const uint64_t tenant_id) { tenant_id_ = tenant_id; }
   OB_INLINE const char *get_tenant_name() const { return extract_str(tenant_name_); }
+  // set_tenant_name will overwrite tenant_name already in ObDictTenantMeta
+  // currently only used for obcdc while sync data from standby tenant
+  // (should use tenant_name of standby_tenant,
+  // however tenant_name in data_dict of standby tenant is tenant_name of its primary tenant)
+  int set_tenant_name(const char *tenant_name, bool &is_tenant_name_not_change);
   OB_INLINE int64_t get_schema_version() const { return schema_version_; }
   OB_INLINE common::ObCompatibilityMode get_compatibility_mode() const { return compatibility_mode_; }
   OB_INLINE share::schema::ObTenantStatus get_status() const { return tenant_status_; }
@@ -323,13 +328,16 @@ public:
   }
 
   OB_INLINE bool is_collection() const { return meta_type_.is_collection_sql_type(); }
+  OB_INLINE bool is_hidden_clustering_key_column() const { return ::oceanbase::share::schema::is_heap_table_clustering_key_column(column_flags_) && is_hidden(); }
+  OB_INLINE bool is_heap_table_clustering_key_column() const { return ::oceanbase::share::schema::is_heap_table_clustering_key_column(column_flags_); }
 
   NEED_SERIALIZE_AND_DESERIALIZE_DICT;
   TO_STRING_KV(
       K_(column_id),
       K_(column_name),
       K_(colulmn_properties),
-      K_(column_flags));
+      K_(column_flags),
+      K_(local_session_vars));
 
 private:
   int deep_copy_default_val_(const ObObj &src_default_val, ObObj &dest_default_val);
@@ -426,12 +434,20 @@ public:
         || share::schema::ObTableType::TMP_TABLE_ORA_TRX == table_type_
         || share::schema::ObTableType::TMP_TABLE_ORA_SESS == table_type_;
   }
+  // same meaning as the functions with the same names in TableSchema
+  // todo@lanyi 可以在schema模块内抽出一些类似share::schema::is_index_table的方法，简化这里的逻辑
+  OB_INLINE bool is_table_with_pk() const
+  { return share::schema::TOM_TABLE_WITH_PK == (enum share::schema::ObTablePrimaryKeyExistsMode)table_mode_.pk_exists_; }
+  OB_INLINE bool is_table_with_hidden_pk_column() const
+  { return (share::schema::TOM_HEAP_ORGANIZED == (enum share::schema::ObTableOrganizationMode)table_mode_.table_organization_mode_ ||
+           (share::schema::TOM_INDEX_ORGANIZED == (enum share::schema::ObTableOrganizationMode)table_mode_.table_organization_mode_ &&
+            share::schema::TOM_TABLE_WITHOUT_PK == (enum share::schema::ObTablePrimaryKeyExistsMode)table_mode_.pk_exists_)); }
+  OB_INLINE bool is_table_without_pk() const
+  { return share::schema::TOM_TABLE_WITHOUT_PK == (enum share::schema::ObTablePrimaryKeyExistsMode)table_mode_.pk_exists_; }
   OB_INLINE bool is_aux_lob_meta_table() const { return share::schema::ObTableType::AUX_LOB_META == table_type_; }
   OB_INLINE bool is_aux_lob_piece_table() const { return share::schema::ObTableType::AUX_LOB_PIECE == table_type_; }
   OB_INLINE bool is_aux_lob_table() const { return is_aux_lob_meta_table() || is_aux_lob_piece_table(); }
   OB_INLINE bool is_aux_vp_table() const { return share::schema::ObTableType::AUX_VERTIAL_PARTITION_TABLE == table_type_; }
-  OB_INLINE bool is_heap_table() const
-  { return share::schema::TOM_HEAP_ORGANIZED == (enum share::schema::ObTableOrganizationMode)table_mode_.organization_mode_; }
   OB_INLINE bool is_vir_table() const { return share::schema::ObTableType::VIRTUAL_TABLE == table_type_; }
   OB_INLINE bool is_view_table() const
   {
@@ -452,7 +468,8 @@ public:
   {
     return share::schema::INDEX_TYPE_UNIQUE_LOCAL == index_type_
         || share::schema::INDEX_TYPE_UNIQUE_GLOBAL == index_type_
-        || share::schema::INDEX_TYPE_UNIQUE_GLOBAL_LOCAL_STORAGE == index_type_;
+        || share::schema::INDEX_TYPE_UNIQUE_GLOBAL_LOCAL_STORAGE == index_type_
+        || share::schema::INDEX_TYPE_HEAP_ORGANIZED_TABLE_PRIMARY == index_type_;
   }
   OB_INLINE bool is_global_normal_index_table() const { return share::schema::INDEX_TYPE_NORMAL_GLOBAL == index_type_; }
   OB_INLINE bool is_global_unique_index_table() const { return share::schema::INDEX_TYPE_UNIQUE_GLOBAL == index_type_; }

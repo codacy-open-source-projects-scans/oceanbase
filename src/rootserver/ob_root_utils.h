@@ -440,7 +440,8 @@ public:
       bool &non_paxos_locality_modified,
       int64_t &pre_paxos_num,
       int64_t &cur_paxos_num,
-      const share::ObArbitrationServiceStatus &arb_service_status);
+      const share::ObArbitrationServiceStatus &arb_service_status,
+      const uint64_t tenant_id);
   static int calc_paxos_replica_num(
       const common::ObIArray<share::ObZoneReplicaAttrSet> &zone_locality,
       int64_t &paxos_num);
@@ -474,7 +475,6 @@ private:
       return cmp;
     }
   };
-
   static int get_alter_paxos_replica_number_replica_task(
       const common::ObIArray<share::ObZoneReplicaAttrSet> &pre_zone_locality,
       const common::ObIArray<share::ObZoneReplicaAttrSet> &cur_zone_locality,
@@ -549,6 +549,14 @@ private:
       int64_t pre_paxos_num,
       int64_t cur_paxos_num,
       const share::ObArbitrationServiceStatus &arb_service_status);
+  static int check_zone_same_region(
+      const common::ObZone &z1,
+      const common::ObZone &z2,
+      bool &same_region);
+  static int check_replace_locality_valid(
+      const ObIArray<share::ObZoneReplicaNumSet> &pre_zone_locality,
+      const ObIArray<share::ObZoneReplicaNumSet> &cur_zone_locality,
+      bool &single_replace_valid);
   static int add_multi_zone_locality_task(
       common::ObIArray<AlterPaxosLocalityTask> &alter_paxos_tasks,
       const share::ObZoneReplicaAttrSet &multi_zone_locality,
@@ -573,7 +581,8 @@ class ObRootUtils
 public:
   ObRootUtils() {}
   virtual ~ObRootUtils() {}
-
+  static int create_sslog_tablet(const uint64_t tenant_id);
+  static bool is_dr_replace_deployment_mode_match();
   static int get_rs_default_timeout_ctx(ObTimeoutCtx &ctx);
   static int get_invalid_server_list(
     const ObIArray<share::ObServerInfoInTable> &servers_info,

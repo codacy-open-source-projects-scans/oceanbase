@@ -64,6 +64,10 @@ enum ObTableLockTaskType
   REPLACE_LOCK_OBJECTS = 22,
   REPLACE_LOCK_ALONE_TABLET = 23,
   REPLACE_ALL_LOCKS = 24,
+  ADD_LOCK_INTO_QUEUE_WITHOUT_CHECK = 25,
+  LOCK_TABLE_SCHEMA = 26,
+  UNLOCK_TABLE_SCHEMA = 27,
+  REPLACE_LOCK_TABLE_SCHEMA = 28,
   MAX_TASK_TYPE,
 };
 
@@ -130,6 +134,8 @@ public:
                K_(is_try_lock),
                K_(expired_time),
                K_(schema_version),
+               K_(lock_priority),
+               K_(is_two_phase_lock),
                K_(is_for_replace));
   ObLockID lock_id_;
   ObTableLockMode lock_mode_;
@@ -183,16 +189,20 @@ public:
     UNLOCK_PARTITION_REQ =    10,
     UNLOCK_TABLET_REQ =       11,
     UNLOCK_ALONE_TABLET_REQ = 12,
+    LOCK_TABLE_SCHEMA_REQ =   13,
+    UNLOCK_TABLE_SCHEMA_REQ = 14,
   };
+
 public:
   ObLockRequest() :
-      owner_id_(ObTableLockOwnerID::default_owner()),
-      lock_mode_(NO_LOCK),
-      op_type_(UNKNOWN_TYPE),
-      timeout_us_(0),
-      is_from_sql_(false),
-      lock_priority_(ObTableLockPriority::NORMAL) // default priority should be normal
-  { type_ = ObLockMsgType::UNKNOWN_MSG_TYPE; }
+    type_(ObLockMsgType::UNKNOWN_MSG_TYPE),
+    owner_id_(ObTableLockOwnerID::default_owner()),
+    lock_mode_(NO_LOCK),
+    op_type_(UNKNOWN_TYPE),
+    timeout_us_(0),
+    is_from_sql_(false),
+    lock_priority_(ObTableLockPriority::NORMAL) // default priority should be normal
+  {}
   virtual ~ObLockRequest() { reset(); }
   virtual void reset();
   virtual bool is_valid() const;
@@ -211,7 +221,8 @@ public:
     return !is_unlock_request();
   }
   void set_to_unlock_type();
-  VIRTUAL_TO_STRING_KV(K_(type), K_(owner_id), K_(lock_mode), K_(op_type), K_(timeout_us));
+  VIRTUAL_TO_STRING_KV(K_(type), K_(owner_id), K_(lock_mode), K_(op_type), K_(timeout_us),
+                       K_(is_from_sql), K_(lock_priority));
 public:
   ObLockMsgType type_;
   ObTableLockOwnerID owner_id_;
@@ -256,8 +267,8 @@ struct ObLockObjsRequest : public ObLockRequest
 {
   OB_UNIS_VERSION_V(1);
 public:
-  ObLockObjsRequest() :
-      ObLockRequest(),
+  ObLockObjsRequest()
+    : ObLockRequest(),
       objs_(),
       detect_func_no_(INVALID_DETECT_TYPE),
       detect_param_()
@@ -267,7 +278,8 @@ public:
   virtual bool is_valid() const;
   virtual ObTableLockTaskType get_task_type() const { return LOCK_OBJECT; }
   int assign(const ObLockObjRequest &arg);
-  INHERIT_TO_STRING_KV("ObLockRequest", ObLockRequest, K_(objs), K_(detect_func_no), K_(detect_param));
+  INHERIT_TO_STRING_KV("ObLockRequest", ObLockRequest,
+                       K_(objs), K_(detect_func_no), K_(detect_param));
 public:
   // which objects should we lock
   common::ObSEArray<ObLockID, 2> objs_;
@@ -298,7 +310,8 @@ public:
   virtual void reset();
   virtual bool is_valid() const;
   virtual ObTableLockTaskType get_task_type() const { return LOCK_TABLE; }
-  INHERIT_TO_STRING_KV("ObLockRequest", ObLockRequest, K_(table_id));
+  INHERIT_TO_STRING_KV("ObLockRequest", ObLockRequest,
+                       K_(table_id), K_(detect_func_no), K_(detect_param));
 public:
   // which table should we lock
   uint64_t table_id_;

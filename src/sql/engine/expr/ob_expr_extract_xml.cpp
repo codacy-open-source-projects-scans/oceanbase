@@ -12,12 +12,8 @@
  */
 
 #include "ob_expr_extract_xml.h"
-#include "lib/xml/ob_xml_parser.h"
-#include "lib/xml/ob_xml_util.h"
 #include "sql/engine/expr/ob_expr_xml_func_helper.h"
 #include "lib/xml/ob_binary_aggregate.h"
-#include "lib/utility/utility.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_exec_context.h"
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -100,7 +96,6 @@ int ObExprExtractXml::eval_extract_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   // eval arg
 
   ObMulModeMemCtx* mem_ctx = nullptr;
-  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
 
   if (OB_ISNULL(ctx.exec_ctx_.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
@@ -124,6 +119,7 @@ int ObExprExtractXml::eval_extract_xml(const ObExpr &expr, ObEvalCtx &ctx, ObDat
     LOG_WARN("fail to construct namespace params", K(ret), K(namespace_str));
   }
 
+  lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "XMLModule"));
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObXMLExprHelper::get_xml_base(mem_ctx, xml_datum, cs_type, expect_type, xml_doc, node_type, ObGetXmlBaseType::OB_SHOULD_CHECK))) {
     LOG_WARN("fail to parse xml doc", K(ret));

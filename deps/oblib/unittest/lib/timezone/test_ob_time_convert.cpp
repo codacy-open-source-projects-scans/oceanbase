@@ -11,11 +11,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <stdint.h>
-#include "lib/ob_define.h"
-    #include "lib/timezone/ob_timezone_util.h"
-#include "lib/timezone/ob_time_convert.h"
-#include "lib/timezone/ob_time_format.h"
 #include "lib/timezone/ob_timezone_info.h"
 
 using namespace oceanbase;
@@ -65,7 +60,7 @@ static bool ob_interval_eq(const ObInterval& ans, int64_t year, int64_t month, i
               && (ans.parts_[DT_SEC] == second || -1 == second)
               && (ans.parts_[DT_USEC] == usecond || -1 == usecond);
   if (!ret) {
-    printf("%04u-%02u-%02u %02u:%02u:%02u.%06u\n",
+    printf("%04lu-%02lu-%02lu %02lu:%02lu:%02lu.%06lu\n",
            ans.parts_[DT_YEAR], ans.parts_[DT_MON], ans.parts_[DT_MIN],
            ans.parts_[DT_HOUR], ans.parts_[DT_MIN], ans.parts_[DT_SEC], ans.parts_[DT_USEC]);
   }

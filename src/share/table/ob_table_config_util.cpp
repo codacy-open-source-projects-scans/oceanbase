@@ -12,8 +12,6 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_table_config_util.h"
-#include "lib/container/ob_se_array.h"
-#include "share/config/ob_config_helper.h"
 #include "share/config/ob_config_mode_name_def.h"
 namespace oceanbase
 {
@@ -25,12 +23,12 @@ ObKVFeatureMode::ObKVFeatureMode(const uint8_t *values)
     value_ = 0;
     is_valid_ = false;
   } else {
-    value_ = values[0];
+    value_ = (static_cast<uint16_t>(values[1]) << 8) | static_cast<uint16_t>(values[0]);
     is_valid_ = true;
   }
 }
 
-void ObKVFeatureMode::set_ttl_mode(uint8_t mode)
+void ObKVFeatureMode::set_ttl_mode(uint16_t mode)
 {
   is_valid_ = check_mode_valid(mode);
   if (is_valid_) {
@@ -38,7 +36,7 @@ void ObKVFeatureMode::set_ttl_mode(uint8_t mode)
   }
 }
 
-void ObKVFeatureMode::set_rerouting_mode(uint8_t mode)
+void ObKVFeatureMode::set_rerouting_mode(uint16_t mode)
 {
   is_valid_ = check_mode_valid(mode);
   if (is_valid_) {
@@ -46,7 +44,7 @@ void ObKVFeatureMode::set_rerouting_mode(uint8_t mode)
   }
 }
 
-void ObKVFeatureMode::set_hotkey_mode(uint8_t mode)
+void ObKVFeatureMode::set_hotkey_mode(uint16_t mode)
 {
   is_valid_ = check_mode_valid(mode);
   if (is_valid_) {
@@ -54,16 +52,16 @@ void ObKVFeatureMode::set_hotkey_mode(uint8_t mode)
   }
 }
 
-void ObKVFeatureMode::set_value(uint8_t value)
+void ObKVFeatureMode::set_value(uint16_t value)
 {
-  if ((value & 0b11) == 0b11 || ((value >> 2) & 0b11) == 0b11 || ((value >> 4) & 0b11) == 0b11) {
+  if ((value & 0b11) == 0b11 || ((value >> 2) & 0b11) == 0b11 || ((value >> 4) & 0b11) == 0b11 ||
+      ((value >> 6) & 0b11) == 0b11 || ((value >> 8) & 0b11) == 0b11) {
     is_valid_ = false;
   } else {
     is_valid_ = true;
     value_ = value;
   }
 }
-
 
 bool ObKVFeatureMode::is_ttl_enable() {
   bool mode = MODE_DEFAULT_VAL_TTL;

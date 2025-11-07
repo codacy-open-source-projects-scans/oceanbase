@@ -13,10 +13,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/aggregate/ob_merge_groupby_vec_op.h"
-#include "lib/number/ob_number_v2.h"
-#include "sql/engine/px/ob_px_sqc_proxy.h"
-#include "lib/utility/ob_hyperloglog.h"
-#include "sql/engine/px/ob_px_util.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
 
 namespace oceanbase
@@ -559,10 +555,8 @@ int ObMergeGroupByVecOp::init()
   } else if (OB_FAIL(group_processor_.init(eval_ctx_, all_groupby_exprs_))) {
     LOG_WARN("failed to init group processor", K(ret));
   } else {
-    if (aggr_processor_.has_extra()) {
-      // set group_batch_factor_ to 1 avoid out of memory error
-      group_batch_factor_ = 1;
-    }
+    // set group_batch_factor_ to 1 avoid out of memory error
+    group_batch_factor_ = 1;
     last_child_output_.reuse_ = true;
   }
   return ret;

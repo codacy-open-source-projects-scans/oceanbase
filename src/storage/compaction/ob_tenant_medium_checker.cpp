@@ -11,13 +11,9 @@
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
-#include "storage/compaction/ob_tenant_medium_checker.h"
+#include "ob_tenant_medium_checker.h"
 #include "storage/compaction/ob_medium_compaction_func.h"
-#include "storage/compaction/ob_compaction_diagnose.h"
 #include "storage/compaction/ob_server_compaction_event_history.h"
-#include "storage/compaction/ob_tablet_merge_ctx.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/tablet/ob_tablet.h"
 #include "storage/tx_storage/ob_ls_service.h"
 
 namespace oceanbase
@@ -76,10 +72,12 @@ int ObTenantMediumChecker::mtl_init(ObTenantMediumChecker *&tablet_medium_checke
 ObTenantMediumChecker::ObTenantMediumChecker()
   : is_inited_(false),
     last_check_timestamp_(0),
+    error_tablet_cnt_(0),
     tablet_ls_set_(),
     ls_info_map_(),
     lock_(),
-    ls_locality_cache_empty_(true)
+    ls_locality_cache_empty_(true),
+    ls_locality_cache_refresh_success_(true)
 {}
 
 ObTenantMediumChecker::~ObTenantMediumChecker()
@@ -90,9 +88,7 @@ ObTenantMediumChecker::~ObTenantMediumChecker()
 int ObTenantMediumChecker::init()
 {
   int ret = OB_SUCCESS;
-  if (GCTX.is_shared_storage_mode()) {
-    FLOG_INFO("cluster is shared storage mode, not init ObTenantMediumChecker", KR(ret));
-  } else if (IS_INIT) {
+  if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObTenantMediumChecker is inited before", KR(ret), KPC(this));
   } else if (OB_FAIL(tablet_ls_set_.create(DEFAULT_MAP_BUCKET, "MedCheckSet", "CheckSetNode", MTL_ID()))) {
@@ -129,6 +125,7 @@ int ObTenantMediumChecker::refresh_ls_status()
   if (OB_FAIL(ls_locality_cache.init(MTL_ID()))) {
     LOG_WARN("failed to init ls locality cache", K(ret));
   } else if (OB_FAIL(ls_locality_cache.refresh_ls_locality(true/*force_refresh*/))) {
+    ls_locality_cache_refresh_success_ = false;
     LOG_WARN("failed to refresh ls locality", K(ret));
   } else if (OB_FAIL(MTL(ObLSService *)->get_ls_ids(ls_ids))) {
     LOG_WARN("failed to get all ls id", K(ret));
@@ -139,6 +136,7 @@ int ObTenantMediumChecker::refresh_ls_status()
     } else {
       ls_locality_cache_empty_ = false;
     }
+    ls_locality_cache_refresh_success_ = true;
     ls_info_map_.reuse();
     for (int64_t i = 0; i < ls_ids.count(); ++i) {
       const ObLSID &ls_id = ls_ids[i];
@@ -221,6 +219,15 @@ bool ObTenantMediumChecker::locality_cache_empty()
   return bret;
 }
 
+bool ObTenantMediumChecker::locality_cache_refresh_success()
+{
+  bool bret = true;
+  if (IS_INIT) {
+    bret = ls_locality_cache_refresh_success_;
+  }
+  return bret;
+}
+
 int ObTenantMediumChecker::check_medium_finish_schedule()
 {
   int ret = OB_SUCCESS;
@@ -280,6 +287,21 @@ int ObTenantMediumChecker::check_medium_finish_schedule()
         ObTimeUtility::fast_current_time(),
         K(cost_ts), "batch_check_stat", stat);
     }
+#ifdef ERRSIM
+    if (OB_SUCC(ret)) {
+      ret = OB_E(EventTable::EN_MEDIUM_REPLICA_CHECKSUM_ERROR) OB_SUCCESS;
+      if (OB_SUCC(ret)) {
+        if (REACH_THREAD_TIME_INTERVAL(CLEAR_CKM_ERROR_INTERVAL)) {
+          clear_error_tablet_cnt();
+        }
+      }
+      ret = OB_SUCCESS;
+    }
+#else
+    if (REACH_THREAD_TIME_INTERVAL(CLEAR_CKM_ERROR_INTERVAL)) {
+      clear_error_tablet_cnt();
+    }
+#endif
   }
   return ret;
 }

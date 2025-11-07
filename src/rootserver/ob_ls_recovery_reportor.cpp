@@ -14,22 +14,12 @@
 
 #include "rootserver/ob_ls_recovery_reportor.h"
 #include "rootserver/ob_tenant_info_loader.h"
-#include "rootserver/standby/ob_tenant_role_transition_service.h"//ObTenantRoleTransitionConstants
-#include "rootserver/ob_rs_async_rpc_proxy.h" //ObGetLSReplayedScnProxy
-#include "rootserver/ob_ls_recovery_stat_handler.h" //ObLSRecoveryStatHandler
 #include "rootserver/ob_ls_service_helper.h"//update_ls_stat_in_trans
 #include "storage/tx_storage/ob_ls_service.h" //ObLSService
-#include "storage/tx_storage/ob_ls_map.h"//ObLSIterator
-#include "storage/ls/ob_ls.h"//ObLSGetMod
-#include "observer/ob_server_struct.h"//GCTX
-#include "lib/profile/ob_trace_id.h"
-#include "lib/thread/threads.h"//set_run_wrapper
-#include "share/ls/ob_ls_recovery_stat_operator.h" //ObLSRecoveryStatOperator
 #include "share/ob_schema_status_proxy.h"//ObSchemaStatusProxy
-#include "share/schema/ob_multi_version_schema_service.h"//is_tenant_full_schema
 #include "logservice/ob_log_service.h"//get_palf_role
-#include "share/scn.h"//SCN
-#include "storage/tx_storage/ob_ls_handle.h"  //ObLSHandle
+#include "rootserver/ob_tenant_thread_helper.h"
+#include "lib/utility/ob_tracepoint.h" // ERRSIM_POINT_DEF
 
 namespace oceanbase
 {
@@ -123,18 +113,26 @@ void ObLSRecoveryReportor::run2()
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret));
   } else {
+    ObDIActionGuard ag("LSRecoveryService", "LSRecoveryReportor", "detect task");
     ObThreadCondGuard guard(get_cond());
     const uint64_t meta_tenant_id = gen_meta_tenant_id(tenant_id_);
+    bool meta_tenant_schema_normal = false;
     while (!stop_) {
       DEBUG_SYNC(STOP_LS_RECOVERY_THREAD);
       ObCurTraceId::init(GCONF.self_addr_);
-      if (OB_ISNULL(GCTX.schema_service_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("schema service is empty", KR(ret));
-      } else if (!GCTX.schema_service_->is_tenant_full_schema(meta_tenant_id)) {
-        //need wait
-        LOG_INFO("tenant schema not ready", KR(ret), K(meta_tenant_id));
-      } else {
+      if (!meta_tenant_schema_normal) {
+        ObTenantSchema tenant_schema;
+        if (OB_FAIL(ObTenantThreadHelper::get_tenant_schema(meta_tenant_id, tenant_schema))) {
+          LOG_WARN("meta tenant is not ready", KR(ret), K(meta_tenant_id));
+        } else if (tenant_schema.is_normal()) {
+          meta_tenant_schema_normal = true;
+          LOG_INFO("meta tenant schema is normal", K(tenant_schema));
+        } else {
+          LOG_WARN("meta tenant schema is not normal, need wait", K(tenant_schema));
+        }
+      }
+      if (meta_tenant_schema_normal) {
+        ObDIActionGuard ag1("LS Stat");
         if (OB_SUCCESS != (tmp_ret = update_ls_recovery_stat_())) {
           ret = OB_SUCC(ret) ? tmp_ret : ret;
           LOG_WARN("failed to update ls recovery stat", KR(ret), KR(tmp_ret));
@@ -145,6 +143,7 @@ void ObLSRecoveryReportor::run2()
       }
 
       //更新受控回放位点到replayservice
+      ObDIActionGuard ag1("Replayable Point");
       if (OB_SUCCESS != (tmp_ret = update_replayable_point_())) {
         LOG_WARN("failed to update_replayable_point", KR(tmp_ret));
       }
@@ -170,6 +169,15 @@ void ObLSRecoveryReportor::idle_some_time_()
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("pointer is null", KR(ret), KP(tenant_info_loader));
   }
+
+  // We use _keepalive_interval here to control report interval;
+  // To minimize the latency, the keepalive_interval in the primary database would be lower down;
+  // And the report interval should also be the same to improve efficiency,
+  // hence we need to concern about only one configuration item in both the primary database
+  // and the standby database, even after switch over, we don't need to adjust the configuration;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+  const int64_t STANDBY_IDLE_TIME = tenant_config.is_valid() ?
+      tenant_config->_keepalive_interval : IDLE_TIME;
   while (idle_count < idle_target_cnt && !stop_) {
     bool is_primary_normal_status = true;
     idle_count++;
@@ -181,7 +189,7 @@ void ObLSRecoveryReportor::idle_some_time_()
     } else if (!is_primary_normal_status) {
       idle_target_cnt = 1;
     }
-    idle_wait_us(IDLE_TIME);
+    idle_wait_us(is_primary_normal_status ? IDLE_TIME : STANDBY_IDLE_TIME);
   }
 }
 
@@ -229,6 +237,7 @@ int ObLSRecoveryReportor::submit_tenant_refresh_schema_task_()
   }
   return ret;
 }
+
 int ObLSRecoveryReportor::update_ls_recovery_stat_()
 {
   int ret = OB_SUCCESS;
@@ -294,6 +303,7 @@ int ObLSRecoveryReportor::update_ls_recovery_stat_()
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_UPDATE_LS_RECOVERY_STAT_T1004_LS1001);
 int ObLSRecoveryReportor::update_ls_recovery(
     ObLS *ls,
     common::ObMySQLProxy *sql_proxy)
@@ -306,10 +316,12 @@ int ObLSRecoveryReportor::update_ls_recovery(
   if (OB_ISNULL(ls) || OB_ISNULL(sql_proxy)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("ls or sql proxy is null", KR(ret), KP(ls),  KP(sql_proxy));
+  } else if (OB_UNLIKELY(ERRSIM_UPDATE_LS_RECOVERY_STAT_T1004_LS1001 && 1004 == tenant_id_ && 1001 == ls->get_ls_id().id())) {
+    LOG_WARN("ERRSIM_UPDATE_LS_RECOVERY_STAT_T1004_LS1001 opened", KR(ret));
   } else if (OB_FAIL(guard.init(tenant_id_, ls->get_ls_id()))) {
     if (OB_EAGAIN != ret) {
       LOG_WARN("failed to init ls recovery guard", KR(ret), K(tenant_id_), "ls_id", ls->get_ls_id());
-    } else if (REACH_TENANT_TIME_INTERVAL(1 * 1000 * 1000)) {
+    } else if (REACH_THREAD_TIME_INTERVAL(1 * 1000 * 1000)) {
       //Reduce Exception Throwing
       LOG_WARN("can not report recovery stat, maybe member_list change", KR(ret), K(tenant_id_),
           "ls_id", ls->get_ls_id());
@@ -368,7 +380,9 @@ int ObLSRecoveryReportor::update_sys_ls_recovery_stat_and_tenant_info(
     if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id, &trans, true, tenant_info))) {
       LOG_WARN("failed to load tenant info for update", KR(ret), K(tenant_id));
     } else if (tenant_info.get_tenant_role() != tenant_role
-               || tenant_info.get_switchover_status().is_flashback_status()
+               || tenant_info.get_switchover_status().is_general_flashback_status()
+                  // flashback status need a fixed sync_scn, so we cannnot report here
+                  // if sync_scn is changing during flashback, we might truncate replayed logs
                || (!only_update_readable_scn//If you only need to report readable_scn,
                    //there is no need to check the validity of sync_scn and recovery_until_scn
                    && ls_recovery_stat.get_sync_scn() > tenant_info.get_recovery_until_scn())) {

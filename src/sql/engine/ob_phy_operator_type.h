@@ -148,6 +148,9 @@ PHY_OP_DEF(PHY_EXPAND)
 PHY_OP_DEF(PHY_VEC_NESTED_LOOP_JOIN)
 PHY_OP_DEF(PHY_VEC_SUBPLAN_FILTER)
 PHY_OP_DEF(PHY_TABLE_DIRECT_INSERT)
+PHY_OP_DEF(PHY_UNPIVOT_V2)
+PHY_OP_DEF(PHY_DDL_BLOCK_SAMPLE_SCAN)
+PHY_OP_DEF(PHY_VEC_PX_MULTI_PART_SSTABLE_INSERT)
 PHY_OP_DEF(PHY_END)
 #endif /*PHY_OP_DEF*/
 
@@ -190,6 +193,8 @@ OB_INLINE bool is_phy_op_type_valid(ObPhyOperatorType type)
 }
 
 const char *ob_phy_operator_type_str(ObPhyOperatorType type, bool enable_rich_format = false);
+ObPhyOperatorType get_phy_type_from_name(const char *name, uint64_t length,
+                                         bool &enable_rich_format);
 }
 }
 

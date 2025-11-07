@@ -12,22 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_OPT
 
-#include "sql/optimizer/ob_log_group_by.h"
-#include "sql/ob_sql_utils.h"
 #include "sql/optimizer/ob_update_log_plan.h"
 #include "sql/optimizer/ob_log_update.h"
-#include "sql/optimizer/ob_log_insert.h"
-#include "sql/optimizer/ob_log_delete.h"
-#include "sql/optimizer/ob_log_operator_factory.h"
-#include "sql/optimizer/ob_log_table_scan.h"
-#include "sql/optimizer/ob_log_sort.h"
-#include "sql/optimizer/ob_log_limit.h"
-#include "sql/optimizer/ob_join_order.h"
-#include "sql/optimizer/ob_opt_est_cost.h"
-#include "sql/optimizer/ob_log_subplan_filter.h"
-#include "sql/optimizer/ob_log_link_dml.h"
-#include "sql/rewrite/ob_transform_utils.h"
-#include "common/ob_smart_call.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
 
 using namespace oceanbase;
@@ -189,10 +175,10 @@ int ObUpdateLogPlan::generate_normal_raw_plan()
 
     // step. allocate update operator
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(compute_dml_parallel())) {  // compute parallel before call prepare_dml_infos
-        LOG_WARN("failed to compute dml parallel", K(ret));
-      } else if (OB_FAIL(prepare_dml_infos())) {
+      if (OB_FAIL(prepare_dml_infos())) {
         LOG_WARN("failed to prepare dml infos", K(ret));
+      } else if (OB_FAIL(compute_dml_parallel())) {
+        LOG_WARN("failed to compute dml parallel", K(ret));
       } else if (use_pdml()) {
         // PDML计划
         if (OB_FAIL(candi_allocate_pdml_update())) {
@@ -244,6 +230,14 @@ int ObUpdateLogPlan::generate_normal_raw_plan()
       } else {
         LOG_TRACE("succeed to allocate temp-table transformation",
             K(candidates_.candidate_plans_.count()));
+      }
+    }
+
+    if (OB_SUCC(ret) && update_stmt->is_returning() && update_stmt->get_returning_aggr_item_size() <= 0) {
+      if (OB_FAIL(candi_allocate_material_for_dml())) {
+        LOG_WARN("failed to allocate material operator", K(ret));
+      } else {
+        LOG_TRACE("succeed to allocate material op for dml returning", K(candidates_.candidate_plans_.count()));
       }
     }
 
@@ -539,7 +533,7 @@ int ObUpdateLogPlan::prepare_table_dml_info_special(const ObDmlTableInfo& table_
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("failed to get table schema", K(table_info), K(ret));
   } else if (!update_stmt->has_instead_of_trigger() &&
-             OB_FAIL(check_update_primary_key(index_schema, table_dml_info))) {
+             OB_FAIL(check_update_primary_key(*schema_guard, index_schema, table_dml_info))) {
     LOG_WARN("failed to check update unique key", K(ret));
   } else if (!table_info.is_link_table_ &&
              OB_FAIL(check_update_part_key(index_schema, table_dml_info))) {
@@ -594,6 +588,8 @@ int ObUpdateLogPlan::prepare_table_dml_info_special(const ObDmlTableInfo& table_
         LOG_WARN("failed to init assignment info", K(ret));
       } else if (OB_FAIL(check_update_unique_key(index_schema, index_dml_info))) {
         LOG_WARN("failed to check update unique key", K(ret));
+      } else if (OB_FAIL(check_update_primary_key(*schema_guard, index_schema, index_dml_info))) {
+        LOG_WARN("failed to check update primary key", K(ret));
       } else if (!table_info.is_link_table_ &&
                  OB_FAIL(check_update_part_key(index_schema, index_dml_info))) {
         LOG_WARN("failed to check update part key", K(ret));

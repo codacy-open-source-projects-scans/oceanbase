@@ -14,8 +14,6 @@
 
 #include "sql/engine/aggregate/ob_hash_distinct_vec_op.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase
 {
@@ -512,7 +510,7 @@ int ObHashDistinctVecOp::by_pass_get_next_batch(const int64_t batch_size)
   } else {
     brs_.size_ = child_brs->size_;
     group_cnt_ += (child_brs->size_ - child_brs->skip_->accumulate_bit_cnt(batch_size));
-    brs_.skip_->deep_copy(*(child_brs->skip_), batch_size);
+    brs_.skip_->deep_copy(*(child_brs->skip_), brs_.size_);
     if (child_brs->end_ && (0 == child_brs->size_)) {
       brs_.end_ = true;
       brs_.size_ = 0;

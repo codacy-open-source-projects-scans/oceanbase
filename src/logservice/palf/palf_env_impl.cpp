@@ -12,25 +12,8 @@
 
 #define USING_LOG_PREFIX PALF
 #include "palf_env_impl.h"
-#include <string.h>
-#include "lib/lock/ob_spin_lock.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log.h"
-#include "lib/time/ob_time_utility.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/oblog/ob_log_module.h"
-#include "share/allocator/ob_tenant_mutil_allocator.h"
-#include "share/config/ob_server_config.h"
-#include "share/ob_errno.h"
-#include "share/ob_occam_thread_pool.h"
-#include "log_define.h"
-#include "palf_handle_impl_guard.h"             // IPalfHandleImplGuard
+#include "logservice/ipalf/ipalf_handle.h"
 #include "palf_handle.h"
-#include "log_loop_thread.h"
-#include "log_rpc.h"
-#include "log_block_pool_interface.h"
-#include "log_io_utils.h"
 #include "share/ob_local_device.h"                            // ObLocalDevice
 #include "share/resource_manager/ob_resource_manager.h"       // ObResourceManager
 #include "share/io/ob_io_manager.h"                           // ObIOManager
@@ -199,7 +182,7 @@ PalfEnvImpl::PalfEnvImpl() : palf_meta_lock_(common::ObLatchIds::PALF_ENV_LOCK),
                              rebuild_replica_log_lag_threshold_(0),
                              enable_log_cache_(false),
                              diskspace_enough_(true),
-                             tenant_id_(0),
+                             tenant_id_(-1),
                              io_adapter_(),
                              is_inited_(false),
                              is_running_(false)
@@ -268,7 +251,7 @@ int PalfEnvImpl::init(
     PALF_LOG(ERROR, "construct log path failed", K(ret), K(pret));
   } else if (OB_FAIL(palf_handle_impl_map_.init("LOG_HASH_MAP", tenant_id))) {
     PALF_LOG(ERROR, "palf_handle_impl_map_ init failed", K(ret));
-  } else if (OB_FAIL(log_loop_thread_.init(this))) {
+  } else if (OB_FAIL(log_loop_thread_.init(this, self))) {
     PALF_LOG(ERROR, "log_loop_thread_ init failed", K(ret));
   } else if (OB_FAIL(
                  election_timer_.init_and_start(1, 10_ms, "ElectTimer"))) { // just one worker thread
@@ -987,7 +970,10 @@ int PalfEnvImpl::for_each(const common::ObFunction<int (IPalfHandleImpl *)> &fun
     return bool_ret;
   };
   int ret = OB_SUCCESS;
-  if (OB_FAIL(palf_handle_impl_map_.for_each(func_impl))) {
+  if (!func.is_valid()) {
+    // ObFunction will be invalid when allocating memory failed.
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(palf_handle_impl_map_.for_each(func_impl))) {
     PALF_LOG(WARN, "iterate palf_handle_impl_map_ failed", K(ret));
   } else {
   }
@@ -1011,7 +997,10 @@ int PalfEnvImpl::for_each(const common::ObFunction<int (const PalfHandle &)> &fu
     return bool_ret;
   };
   int ret = OB_SUCCESS;
-  if (OB_FAIL(palf_handle_impl_map_.for_each(func_impl))) {
+  if (!func.is_valid()) {
+    // ObFunction will be invalid when allocating memory failed.
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(palf_handle_impl_map_.for_each(func_impl))) {
     PALF_LOG(WARN, "iterate palf_handle_impl_map_ failed", K(ret));
   } else {
   }
@@ -1224,9 +1213,10 @@ bool PalfEnvImpl::check_can_create_palf_handle_impl_() const
 {
   bool bool_ret = true;
   int64_t count = palf_handle_impl_map_.count();
+  const int64_t per_palf_size = GCTX.is_shared_storage_mode() ? SHARED_STORAGE_MIN_DISK_SIZE_PER_PALF_INSTANCE : MIN_DISK_SIZE_PER_PALF_INSTANCE;
   // NB: avoid concurrent with expand and shrink, need guard by palf_meta_lock_.
   const PalfDiskOptions disk_opts = disk_options_wrapper_.get_disk_opts_for_recycling_blocks();
-  bool_ret = (count + 1) * MIN_DISK_SIZE_PER_PALF_INSTANCE <= disk_opts.log_disk_usage_limit_size_;
+  bool_ret = (count + 1) * per_palf_size <= disk_opts.log_disk_usage_limit_size_;
   return bool_ret;
 }
 
@@ -1306,13 +1296,30 @@ int PalfEnvImpl::remove_stale_incomplete_palf_()
   return ret;
 }
 
-int PalfEnvImpl::get_io_start_time(int64_t &last_working_time)
+int PalfEnvImpl::get_io_statistic_info(int64_t &last_working_time,
+                                       int64_t &pending_write_size,
+                                       int64_t &pending_write_count,
+                                       int64_t &pending_write_rt,
+                                       int64_t &accum_write_size,
+                                       int64_t &accum_write_count,
+                                       int64_t &accum_write_rt)
 {
   int ret = OB_SUCCESS;
+  GetIOStatistic functor;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
+  } else if (OB_FAIL(palf_handle_impl_map_.for_each(functor))) {
+    PALF_LOG(WARN, "for_each failed", K(ret), K(functor));
   } else {
+    // use last_working_time of IOWorker to detect
+    // more IO operations including: pwrite, rename, ...
     last_working_time = log_io_worker_wrapper_.get_last_working_time();
+    pending_write_size = functor.pending_write_size_;
+    pending_write_count = functor.pending_write_count_;
+    pending_write_rt = functor.pending_write_rt_;
+    accum_write_size = functor.accum_write_size_;
+    accum_write_count = functor.accum_write_count_;
+    accum_write_rt = functor.accum_write_rt_;
   }
   return ret;
 }
@@ -1421,8 +1428,8 @@ int PalfEnvImpl::init_log_io_worker_config_(const int log_writer_parallelism,
   config.io_worker_num_ = real_log_writer_parallelism;
   config.io_queue_capcity_ = MAX(default_min_io_queue_cap,
                                  tmp_upper_align_div(default_io_queue_cap, real_log_writer_parallelism));
-  config.batch_width_ = MAX(default_min_batch_width,
-                            tmp_upper_align_div(default_io_batch_width, real_log_writer_parallelism));
+  // for sys tenant, batch_width is 1
+  config.batch_width_ = is_user_tenant(tenant_id) ? default_io_batch_width : 1;
   config.batch_depth_ = PALF_SLIDING_WINDOW_SIZE;
   PALF_LOG(INFO, "init_log_io_worker_config_ success", K(config), K(tenant_id), K(log_writer_parallelism));
   return ret;
@@ -1432,7 +1439,8 @@ int PalfEnvImpl::check_can_update_log_disk_options_(const PalfDiskOptions &disk_
 {
   int ret = OB_SUCCESS;
   const int64_t curr_palf_instance_num = palf_handle_impl_map_.count();
-  const int64_t curr_min_log_disk_size = curr_palf_instance_num * MIN_DISK_SIZE_PER_PALF_INSTANCE;
+  const int64_t per_palf_size = GCTX.is_shared_storage_mode() ? SHARED_STORAGE_MIN_DISK_SIZE_PER_PALF_INSTANCE : MIN_DISK_SIZE_PER_PALF_INSTANCE;
+  const int64_t curr_min_log_disk_size = curr_palf_instance_num * per_palf_size;
   if (disk_opts.log_disk_usage_limit_size_ < curr_min_log_disk_size) {
     ret = OB_NOT_SUPPORTED;
     PALF_LOG(WARN, "can not hold current palf instance", K(curr_palf_instance_num),
@@ -1458,6 +1466,65 @@ int PalfEnvImpl::remove_directory_while_exist_(const char *log_dir)
 LogSharedQueueTh *PalfEnvImpl::get_log_shared_queue_thread()
 {
   return &log_shared_queue_th_;
+}
+
+PalfEnvImpl::GetIOStatistic::GetIOStatistic() :
+    last_working_time_(OB_INVALID_TIMESTAMP),
+    accum_write_size_(0),
+    accum_write_count_(0),
+    accum_write_rt_(0),
+    pending_write_size_(0),
+    pending_write_count_(0),
+    pending_write_rt_(0)
+{ }
+
+PalfEnvImpl::GetIOStatistic::~GetIOStatistic()
+{
+  last_working_time_ = OB_INVALID_TIMESTAMP;
+  accum_write_size_ = 0;
+  accum_write_count_ = 0;
+  accum_write_rt_ = 0;
+  pending_write_size_ = 0;
+  pending_write_count_ = 0;
+  pending_write_rt_ = 0;
+}
+
+bool PalfEnvImpl::GetIOStatistic::operator()(const LSKey &palf_id,
+                                             IPalfHandleImpl *palf_handle_impl)
+{
+  bool bool_ret = true;
+  int ret = OB_SUCCESS;
+  int64_t last_working_time = OB_INVALID_TIMESTAMP;
+  int64_t last_write_size = 0;
+  int64_t accum_write_size = 0;
+  int64_t accum_write_count = 0;
+  int64_t accum_write_rt = 0;
+
+  if (OB_NOT_NULL(palf_handle_impl)) {
+    if (OB_FAIL(palf_handle_impl->get_io_statistic_info(last_working_time,
+        last_write_size, accum_write_size, accum_write_count, accum_write_rt))) {
+      PALF_LOG(WARN, "failed to get_io_statistic_info", K(palf_id));
+    } else {
+      // record last_working_time_
+      if (OB_INVALID_TIMESTAMP == last_working_time) {
+        last_working_time_ = last_working_time_;
+      } else if (OB_INVALID_TIMESTAMP == last_working_time_) {
+        last_working_time_ = last_working_time;
+      } else {
+        last_working_time_ = MIN(last_working_time_, last_working_time);
+      }
+      // record pending write info
+      if (OB_INVALID_TIMESTAMP != last_working_time && last_write_size > 0) {
+        pending_write_size_ += last_write_size;
+        pending_write_count_++;
+        pending_write_rt_ += (common::ObTimeUtility::fast_current_time() - last_working_time);
+      }
+      accum_write_size_ += accum_write_size;
+      accum_write_count_ += accum_write_count;
+      accum_write_rt_ += accum_write_rt;
+    }
+  }
+  return bool_ret;
 }
 
 } // end namespace palf

@@ -117,7 +117,7 @@ public:
   static const int MAX_REFRESH_RETRY_THRESHOLD = 3;
 
   enum class VectorIndexAuxType : int8_t {
-    DELTA_BUF_INDEX = 0,
+    DOMAIN_INDEX = 0,   // FARM COMPAT WHITELIST
     INDEX_ID_INDEX = 1,
     MOCK_INDEX_1 = 2,
     MOCK_INDEX_2 = 3,
@@ -134,15 +134,15 @@ public:
                       const ObVectorRebuildIndexArg &arg);
   int execute_rebuild_inner(pl::ObPLExecCtx &ctx,
                       const ObVectorRebuildIndexInnerArg &arg);
+  static int resolve_table_name(const ObCollationType cs_type,
+                                const ObNameCaseMode case_mode,
+                                const bool is_oracle_mode, const ObString &name,
+                                ObString &database_name, ObString &table_name);
 
 private:
   static int check_min_data_version(const uint64_t tenant_id,
                                     const uint64_t min_data_version,
                                     const char *errmsg);
-  static int resolve_table_name(const ObCollationType cs_type,
-                                const ObNameCaseMode case_mode,
-                                const bool is_oracle_mode, const ObString &name,
-                                ObString &database_name, ObString &table_name);
   static void upper_db_table_name(const ObNameCaseMode case_mode,
                                   const bool is_oracle_mode, ObString &name);
   static int to_refresh_method(const ObString &arg_refresh_method,
@@ -211,7 +211,7 @@ private:
 
   uint64_t tenant_id_;
   uint64_t base_tb_id_;
-  uint64_t delta_buf_tb_id_;
+  uint64_t domain_tb_id_;
   uint64_t index_id_tb_id_;
   share::schema::ObVectorRefreshMethod refresh_method_;
   share::schema::ObVectorIndexOrganization idx_organization_;

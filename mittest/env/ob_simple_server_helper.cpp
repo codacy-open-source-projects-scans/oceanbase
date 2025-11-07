@@ -14,12 +14,9 @@
 #define private public
 #define protected public
 #include "ob_simple_server_helper.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tablet/ob_tablet.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 #include "logservice/ob_log_service.h"
 #include "unittest/storage/init_basic_struct.h"
-#include "lib/profile/ob_trace_id.h"
 #include "storage/tx/ob_trans_service.h"
 #include "share/ob_global_stat_proxy.h"
 
@@ -376,7 +373,7 @@ int SimpleServerHelper::freeze_tx_data(uint64_t tenant_id, ObLSID ls_id)
       } else if (OB_FAIL(tx_data_memtable_mgr->flush(share::SCN::max_scn(),
               checkpoint::INVALID_TRACE_ID))) {
       } else {
-        usleep(1 * 1000 * 1000);
+        ob_usleep(1 * 1000 * 1000);
       }
     }
   }
@@ -401,7 +398,7 @@ int SimpleServerHelper::freeze_tx_ctx(uint64_t tenant_id, ObLSID ls_id)
         LOG_WARN("checkpoint obj is null", KR(ret));
       } else if (OB_FAIL(tx_ctx_memtable->flush(share::SCN::max_scn(), 0))) {
       } else {
-        usleep(1 * 1000 * 1000);
+        ob_usleep(1 * 1000 * 1000);
       }
     }
   }

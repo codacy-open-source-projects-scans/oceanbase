@@ -13,7 +13,6 @@
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_sort_iter.h"
 #include "sql/das/ob_das_attach_define.h"
-#include "sql/engine/ob_bit_vector.h"
 
 namespace oceanbase
 {
@@ -200,7 +199,7 @@ int ObDASSortIter::rescan()
 int ObDASSortIter::inner_get_next_row()
 {
   int ret = OB_SUCCESS;
-  if (limit_param_.limit_ > 0 && output_row_cnt_ >= limit_param_.limit_) {
+  if (limit_param_.limit_ >= 0 && output_row_cnt_ >= limit_param_.limit_) {
     ret = OB_ITER_END;
     LOG_DEBUG("das sort iter got enough rows", K_(limit_param), K_(output_row_cnt), K_(input_row_cnt), K(ret));
   } else if (!sort_finished_ && OB_FAIL(do_sort(false))) {
@@ -227,7 +226,7 @@ int ObDASSortIter::inner_get_next_row()
 int ObDASSortIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
-  if (limit_param_.limit_ > 0 && output_row_cnt_ >= limit_param_.limit_) {
+  if (limit_param_.limit_ >= 0 && output_row_cnt_ >= limit_param_.limit_) {
     ret = OB_ITER_END;
     LOG_DEBUG("das sort iter got enough rows", K_(limit_param), K_(output_row_cnt), K_(input_row_cnt), K(ret));
   } else if (!sort_finished_ && OB_FAIL(do_sort(true))) {

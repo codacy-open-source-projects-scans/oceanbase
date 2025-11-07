@@ -12,14 +12,14 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_ls_transfer_info.h"
-#include "common/ob_version_def.h"
 #include "share/ob_cluster_version.h"
+#include "storage/high_availability/ob_storage_ha_utils.h"
 
 using namespace oceanbase;
 using namespace share;
 using namespace storage;
 
-
+ERRSIM_POINT_DEF(EN_LS_TRANSFER_INFO_DATA_VERSION);
 ObLSTransferInfo::ObLSTransferInfo()
   : ls_id_(TRANSFER_INIT_LS_ID),
     transfer_start_scn_(share::SCN::invalid_scn())
@@ -209,6 +209,9 @@ ObLSTransferMetaInfo::ObLSTransferMetaInfo()
     tablet_id_array_(),
     data_version_(DEFAULT_MIN_DATA_VERSION)
 {
+#ifdef ERRSIM
+  data_version_ = EN_LS_TRANSFER_INFO_DATA_VERSION ?  DATA_CURRENT_VERSION : DEFAULT_MIN_DATA_VERSION;
+#endif
 }
 
 int ObLSTransferMetaInfo::set_transfer_info(
@@ -370,9 +373,14 @@ bool ObLSTransferMetaInfo::is_trans_status_same(
   return trans_status_ == trans_status;
 }
 
-bool ObLSTransferMetaInfo::is_abort_status()
+bool ObLSTransferMetaInfo::is_abort_status() const
 {
   return ObTransferInTransStatus::ABORT == trans_status_;
+}
+
+bool ObLSTransferMetaInfo::is_prepare_status() const
+{
+  return ObTransferInTransStatus::PREPARE == trans_status_;
 }
 
 int ObLSTransferMetaInfo::update_trans_status_(
@@ -407,9 +415,7 @@ int ObLSTransferMetaInfo::get_tablet_id_array(
 
 bool ObLSTransferMetaInfo::is_in_compatible_status()
 {
-  // TODO(@muwei.ym): validate version here
-  return (data_version_ < MOCK_CLUSTER_VERSION_4_2_3_0
-      || data_version_ < CLUSTER_VERSION_4_3_2_0);
+  return !ObTransferUtils::enable_transfer_dml_ctrl(data_version_);
 }
 
 int ObLSTransferMetaInfo::check_transfer_tablet_is_same(

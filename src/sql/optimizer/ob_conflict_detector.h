@@ -54,9 +54,9 @@ struct JoinInfo
                 K_(where_conditions),
                 K_(equal_join_conditions));
   ObRelIds table_set_; //要连接的表集合（即包含在join_qual_中的，除自己之外的所有表）
-  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> on_conditions_; //来自on的条件，如果是outer join
-  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> where_conditions_; //来自where的条件，如果是outer join，则是join filter，如果是inner join，则是join condition
-  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> equal_join_conditions_;//是连接条件（outer的on condition，inner join的where condition）的子集，仅简单等值，在预测未来的mergejoin所需的序的时候使用
+  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> on_conditions_; //来自on的条件，如果是outer/semi join
+  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> where_conditions_; //来自where的条件，如果是outer/semi join，则是join filter，如果是inner join，则是join condition
+  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> equal_join_conditions_; //是连接条件（outer/semi的on condition，inner join的where condition）的子集，仅简单等值，在预测未来的merge join所需的序的时候使用
   ObJoinType join_type_;
 };
 
@@ -96,8 +96,8 @@ public:
   inline JoinInfo& get_join_info() {return join_info_;}
   inline const JoinInfo& get_join_info() const {return join_info_;}
 
-  static int build_confict(common::ObIAllocator &allocator,
-                           ObConflictDetector* &detector);
+  static int build_detector(common::ObIAllocator &allocator,
+                            ObConflictDetector* &detector);
 
   static int satisfy_associativity_rule(const ObConflictDetector &left,
                                         const ObConflictDetector &right,
@@ -165,18 +165,22 @@ public:
                               ObRawExprFactory &expr_factory,
                               ObSQLSessionInfo *session_info,
                               ObRawExprCopier *onetime_copier,
-                              bool should_deduce_conds,
+                              bool should_pushdown_filters,
                               const common::ObIArray<TableDependInfo> &table_depend_infos,
+                              const common::ObIArray<ObRawExpr*> &push_subq_exprs,
                               common::ObIArray<ObRelIds> &bushy_tree_infos,
-                              common::ObIArray<ObRawExpr*> &new_or_quals) :
+                              common::ObIArray<ObRawExpr*> &new_or_quals,
+                              ObQueryCtx *ctx) :
     allocator_(allocator),
     expr_factory_(expr_factory),
     session_info_(session_info),
     onetime_copier_(onetime_copier),
-    should_deduce_conds_(should_deduce_conds),
+    should_pushdown_const_filters_(should_pushdown_filters),
     table_depend_infos_(table_depend_infos),
+    push_subq_exprs_(push_subq_exprs),
     bushy_tree_infos_(bushy_tree_infos),
-    new_or_quals_(new_or_quals)
+    new_or_quals_(new_or_quals),
+    query_ctx_(ctx)
     {}
 
   virtual ~ObConflictDetectorGenerator() {}
@@ -202,6 +206,7 @@ private:
   int generate_semi_join_detectors(const ObDMLStmt *stmt,
                                    const ObIArray<SemiInfo*> &semi_infos,
                                    ObRelIds &left_rel_ids,
+                                   ObIArray<ObSEArray<ObRawExpr*,4>> &baserel_filters,
                                    const ObIArray<ObConflictDetector*> &inner_join_detectors,
                                    ObIArray<ObConflictDetector*> &semi_join_detectors);
 
@@ -218,7 +223,7 @@ private:
                                     ObIArray<ObConflictDetector*> &outer_join_detectors);
 
   int distribute_quals(const ObDMLStmt *stmt,
-                       TableItem *table_item,
+                       uint64_t table_id,
                        const ObIArray<ObRawExpr*> &table_filter,
                        ObIArray<ObSEArray<ObRawExpr*,4>> &baserel_filters);
 
@@ -243,6 +248,11 @@ private:
                              ObIArray<ObRawExpr*> &left_quals,
                              ObIArray<ObRawExpr*> &right_quals,
                              ObIArray<ObRawExpr*> &join_quals);
+
+  int pushdown_semi_conditions(const ObDMLStmt *stmt,
+                               SemiInfo *info,
+                               ObIArray<ObRawExpr*> &right_quals,
+                               ObIArray<ObRawExpr*> &semi_conds);
 
   int generate_cross_product_detector(const ObDMLStmt *stmt,
                                       const ObIArray<TableItem*> &table_items,
@@ -273,6 +283,9 @@ private:
                                    const ObRelIds &rel_ids,
                                    ObConflictDetector* &detector);
 
+  int push_back_join_cond_if_needed(ObIArray<ObRawExpr*> &join_conds,
+                                    ObRawExpr *cond);
+
   bool has_depend_table(const ObRelIds& table_ids);
 
 private:
@@ -280,10 +293,12 @@ private:
   ObRawExprFactory &expr_factory_;
   ObSQLSessionInfo *session_info_;
   ObRawExprCopier *onetime_copier_;
-  bool should_deduce_conds_;
+  bool should_pushdown_const_filters_;
   const common::ObIArray<TableDependInfo> &table_depend_infos_;
+  const common::ObIArray<ObRawExpr*> &push_subq_exprs_;
   common::ObIArray<ObRelIds> &bushy_tree_infos_;
   common::ObIArray<ObRawExpr*> &new_or_quals_;
+  ObQueryCtx *query_ctx_;
 };
 
 

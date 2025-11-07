@@ -18,9 +18,6 @@
 
 #include "storage/ob_partition_range_spliter.h"
 #include "storage/compaction/ob_tablet_merge_ctx.h"
-#include "share/rc/ob_tenant_base.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/blocksstable/index_block/ob_sstable_sec_meta_iterator.h"
 
 namespace oceanbase
 {
@@ -479,7 +476,7 @@ int ObMockIncrementalIterator::init()
     share::schema::ObColDesc col_desc;
     col_desc.col_id_ = 1;
     col_desc.col_type_.set_int();
-    col_desc.col_order_ = ASC;
+    col_desc.col_order_ = ObOrderType::ASC;
 
     if (row_.init(allocator_, ObMockDatumRowkey::COLUMN_NUM)) {
       STORAGE_LOG(WARN, "failed to init datum row", KR(ret));
@@ -709,7 +706,7 @@ void TestPartitionIncrementalRangeSliter::SetUp()
     ObStorageRowkeyColumnSchema rowkey_col;
     rowkey_col.column_idx_ = 1 + common::OB_APP_MIN_COLUMN_ID;
     rowkey_col.meta_type_.set_int();
-    rowkey_col.order_ = ASC;
+    rowkey_col.order_ = ObOrderType::ASC;
     ASSERT_EQ(OB_SUCCESS, storage_schema_.rowkey_array_.push_back(rowkey_col));
 
     // major sstable

@@ -19,8 +19,6 @@
 #define private public
 #define protected public
 #include "storage/test_dml_common.h"
-#include "share/schema/ob_table_dml_param.h"
-#include "storage/access/ob_table_scan_iterator.h"
 #include "storage/test_tablet_helper.h"
 
 namespace oceanbase
@@ -155,6 +153,7 @@ void TestTableScanPureDataTable::insert_data_to_tablet(MockObAccessService *acce
                                                                   *tx_desc,
                                                                   read_snapshot,
                                                                   0,/*branch_id*/
+                                                                  dml_param.write_flag_,
                                                                   store_ctx_guard));
   int64_t affected_rows = 0;
   ASSERT_EQ(OB_SUCCESS, access_service->insert_rows(ls_id_, tablet_id_,

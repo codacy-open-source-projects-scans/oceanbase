@@ -13,19 +13,6 @@
 #define USING_LOG_PREFIX SQL_REWRITE
 
 #include "ob_transform_temp_table.h"
-#include "lib/allocator/ob_allocator.h"
-#include "lib/hash/ob_hashmap.h"
-#include "lib/oblog/ob_log_module.h"
-#include "common/ob_common_utility.h"
-#include "sql/resolver/expr/ob_raw_expr.h"
-#include "sql/resolver/expr/ob_raw_expr_util.h"
-#include "sql/resolver/dml/ob_dml_stmt.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/optimizer/ob_optimizer_util.h"
-#include "sql/rewrite/ob_predicate_deduce.h"
-#include "common/ob_smart_call.h"
-#include "sql/optimizer/ob_optimizer.h"
-#include "sql/optimizer/ob_optimizer_context.h"
 #include "sql/optimizer/ob_log_plan.h"
 #include "ob_transform_min_max.h"
 #include "sql/rewrite/ob_transformer_impl.h"
@@ -94,6 +81,12 @@ int ObTransformTempTable::transform_one_stmt(common::ObIArray<ObParentDMLStmt> &
         LOG_TRACE("succeed to do project pruning for temp table", K(temp_table_infos),  K(is_happened));
       }
     }
+    if (OB_SUCC(ret) && trans_happened) {
+      temp_table_infos.reuse();
+      if (OB_FAIL(stmt->collect_temp_table_infos(temp_table_infos))) {
+        LOG_WARN("failed to collect temp table infos", K(ret));
+      }
+    }
     if (OB_SUCC(ret)) {
       if (OB_FAIL(try_inline_temp_table(stmt, temp_table_infos, is_happened))) {
         LOG_WARN("failed to inline temp table", K(ret));
@@ -141,7 +134,7 @@ int ObTransformTempTable::generate_with_clause(ObDMLStmt *&stmt, bool &trans_hap
   ObSEArray<ObSelectStmt*, 8> non_correlated_stmts;
   ObSEArray<ObSelectStmt*, 8> view_stmts;
   ObArray<TempTableInfo> temp_table_infos;
-  hash::ObHashMap<uint64_t, ObParentDMLStmt> parent_map;
+  hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> parent_map;
   trans_happened = false;
   bool enable_temp_table_transform = false;
   bool has_hint = false;
@@ -474,7 +467,7 @@ int ObTransformTempTable::check_has_for_update(const ObDMLStmt::TempTableInfo &h
  */
 int ObTransformTempTable::extract_common_table_expression(ObDMLStmt *stmt,
                                                          ObIArray<ObSelectStmt*> &stmts,
-                                                         hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                                         hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                                          bool &trans_happened)
 {
   int ret = OB_SUCCESS;
@@ -520,7 +513,7 @@ int ObTransformTempTable::extract_common_table_expression(ObDMLStmt *stmt,
  */
 int ObTransformTempTable::inner_extract_common_table_expression(ObDMLStmt &root_stmt,
                                                                ObIArray<ObSelectStmt*> &stmts,
-                                                               hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                                               hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                                                bool &trans_happened)
 {
   int ret = OB_SUCCESS;
@@ -600,6 +593,9 @@ int ObTransformTempTable::inner_extract_common_table_expression(ObDMLStmt &root_
       } else if (OB_FAIL(compare_infos.push_back(new_helper))) {
         LOG_WARN("failed to push back compare info", K(ret));
       }
+      if (OB_FAIL(ret) && OB_NOT_NULL(new_helper)) {
+        new_helper->~StmtCompareHelper();
+      }
     }
   }
   //对每组相似stmt创建temp table
@@ -624,6 +620,9 @@ int ObTransformTempTable::inner_extract_common_table_expression(ObDMLStmt &root_
         trans_happened |= is_happened;
       }
     }
+  }
+  // always destruct StmtCompareHelper regardless of ret code to avoid memory leak
+  for (int64_t i = 0; i < compare_infos.count(); ++i) {
     if (NULL != compare_infos.at(i)) {
       compare_infos.at(i)->~StmtCompareHelper();
       compare_infos.at(i) = NULL;
@@ -653,7 +652,7 @@ int ObTransformTempTable::add_materialize_stmts(const ObIArray<ObSelectStmt*> &s
 
 int ObTransformTempTable::check_has_stmt(ObSelectStmt *left_stmt,
                                          ObSelectStmt *right_stmt,
-                                         hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                         hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                          bool &has_stmt)
 {
   int ret = OB_SUCCESS;
@@ -700,7 +699,7 @@ int ObTransformTempTable::check_has_stmt(ObSelectStmt *left_stmt,
 
 int ObTransformTempTable::check_has_stmt(const ObIArray<ObSelectStmt *> &stmts,
                                          ObSelectStmt *right_stmt,
-                                         hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                         hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                          bool &has_stmt)
 {
   int ret = OB_SUCCESS;
@@ -735,7 +734,8 @@ int ObTransformTempTable::check_stmt_can_extract_temp_table(ObSelectStmt *first,
     is_valid = QueryRelation::QUERY_EQUAL == relation && map_info.is_order_equal_;
   } else if (second->get_table_size() < 2) {
     if (second->get_group_expr_size() > 0 ||
-        second->get_rollup_expr_size() > 0) {
+        second->get_rollup_expr_size() > 0 ||
+        second->has_grouping_sets()) {
       is_valid = map_info.is_group_equal_ && map_info.is_cond_equal_;
     } else if (second->get_aggr_item_size() > 0) {
       is_valid = map_info.is_table_equal_ && map_info.is_from_equal_ && map_info.is_semi_info_equal_ && map_info.is_cond_equal_;
@@ -1136,7 +1136,7 @@ int ObTransformTempTable::classify_stmts(ObIArray<ObSelectStmt*> &stmts,
 
 int ObTransformTempTable::create_temp_table(ObDMLStmt &root_stmt,
                                             StmtCompareHelper& compare_info,
-                                            hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                            hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                             bool &trans_happened)
 {
   int ret = OB_SUCCESS;
@@ -1273,7 +1273,7 @@ int ObTransformTempTable::create_temp_table(ObDMLStmt &root_stmt,
   if (OB_SUCC(ret) && is_valid && OB_NOT_NULL(temp_table_query)) {
     if (OB_FAIL(ObTransformUtils::adjust_pseudo_column_like_exprs(*temp_table_query))) {
       LOG_WARN("failed to adjust pseudo column like exprs", K(ret));
-    } else if (OB_FAIL(temp_table_query->formalize_stmt(ctx_->session_info_))) {
+    } else if (OB_FAIL(temp_table_query->formalize_stmt(ctx_->session_info_, false))) {
       LOG_WARN("failed to formalize stmt", K(ret));
     } else if (OB_FAIL(temp_table_query->formalize_stmt_expr_reference(ctx_->expr_factory_,
                                                                        ctx_->session_info_))) {
@@ -1433,7 +1433,7 @@ int ObTransformTempTable::inner_create_temp_table(ObSelectStmt *parent_stmt,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpect null stmt", K(ret));
   } else if (parent_stmt->is_set_stmt()) {
-    if (OB_FAIL(ObTransformUtils::pack_stmt(ctx_, parent_stmt))) {
+    if (OB_FAIL(ObTransformUtils::pack_stmt(ctx_, parent_stmt, true))) {
       LOG_WARN("failed to create temp table for set stmt", K(ret));
     } else {
       LOG_TRACE("succeed to create temp table", KPC(parent_stmt));
@@ -1514,7 +1514,7 @@ int ObTransformTempTable::inner_create_temp_table(ObSelectStmt *parent_stmt,
       LOG_WARN("failed to rebuild table hash", K(ret));
     } else if (OB_FAIL(view_table->ref_query_->update_column_item_rel_id())) {
       LOG_WARN("failed to update column item by id", K(ret));
-    } else if (OB_FAIL(view_table->ref_query_->formalize_stmt(ctx_->session_info_))) {
+    } else if (OB_FAIL(view_table->ref_query_->formalize_stmt(ctx_->session_info_, false))) {
       LOG_WARN("failed to formalize stmt", K(ret));
     }
   }
@@ -1651,6 +1651,11 @@ int ObTransformTempTable::apply_temp_table(ObSelectStmt *parent_stmt,
     } else if (OB_FAIL(apply_temp_table_columns(context, map_info, temp_table_query, view,
                                                 old_view_columns, new_temp_columns))) {
       LOG_WARN("failed to apply temp table columns", K(ret));
+    } else if (OB_FAIL(update_table_id_for_pseudo_columns(view, temp_table_query, map_info))) {
+      // Since the mapping of pseudo-columns is not established in map_info,
+      // and the same_as interface currently cannot correct it either, the table information
+      // recorded in the pseudo-columns added to the temp table during merge is incorrect and needs to be corrected.
+      LOG_WARN("failed to update table id for pseudo columns", K(ret));
     } else if (OB_FAIL(apply_temp_table_select_list(context, map_info, parent_stmt,
                                                     temp_table_query, view, view_table,
                                                     old_view_columns, new_temp_columns))) {
@@ -1741,6 +1746,55 @@ int ObTransformTempTable::apply_temp_table_columns(ObStmtCompareContext &context
             LOG_WARN("failed to add column item", K(ret));
           } else if (OB_FAIL(new_column_list.push_back(col_ref))) {
             LOG_WARN("failed to push back expr", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformTempTable::update_table_id_for_pseudo_columns(ObSelectStmt *view,
+                                                             ObSelectStmt *temp_table_query,
+                                                             const ObStmtMapInfo& map_info)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObRawExpr *, 8> relation_exprs;
+  ObSEArray<ObRawExpr *, 8> pseudo_column_like_exprs;
+  if (OB_ISNULL(temp_table_query)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpect null stmt", K(ret), K(temp_table_query));
+  } else if (OB_FAIL(view->get_relation_exprs(relation_exprs))) {
+    LOG_WARN("failed to get relation exprs", K(ret));
+  } else if (OB_FAIL(ObTransformUtils::extract_pseudo_column_like_expr(relation_exprs,
+                                                                       pseudo_column_like_exprs))) {
+    LOG_WARN("failed to extract pseudo column like expr", K(ret));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < pseudo_column_like_exprs.count(); ++i) {
+      ObPseudoColumnRawExpr *pseudo_column_like_expr = NULL;
+      TableItem *table_item = NULL;
+      if (OB_ISNULL(pseudo_column_like_exprs.at(i)) ||
+          OB_UNLIKELY(!pseudo_column_like_exprs.at(i)->is_pseudo_column_expr())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpect null expr", K(ret), K(pseudo_column_like_expr));
+      } else if (OB_FALSE_IT(pseudo_column_like_expr =
+                 static_cast<ObPseudoColumnRawExpr *>(pseudo_column_like_exprs.at(i)))) {
+      } else {
+        uint64_t table_id = OB_INVALID_ID;
+        ObRelIds table_set;
+        if (OB_FAIL(ObStmtComparer::get_map_table(map_info, view, temp_table_query,
+                                                  pseudo_column_like_expr->get_table_id(), table_id))) {
+          LOG_WARN("failed to get map table", K(ret));
+        } else if (OB_INVALID_ID == table_id) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpect invalid table id", K(ret));
+        } else if (OB_FAIL(temp_table_query->get_table_rel_ids(table_id, table_set))) {
+          LOG_WARN("failed to get table rel ids", K(ret));
+        } else {
+          pseudo_column_like_expr->set_table_id(table_id);
+          pseudo_column_like_expr->get_relation_ids().reuse();
+          if (OB_FAIL(pseudo_column_like_expr->get_relation_ids().add_members(table_set))) {
+            LOG_WARN("failed to add members", K(ret));
           }
         }
       }
@@ -2111,7 +2165,13 @@ int ObTransformTempTable::need_transform(const common::ObIArray<ObParentDMLStmt>
   need_trans = false;
   const ObQueryHint *query_hint = NULL;
   const ObHint *trans_hint = NULL;
-  if (OB_ISNULL(ctx_) || OB_ISNULL(query_hint = stmt.get_stmt_hint().query_hint_)) {
+  bool bypass = false;
+  if (OB_FAIL(check_rule_bypass(stmt, bypass))) {
+    LOG_WARN("fail check stmt validity", K(ret));
+  } else if (bypass) {
+    need_trans = false;
+    OPT_TRACE("transform rule bypassed");
+  } else if (OB_ISNULL(ctx_) || OB_ISNULL(query_hint = stmt.get_stmt_hint().query_hint_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), K(ctx_), K(query_hint));
   } else if (!parent_stmts.empty() || current_level != 0 ||
@@ -2119,10 +2179,7 @@ int ObTransformTempTable::need_transform(const common::ObIArray<ObParentDMLStmt>
     need_trans = false;
   } else if (!query_hint->has_outline_data()) {
     // TODO: sean.yyj make the priority of rule hint higher than cost based hint
-    if (OB_FAIL(ObTransformUtils::is_cost_based_trans_enable(ctx_, query_hint->global_hint_,
-                                                             need_trans))) {
-      LOG_WARN("failed to check cost based transform enable", K(ret));
-    }
+    need_trans = ObTransformUtils::is_cost_based_trans_enable(*ctx_, query_hint->global_hint_);
   } else if (NULL == (trans_hint = query_hint->get_outline_trans_hint(ctx_->trans_list_loc_))) {
     /*do nothing*/
     OPT_TRACE("outline reject transform");
@@ -2311,7 +2368,7 @@ int ObTransformTempTable::check_hint_allowed_trans(const ObSelectStmt &ref_query
 
 int ObTransformTempTable::get_stmt_pointers(ObDMLStmt &root_stmt,
                                             ObIArray<ObSelectStmt *> &stmts,
-                                            hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                            hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                             ObIArray<ObSelectStmtPointer> &stmt_ptrs)
 {
   int ret = OB_SUCCESS;
@@ -2417,7 +2474,7 @@ int ObTransformTempTable::accept_cte_transform(ObDMLStmt &origin_root_stmt,
                                                common::ObIArray<ObSelectStmt *> &origin_stmts,
                                                common::ObIArray<ObSelectStmt *> &trans_stmts,
                                                common::ObIArray<ObSelectStmt *> &accept_stmts,
-                                               hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                               hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                                bool force_accept,
                                                bool &trans_happened)
 {
@@ -2555,6 +2612,7 @@ int ObTransformTempTable::evaluate_cte_cost(ObDMLStmt &root_stmt,
     } else {
       CREATE_WITH_TEMP_CONTEXT(param) {
         ObRawExprFactory tmp_expr_factory(CURRENT_CONTEXT->get_arena_allocator());
+        eval_cost_helper.tmp_expr_factory_ = &tmp_expr_factory;
         HEAP_VAR(ObOptimizerContext, optctx,
                 ctx_->session_info_,
                 ctx_->exec_ctx_,
@@ -2599,7 +2657,7 @@ int ObTransformTempTable::accept_cte_transform_v2(ObDMLStmt &origin_root_stmt,
                                                   common::ObIArray<ObSelectStmt *> &origin_stmts,
                                                   common::ObIArray<ObSelectStmt *> &trans_stmts,
                                                   common::ObIArray<ObSelectStmt *> &accept_stmts,
-                                                  hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                                  hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                                   bool force_accept,
                                                   bool &trans_happened)
 {
@@ -2748,6 +2806,9 @@ int ObTransformTempTable::evaluate_cte_cost_partially(ObDMLStmt *root_stmt,
                                         trans.get_max_iteration_count(),
                                         trans_happended))) {
       LOG_WARN("failed to transform heuristic rule", K(ret));
+    } else if (OB_NOT_NULL(root_stmt) && OB_FAIL(root_stmt->formalize_stmt(ctx_->session_info_, true))) {
+      // jinmao TODO: defensive code, remove it later
+      LOG_WARN("failed to formalize stmt", K(ret));
     } else if (OB_FAIL(check_evaluate_after_transform(root_stmt, stmts, can_eval))) {
       LOG_WARN("failed to check after transform", K(ret));
     } else if (!can_eval) {
@@ -2769,6 +2830,7 @@ int ObTransformTempTable::evaluate_cte_cost_partially(ObDMLStmt *root_stmt,
     } else {
       CREATE_WITH_TEMP_CONTEXT(param) {
         ObRawExprFactory tmp_expr_factory(CURRENT_CONTEXT->get_arena_allocator());
+        eval_cost_helper.tmp_expr_factory_ = &tmp_expr_factory;
         HEAP_VAR(ObOptimizerContext, optctx,
                 ctx_->session_info_,
                 ctx_->exec_ctx_,
@@ -2848,9 +2910,13 @@ int ObTransformTempTable::evaluate_cte_cost_globally(ObDMLStmt *origin_root,
                                                 trans.get_max_iteration_count(),
                                                 trans_happended))) {
       LOG_WARN("failed to transform heuristic rule", K(ret));
+    } else if (OB_NOT_NULL(root_stmt) && OB_FAIL(root_stmt->formalize_stmt(ctx_->session_info_, true))) {
+      // jinmao TODO: defensive code, remove it later
+      LOG_WARN("failed to formalize stmt", K(ret));
     } else {
       CREATE_WITH_TEMP_CONTEXT(param) {
         ObRawExprFactory tmp_expr_factory(CURRENT_CONTEXT->get_arena_allocator());
+        eval_cost_helper.tmp_expr_factory_ = &tmp_expr_factory;
         HEAP_VAR(ObOptimizerContext, optctx,
                 ctx_->session_info_,
                 ctx_->exec_ctx_,
@@ -2907,7 +2973,7 @@ int ObTransformTempTable::evaluate_cte_cost_globally(ObDMLStmt *origin_root,
 
 int ObTransformTempTable::need_check_global_cte_cost(const ObDMLStmt *root_stmt,
                                                      const ObIArray<ObSelectStmt *> &origin_stmts,
-                                                     const hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
+                                                     const hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> &parent_map,
                                                      const ObSelectStmt *temp_table_query,
                                                      ObIArray<int64_t> &semi_join_stmt_ids,
                                                      bool &check_global_cost)
@@ -2922,39 +2988,16 @@ int ObTransformTempTable::need_check_global_cte_cost(const ObDMLStmt *root_stmt,
     // 1. can pushdown dynamic filter
     for (int64_t i = 0; OB_SUCC(ret) && !check_global_cost && i < origin_stmts.count(); ++i) {
       const ObSelectStmt *stmt = origin_stmts.at(i);
-      ObSEArray<int64_t, 4> sel_idxs;
-      if (OB_ISNULL(stmt)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("stmt is null", K(ret));
-      } else {
-        // collect idxs of select items that can match index
-        for (int64_t j = 0; OB_SUCC(ret) && j < stmt->get_select_item_size(); j++) {
-          bool match_index = false;
-          if (OB_FAIL(ObTransformUtils::check_select_item_match_index(root_stmt,
-                                                                      stmt,
-                                                                      ctx_->sql_schema_guard_,
-                                                                      j,
-                                                                      match_index))) {
-            LOG_WARN("failed to check select item match index", K(ret));
-          } else if (!match_index) {
-            // do nothing
-          } else if (OB_FAIL(sel_idxs.push_back(j))) {
-            LOG_WARN("failed to push back", K(ret));
-          }
-        }
-      }
-      // check the opportunity of pushing down dynamic filter to view through NLJ inner path
-      if (OB_SUCC(ret) && sel_idxs.count() > 0) {
-        bool use_for_join = false;
-        if (OB_FAIL(check_projected_cols_used_for_join(stmt,
-                                                       parent_map,
-                                                       sel_idxs,
-                                                       semi_join_stmt_ids,
-                                                       use_for_join))) {
-          LOG_WARN("failed to check projected cols used for join", K(ret));
-        } else if (use_for_join) {
-          check_global_cost = true;
-        }
+      bool has_nlj_opportunity = false;
+      if (OB_FAIL(ObTransformUtils::check_nlj_opportunity(*ctx_,
+                                                          root_stmt,
+                                                          stmt,
+                                                          parent_map,
+                                                          semi_join_stmt_ids,
+                                                          has_nlj_opportunity))) {
+        LOG_WARN("failed to check nlj opportunity", K(ret));
+      } else if (has_nlj_opportunity) {
+        check_global_cost = true;
       }
     }
     // 2. current temp table references another temp table（may inline after extraction）
@@ -2965,361 +3008,6 @@ int ObTransformTempTable::need_check_global_cte_cost(const ObDMLStmt *root_stmt,
         LOG_WARN("table item is null", K(ret));
       } else if (table_item->is_temp_table()) {
         check_global_cost = true;
-      }
-    }
-  }
-  return ret;
-}
-
-
-/**
- * @brief check_projected_cols_used_for_join
- * check whether select items projected from the generated table are used for joins (pushdown dynamic filter)
- * @param semi_join_stmt_ids refers to stmts that use target generated table as left table of semi join
- */
-int ObTransformTempTable::check_projected_cols_used_for_join(const ObSelectStmt *stmt,
-                                                             const hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
-                                                             const ObIArray<int64_t> &sel_idxs,
-                                                             ObIArray<int64_t> &semi_join_stmt_ids,
-                                                             bool &used_for_join)
-{
-  int ret = OB_SUCCESS;
-  uint64_t cur_table_id = OB_INVALID_ID;
-  ObDMLStmt *parent_stmt = NULL;
-  if (OB_ISNULL(stmt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("params are invalid", K(ret));
-  } else if (sel_idxs.count() == 0 || used_for_join) {
-    // do nothing
-  } else if (OB_FAIL(get_parent_stmt(stmt, parent_map, cur_table_id, parent_stmt))) {
-    LOG_WARN("failed to get parent stmt", K(ret));
-  } else if (OB_ISNULL(parent_stmt)) {
-    // do nothing
-  } else if (parent_stmt->is_set_stmt()) {
-    if (OB_FAIL(SMART_CALL(check_projected_cols_used_for_join(static_cast<const ObSelectStmt*>(parent_stmt),
-                                                              parent_map,
-                                                              sel_idxs,
-                                                              semi_join_stmt_ids,
-                                                              used_for_join)))) {
-      LOG_WARN("failed to check projected cols used for join", K(ret));
-    }
-  } else if (cur_table_id != OB_INVALID_ID) {
-    ObStmtExprGetter visitor;
-    ObSEArray<ObRawExpr*, 4> tmp_conds;
-    ObSEArray<ObColumnRefRawExpr*, 4> join_col_exprs;
-    ObSEArray<ObColumnRefRawExpr*, 4> mapped_col_exprs;
-    bool can_filter_pushdown = false;
-    visitor.remove_all();
-    visitor.add_scope(SCOPE_JOINED_TABLE);
-    visitor.add_scope(SCOPE_WHERE);
-    visitor.add_scope(SCOPE_SEMI_INFO);
-    parent_stmt->get_relation_exprs(tmp_conds, visitor);
-    // convert select item idxs to columns of parent stmt
-    for (int64_t i = 0; OB_SUCC(ret) && i < sel_idxs.count(); ++i) {
-      int64_t col_id = sel_idxs.at(i) + OB_APP_MIN_COLUMN_ID;
-      ColumnItem *col_item = NULL;
-      ObColumnRefRawExpr *col_expr = NULL;
-      if (OB_ISNULL(col_item = parent_stmt->get_column_item(cur_table_id, col_id))) {
-        // do nothing, unused cols are not in the stmt
-      } else if (OB_ISNULL(col_expr = col_item->get_expr())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("column expr is NULL", K(ret));
-      } else if (OB_FAIL(mapped_col_exprs.push_back(col_expr))) {
-        LOG_WARN("failed to push back column expr", K(ret));
-      }
-    }
-    // collect cols used in join conditions
-    for (int64_t i = 0; OB_SUCC(ret) && i < tmp_conds.count(); ++i) {
-      ObRawExpr *cond = NULL;
-      if (OB_ISNULL(cond = tmp_conds.at(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("expr is NULL", K(ret));
-      } else if (cond->get_relation_ids().num_members() < 2 &&
-                 !cond->has_flag(CNT_SUB_QUERY)) {
-        // do nothing
-      } else if (OB_FAIL(ObTransformUtils::get_simple_filter_column(parent_stmt,
-                                                                    cond,
-                                                                    cur_table_id,
-                                                                    join_col_exprs))) {
-        LOG_WARN("failed to get simple filter column", K(ret));
-      } else if ((cond->has_flag(IS_WITH_ANY) || cond->has_flag(IS_WITH_ALL)) &&
-                 IS_SUBQUERY_COMPARISON_OP(cond->get_expr_type())) {
-        ObColumnRefRawExpr *col = NULL;
-        if (cond->get_param_count() != 2 || OB_ISNULL(cond->get_param_expr(0)) ||
-            OB_ISNULL(cond->get_param_expr(1))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected expr", K(ret));
-        } else if (cond->get_param_expr(0)->is_column_ref_expr()) {
-          col = static_cast<ObColumnRefRawExpr*>(cond->get_param_expr(0));
-          if (col->get_table_id() != cur_table_id) {
-            // do nothing
-          } else if (OB_FAIL(join_col_exprs.push_back(col))) {
-            LOG_WARN("failed to push back column expr", K(ret));
-          }
-        }
-      }
-    }
-    // collect cols from candi join condition (subquery unnest)
-    for (int64_t i = 0; OB_SUCC(ret) && i < parent_stmt->get_subquery_expr_size(); ++i) {
-      ObQueryRefRawExpr *expr = parent_stmt->get_subquery_exprs().at(i);
-      if (OB_ISNULL(expr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("expr is NULL", K(ret));
-      } else if (OB_FAIL(extract_pushdown_cols(*expr, cur_table_id, join_col_exprs))) {
-        LOG_WARN("failed to extract pushdown cols", K(ret));
-      }
-    }
-    // check overlap of join_col_exprs and mapped_col_exprs
-    for (int64_t i = 0; OB_SUCC(ret) && !used_for_join && i < join_col_exprs.count(); ++i) {
-      ObColumnRefRawExpr* col = join_col_exprs.at(i);
-      if (OB_ISNULL(col)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpect null column expr", K(ret));
-      } else if (ObOptimizerUtil::find_item(mapped_col_exprs, col)) {
-        used_for_join = true;
-      }
-    }
-    if (OB_FAIL(ret)) {
-    } else if (used_for_join) {
-      if (OB_FAIL(collect_semi_join_stmt_ids(*parent_stmt,
-                                             mapped_col_exprs,
-                                             cur_table_id,
-                                             semi_join_stmt_ids))) {
-        LOG_WARN("failed to collect semi join stmt ids", K(ret));
-      }
-    } else if (parent_stmt->is_select_stmt()) {
-      // recursively check parent stmt if need
-      const ObSelectStmt *sel_stmt = static_cast<const ObSelectStmt*>(parent_stmt);
-      ObSEArray<int64_t,4> new_sel_idxs;
-      if (OB_FAIL(can_push_dynamic_filter_to_cols(sel_stmt,
-                                                mapped_col_exprs,
-                                                cur_table_id,
-                                                new_sel_idxs,
-                                                can_filter_pushdown))) {
-        LOG_WARN("failed to check filter pushdown to cols", K(ret));
-      } else if (!can_filter_pushdown) {
-        // do nothing
-      } else if (OB_FAIL(SMART_CALL(check_projected_cols_used_for_join(sel_stmt,
-                                                                       parent_map,
-                                                                       new_sel_idxs,
-                                                                       semi_join_stmt_ids,
-                                                                       used_for_join)))) {
-        LOG_WARN("failed to check projected cols used for join", K(ret));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTransformTempTable::extract_pushdown_cols(const ObQueryRefRawExpr &query_ref,
-                                                uint64_t cur_table_id,
-                                                ObIArray<ObColumnRefRawExpr*> &pushdown_cols)
-{
-  int ret = OB_SUCCESS;
-  ObColumnRefRawExpr *col = NULL;
-  for (int64_t j = 0; OB_SUCC(ret) && j < query_ref.get_exec_params().count(); j++) {
-    ObExecParamRawExpr *exec_param = query_ref.get_exec_params().at(j);
-    if (OB_ISNULL(exec_param) || OB_ISNULL(exec_param->get_ref_expr())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("exec param is NULL", K(ret));
-    } else if (!exec_param->get_ref_expr()->is_column_ref_expr()) {
-      // do nothing
-    } else if (OB_FALSE_IT(col = static_cast<ObColumnRefRawExpr*>(exec_param->get_ref_expr()))) {
-    } else if (col->get_table_id() != cur_table_id) {
-      // do nothing
-    } else if (OB_FAIL(pushdown_cols.push_back(col))) {
-      LOG_WARN("failed to push back column expr", K(ret));
-    }
-  }
-  return ret;
-}
-
-int ObTransformTempTable::collect_semi_join_stmt_ids(const ObDMLStmt &parent_stmt,
-                                                     const ObIArray<ObColumnRefRawExpr*> &mapped_col_exprs,
-                                                     uint64_t cur_table_id,
-                                                     ObIArray<int64_t> &semi_join_stmt_ids)
-{
-  int ret = OB_SUCCESS;
-  // collect stmt id if generated table is on left side of semi join
-  bool found = false;
-  for (int64_t i = 0; OB_SUCC(ret) && !found && i < parent_stmt.get_semi_infos().count(); ++i) {
-    SemiInfo *semi_info = parent_stmt.get_semi_infos().at(i);
-    if (OB_ISNULL(semi_info)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("semi info is NULL", K(ret));
-    } else if (!semi_info->is_semi_join()) {
-      // do nothing
-    } else if (!ObOptimizerUtil::find_item(semi_info->left_table_ids_, cur_table_id)) {
-      // do nothing
-    } else if (OB_FAIL(add_var_to_array_no_dup(semi_join_stmt_ids, parent_stmt.stmt_id_))) {
-      LOG_WARN("failed to add var to array no dup", K(ret));
-    } else {
-      found = true;
-    }
-  }
-  // collect stmt id from any/all/exists subquery (candidate semi join)
-  for (int64_t i = 0; OB_SUCC(ret) && !found && i < parent_stmt.get_condition_size(); i++) {
-    ObRawExpr *cond = const_cast<ObRawExpr*>(parent_stmt.get_condition_expr(i));
-    ObQueryRefRawExpr *query_ref = NULL;
-    ObSEArray<ObColumnRefRawExpr*, 2> candi_cols;
-    if (OB_ISNULL(cond)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("cond is NULL", K(ret));
-    } else if (cond->get_expr_type() == T_OP_EXISTS) {
-      if (cond->get_param_count() != 1 || OB_ISNULL(cond->get_param_expr(0)) ||
-          !cond->get_param_expr(0)->is_query_ref_expr()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected expr", K(ret));
-      } else if (OB_FALSE_IT(query_ref = static_cast<ObQueryRefRawExpr*>(cond->get_param_expr(0)))) {
-      } else if (OB_FAIL(extract_pushdown_cols(*query_ref, cur_table_id, candi_cols))) {
-        LOG_WARN("failed to extract pushdown cols", K(ret));
-      } else {
-        for (int64_t j = 0; OB_SUCC(ret) && !found && j < candi_cols.count(); ++j) {
-          if (ObOptimizerUtil::find_item(mapped_col_exprs, candi_cols.at(j))) {
-            found = true;
-            if (OB_FAIL(add_var_to_array_no_dup(semi_join_stmt_ids, parent_stmt.stmt_id_))) {
-              LOG_WARN("failed to add var to array no dup", K(ret));
-            }
-          }
-        }
-      }
-    } else if ((cond->has_flag(IS_WITH_ANY) || cond->has_flag(IS_WITH_ALL)) &&
-                IS_SUBQUERY_COMPARISON_OP(cond->get_expr_type())) {
-      ObColumnRefRawExpr *col = NULL;
-      if (cond->get_param_count() != 2 || OB_ISNULL(cond->get_param_expr(0)) ||
-          OB_ISNULL(cond->get_param_expr(1))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected expr", K(ret));
-      } else if (cond->get_param_expr(0)->is_column_ref_expr() &&
-                 OB_FALSE_IT(col = static_cast<ObColumnRefRawExpr*>(cond->get_param_expr(0))) &&
-                 OB_FAIL(candi_cols.push_back(col))) {
-        LOG_WARN("failed to push back column expr", K(ret));
-      } else if (!cond->get_param_expr(1)->is_query_ref_expr()) {
-        // do nothing
-      } else if (OB_FALSE_IT(query_ref = static_cast<ObQueryRefRawExpr*>(cond->get_param_expr(1)))) {
-      } else if (OB_FAIL(extract_pushdown_cols(*query_ref, cur_table_id, candi_cols))) {
-        LOG_WARN("failed to extract pushdown cols", K(ret));
-      } else {
-        for (int64_t j = 0; OB_SUCC(ret) && !found && j < candi_cols.count(); ++j) {
-          if (ObOptimizerUtil::find_item(mapped_col_exprs, candi_cols.at(j))) {
-            found = true;
-            if (OB_FAIL(add_var_to_array_no_dup(semi_join_stmt_ids, parent_stmt.stmt_id_))) {
-              LOG_WARN("failed to add var to array no dup", K(ret));
-            }
-          }
-        }
-      }
-    }
-  }
-  return ret;
-}
-
-/**
- * @brief can_push_dynamic_filter_to_cols
- * check if any dynamic filter of select item can be pushed down to the input column set.
- * NOTE: This is not a strict check, will miss some scenarios with group by and window functions. (fd, equal sets ...)
- * @param col_exprs input column (sub)set of table item
- * @param sel_idxs idxs of select items that can pushdown dynamic filter to input column set
- */
-int ObTransformTempTable::can_push_dynamic_filter_to_cols(const ObSelectStmt *stmt,
-                                                        const ObIArray<ObColumnRefRawExpr*> &col_exprs,
-                                                        uint64_t table_id,
-                                                        ObIArray<int64_t> &sel_idxs,
-                                                        bool &can_filter_pushdown)
-{
-  int ret = OB_SUCCESS;
-  bool has_rownum = false;
-  bool on_null_side = false;
-  ObSEArray<ObRawExpr*, 4> tmp_col_exprs;
-  can_filter_pushdown = true;
-  sel_idxs.reuse();
-  if (OB_ISNULL(stmt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("stmt is NULL", K(ret));
-  } else if (OB_FAIL(stmt->has_rownum(has_rownum))) {
-    LOG_WARN("failed to check stmt has rownum", K(ret));
-  } else if (OB_FAIL(ObOptimizerUtil::is_table_on_null_side(stmt, table_id, on_null_side))) {
-    LOG_WARN("failed to check table on null side", K(ret));
-  } else if (stmt->is_hierarchical_query() || on_null_side || has_rownum || stmt->has_limit() ||
-             stmt->has_sequence() || stmt->is_contains_assignment() || stmt->is_scala_group_by()) {
-    can_filter_pushdown = false;
-  } else if (OB_FAIL(append(tmp_col_exprs, col_exprs))) {
-    LOG_WARN("failed to assign column exprs", K(ret));
-  } else if (stmt->get_group_exprs().count() > 0 &&
-             OB_FAIL(ObOptimizerUtil::intersect_exprs(tmp_col_exprs, stmt->get_group_exprs(), tmp_col_exprs))) {
-    LOG_WARN("failed to intersect exprs", K(ret));
-  } else if (stmt->has_window_function()) {
-    for (int64_t i = 0; OB_SUCC(ret) && !tmp_col_exprs.empty() && i < stmt->get_window_func_count(); ++i) {
-      const ObWinFunRawExpr *win_expr = NULL;
-      if (OB_ISNULL(win_expr = stmt->get_window_func_expr(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("window function expr is null", K(ret));
-      } else if (OB_FAIL(ObOptimizerUtil::intersect_exprs(tmp_col_exprs,
-                                                          win_expr->get_partition_exprs(),
-                                                          tmp_col_exprs))) {
-        LOG_WARN("failed to intersect expr array", K(ret));
-      }
-    }
-  }
-  if (OB_SUCC(ret) && can_filter_pushdown && !tmp_col_exprs.empty()) {
-    for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_select_items().count(); ++i) {
-      const SelectItem &sel_item = stmt->get_select_item(i);
-      if (OB_ISNULL(sel_item.expr_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("select item expr is NULL", K(ret));
-      } else if (ObOptimizerUtil::find_item(tmp_col_exprs, sel_item.expr_)) {
-        if (OB_FAIL(sel_idxs.push_back(i))) {
-          LOG_WARN("failed to push back select item idx", K(ret));
-        }
-      }
-    }
-  }
-  if (OB_SUCC(ret)) {
-    can_filter_pushdown &= !sel_idxs.empty();
-  }
-  return ret;
-}
-
-/**
- * @brief get_parent_stmt
- * @param table_id refers to the corresponding table id in parent_stmt, if stmt is a generated table query.
- *                 otherwise, it equals to OB_INVALID_ID.
- * @param parent_stmt returns NULL if stmt has no parent
- */
-int ObTransformTempTable::get_parent_stmt(const ObSelectStmt *stmt,
-                                          const hash::ObHashMap<uint64_t, ObParentDMLStmt> &parent_map,
-                                          uint64_t &table_id,
-                                          ObDMLStmt *&parent_stmt)
-{
-  int ret = OB_SUCCESS;
-  table_id = OB_INVALID_ID;
-  parent_stmt = NULL;
-  ObParentDMLStmt parent;
-  uint64_t key = 0;
-  if (OB_ISNULL(stmt)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("stmt is NULL", K(ret));
-  } else if (OB_FALSE_IT(key = reinterpret_cast<uint64_t>(stmt))) {
-  } else if (OB_FAIL(parent_map.get_refactored(key, parent))) {
-    if (ret == OB_HASH_NOT_EXIST) {
-      ret = OB_SUCCESS;
-    } else {
-      LOG_WARN("failed to get value", K(ret));
-    }
-  } else if (OB_ISNULL(parent_stmt = parent.stmt_)) {
-    // parent_stmt is null means stmt is a temp table query
-    // do nothing
-  } else {
-    // find generated table id
-    bool found = false;
-    for (int64_t i = 0; OB_SUCC(ret) && !found && i < parent_stmt->get_table_size(); ++i) {
-      const TableItem *table_item = NULL;
-      if (OB_ISNULL(table_item = parent_stmt->get_table_item(i))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("table item is NULL", K(ret));
-      } else if (table_item->is_generated_table() && table_item->ref_query_ == stmt) {
-        table_id = table_item->table_id_;
-        found = true;
       }
     }
   }
@@ -3515,7 +3203,7 @@ int ObTransformTempTable::prepare_inline_materialize_stmts(ObDMLStmt *root_stmt,
     LOG_WARN("unexpect stmt", K(ret));
   } else if (OB_FALSE_IT(temp_view = static_cast<ObSelectStmt *>(copied_temp_stmt))) {
     // 在 temp table query 上封一层视图（用以获取 temp table access 的代价）
-  } else if (ObTransformUtils::pack_stmt(ctx_, temp_view)) {
+  } else if (OB_FAIL(ObTransformUtils::pack_stmt(ctx_, temp_view))) {
     LOG_WARN("failed to create simple view", K(ret));
   } else if (1 != temp_view->get_table_size()) {
     ret = OB_ERR_UNEXPECTED;
@@ -3557,7 +3245,7 @@ int ObTransformTempTable::prepare_inline_materialize_stmts(ObDMLStmt *root_stmt,
                                                                         ctx_->src_hash_val_,
                                                                         i))) {
         LOG_WARN("failed to recursive adjust statement id", K(ret));
-      } else if (OB_FAIL(materialize_stmt->formalize_stmt(ctx_->session_info_))) {
+      } else if (OB_FAIL(materialize_stmt->formalize_stmt(ctx_->session_info_, false))) {
         LOG_WARN("failed to formalize stmt", K(ret));
       } else if (OB_FAIL(materialize_stmt->update_stmt_table_id(ctx_->allocator_, *temp_view))) {
         LOG_WARN("failed to update table id", K(ret));
@@ -3597,7 +3285,7 @@ int ObTransformTempTable::prepare_inline_materialize_stmts(ObDMLStmt *root_stmt,
       LOG_WARN("failed to recursive adjust statement id", K(ret));
     } else if (OB_FAIL(inline_stmt->update_stmt_table_id(ctx_->allocator_, *temp_table_info.temp_table_query_))) {
       LOG_WARN("failed to update table id", K(ret));
-    } else if (OB_FAIL(inline_stmt->formalize_stmt(ctx_->session_info_))) {
+    } else if (OB_FAIL(inline_stmt->formalize_stmt(ctx_->session_info_, false))) {
       LOG_WARN("failed to formalize stmt", K(ret));
     } else if (OB_FAIL(inline_stmt->formalize_stmt_expr_reference(ctx_->expr_factory_,
                                                                   ctx_->session_info_))) {
@@ -3620,7 +3308,7 @@ int ObTransformTempTable::evaluate_inline_materialize_costs(ObDMLStmt *origin_ro
                                                             ObIArray<int64_t> &choosed_materialize_idxs)
 {
   int ret = OB_SUCCESS;
-  hash::ObHashMap<uint64_t, ObParentDMLStmt> parent_map;
+  hash::ObHashMap<uint64_t, ObParentDMLStmt, common::hash::NoPthreadDefendMode> parent_map;
   ObSEArray<ObSelectStmt*, 8> dummy;
   ObSEArray<int64_t, 4> semi_join_stmt_ids;
   bool check_global_cost = false;
@@ -3829,8 +3517,10 @@ int ObTransformTempTable::prepare_eval_cte_cost_stmt(ObDMLStmt &root_stmt,
   }
 
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(copied_stmt->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(copied_stmt->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt", K(ret));
+  } else if (OB_FAIL(copied_stmt->formalize_special_domain_index_fields())) {
+    LOG_WARN("failed to formalize special domain index fields", K(ret));
   } else if (OB_FAIL(copied_stmt->formalize_stmt_expr_reference(ctx_->expr_factory_,
                                                                 ctx_->session_info_))) {
     LOG_WARN("failed to formalize stmt", K(ret));
@@ -3904,8 +3594,10 @@ int ObTransformTempTable::copy_and_replace_trans_root(ObDMLStmt &root_stmt,
       LOG_WARN("failed to adjust transformed stmt", K(ret));
   }
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(copied_stmt->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(copied_stmt->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt", K(ret));
+  } else if (OB_FAIL(copied_stmt->formalize_special_domain_index_fields())) {
+    LOG_WARN("failed to formalize special domain index fields", K(ret));
   } else if (OB_FAIL(copied_stmt->formalize_stmt_expr_reference(ctx_->expr_factory_,
                                                                 ctx_->session_info_))) {
     LOG_WARN("failed to formalize stmt", K(ret));

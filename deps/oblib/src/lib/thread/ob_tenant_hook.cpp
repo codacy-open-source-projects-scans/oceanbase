@@ -14,9 +14,7 @@
 #define _OCEABASE_TENANT_PRELOAD_H_
 
 #define _GNU_SOURCE 1
-#include "lib/thread/thread.h"
 #include "lib/thread/ob_thread_name.h"
-#include "lib/thread/protected_stack_allocator.h"
 #include "lib/stat/ob_diagnose_info.h"
 #include "lib/ash/ob_active_session_guard.h"
 #include <dlfcn.h>
@@ -178,12 +176,15 @@ int ob_pthread_cond_timedwait(pthread_cond_t *__restrict __cond,
 // ob_usleep wrapper function for C file
 void ob_usleep(const useconds_t v)
 {
-  oceanbase::common::ob_usleep<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>(v);
+  oceanbase::common::ob_usleep<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>(
+      v, static_cast<int64_t>(get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0)))));
+
 }
 
 void ob_idle_usleep(const useconds_t v)
 {
-  oceanbase::common::ob_usleep<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>(v, true);
+  oceanbase::common::ob_usleep<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>(
+      v, true, get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0))));
 }
 
 int futex_hook(uint32_t *uaddr, int futex_op, uint32_t val, const struct timespec* timeout)

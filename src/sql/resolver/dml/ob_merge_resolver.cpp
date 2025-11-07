@@ -12,18 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_merge_resolver.h"
-#include "share/ob_define.h"
-#include "share/schema/ob_schema_struct.h"
-#include "share/schema/ob_column_schema.h"
-#include "share/ob_autoincrement_param.h"
-#include "common/sql_mode/ob_sql_mode_utils.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
-#include "sql/resolver/expr/ob_raw_expr_info_extractor.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/resolver/ob_resolver_utils.h"
-#include "sql/resolver/dml/ob_insert_stmt.h"
-#include "sql/resolver/dml/ob_default_value_utils.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 namespace oceanbase
 {
@@ -60,8 +49,8 @@ int ObMergeResolver::resolve(const ParseNode &parse_tree)
   } else if (OB_ISNULL(merge_stmt = create_stmt<ObMergeStmt>())) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("create insert stmt failed", K(merge_stmt));
-  } else if (OB_FAIL(resolve_outline_data_hints())) {
-    LOG_WARN("resolve outline data hints failed", K(ret));
+  } else if (OB_FAIL(pre_process_hints(parse_tree))) {
+    LOG_WARN("pre process hints failed", K(ret));
   } else {
     if (OB_NOT_NULL(parse_tree.children_[insert_idx]) &&
           parse_tree.children_[insert_idx]->type_ != T_INSERT) {
@@ -390,12 +379,21 @@ int ObMergeResolver::resolve_table(const ParseNode &parse_tree, TableItem *&tabl
         OZ (resolve_unnest_item(*table_node, table_item));
         break;
       }
+      case T_HYBRID_SEARCH_EXPRESSION: {
+        OZ (resolve_hybrid_search_item(*table_node, table_item));
+        break;
+      }
       default: {
         /* won't be here */
         ret = OB_ERR_PARSER_SYNTAX;
         LOG_WARN("Unknown table type", "node_type", table_node->type_);
       }
     }
+  }
+  if (OB_ISNULL(table_item) || session_info_->is_inner()) {
+  } else if (OB_UNLIKELY(table_item->is_system_table_ && table_item->table_name_.case_compare(OB_ALL_LICENSE_TNAME) == 0)) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_WARN("modify license table is not allowed", KR(ret), K(table_item->table_name_), K(table_item->is_system_table_));
   }
   return ret;
 }
@@ -690,9 +688,7 @@ int ObMergeResolver::find_value_desc(ObInsertTableInfo &table_info,
     column_ref = table_info.values_vector_.at(idx);
     if (T_QUESTIONMARK == column_ref->get_expr_type()) {
       OZ (column_ref->add_flag(IS_TABLE_ASSIGN));
-      ObObj val = column_ref->get_result_type().get_param();
       OX (column_ref->set_result_type(value_desc.at(idx)->get_result_type()));
-      OX (column_ref->set_param(val));
     }
   }
   if (OB_ENTRY_NOT_EXIST == ret) {

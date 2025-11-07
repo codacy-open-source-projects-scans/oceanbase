@@ -12,10 +12,8 @@
 
 #define USING_LOG_PREFIX RS
 #include <gmock/gmock.h>
-#include <gtest/gtest.h>
 #define private public
 #include "observer/net/ob_shared_storage_net_throt_service.h"
-
 namespace oceanbase
 {
 using namespace common;

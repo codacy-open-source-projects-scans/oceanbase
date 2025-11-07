@@ -10,8 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
+#include "ob_protected_memtable_mgr_handle.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/ob_protected_memtable_mgr_handle.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::memtable;
@@ -66,7 +66,6 @@ int ObProtectedMemtableMgrHandle::try_reset_memtable_mgr_handle_()
   int ret = OB_SUCCESS;
   SpinWLockGuard guard(memtable_mgr_handle_lock_);
   if (need_reset_without_lock_()) {
-    STORAGE_LOG(INFO, "memtable_mgr has no memtable, release it", KR(ret), KPC(this));
     memtable_mgr_handle_.reset();
   }
   return ret;

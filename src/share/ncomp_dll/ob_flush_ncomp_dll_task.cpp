@@ -13,9 +13,6 @@
 
 #include "ob_flush_ncomp_dll_task.h"
 
-#include "share/ob_version.h"
-#include "share/ob_tenant_info_proxy.h"
-#include "share/ob_define.h"
 #include "share/ob_all_server_tracer.h"
 #include "share/stat/ob_dbms_stats_maintenance_window.h" // ObDbmsStatsMaintenanceWindow
 #include "observer/dbms_scheduler/ob_dbms_sched_table_operator.h" // ObDBMSSchedTableOperator
@@ -28,7 +25,7 @@ using namespace common;
 
 #define USEC_OF_HOUR (60 * 60 * 1000000LL)
 
-int ObFlushNcompDll::check_flush_ncomp_dll_job_exists(ObMySQLTransaction &trans,
+int ObFlushNcompDll::check_job_exists(ObMySQLTransaction &trans,
                                                         const uint64_t tenant_id,
                                                         const ObString &job_name,
                                                         bool &is_job_exists)
@@ -112,36 +109,16 @@ int ObFlushNcompDll::get_job_id(const uint64_t tenant_id,
   return ret;
 }
 
-int ObFlushNcompDll::get_job_action(ObSqlString &job_action)
+int ObFlushNcompDll::get_job_action(const ObSysVariableSchema &sys_variable, ObSqlString &job_action)
 {
   int ret = OB_SUCCESS;
-
-  common::ObZone zone;
-  ObArray<ObServerInfoInTable> servers_info;
-  common::hash::ObHashSet<ObServerInfoInTable::ObBuildVersion> observer_version_set;
-  bool need_comma = false;
-
+  bool is_oracle_mode = false;
   job_action.reset();
-
-  OZ (observer_version_set.create((4)));
-  OZ (share::ObAllServerTracer::get_instance().get_servers_info(zone, servers_info));
-  for (int64_t i = 0; OB_SUCC(ret) && i < servers_info.count(); ++i) {
-    OZ (observer_version_set.set_refactored(servers_info.at(i).get_build_version()));
-  }
-
-  //OZ (get_package_and_svn(build_version, sizeof(build_version)));
-  //OZ (job_action.assign_fmt("delete FROM %s where build_version != '%s'", OB_ALL_NCOMP_DLL_V2_TNAME, build_version));
-  OZ (job_action.append_fmt("delete FROM %s where build_version not in (", OB_ALL_NCOMP_DLL_V2_TNAME));
-  for (common::hash::ObHashSet<ObServerInfoInTable::ObBuildVersion>::const_iterator iter = observer_version_set.begin();
-      OB_SUCC(ret) && iter != observer_version_set.end();
-      iter++) {
-    OZ(job_action.append_fmt("%s'%s'", need_comma ? ", " : "", iter->first.ptr()));
-    OX (need_comma = true);
-  }
-  OZ(job_action.append(")"));
-
-  if (observer_version_set.created()) {
-    observer_version_set.destroy();
+  OZ (sys_variable.get_oracle_mode(is_oracle_mode));
+  if (!is_oracle_mode) {
+    OZ (job_action.assign_fmt("__DBMS_UPGRADE.FLUSH_DLL_NCOMP()"));
+  } else {
+    OZ (job_action.assign_fmt("\"__DBMS_UPGRADE\".FLUSH_DLL_NCOMP()"));
   }
 
   return ret;
@@ -159,7 +136,7 @@ int ObFlushNcompDll::create_flush_ncomp_dll_job_for_425(const ObSysVariableSchem
   if (OB_UNLIKELY(!is_user_tenant(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("must be user tenant", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(check_flush_ncomp_dll_job_exists(trans, tenant_id, async_flush_ncomp_dll_for_425, is_job_exists))) {
+  } else if (OB_FAIL(check_job_exists(trans, tenant_id, async_flush_ncomp_dll_for_425, is_job_exists))) {
     LOG_WARN("fail to check ncomp dll job", K(ret));
   } else if (is_job_exists) {
     // do nothing
@@ -188,11 +165,11 @@ int ObFlushNcompDll::create_flush_ncomp_dll_job(const ObSysVariableSchema &sys_v
   if (OB_UNLIKELY(!is_user_tenant(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("must be user tenant", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(check_flush_ncomp_dll_job_exists(trans, tenant_id, async_flush_ncomp_dll, is_job_exists))) {
+  } else if (OB_FAIL(check_job_exists(trans, tenant_id, async_flush_ncomp_dll, is_job_exists))) {
     LOG_WARN("fail to check ncomp dll job", K(ret));
   } else if (is_job_exists) {
     // do nothing
-  } else if (OB_FAIL(get_job_action(job_action))) {
+  } else if (OB_FAIL(get_job_action(sys_variable, job_action))) {
     LOG_WARN("fail to get job action", K(ret));
   } else if (OB_FAIL(create_flush_ncomp_dll_job_common(sys_variable,
                                                tenant_id,
@@ -241,7 +218,7 @@ int ObFlushNcompDll::create_flush_ncomp_dll_job_common(const ObSysVariableSchema
     ObString exec_env(pos, buf);
     int64_t current_hour = ob_time.parts_[DT_HOUR];
     int64_t hours_to_next_day = HOURS_PER_DAY - current_hour;
-    const int64_t start_usec = (current_time / USEC_OF_HOUR + hours_to_next_day) * USEC_OF_HOUR; // next day 00:00:00
+    const int64_t start_usec = ObTimeUtility::current_time();
     HEAP_VAR(dbms_scheduler::ObDBMSSchedJobInfo, job_info) {
       job_info.tenant_id_ = tenant_id;
       job_info.job_ = job_id;
@@ -253,16 +230,15 @@ int ObFlushNcompDll::create_flush_ncomp_dll_job_common(const ObSysVariableSchema
       job_info.job_style_ = ObString("regular");
       job_info.job_type_ = ObString("PLSQL_BLOCK");
       job_info.job_class_ = ObString("DEFAULT_JOB_CLASS");
-      job_info.what_ = job_action.ptr();
       job_info.start_date_ = start_usec;
       job_info.end_date_ = 64060560000000000; // 4000-01-01 00:00:00.000000
-      job_info.interval_ = ObString();
       job_info.repeat_interval_ = ObString();
       job_info.enabled_ = is_enabled;
       job_info.auto_drop_ = true;
       job_info.max_run_duration_ = SECS_PER_HOUR * 2;
       job_info.exec_env_ = exec_env;
       job_info.comments_ = ObString("used to auto flush ncomp dll table expired data");
+      job_info.func_type_ = dbms_scheduler::ObDBMSSchedFuncType::FLUSH_NCOMP_DLL_JOB;
 
       if (OB_FAIL(dbms_scheduler::ObDBMSSchedJobUtils::create_dbms_sched_job(trans,
                                                                             tenant_id,

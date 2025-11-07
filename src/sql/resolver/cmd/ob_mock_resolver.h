@@ -48,6 +48,9 @@ private:
       case T_FLUSH_MOCK:
         ret = stmt::T_FLUSH_MOCK;
         break;
+      case T_FLUSH_TABLE_MOCK:
+        ret = stmt::T_FLUSH_TABLE_MOCK;
+        break;
       case T_HANDLER_MOCK:
         ret = stmt::T_HANDLER_MOCK;
         break;
@@ -83,6 +86,12 @@ private:
         break;
       case T_DROP_LOGFILE_GROUP:
         ret = stmt::T_DROP_LOGFILE_GROUP;
+        break;
+      case T_GRANT_PROXY:
+        ret = stmt::T_GRANT_PROXY;
+        break;
+      case T_REVOKE_PROXY:
+        ret = stmt::T_REVOKE_PROXY;
         break;
       default:
         ret = stmt::T_NONE;

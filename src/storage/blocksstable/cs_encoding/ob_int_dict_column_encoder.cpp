@@ -13,12 +13,6 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_int_dict_column_encoder.h"
-#include "ob_cs_encoding_util.h"
-#include "ob_string_stream_encoder.h"
-#include "ob_integer_stream_encoder.h"
-#include "ob_column_datum_iter.h"
-#include "storage/blocksstable/ob_imicro_block_writer.h"
-#include "lib/codec/ob_codecs.h"
 
 namespace oceanbase
 {
@@ -40,7 +34,7 @@ int ObIntDictColumnEncoder::init(
     column_header_.type_ = type_;
     dict_encoding_meta_.distinct_val_cnt_ = ctx.ht_->distinct_val_cnt();
     dict_encoding_meta_.ref_row_cnt_ = row_count_;
-    if (ctx_->null_cnt_ > 0) {
+    if (ctx_->null_or_nop_cnt_ > 0) {
       dict_encoding_meta_.set_has_null();
     }
     column_header_.set_is_fixed_length();
@@ -70,7 +64,7 @@ int ObIntDictColumnEncoder::build_integer_dict_encoder_ctx_()
       is_monotonic_inc_integer_dict_ = true;
     }
   }
-  if (row_count_ == ctx_->null_cnt_) { // empty dict
+  if (row_count_ == ctx_->null_or_nop_cnt_) { // empty dict
     if (dict_encoding_meta_.distinct_val_cnt_ != 0) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected dict count", K(ret), KPC_(ctx), K_(dict_encoding_meta));
@@ -79,17 +73,28 @@ int ObIntDictColumnEncoder::build_integer_dict_encoder_ctx_()
     if (ObIntSC == store_class_ || ObDecimalIntSC == store_class_) {
       const int64_t int_min = static_cast<int64_t>(ctx_->integer_min_);
       const int64_t int_max = static_cast<int64_t>(ctx_->integer_max_);
-      if (OB_FAIL(integer_dict_enc_ctx_.build_signed_stream_meta(int_min, int_max, is_replace_null,
-          null_replaced_value, precision_width_size_, is_force_raw_,
-          ctx_->encoding_ctx_->major_working_cluster_version_, dict_integer_range_))) {
+      if (OB_FAIL(integer_dict_enc_ctx_.build_signed_stream_meta(
+              int_min,
+              int_max,
+              is_replace_null,
+              null_replaced_value,
+              precision_width_size_,
+              is_force_raw_,
+              ctx_->encoding_ctx_->major_working_cluster_version_,
+              dict_integer_range_))) {
         LOG_WARN("fail to build_signed_stream_meta", K(ret));
       }
     } else if (ObUIntSC == store_class_) {
       const uint64_t uint_min = static_cast<uint64_t>(ctx_->integer_min_);
       const uint64_t uint_max = static_cast<uint64_t>(ctx_->integer_max_);
       if (OB_FAIL(integer_dict_enc_ctx_.build_unsigned_stream_meta(
-          uint_min, uint_max, is_replace_null, null_replaced_value,
-          is_force_raw_, ctx_->encoding_ctx_->major_working_cluster_version_, dict_integer_range_))) {
+              uint_min,
+              uint_max,
+              is_replace_null,
+              null_replaced_value,
+              is_force_raw_,
+              ctx_->encoding_ctx_->major_working_cluster_version_,
+              dict_integer_range_))) {
         LOG_WARN("fail to build_unsigned_stream_meta", K(ret));
       }
     } else {
@@ -97,12 +102,15 @@ int ObIntDictColumnEncoder::build_integer_dict_encoder_ctx_()
       LOG_WARN("unexpected store class", K(ret), K_(store_class));
     }
 
+    ObPreviousColumnEncoding *pre_col_encoding = nullptr;
     if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(get_previous_cs_encoding(pre_col_encoding))) {
+      LOG_WARN("get_previous_cs_encoding fail", K(ret));
     } else if (OB_FAIL(integer_dict_enc_ctx_.build_stream_encoder_info(
         false/*has_null*/,
         is_monotonic_inc_integer_dict_,
         &ctx_->encoding_ctx_->cs_encoding_opt_,
-        ctx_->encoding_ctx_->previous_cs_encoding_.get_column_encoding(column_index_),
+        pre_col_encoding,
         0/*stream_idx*/, ctx_->encoding_ctx_->compressor_type_, ctx_->allocator_))) {
       LOG_WARN("fail to build_stream_encoder_info", K(ret));
     } else {
@@ -120,9 +128,7 @@ int ObIntDictColumnEncoder::store_column(ObMicroBufferWriter &buf_writer)
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
-  } else if (OB_FAIL(sort_dict_())) {
-    LOG_WARN("fail to sort dict", K(ret));
-  } else if (OB_FAIL(store_dict_encoding_meta_(buf_writer))) {
+  } else if (! ctx_->has_stored_meta_ && OB_FAIL(store_column_meta(buf_writer))) {
     LOG_WARN("fail to store dict encoding meta", K(ret), K_(dict_encoding_meta));
   } else if (OB_FAIL(store_dict_(buf_writer))) {
     LOG_WARN("fail to store dict", K(ret), K_(dict_encoding_meta));
@@ -165,6 +171,19 @@ int ObIntDictColumnEncoder::sort_dict_()
             KPC_(ctx), K(min), K(max), K_(is_monotonic_inc_integer_dict));
       }
     }
+  }
+  return ret;
+}
+
+int ObIntDictColumnEncoder::store_column_meta(ObMicroBufferWriter &buf_writer)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(sort_dict_())) {
+    LOG_WARN("fail to sort dict", K(ret));
+  } else if (OB_FAIL(store_dict_encoding_meta_(buf_writer))) {
+    LOG_WARN("fail to store dict encoding meta", K(ret), K_(dict_encoding_meta));
+  } else if (OB_FAIL(store_nop_bitmap(buf_writer))) {
+    LOG_WARN("fail to store nop bitmap", K(ret));
   }
   return ret;
 }

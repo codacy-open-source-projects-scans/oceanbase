@@ -83,7 +83,8 @@ public:
               const ObString &zone_priority,
               const bool create_with_palf,
               const palf::PalfBaseInfo &palf_base_info,
-              const uint64_t source_tenant_id);
+              const uint64_t source_tenant_id,
+              const ObAllTenantInfo &tenant_info);
   int create_user_ls(const share::ObLSStatusInfo &status_info,
                      const int64_t paxos_replica_num,
                      const share::schema::ZoneLocalityIArray &zone_locality,
@@ -97,6 +98,15 @@ public:
   bool is_valid();
 
 private:
+
+  int create_sys_ls_(
+      const ObILSAddr &addr,
+      const int64_t paxos_replica_num,
+      const share::ObAllTenantInfo &tenant_info,
+      const common::ObCompatibilityMode &compat_mode,
+      const bool create_with_palf,
+      const palf::PalfBaseInfo &palf_base_info);
+
  int construct_clone_tenant_ls_addrs_(const uint64_t source_tenant_id,
                                       ObLSAddr &addr);
  int do_create_ls_(const ObLSAddr &addr,
@@ -122,8 +132,6 @@ private:
                 common::ObMemberList &member_list,
                 common::ObMember &arbitration_service,
                 common::GlobalLearnerList &learner_list);
- int check_tenant_mv_merge_info_(const share::ObAllTenantInfo &tenant_info,
-                                 storage::ObMajorMVMergeInfo &major_mv_merge_info);
  int check_member_list_and_learner_list_all_in_meta_table_(
                 const common::ObMemberList &member_list,
                 const common::GlobalLearnerList &learner_list);
@@ -160,6 +168,7 @@ private:
  int alloc_sys_ls_addr(const uint64_t tenant_id,
                        const ObIArray<share::ObResourcePoolName> &pools,
                        const share::schema::ZoneLocalityIArray &zone_locality,
+                       const bool is_duplicate_ls,
                        common::ObIArray<ObLSReplicaAddr> &addrs);
 
  int alloc_user_ls_addr(const uint64_t tenant_id, const uint64_t unit_group_id,

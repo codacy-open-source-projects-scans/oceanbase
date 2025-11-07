@@ -15,8 +15,9 @@
 #include "ob_i_storage.h"
 #include "ob_storage_file.h"
 #include "ob_storage_oss_base.h"
-#include "ob_storage_cos_base.h"
 #include "ob_storage_s3_base.h"
+#include "hdfs/ob_storage_hdfs_jni_base.h"
+#include "ob_storage_obdal_base.h"
 #include "common/storage/ob_io_device.h"
 
 namespace oceanbase
@@ -39,11 +40,14 @@ class ObObjectDevice;
 void print_access_storage_log(const char *msg, const common::ObString &uri,
     const int64_t start_ts, const int64_t size = 0, bool *is_slow = NULL);
 int get_storage_type_from_path(const common::ObString &uri, ObStorageType &type);
+// specifically for external table, designed to be compatible with COS.
+int get_storage_type_from_path_for_external_table(const common::ObString &uri, ObStorageType &type);
 int validate_uri_type(const common::ObString &uri);
 int get_storage_type_from_name(const char *type_str, ObStorageType &type);
 const char *get_storage_type_str(const ObStorageType &type);
 bool is_io_error(const int result);
 bool is_object_storage_type(const ObStorageType &type);
+bool is_adaptive_append_mode(const ObObjectStorageInfo &storage_info);
 
 class ObExternalIOCounter final
 {
@@ -129,7 +133,7 @@ public:
 
   virtual ~ListAppendableObjectFragmentOp() { meta_arr_.reset(); }
   virtual int func(const dirent *entry) override;
-  virtual bool need_get_file_size() const { return need_size_; }
+  virtual bool need_get_file_meta() const { return need_size_; }
   int gen_object_meta(ObStorageObjectMeta &obj_meta);
 
   bool exist_format_meta() const { return exist_format_meta_; }
@@ -156,64 +160,6 @@ private:
   ObStorageUtil &util_;
 };
 
-// ObTopNMinimumDirEntryWithMarkerOperator is used to get the minimum N element, therefore, we need make
-// a Max-Heap(i.e. always push dirent when the count of Max-Heap is smaller than or equal to N, replace
-// top of Max-Hap when it is greater than new dirent and the count of Max-Heap is greater than N).
-class ObTopNMinimumDirEntryWithMarkerOperator : public ObBaseDirEntryOperator
-{
-public:
-  ObTopNMinimumDirEntryWithMarkerOperator(
-    const int64_t num,
-    const char *marker,
-    const bool need_size);
-  virtual ~ObTopNMinimumDirEntryWithMarkerOperator();
-
-  int func(const dirent *entry) final;
-  int handle_each_dir_entry(common::ObBaseDirEntryOperator &op);
-  virtual bool need_get_file_size() const override;
-
-  struct Entry
-  {
-    Entry() : obj_name_(nullptr), obj_size_(-1) {}
-    char *obj_name_;
-    int64_t obj_size_;
-
-    TO_STRING_KV(K_(obj_name), K_(obj_size));
-  };
-
-  // get top N minimum, we need make a Max-Heap,
-  // TopNCompElement should like this:
-  // bool operator(const T &lhs, const T &rhs)
-  // {
-  //    return lsh < rhs;
-  // }
-  //
-  // get top N maximum, TopNCompElement like this
-  // bool operator(const T &lhs, const T &rhs)
-  // {
-  //    return lsh > rhs;
-  // }
-  //
-  struct TopNCompElement
-  {
-    bool operator()(const Entry &lhs, const Entry &rhs);
-    int get_error_code();
-  };
-
-private:
-  int alloc_and_init_(const char *d_name, Entry &out_entry);
-  void free_memory_(Entry &out_entry);
-  int try_replace_top_(const char *d_name);
-  DISALLOW_COPY_AND_ASSIGN(ObTopNMinimumDirEntryWithMarkerOperator);
-private:
-  int64_t n_;
-  const char *marker_;
-  const bool need_size_;
-  TopNCompElement less_than_;
-  ObBinaryHeap<Entry, TopNCompElement> heap_;
-  DefaultPageAllocator allocator_;
-};
-
 class ObStorageUtil
 {
 public:
@@ -226,7 +172,7 @@ public:
 
   ////////////////////// READY //// TO //// DROP ///// BELOW ////////////////////////////////
   int is_exist(const common::ObString &uri, bool &exist);
-  int get_file_length(const common::ObString &uri, int64_t &file_length);
+  int is_directory(const common::ObString &uri, const bool is_adaptive, bool &is_directory);
   int del_file(const common::ObString &uri);
   int list_files(const common::ObString &dir_path, common::ObBaseDirEntryOperator &op);
   int list_directories(const common::ObString &dir_path, common::ObBaseDirEntryOperator &op);
@@ -236,7 +182,6 @@ public:
   int write_single_file(const common::ObString &uri, const char *buf, const int64_t size);
   int del_dir(const common::ObString &uri);
   int is_tagging(const common::ObString &uri, bool &is_tagging);
-  int list_files_with_marker(const common::ObString &dir_path, common::ObBaseDirEntryOperator &op);
   // This func is to check the object/file/dir exists or not.
   // If the uri is a common directory(not a 'SIMULATE_APPEND' object), please set @is_adaptive as FALSE
   // If the uri is a normal object, please set @is_adaptive as FALSE
@@ -244,6 +189,9 @@ public:
   // 'SIMULATE_APPEND' object, please set @is_adaptive as TRUE.
   int is_exist(const common::ObString &uri, const bool is_adaptive, bool &exist);
   int get_file_length(const common::ObString &uri, const bool is_adaptive, int64_t &file_length);
+  int get_file_stat(const common::ObString &uri, const bool is_adaptive, ObIODFileStat &statbuf);
+  int get_file_content_digest(
+      const common::ObString &uri, char *digest_buf, const int64_t digest_buf_len);
   int list_appendable_file_fragments(const common::ObString &uri, ObStorageObjectMeta &obj_meta);
 
   int del_file(const common::ObString &uri, const bool is_adaptive);
@@ -274,7 +222,7 @@ public:
       const ObIArray<ObString> &files_to_delete, ObIArray<int64_t> &failed_files_idx);
   int del_unmerged_parts(const common::ObString &uri);
 
-  // For one object, if given us the uri(no matter in oss, cos or s3), we can't tell the type of this object.
+  // For one object, if given us the uri(no matter in oss or s3), we can't tell the type of this object.
   // It may be a 'single、normal' object. Or it may be a 's3-appendable-object'(like a dir), containing several
   // 'single、normal' objects.
   // So, this function is for checking the object meta, to get its meta info
@@ -325,17 +273,11 @@ private:
   // If there also exists 'SIMULATE_APPEND' type object in this uri, this function will just list
   // this 'appendable-dir' name, not include its children objects' name.
   //
-  // NOTICE: children objects of 'appendable-dir' all have the same prefix(OB_S3_APPENDABLE_FRAGMENT_PREFIX).
+  // NOTICE: children objects of 'appendable-dir' all have the same prefix(OB_ADAPTIVELY_APPENDABLE_FRAGMENT_PREFIXT_PREFIX).
   //         If there exists some children objects not have this prefix, these objects will also be listed.
   //         Cuz we think these objects are just some common objects.
   //
-  // If op.is_marker_scan() is True:
-  // list objects under the directory 'uri' that are lexicographically greater than 'marker',
-  // and the number of objects returned does not exceed op.get_scan_count()
-  // If 'marker' is "", it means the listing starts from the lexicographically smallest object in the 'dir_name' directory
   // If op.get_scan_count() is <= 0, it indicates there is no upper limit on the number of objects listed
-  // If op.is_marker_scan() is False:
-  // 'marker' is unsed
   int list_adaptive_files(const common::ObString &uri, common::ObBaseDirEntryOperator &op);
   // ObjectStorage and Filesystem need to handle seperately.
   int handle_listed_objs(ObStorageListCtxBase *ctx_base, const common::ObString &uri,
@@ -357,8 +299,9 @@ private:
 
   ObStorageFileUtil file_util_;
   ObStorageOssUtil oss_util_;
-  ObStorageCosUtil cos_util_;
   ObStorageS3Util s3_util_;
+  ObStorageHdfsJniUtil hdfs_util_;
+  ObStorageObDalUtil obdal_util_;
   ObIStorageUtil* util_;
   common::ObObjectStorageInfo* storage_info_;
   bool init_state;
@@ -429,8 +372,9 @@ protected:
   ObIStorageReader *reader_;
   ObStorageFileReader file_reader_;
   ObStorageOssReader oss_reader_;
-  ObStorageCosReader cos_reader_;
   ObStorageS3Reader s3_reader_;
+  ObStorageHdfsReader hdfs_reader_;
+  ObStorageObDalReader obdal_reader_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
   bool has_meta_;
@@ -459,8 +403,9 @@ private:
   ObIStorageReader *reader_;
   ObStorageFileReader file_reader_;
   ObStorageOssReader oss_reader_;
-  ObStorageCosReader cos_reader_;
   ObStorageS3Reader s3_reader_;
+  ObStorageHdfsReader hdfs_reader_;
+  ObStorageObDalReader obdal_reader_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
   ObObjectStorageInfo *storage_info_;
@@ -479,8 +424,9 @@ protected:
   ObIStorageWriter *writer_;
   ObStorageFileSingleWriter file_writer_;
   ObStorageOssWriter oss_writer_;
-  ObStorageCosWriter cos_writer_;
   ObStorageS3Writer s3_writer_;
+  ObStorageHdfsWriter hdfs_writer_;
+  ObStorageObDalWriter obdal_writer_;
   int64_t start_ts_;
   char uri_[OB_MAX_URI_LENGTH];
   ObObjectStorageInfo *storage_info_;
@@ -514,8 +460,9 @@ private:
   ObIStorageWriter *appender_;
   ObStorageFileAppender file_appender_;
   ObStorageOssAppendWriter oss_appender_;
-  ObStorageCosAppendWriter cos_appender_;
   ObStorageS3AppendWriter s3_appender_;
+  ObStorageHdfsAppendWriter hdfs_appender_;
+  ObStorageObDalAppendWriter obdal_appender_;
   int64_t start_ts_;
   bool is_opened_;
   char uri_[OB_MAX_URI_LENGTH];
@@ -546,9 +493,9 @@ public:
 protected:
   ObIStorageMultiPartWriter *multipart_writer_;
   ObStorageFileMultiPartWriter file_multipart_writer_;
-  ObStorageCosMultiPartWriter cos_multipart_writer_;
   ObStorageOssMultiPartWriter oss_multipart_writer_;
   ObStorageS3MultiPartWriter s3_multipart_writer_;
+  ObStorageObDalMultiPartWriter obdal_multipart_writer_;
   int64_t start_ts_;
   bool is_opened_;
   char uri_[OB_MAX_URI_LENGTH];
@@ -569,14 +516,13 @@ public:
 protected:
   ObIStorageParallelMultipartWriter *multipart_writer_;
   ObStorageParallelFileMultiPartWriter file_multipart_writer_;
-  ObStorageParallelCosMultiPartWriter cos_multipart_writer_;
   ObStorageParallelOssMultiPartWriter oss_multipart_writer_;
   ObStorageParallelS3MultiPartWriter s3_multipart_writer_;
+  ObStorageParallelObDalMultiPartWriter obdal_multipart_writer_;
   int64_t start_ts_;
   bool is_opened_;
   char uri_[OB_MAX_URI_LENGTH];
   common::ObObjectStorageInfo *storage_info_;
-
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObStorageParallelMultiPartWriterBase);

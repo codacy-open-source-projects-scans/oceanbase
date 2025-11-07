@@ -11,25 +11,7 @@
  */
 
 #include "mds_tenant_service.h"
-#include "lib/list/ob_dlist.h"
-#include "lib/ob_errno.h"
-#include "lib/profile/ob_trace_id.h"
-#include "lib/string/ob_string_holder.h"
-#include "lib/time/ob_time_utility.h"
-#include "lib/utility/utility.h"
-#include "ob_clock_generator.h"
-#include "share/rc/ob_tenant_base.h"
-#include "share/allocator/ob_shared_memory_allocator_mgr.h"
-#include "storage/meta_mem/ob_tablet_map_key.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/tablet/ob_tablet_memtable_mgr.h"
-#include "storage/tx_storage/ob_ls_handle.h"
-#include "share/scn.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/ls/ob_ls_tablet_service.h"
 #include "storage/tablet/ob_tablet_iterator.h"
 
 namespace oceanbase
@@ -385,11 +367,11 @@ int ObTenantMdsTimer::try_recycle_mds_table_(ObTablet &tablet,
   #define PRINT_WRAPPER KR(ret), K(tablet.get_tablet_meta().tablet_id_), K(tablet_oldest_scn), KPC(this)
   int ret = OB_SUCCESS;
   const ObTabletPointerHandle &pointer_handle = tablet.get_pointer_handle();
-  ObTabletPointer *tablet_pointer = pointer_handle.get_resource_ptr();
+  ObTabletPointer *tablet_pointer = pointer_handle.get_tablet_pointer();
   MDS_TG(5_ms);
   if (OB_ISNULL(tablet_pointer)) {
     ret = OB_BAD_NULL_ERROR;
-    MDS_LOG_GC(ERROR, "down cast to tablet pointer failed");
+    MDS_LOG_GC(ERROR, "down cast to tablet pointer failed", K(pointer_handle));
   } else if (MDS_FAIL(tablet_pointer->try_release_mds_nodes_below(tablet_oldest_scn))) {
     MDS_LOG_GC(WARN, "fail to release mds nodes");
   } else {
@@ -404,11 +386,11 @@ int ObTenantMdsTimer::try_gc_mds_table_(ObTablet &tablet)
   #define PRINT_WRAPPER KR(ret), K(tablet.get_tablet_meta().tablet_id_), KPC(this)
   int ret = OB_SUCCESS;
   const ObTabletPointerHandle &pointer_handle = tablet.get_pointer_handle();
-  ObTabletPointer *tablet_pointer = pointer_handle.get_resource_ptr();
+  ObTabletPointer *tablet_pointer = pointer_handle.get_tablet_pointer();
   MDS_TG(5_ms);
   if (OB_ISNULL(tablet_pointer)) {
     ret = OB_BAD_NULL_ERROR;
-    MDS_LOG_GC(ERROR, "down cast to tablet pointer failed");
+    MDS_LOG_GC(ERROR, "down cast to tablet pointer failed", K(pointer_handle));
   } else if (MDS_FAIL(tablet_pointer->try_gc_mds_table())) {
     if (OB_EAGAIN != ret) {
       MDS_LOG_GC(WARN, "try gc mds table failed");

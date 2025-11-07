@@ -12,10 +12,9 @@
 
 #define USING_LOG_PREFIX SQL_REWRITE
 #include "sql/rewrite/ob_transform_late_materialization.h"
-#include "sql/rewrite/ob_transform_utils.h"
-#include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/optimizer/ob_log_table_scan.h"
 #include "sql/optimizer/ob_log_sort.h"
+#include "sql/optimizer/ob_log_join.h"
 
 namespace oceanbase
 {
@@ -117,6 +116,7 @@ int ObTransformLateMaterialization::check_stmt_need_late_materialization(const O
   } else if (stmt.has_hierarchical_query() ||
              stmt.has_group_by()||
              stmt.has_rollup() ||
+             stmt.has_grouping_sets() ||
              stmt.has_having() ||
              stmt.has_window_function() ||
              stmt.has_distinct() ||
@@ -329,7 +329,7 @@ int ObTransformLateMaterialization::get_accessible_index(const ObSelectStmt &sel
       OB_ISNULL(query_hint = select_stmt.get_stmt_hint().query_hint_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (OB_FAIL(ObTransformUtils::get_vaild_index_id(schema_guard, &select_stmt, &table_item,
+  } else if (OB_FAIL(ObTransformUtils::get_valid_index_id(schema_guard, &select_stmt, &table_item,
                                                           index_ids))) {
     LOG_WARN("fail to get vaild index id", K(ret));
   } else {
@@ -351,7 +351,8 @@ int ObTransformLateMaterialization::get_accessible_index(const ObSelectStmt &sel
             INDEX_TYPE_UNIQUE_GLOBAL == index_type ||
             INDEX_TYPE_PRIMARY == index_type ||
             INDEX_TYPE_NORMAL_GLOBAL_LOCAL_STORAGE == index_type ||
-            INDEX_TYPE_UNIQUE_GLOBAL_LOCAL_STORAGE == index_type) {
+            INDEX_TYPE_UNIQUE_GLOBAL_LOCAL_STORAGE == index_type ||
+            INDEX_TYPE_HEAP_ORGANIZED_TABLE_PRIMARY == index_type) {
           if (OB_FAIL(tmp_index_schemas.push_back(index_schema))) {
             LOG_WARN("failed to push back", K(ret));
           }
@@ -505,6 +506,9 @@ int ObTransformLateMaterialization::evaluate_stmt_cost(ObIArray<ObParentDMLStmt>
     LOG_WARN("failed to fill eval cost helper", K(ret));
   } else if (OB_FAIL(prepare_eval_cost_stmt(parent_stmts, *stmt, root_stmt, is_trans_stmt))) {
     LOG_WARN("failed to prepare eval cost stmt", K(ret));
+  } else if (OB_NOT_NULL(root_stmt) && OB_FAIL(root_stmt->formalize_stmt(ctx_->session_info_, true))) {
+    // jinmao TODO: defensive code, remove it later
+    LOG_WARN("failed to formalize stmt", K(ret));
   } else {
     ctx_->eval_cost_ = true;
     lib::ContextParam param;
@@ -515,6 +519,7 @@ int ObTransformLateMaterialization::evaluate_stmt_cost(ObIArray<ObParentDMLStmt>
          .set_page_size(OB_MALLOC_NORMAL_BLOCK_SIZE);
     CREATE_WITH_TEMP_CONTEXT(param) {
       ObRawExprFactory tmp_expr_factory(CURRENT_CONTEXT->get_arena_allocator());
+      eval_cost_helper.tmp_expr_factory_ = &tmp_expr_factory;
       HEAP_VAR(ObOptimizerContext,
                optctx,
                ctx_->session_info_,
@@ -568,14 +573,13 @@ int ObTransformLateMaterialization::inner_accept_transform(ObIArray<ObParentDMLS
   ObTryTransHelper try_trans_helper;
   cost_based_trans_tried_ = true;
   trans_happened = false;
-  STOP_OPT_TRACE;
+  BEGIN_OPT_TRACE_EVA_COST;
   if (OB_ISNULL(ctx_) || OB_ISNULL(stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("context is null", K(ret), K(ctx_), K(stmt));
-  } else if (ctx_->in_accept_transform_) {
+  } else if (ctx_->eval_cost_) {
     LOG_TRACE("not accept transform because already in one accepct transform");
   } else {
-    ctx_->in_accept_transform_ = true;
     if (OB_SUCC(ret)) {
       if (OB_FAIL(try_trans_helper.fill_helper(stmt->get_query_ctx()))) {
         LOG_WARN("failed to fill try trans helper", K(ret));
@@ -605,9 +609,8 @@ int ObTransformLateMaterialization::inner_accept_transform(ObIArray<ObParentDMLS
         LOG_WARN("failed to finish try trans helper", K(ret));
       }
     }
-    ctx_->in_accept_transform_ = false;
   }
-  RESUME_OPT_TRACE;
+  END_OPT_TRACE_EVA_COST;
 
   if (OB_FAIL(ret)) {
   } else if (!trans_happened) {
@@ -632,6 +635,35 @@ int ObTransformLateMaterialization::inner_accept_transform(ObIArray<ObParentDMLS
               K(check_ctx));
     stmt = trans_stmt;
     reset_stmt_cost();
+  }
+  return ret;
+}
+
+int ObTransformLateMaterialization::replace_expr_skip_part(ObSelectStmt &select_stmt,
+                                                           ObIArray<ObRawExpr *> &old_col_exprs,
+                                                           ObIArray<ObRawExpr *> &new_col_exprs) {
+  int ret = OB_SUCCESS;
+  ObStmtExprReplacer replacer;
+  ObSEArray<ObRawExpr *, 8> part_exprs;
+  const ObIArray<PartExprItem> &part_items = select_stmt.get_part_exprs();
+  for (int64_t i = 0; OB_SUCC(ret) && i < part_items.count(); ++i) {
+    if (part_items.at(i).part_expr_ != NULL &&
+        OB_FAIL(part_exprs.push_back(part_items.at(i).part_expr_))) {
+      LOG_WARN("failed to push back", K(ret));
+    } else if (part_items.at(i).subpart_expr_ != NULL &&
+               OB_FAIL(part_exprs.push_back(part_items.at(i).subpart_expr_))) {
+      LOG_WARN("failed to push back", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    replacer.set_relation_scope();
+    replacer.set_recursive(false);
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(replacer.add_replace_exprs(old_col_exprs, new_col_exprs, &part_exprs))) {
+      LOG_WARN("failed to add replace exprs", K(ret));
+    } else if (OB_FAIL(select_stmt.iterate_stmt_expr(replacer))) {
+      LOG_WARN("failed to iterate stmt expr", K(ret));
+    }
   }
   return ret;
 }
@@ -665,15 +697,17 @@ int ObTransformLateMaterialization::generate_late_materialization_stmt(
                                                   view_table->table_id_, old_col_exprs,
                                                   new_col_exprs))) {
     LOG_WARN("failed to extract replace column exprs", K(ret));
-  } else if (OB_FAIL(select_stmt->replace_relation_exprs(old_col_exprs, new_col_exprs))) {
+  } else if (OB_FAIL(replace_expr_skip_part(*select_stmt, old_col_exprs, new_col_exprs))) {
     LOG_WARN("failed to replace inner stmt expr", K(ret));
   } else if (OB_FAIL(generate_pk_join_conditions(table_item->ref_id_, table_item->table_id_,
                                                  old_col_exprs, new_col_exprs, *select_stmt))) {
     LOG_WARN("failed generate pk join condition", K(ret));
   } else if (OB_FAIL(ObTransformUtils::adjust_pseudo_column_like_exprs(*select_stmt))) {
     LOG_WARN("failed to adjust pseudo column like exprs", K(ret));
-  } else if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_))) {
+  } else if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_, false))) {
     LOG_WARN("failed to formalize stmt", K(ret));
+  } else if (OB_FAIL(select_stmt->formalize_special_domain_index_fields())) {
+    LOG_WARN("failed to formalize special domain index fields", K(ret));
   } else if (OB_FAIL(select_stmt->formalize_stmt_expr_reference(ctx_->expr_factory_,
                                                                 ctx_->session_info_))) {
     LOG_WARN("failed to formalize stmt expr reference", K(ret));
@@ -714,6 +748,7 @@ int ObTransformLateMaterialization::generate_late_materialization_view(
     LOG_WARN("get unexpected null", K(ret));
   } else {
     view_stmt->get_select_items().reset();
+    view_stmt->set_select_into(nullptr);
     for (int64_t i = 0; OB_SUCC(ret) && i < select_col_ids.count(); i++) {
       ObRawExpr *raw_expr = view_stmt->get_column_expr_by_id(table_item_inner->table_id_,
                                                              select_col_ids.at(i));
@@ -1039,6 +1074,26 @@ int ObTransformLateMaterialization::generate_late_materialization_hint(
         }
       }
     }
+    // index back full hint
+    if (OB_SUCC(ret)) {
+      ObTableInHint table_in_hint(table_item.qb_name_,
+                                  table_item.database_name_,
+                                  table_item.get_object_name());
+      ObIndexHint *index_hint = NULL;
+      if (OB_FAIL(ObQueryHint::create_hint(ctx_->allocator_, T_FULL_HINT, index_hint))) {
+        LOG_WARN("failed to create hint", K(ret));
+      } else if (OB_FAIL(index_hint->get_table().assign(table_in_hint))) {
+        LOG_WARN("assign table in hint failed", K(ret));
+      } else {
+        index_hint->set_qb_name(parent_qb_name);
+        index_hint->set_trans_added(true);
+        if (OB_FAIL(select_stmt.get_stmt_hint().merge_hint(*index_hint,
+                                                           HINT_DOMINATED_EQUAL,
+                                                           conflict_hints))) {
+          LOG_WARN("merge index hint failed", K(ret));
+        }
+      }
+    }
     if (OB_SUCC(ret)) {
       // ObTransHint *trans_hint = NULL;
       ObViewMergeHint *no_merge_hint = NULL;
@@ -1338,5 +1393,13 @@ int ObTransformLateMaterialization::check_is_allow_column_store(const ObSelectSt
   return ret;
 }
 
+int ObTransformLateMaterialization::adjust_transform_types(uint64_t &transform_types)
+{
+  int ret = OB_SUCCESS;
+  if (cost_based_trans_tried_) {
+    transform_types &= (~(1ULL << transformer_type_));
+  }
+  return ret;
+}
 }
 }

@@ -13,12 +13,6 @@
 #define USING_LOG_PREFIX WR
 
 #include "share/wr/ob_wr_service.h"
-#include "share/wr/ob_wr_task.h"
-#include "share/scn.h"
-#include "lib/oblog/ob_log.h"
-#include "share/ob_errno.h"
-#include "deps/oblib/src/lib/mysqlclient/ob_mysql_proxy.h"
-#include "observer/ob_server_struct.h"
 
 namespace oceanbase
 {
@@ -119,7 +113,8 @@ int ObWorkloadRepositoryService::inner_switch_to_leader()
   int ret = OB_SUCCESS;
   // schedule wr timer task
   // TODO(roland.qk): need to cancel wr task first?
-  if (OB_FAIL(wr_timer_task_.schedule_one_task())) {
+  int64_t interval_us = get_snapshot_interval(true/*is_laze_load*/) * 60 * 1000L * 1000L;
+  if (OB_FAIL(wr_timer_task_.schedule_one_task(interval_us))) {
     LOG_WARN("failed to schedule wr timer task", K(ret));
   } else {
     LOG_INFO("current observer is leader, start to dispatch workload repository snapshot timer",

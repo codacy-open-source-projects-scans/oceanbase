@@ -52,6 +52,7 @@ struct ObBatchFreezeTabletsParam : public ObBatchExecParam<ObTabletSchedulePair>
   {}
   virtual ~ObBatchFreezeTabletsParam() = default;
   static constexpr int64_t DEFAULT_BATCH_SIZE = 32;
+  int64_t to_string(char *buf, const int64_t buf_len) const override;
 };
 class ObBatchFreezeTabletsTask;
 class ObBatchFreezeTabletsDag : public ObBatchExecDag<ObBatchFreezeTabletsTask, ObBatchFreezeTabletsParam>
@@ -62,6 +63,7 @@ public:
   {}
   virtual ~ObBatchFreezeTabletsDag() = default;
   virtual int inner_init();
+  virtual bool operator == (const ObIDag &other) const override;
 public:
   static constexpr int64_t MAX_CONCURRENT_FREEZE_TASK_CNT = 2;
 private:

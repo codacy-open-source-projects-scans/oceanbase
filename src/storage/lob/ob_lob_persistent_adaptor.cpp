@@ -12,21 +12,13 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "lib/objectpool/ob_server_object_pool.h"
-#include "storage/access/ob_table_scan_iterator.h"
 #include "ob_lob_persistent_adaptor.h"
-#include "ob_lob_piece.h"
-#include "ob_lob_meta.h"
-#include "ob_lob_persistent_iterator.h"
+#include "storage/access/ob_table_scan_iterator.h"
 #include "ob_lob_persistent_reader.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "share/schema/ob_table_dml_param.h"
 #include "share/schema/ob_tenant_schema_service.h"
-#include "storage/tx_storage/ob_access_service.h"
 #include "share/ob_tablet_autoincrement_service.h"
-#include "storage/tablet/ob_tablet_split_mds_helper.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx_storage/ob_ls_handle.h"
 
 namespace oceanbase
 {
@@ -124,7 +116,7 @@ int ObPersistentLobApator::init_table_param()
     } else if (OB_ISNULL(meta_table_param_)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_ERROR("alloc meta_table_param fail", KR(ret), "size", sizeof(ObTableParam));
-    } else if (OB_FAIL(meta_table_param_->convert(meta_schema, meta_column_ids, ObStoragePushdownFlag()))) {
+    } else if (OB_FAIL(meta_table_param_->convert(meta_schema, meta_column_ids, sql::ObStoragePushdownFlag()))) {
       LOG_ERROR("Fail to convert table param", KR(ret), K(meta_schema));
     } else if (OB_FALSE_IT(ATOMIC_STORE(&meta_table_dml_param_, OB_NEWx(ObTableDMLParam, &allocator_, allocator_)))) {
     } else if (OB_ISNULL(meta_table_dml_param_)) {
@@ -190,7 +182,7 @@ int ObPersistentLobApator::fetch_lob_id(ObLobAccessParam& param, uint64_t &lob_i
   } else {
     uint64_t tenant_id = param.tenant_id_;
     share::ObTabletAutoincrementService &auto_inc = share::ObTabletAutoincrementService::get_instance();
-    if (OB_FAIL(auto_inc.get_autoinc_seq(tenant_id, param.lob_meta_tablet_id_, lob_id))) {
+    if (OB_FAIL(auto_inc.get_autoinc_seq(tenant_id, param.lob_meta_tablet_id_, lob_id, share::ObTabletAutoincrementService::LOB_CACHE_SIZE))) {
       LOG_WARN("get lob_id fail", K(ret), K(tenant_id), K(param));
     } else {
       LOG_DEBUG("get lob_id succ", K(lob_id), K(tenant_id), K(param));
@@ -229,7 +221,7 @@ int ObPersistentLobApator::fetch_lob_id_for_split_src(const ObLobAccessParam& pa
     LOG_WARN("fail to get tablet handle", K(ret), K(lob_tablet_id), K(param));
   } else if (OB_FAIL(ObTabletSplitMdsHelper::calc_split_dst_lob(*ls_handle.get_ls(), *tablet_handle.get_obj(), *param.data_row_, param.timeout_, dst_tablet_id))) {
     LOG_WARN("failed to calc split dst tablet", K(ret));
-  } else if (OB_FAIL(auto_inc.get_autoinc_seq(tenant_id, dst_tablet_id, lob_id))) {
+  } else if (OB_FAIL(auto_inc.get_autoinc_seq(tenant_id, dst_tablet_id, lob_id, share::ObTabletAutoincrementService::LOB_CACHE_SIZE))) {
     LOG_WARN("get lob_id fail", K(ret), K(tenant_id), K(dst_tablet_id));
   }
   return ret;
@@ -267,6 +259,7 @@ int ObPersistentLobApator::prepare_lob_meta_dml(ObLobAccessParam& param)
                                                *param.tx_desc_,
                                                param.snapshot_,
                                                0,/*branch_id*/
+                                               param.dml_base_param_->write_flag_,
                                                *param.dml_base_param_->store_ctx_guard_,
                                                param.dml_base_param_->spec_seq_no_ ))) {
       LOG_WARN("fail to get write store tx ctx guard", K(ret), K(param));
@@ -333,10 +326,11 @@ int ObPersistentLobApator::prepare_table_scan_param(
     const ObLobAccessParam &param,
     const bool is_get,
     ObTableScanParam &scan_param,
+    ObIAllocator *stmt_allocator,
     ObIAllocator *scan_allocator)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(build_common_scan_param(param, is_get, ObLobMetaUtil::LOB_META_COLUMN_CNT, scan_param, scan_allocator))) {
+  if (OB_FAIL(build_common_scan_param(param, is_get, ObLobMetaUtil::LOB_META_COLUMN_CNT, scan_param, stmt_allocator, scan_allocator))) {
     LOG_WARN("build common scan param fail", K(ret));
   } else if (OB_FAIL(prepare_table_param(param, scan_param))) {
     LOG_WARN("prepare lob meta table param fail", K(ret));
@@ -349,6 +343,7 @@ int ObPersistentLobApator::build_common_scan_param(
     const bool is_get,
     uint32_t col_num,
     ObTableScanParam& scan_param,
+    ObIAllocator *stmt_allocator,
     ObIAllocator *scan_allocator)
 {
   int ret = OB_SUCCESS;
@@ -394,7 +389,7 @@ int ObPersistentLobApator::build_common_scan_param(
     }
     scan_param.sql_mode_ = param.sql_mode_;
     // common set
-    scan_param.allocator_ = scan_allocator;
+    scan_param.allocator_ = stmt_allocator;
     scan_param.for_update_ = false;
     scan_param.for_update_wait_timeout_ = scan_param.timeout_;
     scan_param.scan_allocator_ = scan_allocator;

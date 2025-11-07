@@ -32,6 +32,8 @@
 #include "sql/engine/join/ob_join_filter_store_row.h"
 #include "sql/engine/join/ob_join_filter_material_control_info.h"
 #include "sql/engine/px/datahub/components/ob_dh_join_filter_count_row.h"
+#include "deps/oblib/src/lib/utility/ob_hyperloglog.h"
+
 
 namespace oceanbase
 {
@@ -249,6 +251,11 @@ public:
     return is_material_controller() && jf_material_control_info_.need_sync_row_count_;
   }
 
+  inline bool use_ndv_runtime_bloom_filter_size() const
+  {
+    return use_ndv_runtime_bloom_filter_size_;
+  }
+
   int update_sync_row_count_flag();
 
   JoinFilterMode mode_;
@@ -273,6 +280,9 @@ public:
   ExprFixedArray full_hash_join_keys_;
   common::ObFixedArray<bool, common::ObIAllocator> hash_join_is_ns_equal_cond_;
   int64_t rf_max_wait_time_ms_{0};
+  bool use_ndv_runtime_bloom_filter_size_{false}; //whether use ndv size build bloom filter
+  bool enable_runtime_filter_adaptive_apply_{true};
+  double basic_table_row_count_{0};
 };
 
 class ObJoinFilterMaterialGroupController
@@ -309,6 +319,7 @@ public:
         Join Filter Create (group id = 2, hash id = 2)
   */
   uint16_t *hash_id_map_{nullptr};
+  ObHyperLogLogCalculator* hash_join_keys_hllc_{nullptr};
 };
 
 class ObJoinFilterOp : public ObOperator
@@ -327,7 +338,7 @@ public:
 
   virtual int inner_open() override;
   virtual int inner_close() override;
-  virtual int inner_rescan() override;
+  virtual int rescan() override;
   virtual int inner_get_next_row() override;
   virtual int inner_get_next_batch(const int64_t max_row_cnt) override; // for batch
   virtual int inner_drain_exch() override;
@@ -358,7 +369,10 @@ private:
   int insert_by_row_batch(const ObBatchRows *child_brs);
   int calc_expr_values(ObDatum *&datum);
   int do_create_filter_rescan();
-  int do_use_filter_rescan();
+  int do_use_filter_rescan_pre();
+
+  int do_use_filter_rescan_post();
+  int do_use_filter_rescan(bool skip_during_rescan);
   int try_send_join_filter();
   int try_merge_join_filter();
   int calc_each_bf_group_size(int64_t &);
@@ -368,6 +382,7 @@ private:
   int open_join_filter_use();
   int join_filter_create_get_next_batch(const int64_t max_row_cnt);
   int join_filter_create_do_material(const int64_t max_row_cnt);
+  int build_and_broadcast_runtime_filter();
   int join_filter_create_bypass_all(const int64_t max_row_cnt);
 
   int join_filter_use_get_next_batch(const int64_t max_row_cnt);
@@ -377,7 +392,6 @@ private:
   int init_local_msg_from_shared_msg(ObP2PDatahubMsgBase &msg);
   int release_local_msg();
   int release_shared_msg();
-  int mark_not_need_send_bf_msg();
   int prepare_extra_use_info_for_vec20(ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx,
                                    ObP2PDatahubMsgBase::ObP2PDatahubMsgType dh_msg_type);
 
@@ -388,22 +402,21 @@ private:
   {
     return sql_mem_processor_.get_data_size() > sql_mem_processor_.get_mem_bound();
   }
-  int calc_join_filter_hash_values(const ObBatchRows &brs, uint64_t *hash_join_hash_values);
+  int calc_join_filter_hash_values(const ObBatchRows &brs);
   uint64_t *get_join_filter_hash_values() { return join_filter_hash_values_; }
   void read_join_filter_hash_values_from_store(const ObBatchRows &brs,
                                                const ObJoinFilterStoreRow **store_rows,
                                                const RowMeta &row_meta,
                                                uint64_t *join_filter_hash_values);
 
-  int get_exec_row_count(const int64_t worker_row_count, int64_t &total_row_count, bool is_in_drain);
+  int get_exec_row_count_and_ndv(const int64_t worker_row_count, int64_t &total_row_count);
   bool can_sync_row_count_locally();
-  int send_datahub_count_row_msg(int64_t &total_row_count, ObTMArray<ObJoinFilterNdv *> &ndv_info,
-                                 bool need_wait_whole_msg);
+  int send_datahub_count_row_msg(int64_t &total_row_count, ObTMArray<ObJoinFilterNdv *> &ndv_info);
 
   int fill_range_filter(const ObBatchRows &brs);
   int fill_in_filter(const ObBatchRows &brs, uint64_t *hash_join_hash_values);
-  int collect_worker_ndv(ObTMArray<ObJoinFilterNdv *> &ndv_info);
-  void check_in_filter_active(int64_t &ndv);
+  int build_ndv_info_before_aggregate(ObTMArray<ObJoinFilterNdv *> &ndv_info);
+  void check_in_filter_active(int64_t &in_filter_ndv);
   int init_bloom_filter(const int64_t worker_row_count, const int64_t total_row_count);
   int fill_bloom_filter();
 
@@ -415,30 +428,44 @@ private:
     return build_send_opt() && in_filter_active_;
   }
 
-  static inline int group_fill_range_filter(ObJoinFilterOp *join_filter_op, const ObBatchRows &brs)
+  inline bool use_hllc_estimate_ndv()
+  {
+    return build_send_opt() && get_my_spec(*this).use_ndv_runtime_bloom_filter_size();
+  }
+
+  static inline int group_fill_range_filter(ObJoinFilterOp *join_filter_op,
+                                            const ObBatchRows &brs)
   {
     return join_filter_op->fill_range_filter(brs);
   }
   static inline int group_calc_join_filter_hash_values(ObJoinFilterOp *join_filter_op,
-                                                       const ObBatchRows &brs,
-                                                       uint64_t *hash_join_hash_values)
+                                                       const ObBatchRows &brs)
   {
-    return join_filter_op->calc_join_filter_hash_values(brs, hash_join_hash_values);
+    return join_filter_op->calc_join_filter_hash_values(brs);
   }
-  static inline int group_fill_in_filter(ObJoinFilterOp *join_filter_op, const ObBatchRows &brs,
+  static inline int group_fill_in_filter(ObJoinFilterOp *join_filter_op,
+                                         const ObBatchRows &brs,
                                          uint64_t *hash_join_hash_values)
   {
     return join_filter_op->fill_in_filter(brs, hash_join_hash_values);
   }
 
-  static inline int group_collect_worker_ndv(ObJoinFilterOp *join_filter_op,
-                                            ObTMArray<ObJoinFilterNdv *> &ndv_info)
+  static int group_build_ndv_info_before_aggregate(ObJoinFilterOp *join_filter_op,
+                                                   ObTMArray<ObJoinFilterNdv *> &ndv_info)
   {
-    return join_filter_op->collect_worker_ndv(ndv_info);
+    return join_filter_op->build_ndv_info_before_aggregate(ndv_info);
   }
 
-  static int group_init_bloom_filter(ObJoinFilterOp *join_filter_op, int64_t worker_row_count,
+  static int group_collect_worker_ndv_by_hllc(ObJoinFilterOp *join_filter_op)
+  {
+    join_filter_op->worker_ndv_ = join_filter_op->hllc_->estimate();
+    return OB_SUCCESS;
+  }
+
+  static int group_init_bloom_filter(ObJoinFilterOp *join_filter_op,
+                                     int64_t worker_row_count,
                                      int64_t total_row_count);
+
   static int group_fill_bloom_filter(ObJoinFilterOp *join_filter_op,
                                      const ObBatchRows &brs_from_controller,
                                      const ObJoinFilterStoreRow **part_stored_rows,
@@ -448,6 +475,7 @@ private:
 private:
   static const int64_t ADAPTIVE_BF_WINDOW_ORG_SIZE = 4096;
   static constexpr double ACCEPTABLE_FILTER_RATE = 0.98;
+  static const int64_t N_HYPERLOGLOG_BIT = 14;
 public:
   ObJoinFilterMsg *filter_create_msg_;
   ObArray<ObP2PDatahubMsgBase *> shared_rf_msgs_; // sqc level share
@@ -472,7 +500,7 @@ public:
 
   ObJoinFilterMaterialGroupController *group_controller_{nullptr};
   bool force_dump_{false};
-  bool has_sync_row_count_{false};
+  bool has_sent_runtime_filter_{false};
   const ExprFixedArray *build_rows_output_{nullptr};
   ExprFixedArray build_rows_output_for_compat_;
 
@@ -480,10 +508,19 @@ public:
   bool in_filter_active_{false};
   ObJoinFilterNdv dh_ndv_;
   // build count opt end
+
+  //Considering compatibility, >= 435 BP1 will use the variables below to estimate NDV.
+  //For each join filter will use this hllc
+  //If this join filter can *reuse* hash join keys, this hllc_ will point to group_controller_.hash_join_keys_hllc_
+  ObHyperLogLogCalculator* hllc_{nullptr};
+  int64_t worker_ndv_{0}; // ndv of each thread, used when this is a non-shared join filter
+  int64_t total_ndv_{0};  // ndv of total dfo, used when this is a shared join filter
+};
+
 };
 
 }
-}
+
 
 #endif /* _SQL_ENGINE_JOIN_OB_JOIN_FILTER_OP_H */
 

@@ -13,15 +13,23 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/blocksstable/ob_macro_seq_generator.h"
+#include "storage/blocksstable/ob_logic_macro_id.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "share/compaction/ob_shared_storage_compaction_util.h"
 #include "share/ob_server_struct.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
 #endif
 using namespace oceanbase;
 using namespace oceanbase::common;
 using namespace oceanbase::storage;
 using namespace oceanbase::blocksstable;
+
+void ObMacroSeqParam::reset()
+{
+  seq_type_ = SEQ_TYPE_MAX;
+  start_ = 0;
+  interval_ = 0;
+  step_ = 0;
+}
 
 bool ObMacroSeqParam::is_valid() const
 {
@@ -30,6 +38,14 @@ bool ObMacroSeqParam::is_valid() const
     bret = interval_ > 0 && step_ > 0;
   }
   return bret;
+}
+
+void ObMacroIncSeqGenerator::reset()
+{
+  is_inited_ = false;
+  start_ = 0;
+  current_ = -1;
+  seq_threshold_ = 0;
 }
 
 int ObMacroIncSeqGenerator::init(const ObMacroSeqParam &seq_param)
@@ -87,6 +103,11 @@ int ObMacroIncSeqGenerator::preview_next(const int64_t current_val, int64_t &nex
     }
   }
   return ret;
+}
+
+void ObMacroSkipSeqGenerator::reset()
+{
+  ddl_seq_generator_.reset();
 }
 
 int ObMacroSkipSeqGenerator::init(const ObMacroSeqParam &seq_param)

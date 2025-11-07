@@ -10,37 +10,12 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <cstdint>
-#include "lib/oblog/ob_log_module.h"
-#include "lib/time/ob_time_utility.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "logservice/palf/lsn.h"
 #include "ob_archive_fetcher.h"
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/stat/ob_session_stat.h"
-#include "lib/thread/ob_thread_name.h"        // lib::set_thread_name
 #include "logservice/ob_log_service.h"        // ObLogService
-#include "logservice/palf/log_group_entry.h"  // LogGroupEntry
-#include "logservice/palf_handle_guard.h"     // PalfHandleGuard
 #include "ob_archive_allocator.h"             // ObArchiveAllocator
-#include "ob_archive_define.h"                // ArchiveWorkStation
 #include "ob_archive_sender.h"                // ObArchiveSender
 #include "ob_ls_mgr.h"                        // ObArchiveLSMgr
-#include "ob_archive_task.h"                  // ObArchive.*Task
-#include "ob_ls_task.h"                       // ObLSArchiveTask
-#include "ob_archive_round_mgr.h"             // ObArchiveRoundMgr
-#include "ob_archive_util.h"
 #include "ob_archive_sequencer.h"             // ObArchivesSequencer
-#include "objit/common/ob_item_type.h"        // print
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "rootserver/ob_tenant_info_loader.h" // ObTenantInfoLoader
-#include "share/ob_debug_sync.h"              // DEBUG_SYNC
-#include "share/ob_debug_sync_point.h"        // LOG_ARCHIVE_PUSH_LOG
-#include "share/ob_errno.h"
-#include "share/ob_ls_id.h"
-#include "share/ob_tenant_info_proxy.h"       // ObAllTenantInfo
-#include "share/scn.h"
 #include "lib/ash/ob_active_session_guard.h"
 
 namespace oceanbase
@@ -222,6 +197,7 @@ int ObArchiveFetcher::submit_log_fetch_task(ObArchiveLogFetchTask *task)
     ret = OB_INVALID_ARGUMENT;
     ARCHIVE_LOG(WARN, "invalid argument", K(ret), KPC(task));
   } else {
+    task->push_fetch_queue_ts_ = ObTimeUtility::fast_current_time();
     RETRY_FUNC_ON_ERROR(OB_SIZE_OVERFLOW, has_set_stop(), task_queue_, push, task);
   }
   if (OB_SUCC(ret)) {
@@ -278,6 +254,7 @@ int ObArchiveFetcher::modify_thread_count(const int64_t thread_count)
 void ObArchiveFetcher::run1()
 {
   ARCHIVE_LOG(INFO, "ObArchiveFetcher thread start");
+  ObDIActionGuard ag("LogService", "LogArchiveService", "ArchiveFetcher");
   lib::set_thread_name("ArcFetcher");
   ObCurTraceId::init(GCONF.self_addr_);
 
@@ -473,6 +450,9 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
   palf::LSN max_no_limit_lsn;
   storage::ObLSHandle handle;
   share::SCN offline_scn;
+  // check if the file id is exist in dest set
+  int64_t cur_file_id = cal_archive_file_id(start_lsn, MAX_ARCHIVE_FILE_SIZE);
+  bool file_id_exist_in_dest_set = false;
 
   if (OB_FAIL(MTL(storage::ObLSService*)->get_ls(id, handle, ObLSGetMod::ARCHIVE_MOD))) {
     ARCHIVE_LOG(WARN, "get ls failed", K(id));
@@ -490,6 +470,11 @@ int ObArchiveFetcher::check_need_delay_(const ObArchiveLogFetchTask &task,
         need_delay = true;
         ARCHIVE_LOG(TRACE, "send_task_count exceed threshold, need delay",
             K(id), K(station), K(send_task_count));
+      } else if (OB_FAIL(ls_archive_task->check_ref_file_id_exist(cur_file_id, file_id_exist_in_dest_set))) {
+        ARCHIVE_LOG(WARN, "check_issue_file_id_exist failed", K(id), K(cur_file_id));
+      } else if (0 < send_task_count && file_id_exist_in_dest_set) {
+        need_delay = true;
+        ARCHIVE_LOG(TRACE, "same ref file id", K(id), K(cur_file_id), "task size", cur_lsn - start_lsn);
       } else {
         ls_archive_task_count = ls_mgr_->get_ls_task_count();
         send_task_status_count = archive_sender_->get_send_task_status_count();
@@ -838,7 +823,8 @@ int ObArchiveFetcher::submit_fetch_log_(ObArchiveLogFetchTask &task, bool &submi
     // just skip
   } else {
     GET_LS_TASK_CTX(ls_mgr_, id) {
-      if (OB_FAIL(ls_archive_task->push_fetch_log(task))) {
+      if (OB_FALSE_IT(task.submit_dest_queue_ts_ = common::ObTimeUtility::fast_current_time())) {
+      } else if (OB_FAIL(ls_archive_task->push_fetch_log(task))) {
         ARCHIVE_LOG(WARN, "push fetch log failed", K(ret), K(id), K(task));
       } else {
         submitted = true;
@@ -902,17 +888,26 @@ int ObArchiveFetcher::try_consume_fetch_log_(const ObLSID &id)
         ARCHIVE_LOG(ERROR, "clear send task failed", K(ret), KPC(task));
       } else if (OB_FAIL(update_fetcher_progress_(*ls_archive_task, *task))) {
         ARCHIVE_LOG(WARN, "update fetcher progresss failed", K(ret), KPC(task), KPC(ls_archive_task));
-      } else if (check_log_fetch_task_consume_complete_(*task)) {
-        // free log fetch task
-        inner_free_task_(task);
-        task = NULL;
-      } else if (OB_FAIL(submit_residual_log_fetch_task_(*task))) {
-        ARCHIVE_LOG(WARN, "submit residual log fetch task failed", K(ret), KPC(task));
       } else {
-        // task not complete if need re-submit to task queue
-        // although get_sorted_fetch_log interface check this condition
-        need_break = true;
-        ARCHIVE_LOG(TRACE, "consume log fetch task succ", K(id));
+        task->consume_ts_ = ObTimeUtility::current_time();
+
+        ARCHIVE_LOG(INFO, "print fetch task stat", KP(task),
+                    "generate_to_push_cost", task->push_fetch_queue_ts_ - task->generate_ts_,
+                    "push_to_submit_cost", task->submit_dest_queue_ts_ - task->push_fetch_queue_ts_,
+                    "submit_to_consume_cost", task->consume_ts_ - task->submit_dest_queue_ts_);
+
+        if (check_log_fetch_task_consume_complete_(*task)) {
+          // free log fetch task
+          inner_free_task_(task);
+          task = NULL;
+        } else if (OB_FAIL(submit_residual_log_fetch_task_(*task))) {
+          ARCHIVE_LOG(WARN, "submit residual log fetch task failed", K(ret), KPC(task));
+        } else {
+          // task not complete if need re-submit to task queue
+          // although get_sorted_fetch_log interface check this condition
+          need_break = true;
+          ARCHIVE_LOG(TRACE, "consume log fetch task succ", K(id));
+        }
       }
 
       if (OB_FAIL(ret) && NULL != task) {
@@ -981,10 +976,15 @@ int ObArchiveFetcher::submit_residual_log_fetch_task_(ObArchiveLogFetchTask &tas
   if (OB_UNLIKELY(cur_piece.is_valid() && cur_offset == start_offset)) {
     ret = OB_INVALID_ARGUMENT;
     ARCHIVE_LOG(WARN, "invalid argument", K(ret), K(task));
-  } else if (OB_FAIL(task_queue_.push(&task))) {
-    ARCHIVE_LOG(WARN, "push task failed", K(ret), K(task));
   } else {
-    ARCHIVE_LOG(TRACE, "submit residual log fetch task succ", KP(&task));
+    task.push_fetch_queue_ts_ = common::ObTimeUtility::fast_current_time();
+    task.consume_ts_ = OB_INVALID_TIMESTAMP;
+    task.submit_dest_queue_ts_ = OB_INVALID_TIMESTAMP;
+    if (OB_FAIL(task_queue_.push(&task))) {
+      ARCHIVE_LOG(WARN, "push task failed", K(ret), K(task));
+    } else {
+      ARCHIVE_LOG(TRACE, "submit residual log fetch task succ", KP(&task));
+    }
   }
   return ret;
 }
@@ -997,6 +997,7 @@ int ObArchiveFetcher::submit_send_task_(ObArchiveSendTask *send_task)
     ret = OB_INVALID_ARGUMENT;
     ARCHIVE_LOG(WARN, "invalid argument", K(ret), KP(send_task));
   } else if (FALSE_IT(buf_size = send_task->get_buf_size())) {
+  } else if (OB_FALSE_IT(send_task->submit_ts_ = common::ObTimeUtility::fast_current_time())) {
   } else if (OB_FAIL(archive_sender_->submit_send_task(send_task))) {
     ARCHIVE_LOG(WARN, "submit send task failed", K(ret), KPC(send_task));
   } else {

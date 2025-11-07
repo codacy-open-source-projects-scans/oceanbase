@@ -12,17 +12,14 @@
 
 #define USING_LOG_PREFIX  SQL_ENG
 
-#include "sql/engine/cmd/ob_load_data_parser.h"
-#include "sql/resolver/cmd/ob_load_data_stmt.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/utility/ob_print_utils.h"
+#include "ob_load_data_parser.h"
+
 #include "lib/string/ob_hex_utils_base.h"
-#include "deps/oblib/src/lib/list/ob_dlist.h"
-#include "share/schema/ob_column_schema.h"
-#ifdef OB_BUILD_CPP_ODPS
+#include "sql/table_format/iceberg/ob_iceberg_utils.h"
+#include "src/sql/engine/ob_exec_context.h"
+#if defined(OB_BUILD_CPP_ODPS) || defined(OB_BUILD_JNI_ODPS)
 #include "share/ob_encryption_util.h"
 #endif
-#include "lib/utility/ob_print_utils.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -31,6 +28,12 @@ namespace oceanbase
 {
 namespace sql
 {
+
+const ObString ObODPSGeneralFormatParam::TUNNEL_API("tunnel_api");
+const ObString ObODPSGeneralFormatParam::STORAGE_API("storage_api");
+const ObString ObODPSGeneralFormatParam::BYTE("byte");
+const ObString ObODPSGeneralFormatParam::ROW("row");
+
 const char INVALID_TERM_CHAR = '\xff';
 
 const char * ObExternalFileFormat::FORMAT_TYPE_STR[] = {
@@ -38,60 +41,79 @@ const char * ObExternalFileFormat::FORMAT_TYPE_STR[] = {
   "PARQUET",
   "ODPS",
   "ORC",
+  "PLUGIN",
 };
 static_assert(array_elements(ObExternalFileFormat::FORMAT_TYPE_STR) == ObExternalFileFormat::MAX_FORMAT, "Not enough initializer for ObExternalFileFormat");
 
-int64_t ObODPSGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len) const
+int ObODPSGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len, int64_t &pos) const
 {
-  int64_t pos = 0;
+  int ret = OB_SUCCESS;
   int64_t idx = 0;
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(access_type_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(access_id_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(access_key_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(sts_token_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(endpoint_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(tunnel_endpoint_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(project_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(schema_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(table_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(quota_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(compression_code_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(collect_statistics_on_create_));
-  return pos;
+  ObCStringHelper helper;
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(access_type_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(access_id_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(access_key_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(sts_token_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(endpoint_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(tunnel_endpoint_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(project_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(schema_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(table_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(quota_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(compression_code_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(collect_statistics_on_create_)));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], helper.convert(ObHexStringWrap(region_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%d)", OPTION_NAMES[idx++], (int)api_mode_));
+  return ret;
 }
 
 int ObODPSGeneralFormat::encrypt_str(common::ObString &src, common::ObString &dst)
 {
   int ret = OB_SUCCESS;
-#ifdef OB_BUILD_CPP_ODPS
+#if defined(OB_BUILD_TDE_SECURITY)
   const uint64_t tenant_id = MTL_ID();
   if (src.empty()) {
     //do nothing
     dst = src;
   } else {
-    char encrypted_string[common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH] = {0};
-
-    char hex_buff[common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH + 1] = {0}; // +1 to reserve space for \0
     int64_t encrypt_len = -1;
-    if (OB_FAIL(oceanbase::share::ObEncryptionUtil::encrypt_sys_data(tenant_id,
-                                                   src.ptr(),
-                                                   src.length(),
-                                                   encrypted_string,
-                                                   common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH,
-                                                   encrypt_len))) {
-
+    ObArenaAllocator tmp_allocator;
+    char *encrypted_string = static_cast<char *>(
+        tmp_allocator.alloc(common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH));
+    char *hex_buff = static_cast<char *>(
+        tmp_allocator.alloc(common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH + 1));
+    if (OB_ISNULL(encrypted_string) || OB_ISNULL(hex_buff)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to allocate memory", K(ret));
+    } else if (OB_FALSE_IT(
+                   memset(encrypted_string,
+                          0,
+                          common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH))) {
+    } else if (OB_FALSE_IT(
+                   memset(hex_buff,
+                          0,
+                          common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH + 1))) {
+    } else if (OB_FAIL(oceanbase::share::ObEncryptionUtil::encrypt_sys_data(
+                   tenant_id,
+                   src.ptr(),
+                   src.length(),
+                   encrypted_string,
+                   common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH,
+                   encrypt_len))) {
       LOG_WARN("fail to encrypt_sys_data", KR(ret), K(src));
     } else if (0 >= encrypt_len || common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH < encrypt_len * 2) {
       ret = OB_ERR_UNEXPECTED;
@@ -104,6 +126,8 @@ int ObODPSGeneralFormat::encrypt_str(common::ObString &src, common::ObString &ds
       LOG_TRACE("succ to encrypt src", K(ret));
     }
   }
+#else
+  dst = src;
 #endif
   return ret;
 }
@@ -111,7 +135,7 @@ int ObODPSGeneralFormat::encrypt_str(common::ObString &src, common::ObString &ds
 int ObODPSGeneralFormat::decrypt_str(common::ObString &src, common::ObString &dst)
 {
   int ret = OB_SUCCESS;
-#ifdef OB_BUILD_CPP_ODPS
+#if defined (OB_BUILD_TDE_SECURITY)
   const uint64_t tenant_id = MTL_ID();
   if (src.empty()) {
     // do nothing
@@ -128,7 +152,7 @@ int ObODPSGeneralFormat::decrypt_str(common::ObString &src, common::ObString &ds
                             encrypted_password_not_hex,
                             common::OB_MAX_ENCRYPTED_EXTERNAL_TABLE_PROPERTIES_ITEM_LENGTH))) {
       LOG_WARN("failed to hex to cstr", K(src.length()), K(ret));
-    } else if (OB_FAIL(ObEncryptionUtil::decrypt_sys_data(tenant_id,
+    } else if (OB_FAIL(share::ObEncryptionUtil::decrypt_sys_data(tenant_id,
                                                           encrypted_password_not_hex,
 
                                                           src.length() / 2,
@@ -145,6 +169,8 @@ int ObODPSGeneralFormat::decrypt_str(common::ObString &src, common::ObString &ds
       LOG_TRACE("succ to decrypt src", K(ret));
     }
   }
+#else
+  dst = src;
 #endif
   return ret;
 }
@@ -152,7 +178,6 @@ int ObODPSGeneralFormat::decrypt_str(common::ObString &src, common::ObString &ds
 int ObODPSGeneralFormat::encrypt()
 {
   int ret = OB_SUCCESS;
-  #ifdef OB_BUILD_CPP_ODPS
   ObString encrypted_access_id;
   ObString encrypted_access_key;
   ObString encrypted_sts_token;
@@ -167,14 +192,12 @@ int ObODPSGeneralFormat::encrypt()
     access_key_ = encrypted_access_key;
     sts_token_ = encrypted_sts_token;
   }
-  #endif
   return ret;
 }
 
 int ObODPSGeneralFormat::decrypt()
 {
   int ret = OB_SUCCESS;
-  #ifdef OB_BUILD_CPP_ODPS
   ObString decrypted_access_id;
   ObString decrypted_access_key;
   ObString decrypted_sts_token;
@@ -189,7 +212,6 @@ int ObODPSGeneralFormat::decrypt()
     access_key_ = decrypted_access_key;
     sts_token_ = decrypted_sts_token;
   }
-  #endif
   return ret;
 }
 
@@ -237,8 +259,11 @@ int ObODPSGeneralFormat::deep_copy(const ObODPSGeneralFormat &src) {
     LOG_WARN("failed to deep copy", K(ret));
   } else if (OB_FAIL(deep_copy_str(src.compression_code_, compression_code_))) {
     LOG_WARN("failed to deep copy", K(ret));
+  } else if (OB_FAIL(deep_copy_str(src.region_, region_))) {
+    LOG_WARN("failed to deep copy region for odps general format", K(ret));
   } else {
     collect_statistics_on_create_ = src.collect_statistics_on_create_;
+    api_mode_ = src.api_mode_;
   }
   return ret;
 }
@@ -354,6 +379,27 @@ int ObODPSGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &al
     }
     node = node->get_next();
   }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+      && json::JT_STRING == node->value_->get_type()) {
+    ObObj obj;
+    OZ (ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
+    if (OB_SUCC(ret) && !obj.is_null()) {
+      region_ = obj.get_string();
+    }
+    node = node->get_next();
+  }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++]) &&
+      json::JT_NUMBER == node->value_->get_type()) {
+    api_mode_ = (ObODPSGeneralFormat::ApiMode)node->value_->get_number();
+    if (api_mode_ != ApiMode::TUNNEL_API && api_mode_ != ApiMode::BYTE && api_mode_ != ApiMode::ROW) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid split mode", K(ret), K(api_mode_));
+    }
+    node = node->get_next();
+  } else {
+    // if there is no this option, use tunnel api old version has no this option
+    api_mode_ = ApiMode::TUNNEL_API;
+  }
   return ret;
 }
 
@@ -416,6 +462,10 @@ int ObCSVGeneralParser::init_opt_variables()
   if (OB_SUCC(ret)) {
     opt_param_.line_term_c_ = format_.line_term_str_.empty() ? INVALID_TERM_CHAR : format_.line_term_str_[0];
     opt_param_.field_term_c_ = format_.field_term_str_.empty() ? INVALID_TERM_CHAR : format_.field_term_str_[0];
+    opt_param_.max_term_ = std::max(static_cast<unsigned> (opt_param_.field_term_c_),
+                                    static_cast<unsigned> (opt_param_.line_term_c_));
+    opt_param_.min_term_ = std::min(static_cast<unsigned> (opt_param_.field_term_c_),
+                                    static_cast<unsigned> (opt_param_.line_term_c_));
     opt_param_.is_filling_zero_to_empty_field_ = lib::is_mysql_mode();
     opt_param_.is_line_term_by_counting_field_ =
         0 == format_.line_term_str_.compare(format_.field_term_str_);
@@ -437,109 +487,169 @@ int ObCSVGeneralParser::init_opt_variables()
   return ret;
 }
 
-int ObCSVGeneralParser::handle_irregular_line(int field_idx, int line_no,
-                                              ObIArray<LineErrRec> &errors)
-{
+int ObCSVGeneralParser::handle_irregular_line(int field_idx,
+                          int line_no,
+                          int output_line_no,
+                          bool is_batch_mode,
+                          common::ObIArray<LineErrRec> &errors) {
   int ret = OB_SUCCESS;
   LineErrRec rec;
   rec.err_code = field_idx > format_.file_column_nums_ ?
         OB_WARN_TOO_MANY_RECORDS : OB_WARN_TOO_FEW_RECORDS;
   rec.line_no = line_no;
-  OX (errors.push_back(rec));
-  for (int i = field_idx; OB_SUCC(ret) && i < format_.file_column_nums_; ++i) {
-    FieldValue &new_field = fields_per_line_.at(i);
-    new_field = FieldValue();
-    new_field.is_null_ = 1;
+  ret = errors.push_back(rec);
+  if (is_batch_mode) {
+    for (int i = field_idx, loc_idx = field_idx + output_line_no * format_.file_column_nums_;
+        OB_SUCC(ret) && i < format_.file_column_nums_; ++i, ++loc_idx) {
+      FieldValue &new_field = fields_per_line_.at(loc_idx);
+      new_field = FieldValue();
+      new_field.is_null_ = 1;
+    }
+  } else {
+    for (int i = field_idx; OB_SUCC(ret) && i < format_.file_column_nums_; ++i) {
+      FieldValue &new_field = fields_per_line_.at(i);
+      new_field = FieldValue();
+      new_field.is_null_ = 1;
+    }
   }
   return ret;
 }
 
-int64_t ObCSVGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len, bool into_outfile) const
+int ObCSVGeneralParser::reset_fields_per_line_count(int64_t count)
 {
-  int64_t pos = 0;
-  int64_t idx = 0;
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(line_term_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(field_term_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], field_escaped_char_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], field_enclosed_char_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], ObCharset::charset_name(cs_type_));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], skip_header_lines_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(skip_blank_lines_));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(trim_space_));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":", OPTION_NAMES[idx++]);
-    J_ARRAY_START();
-      for (int64_t i = 0; i < null_if_.count(); i++) {
-        if (i != 0) {
-          J_COMMA();
-        }
-        databuff_printf(buf, buf_len, pos, "\"%s\"", to_cstring(ObHexStringWrap(null_if_.at(i))));
-      }
-    J_ARRAY_END();
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(empty_field_as_null_));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], compression_algorithm_to_string(compression_algorithm_));
-  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_0 && into_outfile) {
-    J_COMMA();
-    databuff_printf(buf, buf_len, pos, "\"%s\":%s", OPTION_NAMES[idx++], STR_BOOL(is_optional_));
-    J_COMMA();
-    databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++], to_cstring(ObHexStringWrap(file_extension_)));
+  int ret = OB_SUCCESS;
+  if (OB_SUCC(ret) && OB_FAIL(fields_per_line_.prepare_allocate(count))) {
+    LOG_WARN("fail to allocate memory", K(ret), K(count));
   }
-  return pos;
+  return ret;
+}
+
+int ObCSVGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len, int64_t &pos, bool into_outfile) const
+{
+  int ret = OB_SUCCESS;
+  ObCStringHelper helper;
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::LINE_DELIMITER)],
+                     helper.convert(ObHexStringWrap(line_term_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FIELD_DELIMITER)],
+                     helper.convert(ObHexStringWrap(field_term_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%ld)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::ESCAPE)],
+                     field_escaped_char_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%ld)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FIELD_OPTIONALLY_ENCLOSED_BY)],
+                     field_enclosed_char_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::ENCODING)],
+                     ObCharset::charset_name(cs_type_)));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%ld)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::SKIP_HEADER)],
+                     skip_header_lines_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::SKIP_BLANK_LINES)],
+                     STR_BOOL(skip_blank_lines_)));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::TRIM_SPACE)],
+                     STR_BOOL(trim_space_)));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::NULL_IF_EXETERNAL)]));
+    OZ(J_ARRAY_START());
+      for (int64_t i = 0; OB_SUCC(ret) && i < null_if_.count(); i++) {
+        if (i != 0) {
+          OZ(J_COMMA());
+        }
+        OZ(databuff_printf(buf, buf_len, pos, R"("%s")", helper.convert(ObHexStringWrap(null_if_.at(i)))));
+      }
+    OZ(J_ARRAY_END());
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::EMPTY_FIELD_AS_NULL)],
+                     STR_BOOL(empty_field_as_null_)));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                     OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::COMPRESSION)],
+                     compression_algorithm_to_string(compression_algorithm_)));
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_0 && into_outfile) {
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                       OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::IS_OPTIONAL)],
+                       STR_BOOL(is_optional_)));
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                       OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FILE_EXTENSION)],
+                       helper.convert(ObHexStringWrap(file_extension_))));
+  }
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_1) {
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                       OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::PARSE_HEADER)],
+                       STR_BOOL(parse_header_)));
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, R"("%s":"%s")",
+                       OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::BINARY_FORMAT)],
+                       binary_format_to_string(binary_format_)));
+  }
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_2) {
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, R"("%s":%s)",
+                       OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::IGNORE_LAST_EMPTY_COLUMN)],
+                       STR_BOOL(ignore_last_empty_col_)));
+  }
+  return ret;
 }
 
 int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
-  int64_t idx = 0;
-  if (OB_SUCC(ret) && OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_SUCC(ret) && OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::LINE_DELIMITER)])
       && json::JT_STRING == node->value_->get_type()) {
     ObObj obj;
-    OZ (ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
+    OZ(ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
     if (OB_SUCC(ret) && !obj.is_null()) {
       line_term_str_ = obj.get_string();
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FIELD_DELIMITER)])
       && json::JT_STRING == node->value_->get_type()) {
     ObObj obj;
-    OZ (ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
+    OZ(ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
     if (OB_SUCC(ret) && !obj.is_null()) {
       field_term_str_ = obj.get_string();
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::ESCAPE)])
       && json::JT_NUMBER == node->value_->get_type()) {
     field_escaped_char_ = node->value_->get_number();
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FIELD_OPTIONALLY_ENCLOSED_BY)])
       && json::JT_NUMBER == node->value_->get_type()) {
     field_enclosed_char_ = node->value_->get_number();
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::ENCODING)])
       && json::JT_STRING == node->value_->get_type()) {
     cs_type_ = ObCharset::charset_type(node->value_->get_string());
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::SKIP_HEADER)])
       && json::JT_NUMBER == node->value_->get_type()) {
     skip_header_lines_ = node->value_->get_number();
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])) {
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::SKIP_BLANK_LINES)])) {
     if (json::JT_TRUE == node->value_->get_type()) {
       skip_blank_lines_ = true;
     } else {
@@ -547,7 +657,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])) {
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::TRIM_SPACE)])) {
     if (json::JT_TRUE == node->value_->get_type()) {
       trim_space_ = true;
     } else {
@@ -555,7 +665,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
-  if (OB_SUCC(ret) && OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_SUCC(ret) && OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::NULL_IF_EXETERNAL)])
       && json::JT_ARRAY == node->value_->get_type()) {
     const json::Array &it_array = node->value_->get_array();
     int64_t idx = 0;
@@ -571,7 +681,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
         LOG_WARN("null_if_ child is not string", K(ret), "type", it_tmp->get_type());
       } else {
         ObObj obj;
-        OZ (ObHexUtilsBase::unhex(it_tmp->get_string(), allocator, obj));
+        OZ(ObHexUtilsBase::unhex(it_tmp->get_string(), allocator, obj));
         if (OB_SUCC(ret) && !obj.is_null()) {
           null_if_.at(idx++) = obj.get_string();
         }
@@ -579,7 +689,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])) {
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::EMPTY_FIELD_AS_NULL)])) {
     if (json::JT_TRUE == node->value_->get_type()) {
       empty_field_as_null_ = true;
     } else {
@@ -587,7 +697,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::COMPRESSION)])
       && json::JT_STRING == node->value_->get_type()) {
     if (OB_FAIL(compression_algorithm_from_string(node->value_->get_string(), compression_algorithm_))) {
       LOG_WARN("failed to convert string to compression", K(ret));
@@ -595,7 +705,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
       node = node->get_next();
     }
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])) {
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::IS_OPTIONAL)])) {
     if (json::JT_TRUE == node->value_->get_type()) {
       is_optional_ = true;
     } else {
@@ -603,7 +713,7 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
-  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::FILE_EXTENSION)])
       && json::JT_STRING == node->value_->get_type()) {
     ObObj obj;
     OZ (ObHexUtilsBase::unhex(node->value_->get_string(), allocator, obj));
@@ -612,18 +722,50 @@ int ObCSVGeneralFormat::load_from_json_data(json::Pair *&node, ObIAllocator &all
     }
     node = node->get_next();
   }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::PARSE_HEADER)])) {
+    if (json::JT_TRUE == node->value_->get_type()) {
+      parse_header_ = true;
+    } else {
+      parse_header_ = false;
+    }
+    node = node->get_next();
+  }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::BINARY_FORMAT)])
+      && json::JT_STRING == node->value_->get_type()) {
+    if (OB_FAIL(binary_format_from_string(node->value_->get_string(), binary_format_))) {
+      LOG_WARN("failed to convert string to binary format", K(ret));
+    } else {
+      node = node->get_next();
+    }
+  }
+  // the default value of ignore_last_empty_col_ is true
+  // if ignore_last_empty_col_ is missing in ddl json, set ignore_last_empty_col_ to false for previous tables
+  ignore_last_empty_col_ = false;
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[static_cast<int32_t>(ObCSVOptionsEnum::IGNORE_LAST_EMPTY_COLUMN)])) {
+    if (json::JT_TRUE == node->value_->get_type()) {
+      ignore_last_empty_col_ = true;
+    } else {
+      ignore_last_empty_col_ = false;
+    }
+    node = node->get_next();
+  }
   return ret;
 }
 
-int64_t ObParquetGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len) const
+int ObParquetGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len, int64_t &pos) const
 {
-  int64_t pos = 0;
+  int ret = OB_SUCCESS;
   int64_t idx = 0;
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], row_group_size_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compress_type_index_);
-  return pos;
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], row_group_size_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compress_type_index_));
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_2) {
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++],
+                      column_index_type_to_string(column_index_type_)));
+  }
+  return ret;
 }
 
 int ObParquetGeneralFormat::load_from_json_data(json::Pair *&node, common::ObIAllocator &allocator)
@@ -640,35 +782,47 @@ int ObParquetGeneralFormat::load_from_json_data(json::Pair *&node, common::ObIAl
     compress_type_index_ = node->value_->get_number();
     node = node->get_next();
   }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+      && json::JT_STRING == node->value_->get_type()) {
+    if (OB_FAIL(column_index_type_from_string(node->value_->get_string(), column_index_type_))) {
+      LOG_WARN("failed to convert string to column index type", K(ret));
+    } else {
+      node = node->get_next();
+    }
+  }
   return ret;
 }
 
-
-int64_t ObOrcGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len) const
+int ObOrcGeneralFormat::to_json_kv_string(char *buf, const int64_t buf_len, int64_t &pos) const
 {
-  int64_t pos = 0;
+  int ret = OB_SUCCESS;
   int64_t idx = 0;
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], stripe_size_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compress_type_index_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compression_block_size_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], row_index_stride_);
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":", OPTION_NAMES[idx++]);
-  J_ARRAY_START();
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], stripe_size_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compress_type_index_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], compression_block_size_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":%ld", OPTION_NAMES[idx++], row_index_stride_));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":", OPTION_NAMES[idx++]));
+  OZ(J_ARRAY_START());
   int64_t sz = column_use_bloom_filter_.count() - 1;
-  for (int64_t i = 0; i < sz; ++i) {
-    databuff_printf(buf, buf_len, pos, "%ld", column_use_bloom_filter_.at(i));
-    J_COMMA();
+  for (int64_t i = 0; OB_SUCC(ret) && i < sz; ++i) {
+    OZ(databuff_printf(buf, buf_len, pos, "%ld", column_use_bloom_filter_.at(i)));
+    OZ(J_COMMA());
   }
   if (sz > 0) {
-    databuff_printf(buf, buf_len, pos, "%ld", column_use_bloom_filter_.at(sz));
+    OZ(databuff_printf(buf, buf_len, pos, "%ld", column_use_bloom_filter_.at(sz)));
   }
-  J_ARRAY_END();
-  return pos;
+  OZ(J_ARRAY_END());
+  if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_2) {
+    OZ(J_COMMA());
+    OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", OPTION_NAMES[idx++],
+                      column_index_type_to_string(column_index_type_)));
+  }
+  return ret;
 }
 
 int ObOrcGeneralFormat::load_from_json_data(json::Pair *&node, common::ObIAllocator &allocator)
@@ -715,25 +869,35 @@ int ObOrcGeneralFormat::load_from_json_data(json::Pair *&node, common::ObIAlloca
         }
       }
     }
+    node = node->get_next();
+  }
+  if (OB_NOT_NULL(node) && 0 == node->name_.case_compare(OPTION_NAMES[idx++])
+      && json::JT_STRING == node->value_->get_type()) {
+    if (OB_FAIL(column_index_type_from_string(node->value_->get_string(), column_index_type_))) {
+      LOG_WARN("failed to convert string to column index type", K(ret));
+    } else {
+      node = node->get_next();
+    }
   }
   return ret;
 }
 
-int64_t ObOriginFileFormat::to_json_kv_string(char *buf, const int64_t buf_len) const
+int ObOriginFileFormat::to_json_kv_string(char *buf, const int64_t buf_len, int64_t &pos) const
 {
-  int64_t pos = 0;
+  int ret = OB_SUCCESS;
   int64_t idx = 0;
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], to_cstring(ObHexStringWrap(origin_line_term_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], to_cstring(ObHexStringWrap(origin_field_term_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], to_cstring(ObHexStringWrap(origin_field_escaped_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], to_cstring(ObHexStringWrap(origin_field_enclosed_str_)));
-  J_COMMA();
-  databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], to_cstring(ObHexStringWrap(origin_null_if_str_)));
-  return pos;
+  ObCStringHelper helper;
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], helper.convert(ObHexStringWrap(origin_line_term_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], helper.convert(ObHexStringWrap(origin_field_term_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], helper.convert(ObHexStringWrap(origin_field_escaped_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], helper.convert(ObHexStringWrap(origin_field_enclosed_str_))));
+  OZ(J_COMMA());
+  OZ(databuff_printf(buf, buf_len, pos, "\"%s\":\"%s\"", ORIGIN_FORMAT_STRING[idx++], helper.convert(ObHexStringWrap(origin_null_if_str_))));
+  return ret;
 }
 
 int ObOriginFileFormat::load_from_json_data(json::Pair *&node, ObIAllocator &allocator)
@@ -828,6 +992,58 @@ int compression_algorithm_from_string(ObString compression_name,
   return ret;
 }
 
+const char *binary_format_to_string(const ObCSVGeneralFormat::ObCSVBinaryFormat binary_format)
+{
+  switch (binary_format) {
+    case ObCSVGeneralFormat::ObCSVBinaryFormat::HEX:    return "HEX";
+    case ObCSVGeneralFormat::ObCSVBinaryFormat::BASE64:    return "BASE64";
+    default: return "DEFAULT";
+  }
+}
+
+const char *column_index_type_to_string(const sql::ColumnIndexType column_index_type)
+{
+  switch (column_index_type) {
+    case sql::ColumnIndexType::NAME:    return "NAME";
+    case sql::ColumnIndexType::POSITION:    return "POSITION";
+    case sql::ColumnIndexType::ID:    return "ID";
+    default: return "NAME";
+  }
+}
+
+int column_index_type_from_string(const ObString column_index_type_str,
+                                  sql::ColumnIndexType &column_index_type) {
+  int ret = OB_SUCCESS;
+
+  if (column_index_type_str.empty() || 0 == column_index_type_str.case_compare("NAME")) {
+    column_index_type = sql::ColumnIndexType::NAME;
+  } else if (0 == column_index_type_str.case_compare("POSITION")) {
+    column_index_type = sql::ColumnIndexType::POSITION;
+  } else if (0 == column_index_type_str.case_compare("ID")) {
+    column_index_type = sql::ColumnIndexType::ID;
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+  }
+  return ret;
+}
+
+int binary_format_from_string(const ObString binary_format_str,
+                              ObCSVGeneralFormat::ObCSVBinaryFormat &binary_format) {
+  int ret = OB_SUCCESS;
+
+  if (binary_format_str.empty() || 0 == binary_format_str.case_compare("default")) {
+    binary_format = ObCSVGeneralFormat::ObCSVBinaryFormat::DEFAULT;
+  } else if (0 == binary_format_str.case_compare("hex")) {
+    binary_format = ObCSVGeneralFormat::ObCSVBinaryFormat::HEX;
+  } else if (0 == binary_format_str.case_compare("base64")) {
+    binary_format = ObCSVGeneralFormat::ObCSVBinaryFormat::BASE64;
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+    binary_format = ObCSVGeneralFormat::ObCSVBinaryFormat::DEFAULT;
+  }
+  return ret;
+}
+
 int compression_algorithm_from_suffix(ObString filename,
                                       ObCSVGeneralFormat::ObCSVCompression &compression_algorithm)
 {
@@ -853,38 +1069,86 @@ const char *compression_algorithm_to_suffix(ObCSVGeneralFormat::ObCSVCompression
   }
 }
 
+int ObExternalFileFormat::to_string_with_alloc(ObString &str, ObIAllocator &allocator, bool into_outfile) const
+{
+  int ret = OB_SUCCESS;
+  char *buf = NULL;
+  int64_t buf_len = DEFAULT_BUF_LENGTH / 2;
+  int64_t pos = 0;
+  do {
+    buf_len *= 2;
+    ret = OB_SUCCESS;
+    if (OB_ISNULL(buf = static_cast<char*>(allocator.alloc(buf_len)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc buf", K(ret), K(buf_len));
+    } else if (OB_FAIL(to_string(buf, buf_len, pos, into_outfile))) {
+      LOG_WARN("failed to write string", K(ret));
+    }
+  } while (OB_SIZE_OVERFLOW == ret);
+  OX(str.assign_ptr(buf, pos));
+  return ret;
+}
+
+int ObExternalFileFormat::to_string(char *buf, const int64_t buf_len, int64_t &pos, bool into_outfile) const
+{
+  int ret = OB_SUCCESS;
+  bool is_valid_format = format_type_ > INVALID_FORMAT && format_type_ < MAX_FORMAT;
+  OZ(J_OBJ_START());
+  OZ(databuff_print_kv(buf, buf_len, pos, "\"TYPE\"", is_valid_format ? ObExternalFileFormat::FORMAT_TYPE_STR[format_type_] : "INVALID"));
+  switch (format_type_) {
+    case CSV_FORMAT:
+      OZ(csv_format_.to_json_kv_string(buf, buf_len, pos, into_outfile));
+      OZ(origin_file_format_str_.to_json_kv_string(buf, buf_len, pos));
+      break;
+    case ODPS_FORMAT:
+      OZ(odps_format_.to_json_kv_string(buf, buf_len, pos));
+      break;
+    case PARQUET_FORMAT:
+      OZ(parquet_format_.to_json_kv_string(buf, buf_len, pos));
+      break;
+    case ORC_FORMAT:
+      OZ(orc_format_.to_json_kv_string(buf, buf_len, pos));
+      break;
+    case PLUGIN_FORMAT: {
+      J_COMMA();
+      pos += plugin_format_.to_json_string(buf + pos, buf_len - pos);
+      break;
+    }
+    default:
+      // do nothing, format type can be invalid
+      break;
+  }
+  OZ(J_OBJ_END());
+  return ret;
+}
+
 int64_t ObExternalFileFormat::to_string(char *buf, const int64_t buf_len, bool into_outfile) const
 {
   int64_t pos = 0;
-  bool is_valid_format = format_type_ > INVALID_FORMAT && format_type_ < MAX_FORMAT;
-
-  J_OBJ_START();
-
-  databuff_print_kv(buf, buf_len, pos, "\"TYPE\"", is_valid_format ? ObExternalFileFormat::FORMAT_TYPE_STR[format_type_] : "INVALID");
-
-  switch (format_type_) {
-    case CSV_FORMAT:
-      pos += csv_format_.to_json_kv_string(buf + pos, buf_len - pos, into_outfile);
-      pos += origin_file_format_str_.to_json_kv_string(buf + pos, buf_len - pos);
-      break;
-    case ODPS_FORMAT:
-      pos += odps_format_.to_json_kv_string(buf + pos, buf_len - pos);
-      break;
-    case PARQUET_FORMAT:
-      pos += parquet_format_.to_json_kv_string(buf + pos, buf_len - pos);
-      break;
-    case ORC_FORMAT:
-      pos += orc_format_.to_json_kv_string(buf + pos, buf_len - pos);
-      break;
-    default:
-      pos += 0;
-  }
-
-  J_OBJ_END();
+  // ignore ret
+  to_string(buf, buf_len, pos, into_outfile);
   return pos;
 }
 
+int ObExternalFileFormat::parse_format_type(const common::ObString &str,
+    common::ObIAllocator &allocator, FormatType &format_type)
+{
+  int ret = OB_SUCCESS;
+  format_type = INVALID_FORMAT;
+  ObExternalFileFormat format;
+  if (OB_FAIL(format.load_from_string_(str, allocator, true/*parse_format_type_only*/))) {
+    LOG_WARN("failed to parse file format from str", K(ret));
+  } else {
+    format_type = format.format_type_;
+  }
+  return ret;
+}
+
 int ObExternalFileFormat::load_from_string(const ObString &str, ObIAllocator &allocator)
+{
+  return load_from_string_(str, allocator, false/*parse_format_type_only*/);
+}
+int ObExternalFileFormat::load_from_string_(const ObString &str, ObIAllocator &allocator, bool parse_format_type_only)
 {
   int ret = OB_SUCCESS;
   json::Value *data = NULL;
@@ -913,26 +1177,57 @@ int ObExternalFileFormat::load_from_string(const ObString &str, ObIAllocator &al
           break;
         }
       }
-      format_type_node = format_type_node->get_next();
-      switch (format_type_) {
-        case CSV_FORMAT:
-          OZ (csv_format_.load_from_json_data(format_type_node, allocator));
-          OZ (origin_file_format_str_.load_from_json_data(format_type_node, allocator));
-          break;
-        case ODPS_FORMAT:
-          OZ (odps_format_.load_from_json_data(format_type_node, allocator));
-          break;
-        case PARQUET_FORMAT:
-          OZ (parquet_format_.load_from_json_data(format_type_node, allocator));
-          break;
-        case ORC_FORMAT:
-          OZ (orc_format_.load_from_json_data(format_type_node, allocator));
-          break;
-        default:
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid format type", K(ret), K(format_type_str));
-          break;
+      if (parse_format_type_only) {
+      } else {
+        format_type_node = format_type_node->get_next();
+        switch (format_type_) {
+          case CSV_FORMAT:
+            OZ (csv_format_.load_from_json_data(format_type_node, allocator));
+            OZ (origin_file_format_str_.load_from_json_data(format_type_node, allocator));
+            break;
+          case ODPS_FORMAT:
+            OZ (odps_format_.load_from_json_data(format_type_node, allocator));
+            break;
+          case PARQUET_FORMAT:
+            OZ (parquet_format_.load_from_json_data(format_type_node, allocator));
+            break;
+          case ORC_FORMAT:
+            OZ (orc_format_.load_from_json_data(format_type_node, allocator));
+            break;
+          case PLUGIN_FORMAT:
+            OZ (plugin_format_.init(allocator));
+            OZ (plugin_format_.load_from_json_node(format_type_node));
+            break;
+          default:
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid format type", K(ret), K(format_type_str));
+            break;
+        }
       }
+    }
+  }
+  return ret;
+}
+
+int ObExternalFileFormat::mock_gen_bool_tinyint_column_def(
+    const share::schema::ObColumnSchemaV2 &column,
+    ObIAllocator &allocator,
+    ObString &def)
+{
+  int ret = OB_SUCCESS;
+  ObSqlString temp_str;
+  if (format_type_ != CSV_FORMAT) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("not supported format type", K(ret), K(format_type_));
+  } else {
+    uint64_t file_column_idx = column.get_column_id() - OB_APP_MIN_COLUMN_ID + 1;
+    if (OB_FAIL(temp_str.append_fmt(
+            "case %s%lu when 'true' then 1 when 'false' then 0 else NULL end",
+            N_EXTERNAL_FILE_COLUMN_PREFIX,
+            file_column_idx))) {
+      LOG_WARN("fail to append sql str", K(ret));
+    } else if (OB_FAIL(ob_write_string(allocator, temp_str.string(), def))) {
+      LOG_WARN("fail to write string", K(ret));
     }
   }
   return ret;
@@ -962,15 +1257,79 @@ int ObExternalFileFormat::mock_gen_column_def(
       break;
     }
     case PARQUET_FORMAT: {
-      if (OB_FAIL(temp_str.append_fmt("get_path(%s, '%.*s')",
-                                      N_EXTERNAL_FILE_ROW,
-                                      column.get_column_name_str().length(),
-                                      column.get_column_name_str().ptr()))) {
-        LOG_WARN("fail to append sql str", K(ret));
+      // Expect to concat the collection type info suffix.
+      // TODO(bitao): temp implementation, we will remove it.
+      uint8_t depth = 0;
+
+      if (column.is_collection()) {
+        if (1 != column.get_extended_type_info().count()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid extended type info", K(ret));
+        } else {
+          ObString type_info = column.get_extended_type_info().at(0);
+          if (!type_info.prefix_match("ARRAY")) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid type info prefix", K(ret), K(type_info));
+          } else {
+            const char *type_ptr = type_info.ptr();
+            int32_t type_len = type_info.length();
+            char letter = '\0';
+            // Reverse to find out depth for array. ARRAY(ARRAY(INT)) -> 1.
+            for (int32_t i = type_len - 1; OB_SUCC(ret) && i > 0; i --) {
+              letter = type_ptr[i];
+              if (letter == ')') {
+                depth ++;
+              } else {
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Parquet format won't use position.
+      if (parquet_format_.column_index_type_ == sql::ColumnIndexType::NAME) {
+        ObSqlString expect_column_name;
+        OZ (expect_column_name.append(column.get_column_name_str()));
+
+        LOG_TRACE("get expect column name", K(ret), K(expect_column_name.string()));
+        if (OB_FAIL(temp_str.append_fmt("get_path(%s, '%.*s')",
+                                        N_EXTERNAL_FILE_ROW,
+                                        expect_column_name.string().length(),
+                                        expect_column_name.string().ptr()))) {
+          LOG_WARN("fail to append sql str", K(ret));
+        }
+      } else if (parquet_format_.column_index_type_ == sql::ColumnIndexType::POSITION) {
+        uint64_t file_column_idx = column.get_column_id() - OB_APP_MIN_COLUMN_ID + 1;
+        if (OB_FAIL(temp_str.append_fmt("%s%lu", N_EXTERNAL_FILE_POS, file_column_idx))) {
+          LOG_WARN("fail to append sql str", K(ret));
+        }
+      } else {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("not supported column index type", K(ret), K(parquet_format_.column_index_type_));
       }
       break;
     }
     case ORC_FORMAT: {
+      if (orc_format_.column_index_type_ == sql::ColumnIndexType::NAME) {
+        if (OB_FAIL(temp_str.append_fmt("get_path(%s, '%.*s')",
+                                        N_EXTERNAL_FILE_ROW,
+                                        column.get_column_name_str().length(),
+                                        column.get_column_name_str().ptr()))) {
+          LOG_WARN("fail to append sql str", K(ret));
+        }
+      } else if (orc_format_.column_index_type_ == sql::ColumnIndexType::POSITION) {
+        uint64_t file_column_idx = column.get_column_id() - OB_APP_MIN_COLUMN_ID + 1;
+        if (OB_FAIL(temp_str.append_fmt("%s%lu", N_EXTERNAL_FILE_POS, file_column_idx))) {
+          LOG_WARN("fail to append sql str", K(ret));
+        }
+      } else {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("not supported column index type", K(ret), K(orc_format_.column_index_type_));
+      }
+      break;
+    }
+    case PLUGIN_FORMAT: {
       if (OB_FAIL(temp_str.append_fmt("get_path(%s, '%.*s')",
                                       N_EXTERNAL_FILE_ROW,
                                       column.get_column_name_str().length(),

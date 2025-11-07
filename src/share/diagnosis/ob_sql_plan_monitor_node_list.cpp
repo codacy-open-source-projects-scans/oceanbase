@@ -11,24 +11,22 @@
  */
 
 #define USING_LOG_PREFIX SHARE
-#include "share/diagnosis/ob_sql_plan_monitor_node_list.h"
+#include "ob_sql_plan_monitor_node_list.h"
 #include "lib/rc/ob_rc.h"
-#include "share/ob_thread_mgr.h"
-#include "common/ob_smart_call.h"
-#include "sql/engine/ob_operator.h"
 #include "observer/ob_server.h"
+#include "share/diagnosis/ob_runtime_profile.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
 using namespace oceanbase::lib;
 
 const char *ObPlanMonitorNodeList::MOD_LABEL = "SqlPlanMon";
-
 ObPlanMonitorNodeList::ObPlanMonitorNodeList() :
   inited_(false),
   destroyed_(false),
   recycle_threshold_(0),
-  batch_release_(0)
+  batch_release_(0),
+  profile_recycle_threshold_(0)
 {
 }
 
@@ -71,6 +69,7 @@ int ObPlanMonitorNodeList::init(uint64_t tenant_id, const int64_t tenant_mem_siz
       rt_node_id_ = -1;
       recycle_threshold_ = queue_size * 0.9; // when reach 90% usage, begin to recycle
       batch_release_ = queue_size * 0.05; // recycle 5% nodes per round
+      profile_recycle_threshold_ = int64_t(tenant_mem_size * 0.02 * 0.8);
       tenant_id_ = tenant_id;
       inited_ = true;
       destroyed_ = false;
@@ -124,6 +123,15 @@ int ObPlanMonitorNodeList::submit_node(ObMonitorNode &node)
   } else {
     deep_cp_node = new(buf) ObMonitorNode(node);
     deep_cp_node->covert_to_static_node();
+    if (OB_NOT_NULL(node.profile_)) {
+      if (OB_FAIL(node.profile_->to_persist_profile(deep_cp_node->raw_profile_,
+                                                    deep_cp_node->raw_profile_len_, &allocator_))) {
+        LOG_WARN("failed to persist profile");
+        // overwrite ret by design
+        ret = OB_SUCCESS;
+      }
+      deep_cp_node->profile_ = nullptr;
+    }
     int64_t req_id = 0;
     if (OB_FAIL(queue_.push(deep_cp_node, req_id))) {
       //sql audit槽位已满时会push失败, 依赖后台线程进行淘汰获得可用槽位
@@ -163,11 +171,12 @@ int ObPlanMonitorNodeList::revert_monitor_node(ObMonitorNode &node)
   return ret;
 }
 
-
-int ObPlanMonitorNodeList::convert_node_map_2_array(common::ObIArray<ObMonitorNode> &array)
+int ObPlanMonitorNodeList::convert_node_map_2_array(common::ObIArray<ObMonitorNode> &array,
+                                                    common::ObIAllocator *alloc,
+                                                    bool fetch_profile)
 {
   int ret = OB_SUCCESS;
-  ObPlanMonitorNodeList::ObMonitorNodeTraverseCall call(array);
+  ObPlanMonitorNodeList::ObMonitorNodeTraverseCall call(array, alloc, fetch_profile);
   if (OB_FAIL(node_map_.foreach_refactored(call))) {
     LOG_WARN("fail to traverse node map", K(ret));
   }
@@ -210,7 +219,16 @@ int ObPlanMonitorNodeList::ObMonitorNodeTraverseCall::recursive_add_node_to_arra
     if (OB_FAIL(node_array_.push_back(node))) {
       LOG_WARN("fail to push back mointor node", K(ret));
     } else {
-      node_array_.at(node_array_.count() - 1).covert_to_static_node();
+      ObMonitorNode &last_node = node_array_.at(node_array_.count() - 1);
+      last_node.covert_to_static_node();
+      if (fetch_profile_ && OB_NOT_NULL(last_node.profile_)
+          && OB_FAIL(last_node.profile_->to_persist_profile(last_node.raw_profile_,
+                                                            last_node.raw_profile_len_, alloc_))) {
+        LOG_WARN("failed to persist profile");
+        // overwrite ret by design
+        ret = OB_SUCCESS;
+      }
+      last_node.profile_ = nullptr;
     }
   }
   return ret;
@@ -259,7 +277,7 @@ uint64_t ObMonitorNode::calc_db_time()
 void ObMonitorNode::covert_to_static_node()
 {
   db_time_ = calc_db_time();
-  uint64_t cpu_khz = OBSERVER.get_cpu_frequency_khz();
+  uint64_t cpu_khz = OBSERVER_FREQUENCE.get_cpu_frequency_khz();
   db_time_ = db_time_ * 1000 / cpu_khz;
   block_time_ = block_time_ * 1000 / cpu_khz;
   op_ = nullptr;
@@ -279,6 +297,21 @@ int ObSqlPlanMonitorRecycleTask::init(ObPlanMonitorNodeList *node_list)
     ret = OB_ERR_UNEXPECTED;
   } else {
     node_list_ = node_list;
+  }
+  return ret;
+}
+
+int ObMonitorNode::set_sql_id(const ObString &sql_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(sql_id.ptr())) {
+    sql_id_[0] = '\0';
+  } else if (sql_id.length() > common::OB_MAX_SQL_ID_LENGTH) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sql id length unexpected", K(ret), K(sql_id.length()));
+  } else {
+    MEMCPY(sql_id_, sql_id.ptr(), sql_id.length());
+    sql_id_[sql_id.length()] = '\0';
   }
   return ret;
 }

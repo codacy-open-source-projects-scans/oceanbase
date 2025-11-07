@@ -11,18 +11,10 @@
  */
 
 #define USING_LOG_PREFIX COMMON
-
-#include "lib/stat/ob_diagnose_info.h"
-#include "share/io/ob_io_define.h"
-#include "share/io/ob_io_struct.h"
-#include "share/io/ob_io_manager.h"
-#include "share/resource_manager/ob_resource_manager.h"
-#include "lib/time/ob_time_utility.h"
-#include "storage/blocksstable/ob_macro_block_id.h"
-#include "lib/restore/ob_object_device.h"
+#include "ob_io_define.h"
 #include "storage/backup/ob_backup_factory.h"
-#include "deps/oblib/src/lib/stat/ob_session_stat.h"
-
+#include "src/storage/ob_file_system_router.h"
+#include "src/observer/ob_server.h"
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
 /******************             IOMode              **********************/
@@ -30,6 +22,11 @@ static const char *read_mode_name = "READ";
 static const char *read_mode_name_short = "R";
 static const char *write_mode_name = "WRITE";
 static const char *write_mode_name_short = "W";
+enum ObIODirType : int {
+  OB_DIR_TYPE_LOCAL = 0,
+  OB_DIR_TYPE_SS_PRIVATE = 1,
+  OB_DIR_TYPE_SS_PUBLIC = 2
+};
 const char *oceanbase::common::get_io_mode_string(const ObIOMode mode)
 {
   const char *ret_name = "UNKNOWN";
@@ -88,6 +85,55 @@ ObIOMode oceanbase::common::get_io_mode_enum(const char *mode_string)
   return mode;
 }
 
+class DiskChecker
+{
+private:
+  DiskChecker() : is_clog_data_in_same_disk_(false)
+  {}
+  ~DiskChecker()
+  {}
+  int get_major_device(const char *path) const
+  {
+    struct stat fileStat;
+    if (stat(path, &fileStat) != 0) {
+      LOG_ERROR_RET(OB_IO_ERROR, "read file stat failed", K(path));
+    }
+    return (fileStat.st_dev >> 8) & 0xFF;
+  }
+  bool is_same_disk(const char *path1, const char *path2)
+  {
+    bool is_same_disk = false;
+    if (OB_ISNULL(path1) || OB_ISNULL(path2)) {
+      LOG_ERROR_RET(OB_INVALID_ARGUMENT, "clog or data path is nullptr", K(path1), K(path2));
+    } else {
+      const int dev1 = get_major_device(path1);
+      const int dev2 = get_major_device(path1);
+      is_same_disk = (dev1 == dev2);
+    }
+    return is_same_disk;
+  }
+public:
+  static DiskChecker &get_instance()
+  {
+    static DiskChecker instance_;
+    return instance_;
+  }
+  bool is_clog_data_in_same_disk()
+  {
+    int ret = OB_SUCCESS;
+    if (REACH_TIME_INTERVAL(60 * 1000L * 1000L)) {
+      is_clog_data_in_same_disk_ =
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+        !GCONF.enable_logservice &&
+#endif
+        is_same_disk(oceanbase::ObFileSystemRouter::get_instance().get_data_dir(),
+        oceanbase::ObFileSystemRouter::get_instance().get_clog_dir());
+    }
+    return is_clog_data_in_same_disk_;
+  }
+private:
+  bool is_clog_data_in_same_disk_;
+};
 const char *oceanbase::common::get_io_sys_group_name(ObIOModule module)
 {
   const char *ret_name = "UNKNOWN";
@@ -178,6 +224,9 @@ ObIOFlag::ObIOFlag()
       is_write_through_(false),
       is_sealed_(true),
       need_close_dev_and_fd_(false),
+      is_buffered_read_(true),
+      is_preread_(false),
+      ss_dir_type_(ObIODirType::OB_DIR_TYPE_LOCAL),
       reserved_(0),
       group_id_(USER_RESOURCE_OTHER_GROUP_ID),
       sys_module_id_(OB_INVALID_ID)
@@ -201,6 +250,9 @@ void ObIOFlag::reset()
   is_write_through_ = false;
   is_sealed_ = true;
   need_close_dev_and_fd_ = false;
+  is_buffered_read_ = true;
+  ss_dir_type_ = ObIODirType::OB_DIR_TYPE_LOCAL;
+  is_preread_ = false;
   reserved_ = 0;
   group_id_ = USER_RESOURCE_OTHER_GROUP_ID;
   sys_module_id_ = OB_INVALID_ID;
@@ -267,6 +319,16 @@ bool ObIOFlag::is_sys_module() const
   return USER_RESOURCE_OTHER_GROUP_ID == group_id_
           && sys_module_id_ >= SYS_MODULE_START_ID
           && sys_module_id_ < SYS_MODULE_END_ID;
+}
+
+bool ObIORequest::is_limit_net_bandwidth_req() const
+{
+  bool ret = false;
+  if (io_result_ == nullptr) {
+  } else {
+    ret = io_result_->is_limit_net_bandwidth_req_;
+  }
+  return ret;
 }
 
 int64_t ObIOFlag::get_wait_event() const
@@ -379,6 +441,50 @@ bool ObIOFlag::is_need_close_dev_and_fd() const
   return need_close_dev_and_fd_;
 }
 
+void ObIOFlag::set_buffered_read(const bool is_buffered_read)
+{
+  is_buffered_read_ = is_buffered_read;
+}
+
+bool ObIOFlag::is_buffered_read() const
+{
+  return is_buffered_read_;
+}
+
+void ObIOFlag::set_preread()
+{
+  is_preread_ = true;
+}
+
+void ObIOFlag::set_no_preread()
+{
+  is_preread_ = false;
+}
+
+bool ObIOFlag::is_preread() const
+{
+  return is_preread_;
+}
+
+void ObIOFlag::set_ss_private_dir()
+{
+  ss_dir_type_ = ObIODirType::OB_DIR_TYPE_SS_PRIVATE;
+}
+
+void ObIOFlag::set_ss_public_dir()
+{
+  ss_dir_type_ = ObIODirType::OB_DIR_TYPE_SS_PUBLIC;
+}
+
+bool ObIOFlag::is_ss_private_dir() const
+{
+  return ss_dir_type_ == ObIODirType::OB_DIR_TYPE_SS_PRIVATE;
+}
+
+bool ObIOFlag::is_ss_public_dir() const
+{
+  return ss_dir_type_ == ObIODirType::OB_DIR_TYPE_SS_PUBLIC;
+}
 
 bool oceanbase::common::is_atomic_write_callback(const ObIOCallbackType type)
 {
@@ -427,7 +533,7 @@ ObSNIOInfo::ObSNIOInfo()
     fd_(),
     offset_(0),
     size_(0),
-    timeout_us_(DEFAULT_IO_WAIT_TIME_US),
+    timeout_us_(GCONF._data_storage_io_timeout),
     flag_(),
     callback_(nullptr),
     buf_(nullptr),
@@ -453,7 +559,7 @@ void ObSNIOInfo::reset()
   fd_.reset();
   offset_ = 0;
   size_ = 0;
-  timeout_us_ = DEFAULT_IO_WAIT_TIME_US;
+  timeout_us_ = GCONF._data_storage_io_timeout;
   flag_.reset();
   callback_ = nullptr;
   buf_ = nullptr;
@@ -495,9 +601,10 @@ ObSNIOInfo &ObSNIOInfo::operator=(const ObSNIOInfo &other)
 
 /******************             S2IOInfo              **********************/
 #ifdef OB_BUILD_SHARED_STORAGE
-ObSSIOInfo::ObSSIOInfo() : ObSNIOInfo(), phy_block_handle_(), fd_cache_handle_(), tmp_file_valid_length_(0)
-{
-}
+ObSSIOInfo::ObSSIOInfo()
+  : ObSNIOInfo(), phy_block_handle_(), fd_cache_handle_(), tmp_file_valid_length_(0),
+    effective_tablet_id_(ObTabletID::INVALID_TABLET_ID), is_write_cache_(true)
+{}
 
 ObSSIOInfo::ObSSIOInfo(const ObSSIOInfo &other)
 {
@@ -514,6 +621,8 @@ void ObSSIOInfo::reset()
   phy_block_handle_.reset();
   fd_cache_handle_.reset();
   tmp_file_valid_length_ = 0;
+  effective_tablet_id_ = ObTabletID::INVALID_TABLET_ID;
+  is_write_cache_ = true;
 }
 
 ObSSIOInfo &ObSSIOInfo::operator=(const ObSSIOInfo &other)
@@ -532,6 +641,8 @@ ObSSIOInfo &ObSSIOInfo::operator=(const ObSSIOInfo &other)
     user_data_buf_ = other.user_data_buf_;
     part_id_ = other.part_id_;
     tmp_file_valid_length_ = other.tmp_file_valid_length_;
+    effective_tablet_id_ = other.effective_tablet_id_;
+    is_write_cache_ = other.is_write_cache_;
     // ignore ret, cuz assign fails only when other.phy_block_handle_/fd_cache_handle_ is invalid.
     // in case when other.phy_block_handle_/fd_cache_handle_ is invalid, ret is unnecessary.
     int tmp_ret = OB_SUCCESS;
@@ -621,13 +732,13 @@ ObIOResult::ObIOResult()
     is_finished_(false),
     is_canceled_(false),
     has_estimated_(false),
-    is_object_device_req_(false),
+    is_limit_net_bandwidth_req_(false),
     result_ref_cnt_(0),
     out_ref_cnt_(0),
     complete_size_(0),
     offset_(0),
     size_(0),
-    timeout_us_(DEFAULT_IO_WAIT_TIME_US),
+    timeout_us_(GCONF._data_storage_io_timeout),
     aligned_size_(DIO_ALIGN_SIZE),
     tenant_io_mgr_(),
     buf_(nullptr),
@@ -677,11 +788,10 @@ int ObIOResult::init(const ObIOInfo &info)
     LOG_WARN("thread_cond not init yet", K(ret));
   } else if (OB_ISNULL(info.fd_.device_handle_)) {
     ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), KP(info.fd_.device_handle_));
   } else {
     if (info.flag_.is_sync()) {
-      if (OB_FAIL(info.fd_.device_handle_->get_io_aligned_size(aligned_size_))) {
-        LOG_WARN("get io aligned size failed", K(ret));
-      }
+      aligned_size_ = info.fd_.device_handle_->get_io_aligned_size();
     } else {
       aligned_size_ = DIO_ALIGN_SIZE;
     }
@@ -703,7 +813,7 @@ int ObIOResult::init(const ObIOInfo &info)
     buf_ = info.buf_;
     user_data_buf_ = info.user_data_buf_;
     time_log_.begin_ts_ = ObTimeUtility::fast_current_time();
-    is_object_device_req_ = info.fd_.device_handle_->is_object_device();
+    is_limit_net_bandwidth_req_ = info.fd_.device_handle_->should_limit_net_bandwidth();
     if (OB_UNLIKELY(!is_valid())) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid argument", K(ret), K(*this));
@@ -720,13 +830,13 @@ void ObIOResult::reset()
   is_finished_ = false;
   is_canceled_ = false;
   has_estimated_ = false;
-  is_object_device_req_ = false;
+  is_limit_net_bandwidth_req_ = false;
   complete_size_ = 0;
   offset_ = 0;
   size_ = 0;
   result_ref_cnt_ = 0;
   out_ref_cnt_ = 0;
-  timeout_us_ = DEFAULT_IO_WAIT_TIME_US;
+  timeout_us_ = GCONF._data_storage_io_timeout;
   buf_ = nullptr;
   user_data_buf_ = nullptr;
   io_callback_ = nullptr;
@@ -743,13 +853,13 @@ void ObIOResult::destroy()
   is_finished_ = false;
   is_canceled_ = false;
   has_estimated_ = false;
-  is_object_device_req_ = false;
+  is_limit_net_bandwidth_req_ = false;
   complete_size_ = 0;
   offset_ = 0;
   size_ = 0;
   result_ref_cnt_ = 0;
   out_ref_cnt_ = 0;
-  timeout_us_ = DEFAULT_IO_WAIT_TIME_US;
+  timeout_us_ = GCONF._data_storage_io_timeout;
   buf_ = nullptr;
   user_data_buf_ = nullptr;
   io_callback_ = nullptr;
@@ -769,6 +879,11 @@ int64_t ObIOResult::get_data_size() const
   return data_size;
 }
 
+int64_t ObIOResult::get_user_io_size() const
+{
+  return size_;
+}
+
 ObIOMode ObIOResult::get_mode() const
 {
   return flag_.get_mode();
@@ -776,7 +891,7 @@ ObIOMode ObIOResult::get_mode() const
 
 ObIOGroupKey ObIOResult::get_group_key() const
 {
-  return ObIOGroupKey(flag_.get_resource_group_id(), is_object_device_req_ ? get_mode() : ObIOMode::MAX_MODE);
+  return ObIOGroupKey(flag_.get_resource_group_id(), is_limit_net_bandwidth_req_ ? get_mode() : ObIOMode::MAX_MODE);
 }
 
 uint64_t ObIOResult::get_sys_module_id() const
@@ -801,6 +916,7 @@ uint64_t ObIOResult::get_tenant_id() const
 {
   return this->tenant_id_;
 }
+
 void ObIOResult::cancel()
 {
   int ret = OB_SUCCESS;
@@ -812,6 +928,13 @@ void ObIOResult::cancel()
       } else if (is_finished_) {
         // do nothing
       } else {
+        if (REACH_TIME_INTERVAL(1000000)) {
+          LOG_WARN("io canceled", K(lbt()), K(*this));
+        }
+        ObRefHolder<ObTenantIOManager> tenant_holder(tenant_io_mgr_.get_ptr());
+        if (OB_NOT_NULL(tenant_holder.get_ptr())) {
+          tenant_holder.get_ptr()->inc_io_cancel_count();
+        }
         is_canceled_ = true;
         //note: not support channel cancel now
       }
@@ -834,6 +957,13 @@ int ObIOResult::wait(int64_t wait_ms)
       } else if (!is_finished_) {
         int64_t duration_ms = ObTimeUtility::current_time() - begin_ms;
         wait_ms -= duration_ms;
+      }
+      if (REACH_TIME_INTERVAL(1000L * 1000L)) {
+        int64_t cur_time = ObTimeUtility::fast_current_time();
+        if (this->time_log_.enqueue_ts_ > 0 && this->time_log_.dequeue_ts_ <= 0 && cur_time - this->time_log_.enqueue_ts_ > 4 * 1000L * 1000L) {
+          LOG_WARN("schedule time is too long", K(*this), K(wait_ms), K(cur_time), K(this->time_log_.enqueue_ts_));
+          IGNORE_RETURN faststack();
+        }
       }
     }
     if (OB_UNLIKELY(wait_ms <= 0)) { // rarely happen
@@ -862,13 +992,8 @@ void ObIOResult::dec_ref(const char *msg)
       ret = OB_ERR_SYS;
       LOG_ERROR("tenant io manager is null, memory leak", K(ret));
     } else {
-      if (tenant_holder.get_ptr()->io_result_pool_.contain(this)) {
-        reset();
-        tenant_holder.get_ptr()->io_result_pool_.recycle(this);
-      } else {
-        // destroy will be called when free
-        tenant_holder.get_ptr()->io_allocator_.free(this);
-      }
+      // destroy will be called when free
+      tenant_holder.get_ptr()->io_allocator_.free(this);
     }
   }
 }
@@ -892,7 +1017,7 @@ void ObIOResult::finish(const ObIORetCode &ret_code, ObIORequest *req)
           tenant_io_mgr_.get_ptr()->io_usage_.accumulate(*req);
         }
         time_log_.end_ts_ = ObTimeUtility::fast_current_time();
-        if (req->fd_.device_handle_->is_object_device()) {
+        if (req->is_limit_net_bandwidth_req()) {
           const ObStorageIdMod &storage_info = ((ObObjectDevice*)(req->fd_.device_handle_))->get_storage_id_mod();
           if (OB_UNLIKELY(!storage_info.is_valid())) {
             LOG_WARN("invalid storage id", K(storage_info));
@@ -975,13 +1100,14 @@ int ObIOResult::transform_group_config_index_to_usage_index(const ObIOGroupKey &
   // REMOTE READ = 2,
   // REMOTE WRITE = 3
   if (is_sys_module()) {
-    offset = is_object_device_req_ ? 1 : 0;
+    offset = is_limit_net_bandwidth_req_ ? 1 : 0;
     offset = offset * 2 + static_cast<uint64_t>(get_mode());
     tmp_index = get_sys_module_id() - SYS_MODULE_START_ID;
     usage_index = tmp_index * GROUP_MODE_CNT + offset;
   } else {
-    if (OB_FAIL(tenant_io_mgr_.get_ptr()->get_group_index(key, tmp_index))) {
-      // do nothing
+    if (OB_SUCCESS !=  tenant_io_mgr_.get_ptr()->get_group_index(key, tmp_index)) {
+      tmp_index = 0;
+      LOG_WARN("get group index failed", K(ret), K(key));
     }
     uint64_t quot = tmp_index / MODE_CNT;
     usage_index = quot * GROUP_MODE_CNT +
@@ -1007,6 +1133,7 @@ int ObIOResult::cal_delay_us(int64_t &prepare_delay, int64_t &schedule_delay, in
 
 ObIORequest::ObIORequest()
   : io_result_(nullptr),
+    qsched_req_(this),
     is_inited_(false),
     retry_count_(0),
     ref_cnt_(0),
@@ -1113,13 +1240,8 @@ void ObIORequest::free()
   if (OB_ISNULL(tenant_holder.get_ptr())) {
     //not set yet, do nothing
   } else {
-    if (tenant_holder.get_ptr()->io_request_pool_.contain(this)) {
-      destroy();
-      tenant_holder.get_ptr()->io_request_pool_.recycle(this);
-    } else {
-      // destroy will be called when free
-      tenant_holder.get_ptr()->io_allocator_.free(this);
-    }
+    // destroy will be called when free
+    tenant_holder.get_ptr()->io_allocator_.free(this);
   }
 }
 
@@ -1173,7 +1295,7 @@ void ObIORequest::destroy()
   part_id_ = -1;
 }
 
-bool ObIORequest::is_canceled()
+bool ObIORequest::is_canceled() const
 {
   //result = null should not happen, no need to continue request
   return nullptr == io_result_ ? true : io_result_->is_canceled_;
@@ -1203,6 +1325,44 @@ int64_t ObIORequest::timeout_ts() const
 uint64_t ObIORequest::get_sys_module_id() const
 {
   return nullptr == io_result_ ? OB_INVALID_ID : io_result_->flag_.get_sys_module_id();
+}
+
+oceanbase::share::ObFunctionType ObIORequest::get_func_type() const
+{
+  oceanbase::share::ObFunctionType func_type = oceanbase::share::ObFunctionType::DEFAULT_FUNCTION;
+  if (io_result_ != nullptr) {
+    func_type = static_cast<oceanbase::share::ObFunctionType>(get_flag().get_func_type());
+  }
+  return func_type;
+}
+
+bool ObIORequest::is_local_clog_io() const {
+  const oceanbase::share::ObFunctionType func_type = get_func_type();
+  const ObIOGroupKey group_key = get_group_key();
+  bool is_clog_io = group_key.mode_ == ObIOMode::MAX_MODE &&
+                    (func_type == ObFunctionType::PRIO_CLOG_HIGH ||
+                     func_type == ObFunctionType::PRIO_CLOG_MID ||
+                     func_type == ObFunctionType::PRIO_CLOG_LOW);
+  return is_clog_io;
+}
+
+bool ObIORequest::is_local_clog_not_isolated()
+{
+  bool clog_not_isolated = false;
+  const int64_t clog_io_isolation_mode = GCONF.clog_io_isolation_mode;
+  if (OB_UNLIKELY(OBSERVER.is_arbitration_mode())) {
+  } else if (GCONF.enable_logservice) {
+    clog_not_isolated = true;
+  } else if (clog_io_isolation_mode == 0 || clog_io_isolation_mode > 2) {
+    clog_not_isolated = !DiskChecker::get_instance().is_clog_data_in_same_disk();
+  } else if (clog_io_isolation_mode == 1) {
+    clog_not_isolated = true;
+  } else if (clog_io_isolation_mode == 2) {
+  }
+  if (REACH_TIME_INTERVAL(60 * 1000L * 1000L)) { // 60s
+    LOG_INFO("clog_not_isolated", K(clog_not_isolated), K(clog_io_isolation_mode));
+  }
+  return clog_not_isolated;
 }
 
 bool ObIORequest::is_sys_module() const
@@ -1276,7 +1436,7 @@ ObIOMode ObIORequest::get_mode() const
 ObIOGroupMode ObIORequest::get_group_mode() const
 {
   ObIOGroupMode group_mode = ObIOGroupMode::MODECNT;
-  if (fd_.device_handle_->is_object_device()) {
+  if (is_limit_net_bandwidth_req()) {
     if (get_mode() == ObIOMode::READ) {
       group_mode = ObIOGroupMode::REMOTEREAD;
     } else if (get_mode() == ObIOMode::WRITE) {
@@ -1338,7 +1498,7 @@ int ObIORequest::alloc_aligned_io_buf(char *&io_buf)
       && OB_UNLIKELY(!is_io_aligned(io_result_->offset_, aligned_size)
                      || !is_io_aligned(io_result_->size_, aligned_size))) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("write io info not aligned", K(ret), K(*this));
+    LOG_WARN("write io info not aligned", K(ret), K(*this), K(aligned_size));
   } else {
     align_offset_size(io_result_->offset_, io_result_->size_, aligned_size, io_offset, io_size);
     const int64_t io_buffer_size = ((1 == aligned_size) ? io_size : (io_size + aligned_size));
@@ -1514,6 +1674,17 @@ int ObIORequest::re_prepare()
   return ret;
 }
 
+int ObIORequest::retry_io()
+{
+  int ret = OB_SUCCESS;
+  if(OB_ISNULL(tenant_io_mgr_.get_ptr())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("tenant io mgr is null", K(ret), K(*this));
+  } else if (OB_FAIL(tenant_io_mgr_.get_ptr()->retry_io(*this))) {
+    LOG_WARN("retry io failed", K(ret), K(*this));
+  }
+  return ret;
+}
 int ObIORequest::try_alloc_buf_until_timeout(char *&io_buf)
 {
   int ret = OB_SUCCESS;
@@ -1590,13 +1761,8 @@ void ObIORequest::dec_ref(const char *msg)
       ret = OB_ERR_SYS;
       LOG_ERROR("tenant io manager is null, memory leak", K(ret), KCSTRING(lbt()), K(*this));
     } else {
-      if (tenant_holder.get_ptr()->io_request_pool_.contain(this)) {
-        destroy();
-        tenant_holder.get_ptr()->io_request_pool_.recycle(this);
-      } else {
-        // destroy will be called when free
-        tenant_holder.get_ptr()->io_allocator_.free(this);
-      }
+      // destroy will be called when free
+      tenant_holder.get_ptr()->io_allocator_.free(this);
     }
   }
 }
@@ -1719,6 +1885,9 @@ bool ObPhyQueue::reach_adjust_interval()
 }
 
 /******************             IOHandle              **********************/
+
+ERRSIM_POINT_DEF(ERRSIM_IO_HANDLE_TRACE);
+
 ObIOHandle::ObIOHandle()
   : result_(nullptr)
 {
@@ -1755,9 +1924,7 @@ int ObIOHandle::set_result(ObIOResult &result)
   result.inc_ref("handle_inc"); // ref for handle
   result.inc_out_ref();
   result_ = &result;
-#ifdef ENABLE_DEBUG_LOG
-  storage::ObStorageLeakChecker::get_instance().handle_hold(this, storage::ObStorageCheckID::IO_HANDLE);
-#endif
+  storage::ObStorageLeakChecker::get_instance().handle_hold(this);
   return ret;
 }
 
@@ -1835,10 +2002,8 @@ int ObIOHandle::wait(const int64_t wait_timeout_ms)
                 ? result_->time_log_.begin_ts_ + result_->timeout_us_ - ObTimeUtility::current_time()
                 : 0)) /
         1000L;
-    ObWaitEventGuard wait_guard(result_->flag_.get_wait_event(),
-                                timeout_ms,
-                                result_->size_);
-    const int64_t real_wait_timeout = (result_->is_object_device_req_
+    ObWaitEventGuard wait_guard(result_->flag_.get_wait_event(), timeout_ms);
+    const int64_t real_wait_timeout = (result_->is_limit_net_bandwidth_req_
                                        ? timeout_ms
                                        : min(OB_IO_MANAGER.get_io_config().data_storage_io_timeout_ms_, timeout_ms));
 
@@ -1858,8 +2023,14 @@ int ObIOHandle::wait(const int64_t wait_timeout_ms)
             "real_wait_timeout is unexpected < 0", K(ret), K(real_wait_timeout), K(timeout_ms), K(result_), K(lbt()));
       }
     }
+    ObLocalDiagnosticInfo::set_io_time(
+      get_io_interval(result_->time_log_.dequeue_ts_, result_->time_log_.enqueue_ts_),
+      get_io_interval(result_->time_log_.return_ts_, result_->time_log_.submit_ts_),
+      get_io_interval(static_cast<int64_t>(result_->time_log_.callback_finish_ts_), static_cast<int64_t>(result_->time_log_.callback_enqueue_ts_))
+    );
   } else {
     int64_t wait_ms = wait_timeout_ms;
+    ObWaitEventGuard wait_guard(result_->flag_.get_wait_event(), wait_ms);
     if (OB_FAIL(result_->wait(wait_ms))) {
       if (OB_TIMEOUT == ret) {
         const int64_t real_wait_timeout = min(OB_IO_MANAGER.get_io_config().data_storage_io_timeout_ms_, result_->timeout_us_ / 1000L);
@@ -1868,20 +2039,22 @@ int ObIOHandle::wait(const int64_t wait_timeout_ms)
         }
       }
     }
+    ObLocalDiagnosticInfo::set_io_time(
+      get_io_interval(result_->time_log_.dequeue_ts_, result_->time_log_.enqueue_ts_),
+      get_io_interval(result_->time_log_.return_ts_, result_->time_log_.submit_ts_),
+      get_io_interval(static_cast<int64_t>(result_->time_log_.callback_finish_ts_), static_cast<int64_t>(result_->time_log_.callback_enqueue_ts_))
+    );
   }
+
   if (OB_SUCC(ret)) {
     if (OB_FAIL(ATOMIC_LOAD(&result_->ret_code_.io_ret_))) {
       LOG_WARN("IO error, ", K(ret), K(*result_));
     }
   } else if (OB_TIMEOUT == ret || OB_IO_TIMEOUT == ret) {
     LOG_WARN("IO wait timeout", K(ret), K(*result_));
+    ret = OB_TIMEOUT;
   }
   estimate();
-
-  // TODO(binifei.bnf) just for debug, remove this log later
-  if (OB_UNLIKELY(NULL != (strstr(GETTNAME(), "DiskCB")))) {
-    FLOG_INFO("wait io in DiskCB thread", K(lbt()));
-  }
 
   return ret;
 }
@@ -1889,16 +2062,37 @@ int ObIOHandle::wait(const int64_t wait_timeout_ms)
 void ObIOHandle::estimate()
 {
   if (OB_NOT_NULL(result_) && result_->is_finished_ && !ATOMIC_CAS(&result_->has_estimated_, false, true)) {
-    oceanbase::common::ObTenantDiagnosticInfoSummaryGuard guard(result_->get_tenant_id(), result_->flag_.get_resource_group_id());
     const int64_t result_delay = get_io_interval(result_->time_log_.end_ts_, result_->time_log_.begin_ts_);
     if (result_->flag_.is_read()) {
       EVENT_INC(ObStatEventIds::IO_READ_COUNT);
       EVENT_ADD(ObStatEventIds::IO_READ_BYTES, result_->size_);
       EVENT_ADD(ObStatEventIds::IO_READ_DELAY, result_delay);
+
+      // SS directory type statistics for read
+      if (result_->flag_.is_ss_private_dir() && result_->is_limit_net_bandwidth_req_) { // private
+        EVENT_INC(ObStatEventIds::IO_REMOTE_PRIVATE_READ_COUNT);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PRIVATE_READ_BYTES, result_->size_);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PRIVATE_READ_DELAY, result_delay);
+      } else if (result_->flag_.is_ss_public_dir() && result_->is_limit_net_bandwidth_req_) { // public
+        EVENT_INC(ObStatEventIds::IO_REMOTE_PUBLIC_READ_COUNT);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PUBLIC_READ_BYTES, result_->size_);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PUBLIC_READ_DELAY, result_delay);
+      }
     } else {
       EVENT_INC(ObStatEventIds::IO_WRITE_COUNT);
       EVENT_ADD(ObStatEventIds::IO_WRITE_BYTES, result_->size_);
       EVENT_ADD(ObStatEventIds::IO_WRITE_DELAY, result_delay);
+
+      // SS directory type statistics for write
+      if (result_->flag_.is_ss_private_dir() && result_->is_limit_net_bandwidth_req_) { // private
+        EVENT_INC(ObStatEventIds::IO_REMOTE_PRIVATE_WRITE_COUNT);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PRIVATE_WRITE_BYTES, result_->size_);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PRIVATE_WRITE_DELAY, result_delay);
+      } else if (result_->flag_.is_ss_public_dir() && result_->is_limit_net_bandwidth_req_) { // public
+        EVENT_INC(ObStatEventIds::IO_REMOTE_PUBLIC_WRITE_COUNT);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PUBLIC_WRITE_BYTES, result_->size_);
+        EVENT_ADD(ObStatEventIds::IO_REMOTE_PUBLIC_WRITE_DELAY, result_delay);
+      }
     }
     static const int64_t LONG_IO_PRINT_TRIGGER_US = 1000L * 1000L * 3L; // 3s
     if (result_delay > LONG_IO_PRINT_TRIGGER_US) {
@@ -1937,6 +2131,11 @@ int64_t ObIOHandle::get_data_size() const
   return OB_NOT_NULL(result_) ? result_->get_data_size() : 0;
 }
 
+int64_t ObIOHandle::get_user_io_size() const
+{
+  return OB_NOT_NULL(result_) ? result_->get_user_io_size() : 0;
+}
+
 int64_t ObIOHandle::get_rt() const
 {
   return OB_NOT_NULL(result_) ? get_io_interval(result_->time_log_.end_ts_, result_->time_log_.begin_ts_) : -1;
@@ -1945,9 +2144,7 @@ int64_t ObIOHandle::get_rt() const
 void ObIOHandle::reset()
 {
   if (OB_NOT_NULL(result_)) {
-#ifdef ENABLE_DEBUG_LOG
-    storage::ObStorageLeakChecker::get_instance().handle_reset(this, storage::ObStorageCheckID::IO_HANDLE);
-#endif
+    storage::ObStorageLeakChecker::get_instance().handle_reset(this);
     result_->dec_out_ref();
     result_->dec_ref("handle_dec"); // ref for handle
     result_ = nullptr;
@@ -1977,11 +2174,25 @@ ObIOCallback *ObIOHandle::get_io_callback()
   return callback;
 }
 
+bool ObIOHandle::need_trace() const
+{
+  return is_valid() && OB_SUCCESS != ERRSIM_IO_HANDLE_TRACE;
+}
+
 /******************             TenantIOConfig              **********************/
 ObTenantIOConfig::UnitConfig::UnitConfig()
   : min_iops_(0), max_iops_(0), weight_(0), max_net_bandwidth_(0), net_bandwidth_weight_(0)
 {
 
+}
+
+ObTenantIOConfig::UnitConfig::UnitConfig(const share::ObUnitConfig &unit_config)
+{
+  min_iops_ = unit_config.min_iops();
+  max_iops_ = unit_config.max_iops();
+  weight_ = unit_config.iops_weight();
+  max_net_bandwidth_ =unit_config.max_net_bandwidth();
+  net_bandwidth_weight_ = unit_config.net_bandwidth_weight();
 }
 
 bool ObTenantIOConfig::UnitConfig::is_valid() const
@@ -2014,10 +2225,31 @@ bool ObTenantIOConfig::GroupConfig::is_valid() const
          max_percent_ >= min_percent_;
 }
 
+ObTenantIOConfig::ParamConfig::ParamConfig()
+    : memory_limit_(0),
+      callback_thread_count_(0),
+      enable_io_tracer_(false),
+      object_storage_io_timeout_ms_(DEFAULT_OBJECT_STORAGE_IO_TIMEOUT_MS)
+{
+
+}
+
+ObTenantIOConfig::ParamConfig::~ParamConfig()
+{
+
+}
+
+bool ObTenantIOConfig::ParamConfig::is_valid() const
+{
+  return memory_limit_ > 0
+          && callback_thread_count_ >= 0;
+}
+
 ObTenantIOConfig::ObTenantIOConfig()
-  : memory_limit_(0), callback_thread_count_(0), group_configs_(),
-    group_config_change_(false), enable_io_tracer_(false),
-    object_storage_io_timeout_ms_(DEFAULT_OBJECT_STORAGE_IO_TIMEOUT_MS)
+  : unit_config_(),
+    group_configs_(),
+    group_config_change_(false),
+    param_config_()
 {
   int ret = OB_SUCCESS;
   GroupConfig tmp_group_config;
@@ -2034,17 +2266,6 @@ ObTenantIOConfig::ObTenantIOConfig()
   }
 }
 
-ObTenantIOConfig::ObTenantIOConfig(const share::ObUnitConfig &unit_config) : ObTenantIOConfig()
-{
-  memory_limit_ = unit_config.memory_size();
-  unit_config_.min_iops_ = unit_config.min_iops();
-  unit_config_.max_iops_ = unit_config.max_iops();
-  unit_config_.weight_ = unit_config.iops_weight();
-  unit_config_.max_net_bandwidth_ =unit_config.max_net_bandwidth();
-  unit_config_.net_bandwidth_weight_ = unit_config.net_bandwidth_weight();
-  object_storage_io_timeout_ms_ = DEFAULT_OBJECT_STORAGE_IO_TIMEOUT_MS;
-}
-
 ObTenantIOConfig::~ObTenantIOConfig()
 {
   destroy();
@@ -2058,23 +2279,22 @@ void ObTenantIOConfig::destroy()
 const ObTenantIOConfig &ObTenantIOConfig::default_instance()
 {
   static ObTenantIOConfig instance;
-  instance.memory_limit_ = 512L * 1024L * 1024L; // min_tenant_memory: 512M
-  instance.callback_thread_count_ = 0;
+  instance.param_config_.memory_limit_ = 512L * 1024L * 1024L; // min_tenant_memory: 512M
+  instance.param_config_.callback_thread_count_ = 0;
   instance.unit_config_.min_iops_ = 10000;
   instance.unit_config_.max_iops_ = 50000;
   instance.unit_config_.weight_ = 10000;
   instance.unit_config_.max_net_bandwidth_ = INT64_MAX;
   instance.unit_config_.net_bandwidth_weight_ = 100;
   instance.group_config_change_ = false;
-  instance.enable_io_tracer_ = false;
-  instance.object_storage_io_timeout_ms_ = DEFAULT_OBJECT_STORAGE_IO_TIMEOUT_MS;
+  instance.param_config_.enable_io_tracer_ = false;
+  instance.param_config_.object_storage_io_timeout_ms_ = DEFAULT_OBJECT_STORAGE_IO_TIMEOUT_MS;
   return instance;
 }
 
 bool ObTenantIOConfig::is_valid() const
 {
-  bool bret = memory_limit_ > 0
-              && callback_thread_count_ >= 0
+  bool bret = param_config_.is_valid()
               && unit_config_.is_valid();
   for (uint8_t i = (uint8_t)ObIOMode::READ; i <= (uint8_t)ObIOMode::MAX_MODE; ++i) {
     int64_t sum_min_percent = 0;
@@ -2102,12 +2322,9 @@ int ObTenantIOConfig::deep_copy(const ObTenantIOConfig &other_config)
   }
 
   if (OB_SUCC(ret)) {
-    memory_limit_ = other_config.memory_limit_;
-    callback_thread_count_ = other_config.callback_thread_count_;
     unit_config_ = other_config.unit_config_;
     group_config_change_ = other_config.group_config_change_;
-    enable_io_tracer_ = other_config.enable_io_tracer_;
-    object_storage_io_timeout_ms_ = other_config.object_storage_io_timeout_ms_;
+    param_config_ = other_config.param_config_;
   }
   return ret;
 }
@@ -2204,6 +2421,7 @@ int ObTenantIOConfig::add_single_group_config(const uint64_t tenant_id,
   } else {
     ObTenantIOConfig::GroupConfig tmp_group_config;
     strncpy(tmp_group_config.group_name_, group_name, common::OB_MAX_RESOURCE_PLAN_NAME_LENGTH);
+    tmp_group_config.group_name_[common::OB_MAX_RESOURCE_PLAN_NAME_LENGTH - 1] = '\0';
     tmp_group_config.min_percent_ = min_percent;
     tmp_group_config.max_percent_ = max_percent;
     tmp_group_config.weight_percent_ = weight_percent;
@@ -2247,8 +2465,8 @@ int64_t ObTenantIOConfig::get_callback_thread_count() const
 {
   int64_t memory_benchmark = 4L * 1024L * 1024L * 1024L; //4G memory
   //Based on 4G memory, one thread will be added for each additional 4G of memory, and the maximum number of callback_thread_count is 16
-  int64_t callback_thread_num = 0 == callback_thread_count_? min(16, (memory_limit_ / memory_benchmark) + 1) : callback_thread_count_;
-  LOG_INFO("get callback thread by memory success", K(memory_limit_), K(callback_thread_num));
+  int64_t callback_thread_num = 0 == param_config_.callback_thread_count_? min(16, (param_config_.memory_limit_ / memory_benchmark) + 1) : param_config_.callback_thread_count_;
+  LOG_INFO("get callback thread by memory success", K(param_config_.memory_limit_), K(callback_thread_num));
   return callback_thread_num;
 }
 
@@ -2263,8 +2481,7 @@ int64_t ObTenantIOConfig::to_string(char* buf, const int64_t buf_len) const
       group_configs_cnt++;
     }
   }
-  J_KV(K(group_configs_cnt), K(memory_limit_), K(callback_thread_count_), K(unit_config_),
-       K_(enable_io_tracer), K_(object_storage_io_timeout_ms));
+  J_KV(K(group_configs_cnt), K(unit_config_), K(param_config_));
   // if self invalid, print all group configs, otherwise, only print valid group configs
   const bool self_valid = is_valid();
   BUF_PRINTF(", group_configs:[");
@@ -2288,6 +2505,23 @@ int64_t ObTenantIOConfig::to_string(char* buf, const int64_t buf_len) const
 }
 
 /******************             IOClock              **********************/
+void ObAtomIOClock::atom_update_reserve(const int64_t current_ts, const double iops_scale, int64_t &deadline_ts)
+{
+  if (0 == iops_scale * iops_) {
+    deadline_ts = INT64_MAX;
+  } else {
+    const int64_t delta_ns = 1000L * 1000L * 1000L / (iops_scale * iops_);
+    int64_t ov = ATOMIC_LOAD(&last_ns_);
+    int64_t nv = 0;
+    int64_t tv = max(current_ts * 1000L, ov + delta_ns);
+    while (ov != (nv = ATOMIC_VCAS(&last_ns_, ov, tv))) {
+      ov = nv;
+      tv = max(current_ts * 1000L, ov + delta_ns);
+    }
+    deadline_ts = tv / 1000L;
+  }
+}
+
 void ObAtomIOClock::atom_update(const int64_t current_ts, const double iops_scale, int64_t &deadline_ts)
 {
   if (0 == iops_scale * iops_) {
@@ -2309,7 +2543,7 @@ void ObAtomIOClock::compare_and_update(const int64_t current_ts, const double io
 {
   int64_t tmp = 0;
   atom_update(current_ts, iops_scale, tmp);
-  deadline_ts = (INT64_MAX == deadline_ts) ? current_ts : max(deadline_ts, tmp);
+  deadline_ts = (INT64_MAX == deadline_ts) ? tmp : max(deadline_ts, tmp);
 }
 
 void ObAtomIOClock::reset()
@@ -2442,8 +2676,7 @@ int ObMClockQueue::pop_phyqueue(ObIORequest *&req, int64_t &deadline_ts)
         int tmp_ret = push_phyqueue(tmp_phy_queue);
         time_guard.click("R_into_heap");
         if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
-          LOG_WARN("re_into heap failed(R schedule)", K(tmp_ret));
-          abort();
+          LOG_ERROR("re_into heap failed(R schedule)", K(tmp_ret));
         }
       }
     } else {
@@ -2542,7 +2775,7 @@ int ObMClockQueue::pop_with_ready_queue(const int64_t current_ts, ObIORequest *&
             LOG_WARN("get null next_req", KP(next_req));
           } else {
             int tmp_ret = io_clock->adjust_reservation_clock(tmp_phy_queue, *next_req);
-            if (OB_FAIL(io_clock->calc_phyqueue_clock(tmp_phy_queue, *next_req))) {
+            if (OB_SUCCESS != io_clock->calc_phyqueue_clock(tmp_phy_queue, *next_req)) {
               LOG_WARN("calc phyqueue clock failed", K(ret));
             } else if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
               LOG_WARN("adjust reservation clock failed", K(tmp_ret), KPC(next_req));
@@ -2552,7 +2785,7 @@ int ObMClockQueue::pop_with_ready_queue(const int64_t current_ts, ObIORequest *&
       }
       int tmp_ret = push_phyqueue(tmp_phy_queue);
       if (OB_UNLIKELY(OB_SUCCESS != tmp_ret)) {
-        LOG_WARN("re_into heap failed(P schedule)", K(tmp_ret));
+        LOG_ERROR("re_into heap failed(P schedule)", K(tmp_ret));
       }
     }
   } else {

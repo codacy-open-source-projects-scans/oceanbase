@@ -11,7 +11,6 @@
  */
 
 #define USING_LOG_PREFIX SHARE
-#include "ob_backup_config.h"
 #include "ob_log_restore_config.h"
 #include "share/restore/ob_log_restore_source_mgr.h"  // ObLogRestoreSourceMgr
 #include "share/ob_log_restore_proxy.h"  // ObLogRestoreProxyUtil
@@ -95,7 +94,7 @@ int ObLogRestoreSourceLocationConfigParser::check_before_update_inner_config(
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "set standby itself as log restore source");
     }
   }
-  //TODO (wenjinyu.wjy) need support access permission check
+  //TODO (mingqiao) need support access permission check
   //
   return ret;
 }
@@ -196,6 +195,12 @@ int ObLogRestoreSourceServiceConfigParser::update_inner_config_table(common::ObI
     } else if (OB_FAIL(ObAllTenantInfoProxy::load_tenant_info(tenant_id_, &trans,
                                                             true /* for update */, tenant_info))) {
       LOG_WARN("failed to load tenant info", K_(tenant_id));
+    } else if (OB_UNLIKELY(tenant_info.get_switchover_status().is_flashback_and_stay_standby_status())) {
+      ret = OB_OP_NOT_ALLOW;
+      LOG_WARN("set log_restore_source when the tenant's switchover_status is not allowed",
+          KR(ret), K(tenant_info));
+      LOG_USER_ERROR(OB_OP_NOT_ALLOW,"Set log_restore_source when the tenant's switchover_status is "
+          "'FLASHBACK AND STAY STANDBY' is");
     } else if (OB_FAIL(restore_source_mgr.add_service_source(tenant_info.get_recovery_until_scn(),
                                                             value_string))) {
       LOG_WARN("failed to add log restore source", K(tenant_info), K(value_string), KPC(this));

@@ -13,29 +13,12 @@
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/cmd/ob_outline_executor.h"
 
-#include "lib/string/ob_string.h"
-#include "share/ob_common_rpc_proxy.h"
-#include "share/ob_rpc_struct.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/schema/ob_schema_struct.h"
-#include "observer/ob_server_struct.h" //能获取mysql_proxy
 #include "sql/ob_sql.h"
 #include "sql/resolver/ddl/ob_create_outline_stmt.h"
 #include "sql/resolver/ddl/ob_alter_outline_stmt.h"
 #include "sql/resolver/ddl/ob_drop_outline_stmt.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/parser/ob_parser.h"
 #include "sql/optimizer/ob_log_plan.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
-#include "sql/rewrite/ob_transformer_impl.h"
-#include "sql/resolver/ob_schema_checker.h"
-#include "sql/optimizer/ob_optimizer.h"
-#include "sql/optimizer/ob_optimizer_context.h"
-#include "sql/optimizer/ob_log_plan_factory.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/plan_cache/ob_cache_object_factory.h"
 #include "share/stat/ob_opt_stat_manager.h"
-#include "sql/monitor/ob_sql_plan.h"
 namespace oceanbase
 {
 
@@ -129,13 +112,20 @@ int ObOutlineExecutor::generate_outline_info1(ObExecContext &ctx,
     LOG_USER_ERROR(OB_INVALID_OUTLINE, "sql text should have no ? when there is no concurrent limit");
     LOG_WARN("outline should have no ? when there is no concurrent limit",
              K(outline_sql), K(ret));
+  } else if (max_concurrent > ObGlobalHint::UNSET_MAX_CONCURRENT
+            && query_hint->has_hint_exclude_concurrent()) {
+    ret = OB_INVALID_OUTLINE;
+    LOG_USER_ERROR(OB_INVALID_OUTLINE, "outline and sql concurrent limit can not be mixed");
+    LOG_WARN("outline and sql concurrent limit can not be mixed",
+    "outline_sql_text", outline_info.get_sql_text_str(), K(ret));
   } else if (OB_UNLIKELY(max_concurrent > ObGlobalHint::UNSET_MAX_CONCURRENT && has_in_expr
                          && concurrent_param.fixed_param_store_.count() > 0 && outline_info.is_format())) {
     ret = OB_INVALID_OUTLINE;
     LOG_USER_ERROR(OB_INVALID_OUTLINE, "format outline with in expr not support concurrent limit, recommend to use normal outline");
     LOG_WARN("format outline with in expr can not have const param",
              "outline_format_sql_text", outline_info.get_format_sql_text_str(), K(ret));
-  } else if (OB_FAIL(get_outline(ctx, outline_stmt, outline))) {
+  } else if (ObGlobalHint::UNSET_MAX_CONCURRENT == max_concurrent
+            && OB_FAIL(get_outline(ctx, outline_stmt, outline))) {
     LOG_WARN("fail to get outline", K(ret));
   } else {
     //to check whether ok

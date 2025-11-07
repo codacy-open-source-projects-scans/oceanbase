@@ -8,13 +8,8 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PubL v2 for more details.
 #define USING_LOG_PREFIX STORAGE
-#include "ob_storage_clog_recorder.h"
 
-#include "lib/utility/ob_tracepoint.h"
-#include "logservice/ob_log_base_header.h"
-#include "logservice/ob_log_base_type.h"
-#include "logservice/ob_log_handler.h"
-#include "storage/tx_storage/ob_ls_handle.h"
+#include "ob_storage_clog_recorder.h"
 #include "storage/tx_storage/ob_ls_service.h"
 
 namespace oceanbase
@@ -111,7 +106,7 @@ OB_INLINE void ObIStorageClogRecorder::wait_to_lock(const int64_t update_version
   while (true) {
     int64_t last_time = ObTimeUtility::fast_current_time();
     while (true == ATOMIC_LOAD(&lock_)) {
-      usleep(100);
+      ob_usleep(100);
       if (ObTimeUtility::fast_current_time() + 100 * 1000 > last_time) {
         last_time = ObTimeUtility::fast_current_time();
         LOG_DEBUG("waiting to lock", K(update_version), K(max_saved_version_), KPC(this));
@@ -133,7 +128,7 @@ OB_INLINE void ObIStorageClogRecorder::wait_for_logcb(const int64_t update_versi
       last_time = ObTimeUtility::fast_current_time();
       LOG_DEBUG("waiting for clog callback", K(update_version), K(max_saved_version_), KPC(this));
     }
-    usleep(100);
+    ob_usleep(100);
     WEAK_BARRIER();
   }
 }
@@ -151,7 +146,9 @@ int ObIStorageClogRecorder::try_update_with_lock(
       break;
     } else {
       logcb_ptr_->set_update_version(update_version);
-      if (OB_FAIL(submit_log(update_version, clog_buf, clog_len))) {
+      if (OB_FAIL(reset_for_retry_in_lock())) {
+        LOG_WARN("fail to reset for retry", K(ret), K(update_version), K_(max_saved_version));
+      } else if (OB_FAIL(submit_log(update_version, clog_buf, clog_len))) {
         if (OB_BLOCK_FROZEN != ret) {
           LOG_WARN("fail to submit log", K(ret), K(update_version), K(max_saved_version_));
         } else if (ObTimeUtility::fast_current_time() >= expire_ts) {

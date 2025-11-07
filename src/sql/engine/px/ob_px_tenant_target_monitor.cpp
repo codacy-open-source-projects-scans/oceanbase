@@ -12,13 +12,8 @@
 
 #define USING_LOG_PREFIX  SQL_ENG
 #include "ob_px_tenant_target_monitor.h"
-#include "lib/oblog/ob_log_module.h"
-#include "ob_px_rpc_processor.h"
 #include "share/ob_rpc_share.h"
-#include "share/schema/ob_schema_utils.h"
-#include "storage/tx/ob_trans_service.h"
 #include "logservice/ob_log_service.h"
-#include "lib/utility/ob_tracepoint.h"
 
 namespace oceanbase
 {
@@ -584,6 +579,8 @@ int ObPxTargetCond::wait(const int64_t wait_time_us)
     THIS_WORKER.sched_wait();
     {
       ObMonitor<Mutex>::Lock guard(monitor_);
+      oceanbase::common::ObWaitEventGuard
+        wait_guard(oceanbase::common::ObWaitEventIds::PX_TARGET_WAIT, wait_time_us, reinterpret_cast<uint64_t>(this));
       if (!monitor_.timed_wait(ObSysTime(wait_time_us))) { // timeout
         ret = OB_TIMEOUT;
       }
@@ -604,6 +601,8 @@ void ObPxTargetCond::usleep(const int64_t us)
   if (us > 0) {
     ObMonitor<Mutex> monitor;
     THIS_WORKER.sched_wait();
+    oceanbase::common::ObWaitEventGuard
+        wait_guard(oceanbase::common::ObWaitEventIds::PX_TARGET_WAIT, us);
     (void)monitor.timed_wait(ObSysTime(us));
     THIS_WORKER.sched_run();
   }

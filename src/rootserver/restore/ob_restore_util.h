@@ -40,7 +40,8 @@ public:
   static int fill_physical_restore_job(
              const int64_t job_id,
              const obrpc::ObPhysicalRestoreTenantArg &arg,
-             share::ObPhysicalRestoreJob &job);
+             share::ObPhysicalRestoreJob &job,
+             bool is_recover_table=false);
   static int record_physical_restore_job(
              common::ObISQLClient &sql_client,
              const share::ObPhysicalRestoreJob &job);
@@ -71,9 +72,10 @@ public:
              ObIArray<share::ObRestoreLogPieceBriefInfo> &backup_piece_list,
              ObIArray<share::ObBackupPathString> &log_path_list);
   static int insert_user_tenant_restore_job(
-             common::ObISQLClient &sql_client,
+             common::ObMySQLProxy &sql_client,
              const ObString &tenant_name,
-             const int64_t user_tenant_id);
+             const int64_t user_tenant_id,
+             ObMySQLTransaction &trans);
   static int get_user_restore_job_history(common::ObISQLClient &sql_client,
                                           const uint64_t user_tenant_id,
                                           const uint64_t initiator_tenant_id,
@@ -126,6 +128,7 @@ static int fill_multi_path_restore_scn_without_compl_log_(
   static int check_multi_path_using_complement_log_(
              ObIArray<ObString> &multi_path_array,
              bool &use_complement_log);
+  static int notify_restore_service(const uint64_t tenant_id);
 private:
   static int fill_backup_info_(
              const obrpc::ObPhysicalRestoreTenantArg &arg,
@@ -221,6 +224,7 @@ private:
              share::ObPhysicalRestoreJob &job);
   static int check_backup_set_version_match_(share::ObBackupSetFileDesc &backup_file_desc);
   static int check_backup_set_compatible_(const share::ObRestoreType &restore_type, const share::ObBackupSetFileDesc &backup_file_desc);
+  static int fill_restore_type_(share::ObPhysicalRestoreJob &job, const share::ObBackupSetFileDesc &backup_file_desc);
   static int get_backup_sys_time_zone_(
       const ObIArray<ObString> &tenant_path_array,
       common::ObTimeZoneInfoWrap &time_zone_wrap);

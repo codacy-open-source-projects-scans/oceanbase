@@ -14,31 +14,26 @@
 
 #include "common/object/ob_obj_type.h"
 #include "share/vector/ob_i_vector.h"
+#include "sql/engine/ob_batch_rows.h"
 
 namespace oceanbase
 {
 namespace common
 {
-class ObFixedLengthBase;
-class ObContinuousBase;
-class ObUniformBase;
 class ObDatum;
 } // namespace common
 namespace share
 {
+namespace schema
+{
+class ObColDesc;
+} // namespace schema
 class ObTabletCacheInterval;
 } // namespace share
-namespace blocksstable
-{
-class ObStorageDatum;
-class ObDatumRow;
-} // namespace blocksstable
-namespace sql
-{
-class ObBatchRows;
-} // namespace sql
 namespace storage
 {
+class ObDirectLoadBatchRows;
+
 class ObDirectLoadVectorUtils
 {
 public:
@@ -47,37 +42,36 @@ public:
   static int prepare_vector(ObIVector *vector, const int64_t max_batch_size,
                             ObIAllocator &allocator);
 
-  // 按需实现, 目前只支持以下场景:
-  // * VEC_CONTINUOUS, VEC_DISCRETE, VEC_UNIFORM, VEC_UNIFORM_CONST -> VEC_DISCRETE
-  // * VEC_UNIFORM -> VEC_UNIFORM
-  // * VEC_UNIFORM_CONST -> VEC_UNIFORM_CONST
-  static int shallow_copy_vector(ObIVector *src_vec, ObIVector *dest_vec, const int64_t batch_size);
-
-  static int get_payload(ObIVector *vector, const int64_t idx, bool &is_null, const char *&payload,
-                         ObLength &len);
-
   static int to_datum(common::ObIVector *vector, const int64_t idx, common::ObDatum &datum);
-  static int to_datums(const common::ObIArray<common::ObIVector *> &vectors, int64_t idx,
-                       common::ObDatum *datums, const int64_t count);
-  static int to_datums(const common::ObIArray<common::ObIVector *> &vectors, int64_t idx,
-                       blocksstable::ObStorageDatum *datums, const int64_t count);
-  static int set_datum(common::ObIVector *vector, const int64_t idx, const common::ObDatum &datum);
+
+  static int check_rowkey_length(const ObDirectLoadBatchRows &batch_rows,
+                                 const int64_t rowkey_column_count);
+  static int check_rowkey_length(const ObDirectLoadBatchRows &batch_rows,
+                                 const int64_t rowkey_column_count,
+                                 const common::ObIArray<share::schema::ObColDesc> &col_descs);
 
   // tablet id vector, ginore null value
   static const VecValueTypeClass tablet_id_value_tc = VEC_TC_INTEGER;
   static int make_const_tablet_id_vector(const ObTabletID &tablet_id, ObIAllocator &allocator,
                                          common::ObIVector *&vector);
-  static int set_tablet_id(common::ObIVector *vector, const int64_t batch_idx,
-                           const ObTabletID &tablet_id);
-  static ObTabletID get_tablet_id(common::ObFixedLengthBase *vector, const int64_t batch_idx);
-  template <bool IS_CONST>
-  static ObTabletID get_tablet_id(common::ObUniformBase *vector, const int64_t batch_idx);
   static ObTabletID get_tablet_id(common::ObIVector *vector, const int64_t batch_idx);
-  static bool check_all_tablet_id_is_same(common::ObIVector *vector, const int64_t size);
+
+  static bool check_all_tablet_id_is_same(const uint64_t *tablet_ids, const int64_t size);
+  static bool check_is_same_tablet_id(const ObTabletID &tablet_id, common::ObIVector *vector,
+                                      const int64_t size);
+  static bool check_is_same_tablet_id(const ObTabletID &tablet_id, common::ObIVector *vector,
+                                      const uint16_t *selector, const int64_t size);
+  static bool check_is_same_tablet_id(const ObTabletID &tablet_id,
+                                      const common::ObDatumVector &datum_vec, const int64_t size);
+  static bool check_is_same_tablet_id(const ObTabletID &tablet_id,
+                                      const common::ObDatumVector &datum_vec,
+                                      const uint16_t *selector, const int64_t size);
 
   // hidden pk vector
   static int batch_fill_hidden_pk(common::ObIVector *vector, const int64_t start,
                                   const int64_t size, share::ObTabletCacheInterval &pk_interval);
+  static int batch_fill_value(common::ObIVector *vector, const int64_t start,
+                              const int64_t size, const int64_t value);
 
   // multi version vector
   static const VecValueTypeClass multi_version_value_tc = VEC_TC_INTEGER;

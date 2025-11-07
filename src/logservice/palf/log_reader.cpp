@@ -11,15 +11,9 @@
  */
 
 #include "log_reader.h"
-#include "lib/ob_define.h"                // some constexpr
-#include "lib/ob_errno.h"
-#include "share/ob_errno.h"               // ERRNO
-#include "lib/utility/ob_utility.h"       // ob_pread
-#include "log_define.h"                   // LOG_READ_FLAG
-#include "log_define.h"                   // LOG_DIO_ALIGN_SIZE...
-#include "log_reader_utils.h"             // ReadBuf
 #include "lib/stat/ob_session_stat.h"     // Session
 #include "log_io_adapter.h"               // LogIOAdapter
+#include "share/rc/ob_tenant_base.h"
 
 namespace oceanbase
 {
@@ -158,8 +152,6 @@ int LogReader::inner_pread_(const ObIOFd &read_io_fd,
   offset_t backoff = start_offset - aligned_start_offset;
   int64_t aligned_in_read_size = upper_align(in_read_size + backoff, LOG_DIO_ALIGN_SIZE);
   int64_t limited_and_aligned_in_read_size = 0;
-  ObWaitEventGuard wait_event(ObWaitEventIds::PALF_READ,
-      PALF_IO_WAIT_EVENT_TIMEOUT_MS, read_io_fd.second_id_, start_offset, aligned_in_read_size);
   if (OB_FAIL(limit_and_align_in_read_size_by_block_size_(
           aligned_start_offset, aligned_in_read_size,  limited_and_aligned_in_read_size))) {
     PALF_LOG(WARN, "limited_and_aligned_in_read_size failed, maybe read offset exceed block size",

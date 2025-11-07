@@ -28,6 +28,7 @@
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "observer/omt/ob_tenant_config_mgr.h"
 #include "sql/engine/sort/ob_pd_topn_sort_filter.h"
+#include "sql/engine/sort/ob_partition_topn_sort_vec_op.h"
 
 namespace oceanbase {
 namespace sql {
@@ -59,15 +60,17 @@ public:
     next_stored_row_func_(&ObSortVecOpImpl::array_next_stored_row), exec_ctx_(nullptr),
     sk_rows_(nullptr), addon_rows_(nullptr), buckets_(nullptr), max_bucket_cnt_(0),
     part_hash_nodes_(nullptr), max_node_cnt_(0), part_cnt_(0), topn_cnt_(INT64_MAX),
-    outputted_rows_cnt_(0), use_heap_sort_(false), is_fetch_with_ties_(false), topn_heap_(nullptr),
-    ties_array_pos_(0), ties_array_(), sorted_dumped_rows_ptrs_(), last_ties_row_(nullptr), rows_(nullptr),
+    outputted_rows_cnt_(0), use_heap_sort_(false), is_fetch_with_ties_(false), is_aggregate_keep_(false), topn_heap_(nullptr),
+    ties_array_pos_(0), ties_array_(), use_partition_topn_sort_(false), partition_topn_sort_(nullptr),
+    sorted_dumped_rows_ptrs_(), last_ties_row_(nullptr), rows_(nullptr),
     sort_exprs_getter_(allocator_),
     store_row_factory_(allocator_, sql_mem_processor_, sk_row_meta_, addon_row_meta_, inmem_row_size_, topn_cnt_),
-    topn_filter_(nullptr), is_topn_filter_enabled_(false), compress_type_(NONE_COMPRESSOR)
+    topn_filter_(nullptr), is_topn_filter_enabled_(false), is_fixed_key_sort_enabled_(false), fixed_sort_key_len_(0),
+    compress_type_(NONE_COMPRESSOR), tempstore_read_alignment_size_(0)
   {}
   virtual ~ObSortVecOpImpl()
   {
-    reset();
+    destroy();
   }
   virtual void reset() override;
   virtual int init(ObSortVecOpContext &context) override;
@@ -88,6 +91,7 @@ public:
   // reset to state before init
   void destroy()
   {
+    sql_mem_processor_.unregister_profile();
     reset();
   }
   int init_pd_topn_filter_msg(ObSortVecOpContext &ctx);
@@ -150,7 +154,7 @@ public:
   public:
     CopyableComparer(Compare &compare) : compare_(compare)
     {}
-    bool operator()(const Store_Row *l, const Store_Row *r)
+    OB_INLINE bool operator()(const Store_Row *l, const Store_Row *r)
     {
       return compare_(l, r);
     }
@@ -195,21 +199,46 @@ protected:
   int ems_heap_next(SortVecOpChunk *&chunk);
   int imms_heap_next(const Store_Row *&sk_row);
   int array_next_stored_row(const Store_Row *&sk_row);
+  int part_topn_next_stored_row(const Store_Row *&sk_row);
   int imms_heap_next_stored_row(const Store_Row *&sr);
   int ems_heap_next_stored_row(const Store_Row *&sr);
+  int array_next_dump_stored_row(const Store_Row *&sk_row);
   int build_row(const common::ObIArray<ObExpr *> &exprs, const RowMeta &row_meta,
                 const int64_t row_size, ObEvalCtx &ctx, ObCompactRow *&stored_row);
   bool need_dump()
   {
-    return sql_mem_processor_.get_data_size() > get_tmp_buffer_mem_bound()
-           || get_total_used_size() >= profile_.get_max_bound();
+    return sql_mem_processor_.get_data_size() + get_ht_bucket_size() > get_tmp_buffer_mem_bound()
+           || get_total_used_size() >= profile_.get_global_bound_size();
   }
+
+  int64_t get_ht_bucket_size() // calculate hash table needed size
+  {
+    int64_t ret = 0;
+    if (part_cnt_ != 0) {
+      if (use_partition_topn_sort_) {
+        ret = get_partition_topn_ht_bucket_size();
+      } else {
+        ret = get_partition_sort_ht_bucket_size();
+      }
+    }
+    return ret;
+  }
+
   int64_t get_total_used_size()
   {
+    return mem_context_->used() + get_partition_sort_ht_bucket_size();
+  }
+  int64_t get_partition_topn_ht_bucket_size() // calculate partition topn sort hash table needed size
+  {
+    OB_ASSERT(nullptr != partition_topn_sort_);
+    return partition_topn_sort_->get_ht_bucket_size();
+  }
+  int64_t get_partition_sort_ht_bucket_size() // calculate partition sort hash table needed size
+  {
     int64_t row_cnt = sk_store_.get_row_cnt();
-    return mem_context_->used() + ((part_cnt_ == 0) ? 0 :
-          ((row_cnt * FIXED_PART_NODE_SIZE * 2) +                         // size of(part_hash_nodes_)
-          (next_pow2(std::max(16L, row_cnt)) * FIXED_PART_BKT_SIZE * 2))); // size of(buckets_)
+    return ((part_cnt_ == 0) ? 0 :
+          (row_cnt * FIXED_PART_NODE_SIZE * 2) +                          // size of(part_hash_nodes_)
+          (next_pow2(std::max(16L, row_cnt)) * FIXED_PART_BKT_SIZE * 2)); // size of(buckets_)
   }
   inline int64_t get_tmp_buffer_mem_bound() {
     // The memory reserved for ObSortVecOpEagerFilter should be deducted when topn filter is enabled.
@@ -262,7 +291,7 @@ protected:
   int attach_rows(const int64_t read_rows);
   bool need_imms() const
   {
-    return !use_heap_sort_ && rows_->count() > sk_store_.get_row_cnt();
+    return !use_heap_sort_ && !use_partition_topn_sort_ && rows_->count() > sk_store_.get_row_cnt();
   }
   OB_INLINE bool is_separate_encode_sk() const
   {
@@ -274,6 +303,9 @@ protected:
   int update_max_available_mem_size_periodically();
   int eager_topn_filter(common::ObIArray<Store_Row *> *sorted_dumped_rows);
   int eager_topn_filter_update(const common::ObIArray<Store_Row *> *sorted_dumped_rows);
+  int init_fixed_key_sort();
+  int do_fixed_key_sort(int64_t begin);
+  int init_partition_topn_sort(ObSortVecOpContext &ctx);
   template <typename Input>
   int build_chunk(const int64_t level, Input &input)
   {
@@ -303,7 +335,7 @@ protected:
       SQL_ENG_LOG(WARN, "failed to init temp row store", K(ret));
     } else {
       while (OB_SUCC(ret)) {
-        if (!is_fetch_with_ties_ && stored_row_cnt >= topn_cnt_) {
+        if (use_heap_sort_ && !is_fetch_with_ties_ && stored_row_cnt >= topn_cnt_) {
           break;
         } else if (OB_FAIL(input(sort_key_row, addon_field_row))) {
           if (OB_ITER_END != ret) {
@@ -320,8 +352,10 @@ protected:
           SQL_ENG_LOG(WARN, "copy row to row store failed");
         } else {
           stored_row_cnt++;
-          op_monitor_info_.otherstat_1_id_ = ObSqlMonitorStatIds::SORT_SORTED_ROW_COUNT;
-          op_monitor_info_.otherstat_1_value_ += 1;
+          if (level > 0) {
+            op_monitor_info_.otherstat_1_id_ = ObSqlMonitorStatIds::SORT_SORTED_ROW_COUNT;
+            op_monitor_info_.otherstat_1_value_ += 1;
+          }
         }
       }
 
@@ -475,9 +509,14 @@ protected:
   // for topn sort
   bool use_heap_sort_;
   bool is_fetch_with_ties_;
+  bool is_aggregate_keep_;
   TopnHeap *topn_heap_;
   int64_t ties_array_pos_;
   common::ObArray<Store_Row *> ties_array_;
+  // for partition topn sort
+  bool use_partition_topn_sort_;
+  ObPartitionTopNSort<Compare, Store_Row, has_addon> *partition_topn_sort_;
+
   common::ObArray<Store_Row *> sorted_dumped_rows_ptrs_;
   Store_Row *last_ties_row_;
   common::ObIArray<Store_Row *> *rows_;
@@ -486,8 +525,11 @@ protected:
   ObSortVecOpStoreRowFactory<Store_Row, has_addon> store_row_factory_;
   ObSortVecOpEagerFilter<Compare, Store_Row, has_addon> *topn_filter_;
   bool is_topn_filter_enabled_;
+  bool is_fixed_key_sort_enabled_;
+  uint32_t fixed_sort_key_len_;
   ObCompressorType compress_type_;
   ObPushDownTopNFilter pd_topn_filter_;
+  int64_t tempstore_read_alignment_size_;
 };
 
 } // end namespace sql

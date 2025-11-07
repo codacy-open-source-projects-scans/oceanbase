@@ -23,12 +23,12 @@ namespace storage
 {
 
 enum class ObCSReplicaTabletStatus : uint8_t {
-  NORMAL                 = 0,  // local ls is not cs replica (F/R)
-                               // local ls is cs replica (C), but no need to be column store (like index or inner table) || valid schema and valid major in cs replica
+  NORMAL                 = 0,  // local ls is not cs replica (F/R), local ls is cs replica (C), but no need to be column store (like index or inner table)
   NOT_COMPLETE           = 1,  // ha status not data complete, need wait transfer/migration/rebuild finish
   NO_MAJOR_SSTABLE       = 2,  // offline ddl or direct load data not finish
   NEED_CO_CONVERT_MERGE  = 3,  // lastest major is row store MAJOR
   NEED_CS_STORAGE_SCHEMA = 4,  // lastest major is column store CO_MAJOR but storage schema is row store.
+  NORMAL_CS_REPLICA      = 5,  // valid schema and valid major in cs replica, not matter cs storage schema is constructed by cs replica or from alter cg delayed
   MAX_STATUS
 };
 
@@ -39,7 +39,8 @@ inline bool is_valid_cs_replica_status(const ObCSReplicaTabletStatus &status)
 
 inline bool is_normal_status(const ObCSReplicaTabletStatus &status)
 {
-  return ObCSReplicaTabletStatus::NORMAL == status;
+  return ObCSReplicaTabletStatus::NORMAL == status
+      || ObCSReplicaTabletStatus::NORMAL_CS_REPLICA == status;
 }
 
 inline bool is_need_wait_status(const ObCSReplicaTabletStatus &status)
@@ -70,10 +71,6 @@ public:
   static int check_local_is_cs_replica(
       const share::ObLSID &ls_id,
       bool &is_cs_replica);
-  // is migrated tablet need convert co major sstable
-  static bool check_need_convert_cs_when_migration(
-      const ObTablet &tablet,
-      const ObStorageSchema& schema_on_tablet);
   static int check_has_cs_replica(
       const share::ObLSID &ls_id,
       bool &has_column_store_replica);
@@ -106,6 +103,7 @@ public:
       const ObLS &ls,
       const ObTablet &tablet,
       ObCSReplicaTabletStatus &cs_replica_status);
+  // don't take schema into consideration, need process for all user tablets in cs replica logstream
   static int check_need_process_cs_replica(
       const ObLS &ls,
       const ObTablet &tablet,
@@ -125,6 +123,9 @@ public:
       const ObUpdateCSReplicaSchemaParam &param,
       const ObStorageSchema &simplified_schema,
       ObStorageSchema *&full_storage_schema);
+  static void diagnose_trim_default_value_checksum_error(
+      const ObSSTable &row_sstable,
+      const ObStorageSchema &storage_schema);
 public:
   static const int64_t DEFAULT_CHECK_LS_REPLICA_LOCATION_TIMEOUT = 10 * 1000 * 1000L; // 10s
 };

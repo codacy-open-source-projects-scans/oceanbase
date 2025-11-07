@@ -11,13 +11,8 @@
  */
 
 #include "ob_index_sstable_estimator.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/blocksstable/index_block/ob_index_block_row_scanner.h"
 #include "storage/blocksstable/ob_micro_block_row_scanner.h"
 #include "storage/blocksstable/ob_storage_cache_suite.h"
-#include "storage/tablet/ob_tablet.h"
-#include "share/schema/ob_column_schema.h"
-#include "storage/blocksstable/ob_shared_macro_block_manager.h"
 
 namespace oceanbase
 {
@@ -201,7 +196,7 @@ int ObIndexBlockScanEstimator::cal_total_estimate_result(
       if (datum_range.is_whole_range()) {
       } else {
         const bool is_multi_version_minor = sstable.is_multi_version_minor_sstable();
-        const bool is_major = sstable.is_major_sstable();
+        const bool is_major = sstable.is_major_type_sstable();
         if (!datum_range.get_start_key().is_min_rowkey()) {
           if (OB_FAIL(estimate_excluded_border_result(
                   is_multi_version_minor, is_major, datum_range, true, result))) {
@@ -325,10 +320,10 @@ int ObIndexBlockScanEstimator::estimate_excluded_border_result(const bool is_mul
 
           if (OB_ITER_END == ret && idx > 0) {
             int64_t ratio = 0;
-            if (0 == border_micro_index_info.get_row_count()) {
+            if (OB_ISNULL(border_micro_index_info.row_header_) || 0 == border_micro_index_info.get_row_count()) {
               ret = common::OB_INVALID_ARGUMENT;
               STORAGE_LOG(WARN, "Border micro index row count should not be 0", K(ret));
-            } else if (is_major) {
+            } else if (!is_left && is_major) {
               ratio = (result.total_row_count_ - result.excluded_row_count_) / border_micro_index_info.get_row_count();
             }
             if (OB_ITER_END == ret && ratio < RANGE_ROWS_IN_AND_BORDER_RATIO_THRESHOLD) {
@@ -433,7 +428,10 @@ int ObIndexBlockScanEstimator::prefetch_index_block_data(
     if (OB_FAIL(micro_index_info.row_header_->fill_micro_des_meta(true /* deep_copy_key */, micro_handle.des_meta_))) {
       STORAGE_LOG(WARN, "Failed to fill micro block deserialize meta", K(ret));
     } else if (OB_FAIL(cache->prefetch(tenant_id_, macro_id, micro_index_info,
-            context_.query_flag_.is_use_block_cache(), micro_handle.io_handle_, &allocator_))) {
+                                       context_.query_flag_.is_use_block_cache(),
+                                       // Note: no need to pass effective_tablet_id for estimator
+                                       ObTabletID(ObTabletID::INVALID_TABLET_ID)/*effective_tablet_id*/,
+                                       micro_handle.io_handle_, &allocator_))) {
       STORAGE_LOG(WARN, "Failed to prefetch data micro block", K(ret), K(micro_index_info));
     } else if (ObSSTableMicroBlockState::UNKNOWN_STATE == micro_handle.block_state_) {
       micro_handle.tenant_id_ = tenant_id_;

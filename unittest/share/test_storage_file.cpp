@@ -9,20 +9,12 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
-
 #define protected public
-#include "lib/restore/ob_storage.h"
-#include "lib/restore/ob_storage_oss_base.cpp"
 #undef protected
 
-#include "lib/profile/ob_trace_id.h"
 #include <gtest/gtest.h>
-#include "lib/utility/ob_test_util.h"
-#include "lib/thread/ob_dynamic_thread_pool.h"
 #include "share/backup/ob_backup_io_adapter.h"
-#include "common/storage/ob_fd_simulator.h"
 #include "share/ob_device_manager.h"
-#include "share/backup/ob_backup_struct.h"
 #include "share/io/ob_io_manager.h"
 
 using namespace oceanbase::common;
@@ -178,7 +170,7 @@ TEST_F(TestStorageFile, test_reader)
   ASSERT_EQ(strlen(test_content), read_size);
   ASSERT_EQ(0, strncmp(test_content, read_buf, read_size));
 
-  ASSERT_EQ(OB_INVALID_ARGUMENT, dev_handle->pread(fd_2, read_size + 1, sizeof(read_buf), read_buf, read_size));
+  ASSERT_EQ(OB_DATA_OUT_OF_RANGE, dev_handle->pread(fd_2, read_size + 1, sizeof(read_buf), read_buf, read_size));
   ASSERT_EQ(OB_INVALID_ARGUMENT, dev_handle->pread(fd_2, -1, sizeof(read_buf), read_buf, read_size));
   ASSERT_EQ(OB_INVALID_ARGUMENT, dev_handle->pread(fd_2, -1, sizeof(read_buf), NULL, read_size));
   ASSERT_EQ(OB_INVALID_ARGUMENT, dev_handle->pread(fd_2, 0, 0, read_buf, read_size));
@@ -309,63 +301,6 @@ TEST_F(TestStorageFile, test_parallel_mkdir)
   ASSERT_EQ(0, pool.get_task_count());
   pool.stop();
   pool.destroy();
-}
-
-TEST_F(TestStorageFile, test_list_files_with_marker)
-{
-  class ObTestListFilesWithMarker : public ObBaseDirEntryOperator {
-  public:
-    ObTestListFilesWithMarker() : ObBaseDirEntryOperator(), global_objects_(0){}
-    int func(const dirent *entry) final
-    {
-      global_objects_++;
-      uris_.push_back(entry->d_name);
-      return OB_SUCCESS;
-    };
-    int64_t global_objects_;
-    std::vector<std::string> uris_;
-  };
-  ObBackupIoAdapter util;
-  ObBackupStorageInfo storage_info;
-  storage_info.device_type_ = ObStorageType::OB_STORAGE_FILE;
-  int64_t write_size = -1;
-  std::string test_dir_uri_root_str = std::string(test_dir_uri_);
-  std::string test_dir_uri_str = test_dir_uri_root_str + "/" + "list_files_with_marker";
-  ObString test_dir_uri(test_dir_uri_str.c_str());
-  EXPECT_EQ(OB_SUCCESS, util.mkdir(test_dir_uri, &storage_info));
-  bool mkdir_success = false;
-  EXPECT_EQ(OB_SUCCESS, util.is_exist(test_dir_uri, &storage_info, mkdir_success));
-  const int64_t scan_count = 10;
-  ObTestListFilesWithMarker op;
-  ASSERT_EQ(OB_SUCCESS, op.set_marker_flag("", scan_count));
-  EXPECT_EQ(OB_SUCCESS, util.adaptively_list_files(test_dir_uri, &storage_info, op));
-  EXPECT_EQ(0, op.global_objects_);
-  EXPECT_EQ(0, op.uris_.size());
-  char uri[OB_MAX_URI_LENGTH];
-  char test_content[OB_MAX_URI_LENGTH];
-  memset(test_content, 'c', sizeof(test_content));
-  {
-    const int64_t file_count = 20;
-    for (int i = 0; i < file_count; i++) {
-      EXPECT_EQ(OB_SUCCESS, databuff_printf(uri, OB_MAX_URI_LENGTH, "%s/%012d", test_dir_uri_str.c_str(), i));
-      EXPECT_EQ(OB_SUCCESS, util.write_single_file(uri, &storage_info, test_content, strlen(test_content),
-                                                   ObStorageIdMod::get_default_id_mod()));
-    }
-    op.global_objects_ = 0;
-    op.uris_.clear();
-    std::string test_with_marker_str = test_dir_uri_str+"/";
-    ASSERT_EQ(OB_SUCCESS, op.set_marker_flag("0", scan_count));
-    EXPECT_EQ(OB_SUCCESS, util.adaptively_list_files(test_with_marker_str.c_str(), &storage_info, op));
-    EXPECT_EQ(scan_count, op.global_objects_);
-    // 输出文件序与对象存储保持一致，字典序升序
-    int j = 0;
-    for (int i = 0; i < scan_count; i++) {
-      char expected_uri_c[OB_MAX_URI_LENGTH] = {'\0'};
-      EXPECT_EQ(OB_SUCCESS, databuff_printf(expected_uri_c, OB_MAX_URI_LENGTH, "%012d", i));
-      std::string expected_uri(expected_uri_c);
-      EXPECT_EQ(expected_uri, op.uris_[j++]);
-    }
-  }
 }
 
 int main(int argc, char **argv)

@@ -13,10 +13,6 @@
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_ttl_executor.h"
 #include "src/observer/table/ob_table_cg_service.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "sql/das/ob_das_insert_op.h"
-#include "sql/engine/dml/ob_dml_service.h"
-#include "src/observer/table/ob_htable_utils.h"
 using namespace oceanbase::sql;
 
 namespace oceanbase
@@ -105,7 +101,7 @@ int ObTableApiTTLExecutor::open()
       conflict_checker_.set_local_tablet_loc(tablet_loc);
       // init update das_ref
       ObMemAttr mem_attr;
-      bool use_dist_das = tb_ctx_.has_global_index();
+      bool use_dist_das = tb_ctx_.need_dist_das();
       mem_attr.tenant_id_ = tb_ctx_.get_session_info().get_effective_tenant_id();
       mem_attr.label_ = "TableApiTTL";
       upd_rtctx_.das_ref_.set_expr_frame_info(ttl_spec_.get_expr_frame_info());
@@ -123,7 +119,7 @@ int ObTableApiTTLExecutor::open()
   return ret;
 }
 
-int ObTableApiTTLExecutor::refresh_exprs_frame(const ObTableEntity *entity)
+int ObTableApiTTLExecutor::refresh_exprs_frame(const ObITableEntity *entity)
 {
   int ret = OB_SUCCESS;
   ObTableTTLCtDef *ttl_ctdef = nullptr;
@@ -277,14 +273,16 @@ int ObTableApiTTLExecutor::update_row_to_conflict_checker()
   } else if (OB_FAIL(conflict_checker_.check_duplicate_rowkey(insert_row, constraint_values, true))) {
     LOG_WARN("fail to check duplicated key", K(ret), KPC(insert_row));
   } else {
+    bool is_heap_table = tb_ctx_.is_heap_table();
     upd_rtdef.found_rows_++;
-    const ObChunkDatumStore::StoredRow *upd_new_row = insert_row;
+    ObChunkDatumStore::StoredRow *upd_new_row = insert_row;
     const ObChunkDatumStore::StoredRow *upd_old_row = constraint_values.at(0).current_datum_row_; // 这里只取第一行是和mysql对齐的
     if (OB_ISNULL(upd_old_row)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("upd_old_row is NULL", K(ret));
-    } else if (OB_FAIL(check_rowkey_change(*upd_old_row,
-                                           *upd_new_row))) {
+    } else if (is_heap_table && OB_FAIL(copy_heap_table_hidden_pk(upd_old_row, upd_new_row))) {
+      LOG_WARN("fail to copy heap table hidden pk", K(ret));
+    } else if (!is_heap_table && OB_FAIL(check_rowkey_change(*upd_old_row, *upd_new_row))) {
       LOG_WARN("can not update rowkey column", K(ret));
     } else if (OB_FAIL(check_whether_row_change(*upd_old_row,
                                                 *upd_new_row,
@@ -551,8 +549,8 @@ int ObTableApiTTLExecutor::get_next_row()
 {
   int ret = OB_SUCCESS;
   transaction::ObTxSEQ savepoint_no;
-
   set_need_fetch_conflict();
+
   if (OB_FAIL(ObSqlTransControl::create_anonymous_savepoint(exec_ctx_, savepoint_no))) {
     LOG_WARN("fail to create save_point", K(ret));
   } else if (OB_FAIL(try_insert_row())) {

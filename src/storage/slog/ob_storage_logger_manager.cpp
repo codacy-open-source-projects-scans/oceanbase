@@ -12,11 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE_REDO
 #include <sys/statvfs.h>
-#include "lib/ob_define.h"
-#include "lib/ob_running_mode.h"
 #include "ob_storage_logger_manager.h"
-#include "observer/omt/ob_multi_tenant.h"
-#include "observer/ob_server_struct.h"
 #include "storage/meta_store/ob_tenant_storage_meta_service.h"
 
 namespace oceanbase
@@ -66,7 +62,7 @@ int ObStorageLoggerManager::init(
     log_dir_ = log_dir;
     max_log_file_size_ = max_log_file_size;
     log_file_spec_ = log_file_spec;
-    if (OB_FAIL(server_slogger_.init(*this, OB_SERVER_TENANT_ID))) {
+    if (OB_FAIL(server_slogger_.init(*this, OB_SERVER_TENANT_ID, 0/*tenant epoch*/))) {
       STORAGE_REDO_LOG(WARN, "fail to init server slogger", K(ret));
     } else {
       is_inited_ = true;

@@ -952,32 +952,18 @@ struct ObNestedVectorArithOpFunc : public Base
     ObIArrayType *right_obj = NULL;
     ObIArrayType *res_obj = NULL;
     ObString res_str;
-    if (l_vec.get_format() == VEC_UNIFORM || l_vec.get_format() == VEC_UNIFORM_CONST) {
-      ret = Base::construct_param(tmp_allocator, ctx, left_meta_id, left, left_obj);
-    } else {
-      ret = Base::construct_attr_param(tmp_allocator, ctx, *expr.args_[0], left_meta_id, idx, left_obj);
-    }
-    if (OB_FAIL(ret)) {
-    } else if (r_vec.get_format() == VEC_UNIFORM || r_vec.get_format() == VEC_UNIFORM_CONST) {
-      ret = Base::construct_param(tmp_allocator, ctx, right_meta_id, right, right_obj);
-    } else {
-      ret = Base::construct_attr_param(tmp_allocator, ctx, *expr.args_[1], right_meta_id, idx, right_obj);
-    }
-    if (OB_FAIL(ret)) {
+    if (OB_FAIL(Base::construct_param(tmp_allocator, ctx, left_meta_id, left, left_obj))) {
+      SQL_ENG_LOG(WARN, "get array failed", K(ret));
+    } else if (OB_FAIL(Base::construct_param(tmp_allocator, ctx, right_meta_id, right, right_obj))) {
+      SQL_ENG_LOG(WARN, "get array failed", K(ret));
     } else if (OB_FAIL(Base::construct_res_obj(tmp_allocator, ctx, res_meta_id, res_obj))) {
       SQL_ENG_LOG(WARN, "get array failed", K(ret));
     } else if (OB_FAIL(Base()(*res_obj, *left_obj, *right_obj))) {
       SQL_ENG_LOG(WARN, "exec calculate func failed", K(ret));
     } else if (OB_FAIL(res_obj->init())) {
       SQL_ENG_LOG(WARN, "init nested obj failed", K(ret));
-    } else if (res_vec.get_format() == VEC_UNIFORM || res_vec.get_format() == VEC_UNIFORM_CONST) {
-      if (OB_FAIL(Base::get_res_batch(ctx, res_obj, expr, idx, &res_vec))) {
-        SQL_ENG_LOG(WARN, "get array binary string failed", K(ret));
-      }
-    } else {
-      if (OB_FAIL(Base::distribute_expr_attrs(expr, ctx, idx, *res_obj))) {
-        SQL_ENG_LOG(WARN, "get array binary string failed", K(ret));
-      }
+    } else if (OB_FAIL(Base::get_res_batch(ctx, res_obj, expr, idx, &res_vec))) {
+      SQL_ENG_LOG(WARN, "get array binary string failed", K(ret));
     }
     return ret;
   }
@@ -1022,8 +1008,6 @@ struct ObNestedArithOpWrap : public Base
 
 struct ObNestedArithOpBaseFunc
 {
-  static int construct_attr_param(ObIAllocator &alloc, ObEvalCtx &ctx, ObExpr &param_expr,
-                                  const uint16_t meta_id, int64_t row_idx, ObIArrayType *&param_obj);
   static int construct_param(ObIAllocator &alloc, ObEvalCtx &ctx, const uint16_t meta_id,
                              ObString &str_data, ObIArrayType *&param_obj);
   static int construct_res_obj(ObIAllocator &alloc, ObEvalCtx &ctx, const uint16_t meta_id, ObIArrayType *&res_obj);

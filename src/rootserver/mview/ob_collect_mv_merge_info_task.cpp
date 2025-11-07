@@ -12,9 +12,6 @@
 
 #define USING_LOG_PREFIX RS
 #include "rootserver/mview/ob_collect_mv_merge_info_task.h"
-#include "lib/ob_define.h"
-#include "observer/ob_server.h"
-#include "observer/ob_server_struct.h"
 #include "src/storage/high_availability/ob_storage_ha_src_provider.h"
 #include "share/ob_global_stat_proxy.h"
 
@@ -116,6 +113,8 @@ int ObCollectMvMergeInfoTask::get_stable_member_list_and_config_version(const ui
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(member_info.get_member_list().get_addr_array(addr_list))) {
     LOG_WARN("failed to get member_list addr array", KR(ret), K(member_info));
+  } else {
+    log_config_version = member_info.get_config_version();
   }
 
   return ret;
@@ -253,6 +252,10 @@ int ObCollectMvMergeInfoTask::collect_ls_member_merge_info(const uint64_t tenant
   } else if (OB_FAIL(get_stable_member_list_and_config_version(tenant_id, ls_id,
                                                               addr_list, log_config_version))) {
     LOG_WARN("fail to get member list", KR(ret), K(ls_id));
+  } else if (!log_config_version.is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid log config version",
+              KR(ret), K(ls_id), K(log_config_version));
   } else {
     // batch collect ls merge info
     ObCollectMvMergeInfoProxy batch_proxy(
@@ -311,6 +314,10 @@ int ObCollectMvMergeInfoTask::collect_ls_member_merge_info(const uint64_t tenant
         if (OB_FAIL(get_stable_member_list_and_config_version(tenant_id, ls_id,
                                                              addr_list_new, log_config_version_new))) {
           LOG_WARN("fail to get member list", KR(ret), K(ls_id));
+        } else if (!log_config_version_new.is_valid()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid log config version",
+                   KR(ret), K(ls_id), K(log_config_version_new));
         } else if (log_config_version_new != log_config_version) {
           ret = OB_STATE_NOT_MATCH;
           LOG_WARN("member list or leader changed, skip task", KR(ret),
@@ -390,17 +397,23 @@ int ObCollectMvMergeInfoTask::check_and_update_tenant_merge_scn(const ObLSAttrAr
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_SKIP_COLLECT_MV_MERGE_INFO_TASK);
 void ObCollectMvMergeInfoTask::runTimerTask() {
   int ret = OB_SUCCESS;
-
+  int tmp_ret = OB_SUCCESS;
   share::SCN merge_scn(share::SCN::max_scn());
   share::ObLSAttrOperator ls_attr_operator(tenant_id_, GCTX.sql_proxy_);
   ObLSAttrArray ls_attr_array;
   bool need_schedule = false;
   share::SCN latest_merge_scn;
   share::SCN major_mv_merge_scn;
-
-  if (IS_NOT_INIT) {
+  if (OB_UNLIKELY(ERRSIM_SKIP_COLLECT_MV_MERGE_INFO_TASK)) {
+    tmp_ret = ERRSIM_SKIP_COLLECT_MV_MERGE_INFO_TASK;
+    LOG_INFO("errsim to block collect_mv_merge_info_task", K(tmp_ret));
+  }
+  if (OB_TMP_FAIL(tmp_ret)) {
+    // errsim to skip task
+  } else if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObCollectMvMergeInfoTask not init", KR(ret), KP(this));
   } else if (OB_ISNULL(GCTX.sql_proxy_)) {
@@ -412,7 +425,7 @@ void ObCollectMvMergeInfoTask::runTimerTask() {
     LOG_WARN("fail to check need task should schedule or not", KR(ret), K(tenant_id_));
   }
 
-  if (OB_FAIL(ret)) {
+  if (OB_FAIL(ret) || OB_TMP_FAIL(tmp_ret)) {
   } else if (!need_schedule) {
     // do nothing
   } else if (OB_FAIL(ls_attr_operator.get_all_ls_by_order(ls_attr_array))) {

@@ -16,7 +16,7 @@
 #include "observer/table_load/ob_table_load_service.h"
 #include "observer/table_load/ob_table_load_store.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
-#include "sql/engine/ob_des_exec_context.h"
+#include "observer/table_load/ob_table_load_store_ctx.h"
 #include "observer/table_load/ob_table_load_empty_insert_tablet_ctx_manager.h"
 
 namespace oceanbase
@@ -74,6 +74,7 @@ int ObDirectLoadControlPreBeginExecutor::process()
     param.compressor_type_ = arg_.compressor_type_;
     param.online_sample_percent_ = arg_.online_sample_percent_;
     param.load_level_ = ObDirectLoadLevel::TABLE;
+    param.enable_inc_major_ = arg_.enable_inc_major_;
     if (OB_FAIL(create_table_ctx(param, arg_.ddl_param_, table_ctx))) {
       LOG_WARN("fail to create table ctx", KR(ret));
     }
@@ -106,6 +107,7 @@ int ObDirectLoadControlPreBeginExecutor::create_table_ctx(const ObTableLoadParam
   } else if (OB_FAIL(ObTableLoadStore::init_ctx(table_ctx, arg_.partition_id_array_,
                                                 arg_.target_partition_id_array_))) {
     LOG_WARN("fail to store init ctx", KR(ret));
+  } else if (FALSE_IT(table_ctx->store_ctx_->heart_beat())) {
   } else if (OB_FAIL(ObTableLoadService::add_ctx(table_ctx))) {
     LOG_WARN("fail to add ctx", KR(ret));
   }
@@ -310,7 +312,7 @@ int ObDirectLoadControlAbortExecutor::process()
       res_.is_stopped_ = true;
     }
   } else {
-    ObTableLoadStore::abort_ctx(table_ctx, res_.is_stopped_);
+    ObTableLoadStore::abort_ctx(table_ctx, arg_.error_code_, res_.is_stopped_);
     table_ctx->mark_delete();
     if (res_.is_stopped_ && OB_FAIL(ObTableLoadService::remove_ctx(table_ctx))) {
       LOG_WARN("fail to remove table ctx", KR(ret), K(key));
@@ -707,12 +709,14 @@ int ObDirectLoadControlInitEmptyTabletsExecutor::process()
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObTableLoadService::check_tenant())) {
     LOG_WARN("fail to check tenant", KR(ret));
-  } else if (OB_FAIL(ObTableLoadEmptyInsertTabletCtxManager::execute(
+  } else {
+    if (OB_FAIL(ObTableLoadEmptyInsertTabletCtxManager::execute_for_dag(
                                                     arg_.table_id_,
                                                     arg_.ddl_param_,
                                                     arg_.partition_id_array_,
                                                     arg_.target_partition_id_array_))) {
-    LOG_WARN("fail to execute init empty tablet", KR(ret));
+      LOG_WARN("fail to execute init empty tablet", KR(ret));
+    }
   }
   return ret;
 }

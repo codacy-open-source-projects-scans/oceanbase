@@ -12,15 +12,6 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_batch_execute_processor.h"
-#include "ob_table_rpc_processor_util.h"
-#include "observer/ob_service.h"
-#include "ob_table_end_trans_cb.h"
-#include "sql/optimizer/ob_table_location.h"  // ObTableLocation
-#include "lib/stat/ob_diagnose_info.h"
-#include "lib/stat/ob_session_stat.h"
-#include "ob_htable_utils.h"
-#include "ob_table_cg_service.h"
-#include "observer/ob_req_time_service.h"
 #include "ob_table_move_response.h"
 
 using namespace oceanbase::observer;
@@ -32,10 +23,11 @@ using namespace oceanbase::sql;
 ObTableBatchExecuteP::ObTableBatchExecuteP(const ObGlobalContext &gctx)
     : ObTableRpcProcessor(gctx),
       default_entity_factory_("TableBatchEntFac", MTL_ID()),
-      allocator_("TbBatExeP", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       batch_ctx_(allocator_, audit_ctx_)
 {
+  allocator_.set_attr(ObMemAttr(MTL_ID(), "TbBatExeP", ObCtxIds::DEFAULT_CTX_ID));
 }
+
 
 int ObTableBatchExecuteP::deserialize()
 {
@@ -43,7 +35,9 @@ int ObTableBatchExecuteP::deserialize()
   arg_.batch_operation_.set_entity_factory(&default_entity_factory_);
   result_.set_entity_factory(&default_entity_factory_);
   int ret = ParentType::deserialize();
-  if (OB_SUCC(ret) && ObTableEntityType::ET_HKV == arg_.entity_type_) {
+  if (OB_FAIL(ret)){
+    // do nothing and return
+  } else if (ObTableEntityType::ET_HKV == arg_.entity_type_) {
     // for HKV, modify the value of timestamp to be negative
     const int64_t N = arg_.batch_operation_.count();
     for (int64_t i = 0; OB_SUCCESS == ret && i < N; ++i)
@@ -55,18 +49,25 @@ int ObTableBatchExecuteP::deserialize()
         LOG_WARN("fail to negate timestamp value", K(ret));
       }
     } // end for
+   } else if (ObTableEntityType::ET_KV == arg_.entity_type_) {
+    // for KV, set entity allocator
+    const int64_t N = arg_.batch_operation_.count();
+    for (int64_t i = 0; OB_SUCCESS == ret && i < N; ++i)
+    {
+      ObITableEntity *entity = nullptr;
+      if (OB_FAIL(const_cast<ObTableOperation&>(arg_.batch_operation_.at(i)).get_entity(entity))) {
+        LOG_WARN("fail to get entity", K(ret), K(i));
+      }
+      entity->set_allocator(&allocator_);
+    } // end for
   }
   return ret;
 }
 
-void ObTableBatchExecuteP::init_batch_ctx()
+int ObTableBatchExecuteP::init_batch_ctx()
 {
-  batch_ctx_.stat_event_type_ = &stat_event_type_;
+  int ret = OB_SUCCESS;
   batch_ctx_.trans_param_ = &trans_param_;
-  batch_ctx_.ops_ = &arg_.batch_operation_.get_table_operations();
-  batch_ctx_.results_ = &result_;
-  batch_ctx_.table_id_ = arg_.table_id_;
-  batch_ctx_.tablet_id_ = arg_.tablet_id_;
   batch_ctx_.is_atomic_ = arg_.batch_operation_as_atomic_;
   batch_ctx_.is_readonly_ = arg_.batch_operation_.is_readonly();
   batch_ctx_.is_same_type_ = arg_.batch_operation_.is_same_type();
@@ -74,12 +75,9 @@ void ObTableBatchExecuteP::init_batch_ctx()
   batch_ctx_.use_put_ = arg_.use_put();
   batch_ctx_.returning_affected_entity_ = arg_.returning_affected_entity();
   batch_ctx_.returning_rowkey_ = arg_.returning_rowkey();
-  batch_ctx_.return_one_result_ = arg_.return_one_result();
-  batch_ctx_.entity_type_ = arg_.entity_type_;
   batch_ctx_.consistency_level_ = arg_.consistency_level_;
-  batch_ctx_.entity_factory_ = &default_entity_factory_;
-  batch_ctx_.result_entity_ = &result_entity_;
   batch_ctx_.credential_ = &credential_;
+  return ret;
 }
 
 int ObTableBatchExecuteP::before_process()
@@ -88,8 +86,8 @@ int ObTableBatchExecuteP::before_process()
 
   if (OB_FAIL(ParentType::before_process())) {
     LOG_WARN("before process failed", K(ret));
-  } else {
-    init_batch_ctx();
+  } else if (OB_FAIL(init_batch_ctx())) {
+    LOG_WARN("fail to init batch context", K(ret));
   }
 
   return ret;
@@ -173,6 +171,7 @@ void ObTableBatchExecuteP::reset_ctx()
   result_.reset();
   ObTableApiProcessorBase::reset_ctx();
   batch_ctx_.tb_ctx_.reset();
+  batch_ctx_.tablet_ids_.reset();
   result_entity_.reset();
 }
 
@@ -224,16 +223,28 @@ int ObTableBatchExecuteP::try_process()
 {
   int ret = OB_SUCCESS;
   table_id_ = arg_.table_id_; // init move response need
+  const common::ObIArray<ObTableOperation> &ops = arg_.batch_operation_.get_table_operations();
+  stat_process_type_ = get_stat_process_type(arg_.batch_operation_.is_readonly(),
+                                             arg_.batch_operation_.is_same_type(),
+                                             arg_.batch_operation_.is_same_properties_names(),
+                                             ops.at(0).type());
+
   if (OB_FAIL(init_schema_info(arg_.table_name_, table_id_))) {
     LOG_WARN("fail to init schema info", K(ret), K(arg_.table_name_));
-  } else if (OB_FAIL(init_single_op_tb_ctx(batch_ctx_.tb_ctx_, batch_ctx_.ops_->at(0)))) {
+  } else if (OB_FAIL(init_single_op_tb_ctx(batch_ctx_.tb_ctx_, ops.at(0)))) {
     LOG_WARN("fail to init table ctx", K(ret));
+  } else if (OB_FAIL(batch_ctx_.tablet_ids_.push_back(batch_ctx_.tb_ctx_.get_tablet_id()))) {
+    LOG_WARN("fail to push back tablet id", K(ret));
   } else if (OB_FAIL(start_trans())) {
     LOG_WARN("fail to start trans", K(ret));
   } else if (OB_FAIL(batch_ctx_.tb_ctx_.init_trans(get_trans_desc(), get_tx_snapshot()))) {
     LOG_WARN("fail to init trans", K(ret));
-  } else if (OB_FAIL(ObTableBatchService::execute(batch_ctx_))) {
+  } else if (OB_FAIL(ObTableBatchService::prepare_results(ops, default_entity_factory_, result_))) {
+    LOG_WARN("fail to prepare results", K(ret), K(ops));
+  } else if (OB_FAIL(ObTableBatchService::execute(batch_ctx_, ops, result_))) {
     LOG_WARN("fail to execute batch operation", K(ret));
+  } else if (OB_FAIL(arg_.return_one_result()) && OB_FAIL(ObTableBatchService::aggregate_one_result(result_))) {
+    LOG_WARN("fail to aggregate one result", K(ret), K(result_));
   }
 
   int tmp_ret = ret;

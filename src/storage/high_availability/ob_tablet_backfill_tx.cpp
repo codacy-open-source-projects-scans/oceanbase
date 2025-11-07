@@ -12,20 +12,19 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_tablet_backfill_tx.h"
-#include "observer/ob_server.h"
-#include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
-#include "storage/ob_storage_struct.h"
-#include "storage/tablet/ob_tablet_iterator.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/high_availability/ob_storage_ha_diagnose_mgr.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
 #include "storage/compaction/ob_partition_merger.h"
 #include "storage/tablet/ob_tablet_mds_table_mini_merger.h"
+#ifdef OB_BUILD_SHARED_STORAGE
+#include "storage/high_availability/ob_ss_transfer_tablet_upload.h"
+#endif
+
 
 namespace oceanbase
 {
 using namespace share;
+using namespace compaction;
 namespace storage
 {
 
@@ -259,7 +258,7 @@ bool ObTabletBackfillTXDag::operator == (const ObIDag &other) const
   return is_same;
 }
 
-int64_t ObTabletBackfillTXDag::hash() const
+uint64_t ObTabletBackfillTXDag::hash() const
 {
   int ret = OB_SUCCESS;
   int64_t hash_value = 0;
@@ -287,9 +286,9 @@ int ObTabletBackfillTXDag::init(
     ObBackfillTabletsTableMgr *tablets_table_mgr)
 {
   int ret = OB_SUCCESS;
-  ObLSHandle ls_handle;
   ObLS *ls = nullptr;
   ObTabletHandle tablet_handle;
+  ObTransferBackfillTXBaseCtx *ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
@@ -299,11 +298,10 @@ int ObTabletBackfillTXDag::init(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("init tablet backfill tx dag get invalid argument", K(ret), K(dag_net_id), K(ls_id), K(tablet_info),
         KP(ha_dag_net_ctx), KP(backfill_tx_ctx), KP(tablets_table_mgr));
-  } else if (OB_FAIL(ObStorageHADagUtils::get_ls(ls_id, ls_handle))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), K(ls_id_));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(ha_dag_net_ctx, ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(ctx->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ctx));
   } else if (OB_FAIL(ls->ha_get_tablet(tablet_info.tablet_id_, tablet_handle))) {
     //Here get tablet handle just get compat mode
     //tablet_handle_ will init by ObTabletBackfillTXTask
@@ -373,7 +371,7 @@ int ObTabletBackfillTXDag::generate_next_dag(share::ObIDag *&dag)
   } else if (OB_ISNULL(scheduler = MTL(ObTenantDagScheduler*))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("failed to get ObTenantDagScheduler from MTL", K(ret));
-  } else if (OB_FAIL(scheduler->alloc_dag(tablet_backfill_tx_dag))) {
+  } else if (OB_FAIL(scheduler->alloc_dag(tablet_backfill_tx_dag, true/*is_ha_dag*/))) {
     LOG_WARN("failed to alloc tablet backfill tx migration dag ", K(ret));
   } else if (OB_FAIL(tablet_backfill_tx_dag->init(dag_net_id_, ls_id_, next_tablet_info, ha_dag_net_ctx_,
       backfill_tx_ctx_, tablets_table_mgr_))) {
@@ -408,8 +406,8 @@ int ObTabletBackfillTXDag::get_tablet_handle(ObTabletHandle &tablet_handle)
   } else if (!tablet_handle_.is_valid()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet handle should not be invalid, cannot get tablet handle", K(ret), K(tablet_handle_), K(tablet_info_));
-  } else {
-    tablet_handle = tablet_handle_;
+  } else if (OB_FAIL(tablet_handle.assign(tablet_handle_))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
   }
   return ret;
 }
@@ -461,6 +459,7 @@ int ObTabletBackfillTXDag::init_tablet_handle()
   int ret = OB_SUCCESS;
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
+  ObTransferBackfillTXBaseCtx *ctx = nullptr;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
@@ -468,11 +467,10 @@ int ObTabletBackfillTXDag::init_tablet_handle()
   } else if (tablet_handle_.is_valid()) {
     ret = OB_INIT_TWICE;
     LOG_WARN("tablet handle is already init", K(ret), K(ls_id_), K(tablet_info_));
-  } else if (OB_FAIL(ObStorageHADagUtils::get_ls(ls_id_, ls_handle))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), K(ls_id_));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(ha_dag_net_ctx_, ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(ctx->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ctx));
   } else if (OB_FAIL(ls->ha_get_tablet(tablet_info_.tablet_id_, tablet_handle_))) {
     LOG_WARN("failed to get tablet", K(ret), K(tablet_info_));
   }
@@ -503,6 +501,7 @@ int ObTabletBackfillTXTask::init(
 {
   int ret = OB_SUCCESS;
   ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTransferBackfillTXBaseCtx *ha_dag_net_ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
@@ -510,10 +509,14 @@ int ObTabletBackfillTXTask::init(
   } else if (dag_net_id.is_invalid() || !ls_id.is_valid() || !tablet_info.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("init tablet backfill tx get invalid argument", K(ret), K(dag_net_id), K(ls_id), K(tablet_info));
+  } else if (OB_ISNULL(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet backfill tx dag should not be NULL", K(ret), KP(tablet_backfill_tx_dag));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(tablet_backfill_tx_dag->get_ha_dag_net_ctx(), ha_dag_net_ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
   } else {
-    tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
     backfill_tx_ctx_ = tablet_backfill_tx_dag->get_backfill_tx_ctx();
-    ha_dag_net_ctx_ = tablet_backfill_tx_dag->get_ha_dag_net_ctx();
+    ha_dag_net_ctx_ = ha_dag_net_ctx;
     tablets_table_mgr_ = tablet_backfill_tx_dag->get_backfill_tablets_table_mgr();
     ls_id_ = ls_id;
     tablet_info_ = tablet_info;
@@ -544,8 +547,19 @@ int ObTabletBackfillTXTask::process()
     LOG_WARN("failed to init tablet handle", K(ret));
   } else if (OB_FAIL(init_tablet_table_mgr_())) {
     LOG_WARN("failed to init tablet table mgr", K(ret), K(tablet_info_), K(ls_id_));
-  } else if (OB_FAIL(generate_backfill_tx_task_())) {
-    LOG_WARN("failed to generate backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else if (tablet_info_.is_shared_storage_) {
+#ifdef OB_BUILD_SHARED_STORAGE
+    if (OB_FAIL(generate_ss_backfill_tx_task_())) {
+      LOG_WARN("failed to generate ss backfill tx task", K(ret), K(tablet_info_), K(ls_id_));
+    }
+#else
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("only shared storage mode support it", K(ret), K(tablet_info_), K(ls_id_));
+#endif
+  } else {
+    if (OB_FAIL(generate_backfill_tx_task_())) {
+      LOG_WARN("failed to generate backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+    }
   }
 
 #ifdef ERRSIM
@@ -595,7 +609,7 @@ int ObTabletBackfillTXTask::generate_backfill_tx_task_()
   ObArray<ObTableHandleV2> table_array;
   ObTablesHandleArray sstable_handles;
   ObITask *child_task = nullptr;
-  int64_t dest_transfer_seq = -1;
+  bool inc_major_exist = false;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
@@ -610,15 +624,15 @@ int ObTabletBackfillTXTask::generate_backfill_tx_task_()
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
-  } else if (OB_FAIL(get_all_sstable_handles_(tablet, sstable_handles))) {
+  } else if (OB_FAIL(get_all_sstable_handles_(tablet, sstable_handles, inc_major_exist))) {
     LOG_WARN("failed to get all sstable handles", K(ret), KPC(tablet));
   } else if (OB_FAIL(get_all_backfill_tx_tables_(sstable_handles, tablet, table_array))) {
     LOG_WARN("get all backfill tx tabels", K(ret), KPC(tablet));
-  } else if (OB_FAIL(get_dest_transfer_seq_(tablet_info_.tablet_id_, dest_transfer_seq))) {
-    LOG_WARN("failed to get dest_transfser_seq", K(ret), K(tablet_info_));
-  } else if (OB_FAIL(generate_mds_table_backfill_task_(dest_transfer_seq, transfer_replace_task, child_task))) {
+  } else if (OB_FAIL(generate_mds_table_backfill_task_(transfer_replace_task, child_task))) {
     LOG_WARN("failed to generate mds table backfill task", K(ret), KPC(tablet));
-  } else if (OB_FAIL(generate_table_backfill_tx_task_(dest_transfer_seq, transfer_replace_task, table_array, child_task))) {
+  } else if (inc_major_exist && OB_FAIL(generate_inc_major_table_backfill_task_(transfer_replace_task, child_task))) {
+    LOG_WARN("failed to generate inc major table backfill task", K(ret), KPC(tablet));
+  } else if (OB_FAIL(generate_table_backfill_tx_task_(transfer_replace_task, table_array, child_task))) {
     LOG_WARN("failed to generate minor sstables backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
   } else if (OB_FAIL(dag_->add_task(*transfer_replace_task))) {
     LOG_WARN("failed to add transfer replace task to dag", K(ret));
@@ -677,9 +691,9 @@ int ObTabletBackfillTXTask::get_backfill_tx_memtables_(
   const int64_t OB_CHECK_MEMTABLE_INTERVAL = 200 * 1000; // 200ms
   const int64_t OB_WAIT_MEMTABLE_READY_TIMEOUT = 30 * 60 * 1000 * 1000L; // 30 min
   table_array.reset();
-  const bool need_active = true;
   share::SCN memtable_end_scn;
   share::SCN tablet_clog_checkpoint_scn;
+  ObTransferBackfillTXBaseCtx *ctx = nullptr;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
@@ -687,12 +701,11 @@ int ObTabletBackfillTXTask::get_backfill_tx_memtables_(
   } else if (OB_ISNULL(tablet)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get backfll tx memtables get invalid argument", K(ret), KP(tablet));
-  } else if (OB_FAIL(ObStorageHADagUtils::get_ls(ls_id_, ls_handle))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_), KPC(tablet));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), K(ls_id_));
-  } else if (OB_FAIL(tablet->get_memtables(memtables, need_active))) {
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(ha_dag_net_ctx_, ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(ctx->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ctx));
+  } else if (OB_FAIL(tablet->get_memtables(memtables))) {
     LOG_WARN("failed to get_memtable_mgr for get all memtable", K(ret), KPC(tablet));
   } else if (FALSE_IT(tablet_clog_checkpoint_scn = tablet->get_clog_checkpoint_scn())) {
   } else if (memtables.empty()) {
@@ -749,7 +762,6 @@ int ObTabletBackfillTXTask::get_backfill_tx_memtables_(
 }
 
 int ObTabletBackfillTXTask::generate_table_backfill_tx_task_(
-    const int64_t dest_transfer_seq,
     share::ObITask *replace_task,
     common::ObIArray<ObTableHandleV2> &table_array,
     share::ObITask *child)
@@ -782,7 +794,7 @@ int ObTabletBackfillTXTask::generate_table_backfill_tx_task_(
         LOG_WARN("table should not be NULL or table type is unexpected", K(ret), KPC(table));
       } else if (OB_FAIL(tablet_backfill_tx_dag->alloc_task(table_backfill_tx_task))) {
         LOG_WARN("failed to alloc table backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
-      } else if (OB_FAIL(table_backfill_tx_task->init(ls_id_, tablet_info_, dest_transfer_seq, tablet_handle, table_array.at(i), replace_task))) {
+      } else if (OB_FAIL(table_backfill_tx_task->init(ls_id_, tablet_info_, tablet_handle, table_array.at(i), replace_task))) {
         LOG_WARN("failed to init table backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
       } else if (OB_FAIL(pre_task->add_child(*table_backfill_tx_task))) {
         LOG_WARN("failed to add table backfill tx task as child", K(ret), K(ls_id_), K(tablet_info_), KPC(table), KPC(pre_task));
@@ -799,9 +811,44 @@ int ObTabletBackfillTXTask::generate_table_backfill_tx_task_(
   return ret;
 }
 
+int ObTabletBackfillTXTask::generate_inc_major_table_backfill_task_(
+    share::ObITask *replace_task,
+    share::ObITask *pre_task)
+{
+  int ret = OB_SUCCESS;
+  ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTabletHandle tablet_handle;
+  ObTabletIncMajorTableBackfillTXTask *inc_major_task = nullptr;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObTabletBackfillTXTask not inited", K(ret));
+  } else if (OB_UNLIKELY(nullptr == replace_task || nullptr == pre_task)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid argument", K(ret), KP(replace_task), K(ls_id_), K(tablet_info_), KP(pre_task));
+  } else if (FALSE_IT(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag*>(this->get_dag()))) {
+  } else if (OB_FAIL(tablet_backfill_tx_dag->get_tablet_handle(tablet_handle))) {
+    LOG_WARN("failed to get tablet handler", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(tablet_backfill_tx_dag->alloc_task(inc_major_task))) {
+    LOG_WARN("failed to alloc inc major backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(inc_major_task->init(ls_id_, tablet_info_, tablet_handle))) {
+    LOG_WARN("failed to init inc major backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(pre_task->add_child(*inc_major_task))) {
+    LOG_WARN("failed to add inc major backfill tx task as child", K(ret), K(ls_id_), K(tablet_info_), KPC(pre_task));
+  } else if (OB_FAIL(inc_major_task->add_child(*replace_task))) {
+    LOG_WARN("failed to add replace task as child", K(ret), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(dag_->add_task(*inc_major_task))) {
+    LOG_WARN("failed to add table backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
+  } else {
+    LOG_INFO("generate table backfill TX", KPC(inc_major_task));
+  }
+  return ret;
+}
+
 int ObTabletBackfillTXTask::get_all_sstable_handles_(
     const ObTablet *tablet,
-    ObTablesHandleArray &sstable_handles)
+    ObTablesHandleArray &sstable_handles,
+    bool &inc_major_exist)
 {
   int ret = OB_SUCCESS;
   sstable_handles.reset();
@@ -822,42 +869,15 @@ int ObTabletBackfillTXTask::get_all_sstable_handles_(
     LOG_WARN("tablet data is incomplete, replacement should not be performed", K(ret), KP(tablet));
   } else if (OB_FAIL(tablet->fetch_table_store(wrapper))) {
     LOG_WARN("fetch table store fail", K(ret), KP(tablet));
-  } else if (OB_FAIL(check_major_sstable_(tablet, wrapper))) {
-    LOG_WARN("failed check major sstable", K(ret), KP(tablet));
+  } else if (OB_FAIL(ObTransferUtils::check_ddl_merge_finished(tablet))) {
+    LOG_WARN("failed to check ddl merge finished", K(ret), KPC(tablet));
   } else if (OB_FAIL(wrapper.get_member()->get_all_sstable(sstable_iter, false /*unpack_co_table*/))) {
     LOG_WARN("get all sstable fail", K(ret));
   } else if (OB_FAIL(add_sstable_into_handles_(sstable_iter, sstable_handles))) {
     LOG_WARN("failed to add data sstable into handles", K(ret));
+  } else {
+    inc_major_exist = !wrapper.get_member()->get_inc_major_sstables().empty();
   }
-  return ret;
-}
-
-int ObTabletBackfillTXTask::check_major_sstable_(
-    const ObTablet *tablet,
-    const ObTabletMemberWrapper<ObTabletTableStore> &table_store_wrapper)
-{
-  int ret = OB_SUCCESS;
-  ObTableStoreIterator ddl_iter;
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("tablet backfill tx task do not init", K(ret));
-  } else if (OB_ISNULL(tablet) || !table_store_wrapper.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("check major sstable get invalid argument", K(ret), KP(tablet), K(table_store_wrapper));
-  } else if (!tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
-    //skip check tablet sstable when tablet in restore status
-  } else if (!table_store_wrapper.get_member()->get_major_sstables().empty()) {
-    // do nothing
-  } else if (OB_FAIL(tablet->get_ddl_sstables(ddl_iter))) {
-    LOG_WARN("failed to get ddl sstable", K(ret));
-  } else if (ddl_iter.is_valid()) {
-    ret = OB_EAGAIN;
-    LOG_WARN("wait for ddl sstable to merge to generate major sstable", K(ret), K(ddl_iter));
-  } else if (tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
-    ret = OB_INVALID_TABLE_STORE;
-    LOG_ERROR("neither major sstable nor ddl sstable exists", K(ret), K(ddl_iter));
-  }
-
   return ret;
 }
 
@@ -916,6 +936,8 @@ int ObTabletBackfillTXTask::split_sstable_array_by_backfill_(
       } else if (table->is_major_sstable()) {
         //major sstable will do not add to table mgr, the major sstable will get from tablet
         max_end_major_scn = SCN::max(table->get_end_scn(), max_end_major_scn);
+      } else if (table->is_inc_major_type_sstable()) {
+        // do nothing, deal with the inc major tables in ObTabletIncMajorTableBackfillTXTask
       } else if (table->is_minor_sstable() || table->is_mds_sstable()) {
         ObSSTable *sstable = nullptr;
         ObSSTableMetaHandle sst_meta_hdl;
@@ -955,8 +977,6 @@ int ObTabletBackfillTXTask::add_ready_sstable_into_table_mgr_(
   mds::MdsWriter writer;
   mds::TwoPhaseCommitState trans_stat;
   share::SCN trans_version;
-  ObLSService* ls_srv = nullptr;
-  ObLSHandle ls_handle;
   ObLS *ls = NULL;
   int64_t rebuild_seq = 0;
 
@@ -966,14 +986,8 @@ int ObTabletBackfillTXTask::add_ready_sstable_into_table_mgr_(
   } else if (OB_ISNULL(tablet) || !max_major_end_scn.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("add ready sstable into table mgr get invalid argument", K(ret), KP(tablet), K(max_major_end_scn));
-  } else if (OB_ISNULL(ls_srv = MTL(ObLSService*))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_ERROR("ls srv should not be NULL", K(ret), KP(ls_srv));
-  } else if (OB_FAIL(ls_srv->get_ls(ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
-    LOG_WARN("failed to get ls", KR(ret), K(ls_id_));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls is NULL", KR(ret), K(ls_id_));
+  } else if (OB_FAIL(ha_dag_net_ctx_->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ha_dag_net_ctx_));
   } else if (FALSE_IT(rebuild_seq = ls->get_ls_meta().get_rebuild_seq())) {
   } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
     LOG_WARN("failed to get latest tablet status", K(ret), KP(tablet));
@@ -1019,50 +1033,8 @@ int ObTabletBackfillTXTask::add_ready_sstable_into_table_mgr_(
 int ObTabletBackfillTXTask::get_diagnose_support_info_(share::ObLSID &dest_ls_id, share::SCN &backfill_scn) const
 {
   int ret = OB_SUCCESS;
-  dest_ls_id.reset();
-  backfill_scn.reset();
-  if (ObIHADagNetCtx::TRANSFER_BACKFILL_TX != ha_dag_net_ctx_->get_dag_net_ctx_type()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected type", K(ret), "ctx type", ha_dag_net_ctx_->get_dag_net_ctx_type());
-  } else {
-    dest_ls_id = static_cast<const ObTransferBackfillTXCtx *>(ha_dag_net_ctx_)->get_ls_id();
-    backfill_scn = backfill_tx_ctx_->backfill_scn_;
-  }
-  return ret;
-}
-
-int ObTabletBackfillTXTask::get_dest_transfer_seq_(const common::ObTabletID &tablet_id, int64_t &transfer_seq) const
-{
-  int ret = OB_SUCCESS;
-  transfer_seq = -1;
-  ObLSID dest_ls_id;
-  share::SCN unused_scn;
-  ObTabletHandle handle;
-  ObLSService *ls_service;
-  ObLSHandle ls_handle;
-  ObLS *ls;
-
-  if (!tablet_id.is_valid()) {
-    LOG_WARN("invalid argument", K(ret));
-  } else if (OB_FAIL(get_diagnose_support_info_(dest_ls_id, unused_scn))) {
-    LOG_WARN("failed to get ls_id", K(ret), K(tablet_id), K(dest_ls_id));
-  } else if (OB_ISNULL(ls_service = MTL(ObLSService*))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ls_service", K(ret), KP(ls_service));
-  } else if (OB_FAIL(ls_service->get_ls(dest_ls_id, ls_handle, ObLSGetMod::HA_MOD))) {
-    LOG_WARN("failed to get ls", K(ret), K(dest_ls_id));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ls", K(ret), K(dest_ls_id), KP(ls));
-  } else if (OB_FAIL(ls->get_tablet_svr()->get_tablet(tablet_id, handle, 0/*timeout*/, ObMDSGetTabletMode::READ_WITHOUT_CHECK))) {
-    LOG_WARN("failed to get tablet", K(ret), K(dest_ls_id), K(tablet_id));
-  } else if (!handle.is_valid()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid tablet_handle", K(ret), K(dest_ls_id), K(tablet_id), K(handle));
-  } else {
-    transfer_seq = handle.get_obj()->get_transfer_seq();
-  }
-
+  dest_ls_id = tablet_info_.relative_ls_id_;
+  backfill_scn = tablet_info_.backfill_scn_;
   return ret;
 }
 
@@ -1113,7 +1085,6 @@ int ObTabletBackfillTXTask::add_sstable_into_handles_(
 }
 
 int ObTabletBackfillTXTask::generate_mds_table_backfill_task_(
-    const int64_t dest_tranfser_seq,
     share::ObITask *finish_task,
     share::ObITask *&child)
 {
@@ -1134,7 +1105,7 @@ int ObTabletBackfillTXTask::generate_mds_table_backfill_task_(
     LOG_WARN("failed to get tablet handler", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
   } else if (OB_FAIL(tablet_backfill_tx_dag->alloc_task(mds_table_backfill_tx_task))) {
     LOG_WARN("failed to alloc table backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
-  } else if (OB_FAIL(mds_table_backfill_tx_task->init(ls_id_, tablet_info_, dest_tranfser_seq, tablet_handle))) {
+  } else if (OB_FAIL(mds_table_backfill_tx_task->init(ls_id_, tablet_info_, tablet_handle))) {
     LOG_WARN("failed to init mds table backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
   } else if (OB_FAIL(this->add_child(*mds_table_backfill_tx_task))) {
     LOG_WARN("failed to add table backfill tx task as child", K(ret), K(ls_id_), K(tablet_info_));
@@ -1160,15 +1131,15 @@ int ObTabletBackfillTXTask::wait_memtable_frozen_()
   const int64_t OB_CHECK_MEMTABLE_INTERVAL = 200 * 1000; // 200ms
   const int64_t OB_WAIT_MEMTABLE_READY_TIMEOUT = 30 * 60 * 1000 * 1000L; // 30 min
   const int64_t start_ts = ObTimeUtility::current_time();
+  ObTransferBackfillTXBaseCtx *ctx = nullptr;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet backfill tx task do not init", K(ret));
-  } else if (OB_FAIL(ObStorageHADagUtils::get_ls(ls_id_, ls_handle))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_), KPC(tablet));
-  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), KP(ls), K(ls_id_));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(ha_dag_net_ctx_, ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(ctx->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ctx));
   } else if (OB_FAIL(ls->ha_get_tablet(tablet_info_.tablet_id_, tablet_handle))) {
     LOG_WARN("failed to get tablet", K(ret), K(tablet_info_));
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
@@ -1180,7 +1151,7 @@ int ObTabletBackfillTXTask::wait_memtable_frozen_()
     while (OB_SUCC(ret)) {
       memtables.reset();
       bool is_memtable_ready = true;
-      if (OB_FAIL(tablet->get_all_memtables(memtables))) {
+      if (OB_FAIL(tablet->get_all_memtables_from_memtable_mgr(memtables))) {
         LOG_WARN("failed to get all memtables", K(ret), KPC(tablet));
       } else if (memtables.empty()) {
         FLOG_INFO("transfer src tablet memtable is empty", KPC(tablet));
@@ -1231,7 +1202,7 @@ int ObTabletBackfillTXTask::wait_memtable_frozen_()
             break;
           } else {
             const int64_t current_ts = ObTimeUtility::current_time();
-            if (REACH_TENANT_TIME_INTERVAL(60 * 1000 * 1000)) {
+            if (REACH_THREAD_TIME_INTERVAL(60 * 1000 * 1000)) {
               LOG_INFO("tablet not ready, retry next loop", "tablet_id", tablet_info_,
                   "wait_tablet_start_ts", wait_memtable_start_ts,
                   "current_ts", current_ts);
@@ -1278,6 +1249,102 @@ int ObTabletBackfillTXTask::init_tablet_handle_()
   return ret;
 }
 
+#ifdef OB_BUILD_SHARED_STORAGE
+int ObTabletBackfillTXTask::generate_ss_backfill_tx_task_()
+{
+  int ret = OB_SUCCESS;
+  ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTabletHandle tablet_handle;
+  ObTablet *tablet = nullptr;
+  ObSSTabletBackfillUploadTask *ss_tablet_upload_task = nullptr;
+  ObArray<ObTableHandleV2> table_array;
+  ObTablesHandleArray sstable_handles;
+  ObITask *child_task = nullptr;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet backfill tx task do not init", K(ret));
+  } else if (FALSE_IT(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag*>(this->get_dag()))) {
+  } else if (OB_FAIL(tablet_backfill_tx_dag->alloc_task(ss_tablet_upload_task))) {
+    LOG_WARN("failed to alloc transfer replace task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(ss_tablet_upload_task->init(ls_id_, tablet_info_, backfill_tx_ctx_))) {
+    LOG_WARN("failed to init finish backfill tx task", K(ret));
+  } else if (OB_FAIL(tablet_backfill_tx_dag->get_tablet_handle(tablet_handle))) {
+    LOG_WARN("failed to get tablet handler", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet should not be NULL", K(ret), KP(tablet));
+  } else if (OB_FAIL(get_all_backfill_tx_tables_(sstable_handles, tablet, table_array))) {
+    LOG_WARN("get all backfill tx tabels", K(ret), KPC(tablet));
+  } else if (OB_FAIL(generate_mds_table_backfill_task_(ss_tablet_upload_task, child_task))) {
+    LOG_WARN("failed to generate mds table backfill task", K(ret), KPC(tablet));
+  } else if (OB_FAIL(generate_ss_table_backfill_tx_task_(ss_tablet_upload_task, table_array, child_task))) {
+    LOG_WARN("failed to generate minor sstables backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
+  } else if (OB_FAIL(dag_->add_task(*ss_tablet_upload_task))) {
+    LOG_WARN("failed to add transfer replace task to dag", K(ret));
+  }
+  return ret;
+}
+
+int ObTabletBackfillTXTask::generate_ss_table_backfill_tx_task_(
+    share::ObITask *replace_task,
+    common::ObIArray<ObTableHandleV2> &table_array,
+    share::ObITask *child)
+{
+  int ret = OB_SUCCESS;
+  ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTabletHandle tablet_handle;
+  share::ObITask *pre_task = child;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet backfill tx task do not init", K(ret));
+  } else if (OB_ISNULL(replace_task) || OB_ISNULL(child)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("generate table backfill tx task get invalid argument",
+        K(ret), KP(replace_task), K(ls_id_), K(tablet_info_), KP(child));
+  } else if (FALSE_IT(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag*>(this->get_dag()))) {
+  } else if (OB_FAIL(tablet_backfill_tx_dag->get_tablet_handle(tablet_handle))) {
+    LOG_WARN("failed to get tablet handler", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < table_array.count(); ++i) {
+      ObITable *table = table_array.at(i).get_table();
+      ObTabletTableBackfillTXTask *table_backfill_tx_task = nullptr;
+      ObFakeTask *wait_finish_task = nullptr;
+
+      if (OB_ISNULL(table)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("table should not be NULL or table type is unexpected", K(ret), KPC(table));
+      } else if ((!table->is_data_memtable() && !table->is_minor_sstable())
+          || table->is_remote_logical_minor_sstable()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("table should not be NULL or table type is unexpected", K(ret), KPC(table));
+      } else if (OB_FAIL(dag_->alloc_task(wait_finish_task))) {
+        LOG_WARN("failed to alloc wait finish task", K(ret));
+      } else if (OB_FAIL(tablet_backfill_tx_dag->alloc_task(table_backfill_tx_task))) {
+        LOG_WARN("failed to alloc table backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
+      } else if (OB_FAIL(table_backfill_tx_task->init(ls_id_, tablet_info_, tablet_handle, table_array.at(i), wait_finish_task))) {
+        LOG_WARN("failed to init table backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
+      } else if (OB_FAIL(pre_task->add_child(*table_backfill_tx_task))) {
+        LOG_WARN("failed to add table backfill tx task as child", K(ret), K(ls_id_), K(tablet_info_), KPC(table), KPC(pre_task));
+      } else if (OB_FAIL(table_backfill_tx_task->add_child(*wait_finish_task))) {
+        LOG_WARN("failed to add replace task as child", K(ret), K(ls_id_), K(tablet_info_), KPC(table));
+      } else if (OB_FAIL(wait_finish_task->add_child(*replace_task))) {
+        LOG_WARN("failed to add replace task as child", K(ret), K(ls_id_), K(tablet_info_));
+      } else if (OB_FAIL(dag_->add_task(*table_backfill_tx_task))) {
+        LOG_WARN("failed to add table backfill tx task", K(ret), K(ls_id_), K(tablet_info_));
+      } else if (OB_FAIL(dag_->add_task(*wait_finish_task))) {
+        LOG_WARN("failed to add wait finish task", K(ret), K(ls_id_), K(tablet_info_));
+      } else {
+        pre_task = wait_finish_task;
+        LOG_INFO("generate table backfill TX", KPC(table), K(i), KPC(table_backfill_tx_task));
+      }
+    }
+  }
+  return ret;
+}
+#endif
+
 /******************ObTabletTableBackfillTXTask*********************/
 ObTabletTableBackfillTXTask::ObTabletTableBackfillTXTask()
   : ObITask(TASK_TYPE_MIGRATE_PREPARE),
@@ -1286,7 +1353,6 @@ ObTabletTableBackfillTXTask::ObTabletTableBackfillTXTask()
     ha_dag_net_ctx_(nullptr),
     ls_id_(),
     tablet_info_(),
-    dest_transfer_seq_(ObStorageObjectOpt::INVALID_TABLET_TRANSFER_SEQ),
     tablet_handle_(),
     table_handle_(),
     tablets_table_mgr_(nullptr),
@@ -1301,29 +1367,33 @@ ObTabletTableBackfillTXTask::~ObTabletTableBackfillTXTask()
 int ObTabletTableBackfillTXTask::init(
     const share::ObLSID &ls_id,
     const ObTabletBackfillInfo &tablet_info,
-    const int64_t dest_transfer_seq,
     ObTabletHandle &tablet_handle,
     ObTableHandleV2 &table_handle,
     share::ObITask *child)
 {
   int ret = OB_SUCCESS;
   ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTransferBackfillTXBaseCtx *ha_dag_net_ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("tablet table back fill tx task do not init", K(ret));
-  } else if (!ls_id.is_valid() || !tablet_info.is_valid() || !tablet_handle.is_valid() || !table_handle.is_valid() || OB_ISNULL(child) || dest_transfer_seq < 0) {
+  } else if (!ls_id.is_valid() || !tablet_info.is_valid() || !tablet_handle.is_valid() || !table_handle.is_valid() || OB_ISNULL(child)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("init tablet table backfill task get invalid argument", K(ret), K(ls_id),
         K(tablet_info), K(tablet_handle), K(table_handle));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
+  } else if (OB_ISNULL(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet backfill tx dag should not be NULL", K(ret), KP(tablet_backfill_tx_dag));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(tablet_backfill_tx_dag->get_ha_dag_net_ctx(), ha_dag_net_ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
   } else {
-    tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
-    ha_dag_net_ctx_ = tablet_backfill_tx_dag->get_ha_dag_net_ctx();
+    ha_dag_net_ctx_ = ha_dag_net_ctx;
     backfill_tx_ctx_ = tablet_backfill_tx_dag->get_backfill_tx_ctx();
     ls_id_ = ls_id;
     tablet_info_ = tablet_info;
-    dest_transfer_seq_ = dest_transfer_seq;
-    tablet_handle_ = tablet_handle;
     table_handle_ = table_handle;
     tablets_table_mgr_ = tablet_backfill_tx_dag->get_backfill_tablets_table_mgr();
     child_ = child;
@@ -1417,9 +1487,9 @@ int ObTabletTableBackfillTXTask::generate_merge_task_()
     LOG_WARN("tablet table backfill tx task do not init", K(ret));
   } else if (OB_FAIL(dag_->alloc_task(finish_backfill_task))) {
     LOG_WARN("failed to alloc tablet finish backfill tx task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_));
-  } else if (OB_FAIL(finish_backfill_task->init(ls_id_, tablet_info_, dest_transfer_seq_, tablet_handle_, table_handle_, child_))) {
+  } else if (OB_FAIL(finish_backfill_task->init(ls_id_, tablet_info_, tablet_handle_, table_handle_, child_))) {
     LOG_WARN("failed to init table finish backfill tx task", K(ret), K(ls_id_), K(tablet_info_), K(table_handle_));
-  } else if (OB_FAIL(finish_backfill_task->add_child(*child_))) {
+  } else if (OB_FAIL(finish_backfill_task->add_child(*child_, false /*check_child_task_status*/))) {
     LOG_WARN("failed to add child task", K(ret), K(ls_id_), K(tablet_info_));
   } else if (OB_FAIL(dag_->alloc_task(merge_task))) {
     LOG_WARN("failed to alloc table merge task", K(ret), KPC(ha_dag_net_ctx_), K(ls_id_), K(tablet_info_), K(table_handle_));
@@ -1442,7 +1512,11 @@ int ObTabletTableBackfillTXTask::get_diagnose_support_info_(share::ObLSID &dest_
   int ret = OB_SUCCESS;
   dest_ls_id.reset();
   log_sync_scn.reset();
-  if (ObIHADagNetCtx::TRANSFER_BACKFILL_TX != ha_dag_net_ctx_->get_dag_net_ctx_type()) {
+  //TODO(muwei.ym) using tablet info get ls id and transfer scn
+  if (tablet_info_.is_shared_storage_) {
+    dest_ls_id = tablet_info_.relative_ls_id_;
+    log_sync_scn = tablet_info_.backfill_scn_;
+  } else if (ObIHADagNetCtx::TRANSFER_BACKFILL_TX != ha_dag_net_ctx_->get_dag_net_ctx_type()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected type", K(ret), "ctx type", ha_dag_net_ctx_->get_dag_net_ctx_type());
   } else {
@@ -1498,13 +1572,13 @@ ObTabletTableFinishBackfillTXTask::~ObTabletTableFinishBackfillTXTask()
 int ObTabletTableFinishBackfillTXTask::init(
     const share::ObLSID &ls_id,
     const ObTabletBackfillInfo &tablet_info,
-    const int64_t dest_transfer_seq,
     ObTabletHandle &tablet_handle,
     ObTableHandleV2 &table_handle,
     share::ObITask *child)
 {
   int ret = OB_SUCCESS;
   ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTransferBackfillTXBaseCtx *ha_dag_net_ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
@@ -1513,18 +1587,23 @@ int ObTabletTableFinishBackfillTXTask::init(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("init tablet table finish backfill task get invalid argument", K(ret), K(ls_id),
         K(tablet_info), K(tablet_handle), K(table_handle));
+  } else if (OB_ISNULL(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet backfill tx dag should not be NULL", K(ret), KP(tablet_backfill_tx_dag));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(tablet_backfill_tx_dag->get_ha_dag_net_ctx(), ha_dag_net_ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
   } else {
-    tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
-    ha_dag_net_ctx_ = tablet_backfill_tx_dag->get_ha_dag_net_ctx();
+    ha_dag_net_ctx_ = ha_dag_net_ctx;
     backfill_tx_ctx_ = tablet_backfill_tx_dag->get_backfill_tx_ctx();
     ls_id_ = ls_id;
     tablet_info_ = tablet_info;
-    tablet_handle_ = tablet_handle;
     table_handle_ = table_handle;
     tablets_table_mgr_ = tablet_backfill_tx_dag->get_backfill_tablets_table_mgr();
     child_ = child;
 
-    if (OB_FAIL(prepare_merge_ctx_(dest_transfer_seq))) {
+    if (OB_FAIL(prepare_merge_ctx_())) {
       LOG_WARN("failed to prepare merge ctx", K(ret), K(ls_id_), K(tablet_info_), K(table_handle_));
     } else {
       is_inited_ = true;
@@ -1533,7 +1612,7 @@ int ObTabletTableFinishBackfillTXTask::init(
   return ret;
 }
 
-int ObTabletTableFinishBackfillTXTask::prepare_merge_ctx_(const int64_t dest_transfer_seq)
+int ObTabletTableFinishBackfillTXTask::prepare_merge_ctx_()
 {
   int ret = OB_SUCCESS;
   param_.merge_version_ = ObVersion::MIN_VERSION; //only major or meta major need this, mini or minor do not use it
@@ -1543,9 +1622,12 @@ int ObTabletTableFinishBackfillTXTask::prepare_merge_ctx_(const int64_t dest_tra
   param_.merge_type_ = table_handle_.get_table()->is_memtable() ? compaction::ObMergeType::MINI_MERGE : compaction::ObMergeType::MINOR_MERGE;
   bool unused_finish_flag = false;
   int64_t local_rebuild_seq = 0;
+  ObTabletBackfillTXDag *dag = static_cast<ObTabletBackfillTXDag *>(get_dag());
+
   if (OB_FAIL(tablets_table_mgr_->get_local_rebuild_seq(local_rebuild_seq))) {
     LOG_WARN("failed to get local rebuild seq", K(ret), K(ls_id_), K(tablet_info_), K(table_handle_));
-  } else if (OB_FAIL(tablet_merge_ctx_.init(backfill_tx_ctx_->backfill_scn_, local_rebuild_seq, dest_transfer_seq, tablet_handle_, table_handle_))) {
+  } else if (OB_FAIL(tablet_merge_ctx_.init(dag, backfill_tx_ctx_->backfill_scn_, local_rebuild_seq,
+                                    tablet_handle_, table_handle_))) {
     LOG_WARN("failed to init tablet merge ctx", K(ret), K(ls_id_), K(tablet_info_), K(table_handle_));
   } else if (OB_FAIL(tablet_merge_ctx_.build_ctx(unused_finish_flag))) {
     LOG_WARN("failed to build ctx", K(ret), K(ls_id_), K(tablet_info_));
@@ -1605,6 +1687,80 @@ int ObTabletTableFinishBackfillTXTask::update_merge_sstable_()
   return ret;
 }
 
+int ObTabletTableFinishBackfillTXTask::update_merge_sstable_for_ss_()
+{
+  int ret = OB_SUCCESS;
+  ObLS *ls = nullptr;
+  ObTablet *tablet = nullptr;
+  ObTabletCreateDeleteMdsUserData user_data;
+  compaction::ObStaticMergeParam &static_param = tablet_merge_ctx_.static_param_;
+  bool skip_to_create_empty_cg = false; // placeholder
+  ObSSTable *sstable = nullptr;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet table finish backfill tx task do not init", K(ret));
+  } else if (OB_ISNULL(ls = static_param.ls_handle_.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls should not be NULL", K(ret), KP(ls), K(ls_id_));
+  } else if (!compaction::is_mini_merge(tablet_merge_ctx_.get_merge_type())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("update merge sstable for ss is not mini merge, unexpected", K(ret), K(tablet_merge_ctx_));
+  } else if (OB_FAIL(tablet_merge_ctx_.merge_info_.create_sstable(
+      tablet_merge_ctx_,
+      tablet_merge_ctx_.merged_table_handle_,
+      skip_to_create_empty_cg))) {
+    LOG_WARN("fail to create sstable", K(ret), K(tablet_merge_ctx_));
+  } else if (OB_ISNULL(tablet = tablet_handle_.get_obj())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet should not be NULL", K(ret), K(tablet_handle_), K(ls_id_));
+  } else if (OB_FAIL(tablet_merge_ctx_.merged_table_handle_.get_sstable(sstable))) {
+    LOG_WARN("failed to get sstable", K(ret), K(tablet_handle_), K(ls_id_));
+  } else {
+    ObTabletHandle new_tablet_handle;
+    const int64_t snapshot_version = static_param.version_range_.snapshot_version_;
+    const int64_t multi_version_start_ = static_param.version_range_.multi_version_start_;
+    const int64_t rebuild_seq = tablet_merge_ctx_.get_ls_rebuild_seq();
+    const int64_t transfer_seq = tablet->get_tablet_meta().transfer_info_.transfer_seq_;
+    const share::SCN end_scn = sstable->get_end_scn();
+    const bool has_truncate_info = tablet->has_truncate_info();
+    const bool need_check_sstable = compaction::is_minor_merge(tablet_merge_ctx_.get_merge_type()) || compaction::is_history_minor_merge(tablet_merge_ctx_.get_merge_type());
+
+    ObUpdateTableStoreParam param(snapshot_version,
+                                  multi_version_start_,
+                                  tablet_merge_ctx_.get_schema(),
+                                  rebuild_seq,
+                                  sstable);
+    ObHATableStoreParam ha_param(transfer_seq,
+                                 true/*need_check_transfer_seq*/);
+    ObCompactionTableStoreParam compaction_param(compaction::ObMergeType::MINI_MERGE,
+                                                 end_scn,
+                                                 false/*need_report*/,
+                                                 has_truncate_info);
+
+    if (OB_FAIL(param.init_with_ha_info(ha_param))) {
+      LOG_WARN("failed to init param with ha info", K(ret), K(param));
+    } else if (OB_FAIL(param.init_with_compaction_info(compaction_param))) {
+      LOG_WARN("failed to init param with compaction info", K(ret), K(param));
+    } else if (OB_FAIL(ObTXTransferUtils::get_tablet_status(false/*get_commit*/, tablet, user_data))) {
+      LOG_WARN("failed to get tablet status", K(ret), K(ls_id_), KPC(tablet));
+    } else if (user_data.transfer_scn_ != tablet_info_.backfill_scn_) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("transfer start scn is invalid, unexpected for ss", K(ret), K(user_data), KPC(backfill_tx_ctx_));
+    } else if (OB_FAIL(ls->update_tablet_table_store(tablet_info_.tablet_id_, param, new_tablet_handle))) {
+      LOG_WARN("failed to update tablet table store", K(ret), K(param));
+      if (OB_NO_NEED_MERGE == ret) {
+        ret = OB_SUCCESS;
+        LOG_INFO("no need update tablet table store, transfer backfill need continue", K(ret), K(param), K(tablet_info_));
+      }
+    } else if (OB_FAIL(new_tablet_handle.get_obj()->release_memtables(end_scn))) {
+      LOG_WARN("failed to release memtable", K(ret), "end_scn", end_scn);
+    }
+  }
+  return ret;
+}
+
+
 int ObTabletTableFinishBackfillTXTask::process()
 {
   int ret = OB_SUCCESS;
@@ -1614,8 +1770,14 @@ int ObTabletTableFinishBackfillTXTask::process()
     LOG_WARN("tablet table backfill tx task do not init", K(ret));
   } else if (ha_dag_net_ctx_->is_failed()) {
     LOG_INFO("ctx already failed", KPC(ha_dag_net_ctx_));
-  } else if (OB_FAIL(update_merge_sstable_())) {
-    LOG_WARN("failed to update merge sstable", K(ret), KPC(this));
+  } else if (tablet_info_.is_shared_storage_) {
+    if (OB_FAIL(update_merge_sstable_for_ss_())) {
+      LOG_WARN("failed to update merge sstable for ss", K(ret), KPC(this));
+    }
+  } else {
+    if (OB_FAIL(update_merge_sstable_())) {
+      LOG_WARN("failed to update merge sstable", K(ret), KPC(this));
+    }
   }
 
   if (OB_FAIL(ret)) {
@@ -1696,7 +1858,7 @@ bool ObFinishBackfillTXDag::operator == (const ObIDag &other) const
   return is_same;
 }
 
-int64_t ObFinishBackfillTXDag::hash() const
+uint64_t ObFinishBackfillTXDag::hash() const
 {
   int ret = OB_SUCCESS;
   int64_t hash_value = 0;
@@ -1776,16 +1938,18 @@ int ObFinishBackfillTXTask::init()
 {
   int ret = OB_SUCCESS;
   ObFinishBackfillTXDag *finish_backfill_tx_dag = nullptr;
+  ObTransferBackfillTXBaseCtx *ha_dag_net_ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("finish backfill tx migration task init twice", K(ret));
-  } else if (FALSE_IT(finish_backfill_tx_dag = static_cast<ObFinishBackfillTXDag *>(this->get_dag()))) {
-  } else if (OB_ISNULL(finish_backfill_tx_dag)) {
+  } else if (OB_ISNULL(finish_backfill_tx_dag = static_cast<ObFinishBackfillTXDag *>(this->get_dag()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("finish backfill tx dag should not be NULL", K(ret), KP(finish_backfill_tx_dag));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(finish_backfill_tx_dag->get_ha_dag_net_ctx(), ha_dag_net_ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
   } else {
-    ha_dag_net_ctx_ = finish_backfill_tx_dag->get_ha_dag_net_ctx();
+    ha_dag_net_ctx_ = ha_dag_net_ctx;
     is_inited_ = true;
   }
   return ret;
@@ -1826,7 +1990,6 @@ ObTabletMdsTableBackfillTXTask::ObTabletMdsTableBackfillTXTask()
     ha_dag_net_ctx_(nullptr),
     ls_id_(),
     tablet_info_(),
-    dest_transfer_seq_(ObStorageObjectOpt::INVALID_TABLET_TRANSFER_SEQ),
     tablet_handle_(),
     allocator_("MdsBackfillTX"),
     merger_arena_("TblBkfilMerger", OB_MALLOC_NORMAL_BLOCK_SIZE),
@@ -1841,11 +2004,11 @@ ObTabletMdsTableBackfillTXTask::~ObTabletMdsTableBackfillTXTask()
 int ObTabletMdsTableBackfillTXTask::init(
     const share::ObLSID &ls_id,
     const ObTabletBackfillInfo &tablet_info,
-    const int64_t dest_transfer_seq,
     ObTabletHandle &tablet_handle)
 {
   int ret = OB_SUCCESS;
   ObTabletBackfillTXDag *tablet_backfill_tx_dag = nullptr;
+  ObTransferBackfillTXBaseCtx *ha_dag_net_ctx = nullptr;
 
   if (is_inited_) {
     ret = OB_INIT_TWICE;
@@ -1857,14 +2020,18 @@ int ObTabletMdsTableBackfillTXTask::init(
   } else if (ObDagType::DAG_TYPE_TABLET_BACKFILL_TX != this->get_dag()->get_type()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("init tablet mds table backfill dag type is unexpected", K(ret), KPC(this));
+  } else if (OB_ISNULL(tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet backfill tx dag should not be NULL", K(ret), KP(tablet_backfill_tx_dag));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(tablet_backfill_tx_dag->get_ha_dag_net_ctx(), ha_dag_net_ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
   } else {
-    tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
-    ha_dag_net_ctx_ = tablet_backfill_tx_dag->get_ha_dag_net_ctx();
+    ha_dag_net_ctx_ = ha_dag_net_ctx;
     backfill_tx_ctx_ = tablet_backfill_tx_dag->get_backfill_tx_ctx();
     ls_id_ = ls_id;
     tablet_info_ = tablet_info;
-    dest_transfer_seq_ = dest_transfer_seq;
-    tablet_handle_ = tablet_handle;
     tablets_table_mgr_ = tablet_backfill_tx_dag->get_backfill_tablets_table_mgr();
     is_inited_ = true;
   }
@@ -1881,14 +2048,19 @@ int ObTabletMdsTableBackfillTXTask::process()
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
-  } else if (OB_FAIL(do_backfill_mds_table_(mds_sstable))) {
-    LOG_WARN("failed to do backfill mds table", K(ret), K(ls_id_), K(tablet_info_));
-  } else if (OB_FAIL(prepare_backfill_mds_sstables_(mds_sstable, mds_sstable_array))) {
-    LOG_WARN("failed to prepare backfill mds sstables", K(ret), K(ls_id_), K(tablet_info_));
-  } else if (mds_sstable_array.empty()) {
-    //allow mds sstable array empty, because tablet status will be filtered by transfer
-  } else if (OB_FAIL(do_backfill_mds_sstables_(mds_sstable_array, final_mds_sstable))) {
-    LOG_WARN("failed to do backfill mds sstables", K(ret), K(ls_id_), K(tablet_info_));
+  } else if (tablet_info_.is_shared_storage_) {
+#ifdef OB_BUILD_SHARED_STORAGE
+    if (OB_FAIL(do_ss_backfill_mds_())) {
+      LOG_WARN("failed to do ss backfill mds", K(ret));
+    }
+#else
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("only shared storage mode support it", K(ret), K(tablet_info_));
+#endif
+  } else {
+    if (OB_FAIL(do_backfill_mds_())) {
+      LOG_WARN("failed to do backfill mds", K(ret));
+    }
   }
 
   if (OB_FAIL(ret)) {
@@ -1909,8 +2081,37 @@ int ObTabletMdsTableBackfillTXTask::process()
   return ret;
 }
 
+int ObTabletMdsTableBackfillTXTask::do_backfill_mds_()
+{
+  int ret = OB_SUCCESS;
+  ObTableHandleV2 mds_sstable;
+  common::ObArray<ObTableHandleV2> mds_sstable_array;
+  ObTableHandleV2 final_mds_sstable;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
+  } else {
+    SMART_VARS_2((compaction::ObTabletMergeDagParam, param), (compaction::ObTabletMergeCtx, tablet_merge_ctx, param, allocator_)) {
+      if (OB_FAIL(do_backfill_mds_table_(tablet_merge_ctx, mds_sstable))) {
+        LOG_WARN("failed to do backfill mds table", K(ret), K(ls_id_), K(tablet_info_));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(prepare_backfill_mds_sstables_(mds_sstable, mds_sstable_array))) {
+      LOG_WARN("failed to prepare backfill mds sstables", K(ret), K(ls_id_), K(tablet_info_));
+    } else if (mds_sstable_array.empty()) {
+      //allow mds sstable array empty, because tablet status will be filtered by transfer
+    } else if (OB_FAIL(do_backfill_mds_sstables_(mds_sstable_array, final_mds_sstable))) {
+      LOG_WARN("failed to do backfill mds sstables", K(ret), K(ls_id_), K(tablet_info_));
+    }
+  }
+  return ret;
+}
+
 //mds table means the mds data in memory
 int ObTabletMdsTableBackfillTXTask::do_backfill_mds_table_(
+    compaction::ObTabletMergeCtx &tablet_merge_ctx,
     ObTableHandleV2 &mds_sstable)
 {
   int ret = OB_SUCCESS;
@@ -1924,16 +2125,12 @@ int ObTabletMdsTableBackfillTXTask::do_backfill_mds_table_(
     LOG_WARN("tablet should not be NULL", K(ret), K(ls_id_), K(tablet_info_), K(tablet_handle_));
   } else if (tablet->get_mds_checkpoint_scn() >= backfill_tx_ctx_->backfill_scn_) {
     LOG_INFO("mds checkpoint is bigger than backfill scn, skip mds table backfill", KPC(tablet), KPC(backfill_tx_ctx_));
-  } else {
-    SMART_VARS_2((compaction::ObTabletMergeDagParam, param), (compaction::ObTabletMergeCtx, tablet_merge_ctx, param, allocator_)) {
-      if (OB_FAIL(prepare_mds_table_merge_ctx_(tablet_merge_ctx))) {
-        LOG_WARN("failed to prepare mds table merge ctx", K(ret));
-      } else if (OB_FAIL(build_mds_table_to_sstable_(tablet_merge_ctx, mds_sstable))) {
-        LOG_WARN("failed to build mds table to sstable", K(ret), K(tablet_merge_ctx), K(tablet_info_), K(ls_id_));
-        if (OB_EMPTY_RESULT == ret) {
-          ret = OB_SUCCESS;
-        }
-      }
+  } else if (OB_FAIL(prepare_mds_table_merge_ctx_(tablet_merge_ctx))) {
+    LOG_WARN("failed to prepare mds table merge ctx", K(ret));
+  } else if (OB_FAIL(build_mds_table_to_sstable_(tablet_merge_ctx, mds_sstable))) {
+    LOG_WARN("failed to build mds table to sstable", K(ret), K(tablet_merge_ctx), K(tablet_info_), K(ls_id_));
+    if (OB_EMPTY_RESULT == ret) {
+      ret = OB_SUCCESS;
     }
   }
   return ret;
@@ -1943,43 +2140,67 @@ int ObTabletMdsTableBackfillTXTask::prepare_mds_table_merge_ctx_(
     compaction::ObTabletMergeCtx &tablet_merge_ctx)
 {
   int ret = OB_SUCCESS;
-  ObLSService *ls_service = nullptr;
+  ObLS *ls = nullptr;
   compaction::ObTabletMergeDagParam param;
   compaction::ObStaticMergeParam &static_param = tablet_merge_ctx.static_param_;
   ObTablet *tablet = nullptr;
+  SCN max_decided_scn;
+  ObTabletCreateDeleteMdsUserData user_data;
+  const bool is_shared_storage = GCTX.is_shared_storage_mode();
+  int32_t private_transfer_epoch = -1;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
-  } else if (OB_ISNULL(ls_service = MTL(ObLSService*))) {
+  } else if (OB_FAIL(ha_dag_net_ctx_->get_src_ls_handle(static_param.ls_handle_))) {
+    LOG_WARN("failed to get dest ls handle", K(ret), KPC(ha_dag_net_ctx_));
+  } else if (OB_ISNULL(ls = static_param.ls_handle_.get_ls())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ObLSService from MTL", K(ret), KP(ls_service));
-  } else if (OB_FAIL(ls_service->get_ls(ls_id_, static_param.ls_handle_, ObLSGetMod::HA_MOD))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_));
+    LOG_WARN("ls should not be NULL", K(ret), KPC(ha_dag_net_ctx_));
   } else if (OB_ISNULL(tablet = tablet_handle_.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet should not be NULL", K(ret), K(ls_id_), K(tablet_info_), K(tablet_handle_));
+  } else if (OB_FAIL(ObTXTransferUtils::get_tablet_status(false/*get_commit*/, tablet, user_data))) {
+    LOG_WARN("failed to get tablet status", K(ret), KPC(ha_dag_net_ctx_), KPC(tablet));
+  } else if (tablet_info_.is_shared_storage_ && !user_data.start_transfer_commit_scn_.is_valid()) {
+    ret = OB_EAGAIN;
+    LOG_WARN("shared storage max decided scn should not smaller than backfill scn", K(ret),
+        K(tablet_info_), K(max_decided_scn), KPC(backfill_tx_ctx_));
+  } else if (OB_FAIL(tablet_merge_ctx.tablet_handle_.assign(tablet_handle_))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle_));
+  } else if (OB_FAIL(tablet->get_private_transfer_epoch(private_transfer_epoch))) {
+    LOG_WARN("failed to get private transfer epoch", K(ret), "tablet_meta", tablet->get_tablet_meta());
   } else {
+    // Shared storage will use START_TRANSFER_OUT commit_scn to dump mds sstable
+    // Because src tablet will put all mds data into shared-storage.
+    // Shared-nothing will use START_TRANSFER_OUT redo_scn to dump mds sstable
+    // Then put sstable into sstable cache area
+
+    const SCN real_scn = is_shared_storage && user_data.start_transfer_commit_scn_.is_valid_and_not_min() ?
+        user_data.start_transfer_commit_scn_ : backfill_tx_ctx_->backfill_scn_;
     // init tablet merge dag param
     static_param.dag_param_.ls_id_ = ls_id_;
     static_param.dag_param_.merge_type_ = compaction::ObMergeType::MDS_MINI_MERGE;
     static_param.dag_param_.tablet_id_ = tablet_info_.tablet_id_;
     static_param.pre_warm_param_.type_ = ObPreWarmerType::MEM_PRE_WARM;
     // init version range and sstable
-    tablet_merge_ctx.tablet_handle_ = tablet_handle_;
     static_param.scn_range_.start_scn_ = tablet->get_mds_checkpoint_scn();
-    static_param.scn_range_.end_scn_ = backfill_tx_ctx_->backfill_scn_;
-    static_param.version_range_.snapshot_version_ = backfill_tx_ctx_->backfill_scn_.get_val_for_tx();
+    static_param.scn_range_.end_scn_ = real_scn;
+    static_param.version_range_.snapshot_version_ = real_scn.get_val_for_tx();
     static_param.version_range_.multi_version_start_ = tablet_handle_.get_obj()->get_multi_version_start();
-    static_param.merge_scn_ = backfill_tx_ctx_->backfill_scn_;
+    static_param.merge_scn_ = real_scn;
     static_param.create_snapshot_version_ = 0;
+    //TODO(muwei): backfill need using same code with minor merge in 4.4.
     static_param.need_parallel_minor_merge_ = false;
     // double set insurance
-    static_param.tablet_transfer_seq_ = dest_transfer_seq_;
-    tablet_merge_ctx.static_desc_.tablet_transfer_seq_ = dest_transfer_seq_;
+    static_param.ls_rebuild_seq_ = ls->get_rebuild_seq();
+    static_param.private_transfer_epoch_ = private_transfer_epoch;
+    tablet_merge_ctx.static_desc_.private_transfer_epoch_ = private_transfer_epoch;
 
     if (OB_FAIL(tablet_merge_ctx.init_tablet_merge_info())) {
       LOG_WARN("failed to init tablet merge info", K(ret), K(ls_id_), K(tablet_info_), K(tablet_merge_ctx));
+    } else if (OB_FAIL(tablet->get_mds_table_rec_scn(static_param.rec_scn_))) {
+      LOG_WARN("fail to get mds table rec scn", K(ret), KPC(tablet));
     }
   }
   return ret;
@@ -1992,14 +2213,19 @@ int ObTabletMdsTableBackfillTXTask::build_mds_table_to_sstable_(
   int ret = OB_SUCCESS;
   table_handle.reset();
   const int64_t mds_construct_sequence = 0;
+  compaction::ObStaticMergeParam &static_param = tablet_merge_ctx.static_param_;
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
   } else {
-    ObCrossLSMdsMiniMergeOperator op(backfill_tx_ctx_->backfill_scn_);
+    const bool keep_original_tablet_status = tablet_info_.is_shared_storage_;
+    ObCrossLSMdsMiniMergeOperator op(static_param.scn_range_.end_scn_, keep_original_tablet_status);
     SMART_VAR(ObMdsTableMiniMerger, mds_mini_merger) {
-      if (OB_FAIL(mds_mini_merger.init(tablet_merge_ctx, op))) {
+      ObMacroSeqParam macro_seq_param;
+      if (OB_FAIL(ObMdsTableMiniMerger::prepare_macro_seq_param(tablet_merge_ctx, macro_seq_param))) {
+        LOG_WARN("prepare macro seq param failed", K(ret), K(macro_seq_param));
+      } else if (OB_FAIL(mds_mini_merger.init(macro_seq_param, tablet_merge_ctx, op))) {
         LOG_WARN("fail to init mds mini merger", K(ret), K(tablet_merge_ctx), K(ls_id_), K(tablet_info_));
       } else if (OB_FAIL(tablet_merge_ctx.get_tablet()->scan_mds_table_with_op(mds_construct_sequence, op))) {
         LOG_WARN("fail to scan mds table with op", K(ret), K(tablet_merge_ctx), K(ls_id_), K(tablet_info_));
@@ -2087,36 +2313,41 @@ int ObTabletMdsTableBackfillTXTask::prepare_mds_sstable_merge_ctx_(
     ObTabletCrossLSMdsMinorMergeCtx &tablet_merge_ctx)
 {
   int ret = OB_SUCCESS;
-  ObLSService *ls_service = nullptr;
   compaction::ObStaticMergeParam &static_param = tablet_merge_ctx.static_param_;
   bool unused_finish_flag = false;
-
+  ObTablet *tablet = nullptr;
+  int32_t private_transfer_epoch = -1;
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
   } else if (mds_sstable_array.empty()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("prepare mds sstable merge ctx get invalid argument", K(ret), K(mds_sstable_array));
-  } else if (OB_ISNULL(ls_service = MTL(ObLSService*))) {
+  } else if (OB_FAIL(ha_dag_net_ctx_->get_src_ls_handle(static_param.ls_handle_))) {
+    LOG_WARN("failed to get ls", K(ret), KPC(ha_dag_net_ctx_));
+  } else if (OB_FAIL(tablet_merge_ctx.tablet_handle_.assign(tablet_handle_))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle_));
+  } else if (OB_ISNULL(tablet = tablet_handle_.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ObLSService from MTL", K(ret), KP(ls_service));
-  } else if (OB_FAIL(ls_service->get_ls(ls_id_, static_param.ls_handle_, ObLSGetMod::HA_MOD))) {
-    LOG_WARN("failed to get ls", K(ret), K(ls_id_));
+    LOG_WARN("unexpected null tablet", K(ret), K(tablet));
+  } else if (OB_FAIL(tablet->get_private_transfer_epoch(private_transfer_epoch))) {
+    LOG_WARN("failed to get private transfer epoch", K(ret), "tablet_meta", tablet->get_tablet_meta());
   } else {
     // init tablet merge dag param
     static_param.dag_param_.ls_id_ = ls_id_;
     static_param.dag_param_.merge_type_ = compaction::ObMergeType::MDS_MINOR_MERGE;
     static_param.dag_param_.tablet_id_ = tablet_info_.tablet_id_;
     // init version range and sstable
-    tablet_merge_ctx.tablet_handle_ = tablet_handle_;
-    static_param.scn_range_.start_scn_ = mds_sstable_array.at(0).get_table()->get_start_scn();
+    static_param.scn_range_.start_scn_ = const_cast<ObITable*>(mds_sstable_array.at(0).get_table())->get_start_scn();
     static_param.scn_range_.end_scn_ = backfill_tx_ctx_->backfill_scn_;
     static_param.version_range_.snapshot_version_ = backfill_tx_ctx_->backfill_scn_.get_val_for_tx();
     static_param.version_range_.multi_version_start_ = tablet_handle_.get_obj()->get_multi_version_start();
     static_param.merge_scn_ = backfill_tx_ctx_->backfill_scn_;
     static_param.create_snapshot_version_ = 0;
     static_param.need_parallel_minor_merge_ = false;
-    static_param.tablet_transfer_seq_ = dest_transfer_seq_;
+    static_param.rec_scn_ = const_cast<ObITable *>(mds_sstable_array.at(0).get_table())->get_rec_scn();
+    static_param.private_transfer_epoch_ = private_transfer_epoch;
+
     if (OB_FAIL(tablet_merge_ctx.prepare_merge_tables(mds_sstable_array))) {
       LOG_WARN("failed to prepare merge tables", K(ret), K(mds_sstable_array));
     } else if (OB_FAIL(tablet_merge_ctx.prepare_schema())) {
@@ -2175,9 +2406,27 @@ int ObTabletMdsTableBackfillTXTask::update_merge_sstable_(
     compaction::ObTabletCrossLSMdsMinorMergeCtx &tablet_merge_ctx)
 {
   int ret = OB_SUCCESS;
+  bool skip_to_create_empty_cg = false; // placeholder
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet mds sstable table backfill tx task do not init", K(ret));
+  } else if (OB_FAIL(tablet_merge_ctx.merge_info_.create_sstable(
+      tablet_merge_ctx,
+      tablet_merge_ctx.merged_table_handle_,
+      skip_to_create_empty_cg))) {
+    LOG_WARN("fail to create sstable", K(ret), K(tablet_merge_ctx));
+  } else if (OB_FAIL(add_sstable_(tablet_merge_ctx.merged_table_handle_))) {
+    LOG_WARN("failed to add sstable", K(ret), K(tablet_info_), K(tablet_merge_ctx));
+  }
+  return ret;
+}
+
+int ObTabletMdsTableBackfillTXTask::add_sstable_(ObTableHandleV2 &sstable)
+{
+  int ret = OB_SUCCESS;
   ObLS *ls = nullptr;
   bool skip_to_create_empty_cg = false; // placeholder
-  compaction::ObStaticMergeParam &static_param = tablet_merge_ctx.static_param_;
   int64_t transfer_seq = 0;
   ObTabletHandle tablet_handle;
   ObTablet *tablet = nullptr;
@@ -2191,15 +2440,17 @@ int ObTabletMdsTableBackfillTXTask::update_merge_sstable_(
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet mds sstable table backfill tx task do not init", K(ret));
-  } else if (OB_ISNULL(ls = static_param.ls_handle_.get_ls())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("ls should not be NULL", K(ret), KP(ls), K(ls_id_));
+  } else if (!sstable.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("add sstable get invalid argument", K(ret));
+  } else if (OB_FAIL(ha_dag_net_ctx_->get_src_ls(ls))) {
+    LOG_WARN("failed to get ls", K(ret), KPC(ha_dag_net_ctx_));
   } else if (FALSE_IT(rebuild_seq = ls->get_ls_meta().get_rebuild_seq())) {
   } else if (OB_FAIL(ls->ha_get_tablet(tablet_info_.tablet_id_, tablet_handle))) {
-    LOG_WARN("failed to get tablet", K(ret), K(ls_id_), K(tablet_info_));
+    LOG_WARN("failed to get tablet", K(ret), KPC(ha_dag_net_ctx_), K(tablet_info_));
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("tablet should not be NULL", K(ret), K(ls_id_), K(tablet_info_), K(tablet_handle));
+    LOG_WARN("tablet should not be NULL", K(ret), KPC(ha_dag_net_ctx_), K(tablet_info_), K(tablet_handle));
   } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
     LOG_WARN("failed to get latest tablet status", K(ret), KP(tablet));
   } else if (FALSE_IT(transfer_start_scn = user_data.transfer_scn_)) {
@@ -2212,17 +2463,51 @@ int ObTabletMdsTableBackfillTXTask::update_merge_sstable_(
       ret = OB_EAGAIN;
       LOG_WARN("transfer start scn is invalid, may transfer transaction rollback, need retry", K(ret), K(tablet_info_), K(user_data));
     }
-  } else if (OB_FAIL(tablet_merge_ctx.merge_info_.create_sstable(
-      tablet_merge_ctx,
-      tablet_merge_ctx.merged_table_handle_,
-      skip_to_create_empty_cg))) {
-    LOG_WARN("fail to create sstable", K(ret), K(tablet_merge_ctx));
   } else if (OB_FAIL(tablets_table_mgr_->add_sstable(
-      tablet_info_.tablet_id_, rebuild_seq, transfer_start_scn, transfer_seq, tablet_merge_ctx.merged_table_handle_))) {
-    LOG_WARN("failed to add sstable", K(ret), K(ls_id_), K(tablet_info_), K(tablet_merge_ctx));
+      tablet_info_.tablet_id_, rebuild_seq, transfer_start_scn, transfer_seq, sstable))) {
+    LOG_WARN("failed to add sstable", K(ret), KPC(ha_dag_net_ctx_), K(tablet_info_), K(sstable));
   }
   return ret;
 }
+
+#ifdef OB_BUILD_SHARED_STORAGE
+int ObTabletMdsTableBackfillTXTask::do_ss_backfill_mds_()
+{
+  int ret = OB_SUCCESS;
+  ObTableHandleV2 mds_sstable;
+  ObLS *ls = nullptr;
+  ObSSTable *sstable = nullptr;
+  ObTabletHandle new_tablet_handle;
+  ObTransferBackfillTXBaseCtx *ctx = nullptr;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("tablet mds table backfill tx task do not init", K(ret));
+  } else if (OB_FAIL(ObTransferBackfillTXBaseCtx::convert_from_ha_ctx(ha_dag_net_ctx_, ctx))) {
+    LOG_WARN("failed to get transfer backfill tx base ctx", K(ret));
+  } else if (OB_FAIL(ctx->get_src_ls(ls))) {
+    LOG_WARN("failed to get src ls", K(ret), KPC(ctx));
+  } else {
+    SMART_VARS_2((compaction::ObTabletMergeDagParam, param), (compaction::ObTabletMergeCtx, tablet_merge_ctx, param, allocator_)) {
+      if (OB_FAIL(do_backfill_mds_table_(tablet_merge_ctx, mds_sstable))) {
+        LOG_WARN("failed to do backfill mds table", K(ret), K(ls_id_), K(tablet_info_));
+      } else if (!mds_sstable.is_valid()) {
+        //do nothing
+      } else if (OB_FAIL(mds_sstable.get_sstable(sstable))) {
+        LOG_WARN("failed to get sstable", K(ret), K(ls_id_), K(tablet_info_));
+      } else if (OB_FAIL(ls->build_new_tablet_from_mds_table(
+          tablet_merge_ctx,
+          tablet_info_.tablet_id_,
+          mds_sstable,
+          sstable->get_end_scn(),
+          new_tablet_handle))) {
+        LOG_WARN("failed to build new tablet from mds table", K(ret), K(tablet_info_), KPC(sstable));
+      }
+    }
+  }
+  return ret;
+}
+#endif
 
 /******************ObTabletBackfillMergeCtx*********************/
 ObTabletBackfillMergeCtx::ObTabletBackfillMergeCtx(
@@ -2232,7 +2517,8 @@ ObTabletBackfillMergeCtx::ObTabletBackfillMergeCtx(
     is_inited_(false),
     backfill_table_handle_(),
     backfill_scn_(),
-    ls_rebuild_seq_(0)
+    ls_rebuild_seq_(0),
+    dag_(NULL)
 
 {
 }
@@ -2242,25 +2528,35 @@ ObTabletBackfillMergeCtx::~ObTabletBackfillMergeCtx()
 }
 
 int ObTabletBackfillMergeCtx::init(
+    ObTabletBackfillTXDag *dag,
     const SCN &backfill_scn,
     const int64_t ls_rebuild_seq,
-    const int64_t dest_transfer_seq,
     ObTabletHandle &tablet_handle,
     storage::ObTableHandleV2 &backfill_table_handle)
 {
   int ret = OB_SUCCESS;
+  ObTablet *tablet = nullptr;
+  int32_t private_transfer_epoch = -1;
+
   if (is_inited_) {
     ret = OB_INIT_TWICE;
     LOG_WARN("tablet backfill merge ctx already init", K(ret));
-  } else if (!backfill_scn.is_valid() || !tablet_handle.is_valid() || !backfill_table_handle.is_valid() || ls_rebuild_seq < 0) {
+  } else if (OB_ISNULL(dag) || !backfill_scn.is_valid() || !tablet_handle.is_valid() || !backfill_table_handle.is_valid() || ls_rebuild_seq < 0) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("init tablet backfill merge ctx get invalid argument", K(ret), K(backfill_scn), K(tablet_handle), K(backfill_table_handle), K(ls_rebuild_seq));
+    LOG_WARN("init tablet backfill merge ctx get invalid argument", K(ret), KP(dag), K(backfill_scn), K(tablet_handle), K(backfill_table_handle), K(ls_rebuild_seq));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
+  } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null tablet", K(ret), K(tablet_handle));
+  } else if (OB_FAIL(tablet->get_private_transfer_epoch(private_transfer_epoch))) {
+    LOG_WARN("failed to get private transfer epoch", K(ret), "tablet_meta", tablet->get_tablet_meta());
   } else {
+    dag_ = dag;
     backfill_scn_ = backfill_scn;
-    tablet_handle_ = tablet_handle;
     backfill_table_handle_ = backfill_table_handle;
     ls_rebuild_seq_ = ls_rebuild_seq;
-    static_param_.tablet_transfer_seq_ = dest_transfer_seq;
+    static_param_.private_transfer_epoch_ = private_transfer_epoch;
     is_inited_ = true;
   }
   return ret;
@@ -2321,6 +2617,8 @@ int ObTabletBackfillMergeCtx::get_merge_tables(ObGetMergeTablesResult &get_merge
       // The freeze_snapshot_version represents that
       // all tx of the previous version has been committed.
       get_merge_table_result.scn_range_ = backfill_table_handle_.get_table()->get_key().scn_range_;
+      // backfill use the rec scn of origin sstable
+      get_merge_table_result.rec_scn_ = backfill_table_handle_.get_table()->get_rec_scn();
       get_merge_table_result.merge_version_ = ObVersionRange::MIN_VERSION;
       get_merge_table_result.is_backfill_ = true;
       get_merge_table_result.backfill_scn_ = backfill_scn_;
@@ -2331,8 +2629,13 @@ int ObTabletBackfillMergeCtx::get_merge_tables(ObGetMergeTablesResult &get_merge
       //snapshot_info is only for calculate multi version start, backfill will not change mulit version start
       get_merge_table_result.snapshot_info_.snapshot_type_ = ObStorageSnapshotInfo::SNAPSHOT_MULTI_VERSION_START_ON_TABLET;
       get_merge_table_result.snapshot_info_.snapshot_ = get_tablet()->get_multi_version_start();
-      //src_tablet_transfer_seq, should not be used to write block;
-      get_merge_table_result.transfer_seq_ = get_tablet()->get_transfer_seq();
+      //src_tablet_transfer_epoch, should not be used to write block;
+      if (OB_FAIL(get_tablet()->get_private_transfer_epoch(get_merge_table_result.private_transfer_epoch_))) {
+        LOG_WARN("Fail to get transfer epoch", K(ret), "tablet_meta", get_tablet()->get_tablet_meta());
+      } else if (OB_FAIL(get_tablet()->get_recycle_version(get_merge_table_result.version_range_.multi_version_start_,
+                                                    get_merge_table_result.version_range_.base_version_))) {
+        LOG_WARN("Fail to get table store recycle version", K(ret), K_(get_merge_table_result.version_range), KPC(get_tablet()));
+      }
     }
   }
   return ret;
@@ -2341,14 +2644,17 @@ int ObTabletBackfillMergeCtx::get_merge_tables(ObGetMergeTablesResult &get_merge
 int ObTabletBackfillMergeCtx::prepare_schema()
 {
   int ret = OB_SUCCESS;
+  ObStorageSchema *schema = nullptr;
   if (!is_inited_) {
     ret = OB_NOT_INIT;
     LOG_WARN("tablet backfill merge ctx do not init", K(ret));
-  } else if (OB_FAIL(get_storage_schema())) {
+  } else if (OB_FAIL(get_storage_schema(schema))) {
     LOG_WARN("failed to get storage schema from tablet", KR(ret));
   } else if (is_mini_merge(static_param_.dag_param_.merge_type_) && OB_FAIL(update_storage_schema_by_memtable(
-      *static_param_.schema_, static_param_.tables_handle_))) {
+      static_param_.tables_handle_, *schema))) {
     LOG_WARN("failed to update storage schema by memtable", KR(ret));
+  } else {
+    static_param_.schema_ = schema;
   }
   return ret;
 }
@@ -2368,6 +2674,154 @@ int ObTabletBackfillMergeCtx::cal_merge_param()
   }
   return ret;
 }
+
+ObDagPrio::ObDagPrioEnum ObTabletBackfillMergeCtx::get_dag_priority() const
+{
+  return OB_NOT_NULL(dag_) ? dag_->get_priority() : ObDagPrio::ObDagPrioEnum::DAG_PRIO_MAX;
+}
+
+
+/******************ObTabletIncMajorTableBackfillTXTask*********************/
+ObTabletIncMajorTableBackfillTXTask::ObTabletIncMajorTableBackfillTXTask()
+  : ObITask(TASK_TYPE_MIGRATE_PREPARE),
+    is_inited_(false),
+    backfill_tx_ctx_(nullptr),
+    ls_id_(),
+    tablet_info_(),
+    tablet_handle_(),
+    allocator_("IncBackfillTX"),
+    tablets_table_mgr_(nullptr)
+{
+}
+
+ObTabletIncMajorTableBackfillTXTask::~ObTabletIncMajorTableBackfillTXTask()
+{
+}
+
+int ObTabletIncMajorTableBackfillTXTask::init(
+    const share::ObLSID &ls_id,
+    const ObTabletBackfillInfo &tablet_info,
+    ObTabletHandle &tablet_handle)
+{
+  int ret = OB_SUCCESS;
+
+  if (IS_INIT) {
+    ret = OB_INIT_TWICE;
+    LOG_WARN("ObTabletIncMajorTableBackfillTXTask inited twice", K(ret), KPC(this));
+  } else if (OB_UNLIKELY(!ls_id.is_valid() || !tablet_info.is_valid() || !tablet_handle.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid argument", K(ret), K(ls_id), K(tablet_info), K(tablet_handle));
+  } else if (OB_UNLIKELY(ObDagType::DAG_TYPE_TABLET_BACKFILL_TX != this->get_dag()->get_type())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected dag type", K(ret), KPC(this));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet handle", K(ret));
+  } else {
+    ObTabletBackfillTXDag *tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
+    ls_id_ = ls_id;
+    backfill_tx_ctx_ = tablet_backfill_tx_dag->get_backfill_tx_ctx();
+    tablet_info_ = tablet_info;
+    tablets_table_mgr_ = tablet_backfill_tx_dag->get_backfill_tablets_table_mgr();
+    is_inited_ = true;
+  }
+  return ret;
+}
+
+int ObTabletIncMajorTableBackfillTXTask::process()
+{
+  int ret = OB_SUCCESS;
+  ObTablet *tablet = nullptr;
+  ObTabletMemberWrapper<ObTabletTableStore> wrapper;
+  ObTableStoreIterator table_store_iter;
+  ObLSHandle ls_handle;
+  int64_t rebuild_seq = 0;
+  ObTabletCreateDeleteMdsUserData user_data;
+  mds::MdsWriter writer;
+  mds::TwoPhaseCommitState trans_stat;
+  share::SCN trans_version;
+  SCN transfer_start_scn;
+  int64_t transfer_seq = 0;
+
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObTabletIncMajorTableBackfillTXTask not inited", K(ret));
+  } else if (OB_ISNULL(tablet = tablet_handle_.get_obj())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("tablet should not be NULL", K(ret), K(ls_id_), K(tablet_info_), K(tablet_handle_));
+  } else if (OB_FAIL(tablet->fetch_table_store(wrapper))) {
+    LOG_WARN("failed to get tablet table store", K(ret));
+  } else if (OB_FAIL(wrapper.get_member()->get_inc_major_sstables(table_store_iter))) {
+    LOG_WARN("failed to get inc major sstables", K(ret));
+  } else if (OB_UNLIKELY(0 == table_store_iter.count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected empty inc major iter", K(ret), K(wrapper));
+  } else if (OB_FAIL(MTL(ObLSService *)->get_ls(ls_id_, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+    LOG_WARN("failed to get ls", KR(ret), K(ls_id_));
+  } else if (FALSE_IT(rebuild_seq = ls_handle.get_ls()->get_ls_meta().get_rebuild_seq())) {
+  } else if (OB_FAIL(tablet->ObITabletMdsInterface::get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
+    LOG_WARN("failed to get latest tablet status", K(ret), KP(tablet));
+  } else if (FALSE_IT(transfer_start_scn = user_data.transfer_scn_)) {
+  } else if (FALSE_IT(transfer_seq = tablet->get_tablet_meta().transfer_info_.transfer_seq_)) {
+  } else if (!transfer_start_scn.is_valid()) {
+    if (tablet_info_.is_committed_) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("transfer transaction is committed but transfer start scn is invalid, unexpected", K(ret), K(tablet_info_), K(user_data));
+    } else {
+      ret = OB_EAGAIN;
+      LOG_WARN("transfer start scn is invalid, may transfer transaction rollback, need retry", K(ret), K(tablet_info_), K(user_data));
+    }
+  }
+
+  ObTableHandleV2 cur_table_hdl;
+  while (OB_SUCC(ret)) {
+    cur_table_hdl.reset();
+    ObSSTable *cur_table = nullptr;
+    int64_t commit_version = -1;
+    const SCN &backfill_scn = backfill_tx_ctx_->backfill_scn_;
+    bool need_backfill = true;
+    bool is_trans_abort = false;
+
+    if (OB_FAIL(table_store_iter.get_next(cur_table_hdl))) {
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;
+        break;
+      } else {
+        LOG_WARN("failed to get inc major table", K(ret));
+      }
+    } else if (OB_UNLIKELY(!cur_table_hdl.is_valid() || !cur_table_hdl.get_table()->is_inc_major_type_sstable())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected not valid table handle", K(ret));
+    } else if (OB_FAIL(ObTransferUtils::check_inc_major_backfill(ls_id_, backfill_scn, cur_table_hdl, need_backfill, is_trans_abort))) {
+      LOG_WARN("failed to check inc major backfill", K(ret), K(ls_id_), K(backfill_scn), K(cur_table_hdl));
+    } else if (is_trans_abort) {
+      continue;
+    } else if (!need_backfill) {
+      //do nothing
+    } else if (OB_FAIL(cur_table->backfill_commit_version(allocator_ /*placeholder*/, commit_version, backfill_scn))) {
+      LOG_WARN("failed to backfill commit version", K(ret), KPC(cur_table));
+    }
+
+    // will deep copy orig sstable by using inner allocator
+    if (FAILEDx(tablets_table_mgr_->add_sstable(tablet_info_.tablet_id_, rebuild_seq, transfer_start_scn, transfer_seq, cur_table_hdl))) {
+      LOG_WARN("failed to add inc sstable", K(ret));
+    }
+  }
+
+  if (OB_FAIL(ret)) {
+    int tmp_ret = OB_SUCCESS;
+    if (ObDagType::DAG_TYPE_TABLET_BACKFILL_TX != this->get_dag()->get_type()) {
+      tmp_ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected dag type", K(tmp_ret), KPC(this));
+    } else {
+      ObTabletBackfillTXDag *tablet_backfill_tx_dag = static_cast<ObTabletBackfillTXDag *>(this->get_dag());
+      if (OB_SUCCESS != (tmp_ret = tablet_backfill_tx_dag->set_result(ret))) {
+        LOG_WARN_RET(tmp_ret, "failed to set result", K(ret), K(ls_id_), K(tablet_info_));
+      }
+    }
+  }
+  return ret;
+}
+
 
 }
 }

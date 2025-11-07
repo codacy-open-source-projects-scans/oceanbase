@@ -25,7 +25,11 @@ namespace blocksstable
 class ObBatchDatumRows
 {
 public:
-  ObBatchDatumRows() : row_count_(0) {}
+  ObBatchDatumRows()
+    : row_count_(0)
+  {
+    vectors_.set_tenant_id(MTL_ID());
+  }
   ~ObBatchDatumRows() {}
   void reset();
 
@@ -37,6 +41,7 @@ public:
   // convert vectors_ to datum_row at row idx = idx
   // performance is low, use it in performance non sensitive position
   int to_datum_row(int64_t idx, ObDatumRow &datum_row) const;
+  int shadow_copy(const ObBatchDatumRows &other);
 
 public:
   ObDmlRowFlag row_flag_;

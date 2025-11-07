@@ -11,13 +11,8 @@
  */
 
 #define USING_LOG_PREFIX SHARE
-#include "share/transfer/ob_transfer_info.h"
-#include "share/schema/ob_schema_struct.h"  // ObBasePartition
-#include "lib/profile/ob_trace_id.h"        // TraceId
-#include "storage/tablelock/ob_table_lock_rpc_struct.h" // ObLockObjRequest
-#include "lib/mysqlclient/ob_mysql_transaction.h" // ObMysqlTransaction
+#include "ob_transfer_info.h"
 #include "observer/ob_inner_sql_connection.h" // ObInnerSQLConnection
-#include "share/ob_share_util.h" // ObShareUtil
 #include "storage/tablelock/ob_lock_inner_connection_util.h" // ObInnerConnectionLockUtil
 
 using namespace oceanbase;
@@ -381,6 +376,14 @@ int ObTransferPartInfo::to_display_str(char *buf, const int64_t len, int64_t &po
   return ret;
 }
 
+int ObTransferPartInfo::hash(uint64_t &hash_val) const
+{
+  hash_val = 0;
+  hash_val = murmurhash(&table_id_, sizeof(table_id_), hash_val);
+  hash_val = murmurhash(&part_object_id_, sizeof(part_object_id_), hash_val);
+  return OB_SUCCESS;
+}
+
 bool ObTransferPartInfo::operator==(const ObTransferPartInfo &other) const
 {
   return other.table_id_ == table_id_
@@ -425,6 +428,9 @@ static const char* TRANSFER_TASK_COMMENT_ARRAY[] =
   "Unable to process task due to inactive server in member list",
   "Wait to retry due to the last failure",
   "Wait for tenant major compaction to end",
+  "Wait for learner list to be same",
+  "Unable to process task due to all partitions being locked",
+  "Unable to process task due to partitions being locked or non-existent",
   "Unknow"/*MAX_COMMENT*/
 };
 

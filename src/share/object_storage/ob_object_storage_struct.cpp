@@ -11,16 +11,10 @@
  */
 
 #define USING_LOG_PREFIX SHARE
-#include "share/object_storage/ob_object_storage_struct.h"
-#include "common/ob_record_header.h"
-#include "lib/restore/ob_storage_oss_base.h"
+#include "ob_object_storage_struct.h"
 #include "rootserver/ob_root_service.h"
-#include "share/config/ob_server_config.h"
-#include "share/ob_rpc_struct.h"
 #include "share/object_storage/ob_zone_storage_table_operation.h"
-#include "share/schema/ob_multi_version_schema_service.h"
 #include "share/object_storage/ob_device_config_mgr.h"
-#include "share/object_storage/ob_device_connectivity.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_ss_format_util.h"
 #endif
@@ -161,10 +155,10 @@ int ObStorageDestCheck::get_bucket_path(const ObString &uri, ObString &bucket_pa
   } else {
     if (OB_STORAGE_OSS == type) {
       bucket_start = static_cast<ObString::obstr_size_t>(strlen(OB_OSS_PREFIX));
-    } else if (OB_STORAGE_COS == type) {
-      bucket_start = static_cast<ObString::obstr_size_t>(strlen(OB_COS_PREFIX));
     } else if (OB_STORAGE_S3 == type) {
       bucket_start = static_cast<ObString::obstr_size_t>(strlen(OB_S3_PREFIX));
+    } else if (OB_STORAGE_AZBLOB == type) {
+      bucket_start = static_cast<ObString::obstr_size_t>(strlen(OB_AZBLOB_PREFIX));
     } else {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("the storage type is not supported in shared storage mode", KR(ret), K(uri));
@@ -483,6 +477,49 @@ bool ObStorageDestAttr::is_valid() const
          (0 != strlen(endpoint_) && 0 != strlen(authorization_));
 }
 
+int ObStorageDestAttr::change_checksum_type(const ObStorageChecksumType &checksum_type)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(checksum_type >= OB_STORAGE_CHECKSUM_MAX_TYPE)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid checksum type", KR(ret), K(checksum_type));
+  } else {
+    const char *new_checksum_type_str = get_storage_checksum_type_str(checksum_type);
+    const char *checksum_type_str_start = STRCASESTR(extension_, CHECKSUM_TYPE);
+    const int64_t add_len = STRLEN(CHECKSUM_TYPE) + STRLEN(new_checksum_type_str);
+
+    if (nullptr != checksum_type_str_start) {
+      int64_t pos = checksum_type_str_start - extension_;
+      const char *next_token_start = STRCHR(checksum_type_str_start, '&');
+      if (next_token_start == nullptr) {
+        if (pos > 0) {
+          extension_[pos - 1] = '\0';
+        } else {
+          extension_[pos] = '\0';
+        }
+      } else {
+        memmove(extension_ + pos, next_token_start + 1, STRLEN(next_token_start + 1) + 1);
+      }
+    }
+
+    int64_t pos = STRLEN(extension_);
+    if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(pos + add_len + (pos > 0 ? 1 : 0) >= OB_MAX_BACKUP_EXTENSION_LENGTH)) {
+      ret = OB_SIZE_OVERFLOW;
+      LOG_WARN("added extension is too long", KR(ret), K(extension_), K(pos), K(add_len));
+    } else if (pos > 0) {
+      if (OB_FAIL(databuff_printf(extension_, OB_MAX_BACKUP_EXTENSION_LENGTH, pos, "&"))) {
+        LOG_WARN("failed to add delimiter", KR(ret), K(extension_), K(pos));
+      }
+    }
+
+    if (FAILEDx(databuff_printf(extension_, OB_MAX_BACKUP_EXTENSION_LENGTH, pos, "%s%s", CHECKSUM_TYPE, new_checksum_type_str))) {
+      LOG_WARN("failed to change extension", KR(ret), K(extension_), K(pos), K(add_len));
+    }
+  }
+  return ret;
+}
+
 OB_SERIALIZE_MEMBER(ObZoneStorageTableInfo, dest_attr_, state_, used_for_, storage_id_, op_id_,
                     sub_op_id_, zone_, max_iops_, max_bandwidth_);
 void ObZoneStorageTableInfo::reset()
@@ -532,11 +569,11 @@ bool ObDeviceConfig::is_valid() const
   if ((STRLEN(used_for_) <= 0) || (STRLEN(path_) <= 0)
       || (STRLEN(state_) <= 0) || (create_timestamp_ < 0)
       || (last_check_timestamp_ < 0)
-      || (UINT64_MAX == op_id_)
-      || (UINT64_MAX == sub_op_id_)
-      || (UINT64_MAX == storage_id_)
-      || (max_iops_ < 0)
-      || (max_bandwidth_ < 0)) {
+      || (OB_DEVICE_CONF_MGR.is_shared_storage_dump_manifest() && (UINT64_MAX == op_id_))
+      || (OB_DEVICE_CONF_MGR.is_shared_storage_dump_manifest() && (UINT64_MAX == sub_op_id_))
+      || (OB_DEVICE_CONF_MGR.is_shared_storage_dump_manifest() && (UINT64_MAX == storage_id_))
+      || (OB_DEVICE_CONF_MGR.is_shared_storage_dump_manifest() && (max_iops_ < 0))
+      || (OB_DEVICE_CONF_MGR.is_shared_storage_dump_manifest() && (max_bandwidth_ < 0))) {
     bool_ret = false;
   } else {
     if (ObString(path_).prefix_match(OB_FILE_PREFIX)) {

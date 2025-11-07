@@ -12,17 +12,9 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/px/p2p_datahub/ob_runtime_filter_msg.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_proxy.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_process.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_msg.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_mgr.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_proxy.h"
-#include "sql/engine/expr/ob_expr_join_filter.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
-#include "sql/engine/ob_operator.h"
 #include "share/detect/ob_detect_manager_utils.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "sql/engine/basic/ob_pushdown_filter.h"
 #include "sql/engine/join/hash_join/ob_hash_join_vec_op.h"
 
 using namespace oceanbase::common;
@@ -318,7 +310,6 @@ int ObRFBloomFilterMsg::reuse()
   int ret = OB_SUCCESS;
   is_empty_ = true;
   bloom_filter_.reset_filter();
-  need_send_msg_ = true;
   is_active_ = true;
   return ret;
 }
@@ -1073,15 +1064,13 @@ int ObRFBloomFilterMsg::broadcast(ObIArray<ObAddr> &target_addrs,
   ObPxP2PDatahubArg arg;
 
   arg.msg_ = &msg;
-  while (!create_finish_ && need_send_msg_ && OB_SUCC(ret)) {
+  while (!create_finish_ && OB_SUCC(ret)) {
     if (OB_FAIL(THIS_WORKER.check_status())) {
       LOG_WARN("fail to check status", K(ret));
     }
     ob_usleep(10);
   }
   if (OB_FAIL(ret)) {
-  } else if (!need_send_msg_) {
-    // when drain_exch, not need to send msg
   } else if (OB_FAIL(msg.shadow_copy(*this))) {
     LOG_WARN("fail to shadow copy second phase msg", K(ret));
   } else {

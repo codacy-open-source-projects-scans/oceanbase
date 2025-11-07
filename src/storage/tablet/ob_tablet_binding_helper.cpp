@@ -12,21 +12,9 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/tablet/ob_tablet_binding_helper.h"
+#include "ob_tablet_binding_helper.h"
 #include "storage/tablet/ob_tablet_binding_replay_executor.h"
-#include "lib/ob_abort.h"
-#include "lib/lock/ob_tc_rwlock.h"
-#include "lib/utility/ob_unify_serialize.h"
-#include "share/ob_rpc_struct.h"
 #include "share/tablet/ob_tablet_to_ls_operator.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/memtable/ob_memtable.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/multi_data_source/mds_ctx.h"
-#include "storage/tablet/ob_tablet_common.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
-#include "storage/tx/ob_trans_define.h"
-#include "storage/tx_storage/ob_ls_handle.h"
 #include "storage/tx_storage/ob_ls_service.h"
 
 using namespace oceanbase::obrpc;
@@ -47,7 +35,8 @@ ObBatchUnbindTabletArg::ObBatchUnbindTabletArg()
     schema_version_(OB_INVALID_VERSION),
     orig_tablet_ids_(),
     hidden_tablet_ids_(),
-    is_old_mds_(false)
+    is_old_mds_(false),
+    is_write_defensive_(false)
 {
 }
 
@@ -63,6 +52,7 @@ int ObBatchUnbindTabletArg::assign(const ObBatchUnbindTabletArg &other)
     ls_id_ = other.ls_id_;
     schema_version_ = other.schema_version_;
     is_old_mds_ = other.is_old_mds_;
+    is_write_defensive_ = other.is_write_defensive_;
   }
   return ret;
 }
@@ -128,14 +118,14 @@ int ObBatchUnbindTabletArg::is_old_mds(const char *buf,
 OB_DEF_SERIALIZE(ObBatchUnbindTabletArg)
 {
   int ret = OB_SUCCESS;
-  LST_DO_CODE(OB_UNIS_ENCODE, tenant_id_, ls_id_, schema_version_, orig_tablet_ids_, hidden_tablet_ids_, is_old_mds_);
+  LST_DO_CODE(OB_UNIS_ENCODE, tenant_id_, ls_id_, schema_version_, orig_tablet_ids_, hidden_tablet_ids_, is_old_mds_, is_write_defensive_);
   return ret;
 }
 
 OB_DEF_SERIALIZE_SIZE(ObBatchUnbindTabletArg)
 {
   int len = 0;
-  LST_DO_CODE(OB_UNIS_ADD_LEN, tenant_id_, ls_id_, schema_version_, orig_tablet_ids_, hidden_tablet_ids_, is_old_mds_);
+  LST_DO_CODE(OB_UNIS_ADD_LEN, tenant_id_, ls_id_, schema_version_, orig_tablet_ids_, hidden_tablet_ids_, is_old_mds_, is_write_defensive_);
   return len;
 }
 
@@ -150,8 +140,30 @@ OB_DEF_DESERIALIZE(ObBatchUnbindTabletArg)
       LST_DO_CODE(OB_UNIS_DECODE, is_old_mds_);
     }
   }
+  LST_DO_CODE(OB_UNIS_DECODE, is_write_defensive_);
   return ret;
 }
+
+ObBatchUnbindLobTabletArg::ObBatchUnbindLobTabletArg()
+  : tenant_id_(OB_INVALID_ID),
+    ls_id_(),
+    data_tablet_ids_()
+{
+}
+
+int ObBatchUnbindLobTabletArg::assign(const ObBatchUnbindLobTabletArg &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(data_tablet_ids_.assign(other.data_tablet_ids_))) {
+    LOG_WARN("failed to assign data tablet ids", K(ret));
+  } else {
+    tenant_id_ = other.tenant_id_;
+    ls_id_ = other.ls_id_;
+  }
+  return ret;
+}
+
+OB_SERIALIZE_MEMBER(ObBatchUnbindLobTabletArg, tenant_id_, ls_id_, data_tablet_ids_);
 
 int ObTabletBindingHelper::get_ls(const ObLSID &ls_id, ObLSHandle &ls_handle)
 {
@@ -323,6 +335,34 @@ int ObTabletBindingHelper::bind_lob_tablet_to_data_tablet(
   return modify_tablet_binding_new_mds(ls, info.data_tablet_id_, replay_scn, ctx, arg.is_old_mds_, op);
 }
 
+int ObTabletBindingHelper::build_single_table_write_defensive(
+    const ObTableSchema &table_schema,
+    const int64_t schema_version,
+    rootserver::ObDDLSQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!table_schema.is_valid() || schema_version <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("argument is invalid", K(ret), K(table_schema), K(schema_version));
+  }
+  ObArray<ObTabletID> tablet_ids;
+  const uint64_t tenant_id = table_schema.get_tenant_id();
+  int64_t timeout_us = 0;
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(table_schema.get_tablet_ids(tablet_ids))) {
+    LOG_WARN("invalid args", KR(ret), K(table_schema), K(tablet_ids));
+  } else if (OB_FAIL(ObDDLUtil::get_ddl_rpc_timeout(tablet_ids.count(), timeout_us))) {
+    LOG_WARN("failed to get ddl rpc timeout", K(ret), K(tablet_ids.count()));
+  } else if (OB_FAIL(ObTabletBindingMdsHelper::modify_tablet_binding_for_write_defensive(tenant_id,
+                                                                                         tablet_ids,
+                                                                                         schema_version,
+                                                                                         ObTimeUtility::current_time() + timeout_us,
+                                                                                         trans))) {
+    LOG_WARN("fail to modify tablet binding for write defensive", K(ret));
+  }
+  return ret;
+}
+
 // TODO (lihongqin.lhq) Separate the code of replay
 template<typename F>
 int ObTabletBindingHelper::modify_tablet_binding_new_mds(
@@ -485,6 +525,14 @@ int ObSetRwDefensiveOp::operator()(ObTabletBindingMdsUserData &data)
   int ret = OB_SUCCESS;
   data.redefined_ = false;
   data.snapshot_version_ = OB_INVALID_VERSION; // will be fill back on commit
+  data.schema_version_ = schema_version_;
+  return ret;
+};
+
+int ObSetWriteDefensiveOp::operator()(ObTabletBindingMdsUserData &data)
+{
+  int ret = OB_SUCCESS;
+  data.redefined_ = false;
   data.schema_version_ = schema_version_;
   return ret;
 };
@@ -831,6 +879,24 @@ int ObTabletBindingMdsHelper::modify_tablet_binding_for_rw_defensive(
   return ret;
 }
 
+int ObTabletBindingMdsHelper::modify_tablet_binding_for_write_defensive(
+    const uint64_t tenant_id,
+    const ObIArray<ObTabletID> &tablet_ids,
+    const int64_t schema_version,
+    const int64_t abs_timeout_us,
+    ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  ObSetWriteDefensiveOp op(schema_version);
+  if (OB_UNLIKELY(OB_INVALID_VERSION == schema_version)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(ret), K(tenant_id), K(schema_version), K(tablet_ids));
+  } else if (OB_FAIL(modify_tablet_binding_(tenant_id, tablet_ids, abs_timeout_us, op, trans))) {
+    LOG_WARN("failed to modify tablet binding", K(ret));
+  }
+  return ret;
+}
+
 template<typename F>
 int ObTabletBindingMdsHelper::modify_tablet_binding_(
     const uint64_t tenant_id,
@@ -1019,6 +1085,55 @@ int ObTabletBindingMdsHelper::set_tablet_binding_mds_(
         LOG_WARN("failed to replay tablet binding log", K(ret));
       }
     }
+  }
+  return ret;
+}
+
+int ObTabletUnbindLobMdsHelper::modify_tablet_binding_for_unbind_lob_(const ObBatchUnbindLobTabletArg &arg, const share::SCN &replay_scn, mds::BufferCtx &ctx)
+{
+  int ret = OB_SUCCESS;
+  ObLSHandle ls_handle;
+  if (OB_FAIL(ObTabletBindingHelper::get_ls(arg.ls_id_, ls_handle))) {
+    LOG_WARN("failed to get ls", K(ret));
+  } else {
+    ObLS &ls = *ls_handle.get_ls();
+    for (int64_t i = 0; OB_SUCC(ret) && i < arg.data_tablet_ids_.count(); i++) {
+      const ObTabletID &data_tablet_id = arg.data_tablet_ids_.at(i);
+      if (OB_FAIL(ObTabletBindingHelper::modify_tablet_binding_new_mds(ls, data_tablet_id,
+              replay_scn, ctx, false, ClearLobTabletId()))) {
+        LOG_WARN("failed to modify tablet binding", K(ret), K(data_tablet_id));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTabletUnbindLobMdsHelper::on_register(const char* buf, const int64_t len, mds::BufferCtx &ctx)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  ObBatchUnbindLobTabletArg arg;
+  if (OB_FAIL(arg.deserialize(buf, len, pos))) {
+    LOG_WARN("failed to deserialize arg", K(ret));
+  } else if (OB_FAIL(modify_tablet_binding_for_unbind_lob_(arg, SCN::invalid_scn(), ctx))) {
+    LOG_WARN("failed to modify_tablet_binding_for_unbind_lob", K(ret));
+  } else {
+    LOG_INFO("register unbind lob success", K(arg), K(ctx));
+  }
+  return ret;
+}
+
+int ObTabletUnbindLobMdsHelper::on_replay(const char* buf, const int64_t len, const share::SCN &scn, mds::BufferCtx &ctx)
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  ObBatchUnbindLobTabletArg arg;
+  if (OB_FAIL(arg.deserialize(buf, len, pos))) {
+    LOG_WARN("failed to deserialize arg", K(ret));
+  } else if (OB_FAIL(modify_tablet_binding_for_unbind_lob_(arg, scn, ctx))) {
+    LOG_WARN("failed to modify_tablet_binding_for_unbind_lob", K(ret));
+  } else {
+    LOG_INFO("replay unbind lob success", K(arg), K(ctx));
   }
   return ret;
 }

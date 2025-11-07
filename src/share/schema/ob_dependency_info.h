@@ -132,7 +132,8 @@ public:
                                              uint64_t dep_obj_id,
                                              int64_t schema_version,
                                              share::schema::ObObjectType dep_obj_type);
-
+  static int remove_duplicated_dep_infos(ObIArray<ObDependencyInfo> &deps,
+                                        ObIArray<ObDependencyInfo> &source_deps);
   static int collect_dep_info(ObIArray<ObDependencyInfo> &deps,
                               ObObjectType dep_obj_type,
                               int64_t ref_obj_id,
@@ -169,6 +170,8 @@ public:
                              int64_t &create_time,
                              common::ObString &ref_obj_name);
   int gen_dependency_dml(const uint64_t exec_tenant_id, oceanbase::share::ObDMLSqlSplicer &dml);
+  int get_timestamp_str(int64_t timestamp, ObSqlString &value_str);
+  int get_insert_value_str(ObSqlString &value_str);
 
   static int collect_ref_infos(uint64_t tenant_id,
                                uint64_t dep_obj_id,
@@ -211,6 +214,12 @@ public:
                                    uint64_t tenant_id,
                                    rootserver::ObDDLOperator &ddl_operator,
                                    share::schema::ObMultiVersionSchemaService &schema_service);
+
+  static int insert_dependency_infos(common::ObMySQLTransaction &trans,
+                              common::ObIArray<share::schema::ObDependencyInfo> &dep_infos,
+                              uint64_t tenant_id,
+                              uint64_t dep_obj_id,
+                              uint64_t schema_version, uint64_t owner_id);
 
   TO_STRING_KV(K_(tenant_id),
                K_(dep_obj_id),

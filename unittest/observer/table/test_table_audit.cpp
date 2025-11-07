@@ -13,7 +13,6 @@
 #include <gtest/gtest.h>
 #define private public  // 获取private成员
 #define protected public  // 获取protect成员
-#include "share/table/ob_table.h"
 #include "observer/table/ob_table_filter.h"
 
 using namespace oceanbase::common;
@@ -720,7 +719,7 @@ TEST_F(TestTableAudit, ObTableAuditMultiOp)
   int64_t pos = 0;
   ObTableOperationType::Type op_type = ObTableOperationType::Type::INSERT;
   ObSEArray<ObTableOperation, 8> ops;
-  ObTableAuditMultiOp multi_op(op_type, ops);
+  ObTableAuditMultiOp multi_op(op_type, &ops);
   // test1: empty table name
   ObString table_name = ObString::make_empty_string();
   ASSERT_EQ(OB_SUCCESS, multi_op.generate_stmt(table_name, buf, buf_len, pos));

@@ -46,6 +46,7 @@ struct ObIOFd
   bool is_backup_block_file() const;
   void reset();
   uint64_t hash() const;
+  int hash(uint64_t &hash_val) const { hash_val = hash(); return OB_SUCCESS; }
   bool operator == (const ObIOFd& other) const
   {
     return other.first_id_ == this->first_id_ && other.second_id_ == this->second_id_ && other.third_id_ == this->third_id_
@@ -182,7 +183,8 @@ private:
 enum ObIOCBType : uint8_t
 {
   IOCB_TYPE_LOCAL = 0,
-  IOCB_TYPE_LOCAL_CACHE = 1
+  IOCB_TYPE_LOCAL_CACHE = 1,
+  IOCB_TYPE_OBJECT_DEVICE = 2
 };
 
 class ObIOCB
@@ -212,7 +214,8 @@ public:
 enum ObIOEventsType : uint8_t
 {
   IO_EVENTS_TYPE_LOCAL = 0,
-  IO_EVENTS_TYPE_LOCAL_CACHE = 1
+  IO_EVENTS_TYPE_LOCAL_CACHE = 1,
+  IO_EVENTS_TYPE_OBJECT_DEVICE = 2
 };
 
 class ObIOEvents
@@ -360,6 +363,7 @@ public:
   virtual int init(const ObIODOpts &opts) = 0;
   virtual int reconfig(const ObIODOpts &opts) = 0;
   virtual int get_config(ObIODOpts &opts) = 0;
+  int get_device_name(char *buf, int32_t len);
   virtual void destroy() = 0;
 
   virtual int start(const ObIODOpts &opts) = 0;
@@ -504,9 +508,10 @@ public:
   OB_INLINE bool is_object_device() const
   {
     return (ObStorageType::OB_STORAGE_OSS == device_type_)
-           || (ObStorageType::OB_STORAGE_COS == device_type_)
            || (ObStorageType::OB_STORAGE_S3 == device_type_)
-           || (ObStorageType::OB_STORAGE_FILE == device_type_);
+           || (ObStorageType::OB_STORAGE_FILE == device_type_)
+           || (ObStorageType::OB_STORAGE_AZBLOB == device_type_)
+           || (ObStorageType::OB_STORAGE_HDFS == device_type_);
   }
 
   OB_INLINE bool is_local_device() const
@@ -514,7 +519,12 @@ public:
     return (ObStorageType::OB_STORAGE_LOCAL == device_type_);
   }
 
-  int get_io_aligned_size(int64_t &aligned_size) const;
+  virtual bool should_limit_net_bandwidth() const
+  {
+    return false;
+  }
+
+  virtual int64_t get_io_aligned_size() const = 0;
   TO_STRING_KV(K_(device_type), K_(media_id), K_(ref_cnt));
 
 public:

@@ -41,8 +41,10 @@ bool ObSortVecOpProvider::is_basic_cmp_type(VecValueTypeClass vec_tc)
     case VEC_TC_INTEGER:
     case VEC_TC_UINTEGER:
     case VEC_TC_DATE:
+    case VEC_TC_MYSQL_DATE:
     case VEC_TC_TIME:
     case VEC_TC_DATETIME:
+    case VEC_TC_MYSQL_DATETIME:
     case VEC_TC_YEAR:
     case VEC_TC_BIT:
     case VEC_TC_ENUM_SET:
@@ -76,9 +78,12 @@ int ObSortVecOpProvider::decide_sort_key_type(ObSortVecOpContext &ctx)
   }
   if (!ctx.enable_encode_sortkey_) {
     is_basic_cmp_ = true;
-    for (int64_t i = 0; is_basic_cmp_ && i < ctx.sk_exprs_->count(); i++) {
-      VecValueTypeClass vec_tc = ctx.sk_exprs_->at(i)->get_vec_value_tc();
+    is_str_cmp_ = true;
+    for (int64_t i = 0; is_basic_cmp_ && i < ctx.sk_collations_->count(); i++) {
+      ObExpr *expr = ctx.sk_exprs_->at(ctx.sk_collations_->at(i).field_idx_);
+      VecValueTypeClass vec_tc = expr->get_vec_value_tc();
       is_basic_cmp_ = is_basic_cmp_type(vec_tc);
+      is_str_cmp_ &= (vec_tc == VEC_TC_STRING);
     }
   }
   return ret;
@@ -100,10 +105,25 @@ int ObSortVecOpProvider::alloc_sort_impl_instance(ObISortVecOpImpl *&sort_op_imp
 }
 
 template <ObSortVecOpProvider::SortType sort_type, ObSortVecOpProvider::SortKeyType sk_type, bool has_addon>
-int ObSortVecOpProvider::init_sort_impl_instance(ObISortVecOpImpl *&sort_op_impl)
+int ObSortVecOpProvider::init_sort_impl_instance(ObSortVecOpContext &ctx, ObISortVecOpImpl *&sort_op_impl)
 {
   int ret = OB_SUCCESS;
-  if (is_basic_cmp_) {
+  // fast compare for sysbench scenario specialization.
+  if (ctx.enable_single_col_compare_ && (is_basic_cmp_ || is_str_cmp_)) {
+    if (is_basic_cmp_) {
+      if (OB_SUCCESS
+          != (ret = alloc_sort_impl_instance<RTSingleColSortImplType<sk_type, true>>(
+                sort_op_impl))) {
+        LOG_WARN("failed to alloc sort impl instance", K(ret));
+      }
+    } else {
+      if (OB_SUCCESS
+          != (ret = alloc_sort_impl_instance<RTSingleColSortImplType<sk_type, false>>(
+                sort_op_impl))) {
+        LOG_WARN("failed to alloc sort impl instance", K(ret));
+      }
+    }
+  } else if (is_basic_cmp_) {
     if (OB_SUCCESS
         != (ret = alloc_sort_impl_instance<RTSortImplType<sort_type, true, sk_type, has_addon>>(
               sort_op_impl))) {
@@ -123,11 +143,11 @@ int ObSortVecOpProvider::init_sort_impl(ObSortVecOpContext &ctx, ObISortVecOpImp
 #define INIT_SORT_IMPL_INSTANCE(sort_type, sk_type, has_addon)                                     \
   do {                                                                                             \
     if (has_addon) {                                                                               \
-      if (OB_SUCCESS != (ret = init_sort_impl_instance<sort_type, sk_type, true>(sort_op_impl))) { \
+      if (OB_SUCCESS != (ret = init_sort_impl_instance<sort_type, sk_type, true>(ctx, sort_op_impl))) { \
         LOG_WARN("failed to init sort impl instance", K(ret));                                     \
       }                                                                                            \
     } else {                                                                                       \
-      if (OB_SUCCESS != (ret = init_sort_impl_instance<sort_type, sk_type, false>(sort_op_impl))) {\
+      if (OB_SUCCESS != (ret = init_sort_impl_instance<sort_type, sk_type, false>(ctx, sort_op_impl))) {\
         LOG_WARN("failed to init sort impl instance", K(ret));                                     \
       }                                                                                            \
     }                                                                                              \
@@ -202,6 +222,19 @@ int ObSortVecOpProvider::add_batch(const ObBatchRows &input_brs, bool &sort_need
 {
   check_status();
   return sort_op_impl_->add_batch(input_brs, sort_need_dump);
+}
+
+int ObSortVecOpProvider::add_batch(const ObBatchRows &input_brs, const uint16_t selector[],
+                                   const int64_t size)
+{
+  check_status();
+  return sort_op_impl_->add_batch(input_brs, selector, size);
+}
+
+int ObSortVecOpProvider::rewind()
+{
+  check_status();
+  return sort_op_impl_->rewind();
 }
 
 int ObSortVecOpProvider::get_next_batch(const int64_t max_cnt, int64_t &read_rows)

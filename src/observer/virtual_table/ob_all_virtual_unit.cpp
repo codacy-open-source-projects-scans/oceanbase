@@ -12,12 +12,8 @@
 
 #include "observer/virtual_table/ob_all_virtual_unit.h"
 #include "observer/ob_server.h"
-#include "observer/omt/ob_tenant_meta.h"
-#include "observer/omt/ob_multi_tenant.h" 
 #include "observer/omt/ob_tenant.h"
-#include "share/ob_unit_getter.h"
 #include "logservice/ob_log_service.h"
-#include "share/ob_server_struct.h"  // GCTX
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_disk_space_manager.h"
 #endif
@@ -260,7 +256,7 @@ int ObAllVirtualUnit::inner_get_next_row(ObNewRow *&row)
         }
         case DATA_DISK_SIZE: {
           if (GCTX.is_shared_storage_mode()) {
-            cur_row_.cells_[i].set_int(tenant_meta.unit_.config_.data_disk_size());
+            cur_row_.cells_[i].set_int(tenant_meta.unit_.get_effective_actual_data_disk_size());
           } else {
             cur_row_.cells_[i].set_null();
           }
@@ -273,7 +269,7 @@ int ObAllVirtualUnit::inner_get_next_row(ObNewRow *&row)
             // shared_storage mode
             MTL_SWITCH(tenant_meta.unit_.tenant_id_) {
               ObTenantDiskSpaceManager *disk_space_mgr = nullptr;
-              if (OB_ISNULL(disk_space_mgr = MTL(ObTenantDiskSpaceManager*))) {
+              if (OB_ISNULL(disk_space_mgr = MTL(ObTenantDiskSpaceManager *))) {
                 ret = OB_ERR_UNEXPECTED;
                 SERVER_LOG(WARN, "tenant disk space manager is null", KR(ret), KP(disk_space_mgr));
               } else if (OB_FAIL(disk_space_mgr->get_used_disk_size(data_disk_in_use))) {
@@ -321,6 +317,9 @@ int ObAllVirtualUnit::inner_get_next_row(ObNewRow *&row)
         }
         case CREATE_TIME:
           cur_row_.cells_[i].set_int(tenant_meta.unit_.create_timestamp_);
+          break;
+        case REPLICA_TYPE:
+          cur_row_.cells_[i].set_int(tenant_meta.unit_.replica_type_);
           break;
         default: {
           ret = OB_ERR_UNEXPECTED;

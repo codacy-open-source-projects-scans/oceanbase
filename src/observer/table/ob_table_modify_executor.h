@@ -83,7 +83,8 @@ public:
   int init_related_das_rtdef(const sql::DASDMLCtDefArray &das_ctdefs,
                              sql::DASDMLRtDefArray &das_rtdefs);
   int calc_local_tablet_loc(sql::ObDASTabletLoc *&tablet_loc);
-  int calc_tablet_loc(ObExpr *calc_part_id_expr,
+  int calc_tablet_loc(bool is_primary_index,
+                      ObExpr *calc_part_id_expr,
                       ObDASTableLoc &table_loc,
                       ObDASTabletLoc *&tablet_loc);
   // only use for replace and ttl executor
@@ -95,6 +96,10 @@ public:
   OB_INLINE int64_t get_affected_rows() const { return affected_rows_; }
   int get_affected_entity(ObITableEntity *&entity);
 protected:
+  int copy_heap_table_hidden_pk(const ObChunkDatumStore::StoredRow *old_row,
+                                ObChunkDatumStore::StoredRow *new_row);
+  int set_heap_table_hidden_pk(const ObTableInsCtDef &ins_ctdef,
+                               const common::ObTabletID &tablet_id);
   int generate_ins_rtdef(const ObTableInsCtDef &ins_ctdef,
                          ObTableInsRtDef &ins_rtdef);
   int generate_del_rtdef(const ObTableDelCtDef &del_ctdef,

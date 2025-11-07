@@ -15,25 +15,14 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include <gtest/gtest.h>
 #include <gmock/gmock.h>
 
 #define protected public
 #define private public
 
 #include "storage/schema_utils.h"
-#include "storage/ob_storage_schema.h"
-#include "storage/blocksstable/ob_sstable_meta.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/meta_mem/ob_meta_obj_struct.h"
-#include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
-#include "storage/tablet/ob_tablet_meta.h"
-#include "storage/tablet/ob_tablet_table_store.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "storage/test_dml_common.h"
 #include "storage/backup/ob_backup_extern_info_mgr.h"
-#include "share/backup/ob_backup_io_adapter.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share;
@@ -175,7 +164,7 @@ void TestLSTabletInfoWR::fill_tablet_meta()
   ret = src_handle.get_obj()->init_for_first_time_creation(arena_allocator_, src_key.ls_id_, src_key.tablet_id_, src_key.tablet_id_,
       scn, 2022, create_tablet_schema, true/*need_create_empty_major_sstable*/, share::SCN::invalid_scn()/*clog_checkpoint_scn*/,
       share::SCN::invalid_scn()/*mds_checkpoint_scn*/, false/*is_split_dest_tablet*/, ObTabletID()/*split_src_tablet_id*/,
-      false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, ls_handle.get_ls()->get_freezer());
+      false/*micro_index_clustered*/, false/*need_generate_cs_replica_cg_array*/, false/*has_cs_replica*/, DATA_VERSION_4_3_0_0, ls_handle.get_ls()->get_freezer());
   ASSERT_EQ(common::OB_SUCCESS, ret);
 
   share::SCN create_commit_scn;

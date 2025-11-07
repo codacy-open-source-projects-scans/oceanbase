@@ -11,19 +11,12 @@
  */
 #define USING_LOG_PREFIX STORAGETEST
 
-#include <gtest/gtest.h>
-#include <sys/stat.h>
-#include <sys/vfs.h>
-#include <sys/types.h>
 #include <gmock/gmock.h>
 #define protected public
 #define private public
 #include "mittest/mtlenv/mock_tenant_module_env.h"
-#include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
-#include "storage/shared_storage/prewarm/ob_ha_prewarm_struct.h"
 #include "mittest/shared_storage/clean_residual_data.h"
-#include "test_ss_common_util.h"
-#include "storage/ls/ob_ls.h"
+#include "mittest/shared_storage/test_ss_common_util.h"
 #include "unittest/storage/init_basic_struct.h"
 #undef private
 #undef protected
@@ -53,7 +46,6 @@ public:
                           ObIArray<ObSSMicroBlockCacheKey> &micro_keys);
   void generate_micro_keys_not_in_cache(const int64_t micro_num,
                                         ObIArray<ObSSMicroBlockCacheKey> &micro_keys);
-
 public:
   ObLS *ls_;
 };
@@ -82,7 +74,7 @@ void TestSSHAPrewarmStruct::SetUp()
   micro_cache->destroy();
   ASSERT_EQ(OB_SUCCESS, micro_cache->init(MTL_ID(), (1L << 30)));
   micro_cache->start();
-  micro_cache->task_runner_.release_cache_task_.reorganize_op_.enable_reorganize_ = false;
+  micro_cache->task_runner_.release_cache_task_.reorganize_op_.is_enabled_ = false;
 }
 
 void TestSSHAPrewarmStruct::TearDown()
@@ -129,14 +121,15 @@ void TestSSHAPrewarmStruct::generate_phy_block(
   ObSSMicroCache *micro_cache = MTL(ObSSMicroCache *);
   ASSERT_NE(nullptr, micro_cache);
   ObSSPhysicalBlockManager &phy_blk_mgr = micro_cache->phy_blk_mgr_;
-  ObSSMemDataManager &mem_data_mgr = micro_cache->mem_data_mgr_;
-  ObSSPersistMicroDataTask &persist_task = micro_cache->task_runner_.persist_task_;
-  const int64_t available_block_cnt = phy_blk_mgr.get_free_normal_block_cnt();
+  ObSSMemBlockManager &mem_blk_mgr = micro_cache->mem_blk_mgr_;
+  ObSSPersistMicroDataTask &persist_data_task = micro_cache->task_runner_.persist_data_task_;
+  const int64_t available_block_cnt = phy_blk_mgr.blk_cnt_info_.micro_data_blk_max_cnt();
   ASSERT_LT(write_blk_cnt, available_block_cnt);
   const int32_t micro_cnt = 20;
-  const int64_t block_size = micro_cache->phy_block_size_;
-  const int64_t payload_offset = ObSSPhyBlockCommonHeader::get_serialize_size() +
-                                 ObSSNormalPhyBlockHeader::get_fixed_serialize_size();
+  const int64_t block_size = micro_cache->phy_blk_size_;
+  ObSSPhyBlockCommonHeader common_header;
+  ObSSMicroDataBlockHeader data_blk_header;
+  const int64_t payload_offset = common_header.get_serialize_size() + data_blk_header.get_serialize_size();
   const int32_t micro_size = (block_size - payload_offset) / micro_cnt
                              - (sizeof(ObSSMicroBlockIndex) + SS_SERIALIZE_EXTRA_BUF_LEN);
   ObArenaAllocator allocator;
@@ -163,13 +156,14 @@ void TestSSHAPrewarmStruct::generate_phy_block(
       micro_key.micro_id_.offset_ = offset;
       micro_key.micro_id_.size_ = micro_size;
       micro_cache->add_micro_block_cache(micro_key, data_buf, micro_size,
+                                         macro_id.second_id()/*effective_tablet_id*/,
                                          ObSSMicroCacheAccessType::COMMON_IO_TYPE);
       ASSERT_EQ(OB_SUCCESS, micro_keys.push_back(micro_key));
     }
-    ASSERT_NE(nullptr, mem_data_mgr.fg_mem_block_);
-    ASSERT_EQ(micro_cnt, mem_data_mgr.fg_mem_block_->micro_count_);
-    ASSERT_EQ(micro_size * micro_cnt, mem_data_mgr.fg_mem_block_->data_size_);
-    ASSERT_EQ(micro_size * micro_cnt, mem_data_mgr.fg_mem_block_->valid_val_);
+    ASSERT_NE(nullptr, mem_blk_mgr.fg_mem_blk_);
+    ASSERT_EQ(micro_cnt, mem_blk_mgr.fg_mem_blk_->micro_cnt_);
+    ASSERT_EQ(micro_size * micro_cnt, mem_blk_mgr.fg_mem_blk_->total_data_size_);
+    ASSERT_EQ(micro_size * micro_cnt, mem_blk_mgr.fg_mem_blk_->valid_val_);
     ASSERT_EQ(OB_SUCCESS, TestSSCommonUtil::wait_for_persist_task());
   }
 
@@ -196,7 +190,7 @@ TEST_F(TestSSHAPrewarmStruct, test_producer)
   int ret = OB_SUCCESS;
   ObArray<ObSSMicroBlockCacheKey> micro_keys;
 
-  const ObLSID ls_id(100);
+  const ObLSID ls_id(1001);
   create_ls(ls_id);
 
   // generate phy_block of @ls_id into micro_cache_file
@@ -209,7 +203,7 @@ TEST_F(TestSSHAPrewarmStruct, test_producer)
 
   const int64_t split_count = 2;
   ObArray<ObSSPhyBlockIdxRange> block_ranges;
-  ASSERT_EQ(OB_SUCCESS, phy_blk_mgr.divide_normal_used_block_range(ls_id, split_count, block_ranges));
+  ASSERT_EQ(OB_SUCCESS, phy_blk_mgr.divide_cache_data_block_range(ls_id, split_count, block_ranges));
   ASSERT_EQ(split_count, block_ranges.count());
 
   ObArray<ObMigrationCacheJobInfo> job_infos;
@@ -220,11 +214,11 @@ TEST_F(TestSSHAPrewarmStruct, test_producer)
   }
 
   for (int64_t i = 0; i < split_count; ++i) {
-    ObArray<ObCopyMicroBlockKeySet> key_sets;
+    ObArray<ObCopyMicroPrewarmMetaSet> key_sets;
     ObCopyMicroBlockKeySetProducer key_set_producer;
     ASSERT_EQ(OB_SUCCESS, key_set_producer.init(job_infos.at(i), ls_id));
     while (OB_SUCC(ret)) {
-      ObCopyMicroBlockKeySet key_set;
+      ObCopyMicroPrewarmMetaSet key_set;
       ret = key_set_producer.get_next_micro_block_key_set(key_set);
       if (OB_ITER_END == ret) {
         ASSERT_LT(0, key_sets.count());
@@ -233,17 +227,17 @@ TEST_F(TestSSHAPrewarmStruct, test_producer)
         break;
       } else {
         ASSERT_EQ(OB_SUCCESS, ret);
-        if (!key_set.micro_block_key_metas_.empty()) {
+        if (!key_set.micro_prewarm_metas_.empty()) {
           ASSERT_EQ(OB_SUCCESS, key_sets.push_back(key_set));
         }
       }
     }
 
-    ObArray<ObArray<ObSSMicroBlockCacheKeyMeta>> key_meta_arrs;
+    ObArray<ObArray<ObSSMicroPrewarmMeta>> key_meta_arrs;
     ObCopyMicroBlockDataProducer data_producer;
     ASSERT_EQ(OB_SUCCESS, data_producer.init(key_sets));
     while (OB_SUCC(ret)) {
-      ObArray<ObSSMicroBlockCacheKeyMeta> key_meta_arr;
+      ObArray<ObSSMicroPrewarmMeta> key_meta_arr;
       ObBufferReader data;
       ret = data_producer.get_next_micro_block_data(key_meta_arr, data);
       if (OB_ITER_END == ret) {
@@ -277,27 +271,29 @@ TEST_F(TestSSHAPrewarmStruct, test_get_not_exist_micro_blocks)
 
   ObSSMicroCache *micro_cache = MTL(ObSSMicroCache *);
   ASSERT_NE(nullptr, micro_cache);
-  ObArray<ObSSMicroBlockCacheKeyMeta> not_exist_micro_blocks;
-  ObArray<ObSSMicroBlockCacheKeyMeta> micro_key_metas_in_cache;
+  ObArray<ObSSMicroPrewarmMeta> not_exist_micro_blocks;
+  ObArray<ObSSMicroPrewarmMeta> micro_key_metas_in_cache;
   const int64_t micro_key_in_cache_cnt = micro_keys_in_cache.count();
   for (int64_t i = 0; i < micro_key_in_cache_cnt; ++i) {
-    ObSSMicroSnapshotInfo micro_snapshot_info;
-    ObSSCacheHitType hit_type;
+    ObSSMicroBlockMetaInfo micro_meta_info;
+    ObSSMicroCacheHitType hit_type;
     ASSERT_EQ(OB_SUCCESS, micro_cache->check_micro_block_exist(micro_keys_in_cache.at(i),
-                                                               micro_snapshot_info, hit_type));
-    ObSSMicroBlockCacheKeyMeta micro_key_meta(micro_keys_in_cache.at(i), micro_snapshot_info.crc_,
-                                              micro_snapshot_info.size_, micro_snapshot_info.is_in_l1_);
+                                                               micro_meta_info, hit_type));
+    ObSSMicroPrewarmMeta micro_key_meta(micro_keys_in_cache.at(i),
+                                        micro_meta_info.effective_tablet_id_, micro_meta_info.crc_,
+                                        micro_meta_info.size_, micro_meta_info.is_in_l1_);
     ASSERT_EQ(OB_SUCCESS, micro_key_metas_in_cache.push_back(micro_key_meta));
   }
   ASSERT_EQ(OB_SUCCESS, micro_cache->get_not_exist_micro_blocks(micro_key_metas_in_cache, not_exist_micro_blocks));
   ASSERT_EQ(0, not_exist_micro_blocks.count());
 
   not_exist_micro_blocks.reuse();
-  ObArray<ObSSMicroBlockCacheKeyMeta> micro_key_metas_not_in_cache;
+  ObArray<ObSSMicroPrewarmMeta> micro_key_metas_not_in_cache;
   const int64_t micro_key_not_in_cache_cnt = micro_keys_not_in_cache.count();
   for (int64_t i = 0; i < micro_key_not_in_cache_cnt; ++i) {
-    ObSSMicroBlockCacheKeyMeta micro_key_meta(micro_keys_not_in_cache.at(i), 0/*data_crc*/,
-                                              4096/*data_size*/, false/*is_in_l1*/);
+    ObSSMicroPrewarmMeta micro_key_meta(micro_keys_not_in_cache.at(i),
+                                        ObTabletID::INVALID_TABLET_ID, 0/*data_crc*/,
+                                        4096/*data_size*/, false/*is_in_l1*/);
     ASSERT_EQ(OB_SUCCESS, micro_key_metas_not_in_cache.push_back(micro_key_meta));
   }
   ASSERT_EQ(OB_SUCCESS, micro_cache->get_not_exist_micro_blocks(micro_key_metas_not_in_cache, not_exist_micro_blocks));

@@ -11,16 +11,10 @@
  */
 
 #define USING_LOG_PREFIX STORAGE
-#include "storage/ob_i_table.h"
-#include "share/ob_force_print_log.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/blocksstable/ob_storage_cache_suite.h"
-#include "storage/memtable/ob_memtable.h"
+#include "ob_i_table.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 #include "storage/tablelock/ob_lock_memtable.h"
 #include "storage/tx_table/ob_tx_ctx_memtable.h"
-#include "storage/tx_table/ob_tx_data_memtable.h"
-#include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/ddl/ob_tablet_ddl_kv.h"
 
 using namespace oceanbase;
@@ -36,7 +30,8 @@ ObITable::TableKey::TableKey()
     tablet_id_(),
     scn_range_(),
     column_group_idx_(0),
-    table_type_(ObITable::MAX_TABLE_TYPE)
+    table_type_(ObITable::MAX_TABLE_TYPE),
+    slice_range_()
 {
 }
 
@@ -47,6 +42,7 @@ void ObITable::TableKey::reset()
   scn_range_.reset();
   column_group_idx_ = 0;
   table_type_ = ObITable::MAX_TABLE_TYPE;
+  slice_range_.reset();
 }
 
 const char* ObITable::table_type_name_[] =
@@ -79,7 +75,19 @@ const char* ObITable::table_type_name_[] =
   "DDL_MEM_MINI_SSTABLE",
   "MDS_MINI",
   "MDS_MINOR",
-  "MICRO_MINI_SSTABLE"
+  "MICRO_MINI_SSTABLE",
+  "INC_MAJOR_SSTABLE",
+  "INC_COLUMN_ORIENTED_SSTABLE",
+  "INC_NORMAL_COLUMN_GROUP_SSTABLE",
+  "INC_ROWKEY_COLUMN_GROUP_SSTABLE",
+  "INC_MAJOR_DDL_DUMP",
+  "INC_MAJOR_DDL_MERGE_CO",
+  "INC_MAJOR_DDL_MERGE_CG",
+  "INC_MAJOR_DDL_MEM_CO",
+  "INC_MAJOR_DDL_MEM_CG",
+  "INC_MAJOR_DDL_MEM",
+  "INC_MAJOR_DDL_AGGREGATE_CO",
+  "INC_MAJOR_DDL_AGGREGATE_CG"
 };
 
 uint64_t ObITable::TableKey::hash() const
@@ -87,6 +95,7 @@ uint64_t ObITable::TableKey::hash() const
   uint64_t hash_value = 0;
   hash_value = common::murmurhash(&table_type_, sizeof(table_type_), hash_value);
   hash_value = common::murmurhash(&column_group_idx_, sizeof(table_type_), hash_value);
+  hash_value = common::murmurhash(&slice_range_, sizeof(slice_range_), hash_value);
   hash_value += tablet_id_.hash();
   if (is_table_with_scn_range()) {
     hash_value += scn_range_.hash();
@@ -97,11 +106,17 @@ uint64_t ObITable::TableKey::hash() const
 }
 
 OB_SERIALIZE_MEMBER(
+    ObITable::SliceRange,
+    start_slice_idx_,
+    end_slice_idx_);
+
+OB_SERIALIZE_MEMBER(
     ObITable::TableKey,
     tablet_id_,
     scn_range_,
     column_group_idx_,
-    table_type_);
+    table_type_,
+    slice_range_);
 
 OB_SERIALIZE_MEMBER(ObITable, key_);
 
@@ -138,49 +153,6 @@ int ObITable::safe_to_destroy(bool &is_safe)
 {
   is_safe = true;
   return OB_SUCCESS;
-}
-
-int ObITable::exist(
-    ObStoreCtx &ctx,
-    const uint64_t table_id,
-    const storage::ObITableReadInfo &read_info,
-    const blocksstable::ObDatumRowkey &rowkey,
-    bool &is_exist,
-    bool &has_found)
-{
-  UNUSED(ctx);
-  UNUSED(table_id);
-  UNUSED(read_info);
-  UNUSED(rowkey);
-  is_exist = false;
-  has_found = false;
-  return common::OB_NOT_SUPPORTED;
-}
-
-int ObITable::exist(
-    const ObTableIterParam &param,
-    ObTableAccessContext &context,
-    const blocksstable::ObDatumRowkey &rowkey,
-    bool &is_exist,
-    bool &has_found)
-{
-  UNUSED(param);
-  UNUSED(context);
-  UNUSED(rowkey);
-  is_exist = false;
-  has_found = false;
-  return common::OB_NOT_SUPPORTED;
-}
-
-int ObITable::exist(
-    ObRowsInfo &rows_info,
-    bool &is_exist,
-    bool &has_found)
-{
-  UNUSED(rows_info);
-  is_exist = false;
-  has_found = false;
-  return common::OB_NOT_SUPPORTED;
 }
 
 int64_t ObITable::to_string(char *buf, const int64_t buf_len) const
@@ -812,6 +784,16 @@ int ObTablesHandleArray::get_tables(common::ObIArray<ObITable *> &tables) const
   return ret;
 }
 
+int ObTablesHandleArray::get_table_handles(common::ObIArray<ObTableHandleV2> &table_handles) const
+{
+  int ret = OB_SUCCESS;
+  table_handles.reset();
+  if (OB_FAIL(table_handles.assign(handles_array_))) {
+    STORAGE_LOG(WARN, "failed to assign table handles", K(ret));
+  }
+  return ret;
+}
+
 int ObTablesHandleArray::get_first_memtable(ObIMemtable *&memtable) const
 {
   int ret = OB_SUCCESS;
@@ -824,6 +806,16 @@ int ObTablesHandleArray::get_first_memtable(ObIMemtable *&memtable) const
   }
   if (OB_SUCC(ret) && OB_ISNULL(memtable)) {
     ret = OB_ENTRY_NOT_EXIST;
+  }
+  return ret;
+}
+
+int ObTablesHandleArray::get_inc_major_tables(common::ObIArray<ObITable *> &tables) const
+{
+  int ret = OB_SUCCESS;
+  tables.reset();
+  if (OB_FAIL(get_sstable_with_type_(ObITable::is_inc_major_type_sstable, tables))) {
+    STORAGE_LOG(WARN, "failed to get inc major sstable", K(ret));
   }
   return ret;
 }
@@ -905,9 +897,8 @@ int ObTablesHandleArray::check_continues(const share::ObScnRange *scn_range) con
   int ret = OB_SUCCESS;
 
   if (!handles_array_.empty()) {
-    // 1:check major sstable
+    // 1. check major sstable
     // there can only be one major or meta merge
-    const ObITable *last_table = nullptr;
     const ObITable *table = nullptr;
     SCN base_end_scn = SCN::min_scn();
     int64_t i = 0;
@@ -917,21 +908,36 @@ int ObTablesHandleArray::check_continues(const share::ObScnRange *scn_range) con
     } else if (table->is_major_sstable()) {
       i++;
     }
-    // 2:check minor sstable
+
+    // 2. check inc major sstable
+    const ObITable *last_table = nullptr;
     for ( ; OB_SUCC(ret) && i < handles_array_.count(); ++i) {
       table = handles_array_.at(i).get_table();
-      if (OB_ISNULL(table)) {
+      if (OB_UNLIKELY(nullptr == table || table->is_major_sstable())) {
         ret = OB_ERR_SYS;
-        LOG_WARN("table is NULL", KPC(table));
-      } else if (table->is_major_sstable()) {
+        LOG_WARN("get unexpected table", KPC(table));
+      } else if (!table->is_inc_major_type_sstable()) {
+        break;
+      } else if (OB_ISNULL(last_table)) {
+        // meet first inc major table, no need to check
+      } else if (table->get_start_scn() < last_table->get_end_scn()) {
+        ret = OB_LOG_ID_RANGE_NOT_CONTINUOUS;
+        LOG_WARN("inc major range not continuous", K(ret), KPC(table), KPC(last_table));
+      }
+      last_table = table;
+    }
+
+    // 3. check minor sstable
+    last_table = nullptr;
+    for ( ; OB_SUCC(ret) && i < handles_array_.count(); ++i) {
+      table = handles_array_.at(i).get_table();
+      if (OB_UNLIKELY(nullptr == table || table->is_major_sstable() || table->is_inc_major_type_sstable())) {
         ret = OB_ERR_SYS;
-        LOG_WARN("major sstable or meta merge should be first", K(ret), K(i), K(table));
+        LOG_WARN("get unexpected table", KPC(table));
       } else if (OB_ISNULL(last_table)) { // first table
-        if (OB_NOT_NULL(scn_range)
-            && table->get_start_scn() > scn_range->start_scn_) {
+        if (OB_NOT_NULL(scn_range) && table->get_start_scn() > scn_range->start_scn_) {
           ret = OB_LOG_ID_RANGE_NOT_CONTINUOUS;
-          LOG_WARN("first minor sstable don't match the scn_range::start_log_ts", K(ret),
-              KPC(scn_range), K(i), K(*this));
+          LOG_WARN("first minor sstable don't match the scn_range::start_log_ts", K(ret), KPC(scn_range), K(i), K(*this));
         } else if (table->get_end_scn() <= base_end_scn) {
           ret = OB_LOG_ID_RANGE_NOT_CONTINUOUS;
           LOG_WARN("Unexpected end log ts of first minor sstable", K(ret), K(base_end_scn), K(i), K(*this));

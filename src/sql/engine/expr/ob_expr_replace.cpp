@@ -14,16 +14,10 @@
 
 #include "sql/engine/expr/ob_expr_replace.h"
 
-#include <limits.h>
-#include <string.h>
 
-#include "lib/oblog/ob_log.h"
-#include "share/object/ob_obj_cast.h"
-#include "share/ob_compatibility_control.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/engine/expr/ob_expr_result_type_util.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/engine/ob_exec_context.h"
+#include "lib/charset/ob_charset_string_helper.h"
 
 namespace oceanbase
 {
@@ -99,7 +93,12 @@ int ObExprReplace::calc_result_typeN(ObExprResType &type,
       if (param_num == 2 || types_array[2].is_null() || types_array[2].get_calc_length() == 0) {
         // do nothing
       } else {
-        OX(result_len *= types_array[2].get_calc_length());
+        if (OB_SUCC(ret)) {
+          result_len *= types_array[2].get_calc_length();
+          if (result_len > OB_MAX_LONGTEXT_LENGTH) {
+            result_len = OB_MAX_LONGTEXT_LENGTH;
+          }
+        }
         if (OB_SUCC(ret) && (type.is_nchar() || type.is_nvarchar2())) {
           const ObCharsetInfo *cs = ObCharset::get_charset(type.get_collation_type());
           result_len = result_len * cs->mbmaxlen;

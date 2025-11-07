@@ -32,16 +32,17 @@ int ObCGScanner::init(
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("The ObCGScanner has been inited", K(ret));
-  } else if (OB_UNLIKELY(!wrapper.is_valid() || !wrapper.get_sstable()->is_major_or_ddl_merge_sstable() ||
-                         !iter_param.is_valid())) {
+  } else if (OB_UNLIKELY(!wrapper.is_valid()
+                     || !wrapper.get_sstable()->is_major_or_ddl_merge_sstable()
+                     || !iter_param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument to init ObCGScanner", K(ret), K(wrapper), K(iter_param));
   } else if (FALSE_IT(table_wrapper_ = wrapper)) {
   } else if (OB_FAIL(table_wrapper_.get_loaded_column_store_sstable(sstable_))) {
     LOG_WARN("fail to get sstable", K(ret), K(wrapper));
-  } else if (OB_UNLIKELY(!sstable_->is_normal_cg_sstable())) {
+  } else if (OB_UNLIKELY(!sstable_->is_normal_cg_sstable() && !sstable_->is_all_cg_base())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpected not normal cg sstable", K(ret), KPC_(sstable));
+    LOG_WARN("Unexpected sstable", K(ret), KPC_(sstable));
   } else if (OB_FAIL(prefetcher_.init(get_type(), *sstable_, iter_param, access_ctx))) {
     LOG_WARN("fail to init prefetcher, ", K(ret));
   } else if (OB_FAIL(table_wrapper_.get_merge_row_cnt(iter_param, data_row_cnt))) {
@@ -72,16 +73,18 @@ int ObCGScanner::switch_context(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("The ObCGScanner is not inited");
-  } else if (OB_UNLIKELY(!wrapper.is_valid() || !wrapper.get_sstable()->is_major_or_ddl_merge_sstable() ||
-                         !iter_param.is_valid())) {
+
+  } else if (OB_UNLIKELY(!wrapper.is_valid()
+                     || !wrapper.get_sstable()->is_major_or_ddl_merge_sstable()
+                     || !iter_param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(wrapper), K(iter_param));
   } else if (FALSE_IT(table_wrapper_ = wrapper)) {
   } else if (OB_FAIL(table_wrapper_.get_loaded_column_store_sstable(sstable_))) {
     LOG_WARN("fail to get sstable", K(ret), K(wrapper));
-  } else if (OB_UNLIKELY(!sstable_->is_normal_cg_sstable())) {
+  } else if (OB_UNLIKELY(!sstable_->is_normal_cg_sstable() && !sstable_->is_all_cg_base())) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpected not normal cg sstable", K(ret), KPC_(sstable));
+    LOG_WARN("Unexpected sstable", K(ret), KPC_(sstable));
   } else {
     int64_t data_row_cnt = 0;
     if (!prefetcher_.is_valid()) {
@@ -133,12 +136,6 @@ void ObCGScanner::reuse()
   sstable_row_cnt_ = OB_INVALID_CS_ROW_ID;
 }
 
-bool ObCGScanner::start_of_scan() const
-{
-  return (is_reverse_scan_ && current_ == query_index_range_.end_row_id_) ||
-      (!is_reverse_scan_ && current_ == query_index_range_.start_row_id_);
-}
-
 bool ObCGScanner::end_of_scan() const
 {
   return current_ < query_index_range_.start_row_id_
@@ -183,7 +180,7 @@ int ObCGScanner::locate(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(range));
   } else if (range.start_row_id_ >= sstable_row_cnt_) {
-    ret = OB_ITER_END;
+    current_ = OB_INVALID_CS_ROW_ID;
   } else {
     is_new_range_ = true;
     query_index_range_.start_row_id_ = range.start_row_id_;
@@ -216,7 +213,7 @@ int ObCGScanner::locate(
   return ret;
 }
 
-int ObCGScanner::open_cur_data_block()
+int ObCGScanner::open_cur_data_block(bool blockscan)
 {
   int ret = OB_SUCCESS;
   if (prefetcher_.cur_micro_data_fetch_idx_ < 0 ||
@@ -260,8 +257,10 @@ int ObCGScanner::open_cur_data_block()
           current_ = MAX(cs_range.start_row_id_, query_index_range_.start_row_id_);
         }
         access_ctx_->inc_micro_access_cnt();
-        EVENT_INC(ObStatEventIds::BLOCKSCAN_BLOCK_CNT);
-        ++access_ctx_->table_store_stat_.pushdown_micro_access_cnt_;
+        REALTIME_MONITOR_ADD_SSSTORE_READ_BYTES(access_ctx_, micro_scanner_->get_data_length());
+        if (blockscan) {
+          ++access_ctx_->table_store_stat_.pushdown_micro_access_cnt_;
+        }
         LOG_TRACE("[COLUMNSTORE] open data block", "row_range", cs_range);
         LOG_DEBUG("Success to open micro block", K(ret), K(prefetcher_.cur_micro_data_fetch_idx_),
                   K(micro_info), K(micro_handle), KPC(this), K(common::lbt()));
@@ -384,7 +383,7 @@ int ObCGScanner::get_next_valid_block(sql::ObPushdownFilterExecutor *parent,
             LOG_WARN("Fail to set bitmap batch", K(ret), K(row_range));
           } else if (parent && parent->is_enable_reorder() && filter_info.disable_bypass_) {
             filter_info.filter_->get_filter_realtime_statistics().add_filtered_row_cnt(count);
-            filter_info.filter_->get_filter_realtime_statistics().add_skip_index_skip_mb_cnt(1);
+            filter_info.filter_->get_filter_realtime_statistics().add_skip_index_skip_block_cnt(1);
           }
         } else if (index_info.is_filter_always_true()) {
           if (OB_FAIL(result_bitmap.set_bitmap_batch(
@@ -395,7 +394,7 @@ int ObCGScanner::get_next_valid_block(sql::ObPushdownFilterExecutor *parent,
             LOG_WARN("Fail to set bitmap batch", K(ret), K(row_range));
           } else if (parent && parent->is_enable_reorder() && filter_info.disable_bypass_) {
             filter_info.filter_->get_filter_realtime_statistics().add_filtered_row_cnt(count);
-            filter_info.filter_->get_filter_realtime_statistics().add_skip_index_skip_mb_cnt(1);
+            filter_info.filter_->get_filter_realtime_statistics().add_skip_index_skip_block_cnt(1);
           }
         } else if (nullptr != parent && (!parent->is_enable_reorder() || !filter_info.first_batch_) && ObCGScanner::can_skip_filter(
                 *parent, *parent_bitmap, prefetcher_.current_micro_info().get_row_range())) {
@@ -443,7 +442,7 @@ int ObCGScanner::inner_filter(
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
             LOG_WARN("Fail to get next valid index", K(ret));
           }
-        } else if (OB_FAIL(open_cur_data_block())) {
+        } else if (OB_FAIL(open_cur_data_block(true))) {
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
             LOG_WARN("Fail to open cur data block", K(ret));
           }
@@ -526,18 +525,24 @@ int ObCGRowScanner::init(
     void *buf = nullptr;
     void *len_array_buf = nullptr;
     int64_t expr_count = iter_param.output_exprs_->count();
-    const share::schema::ObColumnParam *col_param = nullptr;
+    share::schema::ObColumnParam *col_param = nullptr;
     sql::ObEvalCtx &eval_ctx = iter_param.op_->get_eval_ctx();
     const common::ObIArray<int32_t>* out_cols_projector = iter_param.out_cols_project_;
     int64_t sql_batch_size = iter_param.op_->get_batch_size();
     const common::ObIArray<share::schema::ObColumnParam *>* out_cols_param = iter_param.get_col_params();
     const bool use_new_format = iter_param.use_new_format();
+    const bool need_init_default_datums = wrapper.get_sstable()->is_all_cg_base();
+    if (need_init_default_datums) {
+      default_datums_.set_allocator(access_ctx.stmt_allocator_);
+    }
     if (OB_UNLIKELY(sql_batch_size <= 0)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("Unexpected sql batch size", K(ret), K(sql_batch_size), K(iter_param));
     } else if (OB_FAIL(col_params_.init(expr_count))) {
       LOG_WARN("Fail to init col params", K(ret));
       // TODO: remove these later
+    } else if (need_init_default_datums && OB_FAIL(default_datums_.prepare_allocate(expr_count))) {
+      LOG_WARN("Failed to prepare allocate default datums");
     } else if (OB_ISNULL(buf = access_ctx.stmt_allocator_->alloc(sizeof(char *) * sql_batch_size))) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc cell data", K(ret), K(sql_batch_size));
@@ -550,19 +555,27 @@ int ObCGRowScanner::init(
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc len_array_buf", K(ret), K(sql_batch_size));
     } else if (FALSE_IT(len_array_ = reinterpret_cast<uint32_t *>(len_array_buf))) {
-    } else if (!iter_param.enable_pd_aggregate() || use_new_format) {
-      bool need_padding = common::is_pad_char_to_full_length(access_ctx.sql_mode_);
+    } else if (!iter_param.enable_pd_aggregate() || iter_param.plan_use_new_format()) {
+      is_padding_mode_ = common::is_pad_char_to_full_length(access_ctx.sql_mode_);
       for (int64_t i = 0; OB_SUCC(ret) && i < expr_count; i++) {
         col_param = nullptr;
         int64_t col_offset = out_cols_projector->at(i);
         const common::ObObjMeta &obj_meta = read_info_->get_columns_desc().at(col_offset).col_type_;
-        if (need_padding && obj_meta.is_fixed_len_char_type()) {
+        if (is_padding_mode_ && obj_meta.is_fixed_len_char_type()) {
           col_param = out_cols_param->at(col_offset);
         } else if (obj_meta.is_lob_storage() || obj_meta.is_decimal_int()) {
           col_param = out_cols_param->at(col_offset);
         }
         if (OB_FAIL(col_params_.push_back(col_param))) {
           LOG_WARN("Failed to push back col param", K(ret));
+        }
+        if (need_init_default_datums) {
+          CK(OB_NOT_NULL(out_cols_param->at(col_offset)));
+          OZ(ObNewColumnCommonDecoder::get_default_datum(
+              *out_cols_param->at(col_offset),
+              is_padding_mode_,
+              *access_ctx_->stmt_allocator_,
+              default_datums_[i]));
         }
       }
       if (OB_SUCC(ret)) {
@@ -644,7 +657,7 @@ int ObCGRowScanner::get_next_rows(uint64_t &count, const uint64_t capacity, cons
       }
     }
   }
-  if (count > 0 && datum_infos_.count() > 0) {
+  if (!iter_param_->enable_pd_aggregate() && count > 0 && datum_infos_.count() > 0) {
     if (iter_param_->op_->enable_rich_format_) {
       LOG_DEBUG("[COLUMNSTORE] get next rows in cg", K(ret), K_(query_index_range), K_(current), K(count), K(capacity),
                 "new format datums",
@@ -666,14 +679,13 @@ int ObCGRowScanner::fetch_rows(const int64_t batch_size, uint64_t &count, const 
   if (is_new_range_) {
     prefetcher_.cur_micro_data_fetch_idx_++;
     prefetcher_.cur_micro_data_read_idx_++;
-    if (OB_FAIL(open_cur_data_block())) {
+    if (OB_FAIL(open_cur_data_block(true))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("Fail to open data block", K(ret), K_(current));
       }
     }
   }
 
-  int64_t row_cap = 0;
   while (OB_SUCC(ret) && count < batch_size) {
     if (count > 0) {
       micro_scanner_->reserve_reader_memory(true);
@@ -686,42 +698,55 @@ int ObCGRowScanner::fetch_rows(const int64_t batch_size, uint64_t &count, const 
         LOG_DEBUG("Calc to end of prefetched data", K(ret), K(prefetcher_.cur_micro_data_fetch_idx_),
                   K(prefetcher_.micro_data_prefetch_idx_));
       } else if (FALSE_IT(++prefetcher_.cur_micro_data_fetch_idx_)) {
-      } else if (OB_FAIL(open_cur_data_block())) {
+      } else if (OB_FAIL(open_cur_data_block(true))) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
           LOG_WARN("Fail to open data block", K(ret), K_(current));
         }
       }
-    } else if (OB_FAIL(convert_bitmap_to_cs_index(row_ids_,
-                                                  row_cap,
-                                                  current_,
-                                                  query_index_range_,
-                                                  prefetcher_.current_micro_info().get_row_range(),
-                                                  filter_bitmap_,
-                                                  batch_size - count,
-                                                  is_reverse_scan_))) {
-      LOG_WARN("Fail to get row ids", K(ret), K_(current), K_(query_index_range));
-    } else if (0 == row_cap) {
-    } else if (OB_FAIL(inner_fetch_rows(row_cap, datum_offset + count))) {
-      LOG_WARN("Fail to get next rows", K(ret));
-    } else {
-      count += row_cap;
+    } else if (OB_FAIL(inner_fetch_rows(batch_size, count, datum_offset))) {
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("Fail to fetch rows", K(ret), K(batch_size), K(count), K(datum_offset));
+      }
+    } else if (OB_INVALID_CS_ROW_ID == current_) {
+      const ObCSRange &cs_range = prefetcher_.current_micro_info().get_row_range();
+      if (is_reverse_scan_) {
+        current_ = MAX(cs_range.start_row_id_, query_index_range_.start_row_id_) - 1;
+      } else {
+        current_ = MIN(cs_range.end_row_id_, query_index_range_.end_row_id_) + 1;
+      }
     }
   }
   return ret;
 }
 
-int ObCGRowScanner::inner_fetch_rows(const int64_t row_cap, const int64_t datum_offset)
+int ObCGRowScanner::inner_fetch_rows(const int64_t batch_size, uint64_t &count, const int64_t datum_offset)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(micro_scanner_->get_next_rows(*iter_param_->out_cols_project_,
-                                            col_params_,
-                                            row_ids_,
-                                            cell_data_ptrs_,
-                                            row_cap,
-                                            datum_infos_,
-                                            datum_offset,
-                                            len_array_))) {
+  int64_t row_cap = 0;
+  const ObIArray<ObStorageDatum>* default_datums = table_wrapper_.get_sstable()->is_all_cg_base() ? &default_datums_ : nullptr;
+  if (OB_FAIL(convert_bitmap_to_cs_index(row_ids_,
+                                         row_cap,
+                                         current_,
+                                         query_index_range_,
+                                         prefetcher_.current_micro_info().get_row_range(),
+                                         filter_bitmap_,
+                                         batch_size - count,
+                                         is_reverse_scan_))) {
+    LOG_WARN("Fail to get row ids", K(ret), K_(current), K_(query_index_range));
+  } else if (0 != row_cap && OB_FAIL(micro_scanner_->get_next_rows(*iter_param_->out_cols_project_,
+                                                   col_params_,
+                                                   row_ids_,
+                                                   cell_data_ptrs_,
+                                                   row_cap,
+                                                   datum_infos_,
+                                                   datum_offset + count,
+                                                   len_array_,
+                                                   is_padding_mode_,
+                                                   /* init_vector_header */ true,
+                                                   default_datums))) {
     LOG_WARN("Fail to get next rows", K(ret));
+  } else {
+    count += row_cap;
   }
   return ret;
 }

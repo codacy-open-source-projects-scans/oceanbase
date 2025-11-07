@@ -13,12 +13,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_temp_row_store.h"
-#include "sql/engine/basic/ob_temp_block_store.h"
-#include "share/vector/ob_fixed_length_vector.h"
-#include "share/vector/ob_continuous_vector.h"
-#include "share/vector/ob_uniform_vector.h"
-#include "share/vector/ob_discrete_vector.h"
-#include "share/ob_define.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 
 namespace oceanbase
@@ -68,12 +62,7 @@ int ObTempRowStoreBase<RA>::RowBlock::add_row(
         stored_row->set_null(row_meta, i);
       } else {
         ObIVector *vec = expr->get_vector(ctx);
-        if (expr->is_nested_expr() && !is_uniform_format(vec->get_format())) {
-          if (OB_FAIL(ObCompactRow::nested_vec_to_row(*expr, ctx, row_meta, stored_row, batch_idx,
-                                                          i, remain_size - row_size, row_size))) {
-            LOG_WARN("failed to add row", K(ret));
-          }
-        } else if (OB_FAIL(vec->to_row(row_meta, stored_row, batch_idx, i,
+        if (OB_FAIL(vec->to_row(row_meta, stored_row, batch_idx, i,
                                 remain_size - row_size, expr->is_fixed_length_data_,
                                 row_size))) {
           if (OB_BUF_NOT_ENOUGH != ret) {
@@ -139,8 +128,8 @@ int ObTempRowStoreBase<RA>::RowBlock::add_batch(
       if (nullptr == vectors.at(col_idx)) {
         ret = vector_to_nulls(row_meta, stored_rows, selector, size, col_idx);
       } else {
-        vectors.at(col_idx)->to_rows(row_meta, stored_rows,
-                                     selector, size, col_idx);
+        ret = vectors.at(col_idx)->to_rows(row_meta, stored_rows,
+                                           selector, size, col_idx);
       }
     }
     if (OB_SUCC(ret)) {
@@ -155,57 +144,6 @@ int32_t ObTempRowStoreBase<true>::RowBlock::get_row_location(const int64_t row_i
 {
   return *reinterpret_cast<const row_idx_t *>(reinterpret_cast<const char *>(this) + raw_size_
                                               - (row_id - block_id_ + 1) * ROW_INDEX_SIZE);
-}
-
-template<bool RA>
-int ObTempRowStoreBase<RA>::RowBlock::add_batch_inner(ObEvalCtx &ctx, ShrinkBuffer &buf, const BatchCtx &batch_ctx,
-                                              const RowMeta &row_meta,
-                                              const int64_t size,
-                                              int64_t batch_mem_size,
-                                              ObCompactRow **stored_rows)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(batch_mem_size > buf.remain())) {
-    ret = OB_BUF_NOT_ENOUGH;
-  } else {
-    memset(buf.head(), 0, batch_mem_size);
-    for (int64_t i = 0; i < size; i++) {
-      stored_rows[i] = reinterpret_cast<ObCompactRow *> (buf.head());
-      stored_rows[i]->set_row_size(batch_ctx.row_size_array_[i]);
-      ret = post_add_row(buf, batch_ctx.row_size_array_[i]);
-    }
-    for (int64_t col_idx = 0; OB_SUCC(ret) && col_idx < batch_ctx.vectors_.count(); col_idx ++) {
-      if (nullptr == batch_ctx.vectors_.at(col_idx)) {
-        bool found = false;
-        for (int64_t j = 0; j < batch_ctx.nested_col_id_.count() && !found; ++j) {
-          if (batch_ctx.nested_col_id_.at(j) == col_idx) {
-            found = true;
-            ObExpr *expr = batch_ctx.nested_exprs_.at(j);
-            ObIVector *vec = expr->get_vector(ctx);
-            // nested expr to rows
-            if (!is_uniform_format(vec->get_format())) {
-              if (OB_FAIL(ObCompactRow::nested_vec_to_rows(*expr, ctx, row_meta, stored_rows,
-                                                           batch_ctx.selector_, size, col_idx))) {
-                LOG_WARN("failed to do nested expr to rows", K(ret));
-              }
-            } else {
-              vec->to_rows(row_meta, stored_rows, batch_ctx.selector_, size, col_idx);
-            }
-          }
-        }
-        if (!found) {
-          ret = vector_to_nulls(row_meta, stored_rows, batch_ctx.selector_, size, col_idx);
-        }
-      } else {
-        batch_ctx.vectors_.at(col_idx)->to_rows(row_meta, stored_rows,
-                                                batch_ctx.selector_, size, col_idx);
-      }
-    }
-    if (OB_SUCC(ret)) {
-      cnt_ += size;
-    }
-  }
-  return ret;
 }
 
 template<bool RA>
@@ -248,26 +186,34 @@ int ObTempRowStoreBase<RA>::RowBlock::calc_row_size(const common::ObIArray<ObExp
     }
     ObIVector *vec = exprs.at(col_idx)->get_vector(ctx);
     VectorFormat format = vec->get_format();
-    if (VEC_DISCRETE == format) {
-      ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
-      if (!disc_vec->is_null(batch_idx)) {
-        ObLength *lens = disc_vec->get_lens();
-        size += lens[batch_idx];
+    if (OB_LIKELY(!static_cast<ObVectorBase *>(vec)->is_collection_expr())) {
+      if (VEC_DISCRETE == format) {
+        ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
+        if (!disc_vec->is_null(batch_idx)) {
+          ObLength *lens = disc_vec->get_lens();
+          size += lens[batch_idx];
+        }
+      } else if (VEC_CONTINUOUS == format) {
+        ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
+        uint32_t *offsets = cont_vec->get_offsets();
+        size += (offsets[batch_idx + 1] - offsets[batch_idx]);
+      } else if (is_uniform_format(format)) {
+        ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
+        ObDatum *datums = uni_vec->get_datums();
+        const uint64_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT64_MAX;
+        size += datums[batch_idx & idx_mask].len_;
+      } else if (VEC_FIXED == format) {
+        ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
+        size += fixed_vec->get_length();
       }
-    } else if (VEC_CONTINUOUS == format) {
-      ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
-      uint32_t *offsets = cont_vec->get_offsets();
-      size += (offsets[batch_idx + 1] - offsets[batch_idx]);
-    } else if (is_uniform_format(format)) {
-      ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
-      ObDatum *datums = uni_vec->get_datums();
-      const uint64_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT64_MAX;
-      size += datums[batch_idx & idx_mask].len_;
-    } else if (VEC_FIXED == format) {
-      ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
-      size += fixed_vec->get_length();
+    } else {
+      int64_t len = 0;
+      if (OB_FAIL(ObArrayExprUtils::calc_nested_expr_data_size(*exprs.at(col_idx), ctx, batch_idx, len))) {
+        LOG_WARN("fail to calc nested expr data size", K(ret));
+      } else {
+        size += len;
+      }
     }
-    LOG_DEBUG("calc row size", K(col_idx), K(size), K(format));
   }
   return ret;
 }
@@ -302,35 +248,39 @@ int ObTempRowStoreBase<RA>::RowBlock::calc_rows_size(const IVectorPtrs &vectors,
     if (reordered && row_meta.project_idx(col_idx) < row_meta.fixed_cnt_) {
       continue;
     }
-    VectorFormat format = vec->get_format();
-    if (VEC_DISCRETE == format) {
-      ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
-      ObLength *lens = disc_vec->get_lens();
-      for (int64_t i = 0; i < size; i++) {
-        if (!disc_vec->is_null(selector[i])) {
-          row_size_arr[i] += lens[selector[i]];
+    if (OB_LIKELY(!static_cast<ObVectorBase *>(vec)->is_collection_expr())) {
+      VectorFormat format = vec->get_format();
+      if (VEC_DISCRETE == format) {
+        ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
+        ObLength *lens = disc_vec->get_lens();
+        for (int64_t i = 0; i < size; i++) {
+          if (!disc_vec->is_null(selector[i])) {
+            row_size_arr[i] += lens[selector[i]];
+          }
+        }
+      } else if (VEC_CONTINUOUS == format) {
+        ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
+        uint32_t *offsets = cont_vec->get_offsets();
+        for (int64_t i = 0; i < size; i++) {
+          row_size_arr[i] += offsets[selector[i] + 1] - offsets[selector[i]];
+        }
+      } else if (is_uniform_format(format)) {
+        ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
+        ObDatum *datums = uni_vec->get_datums();
+        const uint16_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT16_MAX;
+        for (int64_t i = 0; i < size; i++) {
+          if (!datums[selector[i] & idx_mask].is_null()) {
+            row_size_arr[i] += datums[selector[i] & idx_mask].len_;
+          }
+        }
+      } else if (VEC_FIXED == format) {
+        ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
+        for (int64_t i = 0; i < size; i++) {
+          row_size_arr[i] += fixed_vec->get_length();
         }
       }
-    } else if (VEC_CONTINUOUS == format) {
-      ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
-      uint32_t *offsets = cont_vec->get_offsets();
-      for (int64_t i = 0; i < size; i++) {
-        row_size_arr[i] += offsets[selector[i] + 1] - offsets[selector[i]];
-      }
-    } else if (is_uniform_format(format)) {
-      ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
-      ObDatum *datums = uni_vec->get_datums();
-      const uint16_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT16_MAX;
-      for (int64_t i = 0; i < size; i++) {
-        if (!datums[selector[i] & idx_mask].is_null()) {
-          row_size_arr[i] += datums[selector[i] & idx_mask].len_;
-        }
-      }
-    } else if (VEC_FIXED == format) {
-      ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
-      for (int64_t i = 0; i < size; i++) {
-        row_size_arr[i] += fixed_vec->get_length();
-      }
+    } else if (OB_FAIL(ObArrayExprUtils::calc_collection_rows_size(*vec, selector, size, row_size_arr))) {
+      LOG_WARN("failed to cacl collection rows size", K(ret), K(size));
     }
   }
 
@@ -368,89 +318,51 @@ int ObTempRowStoreBase<RA>::DtlRowBlock::calc_rows_size(const IVectorPtrs &vecto
     if (reordered && row_meta.project_idx(col_idx) < row_meta.fixed_cnt_) {
       continue;
     }
-    VectorFormat format = vec->get_format();
-    if (VEC_DISCRETE == format) {
-      ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
-      ObLength *lens = disc_vec->get_lens();
-      for (int64_t i = 0; i < brs.size_; i++) {
-        if (brs.skip_->at(i)) {
-          continue;
-        }
-        if (!disc_vec->is_null(i)) {
-          row_size_arr[i] += lens[i];
-        }
-      }
-    } else if (VEC_CONTINUOUS == format) {
-      ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
-      uint32_t *offsets = cont_vec->get_offsets();
-      for (int64_t i = 0; i < brs.size_; i++) {
-        if (brs.skip_->at(i)) {
-          continue;
-        }
-        row_size_arr[i] += offsets[i + 1] - offsets[i];
-      }
-    } else if (is_uniform_format(format)) {
-      ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
-      ObDatum *datums = uni_vec->get_datums();
-      const uint16_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT16_MAX;
-      for (int64_t i = 0; i < brs.size_; i++) {
-        if (brs.skip_->at(i)) {
-          continue;
-        }
-        if (!datums[i & idx_mask].is_null()) {
-          row_size_arr[i] += datums[i & idx_mask].len_;
-        }
-      }
-    } else if (VEC_FIXED == format) {
-      ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
-      for (int64_t i = 0; i < brs.size_; i++) {
-        if (brs.skip_->at(i)) {
-          continue;
-        }
-        row_size_arr[i] += fixed_vec->get_length();
-      }
-    }
-  }
-
-  return ret;
-}
-
-template<bool RA>
-int ObTempRowStoreBase<RA>::RowBlock::calc_rows_size_inner(const RowMeta &row_meta, ObEvalCtx &ctx,
-                                                           const int64_t size, BatchCtx &batch_ctx)
-{
-  int ret = OB_SUCCESS;
-  const int64_t fixed_row_size = row_meta.get_row_fixed_size();
-  const bool reordered = row_meta.fixed_expr_reordered();
-  for (int64_t i = 0; i < size; i++) {
-    batch_ctx.row_size_array_[i] = fixed_row_size;
-  }
-  for (int64_t col_idx = 0; OB_SUCC(ret) && col_idx < batch_ctx.vectors_.count(); col_idx++) {
-    ObIVector *vec = batch_ctx.vectors_.at(col_idx);
-    if (reordered && row_meta.project_idx(col_idx) < row_meta.fixed_cnt_) {
-      continue;
-    } else if (nullptr == vec) {
-      bool found = false;
-      for (int64_t j = 0; j < batch_ctx.nested_col_id_.count() && !found; ++j) {
-        if (batch_ctx.nested_col_id_.at(j) == col_idx) {
-          found = true;
-          ObExpr *expr = batch_ctx.nested_exprs_.at(j);
-          ObIVector *nest_vec = expr->get_vector(ctx);
-          if (!is_uniform_format(nest_vec->get_format())) {
-            if (OB_FAIL(ObTempRowStoreHelper::calc_nested_expr_batch_data_size(*expr, ctx, batch_ctx.selector_, size, batch_ctx.row_size_array_))) {
-              LOG_WARN("failed to get nested expr batch data size", K(ret));
-            }
-          } else {
-            ObTempRowStoreHelper::calc_rows_size(nest_vec, batch_ctx.selector_, size, batch_ctx.row_size_array_);
+    if (OB_LIKELY(!static_cast<ObVectorBase *>(vec)->is_collection_expr())) {
+      VectorFormat format = vec->get_format();
+      if (VEC_DISCRETE == format) {
+        ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
+        ObLength *lens = disc_vec->get_lens();
+        for (int64_t i = 0; i < brs.size_; i++) {
+          if (brs.skip_->at(i)) {
+            continue;
+          }
+          if (!disc_vec->is_null(i)) {
+            row_size_arr[i] += lens[i];
           }
         }
+      } else if (VEC_CONTINUOUS == format) {
+        ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
+        uint32_t *offsets = cont_vec->get_offsets();
+        for (int64_t i = 0; i < brs.size_; i++) {
+          if (brs.skip_->at(i)) {
+            continue;
+          }
+          row_size_arr[i] += offsets[i + 1] - offsets[i];
+        }
+      } else if (is_uniform_format(format)) {
+        ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
+        ObDatum *datums = uni_vec->get_datums();
+        const uint16_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT16_MAX;
+        for (int64_t i = 0; i < brs.size_; i++) {
+          if (brs.skip_->at(i)) {
+            continue;
+          }
+          if (!datums[i & idx_mask].is_null()) {
+            row_size_arr[i] += datums[i & idx_mask].len_;
+          }
+        }
+      } else if (VEC_FIXED == format) {
+        ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
+        for (int64_t i = 0; i < brs.size_; i++) {
+          if (brs.skip_->at(i)) {
+            continue;
+          }
+          row_size_arr[i] += fixed_vec->get_length();
+        }
       }
-      if (!found) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("failed to get length", K(ret));
-      }
-    } else {
-      ObTempRowStoreHelper::calc_rows_size(vec, batch_ctx.selector_, size, batch_ctx.row_size_array_);
+    } else if (OB_FAIL(ObArrayExprUtils::calc_collection_rows_size(*vec, nullptr, brs.size_, row_size_arr, &brs))) {
+      LOG_WARN("failed to cacl collection rows size", K(ret), K(brs.size_));
     }
   }
 
@@ -604,13 +516,6 @@ int ObTempRowStoreBase<false>::Iterator::attach_rows(const ObExprPtrIArray &expr
   for (int64_t col_idx = 0; OB_SUCC(ret) && col_idx < exprs.count(); col_idx ++) {
     if (OB_FAIL(exprs.at(col_idx)->init_vector_default(ctx, read_rows))) {
       LOG_WARN("fail to init vector", K(ret));
-    } else if (exprs.at(col_idx)->is_nested_expr()
-               && !is_uniform_format(exprs.at(col_idx)->get_format(ctx))) {
-      if (OB_FAIL(ObArrayExprUtils::nested_expr_from_rows(*exprs.at(col_idx), ctx, row_meta, srows, read_rows, col_idx))) {
-        LOG_WARN("fail to do nested expr from rows", K(ret));
-      } else {
-        exprs.at(col_idx)->set_evaluated_projected(ctx);
-      }
     } else {
       ObIVector *vec = exprs.at(col_idx)->get_vector(ctx);
       if (VEC_UNIFORM_CONST != vec->get_format()) {
@@ -728,15 +633,19 @@ int ObTempRowStoreBase<RA>::init(const ObExprPtrIArray &exprs,
                          uint32_t row_extra_size,
                          const common::ObCompressorType compressor_type,
                          const bool reorder_fixed_expr /*true*/,
-                         const bool enable_trunc /*false*/)
+                         const bool enable_trunc /*false*/,
+                         int64_t tempstore_read_alignment_size /*0*/)
 {
   int ret = OB_SUCCESS;
   mem_attr_ = mem_attr;
   col_cnt_ = exprs.count();
   max_batch_size_ = max_batch_size;
   ObTempBlockStore::set_inner_allocator_attr(mem_attr);
-  OZ(ObTempBlockStore::init(mem_limit, enable_dump, mem_attr.tenant_id_, mem_attr.ctx_id_, mem_attr_.label_,
-                            compressor_type, enable_trunc));
+  bool sequential_read = false;
+  if (RA) { tempstore_read_alignment_size = 0; }
+  OZ(ObTempBlockStore::init(mem_limit, enable_dump, mem_attr.tenant_id_, mem_attr.ctx_id_,
+                            mem_attr_.label_, compressor_type, enable_trunc, sequential_read,
+                            tempstore_read_alignment_size));
   OZ(row_meta_.init(exprs, row_extra_size, reorder_fixed_expr));
   inited_ = true;
   return ret;
@@ -749,7 +658,8 @@ int ObTempRowStoreBase<RA>::init(const RowMeta &row_meta,
                          const int64_t mem_limit,
                          bool enable_dump,
                          const common::ObCompressorType compressor_type,
-                         const bool enable_trunc /*false*/)
+                         const bool enable_trunc /*false*/,
+                         int64_t tempstore_read_alignment_size /*0*/)
 {
   int ret = OB_SUCCESS;
   mem_attr_ = mem_attr;
@@ -763,29 +673,12 @@ int ObTempRowStoreBase<RA>::init(const RowMeta &row_meta,
   } else if (OB_FAIL(row_meta_.deep_copy(row_meta, allocator_))) {
     LOG_WARN("deep copy row meta failed", K(ret));
   }
-  OZ(ObTempBlockStore::init(mem_limit, enable_dump, mem_attr.tenant_id_, mem_attr.ctx_id_, mem_attr_.label_,
-                            compressor_type, enable_trunc));
+  bool sequential_read = false;
+  if (RA) { tempstore_read_alignment_size = 0; }
+  OZ(ObTempBlockStore::init(mem_limit, enable_dump, mem_attr.tenant_id_, mem_attr.ctx_id_,
+                            mem_attr_.label_, compressor_type, enable_trunc, sequential_read,
+                            tempstore_read_alignment_size));
   inited_ = true;
-  return ret;
-}
-
-template<bool RA>
-int ObTempRowStoreBase<RA>::init_batch_nested_ctx(const ObExprPtrIArray *exprs)
-{
-  int ret = OB_SUCCESS;
-  uint32_t nested_cnt = 0;
-  for (int64_t i = 0; exprs != NULL && i < exprs->count(); i++) {
-    if (exprs->at(i)->is_nested_expr()) {
-      nested_cnt++;
-    }
-  }
-  if (nested_cnt > 0) {
-    if (OB_FAIL(batch_ctx_->nested_exprs_.prepare_allocate(nested_cnt))) {
-      LOG_WARN("init nested exprs array failed", K(ret), K(nested_cnt));
-    } else if (OB_FAIL(batch_ctx_->nested_col_id_.prepare_allocate(nested_cnt))) {
-      LOG_WARN("init nested col id array failed", K(ret), K(nested_cnt));
-    }
-  }
   return ret;
 }
 
@@ -812,9 +705,6 @@ int ObTempRowStoreBase<RA>::init_batch_ctx(const ObExprPtrIArray *exprs)
       batch_ctx_->vectors_.set_attr(mem_attr_);
       ret = batch_ctx_->vectors_.prepare_allocate(col_cnt_);
       batch_ctx_->max_batch_size_ = max_batch_size;
-      if (OB_SUCC(ret) && OB_FAIL(init_batch_nested_ctx(exprs))) {
-        LOG_WARN("init batch nested ctx failed", K(ret), K(size), K(col_cnt_), K(max_batch_size));
-      }
       if (OB_SUCC(ret)) {
         mem += sizeof(*batch_ctx_);
         #define SET_BATCH_CTX_FIELD(X, N) \
@@ -842,7 +732,7 @@ int ObTempRowStoreBase<RA>::add_batch(const common::ObIArray<ObExpr *> &exprs, O
                               const int64_t start_pos /* 0 */)
 {
   int ret = OB_SUCCESS;
-  int16_t size = 0;
+  int64_t size = 0;
   if (OB_FAIL(init_batch_ctx())) {
     LOG_WARN("fail to init batch ctx", K(ret));
   } else {
@@ -860,21 +750,12 @@ int ObTempRowStoreBase<RA>::add_batch(const common::ObIArray<ObExpr *> &exprs, O
       ObIVector *vec = NULL;
       if (OB_FAIL(e->eval_vector(ctx, brs))) {
         LOG_WARN("evaluate batch failed", K(ret));
-      } else if (e->is_nested_expr()) {
-        batch_ctx_->nested_exprs_.push_back(e);
-        batch_ctx_->nested_col_id_.push_back(i);
       } else {
         vec = e->get_vector(ctx);
         batch_ctx_->vectors_.at(i) = vec;
       }
     }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(RowBlock::calc_rows_size_inner(row_meta_, ctx, size,
-                                                      *batch_ctx_))) {
-      LOG_WARN("fail to calc rows size", K(ret));
-    } else if (OB_FAIL(add_batch_inner(ctx, size, stored_rows))) {
-      LOG_WARN("fail to add batch inner", K(ret));
-    }
+    OZ (add_batch(batch_ctx_->vectors_, batch_ctx_->selector_, size, stored_rows));
   }
   if (OB_SUCC(ret)) {
     stored_rows_count = size;
@@ -889,7 +770,7 @@ int ObTempRowStoreBase<RA_ACCESS>::add_batch(const common::ObIArray<ObExpr *> &e
                                              ObCompactRow **stored_rows)
 {
   int ret = OB_SUCCESS;
-  int16_t size = 0;
+  int64_t size = 0;
   if (OB_FAIL(init_batch_ctx())) {
     LOG_WARN("init batch ctx failed", K(ret));
   } else {
@@ -919,6 +800,37 @@ int ObTempRowStoreBase<RA_ACCESS>::add_batch(const common::ObIArray<ObExpr *> &e
   }
   if (OB_SUCC(ret)) {
     stored_rows_count = size;
+  }
+  return ret;
+}
+
+template <bool RA_ACCESS>
+int ObTempRowStoreBase<RA_ACCESS>::add_batch(const common::ObIArray<ObExpr *> &exprs,
+                                             ObEvalCtx &ctx, const uint16_t selector[],
+                                             const EvalBound &bound, const ObBitVector &skip,
+                                             const int64_t size)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(init_batch_ctx())) {
+    LOG_WARN("init batch ctx failed", K(ret));
+  } else {
+    batch_ctx_->selector_ = const_cast<uint16_t *>(selector);
+  }
+  if (OB_SUCC(ret) && size > 0) {
+    for (int i = 0; OB_SUCC(ret) && i < exprs.count(); i++) {
+      ObExpr *e = exprs.at(i);
+      ObIVector *vec = nullptr;
+      if (OB_FAIL(e->eval_vector(ctx, skip, bound))) {
+        LOG_WARN("eval vector failed", K(ret));
+      } else {
+        vec = e->get_vector(ctx);
+        batch_ctx_->vectors_.at(i) = vec;
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(add_batch(batch_ctx_->vectors_, batch_ctx_->selector_, size))) {
+      LOG_WARN("add batch rows failed", K(ret));
+    }
   }
   return ret;
 }
@@ -960,7 +872,11 @@ int ObTempRowStoreBase<false>::try_add_batch(const common::ObIArray<ObExpr *> &e
   if (OB_FAIL(ret)) {
   } else if (OB_UNLIKELY(0 == batch_size)) {
     // no rows, do nothing
-  } else if (OB_FAIL(RowBlock::calc_rows_size_inner(row_meta_, *ctx, batch_size, *batch_ctx_))) {
+  } else if (OB_FAIL(RowBlock::calc_rows_size(batch_ctx_->vectors_,
+                                              row_meta_,
+                                              batch_ctx_->selector_,
+                                              batch_size,
+                                              batch_ctx_->row_size_array_))) {
     LOG_WARN("fail to calc rows size", K(ret));
   } else {
     for (int64_t i = 0; i < batch_size; i++) {
@@ -972,7 +888,10 @@ int ObTempRowStoreBase<false>::try_add_batch(const common::ObIArray<ObExpr *> &e
     batch_added = false;
   } else {
     int64_t count = 0;
-    if (OB_FAIL(add_batch_inner(*ctx, batch_size, batch_ctx_->rows_))) {
+    if (OB_FAIL(add_batch(batch_ctx_->vectors_,
+                          batch_ctx_->selector_,
+                          batch_size,
+                          batch_ctx_->rows_))) {
       LOG_WARN("failed to add batch", K(ret));
     } else {
       batch_added = true;
@@ -1048,6 +967,9 @@ int ObTempRowStoreBase<RA>::add_row(const common::ObIArray<ObExpr*> &exprs,
     LOG_WARN("ensure write block failed", K(ret), K(row_size + idx_size));
   } else if (OB_FAIL(cur_blk()->add_row(blk_buf_, exprs, row_meta_, ctx, stored_row))) {
     LOG_WARN("fail to add row", K(ret));
+  } else if (OB_UNLIKELY(stored_row->get_row_size() != row_size)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("row size mismatch", K(ret), K(row_size), K(stored_row->get_row_size()));
   } else {
     block_id_cnt_ += 1;
     inc_mem_used(row_size + idx_size);
@@ -1100,82 +1022,6 @@ int ObTempRowStoreBase<RA>::add_batch(const IVectorPtrs &vectors,
   }
   return ret;
 }
-
-template<bool RA>
-int ObTempRowStoreBase<RA>::add_batch_inner(ObEvalCtx &ctx, const int64_t size, ObCompactRow **stored_rows)
-{
-  int ret = OB_SUCCESS;
-  int64_t batch_mem_size = 0;
-  if (OB_UNLIKELY(0 == size)) {
-    // no rows, do nothing
-  } else {
-    ObCompactRow **rows = (NULL == stored_rows) ? batch_ctx_->rows_ : stored_rows;
-    for (int64_t i = 0; i < size; i++) {
-      batch_mem_size += batch_ctx_->row_size_array_[i];
-    }
-    batch_mem_size += size * (RA ? ROW_INDEX_SIZE : 0);
-    if (OB_FAIL(ensure_write_blk(batch_mem_size))) {
-      LOG_WARN("ensure write block failed", K(ret));
-    } else if (OB_FAIL(cur_blk()->add_batch_inner(ctx, blk_buf_, *batch_ctx_, row_meta_, size, batch_mem_size, rows))) {
-      LOG_WARN("fail to add batch", K(ret));
-    } else {
-      block_id_cnt_ += size;
-      inc_mem_used(batch_mem_size);
-    }
-  }
-  return ret;
-}
-
-void ObTempRowStoreHelper::calc_rows_size(ObIVector *vec, const uint16_t selector[], const int64_t size, uint32_t row_size_arr[])
-{
-  VectorFormat format = vec->get_format();
-  if (VEC_DISCRETE == format) {
-    ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
-    ObLength *lens = disc_vec->get_lens();
-    for (int64_t i = 0; i < size; i++) {
-      if (!disc_vec->is_null(selector[i])) {
-        row_size_arr[i] += lens[selector[i]];
-      }
-    }
-  } else if (VEC_CONTINUOUS == format) {
-    ObContinuousBase *cont_vec = static_cast<ObContinuousBase*>(vec);
-    uint32_t *offsets = cont_vec->get_offsets();
-    for (int64_t i = 0; i < size; i++) {
-      row_size_arr[i] += offsets[selector[i] + 1] - offsets[selector[i]];
-    }
-  } else if (is_uniform_format(format)) {
-    ObUniformBase *uni_vec = static_cast<ObUniformBase *>(vec);
-    ObDatum *datums = uni_vec->get_datums();
-    const uint16_t idx_mask = VEC_UNIFORM_CONST == format ? 0 : UINT16_MAX;
-    for (int64_t i = 0; i < size; i++) {
-      if (!datums[selector[i] & idx_mask].is_null()) {
-        row_size_arr[i] += datums[selector[i] & idx_mask].len_;
-      }
-    }
-  } else if (VEC_FIXED == format) {
-    ObFixedLengthBase *fixed_vec = static_cast<ObFixedLengthBase*>(vec);
-    for (int64_t i = 0; i < size; i++) {
-      row_size_arr[i] += fixed_vec->get_length();
-    }
-  }
-}
-
-int ObTempRowStoreHelper::calc_nested_expr_batch_data_size(const ObExpr &expr, ObEvalCtx &ctx,
-                                                           const uint16_t selector[], const int64_t size,
-                                                           uint32_t row_size_arr[])
-{
-  int ret = OB_SUCCESS;
-  for (int64_t i = 0; i < size && OB_SUCC(ret); i++) {
-    int64_t len = 0;
-    if (OB_FAIL(ObArrayExprUtils::calc_nested_expr_data_size(expr, ctx, selector[i], len))) {
-      SQL_ENG_LOG(WARN, "fail to calc nested expr data size", K(ret));
-    } else {
-      row_size_arr[i] += len;
-    }
-  }
-  return ret;
-}
-
 
 template<bool RA>
 int ObTempRowStoreBase<RA>::RowBlock::vector_to_nulls(const sql::RowMeta &row_meta,
@@ -1323,7 +1169,7 @@ int BatchTempRowStoresMgr::add_batch(const int64_t *idxes,
     }
     BatchTempRowStoresDisableDumpGuard guard(stores_, true);
     for (int64_t i = 0; OB_SUCC(ret) && i < brs.size_; ++i) {
-      if (brs.skip_->at(i)) {
+      if (brs.skip_->at(i) || idxes[i] < 0) {
         continue;
       }
       if (nullptr != buffers_[idxes[i]] && buffers_[idxes[i]]->remain() > row_size_array_[i]) {
@@ -1340,13 +1186,54 @@ int BatchTempRowStoresMgr::add_batch(const int64_t *idxes,
     }
     if (OB_SUCC(ret)) {
       for (int64_t idx = 0; idx < vectors.count(); ++idx) {
-        vectors.at(idx)->to_rows(meta, return_rows_,
-                                 selector_array_, selector_cnt_, idx);
+        ret = vectors.at(idx)->to_rows(meta, return_rows_,
+                                       selector_array_, selector_cnt_, idx);
       }
     }
   }
   return ret;
 }
+
+int BatchTempRowStoresMgr::reset_part_cnt(const int64_t part_cnt)
+{
+  int ret = OB_SUCCESS;
+  if (!inited_) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("cannot reset part cnt when mgr is not inited", K(ret));
+  } else if (part_cnt_ == part_cnt) {
+    memset(blocks_, 0, sizeof(ObTempBlockStore::Block *) * part_cnt);
+    memset(buffers_, 0, sizeof(ObTempBlockStore::ShrinkBuffer *) * part_cnt);
+  } else {
+    if (nullptr != blocks_) {
+      alloc_->free(blocks_);
+      blocks_ = nullptr;
+    }
+    if (nullptr != buffers_) {
+      alloc_->free(buffers_);
+      buffers_ = nullptr;
+    }
+    stores_.reset();
+    if (OB_FAIL(stores_.prepare_allocate(part_cnt))) {
+      LOG_WARN("failed to reset stores", K(ret));
+    } else if (OB_ISNULL(blocks_ =
+                        static_cast<ObTempBlockStore::Block **>
+                        (alloc_->alloc(sizeof(ObTempBlockStore::Block *) * part_cnt)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc mem", K(ret), K(part_cnt));
+    } else if (OB_ISNULL(buffers_ =
+                        static_cast<ObTempBlockStore::ShrinkBuffer **>
+                        (alloc_->alloc(sizeof(ObTempBlockStore::ShrinkBuffer *) * part_cnt)))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc mem", K(ret), K(part_cnt));
+    } else {
+      part_cnt_ = part_cnt;
+      memset(blocks_, 0, sizeof(ObTempBlockStore::Block *) * part_cnt);
+      memset(buffers_, 0, sizeof(ObTempBlockStore::ShrinkBuffer *) * part_cnt);
+    }
+  }
+  return ret;
+}
+
 
 } // end namespace sql
 } // end namespace oceanbase

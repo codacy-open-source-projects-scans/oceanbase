@@ -13,16 +13,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_px_ordered_coord_op.h"
-#include "share/ob_rpc_share.h"
-#include "share/schema/ob_part_mgr_util.h"
-#include "sql/engine/px/ob_px_util.h"
-#include "sql/dtl/ob_dtl_channel_group.h"
-#include "sql/dtl/ob_dtl_channel_loop.h"
-#include "sql/dtl/ob_dtl_msg_type.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/px/ob_px_dtl_msg.h"
-#include "sql/engine/px/ob_px_dtl_proc.h"
-#include "sql/engine/px/ob_px_util.h"
 
 namespace oceanbase
 {
@@ -166,11 +156,11 @@ int ObPxOrderedCoordOp::inner_get_next_row()
     int64_t nth_channel = OB_INVALID_INDEX_INT64;
     // Note:
     //   inner_get_next_row is invoked in two pathes (batch vs
-    //   non-batch). The eval flag should be cleared with seperated flags
+    //   non-batch). The eval flag should be cleared with separated flags
     //   under each invoke path (batch vs non-batch). Therefore call the
     //   overriding API do_clear_datum_eval_flag() to replace
     //   clear_evaluated_flag
-    // TODO qubin.qb: Implement seperated inner_get_next_batch to
+    // TODO qubin.qb: Implement separated inner_get_next_batch to
     // isolate them
     do_clear_datum_eval_flag();
     clear_dynamic_const_parent_flag();
@@ -523,8 +513,20 @@ int ObPxOrderedCoordOp::setup_readers()
       LOG_WARN("allocate memory failed", K(ret));
     } else {
       reader_cnt_ = task_channels_.count();
+      uint64_t plan_min_cluster_version_ = ctx_.get_physical_plan_ctx()->get_phy_plan()
+                            ->get_min_cluster_version();
+      bool reorder_fixed_expr = ctx_.get_physical_plan_ctx()->get_phy_plan()
+                            ->get_min_cluster_version() >= CLUSTER_VERSION_4_3_3_0;
+      common::ObIAllocator *allocator =
+        ((plan_min_cluster_version_ >= MOCK_CLUSTER_VERSION_4_3_5_3 &&
+          plan_min_cluster_version_ < CLUSTER_VERSION_4_4_0_0) ||
+          plan_min_cluster_version_ >= CLUSTER_VERSION_4_4_1_0)
+          ? &ctx_.get_allocator() : NULL;
       for (int64_t i = 0; i < reader_cnt_; i++) {
-        new (&readers_[i]) ObReceiveRowReader(get_spec().id_);
+        new (&readers_[i]) ObReceiveRowReader(get_spec().id_,
+              &(static_cast<const ObPxReceiveSpec &>(spec_).child_exprs_),
+              reorder_fixed_expr,
+              allocator);
       }
     }
   }

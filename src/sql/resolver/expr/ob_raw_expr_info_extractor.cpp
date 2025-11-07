@@ -12,6 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/expr/ob_raw_expr_info_extractor.h"
+#include "sql/resolver/dml/ob_select_stmt.h"
+
 namespace oceanbase
 {
 using namespace common;
@@ -68,6 +70,12 @@ int ObRawExprInfoExtractor::visit(ObConstRawExpr &expr)
 int ObRawExprInfoExtractor::visit(ObVarRawExpr &expr)
 {
   int ret = OB_SUCCESS;
+  // lambda param will set value in array_map function in execution
+  if (OB_FAIL(expr.add_flag(IS_CONST))) {
+    LOG_WARN("failed to add is const", K(ret));
+  } else if (OB_FAIL(expr.add_flag(IS_DYNAMIC_PARAM))) {
+    LOG_WARN("failed to add is exec param", K(ret));
+  }
   return ret;
 }
 
@@ -109,7 +117,6 @@ int ObRawExprInfoExtractor::visit(ObExecParamRawExpr &expr)
     LOG_WARN("failed to add is onetime", K(ret));
   } else if (!expr.is_eval_by_storage() && expr.get_ref_expr()->has_enum_set_column()) {
     OZ(expr.add_flag(CNT_ENUM_OR_SET));
-    OZ(expr.set_enum_set_values(expr.get_ref_expr()->get_enum_set_values()));
   }
   return ret;
 }
@@ -141,19 +148,19 @@ int ObRawExprInfoExtractor::visit(ObColumnRefRawExpr &expr)
 int ObRawExprInfoExtractor::clear_info(ObRawExpr &expr)
 {
   int ret = OB_SUCCESS;
-  ObExprInfo &expr_info = expr.get_expr_info();
+  const ObExprInfo &expr_info = expr.get_expr_info();
   bool is_implicit_cast = expr_info.has_member(IS_OP_OPERAND_IMPLICIT_CAST);
   bool is_self_param = expr_info.has_member(IS_UDT_UDF_SELF_PARAM);
   bool is_auto_part_expr = expr_info.has_member(IS_AUTO_PART_EXPR);
-  expr_info.reset();
+  expr.reset_flag();
   if (is_implicit_cast) {
-    OZ(expr_info.add_member(IS_OP_OPERAND_IMPLICIT_CAST));
+    OZ(expr.add_flag(IS_OP_OPERAND_IMPLICIT_CAST));
   }
   if (is_self_param) {
-    OZ(expr_info.add_member(IS_UDT_UDF_SELF_PARAM));
+    OZ(expr.add_flag(IS_UDT_UDF_SELF_PARAM));
   }
   if (is_auto_part_expr) {
-    OZ(expr_info.add_member(IS_AUTO_PART_EXPR));
+    OZ(expr.add_flag(IS_AUTO_PART_EXPR));
   }
   return ret;
 }
@@ -338,6 +345,8 @@ int ObRawExprInfoExtractor::visit(ObOpRawExpr &expr)
   if (OB_SUCC(ret) && expr.get_expr_type() == T_OBJ_ACCESS_REF) {
     if (OB_FAIL(expr.add_flag(CNT_OBJ_ACCESS_EXPR))) {
       LOG_WARN("failed to add flag IS_OR", K(ret));
+    } else if (ob_is_enumset_tc(expr.get_data_type()) && OB_FAIL(expr.add_flag(IS_ENUM_OR_SET))) {
+      LOG_WARN("failed to add flag IS_ENUM_OR_SET", K(ret));
     }
   }
   if (OB_SUCC(ret)) {
@@ -396,7 +405,11 @@ int ObRawExprInfoExtractor::visit_subquery_node(ObOpRawExpr &expr)
           //子查询的结果是向量或者集合，那么必须将比较操作符转换为对应的subquery expr operator
           expr.set_expr_type(get_subquery_comparison_type(expr.get_expr_type()));
         }
-        if (expr.get_subquery_key() == T_WITH_ALL) {
+        if (!IS_SUBQUERY_COMPARISON_OP(expr.get_expr_type())) {
+          if (OB_FAIL(expr.add_flag(IS_WITH_SUBQUERY))) {
+            LOG_WARN("failed to add flag IS_WITH_SUBQUERY", K(ret));
+          }
+        } else if (expr.get_subquery_key() == T_WITH_ALL) {
           if (OB_FAIL(expr.add_flag(IS_WITH_ALL))) {
             LOG_WARN("failed to add flag IS_WITH_ALL", K(ret));
           }
@@ -496,6 +509,7 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
     if (T_FUN_SYS_AUTOINC_NEXTVAL == expr.get_expr_type()
         || T_FUN_SYS_VEC_VID == expr.get_expr_type()
         || T_FUN_SYS_DOC_ID == expr.get_expr_type()
+        || T_PSEUDO_HIDDEN_CLUSTERING_KEY == expr.get_expr_type()
         || T_FUN_SYS_TABLET_AUTOINC_NEXTVAL == expr.get_expr_type()
         || T_FUN_SYS_SLEEP == expr.get_expr_type()
         || (T_FUN_SYS_LAST_INSERT_ID == expr.get_expr_type() && expr.get_param_count() > 0)
@@ -533,6 +547,10 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
               || T_FUN_SYS_UUID_SHORT == expr.get_expr_type()) {
       if (OB_FAIL(expr.add_flag(IS_RAND_FUNC))) {
         LOG_WARN("failed to add flag IS_RAND_FUNC", K(ret));
+      }
+    } else if (T_FUN_TMP_FILE_OPEN == expr.get_expr_type()) {
+      if (OB_FAIL(expr.add_flag(IS_RAND_FUNC))) {
+        LOG_WARN("failed to add flag IS_RAND_FUNC for T_FUN_TMP_FILE_OPEN", K(ret));
       }
     } else if (T_FUN_SYS_ROWNUM == expr.get_expr_type()) {
       if (OB_FAIL(expr.add_flag(IS_ROWNUM))) {
@@ -734,6 +752,22 @@ int ObRawExprInfoExtractor::add_deterministic(ObRawExpr &expr)
   }
   return ret;
 }
+
+int ObRawExprInfoExtractor::visit(ObUnpivotRawExpr &expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(clear_info(expr))) {
+    LOG_WARN("failed to clear info", K(ret));
+  } else if (OB_FAIL(pull_info(expr))) {
+    LOG_WARN("pull match against info failed", K(ret));
+  } else if (OB_FAIL(expr.add_flag(IS_UNPIVOT_EXPR))) {
+    LOG_WARN("add flag failed", K(ret));
+  } else if (OB_FAIL(expr.add_flag(CNT_UNPIVOT_EXPR))) {
+    LOG_WARN("add flag failed", K(ret));
+  }
+  return ret;
+}
+
 
 }  // namespace sql
 }  // namespace oceanbase

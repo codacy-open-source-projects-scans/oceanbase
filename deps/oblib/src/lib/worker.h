@@ -51,6 +51,7 @@ public:
   // query immediately.
   virtual bool need_retry() const { return false; }
   virtual void resume() {}
+  virtual int try_add_stream_rpc_session_wait_cnt(int cnt) { return OB_SUCCESS; }
 
   // This function is called before worker waiting for some resources
   // and starting to give cpu out so that Multi-Tenancy would be aware
@@ -203,8 +204,6 @@ inline Worker &this_worker()
 #define THIS_WORKER oceanbase::lib::Worker::self()
 
 #define GET_FUNC_TYPE() (THIS_WORKER.get_func_type())
-#define SET_FUNCTION_TYPE(func_type) (THIS_WORKER.set_func_type_(func_type))
-
 #define GET_GROUP_ID() (THIS_WORKER.get_group_id())
 
 int SET_GROUP_ID(uint64_t group_id, bool is_background = false);
@@ -218,7 +217,9 @@ public:
     : thread_group_id_(GET_GROUP_ID()), group_changed_(false), ret_(OB_SUCCESS)
   {
     group_changed_ = group_id != thread_group_id_;
-    if (group_changed_) {
+    if (is_resource_manager_group(thread_group_id_)) {
+      // has set group id. do nothing.
+    } else if (group_changed_) {
       ret_ = SET_GROUP_ID(group_id);
     }
   }
@@ -252,10 +253,11 @@ public:
     } else {
       uint64_t group_id = 0;
       ret_ = CONVERT_FUNCTION_TYPE_TO_GROUP_ID(func_type, group_id);
-      if (OB_SUCCESS == ret_ && group_id != thread_group_id_) {
+      // if (OB_SUCCESS == ret_ && group_id != thread_group_id_) {
+      /* need to move to background even if group_id not changed */
         group_changed_ = true;
         ret_ = SET_GROUP_ID(group_id, true /* is_background */);
-      }
+      // }
     }
   }
   ~ConsumerGroupFuncGuard()
@@ -310,6 +312,22 @@ public:
 
 private:
   Worker::CompatMode last_compat_mode_;
+};
+
+class WorkerTimeoutGuard
+{
+public:
+  WorkerTimeoutGuard(int64_t abs_timeout_ts)
+  {
+    prev_abs_timeout_ = THIS_WORKER.get_timeout_ts();
+    THIS_WORKER.set_timeout_ts(abs_timeout_ts);
+  }
+  ~WorkerTimeoutGuard()
+  {
+    THIS_WORKER.set_timeout_ts(prev_abs_timeout_);
+  }
+private:
+  int64_t prev_abs_timeout_;
 };
 
 

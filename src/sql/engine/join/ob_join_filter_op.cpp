@@ -12,25 +12,12 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/join/ob_join_filter_op.h"
-#include "lib/utility/utility.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/engine/ob_physical_plan.h"
-#include "sql/engine/expr/ob_sql_expression.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/px/ob_px_data_ch_provider.h"
-#include "sql/engine/expr/ob_expr_join_filter.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
-#include "sql/dtl/ob_dtl.h"
 #include "sql/dtl/ob_dtl_channel_group.h"
-#include "sql/engine/px/ob_px_util.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_mgr.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "sql/engine/px/p2p_datahub/ob_runtime_filter_vec_msg.h"
 #include "sql/engine/join/hash_join/ob_hash_join_vec_op.h"
 #include "sql/engine/join/ob_partition_store.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
-#include "sql/engine/join/ob_join_filter_store_row.h"
+#include "share/diagnosis/ob_runtime_profile.h"
 
 
 using namespace oceanbase;
@@ -87,7 +74,10 @@ OB_SERIALIZE_MEMBER((ObJoinFilterSpec, ObOpSpec),
                     join_type_,
                     full_hash_join_keys_,
                     hash_join_is_ns_equal_cond_,
-                    rf_max_wait_time_ms_ // FARM COMPAT WHITELIST
+                    rf_max_wait_time_ms_, // FARM COMPAT WHITELIST
+                    use_ndv_runtime_bloom_filter_size_, // FARM COMPAT WHITELIST
+                    enable_runtime_filter_adaptive_apply_,
+                    basic_table_row_count_
                     );
 
 OB_SERIALIZE_MEMBER(ObJoinFilterOpInput,
@@ -211,14 +201,6 @@ int ObJoinFilterOpInput::load_runtime_config(const ObJoinFilterSpec &spec, ObExe
     config_.bf_piece_size_ = spec.send_bloom_filter_size_ * 128;
   }
   config_.each_group_size_ = spec.each_group_size_;
-  int64_t sess_wait_time_ms = ctx.get_my_session()->get_runtime_filter_wait_time_ms();
-  if (sess_wait_time_ms != 0) {
-    config_.runtime_filter_wait_time_ms_ = sess_wait_time_ms;
-  } else {
-    // use adaptive max wait time if session variable is 0
-    int64_t sqc_count = ctx.get_sqc_handler()->get_sqc_init_arg().sqc_.get_sqc_count();
-    config_.runtime_filter_wait_time_ms_ = spec.rf_max_wait_time_ms_ / sqc_count;
-  }
 
   config_.runtime_filter_max_in_num_ = ctx.get_my_session()->
       get_runtime_filter_max_in_num();
@@ -229,6 +211,29 @@ int ObJoinFilterOpInput::load_runtime_config(const ObJoinFilterSpec &spec, ObExe
   config_.build_send_opt_ =
       (spec.get_phy_plan()->get_min_cluster_version() >= CLUSTER_VERSION_4_3_5_0
        && spec.use_realistic_runtime_bloom_filter_size() && JF_BS_OPT == OB_SUCCESS);
+
+  int64_t sess_wait_time_ms = ctx.get_my_session()->get_runtime_filter_wait_time_ms();
+  if (MY_SPEC.is_create_mode()) {
+  } else if (sess_wait_time_ms != 0) {
+    config_.runtime_filter_wait_time_ms_ = sess_wait_time_ms;
+  } else {
+    // use adaptive max wait time if session variable is 0
+    int64_t row_count = 0;
+    if (OB_FAIL(ObPxEstimateSizeUtil::get_px_size(&ctx, MY_SPEC.px_est_size_factor_,
+                                                  MY_SPEC.basic_table_row_count_, row_count))) {
+      LOG_WARN("failed to get px size", K(ret));
+    } else {
+      int64_t total_size = row_count * spec_.width_;
+      // Assuming a 16-core CPU can achieve the NIC's max speed, each thread's max speed is 64MB/s.
+      static constexpr int64_t network_speed = 64 * 1000L;
+      static constexpr int64_t wait_time_lower_limit = 10; // at least 10ms
+      static constexpr int64_t wait_time_upper_limit = INT64_MAX >> 10; // in case of overflow
+      config_.runtime_filter_wait_time_ms_ =
+          std::min(wait_time_upper_limit, std::max(wait_time_lower_limit, total_size / network_speed));
+      LOG_TRACE("calc rf wait time", K(MY_SPEC.basic_table_row_count_), K(row_count),
+                K(spec_.width_), K(config_.runtime_filter_wait_time_ms_));
+    }
+  }
 
   LOG_TRACE("load runtime filter config", K(spec.get_id()), K(config_));
   return ret;
@@ -696,10 +701,23 @@ int ObJoinFilterOp::do_create_filter_rescan()
           ->share_info_.shared_jf_constructor_->reset_for_rescan();
     }
   }
+  has_sent_runtime_filter_ = false;
   return ret;
 }
 
-int ObJoinFilterOp::do_use_filter_rescan()
+int ObJoinFilterOp::do_use_filter_rescan_pre()
+{
+  // for partition wise hash join, skip evaluate join filter before rescan table scan
+  return do_use_filter_rescan(true);
+}
+
+int ObJoinFilterOp::do_use_filter_rescan_post()
+{
+  // for partition wise hash join, enable evaluate join filter after table scan rescan
+  return do_use_filter_rescan(false);
+}
+
+int ObJoinFilterOp::do_use_filter_rescan(bool skip_during_rescan)
 {
   int ret = OB_SUCCESS;
   for (int i = 0; i < MY_SPEC.rf_infos_.count() && OB_SUCC(ret); ++i) {
@@ -708,6 +726,9 @@ int ObJoinFilterOp::do_use_filter_rescan()
       if (OB_NOT_NULL(join_filter_ctx = static_cast<ObExprJoinFilter::ObExprJoinFilterContext *>(
                           ctx_.get_expr_op_ctx(MY_SPEC.rf_infos_.at(i).filter_expr_id_)))) {
         join_filter_ctx->rescan();
+        if (!MY_SPEC.is_shared_join_filter()) {
+          join_filter_ctx->skip_during_rescan_ = skip_during_rescan;
+        }
       } else {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("join filter ctx is unexpected", K(ret));
@@ -717,65 +738,37 @@ int ObJoinFilterOp::do_use_filter_rescan()
   return ret;
 }
 
-int ObJoinFilterOp::inner_rescan()
+int ObJoinFilterOp::rescan()
 {
   int ret = OB_SUCCESS;
   if (MY_SPEC.is_create_mode() && OB_FAIL(do_create_filter_rescan())) {
     LOG_WARN("fail to do create filter rescan", K(ret));
-  } else if (MY_SPEC.is_use_mode() && OB_FAIL(do_use_filter_rescan())) {
-    LOG_WARN("fail to do use filter rescan", K(ret));
-  } else if (OB_FAIL(ObOperator::inner_rescan())) {
+  } else if (MY_SPEC.is_use_mode() && OB_FAIL(do_use_filter_rescan_pre())) {
+    LOG_WARN("fail to do use filter rescan pre", K(ret));
+  } else if (OB_FAIL(ObOperator::rescan())) {
     LOG_WARN("operator rescan failed", K(ret));
+  } else if (MY_SPEC.is_use_mode() && OB_FAIL(do_use_filter_rescan_post())) {
+    LOG_WARN("fail to do use filter rescan post", K(ret));
   }
   return ret;
 }
 
-// see issue:
-int ObJoinFilterOp::mark_not_need_send_bf_msg()
-{
-  int ret = OB_SUCCESS;
-  ObJoinFilterOpInput *filter_input = static_cast<ObJoinFilterOpInput*>(input_);
-  ObPxSQCProxy *sqc_proxy = reinterpret_cast<ObPxSQCProxy *>(
-      filter_input->share_info_.ch_provider_ptr_);
-  if (MY_SPEC.is_shared_join_filter() && MY_SPEC.is_shuffle_) {
-    for (int i = 0; i < local_rf_msgs_.count() && OB_SUCC(ret); ++i) {
-      if (local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_MSG
-          || local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_VEC_MSG) {
-        ObRFBloomFilterMsg *shared_bf_msg = static_cast<ObRFBloomFilterMsg *>(shared_rf_msgs_.at(i));
-        bool is_local_dh = false;
-        if (OB_FAIL(sqc_proxy->check_is_local_dh(local_rf_msgs_.at(i)->get_p2p_datahub_id(),
-            is_local_dh,
-            local_rf_msgs_.at(i)->get_msg_receive_expect_cnt()))) {
-          LOG_WARN("fail to check local dh", K(ret));
-        } else if (is_local_dh) {
-        } else {
-          // only the msg is a shared and shuffled BLOOM_FILTER_MSG
-          // let other worker threads stop trying send join_filter
-          if (!shared_bf_msg->create_finish_) {
-            shared_bf_msg->need_send_msg_ = false;
-          }
-        }
-      }
-    }
-  }
-  return ret;
-}
-
-// for create mode, need add mark_not_need_send_bf_msg for shared shuffled bloom filter
 // for use mode, update_plan_monitor_info cause get_next_batch may not get iter end
 int ObJoinFilterOp::inner_drain_exch()
 {
   int ret = OB_SUCCESS;
   if (row_reach_end_ || batch_reach_end_) {
-  // already iter end, not need to mark not send or update_plan_monitor_info again (already done in get_next_row/batch)
-  } else if (MY_SPEC.is_create_mode()) {
-    ret = mark_not_need_send_bf_msg();
+    // update_plan_monitor_info already done in get_next_row/batch iter end
   } else if (MY_SPEC.is_use_mode()) {
     ret = update_plan_monitor_info();
   }
   return ret;
 }
 
+/*
+  Join filter create op may enter do_drain_exch without get_next_row reach iter end, thus runtime
+  filter is not merge & send, so we do these jobs in drain process.
+*/
 int ObJoinFilterOp::do_drain_exch()
 {
   int ret = OB_SUCCESS;
@@ -796,10 +789,18 @@ int ObJoinFilterOp::do_drain_exch()
               |                                                        |
           Transmit   2. wait channel succ, send rows                Transmit   3. wait channel failed
     */
-    int64_t worker_row_count = partition_splitter_->get_total_row_count();
-    int64_t total_row_count = 0;
-    if (OB_FAIL(get_exec_row_count(worker_row_count, total_row_count, true/*is_in_drain*/))) {
-      LOG_WARN("failed to get exec row count");
+    if (OB_LIKELY(has_sent_runtime_filter_)) {
+    } else if (OB_FAIL(build_and_broadcast_runtime_filter())) {
+      LOG_WARN("failed to build and broadcast runtime filter");
+    }
+  } else if (MY_SPEC.is_create_mode() && !MY_SPEC.use_realistic_runtime_bloom_filter_size()) {
+    if (OB_LIKELY(has_sent_runtime_filter_)) {
+    } else if (OB_FAIL(try_merge_join_filter())) {
+      LOG_WARN("fail to merge join filter");
+    } else if (OB_FAIL(try_send_join_filter())) {
+      LOG_WARN("fail to send bloom filter to use filter");
+    } else {
+      has_sent_runtime_filter_ = true;
     }
   }
   return ret;
@@ -822,6 +823,7 @@ int ObJoinFilterOp::inner_get_next_row()
         }
         if (OB_SUCC(ret)) {
           ret = OB_ITER_END;
+          has_sent_runtime_filter_ = true;
         }
       }
     } else if (OB_SUCCESS != ret) {
@@ -915,16 +917,17 @@ int ObJoinFilterOp::join_filter_create_do_material(const int64_t max_row_cnt)
       }
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(partition_splitter_->calc_partition_hash_value(
-                     &brs_, eval_ctx_, hash_join_hash_values_, skip_left_null_,
-                     &MY_SPEC.hash_join_is_ns_equal_cond_))) {
+                   &brs_, eval_ctx_, hash_join_hash_values_,
+                   use_hllc_estimate_ndv(),
+                   group_controller_->hash_join_keys_hllc_, skip_left_null_,
+                   &MY_SPEC.hash_join_is_ns_equal_cond_))) {
         LOG_WARN("failed to calc_partition_hash_value");
       } else if (OB_FAIL(group_controller_->apply(group_fill_range_filter, brs_))) {
         LOG_WARN("failed to group fill range filter");
-      } else if (OB_FAIL(group_controller_->apply(group_calc_join_filter_hash_values, brs_,
-                                                  hash_join_hash_values_))) {
+      } else if (OB_FAIL(group_controller_->apply(group_calc_join_filter_hash_values, brs_))) {
         LOG_WARN("failed to group calculate join filter hash values");
-      } else if (OB_FAIL(group_controller_->apply(group_fill_in_filter, brs_,
-                                                  hash_join_hash_values_))) {
+      } else if (OB_FAIL(
+                   group_controller_->apply(group_fill_in_filter, brs_, hash_join_hash_values_))) {
       } else if (OB_FAIL(partition_splitter_->add_batch(*group_controller_, hash_join_hash_values_,
                                                         brs_,
                                                         ObHashJoinVecOp::MAX_PART_LEVEL << 3))) {
@@ -932,33 +935,43 @@ int ObJoinFilterOp::join_filter_create_do_material(const int64_t max_row_cnt)
         LOG_WARN("failed to process dump");
       }
     } else if (brs_.end_ && 0 == brs_.size_) {
-      if (force_dump_ && OB_FAIL(partition_splitter_->force_dump_all_partition())) {
-        LOG_WARN("failed to force dump all partition");
-      } else if (OB_FAIL(partition_splitter_->finish_add_row())) {
-        LOG_WARN("failed to finish add row");
-      }
       break;
     }
   }
   if (OB_SUCC(ret) && brs_.end_ && 0 == brs_.size_) {
-    // send piece datahub msg, and wait the whole msg, then the total row is get
-    int64_t worker_row_count = partition_splitter_->get_total_row_count();
-    int64_t total_row_count = 0;
-    if (OB_FAIL(get_exec_row_count(worker_row_count, total_row_count, false /*is_in_drain*/))) {
-      LOG_WARN("failed to get exec row count");
-    } else if (OB_FAIL(group_controller_->apply(group_init_bloom_filter, worker_row_count,
-                                                total_row_count))) {
-      LOG_WARN("failed to group_init_bloom_filter");
-    } else if (OB_FAIL(fill_bloom_filter())) { // group fill bloom filter inner
-      LOG_WARN("failed to fill bloom filter");
-    } else if (OB_FAIL(group_controller_->apply(group_merge_and_send_join_filter))) {
-      LOG_WARN("failed to group control merge_and_send_join_filter");
-    } else {
-      // for the controller, it need to add row info manually
-      op_monitor_info_.output_row_count_ += partition_splitter_->get_total_row_count();
+    if (OB_FAIL(build_and_broadcast_runtime_filter())) {
+      LOG_WARN("failed to build and broadcast runtime filter");
     }
   }
   // should return B_SUCCESS, brs_.end_ && 0 == brs_.size_ to parent operator
+  return ret;
+}
+
+int ObJoinFilterOp::build_and_broadcast_runtime_filter()
+{
+  int ret = OB_SUCCESS;
+  // send piece datahub msg, and wait the whole msg, then the total row is get
+  int64_t worker_row_count = partition_splitter_->get_total_row_count();
+  int64_t total_row_count = 0;
+  if (force_dump_ && OB_FAIL(partition_splitter_->force_dump_all_partition())) {
+    LOG_WARN("failed to force dump all partition");
+  } else if (OB_FAIL(partition_splitter_->finish_add_row())) {
+    LOG_WARN("failed to finish add row");
+  } else if (OB_FAIL(get_exec_row_count_and_ndv(worker_row_count, total_row_count))) {
+    LOG_WARN("failed to get exec row count");
+  } else if (OB_FAIL(group_controller_->apply(group_init_bloom_filter, worker_row_count,
+                                              total_row_count))) {
+    LOG_WARN("failed to group_init_bloom_filter");
+  } else if (OB_FAIL(fill_bloom_filter())) { // group fill bloom filter inner
+    LOG_WARN("failed to fill bloom filter");
+  } else if (OB_FAIL(group_controller_->apply(group_merge_and_send_join_filter))) {
+    LOG_WARN("failed to group control merge_and_send_join_filter");
+  } else {
+    has_sent_runtime_filter_ = true;
+    // for the controller, it need to add row info manually
+    op_monitor_info_.output_row_count_ += partition_splitter_->get_total_row_count();
+    INC_METRIC_VAL(ObMetricId::OUTPUT_ROWS, partition_splitter_->get_total_row_count());
+  }
   return ret;
 }
 
@@ -994,6 +1007,8 @@ int ObJoinFilterOp::join_filter_create_get_next_batch(const int64_t max_row_cnt)
       LOG_WARN("fail to merge join filter", K(ret));
     } else if (OB_FAIL(try_send_join_filter())) {
       LOG_WARN("fail to send bloom filter to use filter", K(ret));
+    } else {
+      has_sent_runtime_filter_ = true;
     }
   }
   return ret;
@@ -1086,8 +1101,8 @@ int ObJoinFilterOp::try_merge_join_filter()
   for (int i = 0; i < local_rf_msgs_.count() && OB_SUCC(ret); ++i) {
     if (!MY_SPEC.is_shared_join_filter()) {
       lucky_devil_champions_.at(i) = true;
-    } else if (local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_MSG
-        || local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_VEC_MSG) {
+    } else if (ObP2PDatahubMsgBase::is_bloom_filter(local_rf_msgs_.at(i)->get_msg_type())) {
+      // shared bloom filter already merged when build
     } else if (OB_FAIL(shared_rf_msgs_.at(i)->merge(*local_rf_msgs_.at(i)))) {
       LOG_WARN("fail to do rf merge", K(ret));
     }
@@ -1095,8 +1110,7 @@ int ObJoinFilterOp::try_merge_join_filter()
   if (OB_SUCC(ret) && MY_SPEC.is_shared_join_filter()) {
     cur_cnt = ATOMIC_AAF(count_ptr, -1);
     for (int i = 0; i < local_rf_msgs_.count() && OB_SUCC(ret); ++i) {
-      if (local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_MSG
-          || local_rf_msgs_.at(i)->get_msg_type() == ObP2PDatahubMsgBase::BLOOM_FILTER_VEC_MSG) {
+      if (ObP2PDatahubMsgBase::is_bloom_filter(local_rf_msgs_.at(i)->get_msg_type())) {
         if (MY_SPEC.is_shuffle_) {
           bool is_local_dh = false;
           if (OB_FAIL(sqc_proxy->check_is_local_dh(local_rf_msgs_.at(i)->get_p2p_datahub_id(),
@@ -1232,12 +1246,13 @@ int ObJoinFilterOp::update_plan_monitor_info()
   op_monitor_info_.otherstat_2_id_ = ObSqlMonitorStatIds::JOIN_FILTER_TOTAL_COUNT;
   op_monitor_info_.otherstat_3_id_ = ObSqlMonitorStatIds::JOIN_FILTER_CHECK_COUNT;
   op_monitor_info_.otherstat_4_id_ = ObSqlMonitorStatIds::JOIN_FILTER_READY_TIMESTAMP;
-  op_monitor_info_.otherstat_5_id_ = ObSqlMonitorStatIds::JOIN_FILTER_ID;
-  op_monitor_info_.otherstat_5_value_ = MY_SPEC.filter_id_;
+  op_monitor_info_.otherstat_5_id_ = ObSqlMonitorStatIds::JOIN_FILTER_BY_BASS_COUNT_BEFORE_READY;
+  op_monitor_info_.otherstat_5_value_ = 0;
   op_monitor_info_.otherstat_6_id_ = ObSqlMonitorStatIds::JOIN_FILTER_LENGTH;
   op_monitor_info_.otherstat_6_value_ = MY_SPEC.filter_len_;
   int64_t check_count = 0;
   int64_t total_count = 0;
+  int64_t filter_count = 0;
   for (int i = 0; i < MY_SPEC.rf_infos_.count() && OB_SUCC(ret); ++i) {
     if (OB_INVALID_ID != MY_SPEC.rf_infos_.at(i).filter_expr_id_) {
       ObExprJoinFilter::ObExprJoinFilterContext *join_filter_ctx = NULL;
@@ -1246,15 +1261,36 @@ int ObJoinFilterOp::update_plan_monitor_info()
         LOG_TRACE("join filter expr ctx is null");
       } else {
         op_monitor_info_.otherstat_1_value_ += join_filter_ctx->filter_count_;
+        filter_count += join_filter_ctx->filter_count_;
         total_count = max(total_count, join_filter_ctx->total_count_);
         check_count = max(check_count, join_filter_ctx->check_count_);
         op_monitor_info_.otherstat_4_value_ = max(join_filter_ctx->ready_ts_, op_monitor_info_.otherstat_4_value_);
+        op_monitor_info_.otherstat_5_value_ = max(join_filter_ctx->by_pass_count_before_ready_, op_monitor_info_.otherstat_5_value_);
+
+        if (ObP2PDatahubMsgBase::is_bloom_filter(MY_SPEC.rf_infos_.at(i).dh_msg_type_)) {
+          INC_METRIC_VAL(ObMetricId::BLOOM_FILTER_CHECK_ROWS, join_filter_ctx->check_count_);
+          INC_METRIC_VAL(ObMetricId::BLOOM_FILTER_FILTER_ROWS, join_filter_ctx->filter_count_);
+          INC_METRIC_VAL(ObMetricId::BLOOM_FILTER_BYPASS_ROWS, join_filter_ctx->total_count_ - join_filter_ctx->check_count_);
+        } else if (ObP2PDatahubMsgBase::is_in_filter(MY_SPEC.rf_infos_.at(i).dh_msg_type_)) {
+          INC_METRIC_VAL(ObMetricId::IN_FILTER_CHECK_ROWS, join_filter_ctx->check_count_);
+          INC_METRIC_VAL(ObMetricId::IN_FILTER_FILTER_ROWS, join_filter_ctx->filter_count_);
+          INC_METRIC_VAL(ObMetricId::IN_FILTER_BYPASS_ROWS, join_filter_ctx->total_count_ - join_filter_ctx->check_count_);
+        } else if (ObP2PDatahubMsgBase::is_range_filter(MY_SPEC.rf_infos_.at(i).dh_msg_type_)) {
+          INC_METRIC_VAL(ObMetricId::RANGE_FILTER_CHECK_ROWS, join_filter_ctx->check_count_);
+          INC_METRIC_VAL(ObMetricId::RANGE_FILTER_FILTER_ROWS, join_filter_ctx->filter_count_);
+          INC_METRIC_VAL(ObMetricId::RANGE_FILTER_BYPASS_ROWS, join_filter_ctx->total_count_ - join_filter_ctx->check_count_);
+        }
       }
     }
   }
   if (OB_SUCC(ret)) {
     op_monitor_info_.otherstat_2_value_ += total_count;
     op_monitor_info_.otherstat_3_value_ += check_count;
+  }
+  if (OB_SUCC(ret)) {
+    INC_METRIC_VAL(ObMetricId::JOIN_FILTER_TOTAL_COUNT, total_count);
+    INC_METRIC_VAL(ObMetricId::JOIN_FILTER_CHECK_COUNT, check_count);
+    INC_METRIC_VAL(ObMetricId::JOIN_FILTER_FILTERED_COUNT, filter_count);
   }
   return ret;
 }
@@ -1512,6 +1548,19 @@ int ObJoinFilterOp::init_material_group_exec_info()
   }
 
   if (OB_SUCC(ret)) {
+    buf = ctx_.get_allocator().alloc(sizeof(ObHyperLogLogCalculator));
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to alloc hash join keys hyperloglog calculator");
+    } else {
+      group_controller_->hash_join_keys_hllc_ = new (buf) ObHyperLogLogCalculator();
+      if (OB_FAIL(group_controller_->hash_join_keys_hllc_->init(&ctx_.get_allocator(), N_HYPERLOGLOG_BIT))) {
+        LOG_WARN("fail to init hyperloglog calculator", K(ret));
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     ObOperator *cur_op = this;
     ObJoinFilterOp *join_filter_op = nullptr;
     if (OB_FAIL(group_controller_->join_filter_ops_.init(join_filter_count))) {
@@ -1529,6 +1578,20 @@ int ObJoinFilterOp::init_material_group_exec_info()
         uint16_t hash_id = spec.jf_material_control_info_.hash_id_;
         group_controller_->group_join_filter_hash_values_[i] = join_filter_op->get_join_filter_hash_values();
         group_controller_->hash_id_map_[i] = hash_id;
+        if (spec.can_reuse_hash_join_hash_value()) {
+          join_filter_op->hllc_ = group_controller_->hash_join_keys_hllc_;
+        } else {
+          buf = ctx_.get_allocator().alloc(sizeof(ObHyperLogLogCalculator));
+          if (OB_ISNULL(buf)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("fail to alloc hash join keys hyperloglog calculator");
+          } else {
+            join_filter_op->hllc_ = new (buf) ObHyperLogLogCalculator();
+            if (OB_FAIL(join_filter_op->hllc_->init(&ctx_.get_allocator(), N_HYPERLOGLOG_BIT))) {
+              LOG_WARN("fail to init hyperloglog calculator", K(ret));
+            }
+          }
+        }
         cur_op = cur_op->get_child();
       }
     }
@@ -1563,7 +1626,7 @@ int ObJoinFilterOp::process_dump()
   return ret;
 }
 
-int ObJoinFilterOp::calc_join_filter_hash_values(const ObBatchRows &brs, uint64_t *hash_join_hash_values)
+int ObJoinFilterOp::calc_join_filter_hash_values(const ObBatchRows &brs)
 {
   int ret = OB_SUCCESS;
   if (MY_SPEC.can_reuse_hash_join_hash_value()) {
@@ -1584,7 +1647,12 @@ int ObJoinFilterOp::calc_join_filter_hash_values(const ObBatchRows &brs, uint64_
       }
     }
     if (OB_SUCC(ret)) {
-      ObBitVector::flip_foreach(*brs.skip_, brs.size_, MarkHashValueOP(join_filter_hash_values_));
+      if (use_hllc_estimate_ndv()) {
+        ObBitVector::flip_foreach(
+          *brs.skip_, brs.size_, MarkHashValueAndSetHyperLogLogOP(join_filter_hash_values_, hllc_));
+      } else {
+        ObBitVector::flip_foreach(*brs.skip_, brs.size_, MarkHashValueOP(join_filter_hash_values_));
+      }
     }
   }
   return ret;
@@ -1601,8 +1669,7 @@ void ObJoinFilterOp::read_join_filter_hash_values_from_store(
 }
 
 int ObJoinFilterOp::send_datahub_count_row_msg(int64_t &total_row_count,
-                                               ObTMArray<ObJoinFilterNdv *> &ndv_info,
-                                               bool need_wait_whole_msg)
+                                               ObTMArray<ObJoinFilterNdv *> &ndv_info)
 {
   int ret = OB_SUCCESS;
   ObJoinFilterCountRowPieceMsg piece_msg;
@@ -1623,7 +1690,9 @@ int ObJoinFilterOp::send_datahub_count_row_msg(int64_t &total_row_count,
       LOG_WARN("failed to prepare_allocate", K(ndv_info.count()));
     }
     for (int64_t i = 0; i < ndv_info.count() && OB_SUCC(ret); ++i) {
-      piece_msg.ndv_info_.at(i) = *ndv_info.at(i);
+      if (OB_FAIL(piece_msg.ndv_info_.at(i).assign(*ndv_info.at(i)))) {
+        LOG_WARN("failt to assign ObJoinFilterNdv", K(ret));
+      }
     }
     const ObJoinFilterCountRowWholeMsg *whole_msg = nullptr;
 
@@ -1632,21 +1701,41 @@ int ObJoinFilterOp::send_datahub_count_row_msg(int64_t &total_row_count,
     } else if (OB_FAIL(handler->get_sqc_proxy().aggregate_sqc_pieces_and_get_dh_msg(
                    MY_SPEC.get_id(), dtl::DH_JOIN_FILTER_COUNT_ROW_WHOLE_MSG, piece_msg,
                    ctx_.get_physical_plan_ctx()->get_timeout_timestamp(), true /*need_sync*/,
-                   is_local, need_wait_whole_msg, whole_msg))) {
+                   is_local, true/*need_wait_whole_msg*/, whole_msg))) {
       LOG_WARN("failed to aggregate_sqc_pieces_and_get_dh_msg");
-    } else if (!need_wait_whole_msg) {
-      // only send, not wait
     } else if (OB_ISNULL(whole_msg)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null msg", K(ret));
     } else {
       total_row_count = whole_msg->get_total_rows();
-      for (int64_t i = 0; i < ndv_info.count(); ++i) {
-        *ndv_info.at(i) = whole_msg->ndv_info_.at(i);
+      //Lessons learned:
+      //I strongly recommend using a new package type next time, instead of adding members to the old structure,
+      //to avoid compatibility considerations during the upgrade process.
+      //Because it is difficult to directly retrieve the package version information from a pile of complex code and data member variables,
+      //or you may easily forget these border cases, especially when you think you have already covered the basic cases and completed the task
+      //Then we can use a 'switch' statement to handle all package types.
+      if (whole_msg->ndv_info_.count() == 0) {
+        //do nothing, whole_msg may send from a lower version(4.3.3) Datahub
+        //which only have whole_msg->get_total_rows() and whole_msg->ndv_info_.count() == 0
+      } else if (whole_msg->ndv_info_.count() != ndv_info.count()) {
+        // defence code
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("join filter ndv info count is not equal to the current datahub ", K(ret),
+                 K(whole_msg->ndv_info_.count()), K(ndv_info.count()));
+      } else {
+        for (int64_t i = 0; i < ndv_info.count() && OB_SUCC(ret); ++i) {
+          LOG_TRACE("[NDV_BLOOM_FILTER][JoinFilter]: receive ndv info ",
+                    K(whole_msg->ndv_info_.at(i)));
+          if (OB_FAIL(ndv_info.at(i)->assign(whole_msg->ndv_info_.at(i)))) {
+            LOG_WARN("failt to assign ObJoinFilterNdv", K(i), K(ret));
+          } else if (use_hllc_estimate_ndv()) {
+            group_controller_->join_filter_ops_.at(i)->total_ndv_ =
+              whole_msg->get_ndv_info().at(i).bf_ndv_;
+          }
+        }
       }
     }
-    LOG_TRACE("print row from datahub", K(total_row_count), K(MY_SPEC.is_shuffle_),
-              K(need_wait_whole_msg), K(ndv_info));
+    LOG_TRACE("print row from datahub", K(total_row_count), K(MY_SPEC.is_shuffle_), K(ndv_info));
   }
   return ret;
 }
@@ -1659,23 +1748,26 @@ bool ObJoinFilterOp::can_sync_row_count_locally()
          || ctx_.get_sqc_handler()->get_sqc_init_arg().sqc_.get_sqc_count() == 1;
 }
 
-int ObJoinFilterOp::get_exec_row_count(const int64_t worker_row_count, int64_t &total_row_count,
-                                       bool is_in_drain)
+int ObJoinFilterOp::get_exec_row_count_and_ndv(const int64_t worker_row_count, int64_t &total_row_count)
 {
   int ret = OB_SUCCESS;
-  // when drain exchange, not need to wait whole msg
-  bool need_wait_whole = !is_in_drain;
   bool need_sync_row_count = MY_SPEC.need_sync_row_count();
-  if (has_sync_row_count_ || !need_sync_row_count) {
-    // already done, or not need to sync
+  // In local join filter scenario(partition-wise, pkey-none), need_sync_row_count == false, so we
+  // implement a new function *group_collect_worker_ndv_by_hllc()* which decouple collect ndv logic
+  // from *group_build_ndv_info_before_aggregate()*. We need to call
+  // group_collect_worker_ndv_by_hllc() before check *need_sync_row_count* so that we can collect ndv
+  // info by hllc in local join filter scenario.
+  if (use_hllc_estimate_ndv()
+      && OB_FAIL(group_controller_->apply(group_collect_worker_ndv_by_hllc))) {
+    LOG_WARN("failed to group group_collect_worker_ndv");
+  } else if (!need_sync_row_count) {
+    // not need to sync
   } else {
     ObTMArray<ObJoinFilterNdv *> ndv_info;
-    if (OB_FAIL(group_controller_->apply(group_collect_worker_ndv, ndv_info))) {
-      LOG_WARN("failed to group group_collect_worker_ndv");
-    } else if (OB_FAIL(send_datahub_count_row_msg(total_row_count, ndv_info, need_wait_whole))) {
+    if (OB_FAIL(group_controller_->apply(group_build_ndv_info_before_aggregate, ndv_info))) {
+      LOG_WARN("failed to group group_collect_worker_in_filter_ndv");
+    } else if (OB_FAIL(send_datahub_count_row_msg(total_row_count, ndv_info))) {
       LOG_WARN("failed to sync row count");
-    } else {
-      has_sync_row_count_ = true;
     }
   }
   return ret;
@@ -1708,22 +1800,30 @@ int ObJoinFilterOp::fill_in_filter(const ObBatchRows &brs, uint64_t *hash_join_h
   return ret;
 }
 
-int ObJoinFilterOp::collect_worker_ndv(ObTMArray<ObJoinFilterNdv *> &ndv_info)
+int ObJoinFilterOp::build_ndv_info_before_aggregate(ObTMArray<ObJoinFilterNdv *> &ndv_info)
 {
   int ret = OB_SUCCESS;
+  // 1.set infomation which used to check if *in filter* active
   if (nullptr == in_vec_msg_ || !in_vec_msg_->is_active()) {
-    dh_ndv_.valid_ = false;
+    dh_ndv_.in_filter_active_ = false;
   } else {
-    dh_ndv_.valid_ = true;
-    dh_ndv_.count_ = in_vec_msg_->sm_hash_set_.size();
+    dh_ndv_.in_filter_active_ = true;
+    dh_ndv_.in_filter_ndv_ = in_vec_msg_->sm_hash_set_.size();
   }
+
+  // 2.set infomation which used to estimate ndv of *bloom filter*
+  if (use_hllc_estimate_ndv()) {
+    dh_ndv_.use_hllc_estimate_ndv_ = true;
+    dh_ndv_.hllc_.shadow_copy(*hllc_);
+  }
+
   if (OB_FAIL(ndv_info.push_back(&dh_ndv_))) {
     LOG_WARN("failed to push back ndv info");
   }
   return ret;
 }
 
-void ObJoinFilterOp::check_in_filter_active(int64_t &ndv)
+void ObJoinFilterOp::check_in_filter_active(int64_t &in_filter_ndv)
 {
   if (nullptr == in_vec_msg_) {
     in_filter_active_ = false;
@@ -1739,10 +1839,10 @@ void ObJoinFilterOp::check_in_filter_active(int64_t &ndv)
       // for shared join filter, if each worker's ndv is less than runtime_filter_max_in_num_,
       // but total runtime_filter_max_in_num_ is large than runtime_filter_max_in_num_,
       // the in filter is inactive, but we can use ndv to build a smaller bloom filter
-      if (dh_ndv_.valid_) {
+      if (dh_ndv_.in_filter_active_) {
         ObJoinFilterOpInput *filter_input = static_cast<ObJoinFilterOpInput *>(input_);
-        ndv = dh_ndv_.count_;
-        in_filter_active_ = dh_ndv_.count_ <= filter_input->config_.runtime_filter_max_in_num_;
+        in_filter_ndv = dh_ndv_.in_filter_ndv_;
+        in_filter_active_ = dh_ndv_.in_filter_ndv_ <= filter_input->config_.runtime_filter_max_in_num_;
       } else {
         in_filter_active_ = false;
       }
@@ -1872,24 +1972,43 @@ int ObJoinFilterOp::group_init_bloom_filter(ObJoinFilterOp *join_filter_op,
                                             int64_t worker_row_count, int64_t total_row_count)
 {
   int ret = OB_SUCCESS;
-  int64_t ndv = total_row_count;
-  (void)join_filter_op->check_in_filter_active(ndv);
+  int64_t final_worker_row_count = worker_row_count;
+  int64_t final_total_row_count = total_row_count;
+  int64_t in_filter_ndv = total_row_count;  //only exist for compatibility
+
+  (void)join_filter_op->check_in_filter_active(in_filter_ndv);
+
+  uint64_t op_id = join_filter_op->get_spec().get_id();
+  uint64_t task_id = join_filter_op->ctx_.get_px_task_id();
+  LOG_TRACE("[NDV_BLOOM_FILTER][JoinFilter]: ", K(op_id),
+            K(get_my_spec(*join_filter_op).is_shared_join_filter()), K(task_id),
+            K(worker_row_count), K(total_row_count), K(join_filter_op->worker_ndv_),
+            K(join_filter_op->total_ndv_), K(in_filter_ndv));
+
   // we can use ndv to build a smaller bloom filter
-  if (join_filter_op->build_send_opt()) {
-    total_row_count = ndv;
+  if (join_filter_op->use_hllc_estimate_ndv()) {
+    if (!get_my_spec(*join_filter_op).is_shared_join_filter()) {
+      final_worker_row_count = join_filter_op->worker_ndv_;
+    } else {
+      final_total_row_count = join_filter_op->total_ndv_;
+    }
+  } else if (join_filter_op->build_send_opt()) {
+    final_total_row_count = in_filter_ndv;
   }
+
   if (join_filter_op->skip_fill_bloom_filter()) {
     // in filter active, disable bloom filter
     join_filter_op->bf_vec_msg_->set_is_active(false);
     // in case of wait bloom filter too long, still need to build bloom filter message and send it
-    worker_row_count = 1;
-    total_row_count = 1;
+    final_worker_row_count = 1;
+    final_total_row_count = 1;
   }
-  LOG_TRACE("check in filter active", K(join_filter_op->in_filter_active_), K(worker_row_count),
-            K(total_row_count));
-  if (OB_FAIL(join_filter_op->init_bloom_filter(worker_row_count, total_row_count))) {
+  LOG_TRACE("check in filter active", K(join_filter_op->in_filter_active_), K(final_worker_row_count),
+            K(final_total_row_count));
+
+  if (OB_FAIL(join_filter_op->init_bloom_filter(final_worker_row_count, final_total_row_count))) {
     LOG_WARN("failed to init bloom filter under control", K(join_filter_op->get_spec().get_id()),
-             K(worker_row_count), K(total_row_count));
+             K(final_worker_row_count), K(final_total_row_count));
   }
   return ret;
 }
@@ -1950,6 +2069,7 @@ int ObJoinFilterOp::open_join_filter_use()
           join_filter_ctx->hash_funcs_.set_allocator(&ctx_.get_allocator());
           join_filter_ctx->cmp_funcs_.set_allocator(&ctx_.get_allocator());
           join_filter_ctx->is_partition_wise_jf_ = !MY_SPEC.is_shared_join_filter();
+          join_filter_ctx->enable_slide_window_ = MY_SPEC.enable_runtime_filter_adaptive_apply_;
           if (OB_FAIL(join_filter_ctx->hash_funcs_.init(MY_SPEC.hash_funcs_.count()))) {
             LOG_WARN("failed to assign hash_func");
           } else if (OB_FAIL(join_filter_ctx->cmp_funcs_.init(MY_SPEC.cmp_funcs_.count()))) {
@@ -2199,8 +2319,7 @@ int ObJoinFilterOp::release_local_msg()
       if (!MY_SPEC.is_shared_join_filter()) {
         PX_P2P_DH.erase_msg(key, msg);
         local_rf_msgs_.at(i)->destroy();
-      } else if (local_rf_msgs_.at(i)->get_msg_type() != ObP2PDatahubMsgBase::BLOOM_FILTER_MSG
-          && local_rf_msgs_.at(i)->get_msg_type() != ObP2PDatahubMsgBase::BLOOM_FILTER_VEC_MSG) {
+      } else if (!ObP2PDatahubMsgBase::is_bloom_filter(local_rf_msgs_.at(i)->get_msg_type())) {
         local_rf_msgs_.at(i)->destroy();
       }
     }

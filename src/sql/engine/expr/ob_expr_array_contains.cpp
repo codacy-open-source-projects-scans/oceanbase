@@ -13,8 +13,6 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/expr/ob_expr_array_contains.h"
-#include "lib/udt/ob_collection_type.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_result_type_util.h"
@@ -64,7 +62,7 @@ int ObExprArrayContains::calc_result_type2(ObExprResType &type,
   } else if (OB_ISNULL(type_ctx.get_raw_expr())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("raw expr is null", K(ret));
-  } else if (type_ctx.get_raw_expr()->get_extra() != 0) {
+  } else if (type_ctx.get_raw_expr()->get_reverse_param_order() != 0) {
     // It's any operator ,param order is reversed
     ObExprResType *type_tmp = type2_ptr;
     type2_ptr = type1_ptr;
@@ -72,14 +70,15 @@ int ObExprArrayContains::calc_result_type2(ObExprResType &type,
   }
 
   if (OB_FAIL(ret)) {
+  } else if (type1_ptr->is_null()) {
+    // do nothing
   } else if (!ob_is_collection_sql_type(type1_ptr->get_type())) {
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
     LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, ob_obj_type_str(type1_ptr->get_type()), ob_obj_type_str(type2_ptr->get_type()));
-  } else if (type2_ptr->is_null()) {
-    // do nothing
   } else if (OB_FAIL(ObArrayExprUtils::deduce_array_type(exec_ctx, *type1_ptr, *type2_ptr, subschema_id))) {
     LOG_WARN("failed to get result array type subschema id", K(ret));
   }
+
   if (OB_SUCC(ret)) {
     type.set_int32();
     type.set_scale(common::ObAccuracy::DDL_DEFAULT_ACCURACY[common::ObIntType].scale_);
@@ -288,14 +287,11 @@ int ObExprArrayContains::eval_array_contains_array_batch(const ObExpr &expr, ObE
           continue;                                                                                       \
         } else if (left_vec->is_null(idx)) {                                                              \
           is_null_res = true;                                                                             \
-        } else if (left_format == VEC_UNIFORM || left_format == VEC_UNIFORM_CONST) {                      \
+        } else {                                                                                          \
           ObString left = left_vec->get_string(idx);                                                      \
           if (OB_FAIL(ObNestedVectorFunc::construct_param(tmp_allocator, ctx, meta_id, left, arr_obj))) { \
             LOG_WARN("construct array obj failed", K(ret));                                               \
           }                                                                                               \
-        } else if (OB_FAIL(ObNestedVectorFunc::construct_attr_param(                                      \
-                       tmp_allocator, ctx, *expr.args_[p0], meta_id, idx, arr_obj))) {                    \
-          LOG_WARN("construct array obj failed", K(ret));                                                 \
         }                                                                                                 \
         bool bret = false;                                                                                \
         if (OB_FAIL(ret)) {                                                                               \
@@ -350,41 +346,31 @@ int ObExprArrayContains::eval_array_contains_array_vector(const ObExpr &expr, Ob
         continue;
       } else if (left_vec->is_null(idx)) {
         is_null_res = true;
-      } else if (left_format == VEC_UNIFORM || left_format == VEC_UNIFORM_CONST) {
+      } else {
         ObString left = left_vec->get_string(idx);
         if (OB_FAIL(ObNestedVectorFunc::construct_param(tmp_allocator, ctx, left_meta_id, left, arr_obj))) {
           LOG_WARN("construct array obj failed", K(ret));
         }
-      } else if (OB_FAIL(ObNestedVectorFunc::construct_attr_param(
-                     tmp_allocator, ctx, *expr.args_[p0], left_meta_id, idx, arr_obj))) {
-        LOG_WARN("construct array obj failed", K(ret));
       }
-      if (OB_FAIL(ret)) {
-      } else if (is_null_res) {
-        // do noting
-      } else if (right_vec->is_null(idx)) {
-        bool contains_null = arr_obj->contain_null();
-        res_vec->set_bool(idx, contains_null);
-        eval_flags.set(idx);
-      } else if (right_format == VEC_UNIFORM || right_format == VEC_UNIFORM_CONST) {
-        ObString right = right_vec->get_string(idx);
-        if (OB_FAIL(ObNestedVectorFunc::construct_param(tmp_allocator, ctx, right_meta_id, right, arr_val))) {
-          LOG_WARN("construct array obj failed", K(ret));
-        }
-      } else if (OB_FAIL(ObNestedVectorFunc::construct_attr_param(
-                     tmp_allocator, ctx, *expr.args_[p1], right_meta_id, idx, arr_val))) {
-        LOG_WARN("construct array obj failed", K(ret));
-      }
-      bool bret = false;
       if (OB_FAIL(ret)) {
       } else if (is_null_res) {
         res_vec->set_null(idx);
         eval_flags.set(idx);
-      } else if (OB_FAIL(ObArrayUtil::contains(*arr_obj, *arr_val, bret))) {
-        LOG_WARN("array contains failed", K(ret));
-      } else {
-        res_vec->set_bool(idx, bret);
+      } else if (right_vec->is_null(idx)) {
+        bool contains_null = arr_obj->contain_null();
+        res_vec->set_bool(idx, contains_null);
         eval_flags.set(idx);
+      } else {
+        bool bret = false;
+        ObString right = right_vec->get_string(idx);
+        if (OB_FAIL(ObNestedVectorFunc::construct_param(tmp_allocator, ctx, right_meta_id, right, arr_val))) {
+          LOG_WARN("construct array obj failed", K(ret));
+        } else if (OB_FAIL(ObArrayUtil::contains(*arr_obj, *arr_val, bret))) {
+          LOG_WARN("array contains failed", K(ret));
+        } else {
+          res_vec->set_bool(idx, bret);
+          eval_flags.set(idx);
+        }
       }
     }
   }
@@ -408,7 +394,7 @@ int ObExprArrayContains::cg_expr(ObExprCGCtx &expr_cg_ctx,
   } else {
     rt_expr.eval_func_ = NULL;
     rt_expr.may_not_need_raw_check_ = false;
-    rt_expr.extra_ = raw_expr.get_extra();
+    rt_expr.extra_ = raw_expr.get_reverse_param_order();
     uint32_t p1 = rt_expr.extra_ == 1 ? 0 : 1;
     uint32_t p0 = rt_expr.extra_ == 1 ? 1 : 0;
     const ObObjType right_type = rt_expr.args_[p1]->datum_meta_.type_;
@@ -420,7 +406,9 @@ int ObExprArrayContains::cg_expr(ObExprCGCtx &expr_cg_ctx,
       ObObjType elem_type;
       uint32_t unused;
       bool is_vec = false;
-      if (OB_FAIL(ObArrayExprUtils::get_array_element_type(exec_ctx, sub_id, elem_type, unused, is_vec))) {
+      if (ob_is_null(rt_expr.args_[p0]->datum_meta_.type_)) {
+        // do nothing
+      } else if (OB_FAIL(ObArrayExprUtils::get_array_element_type(exec_ctx, sub_id, elem_type, unused, is_vec))) {
         LOG_WARN("failed to get collection elem type", K(ret), K(sub_id));
       } else {
         right_tc = ob_obj_type_class(elem_type);

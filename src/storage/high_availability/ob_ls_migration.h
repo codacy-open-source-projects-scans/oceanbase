@@ -49,7 +49,7 @@ public:
   uint64_t tenant_id_;
   ObMigrationOpArg arg_;
   share::SCN local_clog_checkpoint_scn_;
-  int64_t local_rebuild_seq_;
+  int64_t src_ls_rebuild_seq_;
 
   int64_t start_ts_;
   int64_t finish_ts_;
@@ -68,7 +68,7 @@ public:
       "ObIHADagNetCtx", ObIHADagNetCtx,
       K_(arg),
       K_(local_clog_checkpoint_scn),
-      K_(local_rebuild_seq),
+      K_(src_ls_rebuild_seq),
       K_(start_ts),
       K_(finish_ts),
       K_(task_id),
@@ -131,7 +131,7 @@ public:
   }
   virtual int start_running() override;
   virtual bool operator == (const share::ObIDagNet &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_comment(char *buf, const int64_t buf_len) const override;
   virtual int fill_dag_net_key(char *buf, const int64_t buf_len) const override;
   virtual int clear_dag_net_ctx() override;
@@ -177,7 +177,7 @@ public:
   ObInitialMigrationDag();
   virtual ~ObInitialMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
 
@@ -215,7 +215,7 @@ public:
   ObStartMigrationDag();
   virtual ~ObStartMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
 
@@ -272,7 +272,7 @@ public:
   ObSysTabletsMigrationDag();
   virtual ~ObSysTabletsMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
 
@@ -319,7 +319,7 @@ public:
   ObTabletMigrationDag();
   virtual ~ObTabletMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
   virtual int inner_reset_status_for_retry() override;
@@ -364,6 +364,12 @@ private:
       ObTabletCopyFinishTask *tablet_copy_finish_task,
       share::ObITask *&parent_task);
   int generate_ddl_copy_tasks_(
+      ObTabletCopyFinishTask *tablet_copy_finish_task,
+      share::ObITask *&parent_task);
+  int generate_inc_major_ddl_copy_tasks_(
+      ObTabletCopyFinishTask *tablet_copy_finish_task,
+      share::ObITask *&parent_task);
+  int generate_inc_major_copy_tasks_(
       ObTabletCopyFinishTask *tablet_copy_finish_task,
       share::ObITask *&parent_task);
   int generate_copy_tasks_(
@@ -444,7 +450,7 @@ public:
   ObDataTabletsMigrationDag();
   virtual ~ObDataTabletsMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
 
@@ -476,6 +482,7 @@ private:
   int inner_generate_check_co_convert_dag(ObLS *ls);
   int try_remove_unneeded_tablets_();
   int try_offline_ls_();
+  int check_tx_data_continue_();
   int record_server_event_();
 
 private:
@@ -498,7 +505,7 @@ public:
   ObTabletGroupMigrationDag();
   virtual ~ObTabletGroupMigrationDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
   virtual int generate_next_dag(share::ObIDag *&dag);
@@ -535,7 +542,6 @@ private:
   int try_remove_tablets_info_();
   int remove_tablets_info_();
   int record_server_event_();
-
 private:
   bool is_inited_;
   ObLSHandle ls_handle_;
@@ -556,7 +562,7 @@ public:
   ObMigrationFinishDag();
   virtual ~ObMigrationFinishDag();
   virtual bool operator == (const share::ObIDag &other) const override;
-  virtual int64_t hash() const override;
+  virtual uint64_t hash() const override;
   virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
   virtual int create_first_task() override;
 

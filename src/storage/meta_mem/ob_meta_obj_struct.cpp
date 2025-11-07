@@ -12,8 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "common/log/ob_log_constants.h"
-#include "storage/meta_mem/ob_meta_obj_struct.h"
+#include "ob_meta_obj_struct.h"
 #include "storage/meta_mem/ob_tenant_meta_mem_mgr.h"
 
 namespace oceanbase
@@ -158,9 +157,9 @@ bool ObMetaDiskAddr::is_valid() const
   switch (type_) {
     case DiskType::FILE:
       ret = file_id_ > 0
-         && (offset_ < ObLogConstants::MAX_LOG_FILE_SIZE)
+         && (offset_ < ObLogConstants::MAX_LOG_FILE_SIZE_IN_HISTORY)
          && size_ > 0
-         && size_ <= ObLogConstants::MAX_LOG_FILE_SIZE;
+         && size_ <= ObLogConstants::MAX_LOG_FILE_SIZE_IN_HISTORY;
       break;
     case DiskType::BLOCK:
     case DiskType::RAW_BLOCK:
@@ -183,35 +182,28 @@ bool ObMetaDiskAddr::is_valid() const
 int64_t ObMetaDiskAddr::to_string(char *buf, const int64_t buf_len) const
 {
   int64_t pos = 0;
-  // 1. print detail info of first_id
-  block_id().first_id_to_string(buf, buf_len, pos);
+  // 1. print detail info of macro_info, 1st, 2nd, 3rd, 5th
+  pos = block_id().to_string(buf, buf_len);
 
-  // 2. print other info
+  // 2. print offset and other info: 4th, 6th
   switch (type_) {
   case FILE:
     databuff_printf(buf, buf_len, pos,
-                     "[2nd=%lu][3rd=%lu][file_id=%ld,offset=%lu,size=%lu,type=%lu,seq=%lu][5th=%lu][6th=%lu]}",
-                     second_id_,
-                     third_id_,
+                     "{[file_id=%ld,offset=%lu,size=%lu,type=%lu,seq=%lu][6th=%lu]}",
+                     file_id_,
                      (uint64_t) offset_,
                      (uint64_t) size_,
                      (uint64_t) type_,
                      (uint64_t) seq_,
-                     fifth_id_,
-                     sixth_id_,
-                     file_id_);
+                     sixth_id_);
     break;
   default:
     databuff_printf(buf, buf_len, pos,
-                    "[2nd=%lu][3rd=%lu][offset=%lu,size=%lu,type=%lu,seq=%lu][trans_seq=%lu, sec_part=%lu][6th=%lu]}",
-                    second_id_,
-                    third_id_,
+                    "{[offset=%lu,size=%lu,type=%lu,seq=%lu][6th=%lu]}",
                     (uint64_t) offset_,
                     (uint64_t) size_,
                     (uint64_t) type_,
                     (uint64_t) seq_,
-                    (uint64_t) block_id().macro_transfer_seq(),
-                    (uint64_t) block_id().tenant_seq(),
                     sixth_id_);
     break;
   };

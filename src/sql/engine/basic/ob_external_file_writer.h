@@ -35,7 +35,7 @@ namespace sql
 class ObExternalFileWriter
 {
 public:
-  ObExternalFileWriter(const share::ObBackupStorageInfo &access_info,
+  ObExternalFileWriter(const common::ObObjectStorageInfo *access_info,
                        const IntoFileLocation &file_location):
     write_bytes_(0),
     is_file_opened_(false),
@@ -67,14 +67,14 @@ public:
   ObStorageAppender storage_appender_;
   int64_t split_file_id_;
   ObString url_;
-  const share::ObBackupStorageInfo &access_info_;
+  const common::ObObjectStorageInfo *access_info_;
   const IntoFileLocation &file_location_;
 };
 
 class ObCsvFileWriter : public ObExternalFileWriter
 {
 public:
-  ObCsvFileWriter(const share::ObBackupStorageInfo &access_info,
+  ObCsvFileWriter(const common::ObObjectStorageInfo *access_info,
                   const IntoFileLocation &file_location,
                   bool &use_shared_buf,
                   const bool &has_compress,
@@ -123,6 +123,7 @@ public:
   virtual int close_file() override;
   virtual int64_t get_file_size() override;
   int64_t get_curr_bytes_exclude_curr_line();
+  int64_t get_curr_file_pos();
 private:
   char *buf_;
   int64_t buf_len_;
@@ -139,7 +140,7 @@ private:
 class ObBatchFileWriter : public ObExternalFileWriter
 {
 public:
-  ObBatchFileWriter(const share::ObBackupStorageInfo &access_info,
+  ObBatchFileWriter(const common::ObObjectStorageInfo *access_info,
                     const IntoFileLocation &file_location):
     ObExternalFileWriter(access_info, file_location),
     row_batch_size_(64),
@@ -172,7 +173,7 @@ protected:
 class ObParquetFileWriter : public ObBatchFileWriter
 {
 public:
-  ObParquetFileWriter(const share::ObBackupStorageInfo &access_info,
+  ObParquetFileWriter(const common::ObObjectStorageInfo *access_info,
                       const IntoFileLocation &file_location,
                       std::shared_ptr<parquet::schema::GroupNode> parquet_writer_schema):
     ObBatchFileWriter(access_info, file_location),
@@ -239,7 +240,7 @@ private:
 class ObOrcFileWriter : public ObBatchFileWriter
 {
 public:
-  ObOrcFileWriter(const share::ObBackupStorageInfo &access_info,
+  ObOrcFileWriter(const common::ObObjectStorageInfo *access_info,
                   const IntoFileLocation &file_location):
     ObBatchFileWriter(access_info, file_location),
     orc_output_stream_(nullptr),

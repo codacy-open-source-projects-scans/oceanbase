@@ -11,14 +11,9 @@
  */
 
 #define USING_LOG_PREFIX SQL_OPT
-#include "share/stat/ob_stat_item.h"
-#include "lib/utility/ob_print_utils.h"
-#include "pl/sys_package/ob_dbms_stats.h"
-#include "share/stat/ob_opt_table_stat.h"
+#include "ob_stat_item.h"
 #include "share/stat/ob_hybrid_hist_estimator.h"
-#include "share/stat/ob_topk_hist_estimator.h"
 #include "share/stat/ob_dbms_stats_utils.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
 namespace oceanbase
 {
 using namespace sql;
@@ -493,7 +488,8 @@ int ObStatItem::cast_int(const ObObj &obj, int64_t &ret_value)
   return ret;
 }
 
-void ObGlobalTableStat::add(int64_t rc, int64_t rs, int64_t ds, int64_t mac, int64_t mic)
+void ObGlobalTableStat::add(int64_t rc, int64_t rs, int64_t ds, int64_t mac, int64_t mic,
+                           int64_t scnt, int64_t mcnt)
 {
   // skip empty partition
   if (rc > 0) {
@@ -503,6 +499,8 @@ void ObGlobalTableStat::add(int64_t rc, int64_t rs, int64_t ds, int64_t mac, int
     macro_block_count_ += mac;
     micro_block_count_ += mic;
     part_cnt_ ++;
+    sstable_row_cnt_ += scnt;
+    memtable_row_cnt_ += mcnt;
   }
 }
 
@@ -528,8 +526,20 @@ int ObGlobalTableStat::add(int64_t rc, int64_t rs, int64_t ds, int64_t mac, int6
         LOG_WARN("failed to assign", K(ret));
       }
     } else if (OB_UNLIKELY(cg_macro_arr.count() != cg_macro_cnt_arr_.count())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected error", K(ret), K(cg_macro_arr), K(cg_macro_cnt_arr_));
+      if (cg_macro_arr.count() == 1) {
+        cg_macro_cnt_arr_.at(0) += cg_macro_arr.at(0);
+      } else if (cg_macro_cnt_arr_.count() == 1) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < cg_macro_arr.count(); ++i) {
+          if (i == 0) {
+            cg_macro_cnt_arr_.at(0) += cg_macro_arr.at(0);
+          } else if (OB_FAIL(cg_macro_cnt_arr_.push_back(cg_macro_arr.at(i)))) {
+            LOG_WARN("failed to push back macro cnt", K(ret));
+          }
+        }
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(cg_macro_arr), K(cg_macro_cnt_arr_));
+      }
     } else {
       for (int64_t i = 0; i < cg_macro_arr.count(); ++i) {
         cg_macro_cnt_arr_.at(i) += cg_macro_arr.at(i);
@@ -543,8 +553,21 @@ int ObGlobalTableStat::add(int64_t rc, int64_t rs, int64_t ds, int64_t mac, int6
           LOG_WARN("failed to assign", K(ret));
         }
       } else if (OB_UNLIKELY(cg_micro_arr.count() != cg_micro_cnt_arr_.count())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected error", K(ret), K(cg_micro_arr), K(cg_micro_cnt_arr_));
+        if (cg_micro_arr.count() == 1) {
+          cg_micro_cnt_arr_.at(0) += cg_micro_arr.at(0);
+        } else if (cg_micro_cnt_arr_.count() == 1) {
+          for (int64_t i = 0; OB_SUCC(ret) && i < cg_micro_arr.count(); ++i) {
+            if (i == 0) {
+              cg_micro_cnt_arr_.at(0) += cg_micro_arr.at(0);
+            } else if (OB_FAIL(cg_micro_cnt_arr_.push_back(cg_micro_arr.at(i)))) {
+              LOG_WARN("failed to push back micro cnt", K(ret));
+            }
+          }
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get unexpected error", K(ret), K(cg_micro_arr), K(cg_micro_cnt_arr_));
+        }
+
       } else {
         for (int64_t i = 0; i < cg_micro_arr.count(); ++i) {
           cg_micro_cnt_arr_.at(i) += cg_micro_arr.at(i);
@@ -582,6 +605,73 @@ int64_t ObGlobalTableStat::get_micro_block_count() const
   return micro_block_count_;
 }
 
+const ObIArray<uint64_t>& ObGlobalSkipRateStat::get_skip_sample_cnt_arr() const
+{
+  return skip_sample_cnt_arr_;
+}
+
+const ObIArray<double>& ObGlobalSkipRateStat::get_skip_rate_arr() const
+{
+  return cg_skip_rate_arr_;
+}
+
+int ObGlobalSkipRateStat::add(const ObIArray<uint64_t> &skip_sample_cnt_arr, const ObIArray<double> &cg_skip_rate_arr)
+{
+  int ret = OB_SUCCESS;
+  if (cg_skip_rate_arr.empty()) {
+    //do nothing
+  } else if (count_ == 0 &&
+             !cg_skip_rate_arr.empty() &&
+             OB_FAIL(cg_skip_rate_arr_.prepare_allocate(cg_skip_rate_arr.count()))) {
+    LOG_WARN("failed to prepare allocate", K(ret));
+  } else if (count_ == 0 &&
+             !skip_sample_cnt_arr.empty() &&
+             OB_FAIL(skip_sample_cnt_arr_.prepare_allocate(skip_sample_cnt_arr.count()))) {
+    LOG_WARN("failed to prepare allocate", K(ret));
+  } else if (OB_UNLIKELY(cg_skip_rate_arr.count() != cg_skip_rate_arr_.count()) ||
+             OB_UNLIKELY(skip_sample_cnt_arr.count() != skip_sample_cnt_arr_.count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected error", K(ret), K(cg_skip_rate_arr), K(cg_skip_rate_arr_), K(skip_sample_cnt_arr));
+  } else if (count_ == 0 && OB_FAIL(cg_skip_rate_arr_.assign(cg_skip_rate_arr))) {
+    LOG_WARN("failed to assign", K(ret));
+  } else if (count_ == 0 && OB_FAIL(skip_sample_cnt_arr_.assign(skip_sample_cnt_arr))) {
+    LOG_WARN("failed to assign", K(ret));
+  } else {
+    for (int64_t i = 0; i < cg_skip_rate_arr_.count(); ++i) {
+      if (count_ == 0) {
+        cg_skip_rate_arr_.at(i) *= (double)skip_sample_cnt_arr_.at(i);
+      } else {
+        cg_skip_rate_arr_.at(i) += (cg_skip_rate_arr.at(i) * (double)skip_sample_cnt_arr.at(i));
+        skip_sample_cnt_arr_.at(i) += (double)skip_sample_cnt_arr.at(i);
+      }
+    }
+    count_++;
+    LOG_TRACE("OPT:skip rate stat add ",K(cg_skip_rate_arr_),K(skip_sample_cnt_arr), K(count_), K(ret));
+  }
+  return ret;
+}
+
+int ObGlobalSkipRateStat::merge()
+{
+  int ret = OB_SUCCESS;
+  if (cg_skip_rate_arr_.empty()) {
+    //do nothing
+  } else {
+    for (int64_t i = 0; i < cg_skip_rate_arr_.count(); ++i) {
+      if (cg_skip_rate_arr_.at(i) == 0) {
+        //do nothing
+      } else if (OB_UNLIKELY(!cg_skip_rate_arr_.at(i) && skip_sample_cnt_arr_.at(i) == 0)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected error", K(ret), K(cg_skip_rate_arr_), K(skip_sample_cnt_arr_));
+      } else {
+        cg_skip_rate_arr_.at(i) /= (double)skip_sample_cnt_arr_.at(i);
+      }
+    }
+  }
+  LOG_TRACE("OPT:skip rate stat merge",K(cg_skip_rate_arr_), K(skip_sample_cnt_arr_), K(ret));
+  return ret;
+}
+
 void ObGlobalNdvEval::add(int64_t ndv, const char *llc_bitmap)
 {
   if (llc_bitmap != NULL) {
@@ -591,6 +681,7 @@ void ObGlobalNdvEval::add(int64_t ndv, const char *llc_bitmap)
   if (ndv > global_ndv_) {
     global_ndv_ = ndv;
   }
+  liner_ndv_ += ndv;
 }
 
 void ObGlobalNdvEval::update_llc(char *dst_llc_bitmap, const char *src_llc_bitmap, bool force_update)
@@ -614,6 +705,11 @@ int64_t ObGlobalNdvEval::get() const
     num_distinct = get_ndv_from_llc(global_llc_bitmap_);
   }
   return num_distinct;
+}
+
+int64_t ObGlobalNdvEval::get_liner_ndv() const
+{
+  return liner_ndv_;
 }
 
 //splict the get function in to two, so get function should be used outside the NdvEval.
@@ -683,18 +779,46 @@ void ObGlobalMaxEval::add(const ObObj &obj)
 {
   if (global_max_.is_null()) {
     global_max_ = obj;
+  } else if (obj.is_null()) {
+    //do nothing
   } else if (obj > global_max_) {
     global_max_ = obj;
   }
+}
+
+int ObGlobalMaxEval::flush(common::ObIAllocator *alloc)
+{
+  int ret = OB_SUCCESS;
+  ObObj temp_value_;
+  if (is_valid() && OB_FAIL(ob_write_obj(*alloc, global_max_, temp_value_))) {
+    LOG_WARN("failed to deep copy min obj", K(ret));
+  } else if (is_valid()) {
+    global_max_ = temp_value_;
+  }
+  return ret;
 }
 
 void ObGlobalMinEval::add(const ObObj &obj)
 {
   if (global_min_.is_null()) {
     global_min_ = obj;
+  } else if (obj.is_null()) {
+    //do nothing
   } else if (global_min_ > obj) {
     global_min_ = obj;
   }
+}
+
+int ObGlobalMinEval::flush(common::ObIAllocator *alloc)
+{
+  int ret = OB_SUCCESS;
+  ObObj temp_value_;
+  if (is_valid() && OB_FAIL(ob_write_obj(*alloc, global_min_, temp_value_))) {
+    LOG_WARN("failed to deep copy min obj", K(ret));
+  } else if (is_valid()) {
+    global_min_ = temp_value_;
+  }
+  return ret;
 }
 
 int ObStatHybridHist::gen_expr(char *buf, const int64_t buf_len, int64_t &pos)
@@ -753,6 +877,34 @@ int ObStatHybridHist::decode(ObObj &obj, ObIAllocator &allocator)
   return ret;
 }
 
+int ObGlobalAllColEvals::flush(common::ObIAllocator *alloc)
+{
+  int ret = OB_SUCCESS;
+  if(OB_FAIL(max_eval_.flush(alloc))) {
+    LOG_WARN("failed to flush min", K(ret));
+  } else if (OB_FAIL((min_eval_.flush(alloc)))) {
+    LOG_WARN("failed to flush max", K(ret));
+  }
+  return ret;
+}
+
+void ObGlobalAllColEvals::merge(const ObOptColumnStat &col_stats)
+{
+  if (col_stats.get_last_analyzed() > 0) {
+    ndv_eval_.add(col_stats.get_num_distinct(), col_stats.get_llc_bitmap());
+    null_eval_.add(col_stats.get_num_null());
+    avglen_eval_.add(col_stats.get_avg_len());
+    cg_blk_eval_.add_cg_blk_cnt(col_stats.get_cg_macro_blk_cnt(), col_stats.get_cg_micro_blk_cnt());
+    cg_skip_rate_eval_.add_cg_skip_rate(col_stats.get_cg_skip_rate(), col_stats.get_cg_micro_blk_cnt());
+    // a partition has min/max values only when it contains a valid value in the other word, ndv is not zero
+    if (col_stats.get_num_distinct() != 0) {
+      min_eval_.add(col_stats.get_min_value());
+      max_eval_.add(col_stats.get_max_value());
+    }
+  } else {
+    column_stat_valid_ = false;
+  }
+}
 static const int32_t DEFAULT_DATA_TYPE_LEGNTH[] =
 {
   /*ObNullType        = 0*/  12,
@@ -833,8 +985,12 @@ int ObStatAvgLen::gen_expr(char *buf, const int64_t buf_len, int64_t &pos)
     LOG_WARN("column param is null", K(ret));
   } else if (col_param_->column_type_ < type_count &&
              DEFAULT_DATA_TYPE_LEGNTH[col_param_->column_type_] > 0) {
-    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%d",
-                                DEFAULT_DATA_TYPE_LEGNTH[col_param_->column_type_]))) {
+    const char* fmt = lib::is_oracle_mode() ? " (%d * COUNT(\"%.*s\"))/decode(COUNT(*),0,1,COUNT(*))"
+                     : " (%d * COUNT(`%.*s`))/(case when COUNT(*) = 0 then 1 else COUNT(*) end)";
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, fmt,
+                                DEFAULT_DATA_TYPE_LEGNTH[col_param_->column_type_],
+                                col_param_->column_name_.length(),
+                                col_param_->column_name_.ptr()))) {
       LOG_WARN("failed to print avg column size", K(ret));
     }
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, get_fmt(),

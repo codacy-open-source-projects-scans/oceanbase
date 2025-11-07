@@ -12,16 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/px/p2p_datahub/ob_runtime_filter_vec_msg.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_proxy.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_rpc_process.h"
-#include "sql/engine/px/p2p_datahub/ob_p2p_dh_msg.h"
 #include "sql/engine/px/p2p_datahub/ob_p2p_dh_mgr.h"
-#include "sql/engine/expr/ob_expr_join_filter.h"
-#include "sql/engine/expr/ob_expr_calc_partition_id.h"
-#include "sql/engine/ob_operator.h"
-#include "share/detect/ob_detect_manager_utils.h"
-#include "sql/engine/basic/ob_temp_row_store.h"
-#include "lib/utility/ob_tracepoint.h"
 #include "sql/engine/join/hash_join/ob_hash_join_vec_op.h"
 
 using namespace oceanbase::common;
@@ -1040,11 +1031,7 @@ int ObRFInFilterVecMsg::ObRFInFilterRowStore::create_and_add_row(
   for (int64_t i = 0; i < exprs.count() && OB_SUCC(ret); ++i) {
     ObExpr *expr = exprs.at(i);
     ObIVector *vec = expr->get_vector(ctx);
-    if (expr->is_nested_expr() && !is_uniform_format(vec->get_format())) {
-      OZ(ObCompactRow::nested_vec_to_row(*expr, ctx, row_meta, row, batch_idx, i));
-    } else {
-      OZ(vec->to_row(row_meta, row, batch_idx, i));
-    }
+    OZ(vec->to_row(row_meta, row, batch_idx, i));
   }
   if (OB_FAIL(ret)) {
   } else if (FALSE_IT(row->extra_payload<uint64_t>(row_meta) = hash_val)) {

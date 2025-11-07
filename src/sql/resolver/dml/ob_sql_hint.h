@@ -82,11 +82,9 @@ struct ObQueryHint {
   const ObHints* get_stmt_id_hints(int64_t stmt_id) const;
   int add_stmt_id_map(const int64_t stmt_id, stmt::StmtType stmt_type);
   int set_stmt_id_map_info(const ObDMLStmt &stmt, ObString &qb_name);
-  int init_query_hint(ObIAllocator *allocator, ObSQLSessionInfo *session_info, ObDMLStmt *stmt);
-  int check_and_set_params_from_hint(const ObResolverParams &params, const ObDMLStmt &stmt) const;
-  int check_ddl_schema_version_from_hint(const ObDMLStmt &stmt) const;
-  int check_ddl_schema_version_from_hint(const ObDMLStmt &stmt,
-                                         const ObDDLSchemaVersionHint& ddlSchemaVersionHint) const;
+  int init_query_hint(ObIAllocator *allocator, ObSQLSessionInfo *session_info, const ObGlobalHint &global_hint, ObDMLStmt *stmt);
+  int set_params_from_hint(const ObResolverParams &params) const;
+  int check_ddl_schema_version_from_hint(TableItem *table_item) const;
   int distribute_hint_to_orig_stmt(ObDMLStmt *stmt);
   int adjust_qb_name_for_stmt(ObIAllocator &allocator,
                               ObDMLStmt &stmt,
@@ -140,11 +138,7 @@ struct ObQueryHint {
   int get_table_item_by_hint_table(const ObDMLStmt &stmt,
                                    const ObTableInHint &table,
                                    TableItem *&table_item) const;
-  int get_basic_table_without_index_by_hint_table(const ObDMLStmt &stmt,
-                                                  const ObTableInHint &table,
-                                                  TableItem *&table_item) const;
-  bool has_hint_exclude_concurrent() const {  return !qb_hints_.empty() || !stmt_id_hints_.empty()
-                                                     || global_hint_.has_hint_exclude_concurrent(); }
+  bool has_hint_exclude_concurrent() const;
 
   // print hint
   int print_stmt_hint(PlanText &plan_text, const ObDMLStmt &stmt, const bool is_first_stmt_for_hint) const;
@@ -181,7 +175,7 @@ struct ObQueryHint {
   ObSEArray<const ObHint*, 8, common::ModulePageAllocator, true> outline_trans_hints_; // tranform hints to generate outline data
   ObSEArray<const ObHint*, 8, common::ModulePageAllocator, true> used_trans_hints_;
   ObSEArray<QbNames, 8, common::ModulePageAllocator, true> stmt_id_map_;	//	stmt id -> qb name list, position is stmt id
-  hash::ObHashMap<ObString, int64_t> qb_name_map_;	// qb name -> stmt id
+  hash::ObHashMap<ObString, int64_t, common::hash::NoPthreadDefendMode> qb_name_map_;	// qb name -> stmt id
   int64_t sel_start_id_;
   int64_t set_start_id_;
   int64_t other_start_id_;
@@ -259,6 +253,7 @@ struct LogJoinHint
   LogJoinHint() : join_tables_(),
                   local_methods_(0),
                   dist_methods_(0),
+                  parallel_(ObGlobalHint::UNSET_PARALLEL),
                   slave_mapping_(NULL),
                   nl_material_(NULL),
                   local_method_hints_(),
@@ -271,6 +266,7 @@ struct LogJoinHint
                K_(local_methods),
                K_(dist_methods),
                K_(slave_mapping),
+               K_(parallel),
                K_(nl_material),
                K_(local_method_hints),
                K_(dist_method_hints));
@@ -278,6 +274,7 @@ struct LogJoinHint
   ObRelIds join_tables_;
   int64_t local_methods_;
   int64_t dist_methods_;
+  int64_t parallel_;
   const ObJoinHint *slave_mapping_;
   const ObJoinHint *nl_material_;
   ObSEArray<const ObJoinHint*, 4, common::ModulePageAllocator, true> local_method_hints_;
@@ -290,25 +287,29 @@ struct LogTableHint
                     parallel_hint_(NULL),
                     use_das_hint_(NULL),
                     use_column_store_hint_(NULL),
-                    union_merge_hint_(NULL),
                     dynamic_sampling_hint_(NULL),
                     is_ds_hint_conflict_(false) {}
   LogTableHint(const TableItem *table) :  table_(table),
                                           parallel_hint_(NULL),
                                           use_das_hint_(NULL),
                                           use_column_store_hint_(NULL),
-                                          union_merge_hint_(NULL),
                                           dynamic_sampling_hint_(NULL),
                                           is_ds_hint_conflict_(false) {}
   int assign(const LogTableHint &other);
-  int init_index_hints(ObSqlSchemaGuard &schema_guard);
+  int init_index_hints(const ObDMLStmt &stmt, ObSqlSchemaGuard &schema_guard);
   bool is_use_index_hint() const { return !index_hints_.empty() && NULL != index_hints_.at(0)
                                           && index_hints_.at(0)->is_use_index_hint(); }
   bool is_valid() const { return !index_list_.empty() || NULL != parallel_hint_
                                 || NULL != use_das_hint_ || !join_filter_hints_.empty()
                                 || dynamic_sampling_hint_ != NULL
                                 || NULL != use_column_store_hint_
-                                || NULL != union_merge_hint_; }
+                                || !index_merge_hints_.empty(); }
+  bool has_valid_index_merge_hint() const { return !index_merge_hints_.empty()
+                                                   && !index_merge_list_.empty(); }
+  bool has_force_index_merge_hint() const { return has_valid_index_merge_hint()
+                                                   && index_merge_hints_.at(0)->is_enable_hint(); }
+  bool has_no_index_merge_hint() const { return has_valid_index_merge_hint()
+                                                && index_merge_hints_.at(0)->is_disable_hint(); }
   int get_join_filter_hint(const ObRelIds &left_tables,
                            bool part_join_filter,
                            const ObJoinFilterHint *&hint) const;
@@ -322,8 +323,8 @@ struct LogTableHint
   int get_index_prefix(const uint64_t index_id, int64_t &index_prefix) const;
 
   TO_STRING_KV(K_(table), K_(index_list), K_(index_hints),
-               K_(parallel_hint), K_(use_das_hint), K_(union_merge_hint),
-               K_(join_filter_hints), K_(left_tables),
+               K_(parallel_hint), K_(use_das_hint), K_(index_merge_list),
+               K_(index_merge_hints), K_(join_filter_hints), K_(left_tables),
                KPC(dynamic_sampling_hint_), K(is_ds_hint_conflict_));
 
   const TableItem *table_;
@@ -332,8 +333,8 @@ struct LogTableHint
   const ObTableParallelHint *parallel_hint_;
   const ObIndexHint *use_das_hint_;
   const ObIndexHint *use_column_store_hint_;
-  const ObUnionMergeHint *union_merge_hint_;
-  common::ObSEArray<uint64_t, 2, common::ModulePageAllocator, true> merge_index_list_;
+  common::ObSEArray<uint64_t, 4, common::ModulePageAllocator, true> index_merge_list_;
+  common::ObSEArray<const ObIndexMergeHint*, 4, common::ModulePageAllocator, true> index_merge_hints_;
   ObSEArray<const ObJoinFilterHint*, 1, common::ModulePageAllocator, true> join_filter_hints_;
   ObSEArray<ObRelIds, 1, common::ModulePageAllocator, true> left_tables_; // left table relids in join filter hint
   const ObTableDynamicSamplingHint *dynamic_sampling_hint_;
@@ -388,6 +389,7 @@ struct LogLeadingHint
                                    ObIArray<LeadingInfo> &leading_infos,
                                    TableItem *table,
                                    ObRelIds &table_set);
+  int try_init_leading_info_for_major_refresh_real_time_mview(const ObDMLStmt &stmt);
 
   TO_STRING_KV(K_(leading_tables),
                K_(leading_infos),
@@ -417,7 +419,7 @@ struct ObLogPlanHint
                            const ObDMLStmt &stmt,
                            const ObQueryHint &query_hint,
                            const ObIArray<ObHint*> &hints);
-  int init_log_table_hints(ObSqlSchemaGuard &schema_guard);
+  int init_log_table_hints(const ObDMLStmt &stmt, ObSqlSchemaGuard &schema_guard);
   int init_log_join_hints();
   int add_join_filter_hint(const ObDMLStmt &stmt,
                            const ObQueryHint &query_hint,
@@ -431,9 +433,9 @@ struct ObLogPlanHint
   int add_index_hint(const ObDMLStmt &stmt,
                      const ObQueryHint &query_hint,
                      const ObIndexHint &index_hint);
-  int add_union_merge_hint(const ObDMLStmt &stmt,
+  int add_index_merge_hint(const ObDMLStmt &stmt,
                            const ObQueryHint &query_hint,
-                           const ObUnionMergeHint &union_merge_hint);
+                           const ObIndexMergeHint &index_merge_hint);
   int add_join_hint(const ObDMLStmt &stmt,
                     const ObQueryHint &query_hint,
                     const ObJoinHint &join_hint);
@@ -459,7 +461,6 @@ struct ObLogPlanHint
                                      bool config_disable,
                                      JoinFilterPushdownHintInfo& info) const;
   int check_use_das(uint64_t table_id, bool &force_das, bool &force_no_das) const;
-  const ObUnionMergeHint *get_union_merge_hint(uint64_t table_id) const;
   int check_use_column_store(uint64_t table_id, bool &force_column_store, bool &force_no_column_store) const;
   int check_use_skip_scan(uint64_t table_id,  uint64_t index_id,
                           bool &force_skip_scan,
@@ -487,12 +488,16 @@ struct ObLogPlanHint
                            bool &force_basic,
                            bool &force_partition_wise,
                            bool &force_dist_hash,
-                           bool &force_pull_to_local) const;
+                           bool &force_pull_to_local,
+                           bool &force_hash_local,
+                           bool &force_pushdown_group_by) const;
+  int get_aggregation_dop(int64_t &dop) const;
   int get_distinct_info(bool &force_use_hash,
                         bool &force_use_merge,
                         bool &force_basic,
                         bool &force_partition_wise,
-                        bool &force_dist_hash) const;
+                        bool &force_dist_hash,
+                        bool &force_hash_local) const;
   int get_valid_pq_subquery_hint(const ObIArray<ObString> &sub_qb_names,
                                     const ObPQSubqueryHint *&explicit_hint,
                                     const ObPQSubqueryHint *&implicit_hint) const;

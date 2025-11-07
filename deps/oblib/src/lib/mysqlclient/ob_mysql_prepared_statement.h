@@ -16,7 +16,7 @@
 #include <mysql.h>
 #include "lib/string/ob_string.h"
 #include "lib/allocator/ob_malloc.h"
-#include "lib/mysqlclient/ob_mysql_connection.h"
+// #include "lib/mysqlclient/ob_mysql_connection.h"
 #include "lib/mysqlclient/ob_mysql_prepared_param.h"
 #include "lib/mysqlclient/ob_mysql_prepared_result.h"
 
@@ -47,6 +47,7 @@ namespace common
 {
 namespace sqlclient
 {
+class ObMySQLConnection;
 struct ObBindParam
 {
   ObBindParam() : col_idx_(-1), buffer_type_(enum_field_types::MAX_NO_FIELD_TYPES), buffer_(nullptr),
@@ -465,7 +466,7 @@ private:
                          ObObjType obj_type,
                          bool is_out,
                          const ObTimeZoneInfo *tz_info);
-  int check_assoc_array(const pl::ObPLCollection *coll);
+  int check_assoc_array(pl::ObPLCollection *coll);
   int build_array_isnull(int64_t position,
                          bool is_in,
                          ObObj &param);
@@ -474,6 +475,7 @@ private:
                           ObIAllocator &allocator,
                           const ObTimeZoneInfo *tz_info);
 #endif
+  static int64_t get_alloca_size_by_mysql_type(enum_field_types buffer_type);
   void increase_out_param_cur_pos(int64_t v) {
     out_param_cur_pos_ += v;
   }

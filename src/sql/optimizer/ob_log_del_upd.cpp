@@ -11,15 +11,10 @@
  */
 
 #define USING_LOG_PREFIX SQL_OPT
-#include "sql/resolver/expr/ob_raw_expr.h"
+#include "ob_log_del_upd.h"
 #include "sql/optimizer/ob_del_upd_log_plan.h"
-#include "sql/optimizer/ob_log_del_upd.h"
-#include "sql/optimizer/ob_log_plan.h"
 #include "sql/optimizer/ob_log_table_scan.h"
 #include "sql/optimizer/ob_log_exchange.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "common/ob_smart_call.h"
-#include "sql/rewrite/ob_transform_utils.h"
 #include "sql/optimizer/ob_log_join.h"
 
 using namespace oceanbase;
@@ -42,6 +37,7 @@ int IndexDMLInfo::deep_copy(ObIRawExprCopier &expr_copier, const IndexDMLInfo &o
   is_update_unique_key_ = other.is_update_unique_key_;
   is_update_part_key_ = other.is_update_part_key_;
   is_update_primary_key_ = other.is_update_primary_key_;
+  is_vec_hnsw_index_vid_opt_ = other.is_vec_hnsw_index_vid_opt_;
   assignments_.reset();
   if (OB_FAIL(expr_copier.copy(other.column_exprs_, column_exprs_))) {
     LOG_WARN("failed to assign column exprs", K(ret));
@@ -86,6 +82,7 @@ int IndexDMLInfo::assign_basic(const IndexDMLInfo &other)
   is_update_part_key_ = other.is_update_part_key_;
   is_update_primary_key_ = other.is_update_primary_key_;
   trans_info_expr_ = other.trans_info_expr_;
+  is_vec_hnsw_index_vid_opt_ = other.is_vec_hnsw_index_vid_opt_;
   if (OB_FAIL(column_exprs_.assign(other.column_exprs_))) {
     LOG_WARN("failed to assign column exprs", K(ret));
   } else if (OB_FAIL(column_convert_exprs_.assign(other.column_convert_exprs_))) {
@@ -682,7 +679,6 @@ int ObLogDelUpd::inner_get_op_exprs(ObIArray<ObRawExpr*> &all_exprs, bool need_c
     LOG_WARN("failed to allocate partition id expr", K(ret));
   } else if (get_plan()->get_optimizer_context().is_online_ddl()
       && !get_plan()->get_optimizer_context().is_heap_table_ddl()
-      && GCTX.is_shared_storage_mode()
       && OB_FAIL(generate_ddl_slice_id_expr())) {
     LOG_WARN("failed to allocate ddl slice id expr", K(ret));
   } else if (OB_FAIL(find_trans_info_producer())) {
@@ -935,6 +931,7 @@ int ObLogDelUpd::build_rowid_expr(uint64_t table_id,
                                                       rowkeys,
                                                       part_expr,
                                                       subpart_expr,
+                                                      false,
                                                       rowid_sysfun_expr))) {
     LOG_WARN("failed to build rowid col expr", K(ret));
   } else if (OB_ISNULL(rowid_sysfun_expr)) {
@@ -1025,6 +1022,21 @@ int ObLogDelUpd::assign_dml_infos(const ObIArray<IndexDMLInfo *> &index_dml_info
                OB_FAIL(loc_table_list_.push_back(index_dml_infos.at(i)->loc_table_id_))) {
       LOG_WARN("failed to add loc table id", K(ret));
     }
+  }
+  return ret;
+}
+
+int ObLogDelUpd::add_index_dml_info(IndexDMLInfo *index_dml_info)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(index_dml_info)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("index dml info is null", K(ret));
+  } else if (OB_FAIL(index_dml_infos_.push_back(index_dml_info))) {
+    LOG_WARN("push back failed", K(ret));
+  } else if (index_dml_info->is_primary_index_ &&
+               OB_FAIL(loc_table_list_.push_back(index_dml_info->loc_table_id_))) {
+    LOG_WARN("failed to add loc table id", K(ret));
   }
   return ret;
 }
@@ -1379,8 +1391,8 @@ int ObLogDelUpd::generate_fk_lookup_part_id_expr(IndexDMLInfo &index_dml_info)
     for (int64_t i = 0; OB_SUCC(ret) && i < fk_infos->count(); i++) {
       const ObForeignKeyInfo &fk_info = fk_infos->at(i);
       ObRawExpr* fk_scan_part_expr = nullptr;
-      if (fk_info.table_id_ != fk_info.child_table_id_ || fk_info.is_parent_table_mock_) {
-        // update parent table, check child table, don't use das task to perform foreign key check
+      if (fk_info.table_id_ != fk_info.child_table_id_ || fk_info.is_parent_table_mock_ || !fk_info.is_ref_unique_index()) {
+        // update parent table, check child table, referencing non-unique index, don't use das task to perform foreign key check
         ret = index_dml_info.fk_lookup_part_id_expr_.push_back(fk_scan_part_expr);
       } else {
         const uint64_t parent_table_id = fk_info.parent_table_id_;
@@ -1634,11 +1646,49 @@ int ObLogDelUpd::inner_replace_op_exprs(ObRawExprReplacer &replacer)
   return ret;
 }
 
+int ObLogDelUpd::check_fts_docid_expr(const ObColumnRefRawExpr *expr, const uint64_t table_id, bool &need_column_ref_expr)
+{
+  int ret = OB_SUCCESS;
+  ObSqlSchemaGuard *schema_guard = nullptr;
+  const ObTableSchema *table_schema = nullptr;
+  ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
+  need_column_ref_expr = false;
+  if (!expr->is_virtual_generated_column()) {
+  } else {
+    if (OB_ISNULL(get_plan()) || OB_ISNULL(schema_guard = get_plan()->get_optimizer_context().get_sql_schema_guard())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected error, schema guard or get_plan() is nullptr", K(ret), KP(get_plan()), KP(schema_guard));
+    } else if (OB_FAIL(schema_guard->get_table_schema(table_id, table_schema))) {
+      LOG_WARN("failed to get table schema", K(ret));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected error, table schema is nullptr", K(ret), K(table_id));
+    } else if (OB_FAIL(table_schema->get_simple_index_infos(simple_index_infos))) {
+      LOG_WARN("get simple_index_infos failed", K(ret));
+    } else {
+      for (int64_t i = 0; i < simple_index_infos.count(); ++i) {
+        ObAuxTableMetaInfo &index_info = simple_index_infos.at(i);
+        if (is_doc_rowkey_aux(index_info.index_type_) || is_fts_index_aux(index_info.index_type_) ||
+            is_fts_doc_word_aux(index_info.index_type_) || is_multivalue_index_aux(index_info.index_type_)) {
+          need_column_ref_expr = true;
+          break;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObLogDelUpd::replace_dml_info_exprs(
     ObRawExprReplacer &replacer,
     const ObIArray<IndexDMLInfo *> &index_dml_infos)
 {
   int ret = OB_SUCCESS;
+  ObSchemaGetterGuard *schema_guard = NULL;
+  if (OB_ISNULL(get_plan()) || OB_ISNULL(schema_guard = get_plan()->get_optimizer_context().get_schema_guard())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("schema guard is null", K(ret));
+  }
   for (int64_t i = 0; OB_SUCC(ret) && i < index_dml_infos.count(); i++) {
     IndexDMLInfo *index_dml_info = index_dml_infos.at(i);
     if (OB_ISNULL(index_dml_info)) {
@@ -1666,8 +1716,56 @@ int ObLogDelUpd::replace_dml_info_exprs(
     for (int64_t i = 0; OB_SUCC(ret) && i < index_dml_info->column_old_values_exprs_.count(); ++i) {
       ObRawExpr *&expr = index_dml_info->column_old_values_exprs_.at(i);
       if (expr->is_column_ref_expr() && static_cast<ObColumnRefRawExpr *>(expr)->is_doc_id_column()) {
+        bool need_column_ref_expr = false;
+        if (OB_FAIL(check_fts_docid_expr(static_cast<ObColumnRefRawExpr *>(expr), index_dml_info->ref_table_id_, need_column_ref_expr))) {
+          LOG_WARN("fail to check fts docid expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
+        } else if (!need_column_ref_expr && OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
+          LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
+        }
+      } else if (expr->is_column_ref_expr() && static_cast<ObColumnRefRawExpr *>(expr)->is_vec_hnsw_vid_column()) {
+        const ObTableSchema *table_schema = NULL;
+        if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), index_dml_info->ref_table_id_, table_schema))) {
+          LOG_WARN("failed to get table schema", K(ret));
+        } else if (OB_NOT_NULL(table_schema)) {
+          uint64_t rowkey_vid_tid = OB_INVALID_ID;
+          if (OB_FAIL(ObVectorIndexUtil::check_rowkey_tid_table_readable(schema_guard, *table_schema, rowkey_vid_tid))) {
+            // just skip, nothing to do.
+          } else if (OB_INVALID_ID == rowkey_vid_tid) {
+            if (OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
+              LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
+            }
+          }
+        }
         // just skip, nothing to do.
-      } else if (expr->is_column_ref_expr() && static_cast<ObColumnRefRawExpr *>(expr)->is_vec_vid_column()) {
+      } else if (expr->is_column_ref_expr() && static_cast<ObColumnRefRawExpr *>(expr)->is_vec_cid_column()) {
+        const ObTableSchema *table_schema = NULL;
+        if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), index_dml_info->ref_table_id_, table_schema))) {
+          LOG_WARN("failed to get table schema", K(ret));
+        } else if (OB_NOT_NULL(table_schema)) {
+          uint64_t rowkey_cid_tid = OB_INVALID_ID;
+          if (OB_FAIL(ObVectorIndexUtil::check_rowkey_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), rowkey_cid_tid))) {
+            LOG_WARN("failed to check_rowkey_cid_table_readable", K(ret));
+          } else if (OB_INVALID_ID == rowkey_cid_tid) {
+            if (OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
+              LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
+            }
+          }
+        }
+        // just skip, nothing to do.
+      } else if (expr->is_column_ref_expr() && static_cast<ObColumnRefRawExpr *>(expr)->is_hybrid_embedded_vec_column()) {
+        const ObTableSchema *table_schema = NULL;
+        if (OB_FAIL(schema_guard->get_table_schema(MTL_ID(), index_dml_info->ref_table_id_, table_schema))) {
+          LOG_WARN("failed to get table schema", K(ret));
+        } else if (OB_NOT_NULL(table_schema)) {
+          uint64_t embedded_vec_tid = OB_INVALID_ID;
+          if (OB_FAIL(ObVectorIndexUtil::check_hybrid_embedded_vec_cid_table_readable(schema_guard, *table_schema, static_cast<ObColumnRefRawExpr *>(expr)->get_column_id(), embedded_vec_tid))) {
+            LOG_WARN("failed to check_rowkey_cid_table_readable", K(ret));
+          } else if (OB_INVALID_ID == embedded_vec_tid) {
+            if (OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
+              LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));
+            }
+          }
+        }
         // just skip, nothing to do.
       } else if (OB_FAIL(replace_expr_action(replacer, index_dml_info->column_old_values_exprs_.at(i)))) {
         LOG_WARN("fail to replace expr", K(ret), K(i), K(index_dml_info->column_old_values_exprs_));

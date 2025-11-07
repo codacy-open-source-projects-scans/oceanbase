@@ -34,6 +34,9 @@ public:
   RPC_S(PR5 direct_load, obrpc::OB_TABLE_API_DIRECT_LOAD, (table::ObTableDirectLoadRequest), table::ObTableDirectLoadResult);
   RPC_S(PR5 ls_op_execute, obrpc::OB_TABLE_API_LS_EXECUTE, (table::ObTableLSOpRequest), table::ObTableLSOpResult);
   RPC_S(PR5 redis_execute, obrpc::OB_REDIS_EXECUTE, (table::ObTableOperationRequest), table::ObTableOperationResult);
+  RPC_S(PR5 redis_execute_v2, obrpc::OB_REDIS_EXECUTE_V2, (table::ObRedisRpcRequest), table::ObRedisResult);
+  RPC_S(PR5 hbase_execute, obrpc::OB_HBASE_EXECUTE, (table::ObHbaseRpcRequest), table::ObHbaseResult);
+  RPC_S(PR5 meta_info_execute, obrpc::OB_TABLE_API_META_INFO_EXECUTE, (table::ObTableMetaRequest), table::ObTableMetaResponse);
 };
 
 }; // end namespace obrpc

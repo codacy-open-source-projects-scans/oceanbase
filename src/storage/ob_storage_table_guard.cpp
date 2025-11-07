@@ -12,18 +12,9 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/ob_storage_table_guard.h"
+#include "ob_storage_table_guard.h"
 #include "share/allocator/ob_shared_memory_allocator_mgr.h"
-#include "share/throttle/ob_throttle_common.h"
-#include "share/throttle/ob_share_throttle_define.h"
-#include "storage/memtable/ob_memtable.h"
-#include "storage/ob_i_table.h"
-#include "storage/ob_relative_table.h"
-#include "storage/tablet/ob_table_store_util.h"
-#include "storage/tablet/ob_tablet.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx_storage/ob_ls_handle.h" //ObLSHandle
-#include "storage/tx_storage/ob_tenant_freezer.h"
 
 namespace oceanbase
 {
@@ -225,8 +216,10 @@ int ObStorageTableGuard::create_data_memtable_for_replay_(const share::ObLSID &l
   } else if (FALSE_IT(clog_checkpoint_scn = tmp_handle.get_obj()->get_tablet_meta().clog_checkpoint_scn_)) {
   } else if (replay_scn_ > clog_checkpoint_scn) {
     // TODO: get the newest schema_version from tablet
-    if (OB_FAIL(ls_handle.get_ls()->get_tablet_svr()->create_memtable(
-            tablet_id, 0 /* schema version */, false /* for_direct_load */, for_replay_, clog_checkpoint_scn))) {
+    CreateMemtableArg arg;
+    arg.for_replay_ = for_replay_;
+    arg.clog_checkpoint_scn_ = clog_checkpoint_scn;
+    if (OB_FAIL(ls_handle.get_ls()->get_tablet_svr()->create_memtable(tablet_id, arg))) {
       LOG_WARN("fail to create a boundary memtable", K(ret), K(ls_id), K(tablet_id));
     }
     // In situation that replay_log_scn_ <= clog_checkpoint_scn, we have no need
@@ -270,6 +263,12 @@ void ObStorageTableGuard::reset()
 {
   if (NULL != memtable_) {
     memtable_->dec_write_ref();
+    int64_t used_time = ObClockGenerator::getClock() - init_ts_;
+    if (used_time >= 10L * 1000L * 1000L /*10s*/) {
+      TRANS_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME,
+                    "dec write ref cost too much time",
+                    KPC(memtable_), K(lbt()), K(used_time));
+    }
     memtable_ = NULL;
   }
 }
@@ -384,12 +383,11 @@ int ObStorageTableGuard::check_freeze_to_inc_write_ref(ObMemtable *memtable, boo
       // create a new memtable if no write in the old memtable
       if (OB_FAIL(ret)) {
       } else if (need_create_memtable) {
-        if (OB_FAIL(ls_handle.get_ls()->get_tablet_svr()->create_memtable(
-                tablet_id,
-                memtable->get_max_schema_version() /*schema version*/,
-                false /*for_direct_load*/,
-                for_replay_,
-                clog_checkpoint_scn))) {
+        CreateMemtableArg arg;
+        arg.schema_version_ = memtable->get_max_schema_version();
+        arg.for_replay_ = for_replay_;
+        arg.clog_checkpoint_scn_ = clog_checkpoint_scn;
+        if (OB_FAIL(ls_handle.get_ls()->get_tablet_svr()->create_memtable(tablet_id, arg))) {
           if (OB_EAGAIN == ret) {
           } else if (OB_MINOR_FREEZE_NOT_ALLOW != ret) {
             LOG_WARN("fail to create new memtable for freeze", K(ret), K(need_retry), K(ls_id), K(tablet_id));
@@ -464,8 +462,9 @@ bool ObStorageTableGuard::need_to_refresh_table(ObTableStoreIterator &iter)
   if (OB_FAIL(ret)) {
   } else if (need_create_memtable) {
     const common::ObTabletID &tablet_id = tablet_->get_tablet_meta().tablet_id_;
-    if (OB_FAIL(store_ctx_.ls_->get_tablet_svr()->create_memtable(
-            tablet_id, 0 /*schema version*/, false /*for_inc_direct_load*/, for_replay_))) {
+    CreateMemtableArg arg;
+    arg.for_replay_ = for_replay_;
+    if (OB_FAIL(store_ctx_.ls_->get_tablet_svr()->create_memtable(tablet_id, arg))) {
       LOG_WARN("fail to create a boundary memtable", K(ret), K(tablet_id));
     }
     bool_ret = true;

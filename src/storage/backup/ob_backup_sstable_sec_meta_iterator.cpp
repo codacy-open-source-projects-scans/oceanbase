@@ -12,11 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/backup/ob_backup_sstable_sec_meta_iterator.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/high_availability/ob_storage_restore_struct.h"
-#include "storage/tablet/ob_tablet_create_sstable_param.h"
-#include "storage/blocksstable/index_block/ob_index_block_builder.h"
+#include "ob_backup_sstable_sec_meta_iterator.h"
+#include "src/storage/ls/ob_ls.h"
 #include "storage/backup/ob_backup_meta_cache.h"
 
 using namespace oceanbase::common;
@@ -132,9 +129,10 @@ int ObBackupSSTableSecMetaIterator::inner_init_(
              KPC(sstable_meta_ptr));
   } else if (OB_FAIL(create_tmp_sstable_(create_sstable_param))) {
     LOG_WARN("failed to create tmp sstable", K(ret), K(create_sstable_param));
+  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
+    LOG_WARN("failed to assign tablet_handle", K(ret), K(tablet_handle));
   } else {
     output_idx_ = 0;
-    tablet_handle_ = tablet_handle;
     tablet_id_ = tablet_id;
     table_key_ = table_key;
     if (OB_FAIL(init_sstable_sec_meta_iter_())) {
@@ -321,6 +319,8 @@ int ObBackupSSTableSecMetaIterator::build_create_empty_sstable_param_(
     ObTabletCreateSSTableParam &param)
 {
   int ret = OB_SUCCESS;
+  common::ObArray<blocksstable::MacroBlockId> data_block_ids;
+  common::ObArray<blocksstable::MacroBlockId> other_block_ids;
   if (!backup_sstable_meta.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("build create sstable param get invalid argument", K(ret),
@@ -328,7 +328,7 @@ int ObBackupSSTableSecMetaIterator::build_create_empty_sstable_param_(
   } else if (0 != backup_sstable_meta.sstable_meta_.basic_meta_.data_macro_block_count_) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("sstable param has data macro block, can not build sstable from basic meta", K(ret), K(backup_sstable_meta));
-  } else if (OB_FAIL(param.init_for_ha(backup_sstable_meta.sstable_meta_))) {
+  } else if (OB_FAIL(param.init_for_ha(backup_sstable_meta.sstable_meta_, data_block_ids, other_block_ids))) {
     LOG_WARN("failed to init create sstable param", K(ret));
   }
   return ret;
@@ -339,7 +339,7 @@ int ObBackupSSTableSecMetaIterator::create_tmp_sstable_(
     const ObTabletCreateSSTableParam &param)
 {
   int ret = OB_SUCCESS;
-  if (!param.table_key_.is_co_sstable()) {
+  if (!param.table_key().is_co_sstable()) {
     if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable(
         param, allocator_, table_handle_))) {
       LOG_WARN("failed to create sstable for migrate", K(ret));

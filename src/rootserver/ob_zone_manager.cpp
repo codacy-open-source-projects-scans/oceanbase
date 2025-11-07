@@ -12,20 +12,11 @@
 
 #define USING_LOG_PREFIX RS
 
-#include "ob_zone_manager.h"
 
-#include "lib/time/ob_time_utility.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/mysqlclient/ob_mysql_transaction.h"
+#include "ob_zone_manager.h"
 #include "share/ob_zone_table_operation.h"
-#include "share/ob_global_stat_proxy.h"
-#include "share/ob_zone_info.h"
-#include "share/config/ob_server_config.h"
-#include "ob_rs_event_history_table_operator.h"
-#include "observer/ob_server_struct.h"
-#include "rootserver/ob_root_service.h"
-#include "rootserver/ob_cluster_event.h"
-#include "storage/ob_file_system_router.h"
+#include "src/share/ob_common_rpc_proxy.h"
+#include "rootserver/ob_server_zone_op_service.h"
 
 namespace oceanbase
 {
@@ -437,6 +428,12 @@ int ObZoneManagerBase::add_zone(
         LOG_INFO("succeed to add new zone", "zone_info", zone_infos_[zone_count_]);
         ++zone_count_;
         ROOTSERVICE_EVENT_ADD("zone", "add_zone", K(zone));
+#ifdef OB_BUILD_SHARED_STORAGE
+        if (GCTX.is_shared_storage_mode() && OB_FAIL(ObServerZoneOpService::insert_zone_in_palf_kv(zone))) {
+          // do not check data_version
+          LOG_WARN("fail to insert zone in palf kv", KR(ret), K(zone));
+        }
+#endif
       }
     }
   }
@@ -461,6 +458,14 @@ int ObZoneManagerBase::delete_zone(const ObZone &zone)
   } else if (ObZoneStatus::INACTIVE != zone_infos_[idx].status_) {
     ret = OB_ZONE_STATUS_NOT_MATCH;
     LOG_WARN("zone is not inactive, can't delete it", K(ret));
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else if (GCTX.is_shared_storage_mode()
+          && OB_FAIL(ObServerZoneOpService::delete_zone_from_palf_kv(zone))) {
+    // do not check data_version
+    // delete palf kv first, then delete the inner table to ensure that when delete inner table failed,
+    // the inner table is more than palf kv.
+    LOG_WARN("fail to delete zone from palf kv", KR(ret), K(zone));
+#endif
   } else if (OB_FAIL(ObZoneTableOperation::remove_zone_info(*proxy_, zone))) {
     LOG_WARN("remove_zone_info failed", K(zone), K(ret));
   } else {
@@ -549,6 +554,7 @@ int ObZoneManagerBase::stop_zone(const ObZone &zone)
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_NOT_CHECH_SAME_REGION_IN_SHARED_STORAGE_MODE);
 int ObZoneManagerBase::alter_zone(
     const obrpc::ObAdminZoneArg &arg)
 {
@@ -586,6 +592,9 @@ int ObZoneManagerBase::alter_zone(
           ObRegion old_region;
           if (OB_FAIL(zone_infos_[index].get_region(old_region))) {
             LOG_WARN("failed to get_region", KR(ret));
+          } else if (OB_UNLIKELY(ERRSIM_NOT_CHECH_SAME_REGION_IN_SHARED_STORAGE_MODE)) {
+            // for test, skip check same region.
+            LOG_INFO("errsim not check same region in ss mode", KR(ret));
           } else if (old_region != my_region) {
             ret = OB_NOT_SUPPORTED;
             LOG_WARN("alter region of one of several zones not allowed in shared_storage mode",

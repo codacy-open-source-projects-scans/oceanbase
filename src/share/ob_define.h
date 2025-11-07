@@ -63,7 +63,9 @@ using std::isnan;
 
 #define CK_0(a, b)                              \
   if (!(b)) {                                   \
-    ret = OB_ERR_UNEXPECTED;                    \
+    if (OB_SUCC(ret)) {                         \
+      ret = OB_ERR_UNEXPECTED;                  \
+    }                                           \
     LOG_WARN("invalid arguments", a, b);        \
   }
 
@@ -272,6 +274,7 @@ inline bool is_schema_error(int err)
     case OB_SCHEMA_NOT_UPTODATE:
     case OB_ERR_PARALLEL_DDL_CONFLICT:
     case OB_NO_PARTITION_FOR_GIVEN_VALUE_SCHEMA_ERROR:
+    case OB_ERR_DDL_RESOURCE_NOT_ENOUGH:
       ret = true;
       break;
     default:
@@ -486,6 +489,14 @@ inline bool is_query_killed_return(const int ret)
     || OB_DEAD_LOCK == ret;
 }
 
+OB_NOINLINE bool is_shared_storage_sslog_table(const uint64_t tid);
+OB_NOINLINE bool is_sslog_table(const uint64_t tid);
+OB_NOINLINE bool is_shared_storage_sslog_exist();
+OB_NOINLINE bool is_hardcode_schema_table(const uint64_t tid);
+
+bool is_tenant_sslog_ls(const uint64_t tenant_id, const share::ObLSID &ls_id);
+bool is_tenant_has_sslog(const uint64_t tenant_id);
+
 //@TODO shanyan.g Temporary settings for elr
 static const bool CAN_ELR = false;
 
@@ -542,7 +553,7 @@ const int64_t OB_STATUS_LENGTH = 64;
 ///////////////////////////
 //// used for replay
 const int64_t REPLAY_TASK_QUEUE_SIZE = 32;
-const int64_t APPLY_TASK_QUEUE_SIZE = 32;
+const int64_t APPLY_TASK_QUEUE_SIZE = 64;
 inline int64_t &get_replay_queue_index()
 {
   struct DEFAULT_WRAPPER {
@@ -594,6 +605,7 @@ const uint64_t OB_TABLE_PRIVILEGES_OLD_TID = 12002;  // not used anymore for "TA
 const uint64_t OB_USER_PRIVILEGES_OLD_TID = 12003;   // not used anymore for "USER_PRIVILEGES" has a new table id
 const uint64_t OB_SCHEMA_PRIVILEGES_OLD_TID = 12004; // not used anymore for "SCHEMA_PRIVILEGES" has a new table id
 const uint64_t OB_PARTITIONS_OLD_TID = 12007;        // not used anymore for "PARTITIONS" has a new table id
+const uint64_t OB_ALL_VIRTUAL_PROC_OLD_TID = 12030;              // not used anymore for "PROC" has a new table id
 //end of reserved table id for information schema
 
 ////////////////typedef

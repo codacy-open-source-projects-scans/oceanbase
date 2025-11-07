@@ -41,6 +41,7 @@
 #include "sql/plan_cache/ob_cache_object_factory.h"
 #include "observer/ob_inner_sql_rpc_proxy.h"
 #include "observer/ob_req_time_service.h"
+#include "sql/resolver/tcl/ob_end_trans_stmt.h"
 
 namespace oceanbase
 {
@@ -73,6 +74,7 @@ public:
         route_sql_(),
         is_select_for_update_(false),
         has_hidden_rowid_(false),
+        rowid_table_id_(common::OB_INVALID_ID),
         stmt_sql_(),
         is_bulk_(false),
         has_link_table_(false),
@@ -96,6 +98,7 @@ public:
     ObString route_sql_;
     bool is_select_for_update_;
     bool has_hidden_rowid_;
+    uint64_t rowid_table_id_;
     ObString stmt_sql_;
     bool is_bulk_;
     bool has_link_table_;
@@ -173,6 +176,7 @@ public:
   ObString &get_stmt_sql();
   bool get_is_select_for_update();
   inline bool has_hidden_rowid();
+  inline uint64_t get_rowid_table_id() const;
   inline bool is_bulk();
   inline bool is_link_table();
   inline bool is_skip_locked();
@@ -243,6 +247,7 @@ public:
   uint64_t get_last_insert_id_to_client();
   void set_warning_count(const int64_t &warning_count);
   ObCacheObjGuard& get_cache_obj_guard();
+  ObCacheObjGuard& get_temp_cache_obj_guard();
   void set_cmd(ObICmd *cmd);
   bool is_end_trans_async();
   void set_end_trans_async(bool is_async);
@@ -283,6 +288,7 @@ public:
   int update_last_insert_id();
   int update_last_insert_id_to_client();
   int update_is_result_accurate();
+  bool no_ps_protocol() const { return NO_PS == ps_protocol_; };
   bool is_ps_protocol() const { return STD_PS == ps_protocol_; };
   void set_ps_protocol() { ps_protocol_ = STD_PS; }
   bool is_simple_ps_protocol() const { return SIMPLE_PS == ps_protocol_; };
@@ -339,6 +345,27 @@ public:
   static int implicit_commit_before_cmd_execute(ObSQLSessionInfo &session_info,
                                                 ObExecContext &exec_ctx,
                                                 const int cmd_type);
+  inline bool is_commit_cmd() const {
+    bool is_commit = false;
+    if (stmt::T_END_TRANS == get_stmt_type() && OB_NOT_NULL(get_cmd())) {
+      const ObEndTransStmt* end_trans_stmt = static_cast<const ObEndTransStmt*>(get_cmd());
+      if (OB_NOT_NULL(end_trans_stmt)) {
+        is_commit = !end_trans_stmt->get_is_rollback();
+      }
+    }
+    return is_commit;
+  }
+
+  inline bool is_rollback_cmd() const {
+    bool is_rollback = false;
+    if (stmt::T_END_TRANS == get_stmt_type() && OB_NOT_NULL(get_cmd())) {
+      const ObEndTransStmt* end_trans_stmt = static_cast<const ObEndTransStmt*>(get_cmd());
+      if (OB_NOT_NULL(end_trans_stmt)) {
+        is_rollback = end_trans_stmt->get_is_rollback();
+      }
+    }
+    return is_rollback;
+  }
 private:
   // types and constants
   static const int64_t TRANSACTION_SET_VIOLATION_MAX_RETRY = 3;
@@ -388,6 +415,7 @@ protected:
 private:
   // add cache object guard
   ObCacheObjGuard cache_obj_guard_;
+  ObCacheObjGuard temp_cache_obj_guard_;
   // data members
   common::ObArenaAllocator inner_mem_pool_;
   common::ObIAllocator &mem_pool_;
@@ -481,6 +509,7 @@ private:
 inline ObResultSet::ObResultSet(ObSQLSessionInfo &session, common::ObIAllocator &allocator)
     : is_user_sql_(false),
       cache_obj_guard_(MAX_HANDLE),
+      temp_cache_obj_guard_(MAX_HANDLE),
       inner_mem_pool_(),
       mem_pool_(allocator),
       statement_id_(common::OB_INVALID_ID),
@@ -649,6 +678,11 @@ inline bool ObResultSet::has_hidden_rowid()
   return external_retrieve_info_.has_hidden_rowid_;
 }
 
+inline uint64_t ObResultSet::get_rowid_table_id() const
+{
+  return external_retrieve_info_.rowid_table_id_;
+}
+
 inline bool ObResultSet::is_bulk()
 {
   return external_retrieve_info_.is_bulk_;
@@ -737,6 +771,11 @@ inline void ObResultSet::set_cmd(ObICmd *cmd)
 inline ObCacheObjGuard& ObResultSet::get_cache_obj_guard()
 {
   return cache_obj_guard_;
+}
+
+inline ObCacheObjGuard& ObResultSet::get_temp_cache_obj_guard()
+{
+  return temp_cache_obj_guard_;
 }
 
 inline void ObResultSet::fields_clear()

@@ -56,7 +56,8 @@ protected:
 
   int resolve_assignments(const ParseNode &parse_node,
                           common::ObIArray<ObTableAssignment> &table_assigns,
-                          ObStmtScope scope);
+                          ObStmtScope scope,
+                          const bool is_insert_into_set = false);
 
   int resolve_column_and_values(const ParseNode &assign_list,
                                 ObIArray<ObColumnRefRawExpr *> &target_list,
@@ -79,6 +80,7 @@ protected:
                              ObAssignment &assign);
   int check_need_assignment(const common::ObIArray<ObAssignment> &assigns,
                             uint64_t table_id,
+                            uint64_t ref_table_id,
                             bool before_update_row_trigger_exist,
                             const share::schema::ObColumnSchemaV2 &column,
                             bool &need_assign);
@@ -210,7 +212,9 @@ protected:
                               bool& is_all_default);
   int build_row_for_empty_brackets(common::ObArray<ObRawExpr*> &value_row,
                                    ObInsertTableInfo& table_info);
-
+  int check_vec_hnsw_index_vid_opt(const ObTableAssignment &ta,
+                                   const ObTableSchema *table_schema,
+                                   bool &is_vec_hnsw_index_vid_opt);
   int check_update_part_key(const ObTableAssignment &ta,
                             uint64_t ref_table_id,
                             bool &is_updated,
@@ -266,6 +270,7 @@ protected:
                                                     ObIArray<uint64_t>& the_missing_label_se_columns,
                                                     ObIArray<ObRawExpr*> &value_row);
   virtual int resolve_insert_update_assignment(const ParseNode *node, ObInsertTableInfo& table_info);
+  int check_insertup_assignment_need_calc(const ObRawExpr *raw_expr, bool &need_calc);
   int add_relation_columns(ObIArray<ObTableAssignment> &table_assigns);
   virtual int replace_column_ref(common::ObArray<ObRawExpr*> *value_row,
                                  ObRawExpr *&expr,
@@ -286,12 +291,7 @@ protected:
   int mark_json_partial_update_flag(const ObColumnRefRawExpr *ref_expr, ObRawExpr *expr, int depth, bool &allow_json_partial_update);
   int add_select_item_func(ObSelectStmt &select_stmt, ColumnItem &col);
   int select_items_is_pk(const ObSelectStmt& select_stmt, bool &has_pk);
-  int build_doc_id_function_expr(
-      const ObInsertTableInfo& table_info,
-      const ObColumnSchemaV2 &col_schema,
-      const ObColumnRefRawExpr &column,
-      ObRawExpr *&func_expr);
-  int build_vec_vid_function_expr(
+  int build_domain_id_function_expr(
       const ObInsertTableInfo& table_info,
       const ObColumnSchemaV2 &col_schema,
       const ObColumnRefRawExpr &column,
@@ -299,6 +299,7 @@ protected:
   int is_external_table_partition_column(const TableItem &table_item,
                                          uint64_t column_id,
                                          bool &is_part_column);
+  int check_value_row_all_simple_const(const ObIArray<ObRawExpr*> &value_row, bool &all_const);
 
 private:
   common::hash::ObPlacementHashSet<uint64_t, 4229> insert_column_ids_;

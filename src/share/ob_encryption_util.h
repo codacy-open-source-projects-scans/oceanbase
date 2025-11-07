@@ -145,7 +145,7 @@ public:
   static bool is_aes_encryption(const ObCipherOpMode opmode);
   static bool is_sm4_encryption(const ObCipherOpMode opmode);
   static bool is_ecb_mode(const ObCipherOpMode opmode);
-  static int get_cipher_op_mode(ObCipherOpMode &op_mode, sql::ObSQLSessionInfo *session);
+  static int get_cipher_op_mode(ObCipherOpMode &op_mode, const sql::ObSQLSessionInfo *session);
 
 #ifdef OB_BUILD_TDE_SECURITY
   static const ObCipherOpMode DEFAULT_TABLE_KEY_AES_ENCRYPT_ALGORITHM =
@@ -156,6 +156,7 @@ public:
                                                              share::ObCipherOpMode::ob_aes_256_ecb;
   static const ObCipherOpMode SYS_DATA_ENCRYPT_ALGORITHM = share::ObCipherOpMode::ob_aes_128_cbc;
   static int64_t sys_encrypted_length(int64_t data_len);
+  static int64_t sys_decrypted_length(int64_t data_len);
   // encrypt data with create a random iv and store iv in buf if needed.
   static int encrypt_data(const char *key, const int64_t key_len, enum ObCipherOpMode mode,
                           const char *data, const int64_t data_len,

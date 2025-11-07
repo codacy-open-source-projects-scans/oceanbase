@@ -12,7 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_SESSION
 
-#include "sql/session/ob_local_session_var.h"
+#include "ob_local_session_var.h"
 #include "sql/session/ob_basic_session_info.h"
 
 using namespace oceanbase::common;
@@ -438,7 +438,8 @@ const ObSysVarClassType ObLocalSessionVar::ALL_LOCAL_VARS[] = {
   SYS_VAR_NLS_TIMESTAMP_FORMAT,
   SYS_VAR_NLS_TIMESTAMP_TZ_FORMAT,
   SYS_VAR_COLLATION_CONNECTION,
-  SYS_VAR_MAX_ALLOWED_PACKET
+  SYS_VAR_MAX_ALLOWED_PACKET,
+  SYS_VAR_OB_COMPATIBILITY_VERSION
 };
 
 //add all vars that can be solidified

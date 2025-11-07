@@ -13,15 +13,9 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <cstdio>
-#include <gtest/gtest.h>
-#include <signal.h>
 #define private public
 #define protected public
-#include "logservice/ob_ls_adapter.h"
-#include "share/scn.h"
 #include "env/ob_simple_log_cluster_env.h"
-#include "logservice/palf/palf_iterator.h"
 #undef private
 #undef protected
 
@@ -252,8 +246,8 @@ TEST_F(TestObSimpleLogReplayFunc, test_flashback_to_padding)
     rp_st = guard.get_replay_status();
     ls_adapter.rp_st_ = rp_st;
   }
-  PalfBufferIterator &iterator = rp_st->submit_log_task_.iterator_;
-  iterator.iterator_storage_.get_file_end_lsn_ = get_file_end_lsn;
+  ipalf::IPalfIterator<ipalf::ILogEntry> &iterator = rp_st->submit_log_task_.iterator_;
+  iterator.palf_iterator_.iterator_storage_.get_file_end_lsn_ = get_file_end_lsn;
   // 停止拉日志
   rp_st->block_submit();
   EXPECT_EQ(OB_SUCCESS, submit_log(leader, 31, leader_idx, log_entry_size));
@@ -405,8 +399,8 @@ TEST_F(TestObSimpleLogReplayFunc, test_wait_replay_done)
     rp_st = guard.get_replay_status();
     ls_adapter.rp_st_ = rp_st;
   }
-  PalfBufferIterator &iterator = rp_st->submit_log_task_.iterator_;
-  iterator.iterator_storage_.get_file_end_lsn_ = get_file_end_lsn;
+  ipalf::IPalfIterator<ipalf::ILogEntry> &iterator = rp_st->submit_log_task_.iterator_;
+  iterator.palf_iterator_.iterator_storage_.get_file_end_lsn_ = get_file_end_lsn;
   EXPECT_EQ(OB_SUCCESS, submit_log(leader, 31, leader_idx, log_entry_size));
   EXPECT_EQ(OB_SUCCESS, wait_until_has_committed(leader, leader.get_palf_handle_impl()->get_max_lsn()));
   int64_t remained_log_size = LSN(PALF_BLOCK_SIZE) - leader.get_palf_handle_impl()->get_max_lsn() - sizeof(LogGroupEntryHeader) - sizeof(LogEntryHeader);

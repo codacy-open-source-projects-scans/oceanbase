@@ -119,12 +119,14 @@ public:
   }
   OB_INLINE common::ObObjType get_type() const { return type_; }
   OB_INLINE uint16_t get_subschema_id() const { return static_cast<uint16_t>(cs_type_); }
+  // ObCollectionSQLType reused cs_type as part of sub schema id, always return CS_TYPE_BINARY.
+  OB_INLINE ObCollationType get_cs_type() const { return type_ == ObCollectionSQLType ? CS_TYPE_BINARY : cs_type_; }
 };
 
 // Expression evaluate result info
 struct ObEvalInfo
 {
-  void clear_evaluated_flag()
+  OB_INLINE void clear_evaluated_flag()
   {
     if (evaluated_ || projected_) {
       evaluated_ = 0;
@@ -190,22 +192,30 @@ struct ObEvalCtx
     {
       batch_idx_ptr_ = &eval_ctx.batch_idx_;
       batch_size_ptr_ = &eval_ctx.batch_size_;
+      max_batch_size_ptr_ = &eval_ctx.max_batch_size_;
       batch_idx_default_val_ = eval_ctx.batch_idx_;
       batch_size_default_val_ = eval_ctx.batch_size_;
+      max_batch_size_default_val_ = eval_ctx.max_batch_size_;
     }
     ~BatchInfoScopeGuard()
     {
        *batch_idx_ptr_ = batch_idx_default_val_;
        *batch_size_ptr_ = batch_size_default_val_;
+       *max_batch_size_ptr_ = max_batch_size_default_val_;
     }
     inline void set_batch_idx(int64_t v) { *batch_idx_ptr_ = v; }
     inline void set_batch_size(int64_t v) { *batch_size_ptr_ = v; }
+private:
+    friend class ObExpr;
+    inline void set_max_batch_size(int64_t v) { *max_batch_size_ptr_ = v; }
 
   private:
     int64_t *batch_idx_ptr_ = nullptr;
     int64_t *batch_size_ptr_ = nullptr;
+    int64_t *max_batch_size_ptr_ = nullptr;
     int64_t batch_idx_default_val_ = 0;
     int64_t batch_size_default_val_ = 0;
+    int64_t max_batch_size_default_val_ = 0;
   };
   explicit ObEvalCtx(ObExecContext &exec_ctx, ObIAllocator *allocator = NULL);
   explicit ObEvalCtx(ObEvalCtx &eval_ctx);
@@ -262,6 +272,8 @@ private:
     return tmp_alloc_;
   }
 
+  int get_pvt_skip_for_eval_row(ObBitVector *&skip);
+
 public:
   char **frames_;
   // Used for das, the semantics is the same as max_batch_size_ in spec
@@ -277,6 +289,8 @@ private:
   int64_t batch_size_;
   // Expression result allocator, never reset.
   common::ObArenaAllocator &expr_res_alloc_;
+  // used in `eval_one_datum_of_batch`
+  ObBitVector *pvt_skip_for_eval_row_;
 };
 
 
@@ -361,7 +375,8 @@ struct ObDynReserveBuf
            || common::ObGeometryTC == tc
            || common::ObUserDefinedSQLTC == tc
            || common::ObCollectionSQLTC == tc
-           || common::ObRoaringBitmapTC == tc;
+           || common::ObRoaringBitmapTC == tc
+           || common::ObEnumSetInnerTC == tc;
   }
 
   ObDynReserveBuf() = default;
@@ -403,6 +418,13 @@ typedef common::ObFixedArray<common::ObString, common::ObIAllocator> ObStrValues
 extern int expr_default_eval_batch_func(BATCH_EVAL_FUNC_ARG_DECL);
 extern int expr_default_eval_vector_func(VECTOR_EVAL_FUNC_ARG_DECL);
 
+// index number for args_ in ObExpr
+extern const int64_t ARGS_IDX_ZERO;
+extern const int64_t ARGS_IDX_ONE;
+extern const int64_t ARGS_IDX_TWO;
+extern const int64_t ARGS_IDX_THREE;
+extern const int64_t ARGS_IDX_FOUR;
+extern const int64_t ARGS_IDX_FIVE;
 
 struct VectorHeader {
   VectorHeader() : format_(VEC_INVALID) {}
@@ -412,14 +434,18 @@ struct VectorHeader {
                                 ObDatum *datum,
                                 ObEvalInfo *eval_info);
   ObIVector *get_vector() { return reinterpret_cast<ObIVector *>(vector_buf_); }
+
   int assign(const VectorHeader &other)
   {
     int ret = OB_SUCCESS;
+    ObVectorBase *vec_base = static_cast<ObVectorBase *>(get_vector());
     format_ = other.format_;
     MEMCPY(vector_buf_, other.vector_buf_, common::ObIVector::MAX_VECTOR_STRUCT_SIZE);
     return ret;
   }
 
+private:
+  DISALLOW_COPY_AND_ASSIGN(VectorHeader);
 public:
   VectorFormat format_;
   char vector_buf_[common::ObIVector::MAX_VECTOR_STRUCT_SIZE];
@@ -427,7 +453,10 @@ public:
 
 struct ObExpr
 {
-  OB_UNIS_VERSION(1);
+  // master version is 3, 42x version is 2.
+  // compatibility handling based on the version number during deserialization.
+  // notice: Do not modify the version number arbitrarily.
+  OB_UNIS_VERSION(3);
 public:
   friend class ObOperator;
 
@@ -656,9 +685,21 @@ public:
 
   inline bool is_vector_sort_expr() const {
     return type_ == T_FUN_SYS_L2_DISTANCE ||
+           type_ == T_FUN_SYS_L2_SQUARED ||
            type_ == T_FUN_SYS_INNER_PRODUCT ||
            type_ == T_FUN_SYS_NEGATIVE_INNER_PRODUCT ||
-           type_ == T_FUN_SYS_COSINE_DISTANCE;
+           type_ == T_FUN_SYS_COSINE_DISTANCE ||
+           type_ == T_FUN_SYS_SEMANTIC_DISTANCE ||
+           type_ == T_FUN_SYS_SEMANTIC_VECTOR_DISTANCE;
+  }
+
+  inline bool is_semantic_distance_expr() const {
+    return type_ == T_FUN_SYS_SEMANTIC_DISTANCE ||
+           type_ == T_FUN_SYS_SEMANTIC_VECTOR_DISTANCE;
+  }
+
+  inline bool is_semantic_vector_distance_expr() const {
+    return type_ == T_FUN_SYS_SEMANTIC_VECTOR_DISTANCE;
   }
 
   // Evaluate all parameters, assign the first sizeof...(args) parameters to %args.
@@ -701,7 +742,7 @@ public:
   //   - expr itself equal to input expr
   //   - expr's children equals to input expr
   // Note: NO stack-overflow check as it is done when resolve raw expr
-  int contain_expr (const ObExpr * expr, bool & is_contain)
+  int contain_expr (const ObExpr * expr, bool & is_contain) const
   {
     int ret = OB_SUCCESS;
     if (this == expr) {
@@ -755,7 +796,6 @@ public:
 
   void reset_attrs_datums(ObEvalCtx &ctx) const;
   OB_INLINE bool is_nested_expr() const { return attrs_cnt_ > 0; }
-  int assign_nested_vector(const ObExpr &other, ObEvalCtx &ctx);
 
 
   OB_INLINE void set_all_not_null(ObEvalCtx &ctx, const int64_t size) {
@@ -861,6 +901,8 @@ public:
       uint64_t need_stack_check_:1; // the expression tree depth needs to check whether the stack overflows
       uint64_t is_fixed_length_data_:1; // wether data of this expr is fixed length
       uint64_t nullable_:1;
+      uint64_t is_hidden_clustering_key_column_:1;
+      uint64_t eager_evaluation_:1;
     };
     uint64_t flag_;
   };
@@ -1361,11 +1403,13 @@ OB_INLINE int ObExpr::eval_batch(ObEvalCtx &ctx,
   int ret = common::OB_SUCCESS;
   const ObEvalInfo &info = get_eval_info(ctx);
   if (!is_batch_result()) {
-    if (skip.accumulate_bit_cnt(size) < size) {
-      common::ObDatum *datum = NULL;
-      ret = eval(ctx, datum);
-    } else {
-      // all skiped
+    bool const_dry_run = skip.accumulate_bit_cnt(size) >= size;
+    common::ObDatum *datum = NULL;
+    ret = eval(ctx, datum);
+    if (!const_dry_run) {
+      // do nothing
+    } else if (OB_FAIL(ret)) {
+      ret = OB_SUCCESS;
     }
   } else if (info.projected_ || NULL == eval_batch_func_) {
     // expr values is projected by child or has no evaluate func, do nothing.
@@ -1393,7 +1437,7 @@ OB_INLINE int ObExpr::eval_vector(ObEvalCtx &ctx,
 
 OB_INLINE VectorFormat ObExpr::get_default_res_format() const {
   return !batch_result_ ? VEC_UNIFORM_CONST
-         : ((datum_meta_.type_ == ObNullType || datum_meta_.type_ == ObCollectionSQLType) ? VEC_UNIFORM
+         : (datum_meta_.type_ == ObNullType ? VEC_UNIFORM
          : (is_fixed_length_data_ ? VEC_FIXED : VEC_DISCRETE));
 }
 
@@ -1438,57 +1482,78 @@ OB_INLINE int ObExpr::deep_copy_datum(ObEvalCtx &ctx, const common::ObDatum &dat
   return ret;
 }
 
-inline const char *get_vectorized_row_str(ObEvalCtx &eval_ctx, const ObExprPtrIArray &exprs,
-    const ObBitVector *skip, const EvalBound &bound, const int64_t &batch_size, int64_t index)
+class VectorizedRowsWrapper final
 {
-  char *buffer = NULL;
-  int64_t str_len = 0;
-  CStringBufMgr &mgr = CStringBufMgr::get_thread_local_instance();
-  mgr.inc_level();
-  const int64_t buf_len = mgr.acquire(buffer);
-  if (OB_ISNULL(buffer)) {
-    LIB_LOG_RET(ERROR, OB_ALLOCATE_MEMORY_FAILED, "buffer is NULL");
-  } else {
-    databuff_printf(buffer, buf_len, str_len, "vectorized_rows(%ld)=", index);
-    str_len += to_string(ROWEXPR2STRVEC(exprs, eval_ctx, skip, bound, batch_size),
-        buffer + str_len,
-        buf_len - str_len - 1);
-    if (str_len >= 0 && str_len < buf_len) {
-      buffer[str_len] = '\0';
+public:
+  VectorizedRowsWrapper(ObEvalCtx &ctx, const common::ObIArray<ObExpr *> &exprs,
+    const ObBitVector *skip, const EvalBound &bound, const int64_t &batch_size,
+    int64_t index)
+    : vec_(exprs, ctx, skip, bound, batch_size), index_(index)
+  {}
+  ~VectorizedRowsWrapper() = default;
+  OB_INLINE int64_t to_string(char *buf, const int64_t buf_len) const;
+private:
+  DISABLE_COPY_ASSIGN(VectorizedRowsWrapper);
+private:
+  ROWEXPR2STRVEC vec_;
+  int64_t index_;
+};
+
+OB_INLINE int64_t VectorizedRowsWrapper::to_string(char *buf, const int64_t buf_len) const
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (nullptr != buf && buf_len > 0) {
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "vectorized_rows(%ld)=", index_))) {
+      LIB_LOG(WARN, "call databuff_printf failed", K(pos), K(ret));
     } else {
-      buffer[0] = '\0';
+      int64_t str_len = vec_.to_string(buf + pos, buf_len - pos - 1);
+      pos += str_len;
+      if (pos >= 0 && pos < buf_len) {
+        buf[pos] = '\0';
+      } else {
+        buf[0] = '\0';
+        pos = 0;
+      }
     }
-    mgr.update_position(str_len + 1);
   }
-  mgr.try_clear_list();
-  mgr.dec_level();
-  return buffer;
+  return pos;
 }
 
-inline const char *get_vectorized_exprs_meta_str(ObEvalCtx &eval_ctx, const ObExprPtrIArray &exprs,
-    const ObBitVector *skip, const EvalBound &bound, const int64_t batch_size)
+class VectorizedExprsMetaWrapper final
 {
-  char *buffer = NULL;
-  int64_t str_len = 0;
-  CStringBufMgr &mgr = CStringBufMgr::get_thread_local_instance();
-  mgr.inc_level();
-  const int64_t buf_len = mgr.acquire(buffer);
-  if (OB_ISNULL(buffer)) {
-    LIB_LOG_RET(ERROR, OB_ALLOCATE_MEMORY_FAILED, "buffer is NULL");
-  } else {
-    databuff_printf(buffer, buf_len, str_len, "vectorized_exprs_meta=");
-    str_len += ROWEXPR2STRVEC(exprs, eval_ctx, skip, bound, batch_size)
-                   .meta_to_string(buffer + str_len, buf_len - str_len - 1);
-    if (str_len >= 0 && str_len < buf_len) {
-      buffer[str_len] = '\0';
+public:
+VectorizedExprsMetaWrapper(ObEvalCtx &ctx, const common::ObIArray<ObExpr *> &exprs,
+  const ObBitVector *skip, const EvalBound &bound, const int64_t &batch_size)
+    : vec_(exprs, ctx, skip, bound, batch_size)
+  {}
+  ~VectorizedExprsMetaWrapper() = default;
+  OB_INLINE int64_t to_string(char *buf, const int64_t buf_len) const;
+private:
+  DISABLE_COPY_ASSIGN(VectorizedExprsMetaWrapper);
+private:
+  ROWEXPR2STRVEC vec_;
+};
+
+OB_INLINE int64_t VectorizedExprsMetaWrapper::to_string(char *buf, const int64_t buf_len) const
+{
+  int ret = OB_SUCCESS;
+  int64_t pos = 0;
+  if (nullptr != buf && buf_len > 0) {
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "vectorized_exprs_meta="))) {
+      LIB_LOG(WARN, "call databuff_printf failed", K(pos), K(ret));
     } else {
-      buffer[0] = '\0';
+      int64_t str_len = vec_.meta_to_string(buf + pos, buf_len - pos - 1);
+      pos += str_len;
+      if (pos >= 0 && pos < buf_len) {
+        buf[pos] = '\0';
+      } else {
+        buf[0] = '\0';
+        pos = 0;
+      }
     }
-    mgr.update_position(str_len + 1);
   }
-  mgr.try_clear_list();
-  mgr.dec_level();
-  return buffer;
+  return pos;
 }
 
 #define PRINT_VECTORIZED_ROWS(parMod, level, eval_ctx, exprs, batch_size, skip, args...)         \
@@ -1500,11 +1565,13 @@ inline const char *get_vectorized_exprs_meta_str(ObEvalCtx &eval_ctx, const ObEx
                 ::oceanbase::common::OB_LOG_ROOT::M_##parMod, OB_LOG_LEVEL_##level))) {          \
           int64_t _batch_size = common::min(batch_size, (eval_ctx).get_batch_size());            \
           if (_batch_size > 0) {                                                                 \
-            ::oceanbase::common::OB_PRINT("[" #parMod "] ",                                      \
-                OB_LOG_LEVEL(level),                                                             \
-                get_vectorized_exprs_meta_str(                                                   \
-                    eval_ctx, exprs, skip, sql::EvalBound(_batch_size, false), _batch_size),      \
-                LOG_KVS(args));                                                                  \
+            const sql::EvalBound bound =  sql::EvalBound(_batch_size, false);                    \
+            {                                                                                    \
+              ObCStringHelper helper;                                                            \
+              sql::VectorizedExprsMetaWrapper wrapper(eval_ctx, exprs, skip, bound, _batch_size);\
+              ::oceanbase::common::OB_PRINT("[" #parMod "] ",                                    \
+                  OB_LOG_LEVEL(level), helper.convert(wrapper), LOG_KVS(args));                  \
+            }                                                                                    \
             ObEvalCtx::BatchInfoScopeGuard _batch_info_guard(eval_ctx);                          \
             _batch_info_guard.set_batch_size(_batch_size);                                       \
             for (int64_t i = 0; i < _batch_size; ++i) {                                          \
@@ -1512,85 +1579,16 @@ inline const char *get_vectorized_exprs_meta_str(ObEvalCtx &eval_ctx, const ObEx
                 continue;                                                                        \
               }                                                                                  \
               _batch_info_guard.set_batch_idx(i);                                                \
-              ::oceanbase::common::OB_PRINT("[" #parMod "] ",                                    \
-                  OB_LOG_LEVEL(level),                                                           \
-                  get_vectorized_row_str(                                                        \
-                      eval_ctx, exprs, skip, sql::EvalBound(_batch_size, false), _batch_size, i), \
-                  LOG_KVS(args));                                                                \
+              ObCStringHelper helper;                                                            \
+              sql::VectorizedRowsWrapper wrapper(eval_ctx, exprs, skip, bound, _batch_size, i);  \
+              ::oceanbase::common::OB_PRINT("["#parMod"] ",                                      \
+                  OB_LOG_LEVEL(level), helper.convert(wrapper), LOG_KVS(args));                  \
             }                                                                                    \
           }                                                                                      \
         }                                                                                        \
       }                                                                                          \
       (__FUNCTION__);                                                                            \
     }                                                                                            \
-  } while (false)
-
-inline const char *get_vectorized_row_str_by_column(ObEvalCtx &eval_ctx, const ObExpr *expr,
-    const ObBitVector *skip, const EvalBound &bound, const int64_t index)
-{
-  char *buffer = NULL;
-  int64_t str_len = 0;
-  CStringBufMgr &mgr = CStringBufMgr::get_thread_local_instance();
-  mgr.inc_level();
-  const int64_t buf_len = mgr.acquire(buffer);
-  if (OB_ISNULL(buffer)) {
-    LIB_LOG_RET(ERROR, OB_ALLOCATE_MEMORY_FAILED, "buffer is NULL");
-  } else {
-    databuff_printf(buffer, buf_len, str_len, "vectorized_expr(%ld)=", index);
-    if (NULL != expr) {
-      if (expr->enable_rich_format()) {
-        str_len += ToStrVectorHeader(*expr, eval_ctx, skip, bound)
-                       .to_string(buffer + str_len, buf_len - str_len - 1);
-      } else {
-        int64_t batch_size = bound.batch_size();
-        ObEvalCtx::BatchInfoScopeGuard _batch_info_guard(eval_ctx);
-        _batch_info_guard.set_batch_size(batch_size);
-        for (int64_t i = 0; i < batch_size; ++i) {
-          if (NULL != skip && skip->at(i)) {
-            continue;
-          }
-          _batch_info_guard.set_batch_idx(i);
-          str_len +=
-              ObToStringExpr(eval_ctx, *expr).to_string(buffer + str_len, buf_len - str_len - 1);
-        }
-      }
-    } else {
-      databuff_printf(buffer, buf_len, str_len, "{null}");
-    }
-    if (str_len >= 0 && str_len < buf_len) {
-      buffer[str_len] = '\0';
-    } else {
-      buffer[0] = '\0';
-    }
-    mgr.update_position(str_len + 1);
-  }
-  mgr.try_clear_list();
-  mgr.dec_level();
-  return buffer;
-}
-
-#define PRINT_VECTORIZED_ROWS_BY_COLUMN(parMod, level, eval_ctx, exprs, batch_size, skip, args...) \
-  do {                                                                                             \
-    if (IS_LOG_ENABLED(level)) {                                                                   \
-      [&](const char *_fun_name_) __attribute__((GET_LOG_FUNC_ATTR(level)))                        \
-      {                                                                                            \
-        if (OB_UNLIKELY(OB_LOGGER.need_to_print(                                                   \
-                ::oceanbase::common::OB_LOG_ROOT::M_##parMod, OB_LOG_LEVEL_##level))) {            \
-          int64_t _batch_size = common::min(batch_size, (eval_ctx).get_batch_size());              \
-          if (_batch_size > 0) {                                                                   \
-            for (int64_t i = 0; i < (exprs).count(); i++) {                                        \
-              const ObExpr *expr = (exprs).at(i);                                                                  \
-              ::oceanbase::common::OB_PRINT("[" #parMod "] ",                                      \
-                  OB_LOG_LEVEL(level),                                                             \
-                  get_vectorized_row_str_by_column(                                                \
-                      eval_ctx, expr, skip, sql::EvalBound(_batch_size, true), i),                 \
-                  LOG_KVS(args));                                                                  \
-            }                                                                                      \
-          }                                                                                        \
-        }                                                                                          \
-      }                                                                                            \
-      (__FUNCTION__);                                                                              \
-    }                                                                                              \
   } while (false)
 }  // end namespace sql
 

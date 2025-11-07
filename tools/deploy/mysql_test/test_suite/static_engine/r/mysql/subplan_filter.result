@@ -844,20 +844,21 @@ select /*+no_rewrite parallel(2)*/ (select c1 from t1 order by c2 limit 1) as re
 
 EXPLAIN select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2) order by 1;
 Query Plan
-=============================================================
-|ID|OPERATOR                 |NAME    |EST.ROWS|EST.TIME(us)|
--------------------------------------------------------------
-|0 |SORT                     |        |5       |13          |
-|1 |└─SUBPLAN FILTER         |        |5       |13          |
-|2 |  ├─PX COORDINATOR       |        |5       |7           |
-|3 |  │ └─EXCHANGE OUT DISTR |:EX10000|5       |7           |
-|4 |  │   └─PX BLOCK ITERATOR|        |5       |6           |
-|5 |  │     └─TABLE FULL SCAN|t1      |5       |6           |
-|6 |  └─PX COORDINATOR       |        |5       |6           |
-|7 |    └─EXCHANGE OUT DISTR |:EX20000|5       |6           |
-|8 |      └─PX BLOCK ITERATOR|        |5       |6           |
-|9 |        └─TABLE FULL SCAN|t2      |5       |6           |
-=============================================================
+===============================================================
+|ID|OPERATOR                   |NAME    |EST.ROWS|EST.TIME(us)|
+---------------------------------------------------------------
+|0 |SORT                       |        |5       |13          |
+|1 |└─SUBPLAN FILTER           |        |5       |13          |
+|2 |  ├─PX COORDINATOR         |        |5       |7           |
+|3 |  │ └─EXCHANGE OUT DISTR   |:EX10000|5       |7           |
+|4 |  │   └─PX BLOCK ITERATOR  |        |5       |6           |
+|5 |  │     └─TABLE FULL SCAN  |t1      |5       |6           |
+|6 |  └─PX COORDINATOR         |        |2       |6           |
+|7 |    └─EXCHANGE OUT DISTR   |:EX20000|2       |6           |
+|8 |      └─LIMIT              |        |2       |6           |
+|9 |        └─PX BLOCK ITERATOR|        |2       |6           |
+|10|          └─TABLE FULL SCAN|t2      |2       |6           |
+===============================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1]), filter(nil), rowset=16
@@ -876,9 +877,11 @@ Outputs & filters:
   7 - output(nil), filter(nil), rowset=16
       dop=2
   8 - output(nil), filter(nil), rowset=16
+      limit(1), offset(nil)
   9 - output(nil), filter(nil), rowset=16
+ 10 - output(nil), filter(nil), rowset=16
       access(nil), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2) order by 1;
 +------+
@@ -903,11 +906,12 @@ Query Plan
 |3 |  │ └─EXCHANGE OUT DISTR       |:EX10000|5       |7           |
 |4 |  │   └─PX BLOCK ITERATOR      |        |5       |6           |
 |5 |  │     └─TABLE FULL SCAN      |t1      |5       |6           |
-|6 |  ├─PX COORDINATOR             |        |5       |6           |
-|7 |  │ └─EXCHANGE OUT DISTR       |:EX20000|5       |6           |
-|8 |  │   └─PX BLOCK ITERATOR      |        |5       |6           |
-|9 |  │     └─TABLE FULL SCAN      |t2      |5       |6           |
-|10|  └─DISTRIBUTED TABLE FULL SCAN|t2      |1       |90          |
+|6 |  ├─PX COORDINATOR             |        |2       |6           |
+|7 |  │ └─EXCHANGE OUT DISTR       |:EX20000|2       |6           |
+|8 |  │   └─LIMIT                  |        |2       |6           |
+|9 |  │     └─PX BLOCK ITERATOR    |        |2       |6           |
+|10|  │       └─TABLE FULL SCAN    |t2      |2       |6           |
+|11|  └─DISTRIBUTED TABLE FULL SCAN|t2      |1       |90          |
 ===================================================================
 Outputs & filters:
 -------------------------------------
@@ -927,13 +931,15 @@ Outputs & filters:
   7 - output(nil), filter(nil), rowset=16
       dop=2
   8 - output(nil), filter(nil), rowset=16
+      limit(1), offset(nil)
   9 - output(nil), filter(nil), rowset=16
+ 10 - output(nil), filter(nil), rowset=16
       access(nil), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([1]), filter([:0 = t2.c1]), rowset=16
+ 11 - output([1]), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2)
                                                     and exists(select 1 from t2 where t1.c1 = t2.c1) order by 1;
@@ -959,7 +965,8 @@ Query Plan
 |3 |    └─PX PARTITION ITERATOR|        |3       |118         |
 |4 |      └─SUBPLAN FILTER     |        |3       |118         |
 |5 |        ├─TABLE FULL SCAN  |t1      |5       |6           |
-|6 |        └─TABLE FULL SCAN  |t2      |1       |45          |
+|6 |        └─LIMIT            |        |1       |45          |
+|7 |          └─TABLE FULL SCAN|t2      |1       |45          |
 ===============================================================
 Outputs & filters:
 -------------------------------------
@@ -977,9 +984,11 @@ Outputs & filters:
       access([t1.c1]), partitions(p[0-4])
       is_index_back=false, is_global_index=false, 
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([1]), filter([:0 = t2.c1]), rowset=16
+  6 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  7 - output(nil), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c1 = t2.c1) order by 1;
 +------+
@@ -1004,8 +1013,10 @@ Query Plan
 |3 |    └─PX PARTITION ITERATOR|        |2       |230         |
 |4 |      └─SUBPLAN FILTER     |        |2       |230         |
 |5 |        ├─TABLE FULL SCAN  |t1      |5       |6           |
-|6 |        ├─TABLE FULL SCAN  |t2      |1       |45          |
-|7 |        └─TABLE FULL SCAN  |t2      |1       |45          |
+|6 |        ├─LIMIT            |        |1       |45          |
+|7 |        │ └─TABLE FULL SCAN|t2      |1       |45          |
+|8 |        └─LIMIT            |        |1       |45          |
+|9 |          └─TABLE FULL SCAN|t2      |1       |45          |
 ===============================================================
 Outputs & filters:
 -------------------------------------
@@ -1023,13 +1034,17 @@ Outputs & filters:
       access([t1.c1]), partitions(p[0-4])
       is_index_back=false, is_global_index=false, 
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
-  6 - output([1]), filter([:0 = t2.c1]), rowset=16
+  6 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  7 - output(nil), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
-  7 - output([1]), filter([:1 = t2.c1]), rowset=16
+  8 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  9 - output(nil), filter([:1 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c1 = t2.c1)
                                                     and exists(select 1 from t2 where t1.c1 = t2.c1) order by 1;
@@ -1075,11 +1090,11 @@ Outputs & filters:
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
   6 - output([1]), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
   7 - output([1]), filter([:1 = t3.c1]), rowset=16
       access([t3.c1]), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c1 = t2.c1)
                                                     and exists(select 1 from t3 where t1.c1 = t3.c1) order by 1;
@@ -1106,8 +1121,9 @@ Query Plan
 |5 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |8           |
 |6 |      │   └─PX BLOCK ITERATOR      |        |5       |6           |
 |7 |      │     └─TABLE FULL SCAN      |t1      |5       |6           |
-|8 |      └─PX PARTITION ITERATOR      |        |1       |45          |
-|9 |        └─TABLE FULL SCAN          |t2      |1       |45          |
+|8 |      └─LIMIT                      |        |1       |45          |
+|9 |        └─PX PARTITION ITERATOR    |        |1       |45          |
+|10|          └─TABLE FULL SCAN        |t2      |1       |45          |
 =======================================================================
 Outputs & filters:
 -------------------------------------
@@ -1128,10 +1144,12 @@ Outputs & filters:
       is_index_back=false, is_global_index=false, 
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
   8 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  9 - output(nil), filter(nil), rowset=16
       affinitize, partition wise
-  9 - output(nil), filter([:0 = t2.c1]), rowset=16
+ 10 - output(nil), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c2 = t2.c1) order by 1;
 +------+
@@ -1150,16 +1168,16 @@ Query Plan
 ===========================================================================
 |ID|OPERATOR                               |NAME    |EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------------------
-|0 |PX COORDINATOR MERGE SORT              |        |2       |455         |
-|1 |└─EXCHANGE OUT DISTR                   |:EX10000|2       |455         |
-|2 |  └─SORT                               |        |2       |454         |
-|3 |    └─SUBPLAN FILTER                   |        |2       |454         |
+|0 |PX COORDINATOR MERGE SORT              |        |2       |634         |
+|1 |└─EXCHANGE OUT DISTR                   |:EX10000|2       |633         |
+|2 |  └─SORT                               |        |2       |633         |
+|3 |    └─SUBPLAN FILTER                   |        |2       |633         |
 |4 |      ├─PX BLOCK ITERATOR              |        |5       |6           |
 |5 |      │ └─TABLE FULL SCAN              |t1      |5       |6           |
-|6 |      ├─NESTED-LOOP JOIN CARTESIAN     |        |5       |90          |
+|6 |      ├─NESTED-LOOP JOIN CARTESIAN     |        |1       |162         |
 |7 |      │ ├─DISTRIBUTED TABLE FULL SCAN  |t2      |1       |90          |
-|8 |      │ └─MATERIAL                     |        |5       |72          |
-|9 |      │   └─DISTRIBUTED TABLE FULL SCAN|t3      |5       |72          |
+|8 |      │ └─MATERIAL                     |        |1       |72          |
+|9 |      │   └─DISTRIBUTED TABLE FULL SCAN|t3      |1       |72          |
 |10|      └─DISTRIBUTED TABLE FULL SCAN    |t2      |1       |90          |
 ===========================================================================
 Outputs & filters:
@@ -1181,16 +1199,16 @@ Outputs & filters:
       conds(nil), nl_params_(nil), use_batch=false
   7 - output(nil), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
   8 - output(nil), filter(nil), rowset=16
   9 - output(nil), filter(nil), rowset=16
       access(nil), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
  10 - output([1]), filter([:1 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2, t3 where t1.c1 = t2.c1)
                                                     and exists(select 1 from t2 where t1.c2 = t2.c1) order by 1;
@@ -1211,16 +1229,16 @@ Query Plan
 ===========================================================================
 |ID|OPERATOR                               |NAME    |EST.ROWS|EST.TIME(us)|
 ---------------------------------------------------------------------------
-|0 |PX COORDINATOR MERGE SORT              |        |2       |679         |
-|1 |└─EXCHANGE OUT DISTR                   |:EX10000|2       |679         |
-|2 |  └─SORT                               |        |2       |678         |
-|3 |    └─SUBPLAN FILTER                   |        |2       |678         |
+|0 |PX COORDINATOR MERGE SORT              |        |2       |858         |
+|1 |└─EXCHANGE OUT DISTR                   |:EX10000|2       |857         |
+|2 |  └─SORT                               |        |2       |857         |
+|3 |    └─SUBPLAN FILTER                   |        |2       |857         |
 |4 |      ├─PX BLOCK ITERATOR              |        |5       |6           |
 |5 |      │ └─TABLE FULL SCAN              |t1      |5       |6           |
-|6 |      ├─NESTED-LOOP JOIN CARTESIAN     |        |5       |90          |
+|6 |      ├─NESTED-LOOP JOIN CARTESIAN     |        |1       |162         |
 |7 |      │ ├─DISTRIBUTED TABLE FULL SCAN  |t2      |1       |90          |
-|8 |      │ └─MATERIAL                     |        |5       |72          |
-|9 |      │   └─DISTRIBUTED TABLE FULL SCAN|t3      |5       |72          |
+|8 |      │ └─MATERIAL                     |        |1       |72          |
+|9 |      │   └─DISTRIBUTED TABLE FULL SCAN|t3      |1       |72          |
 |10|      ├─DISTRIBUTED TABLE FULL SCAN    |t2      |1       |90          |
 |11|      └─DISTRIBUTED TABLE FULL SCAN    |t2      |1       |90          |
 ===========================================================================
@@ -1243,20 +1261,20 @@ Outputs & filters:
       conds(nil), nl_params_(nil), use_batch=false
   7 - output(nil), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
   8 - output(nil), filter(nil), rowset=16
   9 - output(nil), filter(nil), rowset=16
       access(nil), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
  10 - output([1]), filter([:1 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
  11 - output([1]), filter([:2 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2, t3 where t1.c1 = t2.c1)
                                                     and exists(select 1 from t2 where t1.c2 = t2.c1)
@@ -1303,11 +1321,11 @@ Outputs & filters:
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
   6 - output([1]), filter([:0 = t2.c1]), rowset=16
       access([t2.c1]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
   7 - output([1]), filter([:1 = t3.c1]), rowset=16
       access([t3.c1]), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c1 = t2.c1)
                                                     and exists(select 1 from t3 where t1.c2 = t3.c1) order by 1;
@@ -1334,10 +1352,12 @@ Query Plan
 |5 |      │ └─EXCHANGE OUT DISTR (PKEY)|:EX10000|5       |8           |
 |6 |      │   └─PX BLOCK ITERATOR      |        |5       |6           |
 |7 |      │     └─TABLE FULL SCAN      |t1      |5       |6           |
-|8 |      ├─PX PARTITION ITERATOR      |        |1       |36          |
-|9 |      │ └─TABLE FULL SCAN          |t4      |1       |36          |
-|10|      └─PX PARTITION ITERATOR      |        |1       |36          |
-|11|        └─TABLE FULL SCAN          |t3      |1       |36          |
+|8 |      ├─LIMIT                      |        |1       |36          |
+|9 |      │ └─PX PARTITION ITERATOR    |        |1       |36          |
+|10|      │   └─TABLE FULL SCAN        |t4      |1       |36          |
+|11|      └─LIMIT                      |        |1       |36          |
+|12|        └─PX PARTITION ITERATOR    |        |1       |36          |
+|13|          └─TABLE FULL SCAN        |t3      |1       |36          |
 =======================================================================
 Outputs & filters:
 -------------------------------------
@@ -1358,16 +1378,20 @@ Outputs & filters:
       is_index_back=false, is_global_index=false, 
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
   8 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+  9 - output(nil), filter(nil), rowset=16
       affinitize, partition wise
-  9 - output(nil), filter([:0 = t4.c1]), rowset=16
+ 10 - output(nil), filter([:0 = t4.c1]), rowset=16
       access([t4.c1]), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t4.__pk_increment]), range(MIN ; MAX)always true
- 10 - output([1]), filter(nil), rowset=16
+ 11 - output([1]), filter(nil), rowset=16
+      limit(1), offset(nil)
+ 12 - output(nil), filter(nil), rowset=16
       affinitize, partition wise
- 11 - output(nil), filter([:1 = t3.c1]), rowset=16
+ 13 - output(nil), filter([:1 = t3.c1]), rowset=16
       access([t3.c1]), partitions(p[0-3])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t4 where t1.c2 = t4.c1) and exists (select 1 from t3 where t1.c2 = t3.c1) order by 1;
 +------+
@@ -1457,7 +1481,7 @@ Outputs & filters:
       range_key([t1.__pk_increment]), range(MIN ; MAX)always true
   6 - output([1]), filter([:0 = t2.c2]), rowset=16
       access([t2.c2]), partitions(p[0-4])
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
 select /*+no_rewrite parallel(2)*/ c1 from t1 where exists(select 1 from t2 where t1.c2 = t2.c2) order by 1;
 +------+
@@ -1475,15 +1499,15 @@ Query Plan
 ===============================================================================
 |ID|OPERATOR                                   |NAME    |EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------------------------------
-|0 |PX COORDINATOR MERGE SORT                  |        |3       |233         |
-|1 |└─EXCHANGE OUT DISTR                       |:EX10000|3       |233         |
-|2 |  └─SORT                                   |        |3       |232         |
-|3 |    └─SUBPLAN FILTER                       |        |3       |232         |
+|0 |PX COORDINATOR MERGE SORT                  |        |3       |591         |
+|1 |└─EXCHANGE OUT DISTR                       |:EX10000|3       |591         |
+|2 |  └─SORT                                   |        |3       |591         |
+|3 |    └─SUBPLAN FILTER                       |        |3       |590         |
 |4 |      ├─PX BLOCK ITERATOR                  |        |5       |6           |
 |5 |      │ └─TABLE FULL SCAN                  |t1      |5       |6           |
-|6 |      └─MERGE GROUP BY                     |        |1       |91          |
-|7 |        └─NESTED-LOOP JOIN CARTESIAN       |        |25      |91          |
-|8 |          ├─NESTED-LOOP JOIN CARTESIAN     |        |5       |90          |
+|6 |      └─MERGE GROUP BY                     |        |1       |234         |
+|7 |        └─NESTED-LOOP JOIN CARTESIAN       |        |25      |234         |
+|8 |          ├─NESTED-LOOP JOIN CARTESIAN     |        |5       |162         |
 |9 |          │ ├─DISTRIBUTED TABLE FULL SCAN  |t2      |1       |90          |
 |10|          │ └─MATERIAL                     |        |5       |72          |
 |11|          │   └─DISTRIBUTED TABLE FULL SCAN|t3      |5       |72          |
@@ -1621,7 +1645,7 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -1638,7 +1662,7 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -1649,7 +1673,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -1659,10 +1682,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -1725,7 +1747,7 @@ Outputs & filters:
       access([t2.c1], [t2.c2]), partitions(p0)
       limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -1742,7 +1764,7 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2") LOCAL LOCAL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
   */
@@ -1752,7 +1774,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -1762,10 +1783,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:4
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:5
       table_dop:1
       dop_method:Table DOP
       avaiable_index_name:[t2]
@@ -1830,7 +1850,7 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :0])
+      range_cond([t2.c1 = :0]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -1847,7 +1867,7 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -1858,7 +1878,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -1870,7 +1889,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -1935,12 +1953,12 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
   6 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :1])
+      range_cond([t2.c1 >= :1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -1958,9 +1976,9 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -1971,7 +1989,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -1981,10 +1998,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -1993,10 +2009,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2060,12 +2075,12 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
   6 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :1])
+      range_cond([t2.c1 >= :1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2083,9 +2098,9 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2096,7 +2111,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2106,10 +2120,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2118,10 +2131,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2185,12 +2197,12 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :0])
+      range_cond([t2.c1 <= :0]),  is_fast_range = true
   6 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2208,9 +2220,9 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2221,7 +2233,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2231,10 +2242,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2243,10 +2253,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2310,12 +2319,12 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :0])
+      range_cond([t2.c1 <= :0]),  is_fast_range = true
   6 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2333,9 +2342,9 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2346,7 +2355,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2356,10 +2364,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2368,10 +2375,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2436,17 +2442,17 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :0])
+      range_cond([t2.c1 <= :0]),  is_fast_range = true
   6 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
   7 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :2])
+      range_cond([t2.c1 = :2]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2465,11 +2471,11 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3" "SEL$4") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
-      FULL(@"SEL$4" "test"."t2"@"SEL$4")
+      INDEX(@"SEL$4" "test"."t2"@"SEL$4" "primary")
       USE_DAS(@"SEL$4" "test"."t2"@"SEL$4")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2480,7 +2486,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2490,10 +2495,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2502,10 +2506,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2516,7 +2519,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2591,37 +2593,37 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :0])
+      range_cond([t2.c1 = :0]),  is_fast_range = true
   6 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
   7 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :2])
+      range_cond([t2.c1 = :2]),  is_fast_range = true
   8 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :3])
+      range_cond([t2.c1 = :3]),  is_fast_range = true
   9 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :4])
+      range_cond([t2.c1 <= :4]),  is_fast_range = true
  10 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:5 = t2.c1])
+      range_cond([:5 = t2.c1]),  is_fast_range = true
  11 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:6 >= t2.c1])
+      range_cond([:6 >= t2.c1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2644,19 +2646,19 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3" "SEL$4" "SEL$5" "SEL$6" "SEL$7" "SEL$8") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
-      FULL(@"SEL$4" "test"."t2"@"SEL$4")
+      INDEX(@"SEL$4" "test"."t2"@"SEL$4" "primary")
       USE_DAS(@"SEL$4" "test"."t2"@"SEL$4")
-      FULL(@"SEL$5" "test"."t2"@"SEL$5")
+      INDEX(@"SEL$5" "test"."t2"@"SEL$5" "primary")
       USE_DAS(@"SEL$5" "test"."t2"@"SEL$5")
-      FULL(@"SEL$6" "test"."t2"@"SEL$6")
+      INDEX(@"SEL$6" "test"."t2"@"SEL$6" "primary")
       USE_DAS(@"SEL$6" "test"."t2"@"SEL$6")
-      FULL(@"SEL$7" "test"."t2"@"SEL$7")
+      INDEX(@"SEL$7" "test"."t2"@"SEL$7" "primary")
       USE_DAS(@"SEL$7" "test"."t2"@"SEL$7")
-      FULL(@"SEL$8" "test"."t2"@"SEL$8")
+      INDEX(@"SEL$8" "test"."t2"@"SEL$8" "primary")
       USE_DAS(@"SEL$8" "test"."t2"@"SEL$8")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2667,7 +2669,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2679,7 +2680,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2689,10 +2689,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2703,7 +2702,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2715,7 +2713,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2725,10 +2722,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2739,7 +2735,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2749,10 +2744,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2828,37 +2822,37 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
   6 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
   7 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :2])
+      range_cond([t2.c1 = :2]),  is_fast_range = true
   8 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :3])
+      range_cond([t2.c1 = :3]),  is_fast_range = true
   9 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :4])
+      range_cond([t2.c1 <= :4]),  is_fast_range = true
  10 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:5 = t2.c1])
+      range_cond([:5 = t2.c1]),  is_fast_range = true
  11 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:6 >= t2.c1])
+      range_cond([:6 >= t2.c1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -2881,19 +2875,19 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3" "SEL$4" "SEL$5" "SEL$6" "SEL$7" "SEL$8") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
-      FULL(@"SEL$4" "test"."t2"@"SEL$4")
+      INDEX(@"SEL$4" "test"."t2"@"SEL$4" "primary")
       USE_DAS(@"SEL$4" "test"."t2"@"SEL$4")
-      FULL(@"SEL$5" "test"."t2"@"SEL$5")
+      INDEX(@"SEL$5" "test"."t2"@"SEL$5" "primary")
       USE_DAS(@"SEL$5" "test"."t2"@"SEL$5")
-      FULL(@"SEL$6" "test"."t2"@"SEL$6")
+      INDEX(@"SEL$6" "test"."t2"@"SEL$6" "primary")
       USE_DAS(@"SEL$6" "test"."t2"@"SEL$6")
-      FULL(@"SEL$7" "test"."t2"@"SEL$7")
+      INDEX(@"SEL$7" "test"."t2"@"SEL$7" "primary")
       USE_DAS(@"SEL$7" "test"."t2"@"SEL$7")
-      FULL(@"SEL$8" "test"."t2"@"SEL$8")
+      INDEX(@"SEL$8" "test"."t2"@"SEL$8" "primary")
       USE_DAS(@"SEL$8" "test"."t2"@"SEL$8")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -2904,7 +2898,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -2914,10 +2907,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2926,10 +2918,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2940,7 +2931,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2952,7 +2942,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2962,10 +2951,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -2976,7 +2964,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -2986,10 +2973,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -3066,37 +3052,37 @@ Outputs & filters:
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 >= :0])
+      range_cond([t2.c1 >= :0]),  is_fast_range = true
   6 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :1])
+      range_cond([t2.c1 <= :1]),  is_fast_range = true
   7 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :2])
+      range_cond([t2.c1 = :2]),  is_fast_range = true
   8 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 = :3])
+      range_cond([t2.c1 = :3]),  is_fast_range = true
   9 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([t2.c1 <= :4])
+      range_cond([t2.c1 <= :4]),  is_fast_range = true
  10 - output([t2.c2]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c2]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:5 = t2.c1])
+      range_cond([:5 = t2.c1]),  is_fast_range = true
  11 - output([t2.c1]), filter(nil), rowset=256
       access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
-      range_cond([:6 >= t2.c1])
+      range_cond([:6 >= t2.c1]),  is_fast_range = true
 Used Hint:
 -------------------------------------
   /*+
@@ -3119,19 +3105,19 @@ Outline Data:
       BEGIN_OUTLINE_DATA
       PQ_SUBQUERY(@"SEL$1" ("SEL$2" "SEL$3" "SEL$4" "SEL$5" "SEL$6" "SEL$7" "SEL$8") NONE ALL)
       FULL(@"SEL$1" "test"."t1"@"SEL$1")
-      FULL(@"SEL$2" "test"."t2"@"SEL$2")
+      INDEX(@"SEL$2" "test"."t2"@"SEL$2" "primary")
       USE_DAS(@"SEL$2" "test"."t2"@"SEL$2")
-      FULL(@"SEL$3" "test"."t2"@"SEL$3")
+      INDEX(@"SEL$3" "test"."t2"@"SEL$3" "primary")
       USE_DAS(@"SEL$3" "test"."t2"@"SEL$3")
-      FULL(@"SEL$4" "test"."t2"@"SEL$4")
+      INDEX(@"SEL$4" "test"."t2"@"SEL$4" "primary")
       USE_DAS(@"SEL$4" "test"."t2"@"SEL$4")
-      FULL(@"SEL$5" "test"."t2"@"SEL$5")
+      INDEX(@"SEL$5" "test"."t2"@"SEL$5" "primary")
       USE_DAS(@"SEL$5" "test"."t2"@"SEL$5")
-      FULL(@"SEL$6" "test"."t2"@"SEL$6")
+      INDEX(@"SEL$6" "test"."t2"@"SEL$6" "primary")
       USE_DAS(@"SEL$6" "test"."t2"@"SEL$6")
-      FULL(@"SEL$7" "test"."t2"@"SEL$7")
+      INDEX(@"SEL$7" "test"."t2"@"SEL$7" "primary")
       USE_DAS(@"SEL$7" "test"."t2"@"SEL$7")
-      FULL(@"SEL$8" "test"."t2"@"SEL$8")
+      INDEX(@"SEL$8" "test"."t2"@"SEL$8" "primary")
       USE_DAS(@"SEL$8" "test"."t2"@"SEL$8")
       OPTIMIZER_FEATURES_ENABLE('')
       END_OUTLINE_DATA
@@ -3142,7 +3128,6 @@ Optimization Info:
       table_rows:18
       physical_range_rows:18
       logical_range_rows:18
-      index_back_rows:0
       output_rows:18
       table_dop:1
       dop_method:Table DOP
@@ -3152,10 +3137,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -3164,10 +3148,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -3178,7 +3161,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -3190,7 +3172,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -3200,10 +3181,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]
@@ -3214,7 +3194,6 @@ Optimization Info:
       table_rows:22
       physical_range_rows:1
       logical_range_rows:1
-      index_back_rows:0
       output_rows:1
       table_dop:1
       dop_method:DAS DOP
@@ -3224,10 +3203,9 @@ Optimization Info:
       estimation method:[DEFAULT, STORAGE]
   t2:
       table_rows:22
-      physical_range_rows:7
-      logical_range_rows:7
-      index_back_rows:0
-      output_rows:7
+      physical_range_rows:8
+      logical_range_rows:8
+      output_rows:8
       table_dop:1
       dop_method:DAS DOP
       avaiable_index_name:[t2]

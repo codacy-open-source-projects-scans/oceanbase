@@ -25,6 +25,7 @@
 #include "lib/utility/ob_backtrace.h"
 #include "lib/oblog/ob_trace_log.h"
 #include "lib/container/ob_iarray.h"
+#include "lib/allocator/ob_malloc.h"
 #include "common/ob_clock_generator.h"
 
 #define FALSE_IT(stmt) ({ (stmt); false; })
@@ -179,37 +180,63 @@ void max(T, T) = delete;
 
 template <oceanbase::common::ObWaitEventIds::ObWaitEventIdEnum event_id =
               oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>
-inline void ob_usleep(const useconds_t v)
+inline void ob_usleep(const useconds_t v, int64_t call_bt=0)
 {
-  oceanbase::common::ObSleepEventGuard<event_id> wait_guard((int64_t)v);
+  if (oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP == event_id && call_bt == 0) {
+    call_bt = static_cast<int64_t>(get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0))));
+  }
+  oceanbase::common::ObSleepEventGuard<event_id> wait_guard((int64_t)v, call_bt);
+  ::usleep(v);
+}
+
+template void ob_usleep<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>(const useconds_t v, int64_t call_bt);
+template <oceanbase::common::ObWaitEventIds::ObWaitEventIdEnum event_id =
+              oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>
+inline void ob_usleep(const useconds_t v, const bool is_idle_sleep, int64_t call_bt=0)
+{
+  if (!is_idle_sleep && oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP == event_id && call_bt == 0) {
+    call_bt = static_cast<int64_t>(get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0))));
+  }
+  if (is_idle_sleep) {
+    ObBKGDSessInActiveGuard inactive_guard;
+    ob_usleep(v, call_bt);
+  } else {
+    ob_usleep(v, call_bt);
+  }
+}
+
+inline void ob_throttle_usleep(const useconds_t v, int errcode, int64_t p3 = 0)
+{
+  ObSleepEventGuard<ObWaitEventIds::TASK_THROTTLE_SLEEP> wait_guard((int64_t)v, (int64_t)v, (int64_t)errcode, p3);
   ::usleep(v);
 }
 
 template <oceanbase::common::ObWaitEventIds::ObWaitEventIdEnum event_id =
               oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>
-inline void ob_usleep(const useconds_t v, const bool is_idle_sleep)
+inline void ob_usleep(const useconds_t v, const int64_t p1, int64_t p2, const int64_t p3)
 {
-  if (is_idle_sleep) {
-    ObBKGDSessInActiveGuard inactive_guard;
-    ob_usleep(v);
-  } else {
-    ob_usleep(v);
+  if (oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP == event_id && p2 == 0) {
+    p2 = static_cast<int64_t>(get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0))));
   }
-
-}
-
-template <oceanbase::common::ObWaitEventIds::ObWaitEventIdEnum event_id =
-              oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>
-inline void ob_usleep(const useconds_t v, const int64_t p1, const int64_t p2, const int64_t p3)
-{
   oceanbase::common::ObSleepEventGuard<event_id> wait_guard((int64_t)v, p1, p2, p3);
   ::usleep(v);
 }
 
+inline void ob_usleep(const useconds_t v, const int64_t event_no, const int64_t p1, const int64_t p2, const int64_t p3)
+{
+  oceanbase::common::ObSleepEventGuard<oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP> wait_guard(
+      event_no, (int64_t)v, p1, p2, p3);
+  ::usleep(v);
+}
+
+
 template <oceanbase::common::ObWaitEventIds::ObWaitEventIdEnum event_id =
               oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP>
-inline void ob_usleep(const useconds_t v, const int64_t p1, const int64_t p2, const int64_t p3, const bool is_idle_sleep)
+inline void ob_usleep(const useconds_t v, const int64_t p1, int64_t p2, const int64_t p3, const bool is_idle_sleep)
 {
+  if (!is_idle_sleep && oceanbase::common::ObWaitEventIds::DEFAULT_SLEEP == event_id && p2 == 0) {
+    p2 = static_cast<int64_t>(get_rel_offset(reinterpret_cast<int64_t>(__builtin_return_address(0))));
+  }
   if (is_idle_sleep) {
     ObBKGDSessInActiveGuard inactive_guard;
     ob_usleep(v, p1, p2, p3);
@@ -435,6 +462,8 @@ int deep_copy_ob_string(Allocator &allocator, const ObString &src, ObString &dst
 
 int deep_copy_obj(ObIAllocator &allocator, const ObObj &src, ObObj &dst);
 int deep_copy_objparam(ObIAllocator &allocator, const ObObjParam &src, ObObjParam &dst);
+
+const char *extract_demangled_class_name(const char *full_class_name, const char *prefix, char *buffer, int64_t &len);
 
 struct SeqLockGuard
 {
@@ -1370,6 +1399,9 @@ int64_t parse_config_capacity(const char *str, bool &valid, bool check_unit = tr
 void get_glibc_version(int &major, int &minor);
 
 bool glibc_prereq(int major, int minor);
+
+const char *get_transparent_hugepage_status();
+int read_one_int(const char *file_name, int64_t &value);
 } // end namespace common
 } // end namespace oceanbase
 

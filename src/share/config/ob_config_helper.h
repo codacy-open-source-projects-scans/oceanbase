@@ -313,6 +313,39 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigSTScredentialChecker);
 };
 
+class ObConfigStorageCachePolicyChecker : public ObConfigChecker
+{
+public:
+  ObConfigStorageCachePolicyChecker() {}
+  virtual ~ObConfigStorageCachePolicyChecker() {}
+  bool check(const ObConfigItem &t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigStorageCachePolicyChecker);
+};
+
+class ObConfigEnableManualSCPChecker : public ObConfigChecker
+{
+public:
+  ObConfigEnableManualSCPChecker() {}
+  virtual ~ObConfigEnableManualSCPChecker() {}
+  bool check(const ObConfigItem &t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigEnableManualSCPChecker);
+};
+
+class ObConfigSuspendStorageCacheTaskChecker : public ObConfigChecker
+{
+public:
+  ObConfigSuspendStorageCacheTaskChecker() {}
+  virtual ~ObConfigSuspendStorageCacheTaskChecker() {}
+  bool check(const ObConfigItem &t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigSuspendStorageCacheTaskChecker);
+};
+
 class ObConfigUseLargePagesChecker
   : public ObConfigChecker
 {
@@ -368,6 +401,17 @@ public:
   bool check(const ObConfigItem &t) const;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigAuditLogCompressionChecker);
+};
+
+class ObConfigDiagnosisLogCompressionChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigDiagnosisLogCompressionChecker() {}
+  virtual ~ObConfigDiagnosisLogCompressionChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigDiagnosisLogCompressionChecker);
 };
 
 class ObConfigAuditLogPathChecker
@@ -648,6 +692,17 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObTTLDutyDurationChecker);
 };
 
+class ObVecIndexOptDutyTimeChecker : public ObConfigChecker {
+public:
+  ObVecIndexOptDutyTimeChecker()
+  {}
+  virtual ~ObVecIndexOptDutyTimeChecker(){};
+  bool check(const ObConfigItem& t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObVecIndexOptDutyTimeChecker);
+};
+
 class ObMySQLVersionLengthChecker : public ObConfigChecker {
 public:
   ObMySQLVersionLengthChecker()
@@ -884,9 +939,9 @@ public:
   virtual ~ObKvFeatureModeParser() {}
   virtual bool parse(const char *str, uint8_t *arr, int64_t len) override;
 public:
-  static const int8_t MODE_DEFAULT = 0b00;
-  static const int8_t MODE_ON = 0b01;
-  static const int8_t MODE_OFF = 0b10;
+  static const int16_t MODE_DEFAULT = 0b00;
+  static const int16_t MODE_ON = 0b01;
+  static const int16_t MODE_OFF = 0b10;
   DISALLOW_COPY_AND_ASSIGN(ObKvFeatureModeParser);
 };
 
@@ -950,6 +1005,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObParallelDDLControlParser);
 };
 
+class ObSSLocalCacheControlParser : public ObConfigParser
+{
+public:
+  ObSSLocalCacheControlParser() {}
+  virtual ~ObSSLocalCacheControlParser() {}
+  virtual bool parse(const char *str, uint8_t *arr, int64_t len) override;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObSSLocalCacheControlParser);
+};
+
 class ObConfigKvGroupCommitRWModeChecker
   : public ObConfigChecker
 {
@@ -1002,6 +1067,17 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigDegradationPolicyChecker);
 };
 
+class ObConfigServerFullSchemaRefreshParallelismChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigServerFullSchemaRefreshParallelismChecker() {}
+  virtual ~ObConfigServerFullSchemaRefreshParallelismChecker() {}
+  bool check(const ObConfigItem& t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigServerFullSchemaRefreshParallelismChecker);
+};
+
 typedef __ObConfigContainer<ObConfigStringKey,
                             ObConfigItem, OB_MAX_CONFIG_NUMBER> ObConfigContainer;
 
@@ -1014,6 +1090,15 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigVectorMemoryChecker);
 };
 
+class ObConfigDefaultTableOrganizationChecker : public ObConfigChecker
+{
+public:
+  ObConfigDefaultTableOrganizationChecker() {}
+  virtual ~ObConfigDefaultTableOrganizationChecker() {}
+  static bool check(const obrpc::ObAdminSetConfigItem &t);
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigDefaultTableOrganizationChecker);
+};
 
 class ObConfigEnableHashRollupChecker: public ObConfigChecker
 {
@@ -1026,6 +1111,120 @@ public:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigEnableHashRollupChecker);
 };
+
+class ObConfigPxNodePolicyChecker: public ObConfigChecker
+{
+public:
+  ObConfigPxNodePolicyChecker()
+  {}
+  virtual ~ObConfigPxNodePolicyChecker()
+  {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigPxNodePolicyChecker);
+};
+
+class ObConfigPluginsLoadChecker : public ObConfigChecker
+{
+public:
+  ObConfigPluginsLoadChecker() = default;
+  virtual ~ObConfigPluginsLoadChecker() = default;
+  bool check(const ObConfigItem& t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigPluginsLoadChecker);
+};
+
+class ObConfigNonStdCmpLevelChecker: public ObConfigChecker
+{
+public:
+  ObConfigNonStdCmpLevelChecker()
+  {}
+  virtual ~ObConfigNonStdCmpLevelChecker()
+  {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigNonStdCmpLevelChecker);
+};
+
+class ObConfigJavaParamsChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigJavaParamsChecker() {}
+  virtual ~ObConfigJavaParamsChecker() {}
+  bool check(const ObConfigItem& t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigJavaParamsChecker);
+};
+class ObConfigJniTransDataParamsChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigJniTransDataParamsChecker() {}
+  virtual ~ObConfigJniTransDataParamsChecker() {}
+  bool check(const ObConfigItem& t) const;
+private:
+  static const ObString arrow_table_str_;
+  static const ObString off_heap_table_str_;
+  DISALLOW_COPY_AND_ASSIGN(ObConfigJniTransDataParamsChecker);
+};
+
+class ObConfigEnableAutoSplitChecker : public ObConfigChecker
+{
+public:
+  ObConfigEnableAutoSplitChecker() {}
+  virtual ~ObConfigEnableAutoSplitChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigEnableAutoSplitChecker);
+};
+
+class ObConfigAutoSplitTabletSizeChecker : public ObConfigChecker
+{
+public:
+  ObConfigAutoSplitTabletSizeChecker() {}
+  virtual ~ObConfigAutoSplitTabletSizeChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigAutoSplitTabletSizeChecker);
+};
+
+class ObConfigGlobalIndexAutoSplitPolicyChecker : public ObConfigChecker
+{
+public:
+  ObConfigGlobalIndexAutoSplitPolicyChecker() {}
+  virtual ~ObConfigGlobalIndexAutoSplitPolicyChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigGlobalIndexAutoSplitPolicyChecker);
+};
+
+class ObHNSWIterFilterScanNumChecker
+  : public ObConfigChecker
+{
+public:
+  ObHNSWIterFilterScanNumChecker() {}
+  virtual ~ObHNSWIterFilterScanNumChecker() {}
+  bool check(const ObConfigItem &t) const;
+  static constexpr int64_t MAX_HNSW_ITER_SCAN_NUMS = INT64_MAX;
+  static constexpr int64_t MIN_HNSW_ITER_SCAN_NUMS = 0;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObHNSWIterFilterScanNumChecker);
+};
+
+class ObConfigDefaultMicroBlockFormatVersionChecker : public ObConfigChecker
+{
+public:
+  ObConfigDefaultMicroBlockFormatVersionChecker() = default;
+
+  virtual ~ObConfigDefaultMicroBlockFormatVersionChecker() = default;
+
+  bool check(const ObConfigItem &t) const;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigDefaultMicroBlockFormatVersionChecker);
+};
+
 } // namespace common
 } // namespace oceanbase
 

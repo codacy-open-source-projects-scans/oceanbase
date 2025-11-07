@@ -12,19 +12,9 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/backup/ob_backup_reader.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/random/ob_random.h"
+#include "ob_backup_reader.h"
 #include "storage/backup/ob_backup_factory.h"
-#include "storage/blocksstable/ob_block_manager.h"
-#include "storage/blocksstable/ob_macro_block_id.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/column_store/ob_column_oriented_sstable.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "observer/ob_server_event_history_table_operator.h"
-#include "storage/blockstore/ob_shared_object_reader_writer.h"
-#include "storage/tablet/ob_mds_schema_helper.h"
 
 using namespace oceanbase::blocksstable;
 using namespace oceanbase::storage;
@@ -670,12 +660,13 @@ int ObSSTableMetaBackupReader::init(const common::ObTabletID &tablet_id,
     linked_writer_ = linked_writer;
     ObTablet &tablet = *tablet_handle_->get_obj();
     bool is_major_compaction_mview_dep = false;
+    share::SCN mview_dep_scn;
     if (OB_FAIL(tablet.fetch_table_store(table_store_wrapper_))) {
       LOG_WARN("failed to fetch table store from tablet", K(ret));
-    } else if (OB_FAIL(ls_backup_ctx.check_is_major_compaction_mview_dep_tablet(tablet_id, is_major_compaction_mview_dep))) {
+    } else if (OB_FAIL(ls_backup_ctx.check_is_major_compaction_mview_dep_tablet(tablet_id, mview_dep_scn, is_major_compaction_mview_dep))) {
       LOG_WARN("failed to check is mview dep tablet", K(ret), K(tablet_id));
     } else if (OB_FAIL(ObBackupUtils::get_sstables_by_data_type(
-        tablet_handle, backup_data_type, *table_store_wrapper_.get_member(), is_major_compaction_mview_dep, sstable_array_))) {
+        tablet_handle, backup_data_type, *table_store_wrapper_.get_member(), is_major_compaction_mview_dep, mview_dep_scn, sstable_array_))) {
       LOG_WARN("failed to get sstables by data type", K(ret), K(tablet_handle));
     } else {
       builder_mgr_ = &index_block_builder_mgr;

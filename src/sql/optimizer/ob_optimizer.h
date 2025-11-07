@@ -204,13 +204,18 @@ namespace sql
     int extract_opt_ctx_basic_flags(const ObDMLStmt &stmt,
                                     ObSQLSessionInfo &session);
     int init_parallel_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &session);
+
     int init_replica_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &session);
     int set_auto_dop_params(const ObSQLSessionInfo &session);
+    bool allowed_get_session_parallel_param(const ObSQLSessionInfo &session);
     int check_pdml_enabled(const ObDMLStmt &stmt,
                            const ObSQLSessionInfo &session);
     int check_direct_load_enabled(const ObDMLStmt &stmt,
                                   const ObSQLSessionInfo &session);
     int check_pdml_supported_feature(const ObDelUpdStmt &pdml_stmt,
+                                     const ObSQLSessionInfo &session,
+                                     bool &is_use_pdml);
+    int check_pdml_insert_up_enabled(const ObDelUpdStmt &pdml_stmt,
                                      const ObSQLSessionInfo &session,
                                      bool &is_use_pdml);
     int check_parallel_das_dml_enabled(const ObDMLStmt &stmt,
@@ -227,11 +232,16 @@ namespace sql
                              const ObColumnRefRawExpr &column_expr,
                              int64_t flag);
     int check_whether_contain_nested_sql(const ObDMLStmt &stmt);
-    int check_force_default_stat();
+    int check_force_default_stat(const ObDMLStmt &stmt);
     int init_system_stat();
     int calc_link_stmt_count(const ObDMLStmt &stmt, int64_t &count);
     int init_correlation_model(ObDMLStmt &stmt, const ObSQLSessionInfo &session);
     int init_table_access_policy(ObDMLStmt &stmt, const ObSQLSessionInfo &session);
+    int init_px_node_opt_info(int64_t tenant_id);
+    int check_enable_topn_runtime_filter();
+    int check_enable_runtime_filter_adaptive_apply();
+    int check_extend_sql_plan_monitor_metrics();
+    int check_enable_delete_insert_scan();
 
   private:
     ObOptimizerContext &ctx_;

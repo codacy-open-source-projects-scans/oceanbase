@@ -16,6 +16,8 @@
 #include "lib/container/ob_fixed_array.h"
 #include "common/row/ob_row_iterator.h"
 #include "sql/das/iter/ob_das_iter_define.h"
+#include "sql/das/ob_das_define.h"
+#include "share/ob_i_tablet_scan.h"
 
 namespace oceanbase
 {
@@ -23,10 +25,10 @@ using namespace common;
 namespace sql
 {
 
-class ObDASDocIdMergeIter;
-class ObDASVIdMergeIter;
+class ObDASDomainIdMergeIter;
 class ObEvalCtx;
 class ObExecContext;
+class ObDASScanCtDef;
 struct ObDASIterParam
 {
 public:
@@ -60,7 +62,7 @@ public:
   int64_t max_size_;
   ObEvalCtx *eval_ctx_;
   ObExecContext *exec_ctx_;
-  const ObIArray<ObExpr*> *output_;
+  const ExprFixedArray *output_;
   const ObExpr *group_id_expr_;
   VIRTUAL_TO_STRING_KV(K_(type), K_(max_size), K_(eval_ctx), K_(exec_ctx), KPC_(output), K_(group_id_expr));
 };
@@ -77,6 +79,9 @@ public:
       group_id_expr_(nullptr),
       children_(nullptr),
       children_cnt_(0),
+      push_down_topn_(),
+      limit_param_(),
+      output_row_cnt_(0),
       inited_(false)
   {}
   virtual ~ObDASIter() { release(); }
@@ -89,7 +94,7 @@ public:
   ObDASIter **&get_children() { return children_; }
   void set_children_cnt(uint32_t children_cnt) { children_cnt_ = children_cnt; }
   int64_t get_children_cnt() const { return children_cnt_; }
-  const ObIArray<ObExpr*> *get_output() { return output_; }
+  const ExprFixedArray *get_output() { return output_; }
 
   // The state of ObDASMergeIter may change many times during execution, e.g., the merge_type
   // changing from SEQUENTIAL_MERGE to SORT_MERGE, or the creation of a new batch of DAS tasks.
@@ -118,23 +123,33 @@ public:
   virtual void reset() override {}
   // for compatibility with ObNewRowIterator
 
-  int get_doc_id_merge_iter(ObDASDocIdMergeIter *&doc_id_merge_iter);
-  int get_vid_merge_iter(ObDASVIdMergeIter *&vid_merge_iter);
+  virtual int set_scan_rowkey(ObEvalCtx *eval_ctx,
+                              const ObIArray<ObExpr *> &rowkey_exprs,
+                              const ObDASScanCtDef *lookup_ctdef,
+                              ObIAllocator *alloc,
+                              int64_t group_id) { return OB_NOT_IMPLEMENT; }
+  int get_domain_id_merge_iter(ObDASDomainIdMergeIter *&domain_id_merge_iter);
+
+  int prepare_limit_pushdown_param(const ObDASPushDownTopN &push_down_topn, const ObLimitParam &limit_param);
 protected:
   virtual int inner_init(ObDASIterParam &param) = 0;
   virtual int inner_reuse() = 0;
   virtual int inner_release() = 0;
   virtual int inner_get_next_row() = 0;
   virtual int inner_get_next_rows(int64_t &count, int64_t capacity) = 0;
+  virtual bool can_limit_pushdown(const ObDASPushDownTopN &push_down_topn) { return false; }
 
   ObDASIterType type_;
   int64_t max_size_;
   ObEvalCtx *eval_ctx_;
   ObExecContext *exec_ctx_;
-  const ObIArray<ObExpr*> *output_;
+  const ExprFixedArray *output_;
   const ObExpr *group_id_expr_;
   ObDASIter **children_;
   uint32_t children_cnt_;
+  ObDASPushDownTopN push_down_topn_;
+  ObLimitParam limit_param_;
+  int64_t output_row_cnt_;
 
 private:
   bool inited_;

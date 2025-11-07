@@ -11,11 +11,8 @@
  */
 
 #define USING_LOG_PREFIX SERVER
-#include <gtest/gtest.h>
 #include <gmock/gmock.h>
 #include "observer/net/ob_rpc_reverse_keepalive.h"
-#include "rpc/obrpc/ob_rpc_reverse_keepalive_struct.h"
-#include "rpc/frame/ob_req_deliver.h"
 #include "lib/net/ob_net_util.h"
 
 #define private public
@@ -147,6 +144,7 @@ TEST_F(TestRpcReverseKeepAliveService, reverse_keepalive_service)
   ASSERT_EQ(ret, OB_HASH_NOT_EXIST);
 
   rpc_reverse_keepalive_instance.destroy();
+  global_poc_server.destroy();
 }
 
 } // end namespace obrpc

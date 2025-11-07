@@ -172,21 +172,6 @@ int ObIODevice::scan_dir_with_prefix(
   return scan_dir(dir_name, f_prefix);
 }
 
-int ObIODevice::get_io_aligned_size(int64_t &aligned_size) const
-{
-  int ret = OB_SUCCESS;
-  if (is_object_device()) {
-    aligned_size = 1;
-  } else if ((ObStorageType::OB_STORAGE_LOCAL == device_type_)
-             || (ObStorageType::OB_STORAGE_LOCAL_CACHE == device_type_)) {
-    aligned_size = DIO_ALIGN_SIZE;
-  } else {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid device type", K(ret), K_(device_type));
-  }
-  return ret;
-}
-
 void ObIODevice::inc_ref()
 {
   IGNORE_RETURN ATOMIC_FAA(&ref_cnt_, 1);
@@ -205,6 +190,18 @@ void ObIODevice::dec_ref()
 int64_t ObIODevice::get_ref_cnt()
 {
   return ATOMIC_LOAD(&ref_cnt_);
+}
+
+int ObIODevice::get_device_name(char *buf, int32_t len)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(buf) || len <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(buf), K(len));
+  } else {
+    snprintf(buf, len, "DeviceType:%d/MediaID:%ld", device_type_, media_id_);
+  }
+  return ret;
 }
 
 }

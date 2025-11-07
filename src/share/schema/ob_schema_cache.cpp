@@ -12,18 +12,12 @@
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
 
-#include "share/schema/ob_schema_cache.h"
 
-#include "lib/oblog/ob_log.h"
+#include "ob_schema_cache.h"
 #include "share/cache/ob_cache_name_define.h"
-#include "share/schema/ob_schema_struct.h"
-#include "share/schema/ob_schema_utils.h"
-#include "share/schema/ob_table_schema.h"
-#include "share/schema/ob_schema_service.h"
-#include "share/schema/ob_server_schema_service.h"
-#include "share/inner_table/ob_inner_table_schema.h"
 #include "observer/ob_server_struct.h"
-#include "lib/stat/ob_diagnose_info.h"
+#include "share/inner_table/ob_sslog_table_schema.h"
+#include "share/schema/ob_iceberg_table_schema.h"
 namespace oceanbase
 {
 using namespace common;
@@ -233,6 +227,14 @@ int ObSchemaCacheValue::deep_copy(char *buf,
     }
     case MOCK_FK_PARENT_TABLE_SCHEMA: {
       DEEP_COPY_SCHEMA(ObMockFKParentTableSchema);
+      break;
+    }
+    case CCL_RULE_SCHEMA: {
+      DEEP_COPY_SCHEMA(ObCCLRuleSchema);
+      break;
+    }
+    case ICEBERG_TABLE_SCHEMA: {
+      DEEP_COPY_SCHEMA(ObIcebergTableSchema);
       break;
     }
     default: {
@@ -459,6 +461,23 @@ const ObTableSchema *ObSchemaCache::get_all_core_table() const
   return &all_core_table_;
 }
 
+#ifdef OB_BUILD_SHARED_STORAGE
+int ObSchemaCache::init_sslog_table()
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_FAIL(ObSSlogTableSchema::all_sslog_table_schema(sslog_table_))) {
+    LOG_WARN("sslog_table_schema failed", K(ret));
+  }
+  return ret;
+}
+
+const ObTableSchema *ObSchemaCache::get_sslog_table() const
+{
+  return &sslog_table_;
+}
+#endif
+
 int ObSchemaCache::init()
 {
   int ret = OB_SUCCESS;
@@ -475,6 +494,11 @@ int ObSchemaCache::init()
     LOG_WARN("init sys cache failed", K(ret));
   } else if (OB_FAIL(init_all_core_table())) {
     LOG_WARN("init all_core_table cache failed", K(ret));
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else if (is_shared_storage_sslog_exist()
+             && OB_FAIL(init_sslog_table())) {
+    LOG_WARN("init sslog_table cache failed", K(ret));
+#endif
   } else {
     lib::ContextParam param;
     param.set_mem_attr(OB_SERVER_TENANT_ID, "SchemaSysCache", ObCtxIds::SCHEMA_SERVICE)
@@ -1161,6 +1185,18 @@ int ObSchemaFetcher::fetch_schema(ObSchemaType schema_type,
           }
           break;
         }
+      case CCL_RULE_SCHEMA: {
+        ObCCLRuleSchema *ccl_rule_schema = NULL;
+        if (OB_FAIL(fetch_ccl_rule_info(
+                schema_status, schema_id, schema_version, allocator,
+                ccl_rule_schema))) {
+          LOG_WARN("fetch ccl_rule_schema failed", K(ret),
+                    K(schema_status), K(schema_id), K(schema_version));
+        } else {
+          schema = ccl_rule_schema;
+        }
+        break;
+      }
       default: {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unknown schema type, should not reach here", K(ret), K(schema_type));
@@ -1486,6 +1522,7 @@ int ObSchemaFetcher::fetch_##OBJECT_NAME##_info(const ObRefreshSchemaStatus &sch
   DEF_SCHEMA_INFO_FETCHER(tablespace, ObTablespaceSchema);
   DEF_SCHEMA_INFO_FETCHER(profile, ObProfileSchema);
   DEF_SCHEMA_INFO_FETCHER(mock_fk_parent_table, ObMockFKParentTableSchema);
+  DEF_SCHEMA_INFO_FETCHER(ccl_rule, ObCCLRuleSchema);
 #undef DEF_SCHEMA_INFO_FETCHER
 #endif
 }      //end of namespace schema

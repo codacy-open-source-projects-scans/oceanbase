@@ -102,6 +102,15 @@ struct ObPCUserVarMeta
 {
 public:
   ObPCUserVarMeta(): precision_(-1), obj_meta_() {}
+  ObPCUserVarMeta(const ObPrecision precision, const ObObjType type,
+                  const ObCollationLevel coll_level,
+                  const ObCollationType coll_type):
+  precision_(precision), obj_meta_()
+  {
+    obj_meta_.set_type(type);
+    obj_meta_.set_collation_level(coll_level);
+    obj_meta_.set_collation_type(coll_type);
+  }
   ObPCUserVarMeta(const ObSessionVariable &sess_var)
   {
     obj_meta_ = sess_var.meta_;
@@ -131,6 +140,10 @@ public:
   {
     return !this->operator==(other);
   }
+  inline void parse_from_variable(const ObSessionVariable &sess_var)
+  {
+    *this = ObPCUserVarMeta(sess_var);
+  }
   TO_STRING_KV(K_(precision), K_(obj_meta));
 
 private:
@@ -143,6 +156,7 @@ class ObPlanSet : public common::ObDLinkBase<ObPlanSet>
 {
   friend struct ObPhyLocationGetter;
 public:
+  static const ObPCUserVarMeta UNKNOWN_VAR_DEFAULT_META;
   explicit ObPlanSet(ObPlanSetType type)
       : alloc_(common::ObNewModIds::OB_SQL_PLAN_CACHE),
         plan_cache_value_(NULL),
@@ -165,7 +179,8 @@ public:
         can_skip_params_match_(false),
         can_delay_init_datum_store_(false),
         resource_map_rule_(),
-        is_cli_return_rowid_(false)
+        is_cli_return_rowid_(false),
+        params_constraint_(alloc_)
   {}
   virtual ~ObPlanSet();
 
@@ -266,6 +281,7 @@ private:
                                          bool &is_same);
 
   bool match_decint_precision(const ObParamInfo &param_info, ObPrecision other_prec) const;
+  int get_variable_meta(const ObSQLSessionInfo *session_info, const ObString &var_name, ObPCUserVarMeta &meta);
 
   DISALLOW_COPY_AND_ASSIGN(ObPlanSet);
   friend class ::test::TestPlanSet_basic_Test;
@@ -301,6 +317,7 @@ public:
   //variable for resource map rule
   ObPCResourceMapRule resource_map_rule_;
   bool is_cli_return_rowid_;
+  common::ObFixedArray<ObPCParamConstraint *, common::ObIAllocator> params_constraint_;
 };
 
 class ObSqlPlanSet : public ObPlanSet
@@ -311,7 +328,7 @@ public:
       is_all_non_partition_(true),
       table_locations_(alloc_),
       array_binding_plan_(),
-      local_plan_(NULL),
+      local_plans_(),
       remote_plan_(NULL),
       direct_local_plan_(NULL),
       dist_plans_(),
@@ -352,9 +369,15 @@ public:
   inline bool has_duplicate_table() const { return has_duplicate_table_; }
   //inline bool has_array_binding() const { return has_array_binding_; }
   inline bool enable_inner_part_parallel() const { return enable_inner_part_parallel_exec_; }
+  int get_plan_type(const ObIArray<ObTableLocation> &table_locations,
+                    const bool is_contain_uncertain_op,
+                    ObPlanCacheCtx &pc_ctx,
+                    ObPhyPlanType &plan_type);
 #ifdef OB_BUILD_SPM
   int add_evolution_plan_for_spm(ObPhysicalPlan *plan, ObPlanCacheCtx &ctx);
   int get_evolving_evolution_task(EvolutionPlanList &evo_task_list);
+  int alloc_evolution_records(ObEvolutionRecords *&evolution_records);
+  void free_evolution_records(ObEvolutionRecords *&evolution_records);
 #endif
 private:
   enum
@@ -414,11 +437,11 @@ private:
   int set_concurrent_degree(int64_t outline_param_idx,
                             ObPhysicalPlan &plan);
 
-  int get_plan_type(const ObIArray<ObTableLocation> &table_locations,
-                    const bool is_contain_uncertain_op,
-                    ObPlanCacheCtx &pc_ctx,
-                    ObIArray<ObCandiTableLoc> &candi_table_locs,
-                    ObPhyPlanType &plan_type);
+  ObPhysicalPlan* get_local_plan(ObPlanCacheCtx &pc_ctx);
+  bool is_exist_local_plan();
+  int add_local_plan(ObPlanCacheCtx &pc_ctx, ObPhysicalPlan &plan);
+  void remove_all_local_plan();
+  int64_t get_local_plan_mem_size();
 
   static int is_partition_in_same_server(const ObIArray<ObCandiTableLoc> &candi_table_locs,
                                          bool &is_same,
@@ -434,7 +457,7 @@ private:
   TableLocationFixedArray table_locations_;
   //used for array binding, only local plan
   ObPhysicalPlan *array_binding_plan_;
-  ObPhysicalPlan *local_plan_;
+  common::ObSEArray<ObPhysicalPlan *, 4> local_plans_;
 #ifdef OB_BUILD_SPM
   ObEvolutionPlan local_evolution_plan_;
   ObEvolutionPlan dist_evolution_plan_;

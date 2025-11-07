@@ -13,13 +13,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_tablet_block_aggregated_info.h"
-#include "storage/ob_super_block_struct.h"
-#include "share/rc/ob_tenant_base.h"
 #include "storage/slog_ckpt/ob_linked_macro_block_writer.h"
-#include "storage/slog_ckpt/ob_linked_macro_block_reader.h"
-#include "storage/tablet/ob_tablet_block_header.h"
 #include "storage/tablet/ob_tablet.h"
-#include "storage/blocksstable/ob_shared_macro_block_manager.h"
 
 namespace oceanbase
 {
@@ -82,139 +77,6 @@ int ObBlockInfoSet::init(
     LOG_WARN("fail to create shared meta block id set", K(ret), K(shared_meta_bucket_num));
   } else if (OB_FAIL(clustered_data_block_info_map_.create(shared_data_bucket_num, "ObBlockInfoMap", "ObBlockMapNode", MTL_ID()))) {
     LOG_WARN("fail to create shared data block id set", K(ret), K(shared_meta_bucket_num));
-  }
-  return ret;
-}
-/**
- * ---------------------------------------ObBlockInfoArray----------------------------------------
- */
-template <typename T>
-ObTabletMacroInfo::ObBlockInfoArray<T>::ObBlockInfoArray()
-  : cnt_(0), arr_(nullptr), capacity_(0)
-{
-}
-
-template <typename T>
-ObTabletMacroInfo::ObBlockInfoArray<T>::~ObBlockInfoArray()
-{
-  reset();
-}
-
-template <typename T>
-void ObTabletMacroInfo::ObBlockInfoArray<T>::reset()
-{
-  cnt_ = 0;
-  capacity_ = 0;
-  arr_ = nullptr;
-}
-
-template <typename T>
-int ObTabletMacroInfo::ObBlockInfoArray<T>::reserve(const int64_t cnt, ObArenaAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  if (0 == cnt) {
-    // no macro id
-    arr_ = nullptr;
-  } else if (OB_ISNULL(arr_ = reinterpret_cast<T *>(allocator.alloc(sizeof(T) * cnt)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("fail to allocate memory", K(ret), K(sizeof(T) * cnt));
-  }
-  if (OB_SUCC(ret)) {
-    cnt_ = cnt;
-    capacity_ = cnt;
-  }
-  return ret;
-}
-
-template <typename T>
-int ObTabletMacroInfo::ObBlockInfoArray<T>::serialize(char *buf, const int64_t buf_len, int64_t &pos) const
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(buf) || OB_UNLIKELY(buf_len <= 0 || pos < 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), KP(buf), K(buf_len), K(pos));
-  } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, pos, cnt_))) {
-    LOG_WARN("fail to encode count", K(ret), K_(cnt));
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < cnt_; i++) {
-    if (OB_UNLIKELY(!arr_[i].is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("macro block id is invalid", K(ret), K(i), K(arr_[i]));
-    } else if (OB_FAIL(arr_[i].serialize(buf, buf_len, pos))) {
-      LOG_WARN("fail to serialize macro block id", K(ret), K(i), KP(buf), K(buf_len), K(pos));
-    }
-  }
-  return ret;
-}
-
-template <typename T>
-int ObTabletMacroInfo::ObBlockInfoArray<T>::deserialize(ObArenaAllocator &allocator, const char *buf, const int64_t data_len, int64_t &pos)
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(buf) || OB_UNLIKELY(pos < 0 || data_len <= 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid arguments", K(ret), KP(buf), K(data_len), K(pos));
-  } else if (OB_FAIL(serialization::decode_i64(buf, data_len, pos, &cnt_))) {
-    LOG_WARN("fail to decode count", K(ret), K(data_len), K(pos));
-  } else if (0 == cnt_) {
-    // no macro id
-    arr_ = nullptr;
-  } else if (OB_UNLIKELY(cnt_ < 0)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("array count shouldn't be less than 0", K(ret), K_(cnt));
-  } else {
-    if (OB_ISNULL(arr_ = static_cast<T *>(allocator.alloc(cnt_ * sizeof(T))))) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("fail to allocate memory for macro id array", K(ret), K_(cnt));
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && i < cnt_; i++) {
-      if (OB_FAIL(arr_[i].deserialize(buf, data_len, pos))) {
-        LOG_WARN("fail to deserialize macro block id", K(ret), K(data_len), K(pos));
-      } else if (OB_UNLIKELY(!arr_[i].is_valid())) {
-        LOG_WARN("deserialized macro id is invalid", K(ret), K(arr_[i]));
-      }
-    }
-  }
-  if (OB_FAIL(ret) && nullptr != arr_) {
-    allocator.free(arr_);
-    reset();
-  } else if (OB_SUCC(ret)) {
-    capacity_ = cnt_;
-  }
-  return ret;
-}
-
-template <typename T>
-int64_t ObTabletMacroInfo::ObBlockInfoArray<T>::get_serialize_size() const
-{
-  T block_info;
-  return serialization::encoded_length_i64(cnt_) + block_info.get_serialize_size() * cnt_;
-}
-
-template <typename T>
-int64_t ObTabletMacroInfo::ObBlockInfoArray<T>::get_deep_copy_size() const
-{
-  return sizeof(T) * cnt_;
-}
-
-template <typename T>
-int ObTabletMacroInfo::ObBlockInfoArray<T>::deep_copy(char *buf, const int64_t buf_len, int64_t &pos, ObBlockInfoArray &dest_obj) const
-{
-  int ret = OB_SUCCESS;
-  const int64_t memory_size = get_deep_copy_size();
-  if (OB_ISNULL(buf) || OB_UNLIKELY(buf_len <= 0 || pos < 0 || buf_len - pos < memory_size)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_len), K(pos), K(memory_size));
-  } else if (OB_NOT_NULL(arr_) && 0 != cnt_) {
-    dest_obj.arr_ = reinterpret_cast<T *>(buf + pos);
-    MEMCPY(dest_obj.arr_, arr_, sizeof(T) * cnt_);
-  } else {
-    dest_obj.arr_ = nullptr;
-  }
-  if (OB_SUCC(ret)) {
-    dest_obj.cnt_ = cnt_;
-    dest_obj.capacity_ = capacity_;
-    pos += memory_size;
   }
   return ret;
 }
@@ -437,7 +299,7 @@ int ObTabletMacroInfo::serialize(char *buf, const int64_t buf_len, int64_t &pos)
     LOG_WARN("ObBlockInfoArray hasn't been inited", K(ret));
   } else if (OB_ISNULL(buf) || OB_UNLIKELY(buf_len <= 0 || buf_len - pos < total_size)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_len), K(pos));
+    LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_len), K(pos), K(total_size));
   } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, meta_pos, version))) {
     LOG_WARN("fail to serialize version", K(ret), KP(buf), K(buf_len), K(version));
   } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, meta_pos, size))) {
@@ -501,11 +363,14 @@ int ObTabletMacroInfo::deserialize(ObArenaAllocator &allocator, const char *buf,
     LOG_WARN("fail to deserialize shared meta block id array", K(ret), KP(buf), K(data_len));
   } else if (new_pos - pos < size && OB_FAIL(shared_data_block_info_arr_.deserialize(allocator, buf, data_len, new_pos))) {
     LOG_WARN("fail to deserialize shared data block id array", K(ret), KP(buf), K(data_len));
-  } else if (OB_UNLIKELY(new_pos - pos != size)) {
+  } else if (OB_UNLIKELY(new_pos - pos > size)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet macro info's size doesn't match", K(ret), K(new_pos), K(pos), K(size), K(meta_block_info_arr_), K(data_block_info_arr_));
-  } else {
-    pos = new_pos;
+  } else if (new_pos - pos < size) {
+    LOG_WARN("old server may deserialize value written by new server", K(new_pos-pos), K(size), K(pos));
+  }
+  if (OB_SUCC(ret)) {
+    pos += size;
     is_inited_ = true;
   }
   return ret;

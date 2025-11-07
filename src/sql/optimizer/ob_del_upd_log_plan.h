@@ -72,6 +72,7 @@ public:
                                             const ObTablePartitionInfo &target_table_partition,
                                             const IndexDMLInfo &index_dml_info,
                                             bool is_index_maintenance,
+                                            bool is_pdml_update_split,
                                             ObExchangeInfo &exch_info);
 
   int compute_repartition_info_for_pdml_insert(const IndexDMLInfo &index_dml_info,
@@ -176,11 +177,6 @@ public:
                                   ObTablePartitionInfo *table_location,
                                   IndexDMLInfo *index_dml_info);
 
-  int check_need_exchange_for_pdml_del_upd(ObLogicalOperator *top,
-                                           const ObExchangeInfo &exch_info,
-                                           uint64_t table_id,
-                                           bool &need_exchange);
-
   int create_index_dml_info(const IndexDMLInfo &orgi_dml_info,
                             IndexDMLInfo *&opt_dml_info);
   //split update index dml info with delete and insert
@@ -236,15 +232,20 @@ public:
                                 IndexDMLInfo*& index_dml_info) const;
   int check_update_part_key(const ObTableSchema* index_schema,
                             IndexDMLInfo*& index_dml_info) const;
-  int check_update_primary_key(const ObTableSchema* index_schema,
+  int check_update_primary_key(ObSchemaGetterGuard &schema_guard,
+                               const ObTableSchema* index_schema,
                                IndexDMLInfo*& index_dml_info) const;
   int allocate_link_dml_as_top(ObLogicalOperator *&old_top);
   bool use_pdml() const { return use_pdml_; }
   int compute_dml_parallel();
-  int get_parallel_info_from_candidate_plans(int64_t &dop) const;
+  int compute_dml_dop_by_auto_dop(const int64_t min_dml_parallel,
+                                  int64_t &dop) const;
+  int inner_compute_dml_dop_by_auto_dop(const ObDelUpdStmt &stmt, int64_t &dop) const;
   int get_pdml_parallel_degree(const int64_t target_part_cnt, int64_t &dop) const;
   bool get_can_use_parallel_das_dml() const { return use_parallel_das_dml_; }
-  int64_t get_max_dml_parallel() { return max_dml_parallel_; }
+  int64_t get_max_dml_parallel() const { return max_dml_parallel_; }
+  int64_t reset_max_dml_parallel() { return max_dml_parallel_ = ObGlobalHint::UNSET_PARALLEL; }
+  void set_max_dml_parallel(int64_t dml_parallel) { max_dml_parallel_ = max_dml_parallel_ < dml_parallel ? dml_parallel : max_dml_parallel_; }
   virtual int perform_vector_assign_expr_replacement(ObDelUpdStmt *stmt);
 protected:
   virtual int generate_normal_raw_plan() override;
@@ -258,11 +259,13 @@ protected:
   int extract_assignment_subqueries(ObRawExpr *expr,
                                     ObIArray<ObRawExpr*> &normal_query_refs,
                                     ObIArray<ObRawExpr*> &alias_query_refs);
-private:
-  int get_parallel_info_from_direct_load(const ObDelUpdStmt *del_upd_stmt,
-                                         const ObSQLSessionInfo *session_info,
-                                         int64_t &dml_parallel) const;
   int check_use_direct_load();
+  int check_basic_sharding_for_dml_stmt(ObShardingInfo &target_sharding,
+                                        ObLogicalOperator &child,
+                                        bool &is_basic);
+private:
+  int get_parallel_info_from_direct_load(int64_t &dml_parallel) const;
+  int check_dml_table_write_dependency(const uint64_t table_id, const ObTableSchema &index_schema) const;
   DISALLOW_COPY_AND_ASSIGN(ObDelUpdLogPlan);
 
 protected:

@@ -12,16 +12,8 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_query_processor.h"
-#include "ob_table_rpc_processor_util.h"
-#include "observer/ob_service.h"
-#include "ob_table_end_trans_cb.h"
-#include "sql/optimizer/ob_table_location.h"  // ObTableLocation
-#include "lib/stat/ob_diagnose_info.h"
-#include "lib/stat/ob_session_stat.h"
-#include "ob_table_scan_executor.h"
-#include "ob_table_cg_service.h"
-#include "ob_htable_filter_operator.h"
 #include "ob_table_query_common.h"
+#include "observer/table/models/ob_model_factory.h"
 
 using namespace oceanbase::observer;
 using namespace oceanbase::common;
@@ -32,10 +24,10 @@ using namespace oceanbase::sql::stmt;
 
 ObTableQueryP::ObTableQueryP(const ObGlobalContext &gctx)
     : ObTableRpcProcessor(gctx),
-      allocator_("TbQueryP", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       tb_ctx_(allocator_),
       result_row_count_(0)
 {
+  allocator_.set_attr(ObMemAttr(MTL_ID(), "TbQueryP", ObCtxIds::DEFAULT_CTX_ID));
   // the streaming interface may return multi packet. The memory may be freed after the first packet has been sended.
   // the deserialization of arg_ is shallow copy, so we need deep copy data to processor
   set_preserve_recv_data();
@@ -79,6 +71,7 @@ void ObTableQueryP::reset_ctx()
   result_row_count_ = 0;
   ObTableApiProcessorBase::reset_ctx();
   tb_ctx_.reset();
+  result_.reset(); // need to reset property_name considering retry
 }
 
 int ObTableQueryP::init_tb_ctx(ObTableApiCacheGuard &cache_guard)
@@ -93,6 +86,7 @@ int ObTableQueryP::init_tb_ctx(ObTableApiCacheGuard &cache_guard)
   tb_ctx_.set_simple_table_schema(simple_table_schema_);
   tb_ctx_.set_sess_guard(&sess_guard_);
   tb_ctx_.set_is_tablegroup_req(is_tablegroup_req_);
+  tb_ctx_.set_read_latest(false);
 
   if (tb_ctx_.is_init()) {
     LOG_INFO("tb ctx has been inited", K_(tb_ctx));
@@ -165,7 +159,7 @@ int ObTableQueryP::query_and_result(ObTableApiScanExecutor *executor)
           LOG_WARN("fail to get next result", K(ret));
         }
       } else if (result_iter->has_more_result()) {
-        if (OB_FAIL(this->flush(rpc_pkt_->get_timeout()))) {
+        if (OB_FAIL(this->flush())) {
           if (OB_ITER_END != ret) {
             LOG_WARN("fail to flush result packet", K(ret));
           } else {
@@ -205,11 +199,6 @@ int ObTableQueryP::query_and_result(ObTableApiScanExecutor *executor)
   }
 
   // record events
-  if (is_hkv) {
-    stat_event_type_ = ObTableProccessType::TABLE_API_HBASE_QUERY; // hbase query
-  } else {
-    stat_event_type_ = ObTableProccessType::TABLE_API_TABLE_QUERY;// table query
-  }
   stat_row_count_ = result_row_count_;
 
   #ifndef NDEBUG
@@ -235,24 +224,30 @@ int ObTableQueryP::query_and_result(ObTableApiScanExecutor *executor)
 int ObTableQueryP::before_process()
 {
   is_tablegroup_req_ = ObHTableUtils::is_tablegroup_req(arg_.table_name_, arg_.entity_type_);
+  retry_policy_.allow_route_retry_ = arg_.server_can_retry();
+  // In HBase model, scan range columns only for odp routing, useless in server
+  if (arg_.entity_type_ == ObTableEntityType::ET_HKV) {
+    arg_.query_.get_scan_range_columns().reset();
+  }
   return ParentType::before_process();
 }
 
-int ObTableQueryP::try_process()
+int ObTableQueryP::old_try_process()
 {
   int ret = OB_SUCCESS;
   ObTableApiSpec *spec = nullptr;
   ObTableApiExecutor *executor = nullptr;
   observer::ObReqTimeGuard req_timeinfo_guard; // 引用cache资源必须加ObReqTimeGuard
   ObTableApiCacheGuard cache_guard;
+
   // Tips: when table_name is tablegroup name
   // Since we only have one table in a tablegroup now
   // tableId and tabletId are correct, which are calculated by the client
-  table_id_ = arg_.table_id_; // init move response need
-  tablet_id_ = arg_.tablet_id_;
   if (FALSE_IT(is_tablegroup_req_ = ObHTableUtils::is_tablegroup_req(arg_.table_name_, arg_.entity_type_))) {
   } else if (OB_FAIL(init_schema_info(arg_.table_name_))) {
     LOG_WARN("fail to init schema guard", K(ret), K(arg_.table_name_));
+  } else if (OB_FAIL(check_mode_type(schema_cache_guard_))) {
+    LOG_WARN("fail to check mode type", K(ret));
   } else if (is_tablegroup_req_ && OB_NOT_NULL(simple_table_schema_) && arg_.table_id_ != simple_table_schema_->get_table_id()) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table id not correct in table group", K(ret));
@@ -262,12 +257,13 @@ int ObTableQueryP::try_process()
     LOG_WARN("fail to get spec from cache", K(ret));
   } else if (OB_FAIL(spec->create_executor(tb_ctx_, executor))) {
     LOG_WARN("fail to generate executor", K(ret), K(tb_ctx_));
-  } else if (OB_FAIL(start_trans(true,
-                                 arg_.consistency_level_,
-                                 tb_ctx_.get_ls_id(),
-                                 tb_ctx_.get_timeout_ts(),
-                                 tb_ctx_.need_dist_das()))) {
-    LOG_WARN("fail to start transaction", K(ret), K_(tb_ctx));
+  } else if (OB_FAIL(trans_param_.init(arg_.consistency_level_,
+                                       tb_ctx_.get_ls_id(),
+                                       tb_ctx_.get_timeout_ts(),
+                                       tb_ctx_.need_dist_das()))) {
+    LOG_WARN("fail to inti trans param", K(ret));
+  } else if (OB_FAIL(ObTableTransUtils::init_read_trans(trans_param_))) {
+    LOG_WARN("fail to init read trans", K(ret));
   } else if (OB_FAIL(tb_ctx_.init_trans(get_trans_desc(), get_tx_snapshot()))) {
     LOG_WARN("fail to init trans", K(ret), K(tb_ctx_));
   } else if (OB_FAIL(query_and_result(static_cast<ObTableApiScanExecutor*>(executor)))) {
@@ -279,12 +275,88 @@ int ObTableQueryP::try_process()
     tb_ctx_.set_expr_info(nullptr);
   }
 
-  int tmp_ret = ret;
-  bool need_rollback_trans = (OB_SUCCESS != ret);
-  if (OB_FAIL(end_trans(need_rollback_trans, req_, nullptr/* ObTableCreateCbFunctor */))) {
-    LOG_WARN("fail to end trans", K(ret), K(need_rollback_trans));
-  }
-  ret = (OB_SUCCESS == tmp_ret) ? ret : tmp_ret;
+  ObTableTransUtils::release_read_trans(trans_param_.trans_desc_);
 
   return ret;
+}
+
+int ObTableQueryP::new_try_process()
+{
+  int ret = OB_SUCCESS;
+  ObModelGuard model_guard;
+  ObIModel *model = nullptr;
+  if (OB_FAIL(init_table_schema_info(arg_.table_name_))) {
+    LOG_WARN("fail to init schema info", K(ret), K(arg_.table_name_));
+  } else {
+    exec_ctx_.set_table_name(arg_.table_name_);
+    exec_ctx_.set_table_id(arg_.table_id_);
+    exec_ctx_.set_timeout_ts(get_timeout_ts());
+    exec_ctx_.set_audit_ctx(audit_ctx_);
+    exec_ctx_.set_table_schema(table_schema_);
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ObModelFactory::get_model_guard(allocator_, arg_.entity_type_, model_guard))) {
+    LOG_WARN("fail to get model guard", K(ret), K(arg_.entity_type_));
+  } else if (FALSE_IT(model = model_guard.get_model())) {
+  } else if (OB_ISNULL(model)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("model is null", K(ret));
+  } else if (OB_FAIL(model->prepare(exec_ctx_, arg_, result_))) {
+    if (ret != OB_ITER_END) {
+      LOG_WARN("fail to prepare model", K(ret), K_(exec_ctx), K_(arg));
+    }
+  } else if (OB_FAIL(trans_param_.init(true, /* is_read_only */
+                                       arg_.consistency_level_,
+                                       exec_ctx_.get_ls_id(),
+                                       get_timeout_ts(),
+                                       !exec_ctx_.get_ls_id().is_valid()/*need_global_snapshot*/))) {
+    LOG_WARN("fail to inti trans param", K(ret));
+  } else if (OB_FAIL(ObTableTransUtils::init_read_trans(trans_param_))) {
+    LOG_WARN("fail to init read trans", K(ret));
+  } else if (!trans_param_.tx_snapshot_.is_ls_snapshot()
+             && tablet_id_.is_valid()
+             && OB_FAIL(check_local_execute(tablet_id_))) {
+    LOG_WARN("fail to check local execute", K(ret));
+  } else if (OB_FAIL(model->work(exec_ctx_, arg_, result_))) {
+    if (ret != OB_ITER_END) {
+      LOG_WARN("model fail to work", K(ret), K_(exec_ctx), K_(arg));
+    }
+  }
+
+  ObTableTransUtils::release_read_trans(trans_param_.trans_desc_);
+
+  if (ret == OB_ITER_END) {
+    ret = OB_SUCCESS; // cover ret
+  }
+  return ret;
+}
+
+int ObTableQueryP::try_process()
+{
+  int ret = OB_SUCCESS;
+  // statis
+  bool is_hkv = (ObTableEntityType::ET_HKV == arg_.entity_type_);
+  if (is_hkv) {
+    stat_process_type_ = ObTableProccessType::TABLE_API_HBASE_QUERY; // hbase query
+  } else {
+    stat_process_type_ = ObTableProccessType::TABLE_API_TABLE_QUERY;// table query
+  }
+  table_id_ = arg_.table_id_; // init move response need
+  tablet_id_ = arg_.tablet_id_;
+
+  if (is_new_try_process()) {
+    ret = new_try_process();
+  } else {
+    ret = old_try_process();
+  }
+
+  return ret;
+}
+
+bool ObTableQueryP::is_new_try_process()
+{
+  return arg_.entity_type_ == ObTableEntityType::ET_HKV &&
+         (!arg_.tablet_id_.is_valid() ||
+         (arg_.tablet_id_.is_valid() && arg_.distribute_need_tablet_id())) &&
+         TABLEAPI_OBJECT_POOL_MGR->is_support_distributed_execute();
 }

@@ -12,25 +12,13 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/cmd/ob_load_data_resolver.h"
-#include "sql/resolver/ob_resolver_define.h"
-#include "sql/resolver/cmd/ob_load_data_stmt.h"
-#include "sql/resolver/ob_resolver_utils.h"
-#include "share/schema/ob_table_schema.h"
-#include "sql/resolver/expr/ob_raw_expr_resolver_impl.h"
-#include "sql/resolver/dml/ob_default_value_utils.h"
-#include "sql/resolver/dml/ob_select_resolver.h"
-#include "common/sql_mode/ob_sql_mode.h"
-#include "sql/printer/ob_raw_expr_printer.h"
-#include "sql/resolver/ob_resolver.h"
-#include "sql/resolver/dml/ob_delete_resolver.h"
-#include "lib/json/ob_json.h"
+#include "src/sql/resolver/dml/ob_del_upd_resolver.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "share/backup/ob_backup_io_adapter.h"
-#include "share/backup/ob_backup_struct.h"
-#include "lib/restore/ob_storage_info.h"
 #include "sql/engine/cmd/ob_load_data_file_reader.h"
 #include <glob.h>
 #include "share/schema/ob_part_mgr_util.h"
+#include "share/catalog/ob_catalog_utils.h"
 
 namespace oceanbase
 {
@@ -72,11 +60,11 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
   ObNameCaseMode case_mode = OB_NAME_CASE_INVALID;
 
   if (OB_ISNULL(node)
-      || OB_UNLIKELY(T_LOAD_DATA != node->type_)
+      || OB_UNLIKELY(T_LOAD_DATA != node->type_ && T_LOAD_DATA_URL != node->type_)
       || OB_UNLIKELY(ENUM_TOTAL_COUNT != node->num_child_)
       || OB_ISNULL(node->children_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid node", K(ret));
+    LOG_WARN("invalid node", K(ret), K(node->type_));
   } else if (OB_ISNULL(session_info_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KP_(session_info), K(ret));
@@ -86,6 +74,7 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to create select stmt");
   } else {
+    load_stmt->set_is_load_data_url((T_LOAD_DATA_URL == node->type_));
     stmt_ = load_stmt;
     LOG_DEBUG("load data parser tree", "tree", SJ(ObParserResultPrintWrapper(*node)));
   }
@@ -123,7 +112,25 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
 
   if (OB_SUCC(ret)) {
     /* 1. file name */
-    ret = resolve_filename(load_stmt, node);
+    if (!load_stmt->is_load_data_url()) {
+      ret = resolve_filename(load_stmt, node);
+    } else {
+      ParseNode *url_spec_node = node->children_[ENUM_FILE_NAME];
+      if (OB_ISNULL(url_spec_node)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid from spec node", K(ret));
+      } else if (T_RELATION_FACTOR == url_spec_node->type_) {
+        load_stmt->get_load_arguments().file_name_ = ObString(url_spec_node->str_len_,
+                                                              url_spec_node->str_value_);
+      } else if (T_SELECT == url_spec_node->type_) {
+        load_stmt->get_load_arguments().url_spec_ = ObString(url_spec_node->str_len_,
+                                                            url_spec_node->str_value_);
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid from spec node", K(ret), K(url_spec_node->type_));
+      }
+    }
+
   }
 
   if (OB_SUCC(ret)) {
@@ -157,6 +164,7 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
     ObLoadArgument &load_args = load_stmt->get_load_arguments();
     uint64_t database_id = session_info_->get_database_id();
     uint64_t tenant_id = session_info_->get_effective_tenant_id();
+    ObString catalog_name;
     ObString database_name;
     ObString table_name;
     const ObTableSchema *tschema = nullptr;
@@ -166,8 +174,12 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
       SQL_RESV_LOG(WARN, "invalid parse tree", K(ret));
     } else if (OB_FAIL(resolve_table_relation_node(parse_tree.children_[ENUM_TABLE_NAME],
                                                    table_name,
-                                                   database_name))) {
-      SQL_RESV_LOG(WARN, "failed to resolve table name", K(table_name), K(database_name), K(ret));
+                                                   database_name,
+                                                   catalog_name))) {
+      SQL_RESV_LOG(WARN, "failed to resolve table name", K(table_name), K(database_name), K(catalog_name), K(ret));
+    } else if (!ObCatalogUtils::is_internal_catalog_name(catalog_name)) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "load data into external catalog is");
     } else if (OB_FAIL(schema_checker_->check_table_exists(tenant_id,
                                                            database_name,
                                                            table_name,
@@ -191,8 +203,6 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "load data to the view is");
     } else if (OB_FAIL(check_trigger_constraint(tschema))) {
       LOG_WARN("check trigger constraint failed", K(ret), KPC(tschema));
-    } else if (OB_FAIL(check_collection_sql_type(tschema))) {
-      LOG_WARN("check collection sql type column failed", K(ret), KPC(tschema));
     } else {
       load_args.table_id_ = tschema->get_table_id();
       load_args.table_name_ = table_name;
@@ -388,6 +398,86 @@ int ObLoadDataResolver::resolve(const ParseNode &parse_tree)
   }
 
   if (OB_SUCC(ret)) {
+    /*14. on_error */
+    const ParseNode *child_node = node->children_[ENUM_OPT_ON_ERROR];
+    if (OB_NOT_NULL(child_node)) {
+      if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_5_2) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("load data on error is not supported", K(ret));
+      } else if (T_LOG_ERROR == child_node->type_ && OB_LIKELY(child_node->num_child_ == 3)) {
+
+        if (OB_NOT_NULL(child_node->children_[0])) {
+          const ParseNode *log_file_node = child_node->children_[0];
+          if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_4_0_0) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_WARN("logging errors into files is not supported", K(ret));
+          } else if (OB_UNLIKELY(log_file_node->type_ != T_LOAD_DATA_ERR_FILE)
+              || OB_ISNULL(log_file_node->children_[0])
+              || OB_UNLIKELY(T_VARCHAR != log_file_node->children_[0]->type_
+                            && T_CHAR != log_file_node->children_[0]->type_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid log file node", K(ret), K(log_file_node));
+          } else {
+            ObString file_name(log_file_node->children_[0]->str_len_,
+                              log_file_node->children_[0]->str_value_);
+            load_stmt->get_load_arguments().diagnosis_log_file_ = file_name;
+          }
+        }
+
+        if (OB_SUCC(ret)) {
+          if (OB_NOT_NULL(child_node->children_[1])) {
+            const ParseNode *limit_node = child_node->children_[1];
+            if (T_LOG_ERROR_LIMIT == limit_node->type_) {
+              load_stmt->get_load_arguments().is_diagnosis_enabled_ = true;
+              if (OB_UNLIKELY(limit_node->num_child_ != 1)
+                  || OB_ISNULL(limit_node->children_[0])
+                  || T_INT != limit_node->children_[0]->type_) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("invalid child node", K(ret), K(limit_node->num_child_));
+              } else {
+                load_stmt->get_load_arguments().diagnosis_limit_num_ = limit_node->children_[0]->value_;
+              }
+            } else if (T_LOG_ERROR_UNLIMITED == limit_node->type_) {
+              load_stmt->get_load_arguments().is_diagnosis_enabled_ = true;
+              load_stmt->get_load_arguments().diagnosis_limit_num_ = -1;
+            } else {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("invalid from spec node", K(ret), K(limit_node->type_));
+            }
+          } else {
+            load_stmt->get_load_arguments().is_diagnosis_enabled_ = true;
+            load_stmt->get_load_arguments().diagnosis_limit_num_ = 0;
+          }
+        }
+
+        if (OB_SUCC(ret)) {
+          if (OB_NOT_NULL(child_node->children_[2])) {
+            const ParseNode *bad_file_node = child_node->children_[2];
+            if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_4_0_0) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_WARN("logging errors into files is not supported", K(ret));
+            } else if (OB_UNLIKELY(bad_file_node->type_ != T_LOAD_DATA_BAD_FILE)
+                || OB_ISNULL(bad_file_node->children_[0])
+                || OB_UNLIKELY(T_VARCHAR != bad_file_node->children_[0]->type_
+                              && T_CHAR != bad_file_node->children_[0]->type_)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("invalid bad file node", K(ret), K(bad_file_node));
+            } else {
+              ObString bad_file_name(bad_file_node->children_[0]->str_len_,
+                                    bad_file_node->children_[0]->str_value_);
+              load_stmt->get_load_arguments().diagnosis_bad_file_ = bad_file_name;
+            }
+          }
+        }
+
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid from spec node", K(ret), K(child_node->type_));
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     ObLoadArgument &load_args = load_stmt->get_load_arguments();
     const ObDirectLoadHint &direct_load_hint = load_stmt->get_hints().get_direct_load_hint();
     if (ObLoadDupActionType::LOAD_STOP_ON_DUP == load_args.dupl_action_ &&
@@ -436,6 +526,8 @@ int ObLoadDataResolver::resolve_hints(const ParseNode &node)
     LOG_WARN("invalid node type", K(node.type_), K(ret));
   } else {
     ObLoadDataHint &stmt_hints = stmt->get_hints();
+    stmt_hints.set_hint_str(ObString(static_cast<int32_t>(node.str_len_),
+                         const_cast<char *>(node.str_value_)));
 
     for (int64_t i = 0; OB_SUCC(ret) && i < node.num_child_; i++) {
       ParseNode *hint_node = node.children_[i];
@@ -688,7 +780,7 @@ int ObLoadDataResolver::resolve_filename(ObLoadDataStmt *load_stmt, ParseNode *n
                 LOG_WARN("file not exist", K(ret), K(i), K(match_array[i]));
               } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
                 LOG_WARN("failed to get secure file priv", K(ret));
-              } else if (OB_FAIL(ObResolverUtils::check_secure_path(secure_file_priv, actual_path))) {
+              } else if (!session_info_->is_inner() && OB_FAIL(ObResolverUtils::check_secure_path(secure_file_priv, actual_path))) {
                 LOG_WARN("failed to check secure path", K(ret), K(secure_file_priv), K(actual_path));
               } else if (OB_FAIL(load_args.file_iter_.add_files(&match_array[i]))) {
                 LOG_WARN("fail to add files", K(ret));
@@ -697,20 +789,37 @@ int ObLoadDataResolver::resolve_filename(ObLoadDataStmt *load_stmt, ParseNode *n
           }
         }
       } else if (ObLoadFileLocation::OSS == load_args.load_file_storage_) {
-        const char *storage_ptr = nullptr;
+        const char *storage_ptr = file_name.reverse_find('?');
         const char *file_ptr = nullptr;
-        if (OB_ISNULL(storage_ptr = file_name.reverse_find('?'))) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "file name or access key");
+        ObString temp_file_name = file_name;
+        if (OB_ISNULL(storage_ptr)) {
+          ObSessionPrivInfo session_priv;
+          share::schema::ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
+          const ObLocationSchema *schema_ptr = NULL;
+          if (OB_ISNULL(schema_guard)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("got null ptr", K(ret));
+          } else if (OB_FAIL(session_info_->get_session_priv_info(session_priv))) {
+            LOG_WARN("get session priv failed", K(ret));
+          } else if (OB_FAIL(schema_guard->get_location_schema_by_prefix_match_with_priv(
+                                    session_priv,
+                                    session_info_->get_enable_role_array(),
+                                    session_info_->get_effective_tenant_id(),
+                                    file_name,
+                                    schema_ptr,
+                                    false))) {
+            LOG_WARN("get location schema failed", K(ret), K(session_info_->get_effective_tenant_id()), K(file_name));
+          } else if (OB_ISNULL(schema_ptr)) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_WARN("match location object failed", K(ret), K(session_info_->get_effective_tenant_id()), K(file_name));
+          } else if (OB_FAIL(ob_write_string(*allocator_, temp_file_name, load_args.file_name_, true))) {
+            LOG_WARN("fail to copy string", K(ret));
+          } else if(OB_FAIL(load_args.access_info_.set(load_args.file_name_.ptr(), schema_ptr->get_location_access_info()))) {
+            LOG_WARN("failed to set access info", K(ret), K(load_args.file_name_), K(schema_ptr->get_location_access_info()));
+          }
         } else {
-          ObString temp_file_name = file_name.split_on(storage_ptr).trim_space_only();
+          temp_file_name = file_name.split_on(storage_ptr).trim_space_only();
           ObString storage_info;
-          bool matched = false;
-          ObString pattern;
-          ObString dir_path;
-          char *path = nullptr;
-          int64_t path_len = 0;
-          ObArray<ObString> file_list;
           if (OB_FAIL(ob_write_string(*allocator_, temp_file_name, load_args.file_name_, true))) {
             LOG_WARN("fail to copy string", K(ret));
           } else if (OB_FAIL(ob_write_string(*allocator_, file_name, storage_info, true))) {
@@ -725,7 +834,19 @@ int ObLoadDataResolver::resolve_filename(ObLoadDataStmt *load_stmt, ParseNode *n
             } else {
               LOG_WARN("failed to set access info", K(ret), K(load_args.file_name_), K(storage_info));
             }
-          } else if (load_args.access_info_.get_load_data_format() == ObLoadDataFormat::OB_BACKUP_1_4) {
+          }
+        }
+
+        if (OB_FAIL(ret)) {
+          // do nothing
+        } else {
+          ObString pattern;
+          ObString dir_path;
+          bool matched = false;
+          char *path = nullptr;
+          int64_t path_len = 0;
+          ObArray<ObString> file_list;
+          if (load_args.access_info_.get_load_data_format() == ObLoadDataFormat::OB_BACKUP_1_4) {
             load_args.file_name_ = temp_file_name;
           } else {
             if (OB_ISNULL(file_ptr = temp_file_name.reverse_find('/'))) {
@@ -1109,7 +1230,8 @@ int ObLoadDataResolver::build_column_ref_expr(ObQualifiedName &q_name, ObRawExpr
   } else if (OB_ISNULL(col_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("column schema is null");
-  } else if (OB_FAIL(ObRawExprUtils::build_column_expr(*params_.expr_factory_, *col_schema, col_expr))) {
+  } else if (OB_FAIL(ObRawExprUtils::build_column_expr(*params_.expr_factory_, *col_schema,
+                                                       params_.session_info_, col_expr))) {
     LOG_WARN("build column expr failed", K(ret));
   } else {
     col_expr->set_column_attr(tb_name, q_name.col_name_);
@@ -1119,8 +1241,8 @@ int ObLoadDataResolver::build_column_ref_expr(ObQualifiedName &q_name, ObRawExpr
     column_expr = col_expr;
 
     ColumnItem column_item;
-    column_item.set_default_value(col_schema->get_cur_default_value());
     column_item.expr_ = col_expr;
+    column_item.set_default_value(col_schema->get_cur_default_value());
     column_item.table_id_ = col_expr->get_table_id();
     column_item.column_id_ = col_expr->get_column_id();
     column_item.column_name_ = col_expr->get_column_name();
@@ -1404,6 +1526,7 @@ int ObLoadDataResolver::check_if_table_exists(uint64_t tenant_id,
                                               uint64_t& table_id)
 {
   int ret = OB_SUCCESS;
+  uint64_t catalog_id = OB_INTERNAL_CATALOG_ID; // not support in catalog now, using fixed value instead
   uint64_t database_id = OB_INVALID_ID;
   bool is_table_exist = false;
   bool is_index_table = false;
@@ -1416,6 +1539,7 @@ int ObLoadDataResolver::check_if_table_exists(uint64_t tenant_id,
   } else if (OB_FAIL(schema_checker_->get_database_id(tenant_id, db_name, database_id))) {
     LOG_WARN("get database id failed", K(ret));
   } else if (OB_FAIL(schema_checker_->check_table_exists(tenant_id,
+                                                         catalog_id,
                                                          database_id,
                                                          table_name,
                                                          is_index_table,
@@ -1677,6 +1801,7 @@ int ObLoadDataResolver::resolve_partitions(const ParseNode &node, ObLoadDataStmt
     const ParseNode *name_list = node.children_[0];
     ObString partition_name;
     ObArray<ObObjectID> part_ids;
+    ObArray<ObString> part_names;
     for (int i = 0; OB_SUCC(ret) && i < name_list->num_child_; i++) {
       ObArray<ObObjectID> partition_ids;
       partition_name.assign_ptr(name_list->children_[i]->str_value_,
@@ -1699,12 +1824,16 @@ int ObLoadDataResolver::resolve_partitions(const ParseNode &node, ObLoadDataStmt
       if (OB_SUCC(ret)) {
         if (OB_FAIL(append_array_no_dup(part_ids, partition_ids))) {
           LOG_WARN("Push partition id error", K(ret));
+        } else if (OB_FAIL(part_names.push_back(partition_name))) {
+          LOG_WARN("Push partition name error", K(ret));
         }
       }
     } // end of for
     if (OB_SUCC(ret)) {
       if (OB_FAIL(load_stmt.set_part_ids(part_ids))) {
         LOG_WARN("fail to set partition ids", KR(ret));
+      } else if (OB_FAIL(load_stmt.set_part_names(part_names))) {
+        LOG_WARN("fail to set partition names", KR(ret));
       }
     }
   }

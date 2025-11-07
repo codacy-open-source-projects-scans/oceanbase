@@ -13,11 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_lob_util.h"
-#include "ob_lob_manager.h"
 #include "storage/tx/ob_trans_service.h"
-#include "storage/blocksstable/ob_datum_row.h"
-#include "storage/lob/ob_lob_meta.h"
-#include "storage/tx_storage/ob_access_service.h"
 
 namespace oceanbase
 {
@@ -168,6 +164,8 @@ int ObInsertLobColumnHelper::insert_lob_column(ObIAllocator &allocator,
           lob_param.scan_backward_ = false;
           lob_param.offset_ = 0;
           lob_param.inrow_threshold_ = lob_storage_param.inrow_threshold_;
+          lob_param.is_index_table_ = lob_storage_param.is_index_table_;
+          lob_param.main_table_rowkey_col_ = !lob_storage_param.is_index_table_ && lob_storage_param.is_rowkey_col_;
           LOG_DEBUG("lob storage param", K(lob_storage_param), K(cs_type));
         }
         if (OB_FAIL(ret)) {
@@ -282,6 +280,8 @@ int ObInsertLobColumnHelper::insert_lob_column(ObIAllocator &allocator,
       lob_param.lob_meta_tablet_id_ = lob_meta_tablet_id;
       lob_param.lob_id_geneator_ = &lob_id_geneator;
       lob_param.inrow_threshold_ = lob_storage_param.inrow_threshold_;
+      lob_param.is_index_table_ = lob_storage_param.is_index_table_;
+      lob_param.main_table_rowkey_col_ = !lob_storage_param.is_index_table_ && lob_storage_param.is_rowkey_col_;
       lob_param.src_tenant_id_ = src_tenant_id;
       lob_param.set_tmp_allocator(&lob_allocator);
       if (!src.is_valid()) {
@@ -338,6 +338,8 @@ int ObInsertLobColumnHelper::delete_lob_column(ObIAllocator &allocator,
           LOG_WARN("invalid src lob locator.", K(ret));
         } else if (OB_FAIL(lob_mngr->build_lob_param(lob_param, allocator, collation_type, 0, UINT64_MAX, timeout_ts, lob))) {
           LOG_WARN("fail to build lob param.", K(ret));
+        } else if (OB_FAIL(lob_param.snapshot_.assign(snapshot))) {
+          LOG_WARN("fail to assign snapshot", K(ret), K(snapshot));
         } else if (OB_FAIL(lob_mngr->erase(lob_param))) {
           LOG_WARN("lob meta row delete failed.", K(ret));
         } else {

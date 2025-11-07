@@ -11,23 +11,12 @@
  */
 
 #include "share/throttle/ob_throttle_unit.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/ls/ob_ls_tx_service.h"
-#include "storage/memtable/ob_memtable.h"
-#include "storage/ob_storage_table_guard.h"
-#include "storage/ob_i_store.h"
-#include "storage/ob_relative_table.h"
 
 #include "storage/tx/ob_trans_service.h"
-#include "storage/tx/ob_trans_part_ctx.h"
 #include "storage/tx/ob_tx_log_operator.h"
 #include "storage/tx/ob_tx_replay_executor.h"
-#include "storage/tx/ob_timestamp_service.h"
-#include "storage/tx/ob_trans_id_service.h"
 #include "storage/tablelock/ob_lock_memtable.h"
 #include "logservice/replayservice/ob_tablet_replay_executor.h"
-#include "storage/tablet/ob_tablet.h"
 
 namespace oceanbase
 {
@@ -138,20 +127,35 @@ int ObTxReplayExecutor::do_replay_(const char *buf, const int64_t size, const in
   return ret;
 }
 
-#ifdef ERRSIM
-ERRSIM_POINT_DEF(EN_TX_REPLAY)
-#endif
+ERRSIM_POINT_DEF(EN_TX_REPLAY_TASK_DELAY_TENANT_ID)
+ERRSIM_POINT_DEF(EN_TX_REPLAY_TASK_DELAY_LS_ID)
+ERRSIM_POINT_DEF(EN_TX_REPLAY_TASK_DELAY_TIME)
+ERRSIM_POINT_DEF(EN_TX_REPLAY_TASK_DELAY_RETRY)
 
 OB_NOINLINE int ObTxReplayExecutor::errsim_tx_replay_()
 {
   int ret = OB_SUCCESS;
 
-#ifdef ERRSIM
-  ret = EN_TX_REPLAY;
-#endif
+  int errsim_tenant_id = abs(EN_TX_REPLAY_TASK_DELAY_TENANT_ID);
+  int errsim_ls_id = abs(EN_TX_REPLAY_TASK_DELAY_LS_ID);
+  int sleep_time = abs(EN_TX_REPLAY_TASK_DELAY_TIME);
+  int retry_delay = abs(EN_TX_REPLAY_TASK_DELAY_RETRY);
+  bool sleep_succ = false;
 
-  if (OB_FAIL(ret)) {
-    TRANS_LOG(INFO, "errsim tx replay in observer", K(ret));
+  if (errsim_tenant_id <= 0 || errsim_tenant_id == tenant_id_) {
+    if (errsim_ls_id <= 0 || errsim_ls_id == ls_id_.id()) {
+      usleep(sleep_time);
+      sleep_succ = true;
+    }
+  }
+
+  if (retry_delay > 0) {
+    ret = OB_EAGAIN;
+  }
+
+  if (sleep_succ || retry_delay > 0) {
+    TRANS_LOG(INFO, "errsim tx replay in observer", K(ret), K(sleep_time), K(errsim_tenant_id),
+              K(errsim_ls_id), K(sleep_time), K(retry_delay), K(sleep_succ));
   }
   return ret;
 }
@@ -222,6 +226,18 @@ int ObTxReplayExecutor::replay_tx_log_(const ObTxLogType log_type)
   case ObTxLogType::TX_MULTI_DATA_SOURCE_LOG: {
     if (OB_FAIL(replay_multi_source_data_())) {
       TRANS_LOG(WARN, "[Replay Tx] replay multi source data log error", KR(ret));
+    }
+    break;
+  }
+  case ObTxLogType::TX_DIRECT_LOAD_INC_MAJOR_LOG:{
+    ObTxDirectLoadIncLog::ReplayArg replay_arg;
+    replay_arg.part_log_no_ = tx_part_log_no_;
+    replay_arg.ddl_log_handler_ptr_ = ls_->get_ddl_log_handler();
+    ObTxDirectLoadIncLog::TempRef temp_ref;
+    ObTxDirectLoadIncLog::ConstructArg  construct_arg(temp_ref);
+    ObTxCtxLogOperator<ObTxDirectLoadIncMajorLog> dli_log_op(ctx_, &log_block_, &construct_arg, replay_arg, log_ts_ns_, lsn_);
+    if (OB_FAIL(dli_log_op(ObTxLogOpType::REPLAY))) {
+      TRANS_LOG(WARN, "[Replay Tx] replay direct load inc log error", KR(ret));
     }
     break;
   }
@@ -296,6 +312,7 @@ int ObTxReplayExecutor::try_get_tx_ctx_()
                         log_block_.get_header().get_org_cluster_id(),
                         cluster_version,
                         0, /*session_id*/
+                        0, /*client_sid*/
                         0, /*associated_session_id*/
                         scheduler,
                         INT64_MAX,         /*trans_expired_time_*/
@@ -702,6 +719,8 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
   lib::Worker::CompatMode mode;
   ObTabletHandle tablet_handle;
   const bool is_update_mds_table = false;
+  ObASHTabletIdSetterGuard ash_tablet_id_guard(row_head.tablet_id_.id());
+  ACTIVE_SESSION_RETRY_DIAG_INFO_SETTER(tablet_id_, row_head.tablet_id_.id());
   if (OB_FAIL(ls_->replay_get_tablet(row_head.tablet_id_, log_ts_ns_, is_update_mds_table, tablet_handle))) {
     if (OB_OBSOLETE_CLOG_NEED_SKIP == ret) {
       ctx_->force_no_need_replay_checksum(!is_tx_log_replay_queue(), log_ts_ns_);
@@ -733,7 +752,7 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
     ObTablet *tablet = tablet_handle.get_obj();
     storage::ObStoreCtx storeCtx;
     storeCtx.ls_id_ = ctx_->get_ls_id();
-    storeCtx.mvcc_acc_ctx_.init_replay(
+    (void)storeCtx.mvcc_acc_ctx_.init_replay(
       *ctx_,
       *mt_ctx_,
       ctx_->get_trans_id()
@@ -741,7 +760,6 @@ int ObTxReplayExecutor::replay_one_row_in_memtable_(ObMutatorRowHeader &row_head
     storeCtx.tablet_id_ = row_head.tablet_id_;
     storeCtx.ls_ = ls_;
 
-    ObRelativeTable relative_table;
     lib::CompatModeGuard compat_guard(mode);
     switch (row_head.mutator_type_) {
     case MutatorType::MUTATOR_ROW: {

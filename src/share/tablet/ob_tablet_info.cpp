@@ -13,8 +13,6 @@
 #define USING_LOG_PREFIX SHARE
 
 #include "share/tablet/ob_tablet_info.h"
-#include "share/ob_errno.h" // KR(ret)
-#include "share/ob_ls_id.h" // ls_id
 #include "share/tablet/ob_tablet_filter.h" // ObTabletFilter
 
 namespace oceanbase
@@ -25,6 +23,8 @@ namespace share
 const static char * ObDataChecksumTypeStr[] = {
   "NORMAL",
   "COLUMNSTORE",
+  "NORMAL_WITH_NORMAL_COLUMN",
+  "COLUMNSTORE_WITH_NORMAL_COLUMN"
 };
 
 const char *data_check_checksum_type_to_str(const ObDataChecksumType type)

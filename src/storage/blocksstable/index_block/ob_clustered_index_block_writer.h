@@ -59,6 +59,7 @@ public:
   int append_row(const ObIndexBlockRowDesc &row_desc);
   // Build clustered index micro block and append to clustered index macro writer.
   int build_and_append_clustered_index_micro_block();
+  int process_micro_block_aggregation(const ObMicroIndexData &micro_index_data, ObMicroBlockDesc &micro_block_desc);
   int reuse_clustered_micro_block(const MacroBlockId &macro_id,
                                   const ObMicroBlockData &micro_block_data);
   // Rewrite clustered index micro block.
@@ -66,9 +67,14 @@ public:
       const char *macro_buf,
       const int64_t macro_size,
       const ObDataMacroBlockMeta &macro_meta);
+  // Attention: this interface will trigger read I/O
   int rewrite_and_append_clustered_index_micro_block(const ObDataMacroBlockMeta &macro_data);
+  int rewrite_and_append_clustered_index_micro_block(
+      const ObDataMacroBlockMeta &macro_meta,
+      const char *leaf_index_block_buf,
+      const int64_t block_size);
   int close();
-
+  int64_t get_last_macro_seq() const { return macro_writer_ ? macro_writer_->get_last_macro_seq() : 0; }
 private:
   DISALLOW_COPY_AND_ASSIGN(ObClusteredIndexBlockWriter);
 
@@ -76,6 +82,8 @@ private:
   int build_clustered_index_micro_block(
     ObMicroBlockDesc &clustered_index_micro_block_desc);
   int check_order(const ObIndexBlockRowDesc &row_desc);
+  int init_pre_agg_util(const ObDataStoreDesc &data_store_desc);
+  void release_pre_agg_util();
   int decompress_and_make_clustered_index_micro_block(
       const char *micro_buffer, const int64_t micro_size,
       const MacroBlockId &macro_id,
@@ -88,6 +96,8 @@ private:
   int make_clustered_index_micro_block_with_reuse(
       const ObMicroBlockData &micro_block_data,
       const MacroBlockId &macro_id);
+  void prepare_clustered_row_desc_from_row_header(ObIndexBlockRowDesc &clustered_row_desc,
+                                                  const ObIndexBlockRowHeader &idx_row_header);
   int print_macro_ids();
 
 private:
@@ -98,6 +108,7 @@ private:
   ObIndexTreeRootCtx * root_ctx_;  // pointer to ObDataIndexBlockBuilder::index_tree_root_ctx_
   ObMacroBlockWriter * macro_writer_;
   ObIMicroBlockWriter * micro_writer_;
+  ObSkipIndexDataAggregator *data_aggregator_;
   common::ObIAllocator * task_allocator_;
   common::ObArenaAllocator row_allocator_;
   compaction::ObLocalArena macro_block_io_allocator_;

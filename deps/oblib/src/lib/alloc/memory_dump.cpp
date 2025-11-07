@@ -16,15 +16,8 @@
 #include <setjmp.h>
 #include "lib/allocator/ob_sql_mem_leak_checker.h"
 #include "lib/signal/ob_signal_struct.h"
-#include "lib/rc/context.h"
-#include "lib/utility/utility.h"
-#include "lib/thread/ob_thread_name.h"
 #include "lib/thread/thread_mgr.h"
-#include "lib/utility/ob_print_utils.h"
 #include "lib/container/ob_vector.h"
-#include "rpc/obrpc/ob_rpc_packet.h"
-#include "common/ob_clock_generator.h"
-#include "common/ob_smart_var.h"
 
 namespace oceanbase
 {
@@ -206,7 +199,7 @@ int ObMemoryDump::push(void *task)
   return ret;
 }
 
-int ObMemoryDump::generate_mod_stat_task(ObMemoryCheckContext *memory_check_ctx)
+int ObMemoryDump::generate_mod_stat_task(ObMemoryCheckContext *memory_check_ctx, uint64_t min_print_size)
 {
   int ret = OB_SUCCESS;
   ObMemoryDumpTask *task = alloc_task();
@@ -216,6 +209,7 @@ int ObMemoryDump::generate_mod_stat_task(ObMemoryCheckContext *memory_check_ctx)
   } else {
     task->type_ = STAT_LABEL;
     task->memory_check_ctx_ = memory_check_ctx;
+    task->min_print_size_ = min_print_size;
     COMMON_LOG(INFO, "task info", K(*task));
     if (OB_FAIL(push(task))) {
       LOG_WARN("push task failed", K(ret));
@@ -263,6 +257,7 @@ void ObMemoryDump::print_malloc_sample_info()
   const char *label = "";
   int64_t bt_cnt = 0;
   const int64_t MAX_LABEL_BT_CNT = 5;
+  const int64_t MIN_PRINT_SIZE = 1 << 21; // 2M
   for (MallocSamplePairVector::iterator it = vector.begin(); OB_SUCC(ret) && it != vector.end(); ++it) {
     if ((*it)->first.tenant_id_ != tenant_id || (*it)->first.ctx_id_ != ctx_id) {
       if (log_pos > 0) {
@@ -278,7 +273,10 @@ void ObMemoryDump::print_malloc_sample_info()
       label = (*it)->first.label_;
       bt_cnt = 0;
     }
-    if (bt_cnt++ < MAX_LABEL_BT_CNT) {
+    if (bt_cnt < MAX_LABEL_BT_CNT) {
+      if ((*it)->second.alloc_bytes_ < MIN_PRINT_SIZE) {
+        continue;
+      }
       char bt[MAX_BACKTRACE_LENGTH];
       parray(bt, sizeof(bt), (int64_t*)(*it)->first.bt_, AOBJECT_BACKTRACE_COUNT);
       ret = databuff_printf(log_buf_, LOG_BUF_LEN, log_pos, "[MEMORY][BT] mod=%15s, alloc_bytes=% '15ld, alloc_count=% '15ld, bt=%s\n",
@@ -288,6 +286,7 @@ void ObMemoryDump::print_malloc_sample_info()
             tenant_id, get_global_ctx_info().get_ctx_name(ctx_id), static_cast<int>(log_pos), log_buf_);
         log_pos = 0;
       }
+      bt_cnt++;
     }
   }
   if (OB_SUCC(ret) && log_pos > 0) {
@@ -300,6 +299,7 @@ void ObMemoryDump::run1()
 {
   SANITY_DISABLE_CHECK_RANGE(); // prevent sanity_check_range
   int ret = OB_SUCCESS;
+  int seq = 0;
   lib::set_thread_name("MemoryDump");
   static int64_t last_dump_ts = common::ObClockGenerator::getClock();
   while (!has_set_stop()) {
@@ -308,8 +308,14 @@ void ObMemoryDump::run1()
       handle(task);
     } else if (OB_ENTRY_NOT_EXIST == ret) {
       int64_t current_ts = common::ObClockGenerator::getClock();
+      static const int FULL_PRINT_INTERVAL = 6;
+      static const uint64_t MIN_PRINT_SIZE = 1 << 26; // 64M
       if (current_ts - last_dump_ts > STAT_LABEL_INTERVAL) {
-        generate_mod_stat_task();
+        if (seq++ % FULL_PRINT_INTERVAL == 0) {
+          generate_mod_stat_task();
+        } else {
+          generate_mod_stat_task(NULL, MIN_PRINT_SIZE);
+        }
         last_dump_ts = current_ts;
       } else {
         ob_usleep(1000, true/*is_idle_sleep*/);
@@ -365,7 +371,7 @@ int parse_block_meta(AChunk *chunk, ABlock *block, BlockFunc b_func, ObjectFunc 
     int loop_cnt = 0;
     AObject *object = (AObject*)(block->data());
     while (OB_SUCC(ret)) {
-      if ((char*)object + AOBJECT_HEADER_SIZE > block_end ||
+      if ((char*)object + AOBJECT_META_SIZE > block_end ||
           !object->is_valid() || loop_cnt++ >= AllocHelper::cells_per_block(block->ablock_size_)) {
         break;
       }
@@ -424,10 +430,10 @@ int print_block_meta(AChunk *chunk, ABlock *block, char *buf, int64_t buf_len, i
   int ret = OB_SUCCESS;
   ret = databuff_printf(buf, buf_len, pos,
                         "    block: %p, offset: %03d, in_use: %d, is_large: %d, is_washed: %d, nblocks: %03d," \
-                        " alloc_bytes: %lu, aobject_size: %d, obj_set: %p, context: %p\n",
+                        " alloc_bytes: %lu, aobject_size: %d, obj_set: %p\n",
                         chunk->blk_data(block), chunk->blk_offset(block), block->in_use_, block->is_large_,
                         block->is_washed_, chunk->blk_nblocks(block),
-                        block->alloc_bytes_, AOBJECT_CELL_BYTES, block->obj_set_, (int64_t*)block->mem_context_);
+                        block->alloc_bytes_, AOBJECT_CELL_BYTES, block->obj_set_);
   if (OB_SUCC(ret)) {
     if (pos > buf_len / 2) {
       ::write(fd, buf, pos);
@@ -684,7 +690,7 @@ void ObMemoryDump::handle(void *task)
     for (int tenant_idx = 0; tenant_idx < tenant_cnt; tenant_idx++) {
       uint64_t tenant_id = tenant_ids_[tenant_idx];
       ma->print_tenant_memory_usage(tenant_id);
-      ma->print_tenant_ctx_memory_usage(tenant_id);
+      ma->print_tenant_ctx_memory_usage(tenant_id, m_task->min_print_size_);
     }
 
 #ifdef FATAL_ERROR_HANG

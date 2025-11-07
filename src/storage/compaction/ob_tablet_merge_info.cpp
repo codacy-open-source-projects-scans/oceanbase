@@ -8,12 +8,9 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PubL v2 for more details.
 #define USING_LOG_PREFIX STORAGE_COMPACTION
-#include "storage/compaction/ob_tablet_merge_info.h"
-#include "storage/tablet/ob_tablet_create_delete_helper.h"
+#include "ob_tablet_merge_info.h"
 #include "storage/compaction/ob_basic_tablet_merge_ctx.h"
-#include "storage/column_store/ob_column_oriented_sstable.h"
-#include "storage/blocksstable/index_block/ob_index_block_builder.h"
-#include "storage/tx_table/ob_tx_data_memtable.h"
+#include "storage/compaction/filter/ob_tx_data_minor_filter.h"
 
 namespace oceanbase
 {
@@ -53,7 +50,12 @@ int ObTabletMergeInfo::init(const ObMergeStaticInfo &static_history)
   } else {
     merge_history_.static_info_.shallow_copy(static_history);
     merge_history_.running_info_.merge_start_time_ = ObTimeUtility::fast_current_time();
-    is_inited_ = true;
+    if (OB_FAIL(ObSSTableMergeHistory::init_sstable_merge_block_info_array(
+        static_history.merge_sstable_count_, merge_history_.sstable_merge_block_info_array_))) {
+      LOG_WARN("failed to init sstable_merge_block_info_array", K(ret));
+    } else {
+      is_inited_ = true;
+    }
   }
 
   return ret;
@@ -109,7 +111,7 @@ int ObTabletMergeInfo::record_start_tx_scn_for_tx_data(const ObBasicTabletMergeC
 {
   int ret = OB_SUCCESS;
   // set INT64_MAX for invalid check
-  param.filled_tx_scn_.set_max();
+  param.set_filled_tx_scn(SCN::max_scn());
   const ObTablesHandleArray &tables_handle = ctx.get_tables_handle();
   if (is_mini_merge(ctx.get_merge_type())) {
     // when this merge is MINI_MERGE, use the start_scn of the oldest tx data memtable as start_tx_scn
@@ -121,34 +123,41 @@ int ObTabletMergeInfo::record_start_tx_scn_for_tx_data(const ObBasicTabletMergeC
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("table ptr is unexpected nullptr", KR(ret), K(ctx));
     } else {
-      param.filled_tx_scn_ = tx_data_memtable->get_start_scn();
+      param.set_filled_tx_scn(tx_data_memtable->get_start_scn());
     }
   } else if (is_minor_merge(ctx.get_merge_type())) {
     // when this merge is MINOR_MERGE, use max_filtered_end_scn in filter if filtered some tx data
-    ObTransStatusFilter *compaction_filter_ = (ObTransStatusFilter*)ctx.info_collector_.compaction_filter_;
+    ObTxDataMinorFilter *compaction_filter = (ObTxDataMinorFilter*)ctx.filter_ctx_.compaction_filter_;
     ObSSTableMetaHandle sstable_meta_hdl;
     ObSSTable *oldest_tx_data_sstable = static_cast<ObSSTable *>(tables_handle.get_table(0));
+    SCN default_tx_data_recycle_scn(SCN::min_scn());
     if (OB_ISNULL(oldest_tx_data_sstable)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("tx data sstable is unexpected nullptr", KR(ret));
     } else if (OB_FAIL(oldest_tx_data_sstable->get_meta(sstable_meta_hdl))) {
       LOG_WARN("fail to get sstable meta handle", K(ret));
     } else {
-      param.filled_tx_scn_ = sstable_meta_hdl.get_sstable_meta().get_filled_tx_scn();
+      default_tx_data_recycle_scn = sstable_meta_hdl.get_sstable_meta().get_filled_tx_scn();
+      param.set_filled_tx_scn(default_tx_data_recycle_scn);
 
-      if (OB_NOT_NULL(compaction_filter_)) {
+      if (OB_NOT_NULL(compaction_filter)) {
         // if compaction_filter is valid, update filled_tx_log_ts if recycled some tx data
         SCN recycled_scn;
-        if (compaction_filter_->get_max_filtered_end_scn() > SCN::min_scn()) {
-          recycled_scn = compaction_filter_->get_max_filtered_end_scn();
+        if (compaction_filter->get_max_filtered_end_scn() > SCN::min_scn()) {
+          recycled_scn = compaction_filter->get_max_filtered_end_scn();
         } else {
-          recycled_scn = compaction_filter_->get_recycle_scn();
+          recycled_scn = compaction_filter->get_recycle_scn();
         }
-        if (recycled_scn > param.filled_tx_scn_) {
-          param.filled_tx_scn_ = recycled_scn;
+        if (recycled_scn > param.filled_tx_scn()) {
+          param.set_filled_tx_scn(recycled_scn);
         }
       }
     }
+    FLOG_INFO("finish record tx_data_recycle_scn",
+              K(param.filled_tx_scn()),
+              K(default_tx_data_recycle_scn),
+              KPC(compaction_filter),
+              KPC(oldest_tx_data_sstable));
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("unexpected merge type when merge tx data table", KR(ret), K(ctx));
@@ -222,7 +231,7 @@ int ObTabletMergeInfo::create_sstable(
           LOG_WARN("fail to create sstable", K(ret), K(param));
           CTX_SET_DIAGNOSE_LOCATION(ctx);
         }
-      } else if (NULL != cg_schema && 0 == param.data_blocks_cnt_) { // skip to create normal cg sstable that is empty
+      } else if (NULL != cg_schema && 0 == param.data_blocks_cnt()) { // skip to create normal cg sstable that is empty
         skip_to_create_empty_cg = true;
         FLOG_INFO("skip to create empty cg sstable!", K(ret), K(param), KPC(cg_schema));
       } else { // use tmp allocator to create normal cg sstable due to the concurrent problem

@@ -13,14 +13,7 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/dml/ob_link_dml_op.h"
-#include "sql/engine/ob_exec_context.h"
-#include "observer/ob_server_struct.h"
-#include "share/schema/ob_dblink_mgr.h"
-#include "lib/mysqlclient/ob_mysql_connection.h"
-#include "lib/mysqlclient/ob_mysql_connection_pool.h"
-#include "sql/ob_sql_utils.h"
 #include "sql/dblink/ob_tm_service.h"
-#include "share/config/ob_server_config.h"
 namespace oceanbase
 {
 using namespace common;
@@ -157,7 +150,7 @@ int ObLinkDmlOp::inner_open()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("session or plan_ctx or dblink_proxy_ is NULL", K(ret), KP(session), KP(plan_ctx), KP(dblink_proxy_));
   } else if (FALSE_IT(tenant_id_ = session->get_effective_tenant_id())) {
-  } else if (FALSE_IT(sessid_ = session->get_sessid())) {
+  } else if (FALSE_IT(sessid_ = session->get_server_sid())) {
   } else if (OB_FAIL(set_next_sql_req_level())) {
     LOG_WARN("failed to set next sql req level", K(ret));
   } else if (OB_FAIL(init_dblink())) {

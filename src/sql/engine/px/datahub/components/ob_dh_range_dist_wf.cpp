@@ -12,10 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
-#include "lib/utility/ob_sort.h"
 #include "sql/engine/px/datahub/components/ob_dh_range_dist_wf.h"
 #include "sql/engine/px/ob_px_util.h"
-#include "sql/engine/window_function/ob_window_function_op.h"
 #include "sql/engine/window_function/ob_window_function_vec_op.h"
 
 namespace oceanbase
@@ -236,7 +234,7 @@ int ObRDWFPieceMsgCtx::formalize_store_row()
   return ret;
 }
 
-int ObRDWFPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs)
+int ObRDWFPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta> &sqcs)
 {
   int ret = OB_SUCCESS;
   ObOperatorKit *op_kit = exec_ctx_.get_operator_kit(op_id_);
@@ -269,7 +267,7 @@ int ObRDWFPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs)
         return std::tie(l->sqc_id_, l->thread_id_) < std::tie(r->sqc_id_, r->thread_id_);
     });
     for (int64_t i = 0; OB_SUCC(ret) && i < sqcs.count(); i++) {
-      auto &sqc = *sqcs.at(i);
+      auto &sqc = sqcs.at(i);
       auto &msg = responses[i];
       msg.op_id_ = op_id_;
       auto it = std::lower_bound(infos_.begin(), infos_.end(), sqc.get_sqc_id(),
@@ -318,7 +316,7 @@ int ObRDWFWholeMsg::assign(const ObRDWFWholeMsg &msg)
 }
 
 int ObRDWFPieceMsgListener::on_message(ObRDWFPieceMsgCtx &ctx,
-                                       common::ObIArray<ObPxSqcMeta *> &sqcs,
+                                       common::ObIArray<ObPxSqcMeta> &sqcs,
                                        const ObRDWFPieceMsg &pkt)
 {
   int ret = OB_SUCCESS;
@@ -548,7 +546,7 @@ struct __sqc_id_cmp_op
   }
 };
 
-int RDWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs)
+int RDWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta> &sqcs)
 {
   int ret = OB_SUCCESS;
   ObOperatorKit *op_kit = exec_ctx_.get_operator_kit(op_id_);
@@ -579,7 +577,7 @@ int RDWinFuncPXPieceMsgCtx::send_whole_msg(common::ObIArray<ObPxSqcMeta *> &sqcs
     }
     dtl::ObDtlChannel *ch = nullptr;
     for (int i = 0; OB_SUCC(ret) && i < sqcs.count(); i++) {
-      ObPxSqcMeta &sqc = *sqcs.at(i);
+      ObPxSqcMeta &sqc = sqcs.at(i);
       RDWinFuncPXWholeMsg &msg = responses[i];
       decltype(infos_)::iterator it = std::lower_bound(infos_.begin(), infos_.end(), sqc.get_sqc_id(), __sqc_id_cmp_op());
       if (it == infos_.end() || (*it)->sqc_id_ != sqc.get_sqc_id()) {
@@ -646,7 +644,7 @@ int RDWinFuncPXWholeMsg::assign(const RDWinFuncPXWholeMsg &other)
 }
 
 int RDWinFuncPXPieceMsgListener::on_message(RDWinFuncPXPieceMsgCtx &ctx,
-                                            common::ObIArray<ObPxSqcMeta *> &sqcs,
+                                            common::ObIArray<ObPxSqcMeta> &sqcs,
                                             const RDWinFuncPXPieceMsg &pkt)
 {
   int ret = OB_SUCCESS;

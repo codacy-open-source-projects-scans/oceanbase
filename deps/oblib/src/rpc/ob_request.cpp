@@ -31,6 +31,7 @@ void on_translate_fail(ObRequest* req, int ret)
   } else if (ObRequest::OB_MYSQL == req_type) {
     SQL_REQ_OP.disconnect_sql_conn(req);
     SQL_REQ_OP.finish_sql_request(req);
+    req->reset_diagnostic_info();
   }
 }
 
@@ -44,6 +45,9 @@ int ObRequest::set_trace_point(int trace_point)
     }
   } else {
     handling_state_ = trace_point;
+    if (OB_RPC == type_) {
+      RPC_REQ_OP.set_trace_point(this, trace_point);
+    }
   }
   return OB_SUCCESS;
 }

@@ -11,17 +11,10 @@
  */
 
 #include "ob_partition_parallel_merge_ctx.h"
-#include "storage/memtable/ob_memtable.h"
-#include "share/config/ob_server_config.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
 #include "storage/ob_partition_range_spliter.h"
 #include "ob_tablet_merge_ctx.h"
-#include "share/scheduler/ob_tenant_dag_scheduler.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/compaction/ob_medium_compaction_mgr.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/column_store/ob_column_oriented_sstable.h"
 #include "storage/compaction/ob_compaction_dag_ranker.h"
+#include "storage/compaction/ob_tenant_tablet_scheduler.h"
 
 namespace oceanbase
 {
@@ -84,7 +77,6 @@ int ObParallelMergeCtx::init(compaction::ObBasicTabletMergeCtx &merge_ctx)
     STORAGE_LOG(WARN, "Invalid argument to init parallel merge", K(ret), K(merge_ctx));
   } else if (FALSE_IT(tablet_size = merge_ctx.get_schema()->get_tablet_size())) {
   } else if (!merge_ctx.get_need_parallel_minor_merge()) {
-    //TODO(jinyu) backfill need using same code with minor merge in 4.2 RC3.
     enable_parallel_minor_merge = false;
   } else {
     omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
@@ -94,9 +86,9 @@ int ObParallelMergeCtx::init(compaction::ObBasicTabletMergeCtx &merge_ctx)
   }
 
   if (OB_FAIL(ret)) {
-  } else if ((tablet_size <= 0
+  } else if (tablet_size <= 0
           || (!enable_parallel_minor_merge && !is_major_merge_type(merge_type))
-          || (is_mini_merge(merge_type) && MTL(ObTenantCompactionMemPool *)->is_emergency_mode()))) {
+          || (is_mini_merge(merge_type) && ObTenantCompactionMemPool::NORMAL_MODE != MTL(ObTenantCompactionMemPool *)->get_memory_mode())) {
     if (OB_FAIL(init_serial_merge())) {
       STORAGE_LOG(WARN, "Failed to init serialize merge", K(ret), K(tablet_size), K(merge_ctx));
     }
@@ -354,37 +346,53 @@ int ObParallelMergeCtx::init_parallel_mini_minor_merge(compaction::ObBasicTablet
   } else {
     const ObITableReadInfo &rowkey_read_info = merge_ctx.get_tablet()->get_rowkey_read_info();
     const int64_t tablet_size = merge_ctx.get_schema()->get_tablet_size();
-    ObRangeSplitInfo range_info;
     ObSEArray<ObITable *, DEFAULT_STORE_CNT_IN_STORAGE> tables;
-    ObSEArray<ObStoreRange, 16> store_ranges;
-    ObPartitionRangeSpliter range_spliter;
+    ObArrayArray<ObDatumRange> split_ranges;
+    ObPartitionMultiRangeSpliter spliter;
+    ObSEArray<ObStoreRange, 1> ranges;
     ObStoreRange whole_range;
     whole_range.set_whole_range();
 
+    int64_t total_size = 0;
+    int64_t parallel_target_count = 0;
+
     if (OB_FAIL(merge_ctx.get_tables_handle().get_all_minor_sstables(tables))) {
       STORAGE_LOG(WARN, "Failed to get all sstables from merge ctx", K(ret), K(merge_ctx));
-    } else if (OB_FAIL(range_spliter.get_range_split_info(tables, rowkey_read_info, whole_range, range_info))) {
+    } else if (OB_FAIL(ranges.push_back(whole_range))) {
+      STORAGE_LOG(WARN, "Failed to push back whole range", K(ret));
+    } else if (OB_FAIL(spliter.get_multi_range_size(ranges, rowkey_read_info, tables, total_size))) {
       STORAGE_LOG(WARN, "Failed to init range spliter", K(ret));
-    } else if (OB_UNLIKELY(tablet_size <= 0 || range_info.total_size_ < 0 || (tables.count() <= 1 && !merge_ctx.static_param_.is_backfill_))) {
+    } else if (OB_UNLIKELY(tablet_size <= 0 || total_size < 0 || (tables.count() <= 1 && !merge_ctx.static_param_.is_backfill_))) {
       ret = OB_INVALID_ARGUMENT;
       STORAGE_LOG(WARN, "Invalid argument to calc mini minor parallel degree", K(ret), K(tablet_size),
-                K(range_info), K(tables.count()), K(merge_ctx));
+                K(total_size), K(tables.count()), K(merge_ctx));
     } else {
-      calc_adaptive_parallel_degree(ObDagPrio::DAG_PRIO_COMPACTION_MID,
-                                    ObCompactionEstimator::MINOR_MEM_PER_THREAD,
-                                    (range_info.total_size_ / tables.count() + tablet_size - 1) / tablet_size,
-                                    range_info.parallel_target_count_);
+      const ObDagPrio::ObDagPrioEnum priority = merge_ctx.get_dag_priority();
+      if (priority == ObDagPrio::ObDagPrioEnum::DAG_PRIO_MAX) {
+        ret = OB_INVALID_ARGUMENT;
+        STORAGE_LOG(WARN, "Invalid dag priority", K(priority));
+      } else {
+        calc_adaptive_parallel_degree(priority,
+                                      ObCompactionEstimator::MINOR_MEM_PER_THREAD,
+                                      (total_size / tables.count() + tablet_size - 1) / tablet_size,
+                                      parallel_target_count);
+      }
     }
 
     if (OB_FAIL(ret)) {
-    } else if (range_info.parallel_target_count_ <= 1) {
+    } else if (parallel_target_count <= 1) {
       if (OB_FAIL(init_serial_merge())) {
         STORAGE_LOG(WARN, "Failed to init serialize merge", K(ret));
       }
-    } else if (OB_FAIL(range_spliter.split_ranges(range_info, allocator_, true, store_ranges))) {
+    } else if (OB_FAIL(spliter.get_split_multi_ranges(ranges,
+                                                      parallel_target_count,
+                                                      rowkey_read_info,
+                                                      tables,
+                                                      allocator_,
+                                                      split_ranges,
+                                                      true))) {
       STORAGE_LOG(WARN, "Failed to split parallel ranges", K(ret));
-    } else if (OB_UNLIKELY(store_ranges.count() <= 1)) {
-      range_spliter.reset();
+    } else if (OB_UNLIKELY(split_ranges.count() <= 1)) {
       reset();
       if (OB_FAIL(init_serial_merge())) {
         STORAGE_LOG(WARN, "Failed to init serialize merge", K(ret));
@@ -392,14 +400,14 @@ int ObParallelMergeCtx::init_parallel_mini_minor_merge(compaction::ObBasicTablet
         STORAGE_LOG(INFO, "parallel minor merge back to serialize merge");
       }
     } else {
-      concurrent_cnt_ = store_ranges.count();
+      concurrent_cnt_ = split_ranges.count();
       parallel_type_ = PARALLEL_MINOR;
-      for (int64_t i = 0; OB_SUCC(ret) && i < store_ranges.count(); i++) {
-        ObDatumRange datum_range;
-        if (OB_FAIL(datum_range.from_range(store_ranges.at(i), allocator_))) {
-          STORAGE_LOG(WARN, "Failed to transfer store range to datum range", K(ret), K(i), K(store_ranges.at(i)));
-        } else if (OB_FAIL(range_array_.push_back(datum_range))) {
-          STORAGE_LOG(WARN, "Failed to push back merge range to array", K(ret), K(datum_range));
+      for (int64_t i = 0; OB_SUCC(ret) && i < split_ranges.count(); i++) {
+        if (OB_UNLIKELY(split_ranges.at(i).count() != 1)) {
+          ret = OB_ERR_UNEXPECTED;
+          STORAGE_LOG(WARN, "Unexpected split result", K(ret), K(i), K(split_ranges.at(i)));
+        } else if (OB_FAIL(range_array_.push_back(split_ranges.at(i).at(0)))) {
+          STORAGE_LOG(WARN, "Failed to push back merge range to array", K(ret), K(split_ranges.at(i)));
         }
       }
       STORAGE_LOG(INFO, "Succ to get parallel mini minor merge ranges", K_(concurrent_cnt), K_(range_array));

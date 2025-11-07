@@ -16,9 +16,6 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/basic/ob_chunk_row_store.h"
-#include "lib/container/ob_se_array_iterator.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "share/config/ob_server_config.h"
 
 
 namespace oceanbase
@@ -238,7 +235,7 @@ ObChunkRowStore::ObChunkRowStore(common::ObIAllocator *alloc /* = NULL */)
     row_extend_size_(0), alloc_size_(0), free_size_(0), callback_(nullptr)
 {
   io_.fd_ = -1;
-  io_.dir_id_ = -1;
+  dir_id_ = -1;
 }
 
 int ObChunkRowStore::init(int64_t mem_limit,
@@ -1598,7 +1595,7 @@ int ObChunkRowStore::get_timeout(int64_t &timeout_ms)
 int ObChunkRowStore::alloc_dir_id()
 {
   int ret = OB_SUCCESS;
-  if (-1 == io_.dir_id_ && OB_FAIL(ObChunkStoreUtil::alloc_dir_id(tenant_id_, io_.dir_id_))) {
+  if (-1 == dir_id_ && OB_FAIL(ObChunkStoreUtil::alloc_dir_id(tenant_id_, dir_id_))) {
     LOG_WARN("allocate file directory failed", K(ret));
   }
   return ret;
@@ -1618,16 +1615,16 @@ int ObChunkRowStore::write_file(void *buf, int64_t size)
     LOG_WARN("get timeout failed", K(ret));
   } else {
     if (!is_file_open()) {
-      if (-1 == io_.dir_id_) {
+      if (-1 == dir_id_) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("temp file dir id is not init", K(ret), K(io_.dir_id_));
-      } else if (OB_FAIL(FILE_MANAGER_INSTANCE_WITH_MTL_SWITCH.open(tenant_id_, io_.fd_, io_.dir_id_))) {
+        LOG_WARN("temp file dir id is not init", K(ret), K(dir_id_));
+      } else if (OB_FAIL(FILE_MANAGER_INSTANCE_WITH_MTL_SWITCH.open(tenant_id_, io_.fd_, dir_id_))) {
         LOG_WARN("open file failed", K(ret));
       } else {
         file_size_ = 0;
         io_.io_desc_.set_wait_event(ObWaitEventIds::ROW_STORE_DISK_WRITE);
         io_.io_timeout_ms_ = timeout_ms;
-        LOG_TRACE("open file success", K_(io_.fd), K_(io_.dir_id));
+        LOG_TRACE("open file success", K_(io_.fd), K_(dir_id));
       }
     }
     ret = OB_E(EventTable::EN_8) ret;

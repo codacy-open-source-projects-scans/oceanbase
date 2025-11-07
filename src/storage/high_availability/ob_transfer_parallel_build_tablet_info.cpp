@@ -12,24 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_transfer_parallel_build_tablet_info.h"
-#include "observer/ob_server.h"
-#include "ob_physical_copy_task.h"
-#include "share/rc/ob_tenant_base.h"
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
-#include "storage/tablet/ob_tablet_common.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "logservice/ob_log_service.h"
-#include "lib/hash/ob_hashset.h"
-#include "lib/time/ob_time_utility.h"
-#include "observer/ob_server_event_history_table_operator.h"
-#include "ob_storage_ha_src_provider.h"
-#include "storage/tablet/ob_tablet_iterator.h"
-#include "ob_storage_ha_utils.h"
-#include "storage/tablet/ob_tablet.h"
-#include "share/ls/ob_ls_table_operator.h"
 #include "ob_rebuild_service.h"
-#include "share/ob_cluster_version.h"
-#include "ob_storage_ha_utils.h"
 
 namespace oceanbase
 {
@@ -66,9 +50,9 @@ bool ObTransferParallelBuildTabletDag::operator == (const ObIDag &other) const
   return is_same;
 }
 
-int64_t ObTransferParallelBuildTabletDag::hash() const
+uint64_t ObTransferParallelBuildTabletDag::hash() const
 {
-  int64_t hash_value = 0;
+  uint64_t hash_value = 0;
   hash_value = common::murmurhash(
       &ls_id_, sizeof(ls_id_), hash_value);
   return hash_value;
@@ -309,7 +293,7 @@ int ObTransferParallelBuildTabletTask::do_build_tablet_info_(const share::ObTran
   } else if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet should not be NULL", K(ret), KP(tablet), K(tablet_info));
-  } else if (OB_FAIL(tablet->get_latest(user_data, writer, trans_stat, trans_version))) {
+  } else if (OB_FAIL(tablet->get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
     LOG_WARN("failed to get latest tablet status", K(ret), KPC(tablet), K(tablet_info));
   } else if (ObTabletStatus::TRANSFER_OUT != user_data.tablet_status_) {
     ret = OB_STATE_NOT_MATCH;

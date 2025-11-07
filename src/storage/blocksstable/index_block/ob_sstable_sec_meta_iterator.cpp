@@ -12,12 +12,7 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "share/rc/ob_tenant_base.h"
-#include "share/schema/ob_table_param.h"
 #include "ob_sstable_sec_meta_iterator.h"
-#include "storage/blocksstable/ob_shared_macro_block_manager.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
-#include "storage/ddl/ob_tablet_ddl_kv.h"
 
 namespace oceanbase
 {
@@ -258,7 +253,7 @@ int ObSSTableSecMetaIterator::get_next(ObDataMacroBlockMeta &macro_meta)
     } else {
       const ObSSTableMacroInfo &macro_info = sstable_meta_hdl_.get_sstable_meta().get_macro_info();
       const int64_t data_block_count = sstable_meta_hdl_.get_sstable_meta().get_basic_meta().get_data_macro_block_count();
-      if (!macro_info.is_meta_root() && 1 == data_block_count) {
+      if (macro_meta.get_macro_id() == ObIndexBlockRowHeader::DEFAULT_IDX_ROW_MACRO_ID) {
         // this means macro meta root block is larger than 16KB but read from the end of data block
         // So the macro id parsed from macro meta is empty, which actually should be same to the
         // data block id read in open_next_micro_block
@@ -538,6 +533,8 @@ int ObSSTableSecMetaIterator::get_micro_block(
             macro_id,
             idx_info,
             prefetch_flag_.is_use_block_cache(),
+            // Note: no need to pass effective_tablet_id for ObSSTableSecMetaIterator
+            ObTabletID(ObTabletID::INVALID_TABLET_ID)/*effective_tablet_id*/,
             data_handle.io_handle_,
             &io_allocator_))) {
           LOG_WARN("Fail to prefetch with async io", K(ret));

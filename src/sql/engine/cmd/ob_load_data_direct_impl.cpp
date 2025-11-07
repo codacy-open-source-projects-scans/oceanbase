@@ -13,17 +13,9 @@
 
 #include "sql/engine/cmd/ob_load_data_direct_impl.h"
 #include "sql/optimizer/ob_direct_load_optimizer_ctx.h"
-#include "observer/omt/ob_tenant.h"
-#include "observer/table_load/ob_table_load_coordinator.h"
-#include "observer/table_load/ob_table_load_coordinator_ctx.h"
-#include "observer/table_load/ob_table_load_service.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
-#include "observer/table_load/ob_table_load_task.h"
 #include "observer/table_load/ob_table_load_task_scheduler.h"
 #include "observer/mysql/ob_query_driver.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/ob_device_manager.h"
-#include "share/backup/ob_backup_io_adapter.h"
 #include "observer/table_load/backup/ob_table_load_backup_table.h"
 #include "share/stat/ob_dbms_stats_utils.h"
 
@@ -73,7 +65,8 @@ ObLoadDataDirectImpl::LoadExecuteParam::LoadExecuteParam()
     insert_mode_(ObDirectLoadInsertMode::INVALID_INSERT_MODE),
     load_level_(ObDirectLoadLevel::INVALID_LEVEL),
     compressor_type_(ObCompressorType::INVALID_COMPRESSOR),
-    online_sample_percent_(100.)
+    online_sample_percent_(100.),
+    enable_inc_major_(false)
 {
   column_ids_.set_tenant_id(MTL_ID());
 }
@@ -239,10 +232,14 @@ int ObLoadDataDirectImpl::Logger::log_error_line(const ObString &file_name, int6
         LOG_WARN("fail to append log", KR(tmp_ret), K(pos), K(line_no), K(err_no), K(err_msg));
       }
     }
-    if (inc_error_count() > max_error_rows_) {
+    const int64_t error_cnt = inc_error_count();
+    if (0 == max_error_rows_) {
+      ret = err_code;
+      LOG_WARN("parse error", KR(ret));
+    } else if (error_cnt > max_error_rows_) {
       ret = OB_ERR_TOO_MANY_ROWS;
       LOG_WARN("error row count reaches its maximum value", KR(ret), K(max_error_rows_),
-               K(err_cnt_));
+               K(error_cnt));
     }
   }
   return ret;
@@ -736,10 +733,17 @@ int ObLoadDataDirectImpl::DataParser::get_next_row(ObNewRow &row)
   } else if (data_buffer_->empty()) {
     ret = OB_ITER_END;
   } else {
-    auto handle_one_line = [](ObIArray<ObCSVGeneralParser::FieldValue> &fields_per_line) -> int {
-      UNUSED(fields_per_line);
-      return OB_SUCCESS;
+    struct Functor {
+      int operator()(ObCSVGeneralParser::HandleOneLineParam param) {
+        UNUSED(param);
+        return OB_SUCCESS;
+      }
+      int operator()(ObCSVGeneralParser::HandleBatchLinesParam param) {
+        UNUSED(param);
+        return OB_SUCCESS;
+      }
     };
+    struct Functor handle_one_line;
     while (OB_SUCC(ret)) {
       const char *str = data_buffer_->data();
       const char *end = str + data_buffer_->get_data_length();
@@ -978,9 +982,11 @@ int ObLoadDataDirectImpl::FileLoadExecutor::inner_init(const LoadExecuteParam &e
     LOG_WARN("fail to init allocator", KR(ret));
   }
   // init task_scheduler_
-  else if (OB_ISNULL(task_scheduler_ =
-                         OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (execute_ctx_->allocator_),
-                                 worker_count_, execute_param_->table_id_, "Parse"))) {
+  else if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (execute_ctx_->allocator_),
+                                               worker_count_,
+                                               execute_param_->table_id_,
+                                               "Parse",
+                                               execute_ctx.exec_ctx_.get_session_info()))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to new ObTableLoadTaskThreadPoolScheduler", KR(ret));
   } else if (OB_FAIL(task_scheduler_->init())) {
@@ -1901,9 +1907,11 @@ int ObLoadDataDirectImpl::BackupLoadExecutor::init(const LoadExecuteParam &execu
           LOG_WARN("fail to init task controller", KR(ret), K(worker_count_));
         } else if (OB_FAIL(task_allocator_.init("TLD_TaskPool", execute_param_->tenant_id_))) {
           LOG_WARN("fail to init allocator", KR(ret));
-        } else if (OB_ISNULL(task_scheduler_ =
-                               OB_NEWx(ObTableLoadTaskThreadPoolScheduler, &allocator_,
-                                       worker_count_, execute_param_->table_id_, "Parse"))) {
+        } else if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, &allocator_,
+                                                       worker_count_,
+                                                       execute_param_->table_id_,
+                                                       "Parse",
+                                                       execute_ctx.exec_ctx_.get_session_info()))) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
           LOG_WARN("fail to new ObTableLoadTaskThreadPoolScheduler", KR(ret));
         } else if (OB_FAIL(task_scheduler_->init())) {
@@ -1927,17 +1935,26 @@ int ObLoadDataDirectImpl::BackupLoadExecutor::check_support_direct_load()
   const uint64_t table_id = execute_param_->table_id_;
   ObSchemaGetterGuard schema_guard;
   const ObTableSchema *table_schema = nullptr;
-  bool has_lob_column = false;
   if (OB_FAIL(
         ObTableLoadSchema::get_table_schema(tenant_id, table_id, schema_guard, table_schema))) {
     LOG_WARN("fail to get table schema", KR(ret), K(tenant_id), K(table_id));
-  }
-  // check has lob column
-  else if (OB_FAIL(ObTableLoadSchema::check_has_lob_column(table_schema, has_lob_column))) {
-    LOG_WARN("fail to check has lob column", KR(ret));
-  } else if (has_lob_column) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("direct-load backup does not support table has lob column", KR(ret));
+  } else {
+    for (ObTableSchema::const_column_iterator iter = table_schema->column_begin();
+         OB_SUCC(ret) && iter != table_schema->column_end(); ++iter) {
+      ObColumnSchemaV2 *column_schema = *iter;
+      if (OB_ISNULL(column_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("invalid column schema", K(column_schema));
+      } else if (column_schema->is_unused()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("backup direct-load does not support table has unused column", KR(ret), KPC(column_schema));
+        FORWARD_USER_ERROR_MSG(ret, "backup direct-load does not support table has unused column");
+      } else if (column_schema->get_meta_type().is_lob_storage()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("backup direct-load does not support table has lob column", KR(ret), KPC(column_schema));
+        FORWARD_USER_ERROR_MSG(ret, "backup direct-load does not support table has lob column");
+      }
+    }
   }
   return ret;
 }
@@ -2039,7 +2056,7 @@ int ObLoadDataDirectImpl::BackupLoadExecutor::process_partition(int32_t session_
     ObNewRow *new_row = nullptr;
     bool is_iter_end = false;
     int64_t processed_line_count = 0;
-    const bool is_heap_table = direct_loader->get_table_ctx()->schema_.is_heap_table_;
+    const bool is_heap_table = direct_loader->get_table_ctx()->schema_.is_table_without_pk_;
     ObTableLoadSequenceNo sequence_no(
       (partition_idx << ObTableLoadSequenceNo::BACKUP_PARTITION_IDX_SHIFT) +
       (subpart_idx << ObTableLoadSequenceNo::BACKUP_SUBPART_IDX_SHIFT));
@@ -2359,6 +2376,7 @@ int ObLoadDataDirectImpl::init_execute_param()
       execute_param_.method_ = optimizer_ctx->load_method_;
       execute_param_.insert_mode_ = optimizer_ctx->insert_mode_;
       execute_param_.load_level_ = optimizer_ctx->load_level_;
+      execute_param_.enable_inc_major_ = optimizer_ctx->enable_inc_major_;
     }
   }
   // parallel_
@@ -2429,8 +2447,11 @@ int ObLoadDataDirectImpl::init_execute_param()
     } else { // 指定列导入
       const static uint64_t INVALID_COLUMN_ID = UINT64_MAX;
       ObArray<uint64_t> user_column_ids;
-      if (OB_FAIL(ObTableLoadSchema::get_user_column_ids(table_schema, user_column_ids))) {
-        LOG_WARN("fail to get user column ids", KR(ret));
+      ObArray<ObString> user_column_names;
+      user_column_ids.set_tenant_id(MTL_ID());
+      user_column_names.set_tenant_id(MTL_ID());
+      if (OB_FAIL(ObTableLoadSchema::get_user_column_id_and_names(table_schema, user_column_ids, user_column_names))) {
+        LOG_WARN("fail to get user column ids and names", KR(ret));
       }
       for (int64_t i = 0; OB_SUCC(ret) && i < field_or_var_list.count(); ++i) {
         const ObLoadDataStmt::FieldOrVarStruct &field_or_var_struct = field_or_var_list.at(i);
@@ -2510,6 +2531,7 @@ int ObLoadDataDirectImpl::init_execute_context()
   load_param.compressor_type_ = execute_param_.compressor_type_;
   load_param.online_sample_percent_ = execute_param_.online_sample_percent_;
   load_param.load_level_ = execute_param_.load_level_;
+  load_param.enable_inc_major_ = execute_param_.enable_inc_major_;
   if (OB_FAIL(direct_loader_.init(load_param,
                                   execute_param_.column_ids_,
                                   execute_param_.tablet_ids_,

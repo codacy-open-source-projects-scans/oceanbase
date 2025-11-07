@@ -113,6 +113,50 @@ ObTableAPITransCb* ObTableBatchExecuteCreateCbFunctor::new_callback()
   return cb;
 }
 
+int ObHbaseExecuteCreateCbFunctor::init(ObRequest *req, const ObHbaseResult *result)
+{
+  int ret = OB_SUCCESS;
+
+  if (!is_inited_) {
+    if (OB_ISNULL(req)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("request is null", K(ret));
+    } else if (OB_ISNULL(result)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("result is null", K(ret));
+    } else {
+      req_ = req;
+      result_ = result;
+      is_inited_ = true;
+    }
+  }
+
+  return ret;
+}
+
+ObTableAPITransCb* ObHbaseExecuteCreateCbFunctor::new_callback()
+{
+  ObHbaseExecuteEndTransCb *cb = nullptr;
+  if (is_inited_) {
+    cb = OB_NEW(ObHbaseExecuteEndTransCb,
+                ObMemAttr(MTL_ID(), "HbaseExuTnCb"),
+                req_);
+    if (NULL != cb) {
+      int ret = OB_SUCCESS;
+      if (OB_ISNULL(result_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("result is null", K(ret));
+      } else if (OB_FAIL(cb->assign_hbase_execute_result(*result_))) {
+        LOG_WARN("fail to assign result", K(ret));
+        cb->~ObHbaseExecuteEndTransCb();
+        cb = NULL;
+        ob_free(cb);
+      }
+    }
+  }
+  return cb;
+}
+
 int ObTableLSExecuteCreateCbFunctor::init(ObRequest *req)
 {
   int ret = OB_SUCCESS;
@@ -122,8 +166,8 @@ int ObTableLSExecuteCreateCbFunctor::init(ObRequest *req)
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("request is null", K(ret));
     } else {
-      ObTableLSExecuteEndTransCb * cb = OB_NEW(ObTableLSExecuteEndTransCb,
-                                               ObMemAttr(MTL_ID(), "TbLsExuTnCb"), req);
+      ObTableLSExecuteEndTransCb *cb = OB_NEW(ObTableLSExecuteEndTransCb,
+                                              ObMemAttr(MTL_ID(), "TbLsExuTnCb"), req);
       if (OB_ISNULL(cb)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("fail to alloc memroy for ls execute callback", K(ret));
@@ -139,7 +183,7 @@ int ObTableLSExecuteCreateCbFunctor::init(ObRequest *req)
 
 ObTableAPITransCb* ObTableLSExecuteCreateCbFunctor::new_callback()
 {
-  ObTableLSExecuteEndTransCb *cb = nullptr;
+  ObTableAPITransCb *cb = nullptr;
   if (is_inited_) {
     cb = cb_;
   }
@@ -149,6 +193,8 @@ ObTableAPITransCb* ObTableLSExecuteCreateCbFunctor::new_callback()
 ObTableAPITransCb::ObTableAPITransCb()
     : tx_desc_(nullptr),
       lock_handle_(nullptr),
+      require_rerouting_(false),
+      require_refresh_kv_meta_(false),
       ref_count_(2)
 {
   create_ts_ = common::ObClockGenerator::getClock();
@@ -167,9 +213,14 @@ void ObTableAPITransCb::destroy_cb_if_no_ref()
   int32_t new_ref = ATOMIC_SAF(&ref_count_, 1);
   if (0 >= new_ref) {
     // @caution !!!
-    this->~ObTableAPITransCb();
-    ob_free(this);
+    destroy_cb();
   }
+}
+
+void ObTableAPITransCb::destroy_cb()
+{
+  this->~ObTableAPITransCb();
+  ob_free(this);
 }
 
 void ObTableAPITransCb::set_lock_handle(ObHTableLockHandle *lock_handle)
@@ -215,6 +266,8 @@ void ObTableExecuteEndTransCb::callback(int cb_param)
     result_.set_affected_rows(0);
     result_entity_.reset();
   }
+  response_sender_.set_require_rerouting(require_rerouting_);
+  response_sender_.set_require_refresh_kv_meta(require_refresh_kv_meta_);
   if (OB_FAIL(response_sender_.response(cb_param))) {
     LOG_WARN("failed to send response", K(ret), K(cb_param));
   } else {
@@ -281,6 +334,8 @@ void ObTableBatchExecuteEndTransCb::callback(int cb_param)
     }
   }
   if (OB_SUCC(ret)) {
+    response_sender_.set_require_rerouting(require_rerouting_);
+    response_sender_.set_require_refresh_kv_meta(require_refresh_kv_meta_);
     if (OB_FAIL(response_sender_.response(cb_param))) {
       LOG_WARN("failed to send response", K(ret), K(cb_param));
     } else {
@@ -348,13 +403,31 @@ void ObTableLSExecuteEndTransCb::callback(int cb_param)
     }
   }
   if (OB_SUCC(ret)) {
+    response_sender_.set_require_rerouting(require_rerouting_);
+    response_sender_.set_require_refresh_kv_meta(require_refresh_kv_meta_);
     if (OB_FAIL(response_sender_.response(cb_param))) {
       LOG_WARN("failed to send response", K(ret), K(cb_param));
     } else {
       LOG_DEBUG("send ls execute response", K(cb_param));
     }
   }
+
+  free_dependent_results();
   this->destroy_cb_if_no_ref();
+}
+
+void ObTableLSExecuteEndTransCb::free_dependent_results()
+{
+  for (int64_t i = 0; i < dependent_results_.count(); i++) {
+    if (OB_NOT_NULL(dependent_results_.at(i))) {
+      if (is_alloc_from_pool_) {
+        TABLEAPI_OBJECT_POOL_MGR->free_res(dependent_results_.at(i));
+      } else {
+        dependent_results_.at(i)->~ObTableLSOpResult();
+      }
+      dependent_results_.at(i) = nullptr;
+    }
+  }
 }
 
 void ObTableLSExecuteEndTransCb::callback(int cb_param, const transaction::ObTransID &trans_id)
@@ -363,45 +436,50 @@ void ObTableLSExecuteEndTransCb::callback(int cb_param, const transaction::ObTra
   this->callback(cb_param);
 }
 
-int ObTableLSExecuteEndTransCb::assign_ls_execute_result(const ObTableLSOpResult &result)
+////////////////////////////////////////////////////////////////
+void ObHbaseExecuteEndTransCb::callback(int cb_param)
 {
   int ret = OB_SUCCESS;
-
-  int64_t tablet_result_cnt = result.count();
-
-  if (OB_FAIL(result_.assign_rowkey_names(result.get_rowkey_names()))) {
-    LOG_WARN("fail to assign rowkey names", K(ret), "rowkey names", result_.get_rowkey_names());
-  } else if (OB_FAIL(result_.assign_properties_names(result.get_properties_names()))) {
-    LOG_WARN("fail to assign property names", K(ret), "properties_names", result_.get_properties_names());
-  } else if (OB_FAIL(result_.prepare_allocate(tablet_result_cnt))) {
-    LOG_WARN("fail to prepare allocate tablet op result", K(ret), K(tablet_result_cnt));
+  check_callback_timeout();
+  if (OB_UNLIKELY(!has_set_need_rollback_)) {
+    LOG_ERROR("is_need_rollback_ has not been set",
+              K(has_set_need_rollback_),
+              K(is_need_rollback_));
+  } else if (OB_UNLIKELY(ObExclusiveEndTransCallback::END_TRANS_TYPE_INVALID == end_trans_type_)) {
+    LOG_WARN("end trans type is invalid", K(cb_param), K(end_trans_type_));
+  } else if (OB_NOT_NULL(tx_desc_)) {
+    MTL(transaction::ObTransService*)->release_tx(*tx_desc_);
+    tx_desc_ = NULL;
   }
-  for (int64_t i = 0; OB_SUCC(ret) && i < result.count(); i++) {
-    const ObTableTabletOpResult &src_tablet_result = result.at(i);
-    ObTableTabletOpResult &dst_tablet_result = result_.at(i);
-    int64_t single_res_cnt = src_tablet_result.count();
-    if (OB_FAIL(dst_tablet_result.prepare_allocate(single_res_cnt))) {
-      LOG_WARN("fail to prepare allocatate single op result", K(ret), K(i), K(single_res_cnt));
-    } else {
-      dst_tablet_result.assign_properties_names(&result_.get_properties_names());
-      dst_tablet_result.set_all_rowkey_names(&result_.get_rowkey_names());
-    }
-    for (int64_t j = 0; OB_SUCC(ret) && j < single_res_cnt; j++) {
-      const ObTableSingleOpResult &src_single_result = src_tablet_result.at(j);
-      ObTableSingleOpResult &dst_single_result = dst_tablet_result.at(j);
-      if (OB_FAIL(dst_single_result.deep_copy(allocator_, entity_factory_, src_single_result))) {
-        LOG_WARN("failed to deep copy result", K(ret));
-      } else {
-        ObITableEntity *entity = dst_single_result.get_entity();
-        if (OB_ISNULL(entity)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("entity is null", K(ret));
-        } else {
-          entity->set_properties_names(&result_.get_rowkey_names());
-          entity->set_rowkey_names(&result_.get_properties_names());
-        }
-      }
-    }
-  } // end for
+  if (lock_handle_ != nullptr) {
+    HTABLE_LOCK_MGR->release_handle(*lock_handle_);
+  }
+  this->handin();
+  CHECK_BALANCE("[hbase async callback]");
+  if (cb_param != OB_SUCCESS) {
+    // commit failed - for hbase result, we don't need to set error since it's not implemented
+    // The error will be handled by the response sender
+  }
+  response_sender_.set_require_rerouting(require_rerouting_);
+  response_sender_.set_require_refresh_kv_meta(require_refresh_kv_meta_);
+  if (OB_FAIL(response_sender_.response(cb_param))) {
+    LOG_WARN("failed to send hbase response", K(ret), K(cb_param));
+  } else {
+    LOG_DEBUG("async send hbase execute response", K(cb_param));
+  }
+
+  this->destroy_cb_if_no_ref();
+}
+
+void ObHbaseExecuteEndTransCb::callback(int cb_param, const transaction::ObTransID &trans_id)
+{
+  UNUSED(trans_id);
+  this->callback(cb_param);
+}
+
+int ObHbaseExecuteEndTransCb::assign_hbase_execute_result(const ObHbaseResult &result)
+{
+  int ret = OB_SUCCESS;
+  result_ = result;
   return ret;
 }

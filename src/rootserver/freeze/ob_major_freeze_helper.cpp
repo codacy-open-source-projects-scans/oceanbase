@@ -15,8 +15,6 @@
 #include "rootserver/freeze/ob_major_freeze_helper.h"
 #include "share/ob_freeze_info_proxy.h"
 #include "share/location_cache/ob_location_service.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "share/ob_tenant_info_proxy.h"
 #include "src/observer/ob_srv_network_frame.h"
 
 namespace oceanbase
@@ -75,9 +73,9 @@ int ObMajorFreezeHelper::tablet_major_freeze(const ObTabletMajorFreezeParam &par
   } else if (OB_UNLIKELY(nullptr == GCTX.location_service_ || nullptr == GCTX.net_frame_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid GCTX", KR(ret));
-  } else if (GCTX.is_shared_storage_mode()) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("not support tablet major freeze cmd in shared storage mode", KR(ret));
+  } else if (!GCONF.enable_major_freeze) {
+    ret = OB_MAJOR_FREEZE_NOT_ALLOW;
+    LOG_WARN("enable_major_freeze is off, refuse to to major_freeze", K(param), KR(ret));
   } else {
     LOG_INFO("tablet major freeze", K(ret), K(param));
     const int64_t start_time = ObTimeUtility::fast_current_time();

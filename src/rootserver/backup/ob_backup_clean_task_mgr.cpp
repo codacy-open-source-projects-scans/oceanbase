@@ -13,21 +13,12 @@
 #define USING_LOG_PREFIX RS
 #include "ob_backup_clean_task_mgr.h"
 #include "ob_backup_clean_ls_task_mgr.h"
-#include "storage/ls/ob_ls.h"
-#include "storage/backup/ob_backup_data_store.h"
-#include "share/backup/ob_backup_path.h"
-#include "share/backup/ob_backup_struct.h"
-#include "share/backup/ob_backup_clean_struct.h"
 #include "share/backup/ob_backup_clean_operator.h"
 #include "share/backup/ob_archive_persist_helper.h"
 #include "share/backup/ob_backup_clean_util.h"
-#include "lib/utility/utility.h"
-#include "share/backup/ob_backup_io_adapter.h"
 #include "share/backup/ob_archive_path.h"
 #include "share/backup/ob_archive_store.h"
 #include "share/backup/ob_backup_connectivity.h"
-#include "share/ob_debug_sync_point.h"
-#include "lib/utility/ob_tracepoint.h"
 
 using namespace oceanbase;
 using namespace rootserver;
@@ -101,7 +92,7 @@ int ObBackupCleanTaskMgr::init(
     backup_service_ = &backup_service;
     is_inited_ = true;
   }
-  // TODO(wenjinyu.wjy): integrate sql_proxy and lease_service 4.3
+  // TODO(lyh444845): integrate sql_proxy and lease_service 4.4.1
   return ret;
 }
 
@@ -132,6 +123,8 @@ int ObBackupCleanTaskMgr::mark_backup_set_files_deleting_()
   } else if (OB_FAIL(ObBackupFileStatus::check_can_change_status(backup_set_info_.file_status_, file_status))) {
     LOG_WARN("failed to check can change status", K(ret));
   } else if (FALSE_IT(backup_set_info_.file_status_ = file_status)) {
+  } else if (OB_FAIL(backup_service_->check_leader())) {
+    LOG_WARN("failed to check leader", K(ret));
   } else if (OB_FAIL(ObBackupSetFileOperator::update_backup_set_file_status(*sql_proxy_, backup_set_info_))) {
     LOG_WARN("failed to update backup set file_status", K(ret), K(file_status));
   }
@@ -148,6 +141,8 @@ int ObBackupCleanTaskMgr::mark_backup_set_files_deleted_()
   } else if (OB_FAIL(ObBackupFileStatus::check_can_change_status(backup_set_info_.file_status_, file_status))) {
     LOG_WARN("failed to check can change status", K(ret));
   } else if (FALSE_IT(backup_set_info_.file_status_ = file_status)) {
+  } else if (OB_FAIL(backup_service_->check_leader())) {
+    LOG_WARN("failed to check leader", K(ret));
   } else if (OB_FAIL(ObBackupSetFileOperator::update_backup_set_file_status(*sql_proxy_, backup_set_info_))) {
     LOG_WARN("failed to update backup set file", K(ret));
   } 
@@ -168,6 +163,8 @@ int ObBackupCleanTaskMgr::mark_backup_piece_files_deleting_()
     LOG_WARN("failed to init archive piece attr", K(ret));
   } else if (OB_FAIL(ObBackupFileStatus::check_can_change_status(backup_piece_info_.file_status_, file_status))) {
     LOG_WARN("failed to check can change status", K(ret));
+  } else if (OB_FAIL(backup_service_->check_leader())) {
+    LOG_WARN("failed to check leader", K(ret));
   } else if (OB_FAIL(archive_table_op.mark_new_piece_file_status(*sql_proxy_, backup_piece_info_.key_.dest_id_,
     backup_piece_info_.key_.round_id_, backup_piece_info_.key_.piece_id_, file_status))) {
     LOG_WARN("failed to update backup piece file status", K(ret));
@@ -188,6 +185,8 @@ int ObBackupCleanTaskMgr::mark_backup_piece_files_deleted_()
   } else if (OB_FAIL(ObBackupFileStatus::check_can_change_status(backup_piece_info_.file_status_, file_status))) {
     LOG_WARN("failed to check can change status", K(ret));
   } else if (FALSE_IT(backup_piece_info_.file_status_ = file_status)) {
+  } else if (OB_FAIL(backup_service_->check_leader())) {
+    LOG_WARN("failed to check leader", K(ret));
   } else if (OB_FAIL(archive_table_op.mark_new_piece_file_status(*sql_proxy_, backup_piece_info_.key_.dest_id_,
     backup_piece_info_.key_.round_id_, backup_piece_info_.key_.piece_id_, file_status))) {
     LOG_WARN("failed to update backup piece file status", K(ret));
@@ -198,6 +197,11 @@ int ObBackupCleanTaskMgr::mark_backup_piece_files_deleted_()
 int ObBackupCleanTaskMgr::mark_backup_files_deleted_() 
 {
   int ret = OB_SUCCESS;
+#ifdef ERRSIM
+  ROOTSERVICE_EVENT_ADD("backup_delete", "before_mark_files_deleted_", "tenant_id", tenant_id_);
+  DEBUG_SYNC(BACKUP_DELETE_BEFORE_MARK_DELETED_IN_NEW_LEADER);
+  DEBUG_SYNC(BACKUP_DELETE_BEFORE_MARK_DELETED_IN_OLD_LEADER);
+#endif
   if (task_attr_.is_delete_backup_set_task()) {
     if (OB_FAIL(mark_backup_set_files_deleted_())) {
       LOG_WARN("failed to mark backup set files deleted", K(ret));
@@ -360,6 +364,9 @@ int ObBackupCleanTaskMgr::process()
         ret = (OB_SUCCESS != tmp_ret) ? tmp_ret : ret; 
       }
     }
+    if (OB_OBJECT_STORAGE_OBJECT_LOCKED_BY_WORM == ret && backup_dest_.is_enable_worm()) {
+      ret = OB_SUCCESS;
+    }
   }
   
   return ret;
@@ -391,8 +398,23 @@ int ObBackupCleanTaskMgr::persist_ls_tasks_()
         } 
       }
     }
+    bool has_complement_log = task_attr_.is_delete_backup_set_task() && backup_set_info_.plus_archivelog_;
     if (OB_FAIL(ret)) {
-    } else if (FALSE_IT(task_attr_.total_ls_count_ = ls_ids.count())) {
+    } else if (has_complement_log) {
+      // Generate a special ls task to delete the complement log (the special ls_id is 0)
+      ObBackupCleanLSTaskAttr new_ls_attr;
+      if (OB_FAIL(generate_ls_task_(ObLSID(0), new_ls_attr))) {
+        LOG_WARN("failed to generate backup delete complement log task", K(ret), K(ls_ids));
+      } else if (FALSE_IT(new_ls_attr.task_type_ = ObBackupCleanTaskType::BACKUP_COMPLEMENT_LOG)) {
+      } else if (OB_FAIL(backup_service_->check_leader())) {
+        LOG_WARN("failed to check leader", K(ret));
+      } else if (OB_FAIL(ObBackupCleanLSTaskOperator::insert_ls_task(trans, new_ls_attr))) {
+        LOG_WARN("failed to insert backup delete complement log task", K(ret), K(new_ls_attr));
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (FALSE_IT(task_attr_.total_ls_count_ = ls_ids.count() + (has_complement_log ? 1 : 0))) {
     } else if (OB_FAIL(advance_task_status_(trans, next_status, task_attr_.result_, task_attr_.end_ts_))) {
       LOG_WARN("failed to advance status to DOING", K(ret), K(ls_ids));
     } else if (OB_FAIL(ObBackupCleanTaskOperator::update_ls_count(trans, task_attr_, true/*is_total*/))) {
@@ -440,6 +462,9 @@ int ObBackupCleanTaskMgr::get_set_ls_ids_(ObIArray<ObLSID> &ls_ids)
   desc.backup_type_ = backup_set_info_.backup_type_;
   if (OB_FAIL(store.init(backup_dest_, desc))) {
     LOG_WARN("faield to init backup data extern mgr", K(ret));
+// TODO(lyh444845): Once the bug fix from yangyi.yyy is available, add a version check.
+// For newer versions, revert to call `read_ls_attr_info` before `get_set_ls_ids_from_traverse_`.
+/*
   } else if (OB_FAIL(store.read_ls_attr_info(ls_attr))) {
     if (OB_OBJECT_NOT_EXIST == ret) {
       if (OB_FAIL(get_set_ls_ids_from_traverse_(ls_ids))) {
@@ -461,8 +486,10 @@ int ObBackupCleanTaskMgr::get_set_ls_ids_(ObIArray<ObLSID> &ls_ids)
         LOG_WARN("failed to push back ls_id", K(ret), K(ls_id));
       } 
     }
+*/
+  } else if (OB_FAIL(get_set_ls_ids_from_traverse_(ls_ids))) {
+    LOG_WARN("failed to get set ls ids from traverse", K(ret));
   }
-
   return ret;
 }
 
@@ -604,7 +631,7 @@ int ObBackupCleanTaskMgr::get_ls_ids_from_traverse_(const ObBackupPath &path, Ob
     LOG_WARN("failed to set log stream prefix", K(ret));  
   } else if (OB_FAIL(prefix_op.init(logstream_prefix, strlen(logstream_prefix)))) {
     LOG_WARN("failed to init dir prefix", K(ret), K(logstream_prefix));
-  // TODO(wenjinyu.wjy) iterate dir sequentially 4.3
+  // TODO(lyh444845) iterate dir sequentially 4.4.1
   } else if (OB_FAIL(util.list_directories(path.get_obstr(), backup_dest_.get_storage_info(), prefix_op))) {
     LOG_WARN("failed to list files", K(ret));
   } else {
@@ -722,17 +749,11 @@ int ObBackupCleanTaskMgr::delete_meta_info_dir_()
 int ObBackupCleanTaskMgr::delete_major_data_info_dir_()
 {
   int ret = OB_SUCCESS;
-  ObBackupPath path;
-  ObBackupSetDesc desc;
-  desc.backup_set_id_ = backup_set_info_.backup_set_id_;
-  desc.backup_type_ = backup_set_info_.backup_type_;
   share::ObBackupDataType backup_data_type;
   backup_data_type.set_major_data_backup();
-  if (OB_FAIL(ObBackupPathUtil::get_ls_info_data_info_dir_path(backup_dest_, desc, backup_data_type,
-      backup_set_info_.major_turn_id_, path))) {
-    LOG_WARN("failed to get ls info data info", K(ret));
-  } else if (OB_FAIL(share::ObBackupCleanUtil::delete_backup_dir_files(path, backup_dest_.get_storage_info()))) {
-    LOG_WARN("failed to delete backup file", K(ret), K(task_attr_), K(path));
+  int64_t max_turn_id = backup_set_info_.major_turn_id_;
+  if (OB_FAIL(delete_data_info_dir_(backup_data_type, max_turn_id))) {
+    LOG_WARN("failed to delete major data info dirs", K(ret), K(max_turn_id));
   }
   return ret;
 }
@@ -741,17 +762,11 @@ int ObBackupCleanTaskMgr::delete_major_data_info_dir_()
 int ObBackupCleanTaskMgr::delete_minor_data_info_dir_()
 {
   int ret = OB_SUCCESS;
-  ObBackupPath path;
-  ObBackupSetDesc desc;
-  desc.backup_set_id_ = backup_set_info_.backup_set_id_;
-  desc.backup_type_ = backup_set_info_.backup_type_;
   share::ObBackupDataType backup_data_type;
   backup_data_type.set_minor_data_backup();
-  if (OB_FAIL(ObBackupPathUtil::get_ls_info_data_info_dir_path(backup_dest_, desc,
-      backup_data_type, backup_set_info_.minor_turn_id_, path))) {
-    LOG_WARN("failed to get ls info data info path", K(ret));
-  } else if (OB_FAIL(share::ObBackupCleanUtil::delete_backup_dir_files(path, backup_dest_.get_storage_info()))) {
-    LOG_WARN("failed to delete backup file", K(ret), K(task_attr_), K(path));
+  int64_t max_turn_id = backup_set_info_.minor_turn_id_;
+  if (OB_FAIL(delete_data_info_dir_(backup_data_type, max_turn_id))) {
+    LOG_WARN("failed to delete minor data info dirs", K(ret), K(max_turn_id));
   }
   return ret;
 }
@@ -760,20 +775,36 @@ int ObBackupCleanTaskMgr::delete_minor_data_info_dir_()
 int ObBackupCleanTaskMgr::delete_user_data_info_dir_()
 {
   int ret = OB_SUCCESS;
+  share::ObBackupDataType backup_data_type;
+  backup_data_type.set_user_data_backup();
+  int64_t max_turn_id = backup_set_info_.major_turn_id_;
+  if (OB_FAIL(delete_data_info_dir_(backup_data_type, max_turn_id))) {
+    LOG_WARN("failed to delete user data info dirs", K(ret), "major_turn_id", max_turn_id);
+  }
+  return ret;
+}
+
+int ObBackupCleanTaskMgr::delete_data_info_dir_(const ObBackupDataType &backup_data_type, int64_t max_turn_id)
+{
+  int ret = OB_SUCCESS;
   ObBackupPath path;
   ObBackupSetDesc desc;
   desc.backup_set_id_ = backup_set_info_.backup_set_id_;
   desc.backup_type_ = backup_set_info_.backup_type_;
-  share::ObBackupDataType backup_data_type;
-  backup_data_type.set_user_data_backup();
-  if (OB_FAIL(ObBackupPathUtil::get_ls_info_data_info_dir_path(backup_dest_, desc,
-      backup_data_type, backup_set_info_.minor_turn_id_, path))) {
-    LOG_WARN("failed to get ls info data info path", K(ret));
-  } else if (OB_FAIL(share::ObBackupCleanUtil::delete_backup_dir_files(path, backup_dest_.get_storage_info()))) {
-    LOG_WARN("failed to delete backup file", K(ret), K(task_attr_), K(path));
+  int64_t turn_id_to_delete = max_turn_id;
+  while (OB_SUCC(ret) && turn_id_to_delete >= 1) {
+    if (OB_FAIL(ObBackupPathUtil::get_ls_info_data_info_dir_path(backup_dest_, desc, backup_data_type,
+        turn_id_to_delete, path))) {
+      LOG_WARN("failed to get ls info data info dir path", K(ret), K(turn_id_to_delete), K(backup_data_type));
+    } else if (OB_FAIL(ObBackupCleanUtil::delete_backup_dir_files(path, backup_dest_.get_storage_info()))) {
+      LOG_WARN("failed to delete backup file", K(ret), K(task_attr_), K(path));
+    } else {
+      --turn_id_to_delete;
+    }
   }
   return ret;
 }
+
 
 // file:///obbackup/backup_set_1_full/infos/table_list/
 int ObBackupCleanTaskMgr::delete_table_list_dir_()
@@ -816,7 +847,7 @@ int ObBackupCleanTaskMgr::delete_data_info_turn_files_(const ObBackupPath &infos
   ObDirPrefixEntryNameFilter prefix_op(d_entrys);
   if (OB_FAIL(prefix_op.init(info_turn_prefix, strlen(info_turn_prefix)))) {
     LOG_WARN("failed to init dir prefix", K(ret), K(info_turn_prefix));
-  // TODO(wenjinyu.wjy) iterate dir sequentially 4.3
+  // TODO(lyh444845) iterate dir sequentially 4.4.1
   } else if (OB_FAIL(util.list_directories(infos_path.get_obstr(), backup_dest_.get_storage_info(), prefix_op))) {
     LOG_WARN("failed to list directories", K(ret));
   } else {
@@ -845,6 +876,47 @@ int ObBackupCleanTaskMgr::delete_backup_dir_(const share::ObBackupPath &path)
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObBackupCleanUtil::delete_backup_dir_files(path, backup_dest_.get_storage_info()))) {
     LOG_WARN("failed to delete info turn files", K(ret), K(path));
+  }
+  return ret;
+}
+
+int ObBackupCleanTaskMgr::check_backup_set_dir_empty_()
+{
+  int ret = OB_SUCCESS;
+  ObBackupPath set_path;
+  ObBackupSetDesc desc;
+  bool is_empty = true;
+  desc.backup_set_id_ = backup_set_info_.backup_set_id_;
+  desc.backup_type_ = backup_set_info_.backup_type_;
+
+  if (OB_FAIL(ObBackupPathUtil::get_backup_set_dir_path(backup_dest_, desc, set_path))) {
+    LOG_WARN("failed to get backup set dir path", K(ret), K_(backup_dest), K_(task_attr));
+  } else if (OB_FAIL(ObBackupIoAdapter::is_empty_directory(set_path.get_ptr(), backup_dest_.get_storage_info(), is_empty))) {
+    LOG_WARN("failed to check if backup set dir is empty", K(ret), K(set_path));
+  } else if (!is_empty) {
+    LOG_ERROR("backup set dir is not empty, there are still files left", K(set_path));
+  } else {
+    LOG_INFO("backup set dir is empty, safe to delete", K(set_path));
+  }
+  return ret;
+}
+
+int ObBackupCleanTaskMgr::check_backup_piece_dir_empty_()
+{
+  int ret = OB_SUCCESS;
+  ObBackupPath piece_path;
+  bool is_empty = true;
+
+  if (OB_FAIL(ObArchivePathUtil::get_piece_dir_path(
+      backup_dest_, backup_piece_info_.key_.dest_id_, backup_piece_info_.key_.round_id_,
+      backup_piece_info_.key_.piece_id_, piece_path))) {
+    LOG_WARN("failed to get backup piece dir path", K(ret), K_(backup_dest), K_(backup_piece_info));
+  } else if (OB_FAIL(ObBackupIoAdapter::is_empty_directory(piece_path.get_ptr(), backup_dest_.get_storage_info(), is_empty))) {
+    LOG_WARN("failed to check if backup piece dir is empty", K(ret), K(piece_path));
+  } else if (!is_empty) {
+    LOG_ERROR("backup piece dir is not empty, there are still files left", K(piece_path));
+  } else {
+    LOG_INFO("backup piece dir is empty, safe to delete", K(piece_path));
   }
   return ret;
 }
@@ -958,6 +1030,8 @@ int ObBackupCleanTaskMgr::delete_backup_set_meta_info_files_()
     LOG_WARN("failed to delete tenant backup set infos", K(ret)); 
   } else if (OB_FAIL(delete_backup_set_inner_placeholder_())) {
     LOG_WARN("failed to delete backup set inner placeholder", K(ret)); 
+  } else if (OB_FAIL(check_backup_set_dir_empty_())) { // check if then anyting left in the backup set dir
+    LOG_INFO("failed to check backup set dir empty", K(ret));
   } else if (OB_FAIL(delete_backup_set_dir_())) {
     LOG_WARN("failed to delete backup set dir", K(ret)); 
   } else if (OB_FAIL(delete_backup_set_start_file_())) {
@@ -1076,6 +1150,8 @@ int ObBackupCleanTaskMgr::delete_backup_piece_meta_info_files_()
       backup_dest_, backup_piece_info_.key_.dest_id_, backup_piece_info_.key_.round_id_,
       backup_piece_info_.key_.piece_id_, path))) {
     LOG_WARN("failed to get tenant backup piece dir path", K(ret));  
+  } else if (OB_FAIL(check_backup_piece_dir_empty_())) { // check if anything left in the backup piece dir
+    LOG_INFO("failed to check backup piece dir empty", K(ret));
   } else if (OB_FAIL(delete_backup_dir_(path))) {
     LOG_WARN("failed to delete backup infos dir", K(ret));
   } else if (OB_FAIL(delete_backup_piece_start_file_())) {
@@ -1169,7 +1245,12 @@ int ObBackupCleanTaskMgr::do_backup_clean_ls_tasks_(
       } else if (OB_FAIL(ls_task_mgr.init(task_attr_, ls_attr, *task_scheduler_, *sql_proxy_, *backup_service_))) {
         LOG_WARN("failed to init task advancer", K(ret), K(ls_attr));
       } else if (OB_FAIL(ls_task_mgr.process(finish_cnt))) {
-        LOG_WARN("failed to process log stream task", K(ret));
+        if (OB_SIZE_OVERFLOW != ret) {
+          LOG_WARN("failed to process log stream task", K(ret));
+        } else {
+          LOG_INFO("log stream task queue is overflow, just ignore", K(ls_attr));
+          ret = OB_SUCCESS;
+        }
       }
     }
   }

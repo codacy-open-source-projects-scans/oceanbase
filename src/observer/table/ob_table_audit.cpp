@@ -12,8 +12,6 @@
 
 #define USING_LOG_PREFIX SERVER
 #include "ob_table_audit.h"
-#include "observer/ob_server_struct.h"
-#include "observer/mysql/ob_mysql_request_manager.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::table;
@@ -65,6 +63,10 @@ StmtType ObTableAuditUtils::get_stmt_type(ObTableOperationType::Type op_type)
       stmt_type = StmtType::T_KV_PUT;
       break;
     }
+    case ObTableOperationType::REDIS: {
+      stmt_type = StmtType::T_REDIS;
+      break;
+    }
     default: {
       stmt_type = StmtType::T_MAX;
       break;
@@ -77,6 +79,7 @@ StmtType ObTableAuditUtils::get_stmt_type(ObTableOperationType::Type op_type)
 // statement is "multi $op_name $table_name col1, col2, col3"
 int64_t ObTableAuditMultiOp::get_stmt_length(const ObString &table_name) const
 {
+  int ret = OB_SUCCESS;
   int64_t len = 0;
   ObString tmp_table_name = table_name.empty() ? ObString::make_string("(null)") : table_name;
 
@@ -87,18 +90,23 @@ int64_t ObTableAuditMultiOp::get_stmt_length(const ObString &table_name) const
   len += tmp_table_name.length(); // "$table_name"
   len += 1; // blank
 
-  if (!ops_.empty()) {
-    const ObIArray<ObString> *propertiy_names = ops_.at(0).entity().get_all_properties_names();
-    if (OB_NOT_NULL(propertiy_names)) {
-      int64_t N = propertiy_names->count();
-      for (int64_t index = 0; index < N - 1; ++index) {
-        len += propertiy_names->at(index).length(); // col1
-        len += 2; // "\"\"" double quote
-        len += 2; // ", "
-      }
-      if (0 < N) {
-        len += propertiy_names->at(N - 1).length(); // col_n
-        len += 2; // "\"\"" double quote
+  if (get_op_count() != 0) {
+    const ObITableEntity *entity = get_entity(0);
+    if (OB_NOT_NULL(entity)) {
+      ObSEArray<ObString, 8> propertiy_names;
+      if (OB_FAIL(entity->get_properties_names(propertiy_names))) {
+        LOG_WARN("failed to get properties names", K(ret), KPC(entity));
+      } else {
+        int64_t N = propertiy_names.count();
+        for (int64_t index = 0; index < N - 1; ++index) {
+          len += propertiy_names.at(index).length(); // col1
+          len += 2; // "\"\"" double quote
+          len += 2; // ", "
+        }
+        if (0 < N) {
+          len += propertiy_names.at(N - 1).length(); // col_n
+          len += 2; // "\"\"" double quote
+        }
       }
     }
   }
@@ -115,23 +123,31 @@ int ObTableAuditMultiOp::generate_stmt(const ObString &table_name, char *buf, in
   int64_t prefix_len = MULTI_PREFIX_LEN + strlen(op_name) + tmp_table_name.length() + 3; // 3 * ' '
   if (OB_ISNULL(buf)) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("buf is bull", KR(ret));
+    LOG_WARN("buf is bull", K(ret));
   } else if (buf_len <= prefix_len) {
     ret = OB_BUF_NOT_ENOUGH;
     LOG_WARN("buffer not enough", K(ret), K(buf_len), K(strlen(op_name)), K(tmp_table_name));
   } else {
     int64_t n = snprintf(buf + pos, prefix_len + 1, "multi %s %s ", op_name, tmp_table_name.ptr()); // "multi $op_name $table_name"
     pos += prefix_len;
-    if (!ops_.empty()) {
-      const ObIArray<ObString> *propertiy_names = ops_.at(0).entity().get_all_properties_names();
-      if (OB_NOT_NULL(propertiy_names)) {
-        int64_t N = propertiy_names->count();
-        for (int64_t index = 0; index < N - 1; ++index) {
-          BUF_PRINTO(propertiy_names->at(index)); // pos will change in BUF_PRINTO
-          J_COMMA(); // ", "
-        }
-        if (0 < N) {
-          BUF_PRINTO(propertiy_names->at(N - 1));
+    if (get_op_count() != 0) {
+      const ObITableEntity *entity = get_entity(0);
+      if (OB_ISNULL(entity)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("entity is null", K(ret), K(index));
+      } else {
+        ObSEArray<ObString, 8> propertiy_names;
+        if (OB_FAIL(entity->get_properties_names(propertiy_names))) {
+          LOG_WARN("failed to get properties names", K(ret), KPC(entity));
+        } else {
+          int64_t N = propertiy_names.count();
+          for (int64_t index = 0; index < N - 1; ++index) {
+            BUF_PRINTO(propertiy_names.at(index)); // pos will change in BUF_PRINTO
+            J_COMMA(); // ", "
+          }
+          if (0 < N) {
+            BUF_PRINTO(propertiy_names.at(N - 1));
+          }
         }
       }
     }

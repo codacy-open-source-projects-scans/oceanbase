@@ -12,13 +12,10 @@
 
 #define USING_LOG_PREFIX SHARE
 
-#include "ob_tx_data_allocator.h"
 
+#include "ob_tx_data_allocator.h"
 #include "share/allocator/ob_shared_memory_allocator_mgr.h"
-#include "share/rc/ob_tenant_base.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx/ob_tx_data_define.h"
-#include "storage/tx_storage/ob_tenant_freezer.h"
 
 namespace oceanbase {
 
@@ -61,21 +58,20 @@ void ObTenantTxDataAllocator::adaptive_update_limit(const int64_t tenant_id,
   // do nothing
 }
 
-int ObTenantTxDataAllocator::init(const char *label)
+int ObTenantTxDataAllocator::init(const char *label, TxShareThrottleTool *throttle_tool)
 {
   int ret = OB_SUCCESS;
   ObMemAttr mem_attr;
   mem_attr.label_ = label;
   mem_attr.tenant_id_ = MTL_ID();
   mem_attr.ctx_id_ = ObCtxIds::TX_DATA_TABLE;
-  ObSharedMemAllocMgr *share_mem_alloc_mgr = MTL(ObSharedMemAllocMgr *);
-  throttle_tool_ = &(share_mem_alloc_mgr->share_resource_throttle_tool());
+  throttle_tool_ = throttle_tool;
   if (IS_INIT){
     ret = OB_INIT_TWICE;
     SHARE_LOG(WARN, "init tenant mds allocator twice", KR(ret), KPC(this));
   } else if (OB_ISNULL(throttle_tool_)) {
     ret = OB_ERR_UNEXPECTED;
-    SHARE_LOG(WARN, "throttle tool is unexpected null", KP(throttle_tool_), KP(share_mem_alloc_mgr));
+    SHARE_LOG(WARN, "throttle tool is unexpected null", KP(throttle_tool_));
   } else if (OB_FAIL(slice_allocator_.init(
                  storage::TX_DATA_SLICE_SIZE, OB_MALLOC_NORMAL_BLOCK_SIZE, block_alloc_, mem_attr))) {
     SHARE_LOG(WARN, "init slice allocator failed", KR(ret));

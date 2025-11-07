@@ -13,24 +13,12 @@
 #define USING_LOG_PREFIX RS
 
 #include "ob_zone_storage_manager.h"
+#include "deps/oblib/src/lib/container/ob_iarray.h"
 
-#include "lib/mysqlclient/ob_mysql_transaction.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/time/ob_time_utility.h"
-#include "ob_rs_event_history_table_operator.h"
-#include "observer/ob_server_struct.h"
-#include "rootserver/ob_cluster_event.h"
 #include "rootserver/ob_root_service.h"
-#include "share/config/ob_server_config.h"
-#include "share/ob_global_stat_proxy.h"
-#include "share/ob_rpc_struct.h"
 #include "share/ob_service_epoch_proxy.h"
-#include "share/ob_zone_info.h"
 #include "share/ob_zone_table_operation.h"
-#include "share/object_storage/ob_object_storage_struct.h"
 #include "share/object_storage/ob_zone_storage_table_operation.h"
-#include "storage/ob_file_system_router.h"
-#include "share/ob_all_server_tracer.h"
 #include "share/object_storage/ob_device_connectivity.h"
 
 namespace oceanbase
@@ -217,7 +205,7 @@ int ObZoneStorageManagerBase::get_zone_storage_list_by_zone(
 
 int ObZoneStorageManagerBase::add_storage(const ObString &storage_path, const ObString &access_info,
                                           const ObString &attribute, const ObStorageUsedType::TYPE &use_for,
-                                          const ObZone &zone, const bool &wait_type)
+                                          const ObZone &zone, const bool &wait_type, common::ObMySQLTransaction &trans)
 {
   int ret = OB_SUCCESS;
   uint64_t compat_version = 0;
@@ -237,7 +225,7 @@ int ObZoneStorageManagerBase::add_storage(const ObString &storage_path, const Ob
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("adding storage only supports used for all", KR(ret), K(use_for));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "adding storage only supports used for all");
-    } else if (OB_FAIL(ObZoneTableOperation::get_zone_info(zone, *proxy_, zone_info))) {
+    } else if (OB_FAIL(ObZoneTableOperation::get_zone_info(zone, trans, zone_info))) {
       LOG_WARN("failed get zone, zone not exist", "zone", zone, KR(ret));
     } else {
       ObBackupDest storage_dest;
@@ -256,8 +244,9 @@ int ObZoneStorageManagerBase::add_storage(const ObString &storage_path, const Ob
       ObDeviceConnectivityCheckManager device_conn_check_mgr;
       int64_t max_iops = 0;
       int64_t max_bandwidth = 0;
+      ObStorageChecksumType checksum_type = ObStorageChecksumType::OB_STORAGE_CHECKSUM_MAX_TYPE;
       if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(parse_attribute_str(attribute, max_iops, max_bandwidth))) {
+      } else if (OB_FAIL(parse_attribute_str(attribute, max_iops, max_bandwidth, checksum_type))) {
         LOG_WARN("fail to parse attribute str", KR(ret), K(attribute));
       } else if (OB_FAIL(storage_dest.set(storage_dest_str))) {
         LOG_WARN("failed to set storage dest", KR(ret), K(storage_dest));
@@ -265,12 +254,12 @@ int ObZoneStorageManagerBase::add_storage(const ObString &storage_path, const Ob
         LOG_WARN("fail to check device connectivity", KR(ret), K(storage_dest));
       } else if (OB_FAIL(zone_info.get_region(region))) {
         LOG_WARN("failed to get region from zone_info", KR(ret), K(zone_info), K(zone));
-      } else if (OB_FAIL(check_zone_storage_with_region_scope(region, use_for, storage_dest))) {
+      } else if (OB_FAIL(check_zone_storage_with_region_scope(region, use_for, storage_dest, trans))) {
         LOG_WARN("failed to check zone storage with region scope", KR(ret), K(zone), K(region), K(storage_dest));
       } else if (ObStorageType::OB_STORAGE_FILE != storage_dest.get_storage_info()->device_type_ &&
                  OB_FAIL(check_add_storage_access_info_equal(storage_dest))) {
         LOG_WARN("failed to check add storage access info equal", KR(ret), K(storage_dest));
-      } else if (OB_FAIL(add_storage_operation(storage_dest, use_for, zone, wait_type, max_iops, max_bandwidth))) {
+      } else if (OB_FAIL(add_storage_operation(storage_dest, use_for, zone, wait_type, max_iops, max_bandwidth, trans))) {
         LOG_WARN("failed to add storage", KR(ret), K(storage_dest), K(use_for), K(zone),
                 K(wait_type), K(max_iops), K(max_bandwidth));
       } else {
@@ -281,13 +270,18 @@ int ObZoneStorageManagerBase::add_storage(const ObString &storage_path, const Ob
       }
     }
   }
+
+  if (OB_INVALID_BACKUP_DEST == ret) {
+    ret = OB_INVALID_STORAGE_DEST;
+  }
   return ret;
 }
 
 int ObZoneStorageManagerBase::add_storage_operation(const ObBackupDest &storage_dest,
                                                     const ObStorageUsedType::TYPE &used_for,
                                                     const ObZone &zone, const bool &wait_type,
-                                                    const int64_t max_iops, const int64_t max_bandwidth)
+                                                    const int64_t max_iops, const int64_t max_bandwidth,
+                                                    common::ObMySQLTransaction &trans)
 {
   UNUSED(wait_type);
   int ret = OB_SUCCESS;
@@ -348,29 +342,21 @@ int ObZoneStorageManagerBase::add_storage_operation(const ObBackupDest &storage_
       new_zone_storage_info.state_ = op_type;
       new_zone_storage_info.max_iops_ = max_iops;
       new_zone_storage_info.max_bandwidth_ = max_bandwidth;
-      ObMySQLTransaction trans_adding;
       if (OB_FAIL(zone_storage_infos_.push_back(new_zone_storage_info))) {
         LOG_WARN("fail to push back new_zone_storage_info", KR(ret), K(new_zone_storage_info));
-      } else if (OB_FAIL(trans_adding.start(proxy_, OB_SYS_TENANT_ID))) {
-        LOG_WARN("start transaction failed", KR(ret));
+      } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans))) {
         // locked the service epoch to make storage operation exclusive with server operation
-      } else if (OB_FAIL(ObServiceEpochProxy::check_and_update_server_zone_op_service_epoch(trans_adding))) {
         LOG_WARN("failed to check and update service epoch", KR(ret));
-      } else if (OB_FAIL(ObStorageInfoOperator::select_for_update(trans_adding, zone))) {
+      } else if (OB_FAIL(ObStorageInfoOperator::select_for_update(trans, zone))) {
         LOG_WARN("failed to select for update", KR(ret), K(zone));
-      } else if (OB_FAIL(ObStorageInfoOperator::insert_storage(trans_adding, storage_dest, used_for,
+      } else if (OB_FAIL(ObStorageInfoOperator::insert_storage(trans, storage_dest, used_for,
                          zone, op_type, storage_id, op_id, max_iops, max_bandwidth))) {
         LOG_WARN("failed to insert zone storage table", KR(ret), K(storage_dest), K(used_for),
                 K(zone), K(op_type), K(storage_id), K(op_id));
       } else if (OB_FAIL(ObStorageOperationOperator::insert_storage_operation(
-                  trans_adding, storage_id, op_id, sub_op_id, zone, op_type, storage_dest_info))) {
+                  trans, storage_id, op_id, sub_op_id, zone, op_type, storage_dest_info))) {
         LOG_WARN("failed to insert zone storage operation table", KR(ret), K(storage_id), K(op_id),
                  K(sub_op_id), K(zone), K(op_type), K(storage_dest_info));
-      }
-      int tmp_ret = trans_adding.end(OB_SUCC(ret));
-      if (OB_SUCCESS != tmp_ret) {
-        LOG_WARN("end transaction failed", KR(ret), K(tmp_ret));
-        ret = (OB_SUCCESS == ret ? tmp_ret : ret);
       }
     }
   }
@@ -517,15 +503,20 @@ int ObZoneStorageManagerBase::alter_storage(const ObString &storage_path, const 
     if (OB_SUCC(ret) && !attribute.empty()) {
       int64_t max_iops = OB_INVALID_MAX_IOPS;
       int64_t max_bandwidth = OB_INVALID_MAX_BANDWIDTH;
-      if (OB_FAIL(parse_attribute_str(attribute, max_iops, max_bandwidth))) {
+      ObStorageChecksumType checksum_type = ObStorageChecksumType::OB_STORAGE_CHECKSUM_MAX_TYPE;
+      if (OB_FAIL(parse_attribute_str(attribute, max_iops, max_bandwidth, checksum_type))) {
         LOG_WARN("fail to parse attribute str", KR(ret), K(attribute));
-      } else if (OB_FAIL(alter_storage_attribute(storage_path, wait_type, max_iops, max_bandwidth))) {
+      } else if (OB_FAIL(alter_storage_attribute(storage_path, wait_type, max_iops, max_bandwidth, checksum_type))) {
         LOG_WARN("failed to alter storage attribute", KR(ret), K(storage_path), K(wait_type), K(attribute));
       } else {
         LOG_INFO("succeed to alter storage attribute", K(storage_path), K(wait_type), K(attribute));
         ROOTSERVICE_EVENT_ADD("storage", "alter storage attribute", "path", storage_path, "wait_type", wait_type, "attribute", attribute);
       }
     }
+  }
+
+  if (OB_INVALID_BACKUP_DEST == ret) {
+    ret = OB_INVALID_STORAGE_DEST;
   }
   return ret;
 }
@@ -620,8 +611,12 @@ int ObZoneStorageManagerBase::alter_storage_authorization(const ObBackupDest &st
   return ret;
 }
 
-int ObZoneStorageManagerBase::alter_storage_attribute(const ObString &storage_path, const bool &wait_type,
-                                                      const int64_t max_iops, const int64_t max_bandwidth)
+int ObZoneStorageManagerBase::alter_storage_attribute(
+    const ObString &storage_path,
+    const bool &wait_type,
+    const int64_t max_iops,
+    const int64_t max_bandwidth,
+    const ObStorageChecksumType &checksum_type)
 {
   int ret = OB_SUCCESS;
   char root_path[OB_MAX_BACKUP_PATH_LENGTH] = {0};
@@ -658,7 +653,13 @@ int ObZoneStorageManagerBase::alter_storage_attribute(const ObString &storage_pa
                    K(zone_storage_infos_.at(i)), K(i));
           LOG_USER_ERROR(OB_NOT_SUPPORTED,
                          "cannot support changing current storage state when undergoing modification, it is");
-        } else if (OB_FAIL(target_storage_dest.set(zone_storage_infos_.at(i).dest_attr_.path_,
+        } else if (checksum_type != ObStorageChecksumType::OB_STORAGE_CHECKSUM_MAX_TYPE) {
+          if (OB_FAIL(zone_storage_infos_.at(i).dest_attr_.change_checksum_type(checksum_type))) {
+            LOG_WARN("failed to change checksum type", KR(ret), K(checksum_type));
+          }
+        }
+
+        if (FAILEDx(target_storage_dest.set(zone_storage_infos_.at(i).dest_attr_.path_,
                                                    zone_storage_infos_.at(i).dest_attr_.endpoint_,
                                                    zone_storage_infos_.at(i).dest_attr_.authorization_,
                                                    zone_storage_infos_.at(i).dest_attr_.extension_))) {
@@ -693,7 +694,14 @@ int ObZoneStorageManagerBase::alter_storage_attribute(const ObString &storage_pa
           } else if (max_bandwidth >= 0 && OB_FAIL(ObStorageInfoOperator::update_storage_bandwidth(
                        trans_changing, zone, target_storage_dest, old_op_id, used_for, max_bandwidth))) {
             LOG_WARN("failed to update storage bandwidth", KR(ret), K(target_storage_dest), K(max_bandwidth));
-          } else if (OB_FAIL(ObStorageInfoOperator::update_storage_state(
+          } else if (checksum_type != ObStorageChecksumType::OB_STORAGE_CHECKSUM_MAX_TYPE) {
+            if (OB_FAIL(ObStorageInfoOperator::update_storage_extension(
+                       trans_changing, zone, target_storage_dest, old_op_id, used_for, zone_storage_infos_.at(i).dest_attr_.extension_))) {
+              LOG_WARN("failed to update storage extension", KR(ret), K(target_storage_dest), K(zone_storage_infos_.at(i).dest_attr_.extension_));
+            }
+          }
+
+          if (FAILEDx(ObStorageInfoOperator::update_storage_state(
                        trans_changing, zone, target_storage_dest, used_for, old_op_id, op_type))) {
             LOG_WARN("failed to update zone storage state", KR(ret), K(op_type));
           } else if (OB_FAIL(ObStorageInfoOperator::update_storage_op_id(
@@ -893,7 +901,8 @@ int ObZoneStorageManagerBase::get_zone_storage_with_zone(const ObZone &zone,
 
 int ObZoneStorageManagerBase::check_zone_storage_with_region_scope(const ObRegion &region,
                                                                    const ObStorageUsedType::TYPE used_for,
-                                                                   const ObBackupDest &storage_dest)
+                                                                   const ObBackupDest &storage_dest,
+                                                                   common::ObMySQLTransaction &trans)
 {
   int ret = OB_SUCCESS;
   hash::ObHashMap<ObZone, ObRegion> zone_info_map;
@@ -906,7 +915,7 @@ int ObZoneStorageManagerBase::check_zone_storage_with_region_scope(const ObRegio
     LOG_WARN("invalid argument", KR(ret), K(region), K(used_for));
   } else if (OB_FAIL(zone_info_map.create(7, attr, attr))) {
     LOG_WARN("create zone region map failed", KR(ret));
-  } else if (OB_FAIL(ObZoneTableOperation::get_zone_region_list(*proxy_, zone_info_map))) {
+  } else if (OB_FAIL(ObZoneTableOperation::get_zone_region_list(trans, zone_info_map))) {
     LOG_WARN("fail to get zone region list", KR(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < zone_storage_infos_.count(); ++i) {
@@ -1018,9 +1027,14 @@ int ObZoneStorageManagerBase::update_zone_storage_table_state(const int64_t idx)
   return ret;
 }
 
-int ObZoneStorageManagerBase::parse_attribute_str(const ObString &attribute, int64_t &max_iops, int64_t &max_bandwidth)
+int ObZoneStorageManagerBase::parse_attribute_str(
+    const ObString &attribute,
+    int64_t &max_iops,
+    int64_t &max_bandwidth,
+    ObStorageChecksumType &checksum_type)
 {
   int ret = OB_SUCCESS;
+  checksum_type = ObStorageChecksumType::OB_STORAGE_CHECKSUM_MAX_TYPE;
   if (OB_UNLIKELY(attribute.empty())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invaild argument", KR(ret), K(attribute));
@@ -1054,6 +1068,11 @@ int ObZoneStorageManagerBase::parse_attribute_str(const ObString &attribute, int
         if (!is_valid) {
           ret = OB_CONVERT_ERROR;
           LOG_WARN("convert failed", KR(ret), K(token));
+        }
+      } else if (0 == STRNCASECMP(CHECKSUM_TYPE, token, strlen(CHECKSUM_TYPE))) {
+        const char *checksum_type_str = token + strlen(CHECKSUM_TYPE);
+        if (OB_FAIL(get_storage_checksum_type(checksum_type_str, checksum_type))) {
+          LOG_WARN("fail to get checksum type", KR(ret), K(checksum_type_str));
         }
       }
     }
@@ -1224,7 +1243,7 @@ int ObZoneStorageManager::reload()
 
 int ObZoneStorageManager::add_storage(const ObString &storage_path, const ObString &access_info,
                                       const ObString &attribute, const ObStorageUsedType::TYPE &use_for,
-                                      const ObZone &zone, const bool &wait_type)
+                                      const ObZone &zone, const bool &wait_type, common::ObMySQLTransaction &trans)
 {
   int ret = OB_SUCCESS;
   SpinWLockGuard guard(write_lock_);
@@ -1234,7 +1253,7 @@ int ObZoneStorageManager::add_storage(const ObString &storage_path, const ObStri
     ObZoneStorageManagerShadowGuard shadow_copy_guard(
       lock_, *(dynamic_cast<ObZoneStorageManagerBase *>(this)), shadow_, ret);
     if (OB_SUCC(ret)) {
-      ret = shadow_.add_storage(storage_path, access_info, attribute, use_for, zone, wait_type);
+      ret = shadow_.add_storage(storage_path, access_info, attribute, use_for, zone, wait_type, trans);
     }
   }
   return ret;

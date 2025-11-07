@@ -23,6 +23,7 @@
 #include "sql/engine/aggregate/ob_groupby_vec_op.h"
 #include "sql/engine/basic/ob_hp_infras_vec_op.h"
 #include "src/sql/engine/expr/ob_expr_estimate_ndv.h"
+#include "sql/engine/basic/ob_temp_row_store.h"
 
 namespace oceanbase
 {
@@ -125,7 +126,8 @@ public:
   static const int64_t SKEW_TEST_STEP_SIZE = 5;
   static const uint64_t MIN_CHECK_POPULAR_VALID_ROWS = 10000;
   constexpr static const float SKEW_POPULAR_MAX_RATIO = 0.5;
-  const static int64_t SKEW_HEAP_SIZE = 15;
+  const static int64_t SKEW_HEAP_SIZE = 36;
+  static const int64_t ADAPTIVE_GBY_MEM_ESTIMATE_SIZE = 2 << 20; // 2MB
 
 public:
   ObHashGroupByVecOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOpInput *input)
@@ -149,7 +151,7 @@ public:
       first_batch_from_store_(true),
       dup_groupby_exprs_(),
       is_dumped_(nullptr),
-      no_non_distinct_aggr_(false),
+      can_skip_last_group_(false),
       start_calc_hash_idx_(0),
       base_hash_vals_(nullptr),
       has_calc_base_hash_(false),
@@ -181,8 +183,6 @@ public:
       reorder_aggr_rows_(false),
       batch_aggr_rows_table_(),
       llc_est_(),
-      dump_add_row_selectors_(nullptr),
-      dump_add_row_selectors_item_cnt_(nullptr),
       dump_vectors_(nullptr),
       dump_rows_(nullptr),
       need_reinit_vectors_(true),
@@ -194,7 +194,9 @@ public:
       by_pass_rows_(0),
       total_load_rows_(0),
       popular_map_(),
-      by_pass_agg_rows_(0)
+      by_pass_agg_rows_(0),
+      stores_mgr_(),
+      part_idxes_(nullptr)
   {
   }
   void reset(bool for_rescan);
@@ -236,8 +238,8 @@ public:
   { return get_aggr_used_size() + sql_mem_processor_.get_data_size(); }
   OB_INLINE int64_t get_mem_used_size() const
   {
-    // Hash table used is double counted here to reserve memory for hash table extension
-    return get_aggr_used_size() + get_extra_size() + get_hash_table_used_size();
+    // Hash table used is 3 times counted here to reserve memory for hash table extension
+    return get_aggr_used_size() + get_extra_size() + 2 * get_hash_table_used_size();
   }
   OB_INLINE int64_t get_actual_mem_used_size() const
   {
@@ -358,7 +360,6 @@ private:
   int by_pass_get_next_permutation_batch(int64_t &nth_group, bool &last_group,
                                          const ObBatchRows *child_brs, ObBatchRows &my_brs,
                                          const int64_t batch_size, bool &insert_group_ht);
-  void reuse_dump_selectors();
   int init_by_pass_op();
 
   int process_multi_groups(aggregate::AggrRowPtr *agg_rows, const ObBatchRows &brs,
@@ -398,7 +399,7 @@ private:
   ObSEArray<ObExpr*, 4> dup_groupby_exprs_;
   ObSEArray<ObExpr*, 4> all_groupby_exprs_;
   bool *is_dumped_;
-  bool no_non_distinct_aggr_;
+  bool can_skip_last_group_;
   int64_t start_calc_hash_idx_;
   uint64_t *base_hash_vals_;
   bool has_calc_base_hash_;
@@ -442,8 +443,6 @@ private:
   bool reorder_aggr_rows_;
   BatchAggrRowsTable batch_aggr_rows_table_;
   LlcEstimate llc_est_;
-  uint16_t **dump_add_row_selectors_;
-  uint16_t *dump_add_row_selectors_item_cnt_;
   common::ObFixedArray<ObIVector *, common::ObIAllocator> dump_vectors_;
   ObCompactRow **dump_rows_;
   bool need_reinit_vectors_;
@@ -461,6 +460,8 @@ private:
   common::ObArray<std::pair<const ObCompactRow *, int32_t>> popular_array_temp_;
   common::ObFixedArray<HashFuncTypeForTc, ObIAllocator> hash_func_for_expr_;
   common::ObFixedArray<NullHashFuncTypeForTc, ObIAllocator> null_hash_func_for_expr_;
+  BatchTempRowStoresMgr stores_mgr_;
+  int64_t *part_idxes_;
 };
 
 } // end namespace sql

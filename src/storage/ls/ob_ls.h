@@ -14,6 +14,7 @@
 #define OCEABASE_STORAGE_OB_LS_
 
 #include "lib/utility/ob_print_utils.h"
+#include "lib/container/ob_iarray.h"
 #include "common/ob_member_list.h"
 #include "share/ob_delegate.h"
 #include "share/ob_tenant_info_proxy.h"
@@ -72,7 +73,14 @@
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_private_block_gc_task.h"
 #include "storage/shared_storage/prewarm/ob_ls_prewarm_handler.h"
+#include "storage/incremental/ob_ls_inc_sstable_uploader.h"
+#include "storage/incremental/ob_sswriter_lease_mgr.h"
+#include "storage/incremental/ob_ss_checkpoint_executor.h"
+#include "storage/incremental/ob_ss_inc_meta_checkpoint.h"
+#include "storage/incremental/sslog/ob_sslog_gts_service.h"
+#include "storage/incremental/sslog/ob_sslog_uid_service.h"
 #endif
+#include "storage/reorganization_info_table/ob_tablet_reorg_info_table.h"
 
 namespace oceanbase
 {
@@ -195,7 +203,7 @@ public:
   friend class checkpoint::ObDataCheckpoint;
   friend class ObLSSwitchChecker;
 public:
-  static constexpr int64_t TOTAL_INNER_TABLET_NUM = 3;
+  static constexpr int64_t TOTAL_INNER_TABLET_NUM = 4;
   static const uint64_t INNER_TABLET_ID_LIST[TOTAL_INNER_TABLET_NUM];
   static const share::SCN LS_INNER_TABLET_FROZEN_SCN;
 public:
@@ -257,15 +265,16 @@ public:
   int prepare_for_safe_destroy();
   bool safe_to_destroy();
   void destroy();
-  int offline();
+  int offline(const bool remove_from_disk=false);
   int online();
   int online_without_lock();
-  int offline_without_lock();
   int enable_for_restore();
   bool is_offline() const
   { return running_state_.is_offline(); }
   bool is_stopped() const
   { return running_state_.is_stopped(); }
+  bool is_running() const
+  { return running_state_.is_running(); }
   int64_t get_state_seq() const
   { return ATOMIC_LOAD(&state_seq_); }
   int64_t get_switch_epoch() const { return ATOMIC_LOAD(&switch_epoch_); }
@@ -290,6 +299,7 @@ public:
   // ObObLogHandler interface:
   // get the log_service pointer
   logservice::ObLogHandler *get_log_handler() { return &log_handler_; }
+  const logservice::ObLogHandler *get_log_handler() const { return &log_handler_; }
   logservice::ObLogRestoreHandler *get_log_restore_handler() { return &restore_handler_; }
   logservice::ObRoleChangeHandler *get_role_change_handler() { return &role_change_handler_;}
   logservice::ObRoleChangeHandler *get_restore_role_change_handler() { return &restore_role_change_handler_;}
@@ -311,10 +321,14 @@ public:
 #ifdef OB_BUILD_SHARED_STORAGE
   ObLSPrivateBlockGCHandler& get_ls_private_block_gc_handler() { return ls_private_block_gc_handler_; }
   ObSSLSPreWarmHandler& get_ls_prewarm_handler() { return ls_prewarm_handler_; }
+  ObSSWriterLSHandler& get_primary_sswriter_ls_handler() { return primary_sswriter_ls_handler_; }
+  ObSSWriterLSHandler& get_restore_sswriter_ls_handler() { return restore_sswriter_ls_handler_; }
+  ObSSCheckpointExecutor &get_ss_checkpoint_executor() { return ss_checkpoint_executor_; }
+  DELEGATE_WITH_RET(ls_migration_handler_, notify_switch_to_leader_and_wait_replace_complete, int);
 #endif
 
   // get ls info
-  int get_ls_info(ObLSVTInfo &ls_info);
+  int get_ls_info(const ObIArray<uint64_t> &output_column_ids, ObLSVTInfo &ls_info);
   int get_ls_role(ObRole &role);
   // report the ls replica info to RS.
   int report_replica_info();
@@ -323,7 +337,7 @@ public:
   int set_start_work_state();
   int set_start_ha_state();
   int set_finish_ha_state();
-  int set_remove_state();
+  int set_remove_state(const bool write_slog);
   ObLSPersistentState get_persistent_state() const;
   int finish_create_ls();
 
@@ -379,7 +393,7 @@ public:
   // @param[in] ls_meta, which is used to update the ls's meta.
   int set_ls_meta(const ObLSMeta &ls_meta);
 
-  int64_t get_ls_epoch() const { return ls_epoch_; }
+  int64_t get_ls_epoch() const { return ls_meta_.get_ls_epoch(); }
   int set_ls_epoch(const int64_t ls_epoch);
   // for ls gc
   int block_tablet_transfer_in();
@@ -430,7 +444,7 @@ private:
   int stop_();
   void wait_();
   int prepare_for_safe_destroy_();
-  int offline_(const int64_t start_ts);
+  int offline_(const int64_t start_ts, const bool remove_from_disk=false);
   int offline_compaction_();
   int online_compaction_();
   int offline_tx_(const int64_t start_ts);
@@ -454,14 +468,25 @@ public:
   // ObLSMeta interface:
   int update_ls_meta(const bool update_restore_status,
                      const ObLSMeta &src_ls_meta);
-
+#ifdef OB_BUILD_SHARED_STORAGE
+  int update_ls_meta(const ObSSLSMeta &src_ss_meta);
+  // advance notify ss change version
+  // @param [in] tablet_id
+  // @param [in] transfer_scn
+  // @param [in] change_version
+  // int advance_notify_ss_change_version(
+  //     const ObTabletID &tablet_id,
+  //     const share::SCN &transfer_scn,
+  //     const share::SCN &change_version);
+  DELEGATE_WITH_RET(ls_tablet_svr_, advance_notify_ss_change_version, int);
+#endif
   int get_transfer_scn(share::SCN &scn);
   int update_id_meta(const int64_t service_type,
                      const int64_t limited_id,
                      const share::SCN &latest_scn,
                      const bool write_slog)
   {
-    return ls_meta_.update_id_meta(ls_epoch_, service_type, limited_id, latest_scn, write_slog);
+    return ls_meta_.update_id_meta(service_type, limited_id, latest_scn, write_slog);
   }
   int set_ls_rebuild();
   // protect in ls lock
@@ -472,29 +497,29 @@ public:
                           const share::SCN &clog_checkpoint_scn,
                           const bool write_slog)
   {
-    return ls_meta_.set_clog_checkpoint(ls_epoch_, clog_checkpoint_lsn, clog_checkpoint_scn, write_slog);
+    return ls_meta_.set_clog_checkpoint(clog_checkpoint_lsn, clog_checkpoint_scn, write_slog);
   }
   CONST_DELEGATE_WITH_RET(ls_meta_, get_clog_checkpoint_scn, share::SCN);
   DELEGATE_WITH_RET(ls_meta_, get_clog_base_lsn, palf::LSN);
   DELEGATE_WITH_RET(ls_meta_, get_saved_info, int);
   int build_saved_info()
   {
-    return ls_meta_.build_saved_info(ls_epoch_);
+    return ls_meta_.build_saved_info();
   }
   int clear_saved_info()
   {
-    return ls_meta_.clear_saved_info(ls_epoch_);
+    return ls_meta_.clear_saved_info();
   }
   CONST_DELEGATE_WITH_RET(ls_meta_, get_rebuild_seq, int64_t);
   CONST_DELEGATE_WITH_RET(ls_meta_, get_tablet_change_checkpoint_scn, share::SCN);
   DELEGATE_WITH_RET(ls_meta_, set_tablet_change_checkpoint_scn, int);
   int set_tablet_change_checkpoint_scn(const share::SCN &tablet_change_checkpoint_scn)
   {
-    return ls_meta_.set_tablet_change_checkpoint_scn(ls_epoch_, tablet_change_checkpoint_scn);
+    return ls_meta_.set_tablet_change_checkpoint_scn(tablet_change_checkpoint_scn);
   }
-  int set_major_mv_merge_scn(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn(ls_epoch_, scn); }
-  int set_major_mv_merge_scn_safe_calc(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn_safe_calc(ls_epoch_, scn); }
-  int set_major_mv_merge_scn_publish(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn_publish(ls_epoch_, scn); }
+  int set_major_mv_merge_scn(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn(scn); }
+  int set_major_mv_merge_scn_safe_calc(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn_safe_calc(scn); }
+  int set_major_mv_merge_scn_publish(const share::SCN &scn) { return ls_meta_.set_major_mv_merge_scn_publish(scn); }
   int set_restore_status(
       const share::ObLSRestoreStatus &restore_status,
       const int64_t rebuild_seq);
@@ -521,7 +546,7 @@ public:
   // @param [in] replayable point.
   int update_ls_replayable_point(const share::SCN &replayable_point)
   {
-    return ls_meta_.update_ls_replayable_point(ls_epoch_, replayable_point);
+    return ls_meta_.update_ls_replayable_point(replayable_point);
   }
   // update replayable point
   // get replayable point
@@ -541,7 +566,7 @@ public:
   DELEGATE_WITH_RET(ls_meta_, get_migration_and_restore_status, int);
   int set_rebuild_info(const ObLSRebuildInfo &rebuild_info)
   {
-    return ls_meta_.set_rebuild_info(ls_epoch_, rebuild_info);
+    return ls_meta_.set_rebuild_info(rebuild_info);
   }
   DELEGATE_WITH_RET(ls_meta_, get_rebuild_info, int);
   DELEGATE_WITH_RET(ls_meta_, get_create_type, int);
@@ -560,11 +585,21 @@ public:
       const ObLSTabletService::HandleTabletMetaFunc &handle_tablet_meta_f);
 
   // ObLSTabletService interface:
-  // update tablet by checkpoint
-  // @param [in] key, key of tablet that will be updated
-  // @param [in] new_addr, new addr of the tablet
-  // @param [out] new_handle, new tablet handle
-  DELEGATE_WITH_RET(ls_tablet_svr_, update_tablet_checkpoint, int);
+  // apply defragment tablet(used for slog checkpoint)
+  // @param [in] t3m: the target that tablet will be applied to.
+  // @param [in] tablet_key: key of specified tablet
+  // @param [in] old_addr: tablet's original address
+  // @param [out] new_handle: handle of specified tablet
+  // @param [in] tsms: used for write slog(if not null).
+  DELEGATE_WITH_RET(ls_tablet_svr_, apply_defragment_tablet, int);
+
+  // ObLSTabletService interface:
+  // handle empty shell when doing slog truncate(only used for slog checkpoint)
+  // @param [in] t3m: used for empty shell cas
+  // @param [in] tablet_key: key of specified empty shell
+  // @param [in] old_addr: empty shell's original address
+  // @return: return OB_NOT_SUPPORTED in SS mode.
+  DELEGATE_WITH_RET(ls_tablet_svr_, refresh_empty_shell_for_slog_ckpt, int);
   // get a tablet handle
   // @param [in] tablet_id, the tablet needed
   // @param [out] handle, store the tablet and inc ref.
@@ -585,13 +620,6 @@ public:
   DELEGATE_WITH_RET(ls_tablet_svr_, build_tablet_iter, int);
   // update medium compaction info for tablet
   DELEGATE_WITH_RET(ls_tablet_svr_, update_medium_compaction_info, int);
-  // trim rebuild tablet
-  // @param [in] tablet_id ObTabletID, is_rollback bool
-  // @param [out] null
-  // int trim_rebuild_tablet(
-  //    const ObTabletID &tablet_id,
-  //    const bool is_rollback = false);
-  DELEGATE_WITH_RET(ls_tablet_svr_, trim_rebuild_tablet, int);
   // remove tablets
   // @param [in] tbalet_ids ObIArray<ObTabletId>
   // @param [out] null
@@ -695,6 +723,7 @@ public:
   // no paired lock op.
   // int check_and_clear_obj_lock(const bool force_compact)
   DELEGATE_WITH_RET(lock_table_, check_and_clear_obj_lock, int);
+  DELEGATE_WITH_RET(lock_table_, add_lock_into_queue, int);
 
   // set the member_list of log_service
   // @param [in] member_list, the member list to be set.
@@ -716,6 +745,10 @@ public:
   // @param[in] palf_base_info, the palf meta used to advance base lsn.
   // int advance_base_info(const palf::PalfBaseInfo &palf_base_info);
   DELEGATE_WITH_RET(log_handler_, advance_base_info, int);
+
+  // get the palf base info by base_lsn
+  // int get_palf_base_info(const LSN &base_lsn, PalfBaseInfo &palf_base_info);
+  DELEGATE_WITH_RET(log_handler_, get_palf_base_info, int);
 
   // get ls readable_scn considering readable scn, sync scn and replayable scn.
   // @param[out] readable_scn ls readable_scn
@@ -912,6 +945,11 @@ public:
   // ObReplayHandler interface:
   DELEGATE_WITH_RET(replay_handler_, replay, int);
 
+  DELEGATE_WITH_RET(ls_freezer_, disable_flush, void);
+  DELEGATE_WITH_RET(ls_freezer_, enable_flush, void);
+  DELEGATE_WITH_RET(ls_freezer_, flush_is_disabled, bool);
+
+
   /**
    * @brief freeze this logstream
    *
@@ -962,11 +1000,14 @@ public:
 
   // ObTxTable interface
   DELEGATE_WITH_RET(tx_table_, get_tx_table_guard, int);
+  DELEGATE_WITH_RET(tx_table_, get_recycle_scn, int);
   DELEGATE_WITH_RET(tx_table_, get_upper_trans_version_before_given_scn, int);
   DELEGATE_WITH_RET(tx_table_, generate_virtual_tx_data_row, int);
   DELEGATE_WITH_RET(tx_table_, get_uncommitted_tx_min_start_scn, int);
   DELEGATE_WITH_RET(tx_table_, update_min_start_scn_info, void);
   DELEGATE_WITH_RET(tx_table_, dump_single_tx_data_2_text, int);
+  DELEGATE_WITH_RET(tx_table_, tx_table_need_re_freeze, bool);
+  DELEGATE_WITH_RET(tx_table_, get_tx_data_sstable_recycle_scn, int);
 
   // ObCheckpointExecutor interface:
   DELEGATE_WITH_RET(checkpoint_executor_, get_checkpoint_info, int);
@@ -1022,14 +1063,16 @@ public:
       const common::ObIArray<common::ObTabletID> &tablet_id_array,
       const uint64_t data_version)
   {
-    return ls_meta_.set_transfer_meta_info(ls_epoch_, replay_scn, src_ls, src_scn, trans_status, tablet_id_array, data_version);
+    return ls_meta_.set_transfer_meta_info(replay_scn, src_ls, src_scn, trans_status, tablet_id_array, data_version);
   }
   CONST_DELEGATE_WITH_RET(ls_meta_, get_transfer_meta_info, int);
   int cleanup_transfer_meta_info(
       const share::SCN &replay_scn)
   {
-    return ls_meta_.cleanup_transfer_meta_info(ls_epoch_, replay_scn);
+    return ls_meta_.cleanup_transfer_meta_info(replay_scn);
   }
+  CONST_DELEGATE_WITH_RET(ls_meta_, get_transfer_meta, int);
+
 
   int set_ls_migration_gc(bool &allow_gc);
   int inner_check_allow_read_(
@@ -1039,21 +1082,22 @@ public:
   int set_ls_allow_to_read();
 
 #ifdef OB_BUILD_SHARED_STORAGE
-  int upload_major_compaction_tablet_meta(
-    const common::ObTabletID &tablet_id,
-    const ObUpdateTableStoreParam &param,
-    const int64_t start_macro_seq);
-
   // write tablet_id_set to pending_free_array when ls replica remove for shared storage
   DELEGATE_WITH_RET(ls_tablet_svr_, write_tablet_id_set_to_pending_free, int);
+  DELEGATE_WITH_RET(inc_sstable_uploader_, prepare_register_sstable_upload, int);
+  DELEGATE_WITH_RET(inc_sstable_uploader_, register_all_sstables_upload, int);
+  ObLSIncSSTableUploader &get_inc_sstable_uploader() { return inc_sstable_uploader_; }
+  DELEGATE_WITH_RET(ls_tablet_svr_, create_or_update_with_ss_tablet, int);
 #endif
 
+  // ObMemberTable interface
+  ObTabletReorgInfoTable *get_reorg_info_table() { return &reorg_info_table_; }
 private:
   void record_async_freeze_tablets_(const ObIArray<ObTabletID> &tablet_ids, const int64_t epoch);
   void record_async_freeze_tablet_(const ObTabletID &tablet_id, const int64_t epoch);
-
-
-
+  int inner_build_tablet_with_batch_tables_(
+      const ObTabletID &tablet_id,
+      const ObBatchUpdateTableStoreParam &param);
 private:
   // StorageBaseUtil
   // table manager: create, remove and guard get.
@@ -1128,6 +1172,8 @@ private:
 #ifdef OB_BUILD_SHARED_STORAGE
   // for shared storage ls replica prewarm
   ObSSLSPreWarmHandler ls_prewarm_handler_;
+  ObPrimarySSWriterLSHandler primary_sswriter_ls_handler_;
+  ObRestoreSSWriterLSHandler restore_sswriter_ls_handler_;
 #endif
 private:
   bool is_inited_;
@@ -1139,7 +1185,6 @@ private:
   int64_t state_seq_;
   uint64_t switch_epoch_;// started from 0, odd means online, even means offline
   ObLSMeta ls_meta_;
-  int64_t ls_epoch_;
   observer::ObIMetaReport *rs_reporter_;
   ObLSLock lock_;
   common::ObMultiModRefMgr<ObLSGetMod> ref_mgr_;
@@ -1155,6 +1200,14 @@ private:
 
   // for delaying the resource recycle after correctness issue
   bool need_delay_resource_recycle_;
+  //for member table
+  ObTabletReorgInfoTable reorg_info_table_;
+#ifdef OB_BUILD_SHARED_STORAGE
+  ObSSIncMetaCheckpoint inc_meta_ckpt_;
+  // upload shared-storage sstable list
+  ObLSIncSSTableUploader inc_sstable_uploader_;
+  ObSSCheckpointExecutor ss_checkpoint_executor_;
+#endif
 };
 
 }

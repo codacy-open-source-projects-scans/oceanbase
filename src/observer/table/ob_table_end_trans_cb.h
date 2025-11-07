@@ -34,6 +34,7 @@ public:
   virtual ~ObTableCreateCbFunctor() = default;
 public:
   virtual ObTableAPITransCb* new_callback() = 0;
+  virtual ObTableAPITransCb* get_callback() { return nullptr; }
 protected:
   bool is_inited_;
 };
@@ -83,12 +84,19 @@ public:
         cb_(nullptr)
   {}
   virtual ~ObTableLSExecuteCreateCbFunctor() = default;
+  void reset()
+  {
+    req_ = nullptr;
+    cb_ = nullptr;
+    is_inited_ = false;
+  }
 public:
   int init(rpc::ObRequest *req);
   virtual ObTableAPITransCb* new_callback() override;
+  virtual ObTableAPITransCb* get_callback() override { return cb_; }
 private:
   rpc::ObRequest *req_;
-  ObTableLSExecuteEndTransCb *cb_;
+  ObTableAPITransCb *cb_;
 };
 
 class ObTableAPITransCb: public sql::ObExclusiveEndTransCallback
@@ -97,8 +105,11 @@ public:
   ObTableAPITransCb();
   virtual ~ObTableAPITransCb();
   void destroy_cb_if_no_ref();
+  void destroy_cb();
   void set_tx_desc(transaction::ObTxDesc *tx_desc) { tx_desc_ = tx_desc; }
   void set_lock_handle(ObHTableLockHandle *lock_handle);
+  void set_require_rerouting(bool require_rerouting) { require_rerouting_ = require_rerouting; }
+  void set_require_refresh_kv_meta(bool require_refresh_kv_meta) { require_refresh_kv_meta_ = require_refresh_kv_meta; }
 protected:
   void check_callback_timeout();
 protected:
@@ -106,6 +117,8 @@ protected:
   ObCurTraceId::TraceId trace_id_;
   transaction::ObTxDesc *tx_desc_;
   ObHTableLockHandle *lock_handle_; // hbase row lock handle
+  bool require_rerouting_;
+  bool require_refresh_kv_meta_;
 private:
   int32_t ref_count_;
   // disallow copy
@@ -135,7 +148,48 @@ private:
   ObTableEntity result_entity_;
   common::ObArenaAllocator allocator_;
   ObTableOperationResult result_;
-  obrpc::ObTableRpcResponseSender<ObTableOperationResult> response_sender_;
+  obrpc::ObTableRpcResponseSender response_sender_;
+};
+
+class ObHbaseExecuteEndTransCb: public ObTableAPITransCb
+{
+public:
+  ObHbaseExecuteEndTransCb(rpc::ObRequest *req)
+    : allocator_(ObMemAttr(MTL_ID(), "HbaseExeCbAlloc")),
+      response_sender_(req, &result_)
+  {
+  }
+  virtual ~ObHbaseExecuteEndTransCb() = default;
+
+  virtual void callback(int cb_param) override;
+  virtual void callback(int cb_param, const transaction::ObTransID &trans_id) override;
+  virtual const char *get_type() const override { return "ObHbaseExecuteEndTransCallback"; }
+  virtual sql::ObEndTransCallbackType get_callback_type() const override { return sql::ASYNC_CALLBACK_TYPE; }
+  int assign_hbase_execute_result(const ObHbaseResult &result);
+private:
+  // disallow copy
+  DISALLOW_COPY_AND_ASSIGN(ObHbaseExecuteEndTransCb);
+private:
+  ObHbaseRpcRequest request_;
+  ObHbaseResult result_;
+  common::ObArenaAllocator allocator_;
+  obrpc::ObTableRpcResponseSender response_sender_;
+};
+
+class ObHbaseExecuteCreateCbFunctor : public ObTableCreateCbFunctor
+{
+public:
+  ObHbaseExecuteCreateCbFunctor()
+      : req_(nullptr),
+        result_(nullptr)
+  {}
+  virtual ~ObHbaseExecuteCreateCbFunctor() = default;
+public:
+  int init(rpc::ObRequest *req, const ObHbaseResult *result);
+  virtual ObTableAPITransCb* new_callback() override;
+private:
+  rpc::ObRequest *req_;
+  const ObHbaseResult *result_;
 };
 
 class ObTableBatchExecuteEndTransCb: public ObTableAPITransCb
@@ -163,7 +217,7 @@ private:
   common::ObArenaAllocator allocator_;
   ObTableEntityFactory<ObTableEntity> entity_factory_;
   ObTableBatchOperationResult result_;
-  obrpc::ObTableRpcResponseSender<ObTableBatchOperationResult> response_sender_;
+  obrpc::ObTableRpcResponseSender response_sender_;
   ObTableOperationType::Type table_operation_type_;
 };
 
@@ -175,6 +229,8 @@ public:
       entity_factory_("TableLSCbEntFac", MTL_ID()),
       response_sender_(req, &result_)
   {
+    dependent_results_.set_attr(ObMemAttr(MTL_ID(), "LsCbDepRes"));
+    is_alloc_from_pool_ = true;
   }
   virtual ~ObTableLSExecuteEndTransCb() = default;
 
@@ -182,10 +238,15 @@ public:
   virtual void callback(int cb_param, const transaction::ObTransID &trans_id) override;
   virtual const char *get_type() const override { return "ObTableLSEndTransCallback"; }
   virtual sql::ObEndTransCallbackType get_callback_type() const override { return sql::ASYNC_CALLBACK_TYPE; }
-  int assign_ls_execute_result(const ObTableLSOpResult &result);
   OB_INLINE ObTableLSOpResult &get_result() { return result_; }
   OB_INLINE ObTableEntityFactory<ObTableSingleOpEntity> &get_entity_factory() { return entity_factory_; }
   OB_INLINE ObIAllocator &get_allocator() { return allocator_; }
+  OB_INLINE int assign_dependent_results(common::ObIArray<ObTableLSOpResult*> &results, bool is_alloc_from_pool)
+  {
+    is_alloc_from_pool_ = is_alloc_from_pool;
+    return dependent_results_.assign(results);
+  }
+  void free_dependent_results();
 private:
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(ObTableLSExecuteEndTransCb);
@@ -194,7 +255,9 @@ private:
   ObTableSingleOpEntity result_entity_;
   ObTableEntityFactory<ObTableSingleOpEntity> entity_factory_;
   ObTableLSOpResult result_;
-  obrpc::ObTableRpcResponseSender<ObTableLSOpResult> response_sender_;
+  common::ObSEArray<ObTableLSOpResult*, 3> dependent_results_;
+  obrpc::ObTableRpcResponseSender response_sender_;
+  bool is_alloc_from_pool_;
 };
 
 } // end namespace table

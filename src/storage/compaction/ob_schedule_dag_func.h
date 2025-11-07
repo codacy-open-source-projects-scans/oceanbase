@@ -14,6 +14,7 @@
 #define OCEANBASE_STORAGE_COMPACTION_OB_SCHEDULE_DAG_FUNC_H_
 #include "lib/container/ob_iarray.h"
 #include "storage/compaction/ob_compaction_util.h"
+#include "share/scheduler/ob_tenant_dag_scheduler.h"
 
 namespace oceanbase
 {
@@ -25,7 +26,7 @@ namespace storage
 {
 namespace mds
 {
-class ObMdsTableMergeDagParam;
+class ObTabletMdsMiniMergeDagParam;
 }
 struct ObDDLTableMergeDagParam;
 struct ObTabletSplitParam;
@@ -34,6 +35,7 @@ class ObTabletSplitDag;
 class ObTabletLobSplitDag;
 class ObComplementDataDag;
 class ObTablet;
+struct ObDirectLoadSSUpdateIncMajorDagParam;
 }
 
 namespace share
@@ -50,6 +52,7 @@ struct ObBatchFreezeTabletsParam;
 struct ObTabletsRefreshSSTableParam;
 struct ObVerifyCkmParam;
 struct ObUpdateSkipMajorParam;
+struct ObTabletSSMinorMergeDagParam;
 #endif
 
 class ObScheduleDagFunc final
@@ -81,7 +84,7 @@ public:
       storage::ObTabletLobSplitDag *&dag,
       const bool is_emergency = false);
   static int schedule_mds_table_merge_dag(
-      storage::mds::ObMdsTableMergeDagParam &param,
+      storage::mds::ObTabletMdsMiniMergeDagParam &param,
       const bool is_emergency = false);
   static int schedule_batch_freeze_dag(
     const ObBatchFreezeTabletsParam &freeze_param);
@@ -91,6 +94,8 @@ public:
       const bool is_emergency = false);
   static int schedule_verify_ckm_dag(ObVerifyCkmParam &param);
   static int schedule_update_skip_major_tablet_dag(const ObUpdateSkipMajorParam &param);
+  static int schedule_tablet_ss_minor_merge_dag(const ObTabletSSMinorMergeDagParam &param);
+  static int schedule_ss_update_inc_major_dag(const storage::ObDirectLoadSSUpdateIncMajorDagParam &param);
 #endif
 };
 

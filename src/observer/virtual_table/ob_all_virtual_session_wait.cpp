@@ -19,32 +19,17 @@ namespace oceanbase
 {
 namespace observer
 {
-
-ObAllVirtualSessionWait::ObAllVirtualSessionWait()
-    : ObVirtualTableScannerIterator(),
-    session_status_(),
-    addr_(NULL),
-    ipstr_(),
-    port_(0),
-    session_iter_(0),
-    collect_(NULL)
-{
-}
-
-ObAllVirtualSessionWait::~ObAllVirtualSessionWait()
-{
-  reset();
-}
-
 void ObAllVirtualSessionWait::reset()
 {
-  ObVirtualTableScannerIterator::reset();
+  omt::ObMultiTenantOperator::reset();
   addr_ = NULL;
   session_iter_ = 0;
   port_ = 0;
   ipstr_.reset();
   session_status_.reset();
   collect_ = NULL;
+  ObVirtualTableScannerIterator::reset();
+
 }
 
 int ObAllVirtualSessionWait::set_ip(common::ObAddr *addr)
@@ -69,13 +54,32 @@ int ObAllVirtualSessionWait::set_ip(common::ObAddr *addr)
 int ObAllVirtualSessionWait::get_all_diag_info()
 {
   int ret = OB_SUCCESS;
-  if (OB_SUCCESS != (ret = ObDiagnosticInfoUtil::get_all_diag_info(session_status_, effective_tenant_id_))) {
+  if (OB_ISNULL(alloc_wrapper_.get_alloc())) {
+    alloc_wrapper_.set_alloc(&alloc_);
+  }
+  if (OB_SUCCESS != (ret = share::ObDiagnosticInfoUtil::get_all_diag_info(session_status_, MTL_ID()))) {
     SERVER_LOG(WARN, "Fail to get session status, ", K(ret));
   }
   return ret;
 }
 
 int ObAllVirtualSessionWait::inner_get_next_row(ObNewRow *&row)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(execute(row))) {
+    SERVER_LOG(WARN, "execute fail", K(ret));
+  }
+  return ret;
+}
+
+void ObAllVirtualSessionWait::release_last_tenant()
+{
+  session_iter_ = 0;
+  session_status_.reset();
+  collect_ = NULL;
+}
+
+int ObAllVirtualSessionWait::process_curr_tenant(common::ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
   ObObj *cells = cur_row_.cells_;
@@ -96,8 +100,7 @@ int ObAllVirtualSessionWait::inner_get_next_row(ObNewRow *&row)
       collect_ = &session_status_.at(session_iter_).second;
       if (NULL != collect_ && OB_SUCCESS == collect_->lock_.try_rdlock()) {
         const uint64_t tenant_id = collect_->base_value_.get_tenant_id();
-        if (session_status_.at(session_iter_).first == collect_->session_id_
-            && (is_sys_tenant(effective_tenant_id_) || tenant_id == effective_tenant_id_)) {
+        if (session_status_.at(session_iter_).first == collect_->session_id_) {
           event_desc = &collect_->base_value_.get_curr_wait();
           if (event_desc->wait_begin_time_ == 0) {
             ret = OB_SUCCESS;
@@ -132,7 +135,11 @@ int ObAllVirtualSessionWait::inner_get_next_row(ObNewRow *&row)
         uint64_t col_id = output_column_ids_.at(i);
         switch(col_id) {
           case SESSION_ID: {
-            cells[cell_idx].set_int(collect_->session_id_);
+            if (INVALID_SESSID == collect_->client_sid_) {
+              cells[cell_idx].set_int(collect_->session_id_);
+            } else {
+              cells[cell_idx].set_int(collect_->client_sid_);
+            }
             break;
           }
           case TENANT_ID: {
@@ -276,27 +283,41 @@ int ObAllVirtualSessionWaitI1::get_all_diag_info()
   int64_t index_id = -1;
   uint64_t key = 0;
   typedef std::pair<uint64_t, common::ObDISessionCollect> DiPair;
+  if (OB_ISNULL(alloc_wrapper_.get_alloc())) {
+    alloc_wrapper_.set_alloc(&alloc_);
+  }
   HEAP_VAR(DiPair, pair)
   {
     for (int64_t i = 0; OB_SUCC(ret) && i < get_index_ids().count(); ++i) {
       index_id = get_index_ids().at(i);
-      if (0 < index_id) {
-        key = static_cast<uint64_t>(index_id);
+      key = index_id;
+      if (OB_FAIL(get_server_sid_by_client_sid(get_session_mgr(), key))) {
+        if (OB_HASH_NOT_EXIST == ret) {
+          ret = OB_SUCCESS;
+        } else {
+          SERVER_LOG(WARN, "Fail to get server sid by client sid, ", K(ret));
+        }
+      } else {
         pair.first = key;
-        if (OB_SUCCESS != (ret = share::ObDiagnosticInfoUtil::get_the_diag_info(key, pair.second))) {
+        if (OB_FAIL(share::ObDiagnosticInfoUtil::get_the_diag_info(key, pair.second))) {
           if (OB_ENTRY_NOT_EXIST == ret) {
             ret = OB_SUCCESS;
           } else {
             SERVER_LOG(WARN, "Fail to get session status, ", K(ret));
           }
         } else {
-          if (OB_SUCCESS != (ret = session_status_.push_back(pair))) {
+          if (OB_FAIL(session_status_.push_back(pair))) {
             SERVER_LOG(WARN, "Fail to push diag info value to array, ", K(ret));
+          } else {
+            SERVER_LOG(DEBUG, "found target di info", K(pair.first), K(pair.second.session_id_),
+                K(pair.second.base_value_.get_tenant_id()),
+                K(pair.second.base_value_.get_curr_wait()));
           }
         }
       }
     }
   }
+  SERVER_LOG(DEBUG, "index scan di", K(session_status_.count()));
   return ret;
 }
 

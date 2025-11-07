@@ -13,15 +13,11 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/table_load/ob_table_load_table_ctx.h"
-#include "lib/allocator/ob_malloc.h"
 #include "observer/table_load/ob_table_load_coordinator_ctx.h"
 #include "observer/table_load/ob_table_load_store_ctx.h"
 #include "observer/table_load/ob_table_load_task.h"
 #include "observer/table_load/ob_table_load_task_scheduler.h"
 #include "observer/table_load/ob_table_load_trans_ctx.h"
-#include "observer/table_load/ob_table_load_utils.h"
-#include "share/ob_common_rpc_proxy.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "sql/engine/ob_des_exec_context.h"
 
 namespace oceanbase
@@ -97,9 +93,9 @@ int ObTableLoadTableCtx::init(const ObTableLoadParam &param,
   } else {
     param_ = param;
     ddl_param_ = ddl_param;
-    if (OB_FAIL(schema_.init(param_.tenant_id_, param_.table_id_))) {
+    if (OB_FAIL(schema_.init(param_.tenant_id_, param_.table_id_, ddl_param.schema_version_))) {
       LOG_WARN("fail to init table load schema", KR(ret), K(param_.tenant_id_),
-               K(param_.table_id_));
+               K(param_.table_id_), K(ddl_param.schema_version_));
     } else if (OB_FAIL(task_allocator_.init("TLD_TaskPool", param_.tenant_id_))) {
       LOG_WARN("fail to init allocator", KR(ret));
     } else if (OB_FAIL(trans_ctx_allocator_.init("TLD_TCtxPool", param_.tenant_id_))) {
@@ -185,7 +181,7 @@ void ObTableLoadTableCtx::unregister_job_stat()
       int64_t log_print_cnt = 0;
       int64_t ref_cnt = 0;
       while ((ref_cnt = job_stat->get_ref_cnt()) > 0) {
-        usleep(1L * 1000 * 1000);  // 1s
+        ob_usleep(1L * 1000 * 1000);  // 1s
         if ((log_print_cnt++) % 10 == 0) {
           LOG_WARN("LOAD DATA wait job handle release", KR(ret), "wait_seconds", log_print_cnt * 10,
                    K_(gid), K(ref_cnt));
@@ -366,7 +362,7 @@ bool ObTableLoadTableCtx::is_stopped() const
   if (nullptr != coordinator_ctx_ && !coordinator_ctx_->task_scheduler_->is_stopped()) {
     bret = false;
   }
-  if (nullptr != store_ctx_ && !store_ctx_->task_scheduler_->is_stopped()) {
+  if (nullptr != store_ctx_ && !store_ctx_->is_stopped()) {
     bret = false;
   }
   return bret;

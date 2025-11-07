@@ -10,12 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include "storage/tx/ob_tx_data_define.h"
-#include "lib/utility/ob_unify_serialize.h"
-#include "storage/tx_table/ob_tx_table.h"
-#include "share/rc/ob_tenant_base.h"
+#include "ob_tx_data_define.h"
 #include "share/allocator/ob_shared_memory_allocator_mgr.h"
-#include "storage/tx/ob_tx_data_op.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::transaction;
@@ -547,6 +543,20 @@ int ObTxData::reserve_undo(ObTxTable *tx_table)
     }
   }
   return ret;
+}
+
+void ObTxData::dec_ref()
+{
+#ifdef UNITTEST
+  return;
+#endif
+  if (nullptr == tx_data_allocator_) {
+    STORAGE_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "invalid slice allocator", KPC(this));
+    ob_abort();
+  } else if (0 == ATOMIC_SAF(&ref_cnt_, 1)) {
+    op_guard_.reset();
+    tx_data_allocator_->free(this);
+  }
 }
 
 int ObTxData::add_undo_action(ObTxTable *tx_table, transaction::ObUndoAction &new_undo_action, ObUndoStatusNode *&undo_node)

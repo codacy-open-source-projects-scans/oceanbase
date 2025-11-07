@@ -106,6 +106,7 @@ public:
 #endif
 #define OB_CLUSTER_PARAMETER(args...) args
   // Liboblog config.
+  DEF_TIME(init_timeout, OB_CLUSTER_PARAMETER, "2h", "[0s,1d]", "obcdc init timeout, 0s means never");
   // max memory occupied by libobcdc: 20G
   DEF_CAP(memory_limit, OB_CLUSTER_PARAMETER, "8G", "[2G,]", "memory limit");
   // Preserve the lower bound of system memory in %, in the range of 10% ~ 80%
@@ -151,7 +152,7 @@ public:
   // Log_level=INFO in the startup scenario, and then optimize the schema to WARN afterwards
   DEF_STR(init_log_level, OB_CLUSTER_PARAMETER, "ALL.*:INFO;PALF.*:WARN;SHARE.SCHEMA:INFO", "log level: DEBUG, TRACE, INFO, WARN, USER_ERR, ERROR");
   DEF_STR(log_level, OB_CLUSTER_PARAMETER, "ALL.*:INFO;PALF.*:WARN;SHARE.SCHEMA:WARN;CLOG.*:WARN;STORAGE.*:WARN;ARCHIVE.*:WARN", "log level: DEBUG, TRACE, INFO, WARN, USER_ERR, ERROR");
-  // root server info for oblog, seperated by `;` between multi rootserver, a root server info format as `ip:rpc_port:sql_port`
+  // root server info for oblog, separated by `;` between multi rootserver, a root server info format as `ip:rpc_port:sql_port`
   DEF_STR(rootserver_list, OB_CLUSTER_PARAMETER, "|", "OB RootServer list");
   DEF_STR(cluster_url, OB_CLUSTER_PARAMETER, "|", "OB configure url");
   DEF_STR(cluster_user, OB_CLUSTER_PARAMETER, "default", "OB login user");
@@ -448,6 +449,8 @@ public:
   // ------------------------------------------------------------------------
   // Test mode, used only in obtest and other test tool scenarios
   T_DEF_BOOL(test_mode_on, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
+  // Test mode fail while init
+  T_DEF_BOOL(test_mode_init_fail, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
 
   // if force fetch archive is on, cdc service will seek archive for all rpc request unconditionally
   T_DEF_BOOL(test_mode_force_fetch_archive, OB_CLUSTER_PARAMETER, 0, "0:disabled, 1:enabled");
@@ -619,6 +622,7 @@ public:
   T_DEF_INT_INFT(direct_load_inc_queue_backlog_lowest_tolerance, OB_CLUSTER_PARAMETER, 0, 0, "lowest threshold of queue_backlog that will touch parser flow control in direct load inc case");
   T_DEF_INT_INFT(sorted_list_auto_treeify_threshold, OB_CLUSTER_PARAMETER, 32, 0, "treeify list auto-treeify mode treeify threshold");
   T_DEF_INT_INFT(sorted_list_auto_untreeify_threshold, OB_CLUSTER_PARAMETER, 30, 0, "treeify list auto-treeify mode treeify threshold");
+  DEF_CAP(meta_data_inc_trans_size_upper_limit, OB_CLUSTER_PARAMETER, "4G", "[0M,]", "meta data increment part_trans_task size upper limit");
 
 #undef OB_CLUSTER_PARAMETER
 

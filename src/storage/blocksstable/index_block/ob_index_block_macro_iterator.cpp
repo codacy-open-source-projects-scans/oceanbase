@@ -218,6 +218,7 @@ void ObIndexBlockMacroIterator::reset() {
   is_iter_end_ = false;
   is_reverse_scan_ = false;
   is_inited_ = false;
+  index_tree_type_ = IndexTreeType::Unknown;
 }
 
 int ObIndexBlockMacroIterator::open(
@@ -230,6 +231,7 @@ int ObIndexBlockMacroIterator::open(
   int ret = OB_SUCCESS;
   bool start_beyond_range = false;
   bool end_beyond_range = false;
+  ObArenaAllocator tmp_arena("MacroIterTmp", OB_MALLOC_MIDDLE_BLOCK_SIZE, MTL_ID());
   ObDatumRowkey sstable_endkey;
   int cmp_ret = 0;
 
@@ -241,7 +243,7 @@ int ObIndexBlockMacroIterator::open(
     LOG_WARN("SSTable is not valid", K(ret), K(sstable), K(range));
   } else if (sstable.no_data_to_read()) {
     is_iter_end_ = true;
-  } else if (OB_FAIL(sstable.get_last_rowkey(allocator, sstable_endkey))) {
+  } else if (OB_FAIL(sstable.get_last_rowkey(tmp_arena, sstable_endkey))) {
     LOG_WARN("Fail to get last rowkey of sstable", K(ret));
   } else if (OB_FAIL(sstable_endkey.compare(
       range.get_start_key(), rowkey_read_info.get_datum_utils(), cmp_ret))) {
@@ -273,8 +275,9 @@ int ObIndexBlockMacroIterator::open(
           end_block_start_row_offset_,
           end_beyond_range))) {
         LOG_WARN("Fail to locate end macro block", K(ret), K(range));
+      } else if (OB_FAIL(tree_cursor_.get_current_endkey(curr_key_))){
+        LOG_WARN("Fail to get current endkey", K(ret), K_(tree_cursor));
       } else {
-        curr_key_ = range.get_end_key();
         if (start_beyond_range) {
           is_iter_end_ = true;
         } else if (end_beyond_range) {
@@ -397,17 +400,9 @@ int ObIndexBlockMacroIterator::get_next_idx_row(ObIAllocator &item_allocator, Ob
     // traverse all node of this macro block and collect index info
     ObDatumRowkey rowkey;
     row_offset = idx_row_parser->get_row_offset();
-    if (idx_row_header->is_data_index() && !idx_row_header->is_major_node()) {
-      if (OB_FAIL(idx_row_parser->get_minor_meta(minor_meta_info))) {
-        LOG_WARN("Fail to get minor meta info", K(ret));
-      }
-    } else if (!idx_row_header->is_major_node() || !idx_row_header->is_pre_aggregated()) {
-      // Do not have aggregate data
-    } else if (OB_FAIL(idx_row_parser->get_agg_row(agg_row_buf, agg_buf_size))) {
-      LOG_WARN("Fail to get aggregate", K(ret));
-    }
-
-    if (OB_SUCC(ret)) {
+    if (OB_FAIL(idx_row_parser->parse_minor_meta_and_agg_row(minor_meta_info, agg_row_buf, agg_buf_size))) {
+      LOG_WARN("Fail to parse minor meta and agg row", K(ret));
+    } else {
       if (need_record_micro_info_) {
         micro_endkey_allocator_.reuse();
         reuse_micro_info_array();
@@ -442,6 +437,64 @@ int ObIndexBlockMacroIterator::get_next_idx_row(ObIAllocator &item_allocator, Ob
     }
     if (OB_SUCC(ret)) {
       reach_cursor_end = is_iter_end_;
+    }
+  }
+  return ret;
+}
+
+int ObIndexBlockMacroIterator::move_to_next_macro() {
+  bool is_first_macro_block = false;
+  int ret = OB_SUCCESS;
+
+  // traverse all node of this macro block and collect index info
+  ObDatumRowkey rowkey;
+  if (need_record_micro_info_) {
+    micro_endkey_allocator_.reuse();
+    reuse_micro_info_array();
+    if (OB_FAIL(tree_cursor_.get_child_micro_infos(
+                *iter_range_,
+                micro_endkey_allocator_,
+                micro_endkeys_,
+                micro_index_infos_,
+                hold_item_))) {
+      LOG_WARN("Fail to record child micro block info", K(ret), KPC(iter_range_));
+    }
+  }
+
+  if (!is_reverse_scan_) {
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(deep_copy_rowkey(curr_key_, prev_key_, prev_key_buf_))) {
+      STORAGE_LOG(WARN, "Failed to save prev key", K(ret), K_(curr_key));
+    } else if (OB_FAIL(tree_cursor_.get_current_endkey(rowkey))) {
+      LOG_WARN("Fail to get current endkey", K(ret), K_(tree_cursor));
+    } else if (OB_FAIL(deep_copy_rowkey(rowkey, curr_key_, curr_key_buf_))) {
+      STORAGE_LOG(WARN, "Failed to save curr key", K(ret), K(rowkey));
+    } else if (OB_FAIL(tree_cursor_.move_forward(is_reverse_scan_))) {
+      if (OB_LIKELY(OB_ITER_END == ret)) {
+        is_iter_end_ = true;
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("Fail to move cursor to next macro node", K(ret), K_(tree_cursor));
+      }
+    }
+  } else {
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(deep_copy_rowkey(curr_key_, prev_key_, prev_key_buf_))) {
+      STORAGE_LOG(WARN, "Failed to save prev key", K(ret), K_(curr_key));
+    } else if (OB_FAIL(tree_cursor_.move_forward(is_reverse_scan_))) {
+      if (OB_LIKELY(OB_ITER_END == ret)) {
+        is_iter_end_ = true;
+        ret = OB_SUCCESS;
+        is_first_macro_block = is_reverse_scan_;
+      } else {
+        LOG_WARN("Fail to move cursor to next macro node", K(ret), K_(tree_cursor));
+      }
+    } else if (is_first_macro_block){
+      curr_key_.set_min_rowkey();
+    } else if (OB_FAIL(tree_cursor_.get_current_endkey(rowkey))) {
+      LOG_WARN("Fail to get current endkey", K(ret), K_(tree_cursor));
+    } else if (OB_FAIL(deep_copy_rowkey(rowkey, curr_key_, curr_key_buf_))) {
+      STORAGE_LOG(WARN, "Failed to save curr key", K(ret), K(rowkey));
     }
   }
   return ret;
@@ -490,42 +543,8 @@ int ObIndexBlockMacroIterator::get_next_macro_block(
       is_iter_end_ = true;
     }
     start_row_offset = idx_row_parser->get_row_offset() - idx_row_header->get_row_count() + 1;
-  }
-
-  if (OB_SUCC(ret)) {
-    // traverse all node of this macro block and collect index info
-    ObDatumRowkey rowkey;
-    if (need_record_micro_info_) {
-      micro_endkey_allocator_.reuse();
-      reuse_micro_info_array();
-      if (OB_FAIL(tree_cursor_.get_child_micro_infos(
-                  *iter_range_,
-                  micro_endkey_allocator_,
-                  micro_endkeys_,
-                  micro_index_infos_,
-                  hold_item_))) {
-        LOG_WARN("Fail to record child micro block info", K(ret), KPC(iter_range_));
-      }
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(deep_copy_rowkey(curr_key_, prev_key_, prev_key_buf_))) {
-      STORAGE_LOG(WARN, "Failed to save prev key", K(ret), K_(curr_key));
-    } else if (OB_FAIL(tree_cursor_.get_current_endkey(rowkey))) {
-      LOG_WARN("Fail to get current endkey", K(ret), K_(tree_cursor));
-    } else if (OB_FAIL(deep_copy_rowkey(rowkey, curr_key_, curr_key_buf_))) {
-      STORAGE_LOG(WARN, "Failed to save curr key", K(ret), K(rowkey));
-    }
-
-    // Move forward.
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(tree_cursor_.move_forward(is_reverse_scan_))) {
-      if (OB_LIKELY(OB_ITER_END == ret)) {
-        is_iter_end_ = true;
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("Fail to move cursor to next macro node", K(ret), K_(tree_cursor));
-      }
+    if (OB_FAIL(move_to_next_macro())) {
+      LOG_WARN("Fail to move to next macro or deep copy rowkey", K(ret), K_(tree_cursor));
     }
   }
   return ret;

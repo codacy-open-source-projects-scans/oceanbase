@@ -14,11 +14,7 @@
 
 #include "sql/rewrite/ob_transform_view_merge.h"
 #include "sql/rewrite/ob_transform_utils.h"
-#include "sql/resolver/dml/ob_dml_stmt.h"
-#include "sql/resolver/dml/ob_del_upd_stmt.h"
-#include "sql/resolver/dml/ob_update_stmt.h"
 #include "sql/optimizer/ob_optimizer_util.h"
-#include "common/ob_smart_call.h"
 
 namespace oceanbase
 {
@@ -100,7 +96,13 @@ int ObTransformViewMerge::need_transform(const common::ObIArray<ObParentDMLStmt>
   UNUSED(current_level);
   const ObQueryHint *query_hint = NULL;
   const ObHint *trans_hint = NULL;
-  if (!stmt.is_sel_del_upd() || stmt.has_instead_of_trigger() || stmt.is_hierarchical_query()) {
+  bool bypass = false;
+  if (OB_FAIL(check_rule_bypass(stmt, bypass))) {
+    LOG_WARN("failed to fast reject transform", K(ret));
+  } else if (bypass) {
+    need_trans = false;
+    OPT_TRACE("transform rule bypassed");
+  } else if (!stmt.is_sel_del_upd() || stmt.has_instead_of_trigger() || stmt.is_hierarchical_query()) {
     need_trans = false;
   } else if (OB_ISNULL(ctx_) || OB_ISNULL(query_hint = stmt.get_stmt_hint().query_hint_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -373,6 +375,8 @@ int ObTransformViewMerge::check_semi_right_table_can_be_merged(ObDMLStmt *stmt,
              || (ref_query->is_values_table_query() &&
                  !ObTransformUtils::is_enable_values_table_rewrite(stmt->get_query_ctx()->optimizer_features_enable_version_))) {
     can_be = false;
+  } else if (stmt->is_unpivot_select() || ref_query->is_unpivot_select()) {
+    can_be = false;
   } else if (OB_FAIL(ref_query->has_rownum(has_rownum))) {
     LOG_WARN("failed to check has rownum expr", K(ret));
   } else if (has_rownum) {
@@ -410,7 +414,7 @@ int ObTransformViewMerge::transform_generated_table(ObDMLStmt *parent_stmt,
                                          child_stmt,
                                          helper,
                                          parent_stmt->is_hierarchical_query(),
-                                         false,
+                                         parent_stmt->is_semi_left_table(table_item->table_id_),
                                          can_be))) {
     LOG_WARN("failed to check can be unnested", K(ret));
   } else if (!can_be) {
@@ -521,6 +525,9 @@ int ObTransformViewMerge::check_basic_validity(ObDMLStmt *parent_stmt,
                  !ObTransformUtils::is_enable_values_table_rewrite(parent_stmt->get_query_ctx()->optimizer_features_enable_version_))) {
     can_be = false;
     OPT_TRACE("not a valid view");
+  } else if (parent_stmt->is_unpivot_select() || child_stmt->is_unpivot_select()) {
+    can_be = false;
+    OPT_TRACE("unpivot view can not be merged");
   } else if (!force_merge && parent_stmt->get_table_size() > 1 && child_stmt->get_table_size() > 1 &&
               parent_stmt->get_table_size() + child_stmt->get_table_size() - 1 > 10) {
     // More than 10 tables may result in the inability to enumerate a valid join order.

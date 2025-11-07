@@ -35,6 +35,7 @@ flag_dict["ORACLE_ONLY"] = "ORACLE_ONLY"
 flag_dict["WITH_CREATE"] = "WITH_CREATE"
 flag_dict["WITH_UPGRADE"] = "WITH_UPGRADE"
 flag_dict["MYSQL_ONLY"] = "MYSQL_ONLY"
+flag_dict["INFLUENCE_PL"] = "INFLUENCE_PL"
 
 flag_value_dict = {}
 flag_value_dict["GLOBAL"] = 1L
@@ -51,6 +52,7 @@ flag_value_dict["ORACLE_ONLY"] = (1L << 9)
 flag_value_dict["WITH_CREATE"] = (1L << 10)
 flag_value_dict["WITH_UPGRADE"] = (1L << 11)
 flag_value_dict["MYSQL_ONLY"] = (1L << 12)
+flag_value_dict["INFLUENCE_PL"] = (1L << 13)
 
 type_dict = {}
 type_dict["tinyint"] = "ObTinyIntType"
@@ -163,6 +165,7 @@ def make_head_file(pdir, head_file_name, sorted_list):
   head_file.write("  const static int64_t WITH_CREATE = (1LL << 10);\n");
   head_file.write("  const static int64_t WITH_UPGRADE = (1LL << 11);\n");
   head_file.write("  const static int64_t MYSQL_ONLY = (1LL << 12);\n");
+  head_file.write("  const static int64_t INFLUENCE_PL = (1LL << 13);\n");
   head_file.write("};\n");
   head_file.write("struct ObSysVarFromJson{\n");
   head_file.write("  ObSysVarClassType id_;\n");
@@ -249,10 +252,8 @@ def make_cpp_file(pdir, cpp_file_name, sorted_list):
   cpp_file.write(file_head_annotation)
   cpp_file.write("#define USING_LOG_PREFIX SHARE\n")
   cpp_file.write("#include \"" + pdir + "/" + cpp_file_name.replace(".cpp", ".h") + "\"\n")
-  cpp_file.write("#include \"share/system_variable/ob_system_variable_factory.h\"\n")
+  cpp_file.write("#include \"ob_system_variable_factory.h\"\n")
   cpp_file.write("#include \"share/object/ob_obj_cast.h\"\n")
-  cpp_file.write("#include \"common/expression/ob_expr_string_buf.h\"\n")
-  cpp_file.write("#include \"common/expression/ob_expr_string_buf.h\"\n")
   cpp_file.write("using namespace oceanbase::common;\n");
   cpp_file.write("\n")
   cpp_file.write("namespace oceanbase\n");
@@ -492,7 +493,7 @@ public:
   ObSysVarFactory(const int64_t tenant_id = OB_SERVER_TENANT_ID);
   virtual ~ObSysVarFactory();
   void destroy();
-  int create_sys_var(ObSysVarClassType sys_var_id, ObBasicSysVar *&sys_var);
+  int create_sys_var(ObSysVarClassType sys_var_id, ObBasicSysVar *&sys_var, int64_t store_idx = -1);
   int create_all_sys_vars();
   int free_sys_var(ObBasicSysVar *sys_var, int64_t sys_var_idx);
   static int create_sys_var(ObIAllocator &allocator_, ObSysVarClassType sys_var_id, ObBasicSysVar *&sys_var_ptr);
@@ -668,11 +669,8 @@ def make_sys_var_cpp(pdir, filename, list_sorted_by_name, list_sorted_by_id):
   wfile = open(filename, 'w')
   wfile.write(file_head_annotation);
   wfile.write("#define USING_LOG_PREFIX SQL_SESSION\n");
-  wfile.write("#include \"share/ob_define.h\"\n")
   wfile.write("#include \"" + pdir + "/" + filename.replace(".cpp", ".h") + "\"\n")
   # wfile.write("#include \"share/system_variable/ob_system_variable_init.cpp\"\n")
-  wfile.write("#include \"share/ob_errno.h\"\n")
-  wfile.write("#include <algorithm>\n")
   wfile.write("using namespace oceanbase::common;\n");
   wfile.write("""
 namespace oceanbase
@@ -1001,14 +999,13 @@ int ObSysVarFactory::create_sys_var(ObIAllocator &allocator_, ObSysVarClassType 
   return ret;
 }
 
-int ObSysVarFactory::create_sys_var(ObSysVarClassType sys_var_id, ObBasicSysVar *&sys_var)
+int ObSysVarFactory::create_sys_var(ObSysVarClassType sys_var_id, ObBasicSysVar *&sys_var, int64_t store_idx)
 {
   int ret = OB_SUCCESS;
-  int64_t store_idx = -1;
   ObBasicSysVar *sys_var_ptr = NULL;
   if (OB_FAIL(try_init_store_mem())) {
     LOG_WARN("fail to init", K(ret));
-  } else if (OB_FAIL(calc_sys_var_store_idx(sys_var_id, store_idx))) {
+  } else if (-1 == store_idx && OB_FAIL(calc_sys_var_store_idx(sys_var_id, store_idx))) {
     LOG_WARN("fail to calc sys var store idx", K(ret), K(sys_var_id));
   } else if (store_idx < 0 || store_idx >= ALL_SYS_VARS_COUNT) {
     ret = OB_ERR_UNEXPECTED;

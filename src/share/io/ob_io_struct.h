@@ -97,7 +97,6 @@ public:
   void destroy();
   int update_memory_limit(const int64_t memory_limit);
   int64_t get_allocated_size() const;
-  int64_t get_pre_allocated_count() const { return block_count_; }
   virtual void *alloc(const int64_t size, const lib::ObMemAttr &attr) override;
   virtual void *alloc(const int64_t size) override;
   virtual void free(void *ptr) override;
@@ -105,15 +104,9 @@ public:
   template<typename T> void free(T *instance);
   TO_STRING_KV(K(is_inited_), "allocated", inner_allocator_.allocated());
 private:
-  int init_macro_pool(const int64_t memory_limit);
-  int calculate_pool_block_count(const int64_t memory_limit, int64_t &block_count);
-private:
-  static const int64_t MACRO_POOL_BLOCK_SIZE = 2L * 1024L * 1024L + DIO_READ_ALIGN_SIZE;
   bool is_inited_;
   int64_t memory_limit_;
-  int64_t block_count_;
   ObConcurrentFIFOAllocator inner_allocator_;
-  ObIOMemoryPool<MACRO_POOL_BLOCK_SIZE> macro_pool_;
 };
 
 
@@ -243,6 +236,9 @@ struct ObIOFailedReqUsageInfo : ObIOGroupUsage
 {
 };
 
+typedef ObSEArray<ObIOUsageInfo, GROUP_START_NUM * static_cast<uint64_t>(ObIOGroupMode::MODECNT)> ObIOUsageInfoArray;
+typedef ObSEArray<ObIOFailedReqUsageInfo, GROUP_START_NUM * static_cast<uint64_t>(ObIOGroupMode::MODECNT)> ObIOFailedReqInfoArray;
+typedef ObSEArray<int64_t, GROUP_START_NUM> ObIOGroupThrottledTimeArray;
 class ObIOUsage final
 {
 public:
@@ -252,17 +248,17 @@ public:
   int refresh_group_num (const int64_t group_num);
   void accumulate(ObIORequest &request);
   void calculate_io_usage();
-  const ObSEArray<ObIOUsageInfo, GROUP_START_NUM> &get_io_usage() { return info_; }
-  ObSEArray<ObIOFailedReqUsageInfo, GROUP_START_NUM> &get_failed_req_usage() { return failed_req_info_; }
-  ObSEArray<int64_t, GROUP_START_NUM> &get_group_throttled_time_us() { return group_throttled_time_us_; }
+  const ObIOUsageInfoArray &get_io_usage() { return info_; }
+  ObIOFailedReqInfoArray &get_failed_req_usage() { return failed_req_info_; }
+  ObIOGroupThrottledTimeArray &get_group_throttled_time_us() { return group_throttled_time_us_; }
   int assign(const ObIOUsage &other);
   int64_t to_string(char* buf, const int64_t buf_len) const;
 private:
   int assign_unsafe(const ObIOUsage &other);
 private:
-  ObSEArray<ObIOUsageInfo, GROUP_START_NUM> info_;
-  ObSEArray<ObIOFailedReqUsageInfo, GROUP_START_NUM> failed_req_info_;
-  ObSEArray<int64_t, GROUP_START_NUM> group_throttled_time_us_;
+  ObIOUsageInfoArray info_;
+  ObIOFailedReqInfoArray failed_req_info_;
+  ObIOGroupThrottledTimeArray group_throttled_time_us_;
   mutable common::ObQSyncLock lock_;
 };
 
@@ -288,7 +284,8 @@ public:
   void stop();
   void wait();
   void destroy();
-  int send_detect_task();
+  int send_sn_detect_task();
+  int send_ss_detect_task();
   virtual void run1() override;
 private:
   int try_release_thread();
@@ -417,6 +414,7 @@ public:
   virtual ~ObIOChannel();
 
   int base_init(ObDeviceChannel *device_channel);
+  static int convert_sys_errno(const int system_errno);
   virtual int submit(ObIORequest &req) = 0;
   virtual void cancel(ObIORequest &req) = 0;
   virtual int64_t get_queue_count() const = 0;
@@ -457,6 +455,7 @@ private:
 
 private:
   static const int32_t MAX_AIO_EVENT_CNT = 512;
+  static const int32_t MAX_DETECT_DISK_HUNG_IO_CNT = 10;
   static const int64_t AIO_POLLING_TIMEOUT_NS = 1000L * 1000L * 1000L - 1L; // almost 1s, for timespec_valid check
 private:
   bool is_inited_;
@@ -493,7 +492,7 @@ private:
   static const int64_t MAX_SYNC_IO_QUEUE_COUNT = 512;
   ObFixedQueue<ObIORequest> req_queue_;
   ObThreadCond cond_;
-  int64_t submit_count_;
+  int64_t used_io_depth_;
   bool is_wait_;
 };
 
@@ -575,17 +574,10 @@ public:
 
   int enqueue_callback(ObIORequest &req);
   void try_release_thread();
-  void get_thread_and_runner_num(int64_t &thread_num, int64_t &runner_count);
   int update_thread_count(const int64_t thread_count);
-  int64_t get_thread_count() const;
-  int64_t get_queue_depth() const;
-  int get_queue_count(ObIArray<int64_t> &queue_count_array);
-
-  const ObArray<ObIORunner *> &get_runners() { return runners_; };
-
-  TO_STRING_KV(K(is_inited_), K(config_thread_count_), K(queue_depth_), K(runners_), KPC(io_allocator_));
+  int64_t to_string(char *buf, const int64_t len) const;
 private:
-  int64_t get_callback_queue_idx(const ObIOCallbackType cb_type) const;
+  int64_t get_callback_queue_idx_(const ObIOCallbackType cb_type) const;
 private:
   static const int64_t ATOMIC_WRITE_CALLBACK_THREAD_RATIO = 2;
 private:
@@ -660,6 +652,7 @@ struct ObIOFuncUsages
 public:
   ObIOFuncUsages();
   ~ObIOFuncUsages() = default;
+  int init(const uint64_t tenant_id);
   int accumulate(ObIORequest &req);
   TO_STRING_KV(K(func_usages_));
   ObIOFuncUsageArr func_usages_;
@@ -681,6 +674,8 @@ public:
   ObIOFaultDetector(const ObIOConfig &io_config);
   virtual ~ObIOFaultDetector();
   int init();
+  void stop();
+  void wait();
   void destroy();
   int start();
   virtual void handle(void *task) override;
@@ -791,7 +786,7 @@ void ObIOAllocator::free(T *instance)
 
 inline bool is_io_aligned(const int64_t value, const int64_t align)
 {
-  return 0 == (value % align);
+  return (align > 0) && (0 == (value % align));
 }
 
 inline void align_offset_size(

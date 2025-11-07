@@ -10,20 +10,11 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
-#include <gmock/gmock.h>
 #define private public
 #define protected public
 
-#include "src/storage/ob_storage_struct.h"
-#include "src/storage/blocksstable/ob_datum_range.h"
-#include "src/share/ob_ddl_common.h"
-#include "src/storage/meta_mem/ob_tablet_handle.h"
-#include "storage/init_basic_struct.h"
 #include "storage/test_tablet_helper.h"
-#include "storage/tx_storage/ob_ls_service.h"
 #include "storage/test_dml_common.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "src/share/ob_partition_split_query.h"
 
 namespace oceanbase
@@ -166,7 +157,7 @@ void FakeObTableScanRange::SetUp()
   need_set_split_end_key_ = false;
   split_info_.split_type_ = ObTabletSplitType::MAX_TYPE;
   split_info_.split_cnt_ = 1;
-  split_info_.src_tablet_handle_ = tablet_handle_;
+  split_info_.is_split_dst_ = true;
   split_info_.partkey_is_rowkey_prefix_ = true;
 }
 

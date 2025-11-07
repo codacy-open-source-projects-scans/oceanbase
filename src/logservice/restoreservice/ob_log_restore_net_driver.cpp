@@ -11,24 +11,10 @@
  */
 
 #define USING_LOG_PREFIX CLOG
-#include "lib/ob_define.h"
-#include "lib/ob_errno.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "lib/time/ob_time_utility.h"
-#include "logservice/palf_handle_guard.h"
-#include "ob_restore_log_function.h"
 #include "ob_log_restore_net_driver.h"
-#include "share/ob_ls_id.h"
-#include "share/rc/ob_tenant_base.h"
-#include "storage/tx_storage/ob_ls_service.h"    // ObLSService
 #include "logservice/ob_log_service.h"      // ObLogService
-#include "share/restore/ob_log_restore_source.h"   // ObLogRestoreSourceType
 #include "logservice/logfetcher/ob_log_fetcher.h"  // ObLogFetcher
-#include "observer/omt/ob_tenant_config_mgr.h"  // tenant_config
 
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "lib/string/ob_sql_string.h"    // ObSqlString
 
 namespace oceanbase
 {
@@ -123,6 +109,8 @@ void ObLogRestoreNetDriver::destroy()
 int ObLogRestoreNetDriver::start()
 {
   // fetcher will be build and start on demand
+  WLockGuard guard(lock_);
+  stop_flag_ = false;
   return OB_SUCCESS;
 }
 
@@ -455,10 +443,10 @@ void ObLogRestoreNetDriver::update_config_()
 int64_t ObLogRestoreNetDriver::get_rpc_timeout_sec_()
 {
   int64_t rpc_timeout = 0;
-  const int64_t DEFAULT_FETECH_LOG_RPC_TIMEOUT = 15;   // 15s
+  const int64_t DEFAULT_FETCH_LOG_RPC_TIMEOUT = 15;   // 15s
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id_));
   if (!tenant_config.is_valid()) {
-    rpc_timeout = DEFAULT_FETECH_LOG_RPC_TIMEOUT;
+    rpc_timeout = DEFAULT_FETCH_LOG_RPC_TIMEOUT;
   } else {
     rpc_timeout = tenant_config->standby_db_fetch_log_rpc_timeout / 1000 / 1000L;
   }

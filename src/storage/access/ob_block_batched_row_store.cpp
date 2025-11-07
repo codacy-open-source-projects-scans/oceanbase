@@ -12,10 +12,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_block_batched_row_store.h"
-#include "sql/engine/expr/ob_expr.h"
-#include "storage/ob_i_store.h"
-#include "storage/blocksstable/ob_micro_block_reader.h"
-#include "storage/blocksstable/encoding/ob_micro_block_decoder.h"
 #include "storage/access/ob_table_access_context.h"
 
 namespace oceanbase
@@ -141,7 +137,7 @@ int ObBlockBatchedRowStore::get_row_ids(
       }
       begin_index = begin_index + capacity * step;
     } else if (res.bitmap_->is_all_false()) {
-      begin_index = begin_index + capacity * step;
+      begin_index = end_index;
     } else {
       if (1 == step && 0 == res.filter_start_) {
         if (OB_FAIL(res.bitmap_->get_row_ids(row_ids_, row_count, begin_index, end_index, capacity))) {

@@ -12,7 +12,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/ls/ob_ls.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tablet/ob_tablet_transfer_tx_ctx.h"
 
@@ -49,7 +48,8 @@ OB_SERIALIZE_MEMBER(ObTxCtxMoveArg,
                     is_sub2pc_,
                     happened_before_,
                     table_lock_info_,
-                    associated_session_id_);
+                    associated_session_id_,
+                    client_sid_);
 OB_SERIALIZE_MEMBER(ObTransferDestPrepareInfo,
                     task_id_,
                     src_ls_id_,

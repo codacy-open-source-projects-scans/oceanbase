@@ -12,22 +12,12 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/backup/ob_backup_ctx.h"
-#include "lib/lock/ob_mutex.h"
-#include "lib/oblog/ob_log_module.h"
-#include "share/backup/ob_backup_io_adapter.h"
+#include "ob_backup_ctx.h"
 #include "storage/backup/ob_backup_factory.h"
 #include "storage/backup/ob_backup_operator.h"
-#include "share/backup/ob_backup_path.h"
-#include "storage/backup/ob_backup_reader.h"
-#include "share/backup/ob_backup_struct.h"
 #include "observer/ob_server_event_history_table_operator.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
 #include "share/backup/ob_backup_data_table_operator.h"
-#include "common/storage/ob_device_common.h"
-#include "storage/backup/ob_backup_data_store.h"
 
-#include <algorithm>
 
 using namespace oceanbase::blocksstable;
 using namespace oceanbase::storage;
@@ -1235,9 +1225,11 @@ ObLSBackupCtx::ObLSBackupCtx()
       backup_tx_table_filled_tx_scn_(share::SCN::min_scn()),
       index_builder_mgr_(),
       bandwidth_throttle_(NULL),
-      mview_dep_tablet_set_(),
+      mview_dep_tablet_map_(),
       wait_reuse_across_sstable_time_(0),
-      mv_mutex_()
+      mv_mutex_(),
+      ls_clog_checkpoint_scn_(share::SCN::min_scn()),
+      is_newly_created_ls_(true)
 {}
 
 ObLSBackupCtx::~ObLSBackupCtx()
@@ -1260,6 +1252,7 @@ int ObLSBackupCtx::open(
   int ret = OB_SUCCESS;
   ObArray<common::ObTabletID> tablet_list;
   ObILSTabletIdReader *reader = NULL;
+  ObMemAttr attr(MTL_ID(), ObModIds::BACKUP);
   if (IS_INIT) {
     ret = OB_INIT_TWICE;
     LOG_WARN("init twice", K(ret));
@@ -1279,8 +1272,8 @@ int ObLSBackupCtx::open(
     LOG_WARN("failed to init index builder mg", K(ret), K(param));
   } else if (OB_FAIL(param_.assign(param))) {
     LOG_WARN("failed to assign param", K(ret), K(param));
-  } else if (OB_FAIL(mview_dep_tablet_set_.create(DEFAULT_MVIEW_DEP_TABLET_SET_SIZE))) {
-    LOG_WARN("failed to create mveiw dep tablet set", K(ret));
+  } else if (OB_FAIL(mview_dep_tablet_map_.create(DEFAULT_MVIEW_DEP_TABLET_SET_SIZE, attr))) {
+    LOG_WARN("failed to create mview dep tablet map", K(ret));
   } else {
     max_file_id_ = 0;
     prefetch_task_id_ = 0;
@@ -1421,7 +1414,7 @@ void ObLSBackupCtx::set_result_code(const int64_t result, bool &is_set)
   ObMutexGuard guard(mutex_);
   if (OB_SUCCESS == result_code_ && OB_SUCCESS != result) {
     result_code_ = result;
-    is_finished_ = true;
+    ATOMIC_STORE(&is_finished_, true);
     is_set = true;
   } else {
     is_set = false;
@@ -1437,14 +1430,12 @@ int64_t ObLSBackupCtx::get_result_code() const
 
 void ObLSBackupCtx::set_finished()
 {
-  ObMutexGuard guard(mutex_);
-  is_finished_ = true;
+  ATOMIC_STORE(&is_finished_, true);
 }
 
 bool ObLSBackupCtx::is_finished() const
 {
-  ObMutexGuard guard(mutex_);
-  return is_finished_;
+  return ATOMIC_LOAD(&is_finished_);
 }
 
 int ObLSBackupCtx::close()
@@ -1519,7 +1510,8 @@ int ObLSBackupCtx::finish_task(const int64_t file_id)
   return ret;
 }
 
-int ObLSBackupCtx::check_is_major_compaction_mview_dep_tablet(const common::ObTabletID &tablet_id, bool &is_dep) const
+int ObLSBackupCtx::check_is_major_compaction_mview_dep_tablet(
+    const common::ObTabletID &tablet_id, share::SCN &mview_dep_scn, bool &is_dep) const
 {
   int ret = OB_SUCCESS;
   is_dep = false;
@@ -1527,12 +1519,11 @@ int ObLSBackupCtx::check_is_major_compaction_mview_dep_tablet(const common::ObTa
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid args", K(ret), K(tablet_id));
   } else {
-    int hash_ret = mview_dep_tablet_set_.exist_refactored(tablet_id);
-    if (OB_HASH_EXIST == hash_ret) {
-      is_dep = true;
-      LOG_INFO("is mview dependent tablet", K(tablet_id));
-    } else if (OB_HASH_NOT_EXIST == hash_ret) {
+    int hash_ret = mview_dep_tablet_map_.get_refactored(tablet_id, mview_dep_scn);
+    if (OB_HASH_NOT_EXIST == hash_ret) {
       is_dep = false;
+    } else if (OB_SUCCESS == hash_ret) {
+      is_dep = true;
     } else {
       ret = hash_ret;
       LOG_WARN("failed to check is mview dep tablet", K(ret), K(tablet_id));
@@ -1642,11 +1633,17 @@ int ObLSBackupCtx::prepare_mview_dep_tablet_set_(const ObLSBackupParam &param,
     LOG_WARN("failed to read mview dep tablet list", K(ret));
   } else {
     const common::ObSArray<common::ObTabletID> &mview_tablet_list = desc.tablet_id_list_;;
+    const ObSArray<share::SCN> &tablet_mview_dep_scn_list = desc.mview_dep_scn_list_;
+    if (mview_tablet_list.count() != tablet_mview_dep_scn_list.count()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("mview tablet list not equal to tablet version list", K(ret));
+    }
     ARRAY_FOREACH_X(mview_tablet_list, idx, cnt, OB_SUCC(ret)) {
       const ObTabletID &tablet_id = mview_tablet_list.at(idx);
+      const SCN &tablet_version = tablet_mview_dep_scn_list.at(idx);
       const int flag = 1;
-      if (OB_FAIL(mview_dep_tablet_set_.set_refactored(tablet_id, flag))) {
-        LOG_WARN("failed to set refactored", K(ret), K(tablet_id));
+      if (OB_FAIL(mview_dep_tablet_map_.set_refactored(tablet_id, tablet_version, flag))) {
+        LOG_WARN("failed to set refactored", K(ret), K(tablet_id), K(tablet_version));
       }
     }
   }
@@ -1662,7 +1659,7 @@ int ObLSBackupCtx::check_mview_tablet_set_(const uint64_t tenant_id, common::ObM
     LOG_WARN("failed to get tenant info", K(ret), K(tenant_id));
   } else if (tenant_info.is_primary()) {
     LOG_INFO("tenant is primary", K(tenant_id), K(tenant_info));
-  } else if (!mview_dep_tablet_set_.empty()) {
+  } else if (!mview_dep_tablet_map_.empty()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tenant not primary but mview dep tablet is not empty", K(tenant_id), K(tenant_info));
   }

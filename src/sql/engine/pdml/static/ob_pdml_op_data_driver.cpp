@@ -14,11 +14,7 @@
 
 #include "sql/engine/pdml/static/ob_pdml_op_data_driver.h"
 #include "sql/engine/dml/ob_dml_service.h"
-#include "sql/engine/px/datahub/ob_dh_msg.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
-#include "sql/engine/px/ob_px_sqc_proxy.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/engine/cmd/ob_table_direct_insert_service.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -37,6 +33,7 @@ int ObPDMLOpDataDriver::init(const ObTableModifySpec &spec,
                              ObDMLOpDataReader *reader,
                              ObDMLOpDataWriter *writer,
                              const bool is_heap_table_insert,
+                             const bool is_clustering_key_table_insert,
                              const bool with_barrier/*false*/)
 {
   UNUSED(allocator);
@@ -50,8 +47,8 @@ int ObPDMLOpDataDriver::init(const ObTableModifySpec &spec,
   op_monitor_info_.otherstat_3_id_ = ObSqlMonitorStatIds::PDML_WRITE_DAS_BUFF_ROW_COUNT;
   op_monitor_info_.otherstat_4_value_ = 0;
   op_monitor_info_.otherstat_4_id_ = ObSqlMonitorStatIds::PDML_SKIP_ROW_COUNT;
-  op_monitor_info_.otherstat_6_value_ = 0;
-  op_monitor_info_.otherstat_6_id_ = ObSqlMonitorStatIds::PDML_STORAGE_RETURN_ROW_COUNT;
+  op_monitor_info_.otherstat_5_value_ = 0;
+  op_monitor_info_.otherstat_5_id_ = ObSqlMonitorStatIds::PDML_STORAGE_RETURN_ROW_COUNT;
 
   if (OB_ISNULL(reader)
       || OB_ISNULL(writer)) {
@@ -62,6 +59,7 @@ int ObPDMLOpDataDriver::init(const ObTableModifySpec &spec,
     writer_ = writer;
     dml_rtdef_ = &dml_rtdef;
     is_heap_table_insert_ = is_heap_table_insert;
+    is_clustering_key_table_insert_ = is_clustering_key_table_insert;
     with_barrier_ = with_barrier;
   }
   // 初始化cache对象
@@ -94,6 +92,7 @@ int ObPDMLOpDataDriver::destroy()
   last_row_expr_ = nullptr;
   op_id_ = OB_INVALID_ID;
   is_heap_table_insert_ = false;
+  is_clustering_key_table_insert_ = false;
   with_barrier_ = false;
   dfo_id_ = OB_INVALID_ID;
   return ret;
@@ -201,7 +200,7 @@ int ObPDMLOpDataDriver::fill_cache_unitl_cache_full_or_child_iter_end(ObExecCont
         }
       } else if (is_skipped) {
         //need to skip this row
-      } else if (is_heap_table_insert_
+      } else if ((is_heap_table_insert_ || is_clustering_key_table_insert_)
           && OB_FAIL(set_heap_table_hidden_pk(row, tablet_id, is_direct_load))) {
         LOG_WARN("fail to set heap table hidden pk", K(ret), K(*row), K(tablet_id), K(is_direct_load));
       } else if (OB_FAIL(cache_.add_row(*row, tablet_id))) {
@@ -447,19 +446,48 @@ int ObPDMLOpDataDriver::set_heap_table_hidden_pk_value(
 {
   int ret = OB_SUCCESS;
   ObExpr *auto_inc_expr = nullptr;
+  ObExpr *hidden_ck_expr = nullptr;
+  ObExpr *hidden_ck_column_expr = nullptr;
+
+  // Find hidden pk column: either T_TABLET_AUTOINC_NEXTVAL (heap table) or T_PSEUDO_HIDDEN_CLUSTERING_KEY (clustering key table)
   for (int64_t i = 0; OB_SUCC(ret) && i < row->count(); ++i) {
     if (T_TABLET_AUTOINC_NEXTVAL == row->at(i)->type_) {
       auto_inc_expr = row->at(i);
-      break;
+    } else if (T_PSEUDO_HIDDEN_CLUSTERING_KEY == row->at(i)->type_) {
+      hidden_ck_expr = row->at(i);
+    } else if (row->at(i)->is_hidden_clustering_key_column_) {
+      hidden_ck_column_expr = row->at(i);
     }
   }
-  if (OB_ISNULL(auto_inc_expr)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("cannot find tablet autoinc expr", KR(ret), KPC(row));
-  } else {
+
+  if (OB_NOT_NULL(auto_inc_expr)) {
+    // Heap table without pk: set uint64 value directly
     ObDatum &datum = auto_inc_expr->locate_datum_for_write(*eval_ctx_);
     datum.set_uint(pk_value);
     auto_inc_expr->set_evaluated_projected(*eval_ctx_);
+  } else if (OB_NOT_NULL(hidden_ck_expr)) {
+    // Clustering key table: set ObHiddenClusteringKey value
+    ObDatum &datum = hidden_ck_expr->locate_datum_for_write(*eval_ctx_);
+    uint64_t buf_len = sizeof(ObHiddenClusteringKey);
+    char *buf = hidden_ck_expr->get_str_res_mem(*eval_ctx_, buf_len);
+    ObString hidden_clustering_key_str(buf_len, 0, buf);
+    if (OB_ISNULL(buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("fail to allocate memory", K(ret), KP(buf));
+    } else {
+      ObHiddenClusteringKey hidden_clustering_key(tablet_id.id(), pk_value);
+      if (OB_FAIL(ObHiddenClusteringKey::set_hidden_clustering_key_to_string(hidden_clustering_key, hidden_clustering_key_str))) {
+        LOG_WARN("failed to set hidden clustering key to string", KR(ret), K(hidden_clustering_key), K(hidden_clustering_key_str));
+      } else {
+        datum.set_string(hidden_clustering_key_str);
+        hidden_ck_expr->set_evaluated_projected(*eval_ctx_);
+      }
+    }
+  } else if (OB_NOT_NULL(hidden_ck_column_expr)) {
+    // Clustering key table: hidden clustering key has original column value, no need to set hidden clustering key value
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected error", K(ret), KPC(row));
   }
   return ret;
 }

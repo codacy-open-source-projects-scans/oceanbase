@@ -21,6 +21,8 @@ namespace oceanbase
 namespace rootserver
 {
 
+static constexpr int64_t MIN_DATA_VERSION_FOR_VID_OPT = DATA_VERSION_4_4_1_0;
+
 class ObVecIndexBuildTask : public ObDDLTask
 {
 public:
@@ -66,27 +68,32 @@ public:
       K(index_snapshot_data_task_submitted_), K(rowkey_vid_task_id_),
       K(vid_rowkey_task_id_), K(delta_buffer_task_id_),
       K(index_id_task_id_), K(index_snapshot_task_id_), K(drop_index_task_id_), K(is_rebuild_index_),
-      K(drop_index_task_submitted_), K(schema_version_), K(execution_id_),
-      K(consumer_group_id_), K(trace_id_), K(parallelism_), K(create_index_arg_));
+      K(drop_index_task_submitted_), K(schema_version_), K(execution_id_), K(is_offline_rebuild_),
+      K(hybrid_vector_embedded_vec_table_id_), K(hybrid_vector_embedded_vec_task_submitted_), K(hybrid_vector_embedded_vec_task_id_),
+      K(is_post_create_hybrid_vector_), K(consumer_group_id_), K(trace_id_), K(parallelism_), K(create_index_arg_), K(use_vid_));
 
 public:
+  static bool is_rebuild_dense_vec_index_task(const share::schema::ObTableSchema &index_schema);
   void set_rowkey_vid_aux_table_id(const uint64_t id) { rowkey_vid_aux_table_id_ = id; }
   void set_vid_rowkey_aux_table_id(const uint64_t id) { vid_rowkey_aux_table_id_ = id; }
   void set_delta_buffer_table_id(const uint64_t id) { delta_buffer_table_id_ = id; }
   void set_index_id_table_id(const uint64_t id) { index_id_table_id_ = id; }
   void set_index_snapshot_data_table_id(const uint64_t id) { index_snapshot_data_table_id_ = id; }
+  void set_hybrid_vector_embedded_vec_table_id(const uint64_t id) { hybrid_vector_embedded_vec_table_id_ = id; }
   void set_drop_index_task_id(const uint64_t id) { drop_index_task_id_ = id; }
   void set_rowkey_vid_task_submitted(const bool status) { rowkey_vid_task_submitted_ = status; }
   void set_vid_rowkey_task_submitted(const bool status) { vid_rowkey_task_submitted_ = status; }
   void set_delta_buffer_task_submitted(const bool status) { delta_buffer_task_submitted_ = status; }
   void set_index_id_task_submitted(const bool status) { index_id_task_submitted_ = status; }
   void set_index_snapshot_data_task_submitted(const bool status) { index_snapshot_data_task_submitted_ = status; }
+  void set_hybrid_vector_embedded_vec_task_submitted(const bool status) { hybrid_vector_embedded_vec_task_submitted_ = status; }
   void set_drop_index_task_submitted(const bool status) { drop_index_task_submitted_ = status; }
   void set_rowkey_vid_task_id(const uint64_t id) { rowkey_vid_task_id_ = id; }
   void set_vid_rowkey_task_id(const uint64_t id) { vid_rowkey_task_id_ = id; }
   void set_delta_buffer_task_id(const uint64_t id) { delta_buffer_task_id_ = id; }
   void set_index_id_task_id(const uint64_t id) { index_id_task_id_ = id; }
   void set_index_snapshot_task_id(const uint64_t id) { index_snapshot_task_id_ = id; }
+  void set_hybrid_vector_embedded_vec_task_id(const uint64_t id) { hybrid_vector_embedded_vec_task_id_ = id; }
   int update_task_message(common::ObISQLClient &proxy);
 
 private:
@@ -105,10 +112,9 @@ private:
   int construct_delta_buffer_arg(obrpc::ObCreateIndexArg &arg);
   int construct_index_id_arg(obrpc::ObCreateIndexArg &arg);
   int construct_index_snapshot_data_arg(obrpc::ObCreateIndexArg &arg);
+  int construct_hybrid_vector_log_table_arg(obrpc::ObCreateIndexArg &arg);
+  int construct_hybrid_vector_embedded_vec_arg(obrpc::ObCreateIndexArg &arg);
 
-  int record_index_table_id(
-      const obrpc::ObCreateIndexArg *create_index_arg_,
-      uint64_t &aux_table_id);
   int get_index_table_id(
       const obrpc::ObCreateIndexArg *create_index_arg,
       uint64_t &index_table_id);
@@ -172,6 +178,7 @@ private:
   };
   static const int64_t OB_VEC_INDEX_BUILD_TASK_VERSION = 1;
   static const int64_t OB_VEC_INDEX_BUILD_CHILD_TASK_NUM = 5;
+  static const int64_t OB_HYBRID_VEC_INDEX_BUILD_CHILD_TASK_NUM = 6;
   using ObDDLTask::tenant_id_;
   using ObDDLTask::task_id_;
   using ObDDLTask::schema_version_;
@@ -202,10 +209,16 @@ private:
   bool drop_index_task_submitted_;
   int64_t drop_index_task_id_;
   bool is_rebuild_index_;
+  bool is_offline_rebuild_;
+  uint64_t hybrid_vector_embedded_vec_table_id_;
+  int64_t hybrid_vector_embedded_vec_task_id_;
+  bool hybrid_vector_embedded_vec_task_submitted_;
+  bool is_post_create_hybrid_vector_;
   ObRootService *root_service_;
   ObDDLWaitTransEndCtx wait_trans_ctx_;
   obrpc::ObCreateIndexArg create_index_arg_;
   common::hash::ObHashMap<uint64_t, share::ObDomainDependTaskStatus> dependent_task_result_map_;
+  bool use_vid_;
 };
 
 } // end namespace rootserver

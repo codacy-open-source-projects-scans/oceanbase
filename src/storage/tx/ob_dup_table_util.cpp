@@ -8,14 +8,9 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PubL v2 for more details.
 
-#include "lib/container/ob_bit_set.h"
-#include "ob_dup_table_lease.h"
-#include "ob_dup_table_tablets.h"
-#include "ob_dup_table_ts_sync.h"
 #include "ob_dup_table_util.h"
 #include "storage/tablet/ob_tablet_iterator.h"
 #include "storage/tx/ob_trans_service.h"
-#include "storage/tx/ob_tx_log_adapter.h"
 #include "storage/tx_storage/ob_ls_service.h"
 
 namespace oceanbase
@@ -1855,7 +1850,7 @@ void ObDupTableLoopWorker::run1()
       time_used = ObTimeUtility::current_time() - start_time;
       if (time_used < LOOP_INTERVAL) {
         ObBKGDSessInActiveGuard inactive_guard;
-        usleep(LOOP_INTERVAL - time_used);
+        ob_usleep(LOOP_INTERVAL - time_used);
       }
     }
   }

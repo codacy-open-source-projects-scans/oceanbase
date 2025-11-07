@@ -12,19 +12,9 @@
 
 #define USING_LOG_PREFIX SHARE
 
-#include "ob_ls_recovery_stat_operator.h"
 
-#include "share/ob_errno.h"
-#include "share/config/ob_server_config.h"
-#include "share/inner_table/ob_inner_table_schema.h"
-#include "lib/string/ob_sql_string.h"//ObSqlString
-#include "lib/mysqlclient/ob_mysql_transaction.h"//ObMySQLTransaction
-#include "lib/utility/ob_tracepoint.h"
-#include "common/ob_timeout_ctx.h"
-#include "share/ob_share_util.h"
+#include "ob_ls_recovery_stat_operator.h"
 #include "share/ls/ob_ls_status_operator.h"
-#include "share/scn.h"
-#include "logservice/palf/log_meta_info.h"//LogConfigVersion
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -135,12 +125,12 @@ int ObLSRecoveryStat::assign(const ObLSRecoveryStat &other)
 }
 ////////////////////ObLSRecoveryStatOperator/////////////
 int ObLSRecoveryStatOperator::create_new_ls(const ObLSStatusInfo &ls_info,
-                                            const SCN &create_ls_scn,
-                                            const common::ObString &zone_priority,
-                                            const share::ObTenantSwitchoverStatus &working_sw_status,
-                                            ObMySQLTransaction &trans)
+                            const SCN &create_ls_scn,
+                            const common::ObString &zone_priority,
+                            const int64_t switchover_epoch,
+                            ObMySQLTransaction &trans)
 {
-  UNUSEDx(zone_priority, working_sw_status);
+  UNUSEDx(zone_priority, switchover_epoch);
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!ls_info.is_valid() || !create_ls_scn.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -342,7 +332,7 @@ int ObLSRecoveryStatOperator::get_ls_recovery_stat(
       const uint64_t &tenant_id,
       const share::ObLSID &ls_id,
       const bool need_for_update,
-      ObLSRecoveryStat &ls_recvery, 
+      ObLSRecoveryStat &ls_recvery,
       ObISQLClient &client)
 {
   int ret = OB_SUCCESS;

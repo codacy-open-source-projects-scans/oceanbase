@@ -30,6 +30,7 @@ class ObColumnParam;
 namespace common
 {
 class ObBitmap;
+struct ObVersionRange;
 }
 namespace sql
 {
@@ -89,16 +90,17 @@ int fill_exprs_lob_locator(const ObTableIterParam &iter_param,
 
 int check_skip_by_monotonicity(sql::ObBlackFilterExecutor &filter,
                                blocksstable::ObStorageDatum &min_datum,
+                               const bool is_min_prefix,
                                blocksstable::ObStorageDatum &max_datum,
+                               const bool is_max_prefix,
                                const sql::ObBitVector &skip_bit,
                                const bool has_null,
+                               const bool is_pad_coll,
                                ObBitmap *result_bitmap,
                                sql::ObBoolMask &bool_mask);
 
 int cast_obj(const common::ObObjMeta &src_meta, common::ObIAllocator &cast_allocator, common::ObObj &obj);
 
-int distribute_attrs_on_rich_format_columns(const int64_t row_count, const int64_t vec_offset,
-                                            sql::ObExpr &expr, sql::ObEvalCtx &eval_ctx);
 
 OB_INLINE int init_expr_vector_header(
     sql::ObExpr &expr,
@@ -161,11 +163,7 @@ OB_INLINE int init_exprs_new_format_header(
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < cols_projector.count(); ++i) {
     sql::ObExpr *expr = exprs.at(i);
-    if (expr->is_nested_expr()) {
-      if (OB_FAIL(expr->init_vector(eval_ctx, VEC_DISCRETE, eval_ctx.max_batch_size_))) {
-        STORAGE_LOG(WARN, "Failed to init vector", K(ret), K(i), KPC(exprs.at(i)));
-      }
-    } else if (OB_FAIL(expr->init_vector_default(eval_ctx, eval_ctx.max_batch_size_))) {
+    if (OB_FAIL(expr->init_vector_default(eval_ctx, eval_ctx.max_batch_size_))) {
       STORAGE_LOG(WARN, "Failed to init vector", K(ret), K(i), KPC(exprs.at(i)));
     }
   }
@@ -351,7 +349,12 @@ inline static common::ObDatumCmpFuncType get_datum_cmp_func(const common::ObObjM
         is_oracle_mode,
         col_obj_type.has_lob_header() || param_obj_type.has_lob_header());
   } else {
-    sql::ObExprBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(col_obj_type.get_type(), col_obj_type.get_collation_type());
+    sql::ObExprBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(
+        col_obj_type.get_type(),
+        col_obj_type.get_collation_type(),
+        col_obj_type.get_scale(),
+        is_oracle_mode,
+        col_obj_type.is_lob_storage());
     cmp_func = is_oracle_mode ? basic_funcs->null_last_cmp_ : basic_funcs->null_first_cmp_;
   }
   return cmp_func;
@@ -489,35 +492,32 @@ struct ObMviewScanInfo
 {
   static const char *OLD_ROW;
   static const char *NEW_ROW;
-  static const char *FINAL_ROW;
   ObMviewScanInfo(ObIAllocator *alloc) : is_mv_refresh_query_(false),
                                          scan_type_(StorageScanType::NORMAL),
                                          begin_version_(-1),
-                                         end_version_(-1),
-                                         op_filters_(alloc)
+                                         end_version_(-1)
   {
   }
   int init(
       const bool is_mv_refresh_query,
       const StorageScanType scan_type,
       const int64_t begin_version,
-      const int64_t end_version,
-      const common::ObIArray<sql::ObExpr *> &non_mview_filters);
+      const int64_t end_version);
   OB_INLINE bool is_begin_valid() const { return -1 != begin_version_; }
   OB_INLINE bool is_end_valid() const { return -1 != end_version_; }
   OB_INLINE bool is_valid() const
   {
-    return !(is_begin_valid() && is_end_valid() && begin_version_ >= end_version_) &&
-           is_mview_table_scan(scan_type_);
+    return is_mview_table_scan(scan_type_) &&
+           is_begin_valid() &&
+           (!is_end_valid() || begin_version_ < end_version_);
   }
   int check_and_update_version_range(const int64_t multi_version_start, common::ObVersionRange &origin_range);
-  TO_STRING_KV(K_(is_mv_refresh_query), K_(scan_type), K_(begin_version), K_(end_version), K_(op_filters));
+  TO_STRING_KV(K_(is_mv_refresh_query), K_(scan_type), K_(begin_version), K_(end_version));
   bool is_mv_refresh_query_;
   StorageScanType scan_type_;
   // (begin_version, end_version]
   int64_t begin_version_;
   int64_t end_version_;
-  sql::ExprFixedArray op_filters_;
 };
 int build_mview_scan_info_if_need(
     const common::ObQueryFlag query_flag,
@@ -525,6 +525,10 @@ int build_mview_scan_info_if_need(
     sql::ObEvalCtx &eval_ctx,
     common::ObIAllocator *alloc,
     ObMviewScanInfo *&mview_scan_info);
+int get_query_begin_version_for_mlog(
+    const sql::ObExprPtrIArray &op_filters,
+    sql::ObEvalCtx &eval_ctx,
+    int64_t &begin_version);
 void release_mview_scan_info(common::ObIAllocator *alloc, ObMviewScanInfo *&mview_scan_info);
 
 }

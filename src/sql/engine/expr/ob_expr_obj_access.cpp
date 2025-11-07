@@ -12,12 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "sql/engine/expr/ob_expr_obj_access.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/ob_spi.h"
-#include "pl/ob_pl.h"
 #include "pl/ob_pl_resolver.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "src/sql/engine/expr/ob_expr_lob_utils.h"
 
 namespace oceanbase
 {
@@ -237,7 +233,7 @@ int ObExprObjAccess::calc_result(ObObj &result,
   return info_.calc(result,
                     alloc,
                     get_result_type(),
-                    get_result_type().get_extend_size(),
+                    info_.extend_size_,
                     param_store,
                     objs_stack,
                     param_num,
@@ -460,7 +456,7 @@ int ObExprObjAccess::ExtraInfo::calc(ObObj &result,
     int64_t *param_ptr = const_cast<int64_t *>(param_array.head());
     int64_t attr_addr = 0;
     int64_t allocator_addr = 0;
-    if (false && OB_NOT_NULL(get_attr)) {
+    if (!for_write_ && OB_NOT_NULL(get_attr)) {
       OZ (get_attr(param_array.count(), param_ptr, &attr_addr, &allocator_addr));
     } else {
       OZ (get_attr_func(param_array.count(), param_ptr, &attr_addr, *ctx, &allocator_addr, ctx->exec_ctx_.get_my_session()));
@@ -601,7 +597,7 @@ int ObExprObjAccess::ExtraInfo::from_raw_expr(const ObObjAccessRawExpr &raw_acce
 {
   int ret = 0;
   if (OB_SUCC(ret)) {
-    extend_size_ = raw_access.get_result_type().get_extend_size();
+    extend_size_ = raw_access.get_extend_size();
     get_attr_func_ = raw_access.get_get_attr_func_addr();
     for_write_ = raw_access.for_write();
     property_type_ = raw_access.get_property();
@@ -630,7 +626,7 @@ int ObExprObjAccess::cg_expr(ObExprCGCtx &op_cg_ctx,
   } else {
     const ObObjAccessRawExpr &raw_access = static_cast<const ObObjAccessRawExpr &>(raw_expr);
     if (OB_SUCC(ret)) {
-      info->extend_size_ = raw_expr.get_result_type().get_extend_size();
+      info->extend_size_ = raw_access.get_extend_size();
       info->get_attr_func_ = raw_access.get_get_attr_func_addr();
       info->for_write_ = raw_access.for_write();
       info->property_type_ = raw_access.get_property();

@@ -10,21 +10,11 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <gtest/gtest.h>
-#include "lib/list/ob_list.h"
-#include "lib/file/file_directory_utils.h"
-#include "lib/file/ob_file.h"
-#include "lib/ob_define.h"
 #include "storage/blocksstable/ob_data_file_prepare.h"
 #include "storage/slog/simple_ob_storage_log.h"
 #include "storage/slog/ob_storage_log_batch_header.h"
-#include "lib/container/ob_se_array.h"
-#include "share/ob_simple_mem_limit_getter.h"
 
 #define private public
-#include "share/rc/ob_tenant_base.h"
-#include "storage/slog/ob_storage_logger_manager.h"
-#include "storage/slog/ob_storage_logger.h"
 #undef private
 
 namespace oceanbase
@@ -140,7 +130,7 @@ TEST_F(TestStorageLoggerManager, test_slogger_basic)
   ObStorageLoggerManager &slogger_mgr = SERVER_STORAGE_META_SERVICE.get_slogger_manager();
 
   ObStorageLogger *slogger = OB_NEW(ObStorageLogger, ObModIds::TEST);
-  ASSERT_EQ(OB_SUCCESS, slogger->init(slogger_mgr, 1));
+  ASSERT_EQ(OB_SUCCESS, slogger->init(slogger_mgr, 1, 0/*tenant epoch*/));
   ASSERT_EQ(OB_SUCCESS, slogger->start());
 
   slogger->start_log(cursor);
@@ -181,7 +171,7 @@ TEST_F (TestStorageLoggerManager, test_build_item)
 
   ObStorageLoggerManager &slogger_mgr = SERVER_STORAGE_META_SERVICE.get_slogger_manager();
   ObStorageLogger *slogger = OB_NEW(ObStorageLogger, ObModIds::TEST);
-  ASSERT_EQ(OB_SUCCESS, slogger->init(slogger_mgr, 1));
+  ASSERT_EQ(OB_SUCCESS, slogger->init(slogger_mgr, 1, 0/*tenant epoch*/));
   ASSERT_EQ(OB_SUCCESS, slogger->start());
 
   slogger->start_log(start_cursor_);

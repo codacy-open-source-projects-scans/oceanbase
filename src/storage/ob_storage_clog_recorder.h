@@ -15,11 +15,18 @@
 //#include "storage/meta_mem/ob_tablet_handle.h"
 namespace oceanbase
 {
+namespace common
+{
+class ObTabletID;
+}
 namespace logservice
 {
 class ObLogHandler;
 } // namespace palf
-
+namespace share
+{
+class ObLSID;
+}
 namespace storage
 {
 class ObTabletHandle;
@@ -51,6 +58,7 @@ protected:
     {
       ATOMIC_SET(&update_version_, update_version);
     }
+    const char *get_cb_name() const override { return "StorageCLogCb"; }
   private:
     ObIStorageClogRecorder &recorder_;
     int64_t update_version_;
@@ -108,6 +116,7 @@ protected:
       const char *clog_buf,
       const int64_t clog_len) = 0;
   virtual void free_struct_in_lock() = 0;
+  virtual int reset_for_retry_in_lock() { return OB_SUCCESS; }
 
   int try_update_with_lock(
       const int64_t update_version,

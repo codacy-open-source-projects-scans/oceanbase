@@ -9,22 +9,11 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
-#include "lib/future/ob_future.h"
-#include <algorithm>
-#include <chrono>
-#include <condition_variable>
-#include <thread>
-#include <vector>
 #include <gtest/gtest.h>
 #define UNITTEST_DEBUG
 #define private public
 #define protected public
-#include "storage/multi_data_source/runtime_utility/common_define.h"
-#include "storage/multi_data_source/mds_table_base.h"
-#include "storage/multi_data_source/mds_table_mgr.h"
 #include "storage/ls/ob_ls.h"
-#include "storage/multi_data_source/mds_table_handle.h"
-#include "storage/multi_data_source/mds_table_order_flusher.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
 namespace oceanbase {
 namespace storage {
@@ -170,7 +159,7 @@ TEST_F(TestMdsTableFlush, flusher_for_all_order_with_enough_memory) {
                                                             v_key[i].tablet_id_,
                                                             share::ObLSID(1),
                                                             share::SCN::min_scn(),
-                                                            (ObTabletPointer*)0x111,
+                                                            (ObTabletBasePointer*)0x111,
                                                             &mgr));
     MdsTableBase *p_mds_table = mds_table.p_mds_table_base_.data_;
     p_mds_table->rec_scn_ = v_key[i].rec_scn_;
@@ -205,7 +194,7 @@ TEST_F(TestMdsTableFlush, flusher_for_all_order_with_limitted_memory_reserve_fai
                                                             v_key[i].tablet_id_,
                                                             share::ObLSID(1),
                                                             share::SCN::min_scn(),
-                                                            (ObTabletPointer*)0x111,
+                                                            (ObTabletBasePointer*)0x111,
                                                             &mgr));
     MdsTableBase *p_mds_table = mds_table.p_mds_table_base_.data_;
     p_mds_table->rec_scn_ = v_key[i].rec_scn_;
@@ -251,7 +240,7 @@ TEST_F(TestMdsTableFlush, flusher_for_one) {
 //                                                            v_key[i].tablet_id_,
 //                                                            share::ObLSID(1),
 //                                                            share::SCN::min_scn(),
-//                                                            (ObTabletPointer*)0x111,
+//                                                            (ObTabletBasePointer*)0x111,
 //                                                            &mgr));
 //     MdsTableBase *p_mds_table = mds_table.p_mds_table_base_.data_;
 //     p_mds_table->rec_scn_ = v_key[i].rec_scn_;
@@ -279,7 +268,7 @@ TEST_F(TestMdsTableFlush, flusher_for_one) {
 //                                                              v_key[i].tablet_id_,
 //                                                              share::ObLSID(1),
 //                                                              share::SCN::min_scn(),
-//                                                              (ObTabletPointer*)0x111,
+//                                                              (ObTabletBasePointer*)0x111,
 //                                                              &mgr));
 //       MdsTableBase *p_mds_table = mds_table.p_mds_table_base_.data_;
 //       p_mds_table->rec_scn_ = v_key[i].rec_scn_;

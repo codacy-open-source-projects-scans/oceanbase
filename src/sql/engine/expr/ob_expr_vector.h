@@ -28,6 +28,11 @@
 
 #include "sql/engine/expr/ob_expr_operator.h"
 #include "lib/udt/ob_array_type.h"
+#include "share/vector_type/ob_vector_l2_distance.h"
+#include "share/vector_type/ob_vector_cosine_distance.h"
+#include "share/vector_type/ob_vector_ip_distance.h"
+#include "share/vector_type/ob_vector_l1_distance.h"
+#include "share/vector_type/ob_sparse_vector_ip_distance.h"
 
 
 namespace oceanbase
@@ -37,6 +42,9 @@ namespace sql
 class ObExprVector : public ObFuncExprOperator
 {
 public:
+
+  static const int64_t MAX_VECTOR_DIM = 16000;
+
   struct VectorCastInfo
   {
     VectorCastInfo()
@@ -82,8 +90,15 @@ public:
     HAMMING,
     MAX_TYPE,
   };
-  using FuncPtrType = int (*)(const float* a, const float* b, const int64_t len, double& distance);
-  static FuncPtrType distance_funcs[];
+  template <typename T = float>
+  struct DisFunc {
+    using FuncPtrType = int (*)(const T* a, const T* b, const int64_t len, double& distance);
+    static FuncPtrType distance_funcs[];
+  };
+  struct SparseVectorDisFunc {
+    using FuncPtrType = int (*)(const ObMapType* a, const ObMapType* b, double& distance);
+    static FuncPtrType spiv_distance_funcs[];
+  };
 public:
   explicit ObExprVectorDistance(common::ObIAllocator &alloc);
   explicit ObExprVectorDistance(common::ObIAllocator &alloc, ObExprOperatorType type,
@@ -102,6 +117,17 @@ public:
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorDistance);
+};
+
+template <typename T>
+typename ObExprVectorDistance::DisFunc<T>::FuncPtrType ObExprVectorDistance::DisFunc<T>::distance_funcs[] =
+{
+  ObVectorCosineDistance<T>::cosine_distance_func,
+  ObVectorIpDistance<T>::ip_distance_func,
+  ObVectorL2Distance<T>::l2_distance_func,
+  ObVectorL1Distance<T>::l1_distance_func,
+  ObVectorL2Distance<T>::l2_square_func,
+  nullptr,
 };
 
 class ObExprVectorL1Distance : public ObExprVectorDistance
@@ -132,6 +158,21 @@ public:
   static int calc_l2_distance(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorL2Distance);
+};
+
+class ObExprVectorL2Squared : public ObExprVectorDistance
+{
+public:
+  explicit ObExprVectorL2Squared(common::ObIAllocator &alloc);
+  virtual ~ObExprVectorL2Squared() {};
+
+  virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
+                      const ObRawExpr &raw_expr,
+                      ObExpr &rt_expr) const override;
+
+  static int calc_l2_squared(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObExprVectorL2Squared);
 };
 
 class ObExprVectorCosineDistance : public ObExprVectorDistance
@@ -211,6 +252,7 @@ public:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExprVectorNorm);
 };
+
 } // sql
 } // oceanbase
 #endif // OCEANBASE_SQL_OB_EXPR_VECTOR

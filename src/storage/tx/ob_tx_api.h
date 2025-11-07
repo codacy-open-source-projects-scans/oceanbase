@@ -10,7 +10,7 @@
  * See the Mulan PubL v2 for more details.
  */
 
-int acquire_tx(ObTxDesc *&tx, const uint32_t session_id = 0, const uint64_t data_version = 0);
+int acquire_tx(ObTxDesc *&tx, const uint32_t session_id = 0, const uint32_t client_sid = 0, const uint64_t data_version = 0);
 
 /**
  * start_tx - explicit start transaction
@@ -161,7 +161,8 @@ int stop_tx(ObTxDesc &tx);
 int get_read_snapshot(ObTxDesc &tx,
                       const ObTxIsolationLevel isolation_level,
                       const int64_t expire_ts,
-                      ObTxReadSnapshot &snapshot);
+                      ObTxReadSnapshot &snapshot,
+                      const bool is_for_sslog = false);
 
 /**
  * get_ls_read_snapshot - get a read snapshot which can be used to read

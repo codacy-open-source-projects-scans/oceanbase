@@ -11,9 +11,9 @@
  */
 
 #define USING_LOG_PREFIX STORAGE
-#include "storage/lob/ob_lob_access_param.h"
-#include "storage/lob/ob_lob_util.h"
-#include "storage/lob/ob_lob_meta.h"
+#include "ob_lob_access_param.h"
+#include "storage/tx_storage/ob_access_service.h"
+#include "observer/ob_server.h"
 
 namespace oceanbase
 {
@@ -225,7 +225,8 @@ bool ObLobAccessParam::enable_block_cache() const
 
 // 1. from rpc can not remote again
 // 2. lob from other tenant also should read by rpc
-bool ObLobAccessParam::is_remote() const  { return ! from_rpc_ && addr_.is_valid() && (MYADDR != addr_ || MTL_ID() != tenant_id_); }
+bool ObLobAccessParam::is_remote() const  { return (! from_rpc_ || enable_remote_retry_) && addr_.is_valid() && (MYADDR != addr_ || is_across_tenant()); }
+bool ObLobAccessParam::is_across_tenant() const { return MTL_ID() != tenant_id_; }
 
 int ObLobAccessParam::check_handle_size() const
 {
@@ -477,7 +478,8 @@ int ObLobAccessParam::get_tx_read_snapshot(ObLobLocatorV2 &locator, transaction:
     int64_t read_snapshot_data_pos = 0;
     if (OB_FAIL(locator.get_read_snapshot_data(read_snapshot_data))) {
       LOG_WARN("failed to get read_snapshot_data", K(ret), K(locator));
-    } else if (OB_FAIL(read_snapshot.deserialize_for_lob(read_snapshot_data.ptr(), read_snapshot_data.length(), read_snapshot_data_pos))) {
+    } else if (OB_FAIL(read_snapshot.deserialize_for_lob(fb_snapshot_,
+        read_snapshot_data.ptr(), read_snapshot_data.length(), read_snapshot_data_pos))) {
       LOG_WARN("failed to deserialize read_snapshot_data", K(ret), K(locator));
     }
   // for compatibility

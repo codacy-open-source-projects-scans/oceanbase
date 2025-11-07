@@ -105,7 +105,8 @@ public:
       share::ObTabletReplica &tablet_replica,
       share::ObTabletReplicaChecksumItem &tablet_checksum,
       const bool need_checksum = true);
-
+  int detect_sslog_ls(const obrpc::ObDetectSSlogLSArg &arg,
+                      obrpc::ObDetectSSlogLSResult &result);
   int detect_master_rs_ls(const obrpc::ObDetectMasterRsArg &arg,
                        obrpc::ObDetectMasterRsLSResult &result);
   int fill_ls_replica(const uint64_t tenant_id,
@@ -130,6 +131,9 @@ public:
   int build_split_tablet_data_finish_request(const obrpc::ObTabletSplitFinishArg &arg, obrpc::ObTabletSplitFinishResult &res);
   int freeze_split_src_tablet(const obrpc::ObFreezeSplitSrcTabletArg &arg, obrpc::ObFreezeSplitSrcTabletRes &res, const int64_t abs_timeout_us);
   int fetch_split_tablet_info(const obrpc::ObFetchSplitTabletInfoArg &arg, obrpc::ObFetchSplitTabletInfoRes &res, const int64_t abs_timeout_us);
+  #ifdef OB_BUILD_SHARED_STORAGE
+  int schedule_tablet_split(const obrpc::ObTabletSplitScheduleArg &arg, obrpc::ObLSTabletSplitScheduleRes &res);
+  #endif
   int build_ddl_single_replica_request(const obrpc::ObDDLBuildSingleReplicaRequestArg &arg);
   int build_ddl_single_replica_request(const obrpc::ObDDLBuildSingleReplicaRequestArg &arg, obrpc::ObDDLBuildSingleReplicaRequestResult &res);
   int check_and_cancel_ddl_complement_data_dag(const obrpc::ObDDLBuildSingleReplicaRequestArg &arg, bool &is_dag_exist);
@@ -140,6 +144,7 @@ public:
   int broadcast_consensus_version(
       const obrpc::ObBroadcastConsensusVersionArg &arg,
       obrpc::ObBroadcastConsensusVersionRes &result);
+  int fetch_tablet_physical_row_cnt(const obrpc::ObFetchTabletPhysicalRowCntArg &arg, obrpc::ObFetchTabletPhysicalRowCntRes &result);
   ////////////////////////////////////////////////////////////////
   // ObRpcFetchSysLSP @RS load balance
   int fetch_sys_ls(share::ObLSReplica &replica);
@@ -160,6 +165,7 @@ public:
   int get_ls_sync_scn(const obrpc::ObGetLSSyncScnArg &arg,
                            obrpc::ObGetLSSyncScnRes &result);
   int force_set_ls_as_single_replica(const obrpc::ObForceSetLSAsSingleReplicaArg &arg);
+  int force_set_server_list(const obrpc::ObForceSetServerListArg &arg, obrpc::ObForceSetServerListResult &result);
   int refresh_tenant_info(const obrpc::ObRefreshTenantInfoArg &arg,
                           obrpc::ObRefreshTenantInfoRes &result);
   int get_ls_replayed_scn(const obrpc::ObGetLSReplayedScnArg &arg,
@@ -168,6 +174,8 @@ public:
                               obrpc::ObEstPartRes &res) const;
   int estimate_tablet_block_count(const obrpc::ObEstBlockArg &arg,
                                   obrpc::ObEstBlockRes &res) const;
+  int estimate_skip_rate(const obrpc::ObEstSkipRateArg &arg,
+                         obrpc::ObEstSkipRateRes &res) const;
   int update_tenant_info_cache(const obrpc::ObUpdateTenantInfoCacheArg &arg,
                                   obrpc::ObUpdateTenantInfoCacheRes &result);
   int refresh_service_name(const obrpc::ObRefreshServiceNameArg &arg,
@@ -229,6 +237,7 @@ public:
   int check_server_empty(const obrpc::ObCheckServerEmptyArg &arg, obrpc::Bool &is_empty);
   int check_server_empty_with_result(const obrpc::ObCheckServerEmptyArg &arg, obrpc::ObCheckServerEmptyResult &result);
   static int do_migrate_ls_replica(const obrpc::ObLSMigrateReplicaArg &arg);
+  static int do_replace_ls_replica(const obrpc::ObLSReplaceReplicaArg &arg);
   // ObRpcIsEmptyServerP @RS bootstrap
 
   // ObRpcCheckDeploymentModeP
@@ -280,7 +289,9 @@ public:
   int get_tenant_refreshed_schema_version(
       const obrpc::ObGetTenantSchemaVersionArg &arg,
       obrpc::ObGetTenantSchemaVersionResult &result);
-  int submit_async_refresh_schema_task(const uint64_t tenant_id, const int64_t schema_version);
+  int submit_async_refresh_schema_task(const uint64_t tenant_id,
+                                       const int64_t schema_version,
+                                       const share::schema::ObRefreshSchemaInfo *schema_info = nullptr);
   int renew_in_zone_hb(const share::ObInZoneHbRequest &arg,
                        share::ObInZoneHbResponse &result);
   int init_tenant_config(
@@ -316,6 +327,8 @@ private:
   int generate_master_rs_ls_info_(
       const share::ObLSReplica &cur_leader,
       share::ObLSInfo &ls_info);
+  int generate_tenant_table_schemas_(const obrpc::ObBatchBroadcastSchemaArg &arg, ObIAllocator &allocator,
+      ObSArray<share::schema::ObTableSchema> &tables);
 private:
   bool inited_;
   bool in_register_process_;

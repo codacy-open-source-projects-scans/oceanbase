@@ -12,7 +12,6 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "storage/backup/ob_backup_fuse_tablet_ctx.h"
-#include "lib/stat/ob_latch_define.h"
 
 namespace oceanbase
 {
@@ -246,6 +245,16 @@ int ObBackupTabletGroupFuseCtx::close_extern_writer()
   lib::ObMutexGuard guard(mutex_);
   if (OB_FAIL(extern_tablet_meta_writer_.close())) {
     LOG_WARN("failed to close extern tablet meta writer", K(ret));
+  }
+  return ret;
+}
+
+int ObBackupTabletGroupFuseCtx::abort_extern_writer()
+{
+  int ret = OB_SUCCESS;
+  lib::ObMutexGuard guard(mutex_);
+  if (OB_FAIL(extern_tablet_meta_writer_.abort())) {
+    LOG_WARN("failed to abort extern tablet meta writer", K(ret));
   }
   return ret;
 }

@@ -66,6 +66,13 @@ int ObExprRbBuild::calc_result_type1(ObExprResType &type,
   } else if (arr_meta.type_ != ObSubSchemaType::OB_SUBSCHEMA_COLLECTION_TYPE) {
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
     LOG_WARN("invalid subschema type", K(ret), K(arr_meta.type_));
+  } else if (OB_ISNULL(coll_info = reinterpret_cast<const ObSqlCollectionInfo *>(arr_meta.value_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("collection info is null", K(ret));
+  } else if (coll_info->collection_meta_->type_id_ != ObNestedType::OB_ARRAY_TYPE
+             && coll_info->collection_meta_->type_id_ != ObNestedType::OB_VECTOR_TYPE) {
+    ret = OB_ERR_INVALID_TYPE_FOR_OP;
+    LOG_WARN("invalid collection type", K(ret), K(coll_info->collection_meta_->type_id_));
   } else {
     ObDataType data_type;
     uint32_t depth = 0;
@@ -96,9 +103,6 @@ int ObExprRbBuild::eval_rb_build(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
   ObString rb_bin;
   ObIArrayType *arr_obj = NULL;
   const uint16_t subschema_id = expr.args_[0]->obj_meta_.get_subschema_id();
-  ObSubSchemaValue meta;
-  const ObSqlCollectionInfo *coll_info = NULL;
-  ObCollectionArrayType *arr_type = NULL;
   bool is_null_res = false;
 
   if (OB_FAIL(expr.args_[0]->eval(ctx, arr_datum))) {
@@ -107,25 +111,14 @@ int ObExprRbBuild::eval_rb_build(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &re
     is_null_res = true;
   } else if (OB_FAIL(ObArrayExprUtils::get_array_obj(tmp_allocator, ctx, subschema_id, arr_datum->get_string(), arr_obj))) {
     LOG_WARN("construct array obj failed", K(ret));
-  } else if (arr_obj->contain_null()) {
-    ret = OB_ERR_NULL_VALUE;
-    LOG_WARN("array contains null element", K(ret));
   } else if (OB_ISNULL(rb = OB_NEWx(ObRoaringBitmap, &tmp_allocator, (&tmp_allocator)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to create alloc memory to roaringbitmap", K(ret));
-  } else if (OB_FAIL(ctx.exec_ctx_.get_sqludt_meta_by_subschema_id(subschema_id, meta))) {
-    LOG_WARN("failed to get subschema value", K(ret), K(subschema_id));
-  } else if (OB_ISNULL(coll_info = reinterpret_cast<const ObSqlCollectionInfo *>(meta.value_))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("coll info is null", K(ret));
-  } else if (OB_ISNULL(arr_type = static_cast<ObCollectionArrayType *>(coll_info->collection_meta_))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("array type is null", K(ret));
   } else {
     for (uint32_t i = 0; OB_SUCC(ret) && i < arr_obj->cardinality(); ++i) {
       ObObj elem_obj;
       bool is_null_elem = false;
-      if (OB_FAIL(ObArrayExprUtils::get_basic_elem_obj(arr_obj, arr_type->element_type_, i, elem_obj, is_null_elem))) {
+      if (OB_FAIL(ObArrayExprUtils::get_basic_elem(arr_obj, i, elem_obj, is_null_elem))) {
         LOG_WARN("failed to cast get element", K(ret));
       } else if (is_null_elem) {
         ret = OB_ERR_NULL_VALUE;

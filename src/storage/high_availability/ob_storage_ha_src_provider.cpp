@@ -12,11 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_ha_src_provider.h"
-#include "share/location_cache/ob_location_service.h"
 #include "observer/ob_server_event_history_table_operator.h"
-#include "storage/tx_storage/ob_ls_handle.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/high_availability/ob_storage_ha_utils.h"
+#include "src/storage/ls/ob_ls.h"
 #include "storage/ob_locality_manager.h"
 
 namespace oceanbase {
@@ -238,8 +235,8 @@ int ObStorageHAGetMemberHelper::filter_dest_replica_(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument!", K(ret), K(dst), K(learner_list));
   } else if (!learner_list.contains(dst.get_server())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("learner list must include dst", K(ret), K(learner_list), K(dst));
+    ret = OB_LS_NOT_IN_LEARNER_LIST;
+    LOG_WARN("learner list not include dst, maybe ls has been removed", K(ret), K(learner_list), K(dst));
   } else if (OB_FAIL(learner_list.remove_learner(dst.get_server()))) {
     LOG_WARN("failed to remove learner", K(ret), K(learner_list), K(dst));
   }
@@ -655,12 +652,17 @@ int ObStorageHASrcProvider::check_replica_validity(
     ret = OB_DATA_SOURCE_NOT_VALID;
     LOG_WARN("do not choose this src, replica type check failed", K(ret), K(tenant_id_), K(ls_id_), K(addr), K(dst), K(learner_list), K(ls_info));
   } else if (OB_FAIL(fetch_ls_meta_info_(tenant_id_, ls_id_, addr, ls_info))) {
-    LOG_WARN("failed to fetch ls meta info", K(ret), K(tenant_id_), K(ls_id_), K(addr));
+    if (OB_DISK_ERROR == ret) {
+      ret = OB_DATA_SOURCE_NOT_VALID; // overwrite ret
+      LOG_WARN("do not choose this src, disk error", K(ret), K(tenant_id_), K(ls_id_), K(addr));
+    } else {
+      LOG_WARN("failed to fetch ls meta info", K(ret), K(tenant_id_), K(ls_id_), K(addr));
+    }
   } else if (!ls_info.is_valid()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ls_info is invalid!", K(ret), K(tenant_id_), K(ls_id_), K(addr), K(ls_info));
   } else if (OB_FAIL(ObStorageHAUtils::check_replica_validity(ls_info))) {
-    LOG_WARN("failed to check replica validity", K(ret), K(ls_info));
+    LOG_WARN("failed to check replica validity", K(ret), K(addr), K(ls_info));
   } else if (local_clog_checkpoint_scn_ > ls_info.ls_meta_package_.ls_meta_.get_clog_checkpoint_scn()) {
     ret = OB_DATA_SOURCE_NOT_VALID;
     LOG_WARN("do not choose this src, local checkpoint scn check failed", K(ret), K(tenant_id_), K(ls_id_), K(addr), K(dst), K(learner_list),
@@ -677,7 +679,7 @@ const char *ObStorageHASrcProvider::ObChooseSourcePolicyStr[static_cast<int64_t>
   "zone",
   "idc",
   "region",
-  "different_region"
+  "different_region",
   "checkpoint",
   "recommend",
 };

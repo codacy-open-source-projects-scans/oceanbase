@@ -12,12 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_PC
 #include "ob_prepare_stmt_struct.h"
-#include "lib/utility/utility.h"
-#include "lib/utility/ob_print_utils.h"
 #include "sql/plan_cache/ob_ps_sql_utils.h"
 #include "sql/plan_cache/ob_ps_cache.h"
-#include "sql/resolver/cmd/ob_call_procedure_stmt.h"
-#include "sql/parser/parse_node.h"
 
 namespace oceanbase
 {
@@ -288,7 +284,8 @@ ObPsStmtInfo::ObPsStmtInfo(ObIAllocator *inner_allocator)
     raw_sql_(),
     raw_params_(inner_allocator),
     raw_params_idx_(inner_allocator),
-    literal_stmt_type_(stmt::T_NONE)
+    literal_stmt_type_(stmt::T_NONE),
+    ps_need_parameterization_(true)
 
 {
 }
@@ -318,7 +315,8 @@ ObPsStmtInfo::ObPsStmtInfo(ObIAllocator *inner_allocator,
     raw_sql_(),
     raw_params_(inner_allocator),
     raw_params_idx_(inner_allocator),
-    literal_stmt_type_(stmt::T_NONE)
+    literal_stmt_type_(stmt::T_NONE),
+    ps_need_parameterization_(true)
 {
 }
 
@@ -465,6 +463,7 @@ int ObPsStmtInfo::deep_copy(const ObPsStmtInfo &other)
     is_expired_ = other.is_expired_;
     is_expired_evicted_ = other.is_expired_evicted_;
     literal_stmt_type_ = other.literal_stmt_type_;
+    ps_need_parameterization_ = other.ps_need_parameterization_;
     if (other.get_dep_objs_cnt() > 0) {
       dep_objs_cnt_ = other.get_dep_objs_cnt();
       if (NULL == (dep_objs_ = reinterpret_cast<ObSchemaObjVersion *>
@@ -700,6 +699,17 @@ int TypeInfo::deep_copy(common::ObIAllocator *allocator,
     OX (elem_type_ = other->elem_type_);
     OX (is_elem_type_ = other->is_elem_type_);
     OX (is_basic_type_ = other->is_basic_type_);
+  }
+  return ret;
+}
+
+int ObPsSessionInfo::fill_param_types_with_null_type()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i=0; OB_SUCC(ret) && i<num_of_params_; ++i) {
+    if (OB_FAIL(param_types_.push_back(obmysql::MYSQL_TYPE_NULL))) {
+      LOG_WARN("push null type into param_types_ failed", K(ret));
+    }
   }
   return ret;
 }

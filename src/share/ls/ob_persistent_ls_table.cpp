@@ -13,14 +13,7 @@
 #define USING_LOG_PREFIX SHARE_PT
 
 #include "ob_persistent_ls_table.h"               // for ObPersistentLSTable's functions
-#include "share/config/ob_server_config.h"        // for ObServerConfig
 #include "observer/omt/ob_tenant_timezone_mgr.h"  // for OTTZ_MGR.get_tenant_tz
-#include "lib/ob_define.h"                        // for pure tenant related
-#include "share/ls/ob_ls_table.h"                 // for OB_ALL_LS_META_TABLE_TNAME
-#include "lib/mysqlclient/ob_isql_client.h"       // for ObISQLClient
-#include "logservice/palf/log_define.h"           // for INVALID_PROPOSAL_ID
-#include "observer/ob_server_struct.h"            // for GCTX
-#include "share/inner_table/ob_inner_table_schema_constants.h" // for xxx_TNAME
 
 namespace oceanbase
 {
@@ -331,6 +324,7 @@ int ObPersistentLSTable::construct_ls_info(
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_NOT_UPDATE_LS_META_TABLE);
 int ObPersistentLSTable::update(
     const ObLSReplica &replica,
     const bool inner_table_only)
@@ -343,7 +337,9 @@ int ObPersistentLSTable::update(
   bool with_snapshot = false;
   ObLSReplica new_replica;
   uint64_t sql_tenant_id = get_private_table_exec_tenant_id(replica.get_tenant_id());
-  if (OB_UNLIKELY(!is_inited()) || OB_ISNULL(sql_proxy_)) {
+  if (OB_UNLIKELY(ERRSIM_NOT_UPDATE_LS_META_TABLE)) {
+    LOG_INFO("errsim here, do nothing");
+  } else if (OB_UNLIKELY(!is_inited()) || OB_ISNULL(sql_proxy_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObPersistentLSTable not init", KR(ret), KP_(sql_proxy));
   } else if (!replica.is_valid()) {
@@ -377,7 +373,9 @@ int ObPersistentLSTable::update(
     }
   }
 
-  if (OB_SUCC(ret)) {
+  if (OB_UNLIKELY(ERRSIM_NOT_UPDATE_LS_META_TABLE)) {
+    LOG_INFO("errsim here, do nothing");
+  } else if (OB_SUCC(ret)) {
     int64_t max_proposal_id = palf::INVALID_PROPOSAL_ID;
     // update leader
     if (new_replica.is_strong_leader()) {

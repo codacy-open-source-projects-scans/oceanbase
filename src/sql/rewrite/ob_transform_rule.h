@@ -132,14 +132,16 @@ struct ObTransformerCtx
     is_force_materialize_(false),
     is_spm_outline_(false),
     push_down_filters_(),
-    in_accept_transform_(false),
     iteration_level_(0),
     mv_stmt_gen_count_(0),
     cbqt_policy_(TransPolicy::DISABLE_TRANS),
     complex_cbqt_table_num_(0),
     max_table_num_(0),
     inline_blacklist_(),
-    materialize_blacklist_()
+    materialize_blacklist_(),
+    disable_gtt_session_isolation_(false),
+    force_subquery_unnest_(false),
+    nested_loop_join_enabled_(true)
   { }
   virtual ~ObTransformerCtx() {}
 
@@ -189,7 +191,7 @@ struct ObTransformerCtx
   //记录semi to inner改写中，代价竞争失败的semi info，避免下一轮迭代重复检查代价
   ObSEArray<uint64_t, 8, common::ModulePageAllocator, true> ignore_semi_infos_;
   ObSEArray<ObSelectStmt*, 8, common::ModulePageAllocator, true> temp_table_ignore_stmts_;
-  bool eval_cost_;
+  bool eval_cost_;  // mark whether the context is in the process of cost evaluation.
   /* used for hint and outline below */
   int64_t trans_list_loc_;  // outline mode, used to keep transform happened ordering in query_hint.trans_list_
   ObString src_qb_name_;
@@ -206,7 +208,6 @@ struct ObTransformerCtx
 
   bool is_spm_outline_;
   ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> push_down_filters_;
-  bool in_accept_transform_;
   uint64_t iteration_level_;
   ObSEArray<MvInfo, 4, common::ModulePageAllocator, true> mv_infos_; // used to perform mv rewrite
   int64_t mv_stmt_gen_count_;
@@ -217,6 +218,12 @@ struct ObTransformerCtx
   /* used for CTE inline && materialize */
   ObSEArray<ObString, 8, common::ModulePageAllocator, true> inline_blacklist_;
   ObSEArray<ObString, 8, common::ModulePageAllocator, true> materialize_blacklist_;
+
+  bool disable_gtt_session_isolation_; //debug GTT, do not add session filters in transformer preprocessing for all GTTs
+  /* used to control subquery unnest behavior */
+  bool force_subquery_unnest_;
+  /* used for NLJ opportunity check */
+  bool nested_loop_join_enabled_;
 };
 
 enum TransMethod
@@ -228,45 +235,45 @@ enum TransMethod
 };
 
 enum TRANSFORM_TYPE {
-  INVALID_TRANSFORM_TYPE     = 0,
-  PRE_PROCESS                   ,
-  POST_PROCESS                  ,
-  SIMPLIFY_DISTINCT             ,
-  SIMPLIFY_EXPR                 ,
-  SIMPLIFY_GROUPBY              ,
-  SIMPLIFY_LIMIT                ,
-  SIMPLIFY_ORDERBY              ,
-  SIMPLIFY_SUBQUERY             ,
-  SIMPLIFY_WINFUNC              ,
-  FASTMINMAX                    , // select min/max -> select order by limit 1
-  ELIMINATE_OJ                  , // 外连接消除
-  VIEW_MERGE                    , // 视图合并
-  WHERE_SQ_PULL_UP              , // where子查询 -> semi join
-  QUERY_PUSH_DOWN               , // push down limit
-  AGGR_SUBQUERY                 , // JA类型子查询改写
-  SIMPLIFY_SET                  , // set相关改写
-  PROJECTION_PRUNING            , // project pruning
-  OR_EXPANSION                  , // or expansion
-  WIN_MAGIC                     ,
-  JOIN_ELIMINATION              ,
-  GROUPBY_PUSHDOWN              ,
-  GROUPBY_PULLUP                ,
-  SUBQUERY_COALESCE             ,
-  PREDICATE_MOVE_AROUND         ,
-  NL_FULL_OUTER_JOIN            ,
-  SEMI_TO_INNER                 ,
-  JOIN_LIMIT_PUSHDOWN           ,
-  TEMP_TABLE_OPTIMIZATION       ,
-  CONST_PROPAGATE               ,
-  LEFT_JOIN_TO_ANTI             ,  // left join + is null -> anti-join
-  COUNT_TO_EXISTS               ,
-  SELECT_EXPR_PULLUP            ,
-  PROCESS_DBLINK                ,
-  DECORRELATE                   ,
-  CONDITIONAL_AGGR_COALESCE     ,
-  MV_REWRITE                    ,
-  LATE_MATERIALIZATION          ,
-  DISTINCT_AGGREGATE            ,
+  INVALID_TRANSFORM_TYPE        = 0,
+  PRE_PROCESS                   = 1,
+  POST_PROCESS                  = 2,
+  SIMPLIFY_DISTINCT             = 3,
+  SIMPLIFY_EXPR                 = 4,
+  SIMPLIFY_GROUPBY              = 5,
+  SIMPLIFY_LIMIT                = 6,
+  SIMPLIFY_ORDERBY              = 7,
+  SIMPLIFY_SUBQUERY             = 8,
+  SIMPLIFY_WINFUNC              = 9,
+  FASTMINMAX                    = 10, // select min/max -> select order by limit 1
+  ELIMINATE_OJ                  = 11, // 外连接消除
+  VIEW_MERGE                    = 12, // 视图合并
+  WHERE_SQ_PULL_UP              = 13, // where子查询 -> semi join
+  QUERY_PUSH_DOWN               = 14, // push down limit
+  AGGR_SUBQUERY                 = 15, // JA类型子查询改写
+  SIMPLIFY_SET                  = 16, // set相关改写
+  PROJECTION_PRUNING            = 17, // project pruning
+  OR_EXPANSION                  = 18, // or expansion
+  WIN_MAGIC                     = 19,
+  JOIN_ELIMINATION              = 20,
+  GROUPBY_PUSHDOWN              = 21,
+  GROUPBY_PULLUP                = 22,
+  SUBQUERY_COALESCE             = 23,
+  PREDICATE_MOVE_AROUND         = 24,
+  NL_FULL_OUTER_JOIN            = 25,
+  SEMI_TO_INNER                 = 26,
+  JOIN_LIMIT_PUSHDOWN           = 27,
+  TEMP_TABLE_OPTIMIZATION       = 28,
+  CONST_PROPAGATE               = 29,
+  LEFT_JOIN_TO_ANTI             = 30,  // left join + is null -> anti-join
+  COUNT_TO_EXISTS               = 31,
+  SELECT_EXPR_PULLUP            = 32,
+  PROCESS_DBLINK                = 33,
+  DECORRELATE                   = 34,
+  CONDITIONAL_AGGR_COALESCE     = 35,
+  MV_REWRITE                    = 36,
+  LATE_MATERIALIZATION          = 37,
+  DISTINCT_AGGREGATE            = 38,
   TRANSFORM_TYPE_COUNT_PLUS_ONE ,
 };
 
@@ -320,6 +327,20 @@ struct ObTryTransHelper
 // param name in this structure is same as the name in origin contexts
 struct ObEvalCostHelper
 {
+  ObEvalCostHelper() :
+    question_marks_count_(0),
+    calculable_items_count_(0),
+    try_trans_helper_(),
+    eval_cost_(false),
+    expr_constraints_count_(0),
+    plan_const_param_constraints_count_(0),
+    equal_param_constraints_count_(0),
+    src_qb_name_(),
+    outline_trans_hints_count_(0),
+    used_trans_hints_count_(0),
+    tmp_expr_factory_(NULL)
+  {}
+
   int fill_helper(const ObPhysicalPlanCtx &phy_plan_ctx,
                   const ObQueryCtx &query_ctx,
                   const ObTransformerCtx &trans_ctx);
@@ -340,6 +361,7 @@ struct ObEvalCostHelper
   ObString src_qb_name_;
   int64_t outline_trans_hints_count_;
   int64_t used_trans_hints_count_;
+  ObRawExprFactory *tmp_expr_factory_;
 };
 
 class ObTransformRule
@@ -372,7 +394,9 @@ public:
       (1L << COUNT_TO_EXISTS) |
       (1L << CONDITIONAL_AGGR_COALESCE) |
       (1L << SEMI_TO_INNER) |
-      (1L << DISTINCT_AGGREGATE);
+      (1L << DISTINCT_AGGREGATE) |
+      (1L << SELECT_EXPR_PULLUP) |
+      (1L << DECORRELATE);
   static const uint64_t ALL_COST_BASED_RULES =
       (1L << OR_EXPANSION) |
       (1L << WIN_MAGIC) |
@@ -383,7 +407,6 @@ public:
       (1L << TEMP_TABLE_OPTIMIZATION) |
       (1L << MV_REWRITE) |
       (1L << LATE_MATERIALIZATION);
-
   static const uint64_t ALL_EXPR_LEVEL_HEURISTICS_RULES =
       (1L << SIMPLIFY_EXPR) |
       (1L << SIMPLIFY_DISTINCT) |
@@ -394,6 +417,18 @@ public:
       (1L << PREDICATE_MOVE_AROUND) |
       (1L << JOIN_LIMIT_PUSHDOWN) |
       (1L << CONST_PROPAGATE);
+
+  // static checks for transformer rule type definition
+  static const uint64_t NON_ITERATIVE_TRANSFORM_RULES =
+                        (1L << INVALID_TRANSFORM_TYPE) |
+                        (1L << PRE_PROCESS) |
+                        (1L << POST_PROCESS) |
+                        (1L << PROCESS_DBLINK);
+  static const uint64_t BOTH_HEURISTIC_AND_COST_BASED_RULES = (1L << SEMI_TO_INNER);
+  static_assert((ALL_HEURISTICS_RULES | ALL_COST_BASED_RULES | NON_ITERATIVE_TRANSFORM_RULES) == ALL_TRANSFORM_RULES,
+                "some of the transform rules are not correctly categorized");
+  static_assert((ALL_HEURISTICS_RULES & ALL_COST_BASED_RULES) == BOTH_HEURISTIC_AND_COST_BASED_RULES,
+                "invalid definition for BOTH_HEURISTIC_AND_COST_BASED_RULES");
 
   ObTransformRule(ObTransformerCtx *ctx,
                   TransMethod transform_method,
@@ -480,6 +515,7 @@ protected:
                        bool force_accept,
                        bool check_original_plan,
                        bool &trans_happened,
+                       bool eval_partial_cost,
                        void *check_ctx = NULL);
 
   /*
@@ -498,6 +534,13 @@ protected:
                              const int64_t current_level,
                              const ObDMLStmt &stmt,
                              bool &need_trans);
+
+  /**
+   * @brief In principle, every rewriting rule that implements validity check in a heavy manner should implement this method
+   * which involves prepositioning some checks that can be efficiently completed, primarily including
+   * basic form check of the stmt and the presence of some special expressions.
+   */
+  virtual int check_rule_bypass(const ObDMLStmt &stmt, bool &reject_trans);
 
   virtual int check_hint_status(const ObDMLStmt &stmt, bool &need_trans);
 
@@ -591,4 +634,3 @@ private:
 } /* namespace oceanbase */
 
 #endif /* _OCEANBASE_SQL_REWRITE_RULE_H */
-

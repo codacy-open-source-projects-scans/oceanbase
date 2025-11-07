@@ -11,13 +11,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_ENG
-#include "sql/ob_sql.h"
 #include "sql/engine/ob_des_exec_context.h"
-#include "sql/engine/ob_physical_plan_ctx.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "observer/ob_server_struct.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "lib/stat/ob_session_stat.h"
 
 using namespace oceanbase::common;
 namespace oceanbase
@@ -46,6 +40,7 @@ void ObDesExecContext::cleanup_session()
 {
   if (NULL != my_session_) {
     if (ObSQLSessionInfo::INVALID_SESSID == free_session_ctx_.sessid_) {
+      my_session_->set_session_sleep();
       my_session_->~ObSQLSessionInfo();
       my_session_ = NULL;
     } else if (NULL != GCTX.session_mgr_) {
@@ -56,6 +51,7 @@ void ObDesExecContext::cleanup_session()
       GCTX.session_mgr_->mark_sessid_unused(free_session_ctx_.sessid_);
     }
   }
+  OB_ASSERT(ObQueryRetryAshGuard::get_info_ptr() == nullptr);
 }
 
 void ObDesExecContext::show_session()
@@ -125,7 +121,7 @@ int ObDesExecContext::create_my_session(uint64_t tenant_id)
     my_session_->set_thread_id(GETTID());
     //notice: can't unlink exec context and session info here
     typedef ObSQLSessionInfo::ExecCtxSessionRegister MyExecCtxSessionRegister;
-    MyExecCtxSessionRegister ctx_register(*my_session_, *this);
+    MyExecCtxSessionRegister ctx_register(*my_session_, this);
     sql_ctx_.session_info_ = my_session_;
   }
   return ret;
@@ -180,7 +176,7 @@ DEFINE_DESERIALIZE(ObDesExecContext)
   }
 
   if (OB_SUCC(ret)) {
-    set_mem_attr(ObMemAttr(tenant_id, ObModIds::OB_SQL_EXEC_CONTEXT, ObCtxIds::EXECUTE_CTX_ID));
+    set_mem_attr(ObMemAttr(my_session_->get_effective_tenant_id(), ObModIds::OB_SQL_EXEC_CONTEXT, ObCtxIds::EXECUTE_CTX_ID));
     // init operator context need session info, initialized after session deserialized.
     if (OB_FAIL(init_phy_op(phy_op_size))) {
       LOG_WARN("init exec context phy op failed", K(ret), K_(phy_op_size));

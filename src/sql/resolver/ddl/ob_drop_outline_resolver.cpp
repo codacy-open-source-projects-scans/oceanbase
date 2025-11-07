@@ -13,9 +13,7 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ddl/ob_drop_outline_resolver.h"
 
-#include "sql/ob_sql_utils.h"
 #include "sql/resolver/ddl/ob_drop_outline_stmt.h"
-#include "sql/session/ob_sql_session_info.h"
 #include "share/schema/ob_outline_sql_service.h"
 namespace oceanbase
 {
@@ -39,6 +37,9 @@ int ObDropOutlineResolver::resolve(const ParseNode &parse_tree)
   } else if (OB_ISNULL(params_.session_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("session info is NULL");
+  } else if (OB_UNLIKELY(is_external_catalog_id(session_info_->get_current_default_catalog()))) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "drop outline in catalog is");
   } else if (OB_ISNULL(drop_outline_stmt = create_stmt<ObDropOutlineStmt>())) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_ERROR("failed to create drop_outline_stmt", K(ret));

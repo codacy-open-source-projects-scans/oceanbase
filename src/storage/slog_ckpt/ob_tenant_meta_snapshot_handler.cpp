@@ -13,16 +13,8 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_tenant_meta_snapshot_handler.h"
-#include "storage/meta_store/ob_tenant_storage_meta_service.h"
-#include "storage/meta_mem/ob_meta_obj_struct.h"
-#include "storage/ob_super_block_struct.h"
-#include "storage/tx/ob_timestamp_service.h"
 #include "observer/omt/ob_tenant.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/tx_storage/ob_ls_handle.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/slog/ob_storage_logger.h"
-#include "observer/ob_startup_accel_task_handler.h"
+#include "src/storage/ls/ob_ls.h"
 
 
 namespace oceanbase
@@ -63,7 +55,7 @@ int ObTenantMetaSnapshotHandler::create_single_ls_snapshot(const ObTenantSnapsho
                                                            share::SCN &clog_max_scn)
 {
   int ret = OB_SUCCESS;
-  ObTenantStorageCheckpointWriter tenant_storage_meta_writer;
+  ObTenantStorageSnapshotWriter tenant_storage_meta_writer;
   MacroBlockId orig_ls_meta_entry;
   ObTenantSnapshotMeta snapshot;
   ObSArray<MacroBlockId> ls_block_list(OB_MALLOC_NORMAL_BLOCK_SIZE, ModulePageAllocator("CreateSnapLS", MTL_ID()));
@@ -106,7 +98,7 @@ int ObTenantMetaSnapshotHandler::delete_single_ls_snapshot(const ObTenantSnapsho
                                                            const ObLSID &ls_id)
 {
   int ret = OB_SUCCESS;
-  ObTenantStorageCheckpointWriter tenant_storage_meta_writer;
+  ObTenantStorageSnapshotWriter tenant_storage_meta_writer;
   MacroBlockId orig_ls_meta_entry;
   MacroBlockId tablet_meta_entry;
   ObTenantSnapshotMeta snapshot;
@@ -153,7 +145,7 @@ int ObTenantMetaSnapshotHandler::delete_single_ls_snapshot(const ObTenantSnapsho
 }
 
 int ObTenantMetaSnapshotHandler::inc_all_linked_block_ref(
-    ObTenantStorageCheckpointWriter &tenant_storage_meta_writer,
+    ObTenantStorageSnapshotWriter &tenant_storage_meta_writer,
     bool &inc_ls_blocks_ref_succ,
     bool &inc_tablet_blocks_ref_succ)
 {
@@ -174,7 +166,7 @@ int ObTenantMetaSnapshotHandler::inc_all_linked_block_ref(
 void ObTenantMetaSnapshotHandler::rollback_ref_cnt(
     const bool inc_ls_blocks_ref_succ,
     const bool inc_tablet_blocks_ref_succ,
-    ObTenantStorageCheckpointWriter &tenant_storage_meta_writer)
+    ObTenantStorageSnapshotWriter &tenant_storage_meta_writer)
 {
   int ret = OB_SUCCESS;
   ObIArray<MacroBlockId> *meta_block_list = nullptr;
@@ -380,7 +372,7 @@ int ObTenantMetaSnapshotHandler::inner_delete_tablet_by_addrs(
           buf_len))) {
         LOG_WARN("fail to read from disk", K(ret), K(deleted_tablet_addrs.at(i)));
       }
-    } while (ObTenantStorageCheckpointWriter::ignore_ret(ret));
+    } while (ObTenantStorageSnapshotWriter::ignore_ret(ret));
     if (OB_SUCC(ret)) {
       tablet.set_tablet_addr(deleted_tablet_addrs.at(i));
       if (OB_FAIL(tablet.release_ref_cnt(arena_allocator, buf, buf_len, pos))) {
@@ -636,7 +628,7 @@ int ObTenantMetaSnapshotHandler::batch_write_slog(
 int ObTenantMetaSnapshotHandler::do_write_slog(ObIArray<ObUpdateTabletLog> &slog_arr)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(TENANT_STORAGE_META_PERSISTER.batch_update_tablet(slog_arr))) {
+  if (OB_FAIL(TENANT_STORAGE_META_SERVICE.batch_update_tablet(slog_arr))) {
     LOG_WARN("fail to batch update tablet", K(ret));
   }
   return ret;

@@ -26,6 +26,10 @@
 
 namespace oceanbase
 {
+namespace common
+{
+  class ObTabletID;
+}
 namespace storage
 {
 class ObMicroBlockDataHandle;
@@ -124,6 +128,21 @@ class ObMicroBlockBufferHandle
 public:
   ObMicroBlockBufferHandle() : micro_block_(NULL) {}
   ~ObMicroBlockBufferHandle() {}
+  void move_from(ObMicroBlockBufferHandle& other) {
+    this->handle_.move_from(other.handle_);
+    this->micro_block_ = other.micro_block_;
+    other.reset();
+  }
+  int assign(const ObMicroBlockBufferHandle& other) {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(this->handle_.assign(other.handle_))) {
+      COMMON_LOG(WARN, "failed to assign micro block buffer handle", K(ret));
+      this->reset();
+    } else {
+      this->micro_block_ = other.micro_block_;
+    }
+    return ret;
+  }
   void reset() { micro_block_ = NULL; handle_.reset(); }
   inline const ObMicroBlockData* get_block_data() const
   { return is_valid() ? &(micro_block_->get_block_data()) : NULL; }
@@ -131,11 +150,11 @@ public:
   inline bool is_valid() const { return NULL != micro_block_ && handle_.is_valid(); }
   inline ObKVMemBlockHandle* get_mb_handle() const { return handle_.get_mb_handle(); }
   inline const ObMicroBlockCacheValue* get_micro_block() const { return micro_block_; }
-  inline void set_mb_handle(ObKVMemBlockHandle *mb_handle) { handle_.set_mb_handle(mb_handle); }
   inline void set_micro_block(const ObMicroBlockCacheValue *micro_block) { micro_block_ = micro_block; }
   TO_STRING_KV(K_(handle), KP_(micro_block));
 private:
   friend class ObIMicroBlockCache;
+  friend class common::ObPointerSwizzleNode;
   common::ObKVCacheHandle handle_;
   const ObMicroBlockCacheValue *micro_block_;
 };
@@ -301,6 +320,7 @@ public:
   virtual int64_t size() const;
   virtual int inner_process(const char *data_buffer, const int64_t size) override;
   virtual const char *get_data() override;
+  virtual const char *get_cb_name() const override { return "SingleMicroBlockIOCB"; }
   int process_without_tl_reader(const char *data_buffer, const int64_t size);
   TO_STRING_KV("callback_type:", "ObAsyncSingleMicroBlockIOCallback", KP_(micro_block), K_(cache_handle), K_(offset), K_(block_des_meta));
 private:
@@ -321,6 +341,7 @@ public:
   virtual int64_t size() const;
   virtual int inner_process(const char *data_buffer, const int64_t size) override;
   virtual const char *get_data() override;
+  virtual const char *get_cb_name() const override { return "MultiDataBlockIOCB"; }
   int process_without_tl_reader(const char *data_buffer, const int64_t size);
   TO_STRING_KV("callback_type:", "ObMultiDataBlockIOCallback", K_(io_ctx), K_(offset));
 private:
@@ -343,6 +364,7 @@ public:
   virtual int64_t size() const;
   virtual int inner_process(const char *data_buffer, const int64_t size) override;
   virtual const char *get_data() override;
+  const char *get_cb_name() const override { return "SyncSingleMicroBLockIOCallback"; }
   TO_STRING_KV("callback_type:", "ObSyncSingleMicroBLockIOCallback", KP_(macro_reader), KP_(block_data), K_(is_data_block));
   DISALLOW_COPY_AND_ASSIGN(ObSyncSingleMicroBLockIOCallback);
 protected:
@@ -391,14 +413,16 @@ public:
       const MacroBlockId &macro_id,
       const ObMicroIndexInfo& idx_row,
       const bool use_cache,
+      const common::ObTabletID &effective_tablet_id,
       ObStorageObjectHandle &macro_handle,
       ObIAllocator *allocator,
-      const bool is_major_macro_preread = false);
+      const bool is_preread = false);
   virtual int load_block(
       const ObMicroBlockId &micro_block_id,
       const ObMicroBlockDesMeta &des_meta,
       const ObLogicMicroBlockId &logic_micro_id,
       const int64_t data_checksum,
+      const common::ObTabletID &effective_tablet_id,
       ObMacroBlockReader *macro_reader,
       ObMicroBlockData &block_data,
       ObIAllocator *allocator) = 0;
@@ -432,14 +456,16 @@ protected:
       const uint64_t tenant_id,
       const MacroBlockId &macro_id,
       const ObMicroIndexInfo& idx_row,
+      const common::ObTabletID &effective_tablet_id,
       ObStorageObjectHandle &macro_handle,
       ObIMicroBlockIOCallback &callback,
-      const bool is_major_macro_preread = false);
+      const bool is_preread = false);
   int prefetch(
       const uint64_t tenant_id,
       const MacroBlockId &macro_id,
       const ObMultiBlockIOParam &io_param,
       const bool use_cache,
+      const common::ObTabletID &effective_tablet_id,
       ObStorageObjectHandle &macro_handle,
       ObIMicroBlockIOCallback &callback);
 private:
@@ -461,12 +487,14 @@ public:
       const MacroBlockId &macro_id,
       const ObMultiBlockIOParam &io_param,
       const bool use_cache,
+      const common::ObTabletID &effective_tablet_id,
       ObStorageObjectHandle &macro_handle);
   int load_block(
       const ObMicroBlockId &micro_block_id,
       const ObMicroBlockDesMeta &des_meta,
       const ObLogicMicroBlockId &logic_micro_id,
       const int64_t data_checksum,
+      const common::ObTabletID &effective_tablet_id,
       ObMacroBlockReader *macro_reader,
       ObMicroBlockData &block_data,
       ObIAllocator *allocator) override;
@@ -517,6 +545,7 @@ public:
       const ObMicroBlockDesMeta &des_meta,
       const ObLogicMicroBlockId &logic_micro_id,
       const int64_t data_checksum,
+      const common::ObTabletID &effective_tablet_id,
       ObMacroBlockReader *macro_reader,
       ObMicroBlockData &block_data,
       ObIAllocator *allocator) override;

@@ -12,8 +12,6 @@
 
 #define USING_LOG_PREFIX SQL_OPT
 #include "sql/optimizer/ob_log_link.h"
-#include "sql/ob_sql_utils.h"
-#include "sql/dblink/ob_dblink_utils.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -59,6 +57,7 @@ int ObLogLink::compute_op_parallel_and_server_info()
     LOG_WARN("failed to assign das path server list", K(ret));
   } else {
     set_parallel(1);
+    set_available_parallel(1);
     set_server_cnt(1);
   }
   return ret;
@@ -85,7 +84,7 @@ int ObLogLink::print_link_stmt(char *buf, int64_t buf_len)
     char *ch = buf;
     char *stmt_end = buf + stmt_fmt_len_ - 3;
     while (ch < stmt_end) {
-      if (0 == ch[0] && 0 == ch[1]) {
+      if (0 == ch[0]) {
         uint16_t param_idx = *(uint16_t *)(ch + 2);
         ch[0] = '$';
         if (param_idx > 999) {

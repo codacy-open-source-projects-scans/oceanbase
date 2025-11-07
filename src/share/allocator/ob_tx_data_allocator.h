@@ -40,8 +40,8 @@ public:
   static const int64_t ALLOC_TX_DATA_MAX_CONCURRENCY = 32;
   static const uint32_t THROTTLE_TX_DATA_INTERVAL = 20 * 1000; // 20ms
 
-  // The tx data memtable will trigger a freeze if its memory use is more than 2%
-  static constexpr double TX_DATA_FREEZE_TRIGGER_PERCENTAGE = 2;
+  // The tx data memtable will trigger a freeze if its memory use is more than 5%
+  static constexpr double TX_DATA_FREEZE_TRIGGER_PERCENTAGE = 5;
 
 public:
   DEFINE_CUSTOM_FUNC_FOR_THROTTLE(TxData);
@@ -50,7 +50,7 @@ public:
   ObTenantTxDataAllocator()
       : is_inited_(false), throttle_tool_(nullptr), block_alloc_(), slice_allocator_() {}
   ~ObTenantTxDataAllocator() { reset(); }
-  int init(const char* label);
+  int init(const char* label, TxShareThrottleTool *throttle_tool);
   void *alloc(const bool enable_throttle = true, const int64_t abs_expire_time = 0);
   void reset();
   int64_t hold() const { return block_alloc_.hold(); }

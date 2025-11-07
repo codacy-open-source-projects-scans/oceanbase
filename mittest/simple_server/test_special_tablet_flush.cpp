@@ -22,9 +22,7 @@
 #include "env/ob_simple_cluster_test_base.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "storage/tablelock/ob_lock_memtable.h"
-#include "logservice/ob_log_base_type.h"
 #include "mtlenv/tablelock/table_lock_tx_common_env.h"
-#include "storage/tx_storage/ob_ls_handle.h" //ObLSHandle
 
 namespace oceanbase
 {
@@ -127,7 +125,7 @@ void ObTabletFlushTest::prepare_ddl_lock_table_data(ObLS *&ls)
   ObLockID lock_id2;
   lock_id2.obj_type_ = ObLockOBJType::OBJ_TYPE_TABLE;
   lock_id2.obj_id_ = 1002;
-  table_lock_op1.owner_id_.convert_from_value(1);
+  table_lock_op1.owner_id_.convert_from_value(static_cast<transaction::tablelock::ObLockOwnerType>(0), 1);
   table_lock_op2.lock_id_ = lock_id2;
   table_lock_op2.lock_mode_ = ROW_SHARE;
   table_lock_op2.create_trans_id_ = 3;

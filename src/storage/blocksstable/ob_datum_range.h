@@ -25,13 +25,15 @@ namespace blocksstable
 struct ObDatumRange
 {
 public:
-  ObDatumRange() : start_key_(), end_key_(), group_idx_(0), border_flag_() { }
+  ObDatumRange() : start_key_(), end_key_(), group_idx_(0), border_flag_(), is_skip_prefetch_(nullptr) { }
   ~ObDatumRange() = default;
   OB_INLINE void reset();
   OB_INLINE bool is_valid() const;
   OB_INLINE bool is_memtable_valid() const;
   OB_INLINE const ObDatumRowkey& get_start_key() const { return start_key_; }
   OB_INLINE const ObDatumRowkey& get_end_key() const { return end_key_; }
+  OB_INLINE ObDatumRowkey& get_start_key() { return start_key_; }
+  OB_INLINE ObDatumRowkey& get_end_key() { return end_key_; }
   OB_INLINE const ObBorderFlag& get_border_flag() const { return border_flag_; }
   OB_INLINE int64_t get_group_idx() const { return group_idx_; }
   OB_INLINE void set_inclusive(ObBorderFlag flag) { border_flag_.set_inclusive(flag.get_data()); }
@@ -51,26 +53,31 @@ public:
   OB_INLINE void set_whole_range();
   OB_INLINE bool is_whole_range() const { return start_key_.is_min_rowkey() && end_key_.is_max_rowkey(); }
   OB_INLINE int is_single_rowkey(const ObStorageDatumUtils &datum_utils, bool &is_single) const;
-  OB_INLINE void change_boundary(const ObDatumRowkey &rowkey, bool is_reverse);
+  OB_INLINE void change_boundary(const ObDatumRowkey &rowkey, bool is_reverse, bool is_closed = false);
   OB_INLINE int from_range(const common::ObStoreRange &range, ObIAllocator &allocator);
-  OB_INLINE int from_range(const common::ObNewRange &range, ObIAllocator &allocator);
+  OB_INLINE int from_range(const common::ObNewRange &range, ObIAllocator &allocator, bool enable_new_false_range = false);
   OB_INLINE int to_store_range(const common::ObIArray<share::schema::ObColDesc> &col_descs,
                               common::ObIAllocator &allocator,
                               common::ObStoreRange &store_range) const;
   OB_INLINE int to_multi_version_range(common::ObIAllocator &allocator, ObDatumRange &dest) const;
   OB_INLINE int prepare_memtable_readable(const common::ObIArray<share::schema::ObColDesc> &col_descs,
                                           common::ObIAllocator &allocator);
+  OB_INLINE int is_memtable_single_rowkey(const int64_t schema_rowkey_cnt,
+                                          const ObStorageDatumUtils &datum_utils,
+                                          bool &is_single) const;
   // !!Attension only compare start key
   OB_INLINE int compare(const ObDatumRange &rhs, const ObStorageDatumUtils &datum_utils, int &cmp_ret) const;
+  int deep_copy(ObDatumRange &dest, ObIAllocator &allocator) const;
   // maybe we will need serialize
   // NEED_SERIALIZE_AND_DESERIALIZE;
-  TO_STRING_KV(K_(start_key), K_(end_key), K_(group_idx), K_(border_flag));
+  TO_STRING_KV(K_(start_key), K_(end_key), K_(group_idx), K_(border_flag), K_(is_skip_prefetch));
 public:
   ObDatumRowkey start_key_;
   ObDatumRowkey end_key_;
   int64_t group_idx_;
   //TODO maybe we should use a new border flag
   common::ObBorderFlag border_flag_;
+  const bool *is_skip_prefetch_;
 };
 
 template<typename T>
@@ -163,6 +170,7 @@ OB_INLINE void ObDatumRange::reset()
   end_key_.reset();
   group_idx_ = 0;
   border_flag_.set_data(0);
+  is_skip_prefetch_ = nullptr;
 }
 
 //TODO without rowkey type, we cannot judge empty
@@ -198,12 +206,43 @@ OB_INLINE int ObDatumRange::is_single_rowkey(const ObStorageDatumUtils &datum_ut
   return ret;
 }
 
-OB_INLINE int ObDatumRange::from_range(const common::ObNewRange &range, ObIAllocator &allocator)
+OB_INLINE int ObDatumRange::is_memtable_single_rowkey(const int64_t schema_rowkey_cnt,
+                                                      const ObStorageDatumUtils &datum_utils,
+                                                      bool &is_single) const
+{
+  int ret = OB_SUCCESS;
+  is_single = false;
+  if (OB_UNLIKELY(!is_memtable_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "Unexpected invalid memtable range", K(ret), KPC(this));
+  } else if (!border_flag_.inclusive_start() || !border_flag_.inclusive_end()) {
+  } else if (start_key_.is_ext_rowkey() || start_key_.is_static_rowkey() ||
+             end_key_.is_ext_rowkey() || end_key_.is_static_rowkey()) {
+  } else if (OB_UNLIKELY(start_key_.store_rowkey_.get_obj_cnt() < schema_rowkey_cnt ||
+                         end_key_.store_rowkey_.get_obj_cnt() < schema_rowkey_cnt)) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "Unexpected rowkey cnt", K(ret), K(schema_rowkey_cnt),
+                K(start_key_.store_rowkey_), K(end_key_.store_rowkey_));
+  } else {
+    bool can_use_single_get = true;
+    for (int64_t i = 0; can_use_single_get && i < schema_rowkey_cnt; i++) {
+      if (ob_is_real_type(start_key_.store_rowkey_.get_obj_ptr()[i].get_type())) {
+        can_use_single_get = false;
+      }
+    }
+
+    if (can_use_single_get && OB_FAIL(start_key_.equal(end_key_, datum_utils, is_single))) {
+      STORAGE_LOG(WARN, "Failed to check datum rowkey equal", K(ret), K(*this));
+    }
+  }
+  return ret;
+}
+
+OB_INLINE int ObDatumRange::from_range(const common::ObNewRange &range, ObIAllocator &allocator, bool enable_new_false_range)
 {
   int ret = OB_SUCCESS;
 
-  //we should not defend the range valid
-  if (OB_UNLIKELY(!range.is_valid())) {
+  if (!enable_new_false_range && OB_UNLIKELY(!range.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "Invalid argument to ", K(ret), K(range));
   } else if (OB_FAIL(start_key_.from_rowkey(range.get_start_key(), allocator))) {
@@ -259,14 +298,22 @@ OB_INLINE int ObDatumRange::compare(const ObDatumRange &rhs, const ObStorageDatu
   return ret;
 }
 
-OB_INLINE void ObDatumRange::change_boundary(const ObDatumRowkey &rowkey, bool is_reverse)
+OB_INLINE void ObDatumRange::change_boundary(const ObDatumRowkey &rowkey, bool is_reverse, bool is_closed)
 {
   if (is_reverse) {
     end_key_ = rowkey;
-    border_flag_.unset_inclusive_end();
+    if (is_closed) {
+      border_flag_.set_inclusive_end();
+    } else {
+      border_flag_.unset_inclusive_end();
+    }
   }  else {
     start_key_ = rowkey;
-    border_flag_.unset_inclusive_start();
+    if (is_closed) {
+      border_flag_.set_inclusive_start();
+    } else {
+      border_flag_.unset_inclusive_start();
+    }
   }
 }
 
@@ -299,6 +346,23 @@ OB_INLINE int ObDatumRange::prepare_memtable_readable(const common::ObIArray<sha
     STORAGE_LOG(WARN, "Failed to prepare start key", K(ret), K(start_key_), K(col_descs));
   } else if (OB_FAIL(end_key_.prepare_memtable_readable(col_descs, allocator))) {
     STORAGE_LOG(WARN, "Failed to prepare end key", K(ret), K(end_key_), K(col_descs));
+  }
+  return ret;
+}
+
+OB_INLINE int ObDatumRange::deep_copy(ObDatumRange &dest, ObIAllocator &allocator) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(this == &dest)) {
+    // by pass
+  } else {
+    dest.group_idx_ = group_idx_;
+    dest.border_flag_ = border_flag_;
+    if (OB_FAIL(start_key_.deep_copy(dest.start_key_, allocator))) {
+      STORAGE_LOG(WARN, "fail to deep copy start key", K(ret), K(start_key_));
+    } else if (OB_FAIL(end_key_.deep_copy(dest.end_key_, allocator))) {
+      STORAGE_LOG(WARN, "fail to deep copy end key", K(ret), K(end_key_));
+    }
   }
   return ret;
 }

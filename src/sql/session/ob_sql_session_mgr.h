@@ -132,7 +132,7 @@ public:
   int disconnect_session(ObSQLSessionInfo &session);
 
   // kill all sessions from this tenant.
-  int kill_tenant(const uint64_t tenant_id);
+  int kill_tenant(const uint64_t tenant_id, bool force_kill);
 
   /**
    * @brief timing clean time out session
@@ -255,13 +255,20 @@ private:
   class KillTenant
   {
   public:
-    KillTenant(ObSQLSessionMgr *mgr, const uint64_t tenant_id)
-        : mgr_(mgr), tenant_id_(tenant_id)
+    KillTenant(ObSQLSessionMgr *mgr, const uint64_t tenant_id, bool force_kill) :
+      ret_(common::OB_SUCCESS), mgr_(mgr), tenant_id_(tenant_id), force_kill_(force_kill)
     {}
-    bool operator() (sql::ObSQLSessionMgr::Key key, ObSQLSessionInfo* sess_info);
+    bool operator()(sql::ObSQLSessionMgr::Key key, ObSQLSessionInfo *sess_info);
+    int get_ret_code()
+    {
+      return ret_;
+    }
+
   private:
+    int ret_;
     ObSQLSessionMgr *mgr_;
     const uint64_t tenant_id_;
+    const bool force_kill_;
   };
 
   class ObClientSessMapErase
@@ -389,7 +396,8 @@ private:
   class SessionPool
   {
   public:
-    static const int64_t POOL_CAPACIPY = 32;
+    static const int64_t MAX_POOL_CAPACIPY = 256;
+    static const int64_t MIN_POOL_CAPACIPY = 32;
   public:
     SessionPool();
     int init(const int64_t capacity);
@@ -400,7 +408,7 @@ private:
                  K(session_pool_.get_total()),
                  K(session_pool_.get_free()));
   private:
-    ObSQLSessionInfo *session_array_[POOL_CAPACIPY];
+    ObSQLSessionInfo *session_array_[MAX_POOL_CAPACIPY];
     common::ObFixedQueue<ObSQLSessionInfo> session_pool_;
   };
   bool is_valid_tenant_id(uint64_t tenant_id) const;

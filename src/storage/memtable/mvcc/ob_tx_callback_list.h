@@ -32,10 +32,17 @@ public:
   void reset();
 
   // append_callback will append your callback into the callback list
+  int append_callback(ObITransCallback *head,
+                      ObITransCallback *tail,
+                      const int64_t length,
+                      const bool for_replay,
+                      const bool parallel_replay = false,
+                      const bool serial_final = false);
   int append_callback(ObITransCallback *callback,
                       const bool for_replay,
                       const bool parallel_replay = false,
                       const bool serial_final = false);
+
 
   // concat_callbacks will append all callbacks in other into itself and reset
   // other. And it will return the concat number during concat_callbacks.
@@ -66,11 +73,7 @@ public:
                                        const transaction::ObTxSEQ from_seq,
                                        const share::SCN replay_scn);
 
-  // reverse_search_callback_by_seq_no will search callback from back to front
-  // until callbacks smaller or equal than the seq_no
-  int reverse_search_callback_by_seq_no(const transaction::ObTxSEQ seq_no, ObITransCallback *search_res);
-
-  // get_memtable_key_arr_w_timeout get all memtable key until timeout
+  // get_memtable_key_arr__timeout get all memtable key until timeout
   int get_memtable_key_arr_w_timeout(transaction::ObMemtableKeyArray &memtable_key_arr);
 
   // clean_unlog_callbacks will remove all unlogged callbacks. Which is called
@@ -104,6 +107,9 @@ public:
   // lock after proposing the commit log and even before the commit log
   // successfully synced for single ls txn.
   int tx_elr_preparing();
+
+  // tx_elr_revoke will clear elr flag on TransNode
+  int tx_elr_revoke();
 
   // tx_print_callback will simply print all calbacks.
   int tx_print_callback();
@@ -159,8 +165,9 @@ private:
                 const ObCallbackScope &callbacks,
                 const LockState lock_state);
   int callback_(ObITxCallbackFunctor &func,
-                ObITransCallback *start,
+                ObITransCallback *start, /*inclusive*/
                 ObITransCallback *end,
+                const bool end_inclusive,
                 const LockState lock_state);
   int64_t calc_need_remove_count_for_fast_commit_();
   void ensure_checksum_(const share::SCN scn);
@@ -168,7 +175,7 @@ private:
 public:
   ObITransCallback *get_guard() { return &head_; }
   ObITransCallback *get_tail() { return head_.get_prev(); }
-  ObITransCallback *get_log_cursor() const { return log_cursor_; }
+  ObITransCallback *get_log_cursor() const { return ATOMIC_LOAD(&log_cursor_); }
   int64_t get_log_epoch() const;
   share::SCN get_sync_scn() const { return sync_scn_; }
   bool check_all_redo_flushed(const bool quite = true) const;

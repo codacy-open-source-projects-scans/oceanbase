@@ -23,7 +23,6 @@
 #include "mtlenv/mock_tenant_module_env.h"
 #include "storage/tablelock/ob_lock_memtable.h"
 #include "table_lock_common_env.h"
-#include "storage/tx/ob_trans_part_ctx.h"
 #include "table_lock_tx_common_env.h"
 
 namespace oceanbase
@@ -41,6 +40,10 @@ int ObTxTable::online()
   ATOMIC_INC(&epoch_);
   ATOMIC_STORE(&state_, TxTableState::ONLINE);
   return OB_SUCCESS;
+}
+void ObTxData::dec_ref()
+{
+  return;
 }
 }  // namespace storage
 
@@ -1169,6 +1172,7 @@ TEST_F(TestLockMemtable, test_lock_retry_lock_conflict)
   ObTableLockOp lock_second = DEFAULT_OUT_TRANS_LOCK_OP;
   lock_second.lock_mode_ = DEFAULT_CONFLICT_LOCK_MODE; // X
   lock_second.owner_id_ = CONFLICT_OWNER_ID; // owner 1
+  lock_second.create_trans_id_ = TRANS_ID2;
 
   MyTxCtx default_ctx;
   ObStoreCtx store_ctx;

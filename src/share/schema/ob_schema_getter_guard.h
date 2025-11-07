@@ -23,6 +23,13 @@
 #include "share/schema/ob_udt_info.h"
 #include "share/schema/ob_outline_mgr.h"
 #include "share/schema/ob_udt_mgr.h"
+#include "share/schema/ob_catalog_schema_struct.h"
+#include "share/schema/ob_external_resource_mgr.h"
+#include "share/schema/ob_location_schema_struct.h"
+#include "share/schema/ob_objpriv_mysql_schema_struct.h"
+#include "share/schema/ob_ai_model_mgr.h"
+#include "share/schema/ob_ccl_schema_struct.h"
+#include "share/schema/ob_ccl_rule_mgr.h"
 
 namespace oceanbase
 {
@@ -269,6 +276,7 @@ public:
   int get_simple_tenant_schemas(common::ObIArray<const ObSimpleTenantSchema *> &tenant_schemas) const;
 
   int get_tenant_ids(common::ObIArray<uint64_t> &tenant_ids) const;
+  int get_user_tenant_count(int64_t &count) const;
   int get_available_tenant_ids(common::ObIArray<uint64_t> &tenant_ids) const;
   int get_tablegroup_ids_in_tenant(const uint64_t tenant_id,
                                    common::ObIArray<uint64_t> &tablegroup_id_array);
@@ -473,41 +481,86 @@ public:
   int is_user_empty_passwd(const ObUserLoginInfo &login_info, bool &is_empty_passwd_account);
   int check_user_access(const ObUserLoginInfo &login_info,
                         ObSessionPrivInfo &s_priv,
+                        common::ObIArray<uint64_t> &enable_role_id_array,
                         SSL *ssl_st,
                         const ObUserInfo *&sel_user_info);
+  int check_catalog_access(const ObSessionPrivInfo &session_priv,
+                           const common::ObIArray<uint64_t> &enable_role_id_array,
+                           const common::ObString &catalog_name);
+  int check_catalog_access(const ObSessionPrivInfo &session_priv,
+                           const common::ObIArray<uint64_t> &enable_role_id_array,
+                           const uint64_t catalog_id);
+  int check_catalog_db_access(const ObSessionPrivInfo &session_priv,
+                              const common::ObIArray<uint64_t> &enable_role_id_array,
+                              const common::ObString &catalog_name,
+                              const common::ObString &database_name);
+  int check_catalog_db_access(const ObSessionPrivInfo &session_priv,
+                              const common::ObIArray<uint64_t> &enable_role_id_array,
+                              const uint64_t catalog_id,
+                              const common::ObString &database_name);
+  int check_catalog_show(const ObSessionPrivInfo &session_priv,
+                         const common::ObIArray<uint64_t> &enable_role_id_array,
+                         const common::ObString &catalog_name,
+                         bool &allow_show);
   int check_db_access(ObSessionPrivInfo &s_priv,
+                      const common::ObIArray<uint64_t> &enable_role_id_array,
+                      const uint64_t catalog_id,
+                      const common::ObString &database_name);
+  int check_db_access(ObSessionPrivInfo &s_priv,
+                      const common::ObIArray<uint64_t> &enable_role_id_array,
                       const common::ObString& database_name);
   int check_db_show(const ObSessionPrivInfo &session_priv,
+                    const common::ObIArray<uint64_t> &enable_role_id_array,
                     const common::ObString &db,
                     bool &allow_show);
   int check_table_show(const ObSessionPrivInfo &session_priv,
+                       const common::ObIArray<uint64_t> &enable_role_id_array,
+                       const uint64_t catalog_id,
                        const common::ObString &db,
                        const common::ObString &table,
                        bool &allow_show);
+  int check_table_show(const ObSessionPrivInfo &session_priv,
+                       const common::ObIArray<uint64_t> &enable_role_id_array,
+                       const common::ObString &db,
+                       const common::ObString &table,
+                       bool &allow_show);
+  int check_routine_show(const ObSessionPrivInfo &session_priv,
+                         const common::ObIArray<uint64_t> &enable_role_id_array,
+                         const common::ObString &db,
+                         const common::ObString &routine,
+                         bool &allow_show,
+                         int64_t routine_type);
 
   int check_ora_priv(const uint64_t tenant_id,
                      const uint64_t uid,
                      const ObStmtOraNeedPrivs &stmt_need_privs,
                      const common::ObIArray<uint64_t> &role_id_array);
   int check_priv(const ObSessionPrivInfo &session_priv,
+                 const common::ObIArray<uint64_t> &enable_role_id_array,
                  const ObStmtNeedPrivs &stmt_need_privs);
   int check_priv_or(const ObSessionPrivInfo &session_priv,
+                    const common::ObIArray<uint64_t> &enable_role_id_array,
                     const ObStmtNeedPrivs &stmt_need_privs);
   int check_db_access(const ObSessionPrivInfo &session_priv,
+                      const common::ObIArray<uint64_t> &enable_role_id_array,
                       const common::ObString &db,
                       ObPrivSet &db_priv_set,
                       bool print_warn = true);
   int check_single_table_priv(const ObSessionPrivInfo &session_priv,
+                              const common::ObIArray<uint64_t> &enable_role_id_array,
                               const ObNeedPriv &table_need_priv);
   int check_single_table_priv_or(const ObSessionPrivInfo &session_priv,
+                                 const common::ObIArray<uint64_t> &enable_role_id_array,
                                  const ObNeedPriv &table_need_priv);
 
   int check_priv_any_column_priv(const ObSessionPrivInfo &session_priv,
+                                 const common::ObIArray<uint64_t> &enable_role_id_array,
                                  const common::ObString &db_name,
                                  const common::ObString &table_name,
                                  bool &pass);
 
   int collect_all_priv_for_column(const ObSessionPrivInfo &session_priv,
+                                  const common::ObIArray<uint64_t> &enable_role_id_array,
                                   const common::ObString &db_name,
                                   const common::ObString &table_name,
                                   const common::ObString &column_name,
@@ -542,6 +595,11 @@ public:
                                     const uint64_t user_id,
                                     common::ObIArray<const ObColumnPriv*> &column_privs);
   int get_column_priv_set(const ObColumnPrivSortKey &column_priv_key, ObPrivSet &priv_set);
+  int get_catalog_priv_set(const ObCatalogPrivSortKey &catalog_priv_key,
+                           ObPrivSet &priv_set);
+  int get_catalog_priv_with_user_id(const uint64_t tenant_id,
+                                    const uint64_t user_id,
+                                    common::ObIArray<const ObCatalogPriv *> &catalog_privs);
   int get_db_priv_with_user_id(const uint64_t tenant_id,
                                const uint64_t user_id,
                                common::ObIArray<const ObDBPriv*> &db_privs);
@@ -583,9 +641,11 @@ public:
   int get_db_priv_set(const ObOriginalDBKey &db_priv_key, ObPrivSet &priv_set, bool is_pattern = false);
   int get_table_priv_set(const ObTablePrivSortKey &table_priv_key, ObPrivSet &priv_set);
   int get_routine_priv_set(const ObRoutinePrivSortKey &routine_priv_key, ObPrivSet &priv_set);
-  int get_obj_privs(
-      const ObObjPrivSortKey &obj_priv_key,
-      ObPackedObjPriv &obj_privs);
+  int get_obj_mysql_priv_set(const ObObjMysqlPrivSortKey &obj_mysql_priv_key, ObPrivSet &priv_set);
+  int get_obj_privs( const ObObjPrivSortKey &obj_priv_key, ObPackedObjPriv &obj_privs);
+  int get_obj_mysql_priv_with_user_id(const uint64_t tenant_id,
+                                      const uint64_t user_id,
+                                      ObIArray<const ObObjMysqlPriv *> &obj_mysql_privs);
   //TODO@xiyu: ObDDLOperator::drop_tablegroup
   int check_database_exists_in_tablegroup(
       const uint64_t tenant_id,
@@ -959,7 +1019,8 @@ public:
                             sql::ObSQLSessionInfo *session_info,
                             const ObString &dblink_name,
                             bool is_reverse_link,
-                            uint64_t *current_scn);
+                            uint64_t *current_scn,
+                            bool &is_under_oracle12c);
   // dblink function end
 
   // directory function begin
@@ -972,6 +1033,31 @@ public:
   int get_directory_schemas_in_tenant(const uint64_t tenant_id,
                                       common::ObIArray<const ObDirectorySchema *> &directory_schemas);
   // directory function end
+
+  // location function begin
+  int get_location_schema_by_name(const uint64_t tenant_id,
+                                  const common::ObString &name,
+                                  const ObLocationSchema *&schema);
+  int get_location_schema_by_id(const uint64_t tenant_id,
+                                const uint64_t location_id,
+                                const ObLocationSchema *&schema);
+  int get_location_schema_by_prefix_match_with_priv(const ObSessionPrivInfo &session_priv,
+                                                    const common::ObIArray<uint64_t> &enable_role_id_array,
+                                                    const uint64_t tenant_id,
+                                                    const common::ObString &access_path,
+                                                    const ObLocationSchema *&schema,
+                                                    const bool is_need_write_priv = false);
+  int get_location_schemas_in_tenant(const uint64_t tenant_id,
+                                     common::ObIArray<const ObLocationSchema *> &location_schemas);
+  int check_location_access(const ObSessionPrivInfo &session_priv,
+                            const common::ObIArray<uint64_t> &enable_role_id_array,
+                            const ObString &location_name,
+                            const bool is_need_write_priv = false);
+  int check_location_show(const ObSessionPrivInfo &session_priv,
+                          const common::ObIArray<uint64_t> &enable_role_id_array,
+                          const common::ObString &location_name,
+                          bool &allow_show);
+  // location function end
 
   // rls function begin
   int get_rls_policy_schema_by_name(const uint64_t tenant_id,
@@ -1012,6 +1098,29 @@ public:
                                        common::ObIArray<const ObRlsContextSchema *> &schemas);
   // rls function end
 
+  // catalog function begin
+  int get_catalog_schema_by_name(const uint64_t tenant_id,
+                                 const common::ObString &name,
+                                 const ObCatalogSchema *&schema);
+  int get_catalog_schema_by_id(const uint64_t tenant_id,
+                               const uint64_t catalog_id,
+                               const ObCatalogSchema *&schema);
+  // catalog function end
+
+  // external resource function begin
+  int get_external_resource_schema(const uint64_t &tenant_id,
+                                   const uint64_t &database_id,
+                                   const ObString &name,
+                                   const ObSimpleExternalResourceSchema *&schema);
+  int get_external_resource_schema(const uint64_t &tenant_id,
+                                   const uint64_t &external_resource_id,
+                                   const ObSimpleExternalResourceSchema *&schema);
+  int check_external_resource_exist(uint64_t tenant_id,
+                                    uint64_t database_id,
+                                    ObString name,
+                                    bool &is_exist);
+  // external resource function end
+
   int check_user_exist(const uint64_t tenant_id,
                        const common::ObString &user_name,
                        const common::ObString &host_name,
@@ -1037,7 +1146,8 @@ public:
   int get_schema_version(const ObSchemaType schema_type,
                          const uint64_t tenant_id,
                          const uint64_t schema_id,
-                         int64_t &schema_version);
+                         int64_t &schema_version,
+                         uint64_t *schema_belong_db_id = nullptr);
   int get_idx_schema_by_origin_idx_name(uint64_t tenant_id,
                                         uint64_t database_id,
                                         const common::ObString &index_name,
@@ -1099,25 +1209,64 @@ public:
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(package, ObSimplePackageSchema);
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(routine, ObSimpleRoutineSchema);
   GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(mock_fk_parent_table, ObSimpleMockFKParentTableSchema);
+  GET_SIMPLE_SCHEMAS_IN_DATABASE_FUNC_DECLARE(external_resource, ObSimpleExternalResourceSchema);
 
   int check_routine_priv(const ObSessionPrivInfo &session_priv,
+                         const common::ObIArray<uint64_t> &enable_role_id_array,
                          const ObNeedPriv &routine_need_priv);
 
   int check_routine_definer_existed(uint64_t tenant_id, const ObString &user_name, bool &existed);
 
+  int check_obj_mysql_priv(const ObSessionPrivInfo &session_priv,
+                           const common::ObIArray<uint64_t> &enable_role_id_array,
+                           const ObNeedPriv &obj_mysql_need_priv);
+  int get_obj_mysql_priv_with_obj_name(const uint64_t tenant_id,
+                                       const ObString &obj_name,
+                                       const uint64_t obj_type,
+                                       ObIArray<const ObObjMysqlPriv *> &obj_privs,
+                                       bool reset_flag);
+  // ai function
+  int get_ai_model_schema(const uint64_t tenant_id,
+                          const uint64_t ai_model_id,
+                          const ObAiModelSchema *&ai_model_schema);
+
+  int get_ai_model_schema(const uint64_t tenant_id,
+                          const ObString &ai_model_name,
+                          const ObAiModelSchema *&ai_model_schema);
+
+  int get_ccl_rule_with_name(const uint64_t tenant_id,
+                             const common::ObString &name,
+                             const ObCCLRuleSchema *&ccl_rule_schema);
+
+  int get_ccl_rule_with_ccl_rule_id(const uint64_t tenant_id,
+                                    const uint64_t ccl_rule_id,
+                                    const ObCCLRuleSchema *&ccl_rule_schema);
+
+  int get_ccl_rule_infos(const uint64_t tenant_id, CclRuleContainsInfo,
+                         ObCCLRuleMgr::CCLRuleInfos *&ccl_rule_infos);
+  int get_ccl_rule_count(const uint64_t tenant_id, uint64_t & count);
+
 private:
   int check_ssl_access(const ObUserInfo &user_info,
                        SSL *ssl_st);
-  int check_ssl_invited_cn(const uint64_t tenant_id, SSL *ssl_st);
-
+  int check_catalog_priv(const ObSessionPrivInfo &session_priv,
+                         const common::ObIArray<uint64_t> &enable_role_id_array,
+                         const ObNeedPriv &need_priv);
+  int check_catalog_priv(const ObSessionPrivInfo &session_priv,
+                         const common::ObIArray<uint64_t> &enable_role_id_array,
+                         const ObNeedPriv &need_priv,
+                         ObPrivSet &user_catalog_priv_set);
   int check_db_priv(const ObSessionPrivInfo &session_priv,
+                    const common::ObIArray<uint64_t> &enable_role_id_array,
                     const common::ObString &db,
                     const ObPrivSet need_priv_set,
                     ObPrivSet &user_db_priv_set);
   int check_db_priv(const ObSessionPrivInfo &session_priv,
+                    const common::ObIArray<uint64_t> &enable_role_id_array,
                     const common::ObString &db,
                     const ObPrivSet need_priv_set);
   int check_user_priv(const ObSessionPrivInfo &session_priv,
+                      const common::ObIArray<uint64_t> &enable_role_id_array,
                       const ObPrivSet priv_set,
                       bool check_all = true);
   int verify_db_read_only(const uint64_t tenant_id,
@@ -1132,7 +1281,8 @@ private:
   // for privilege
   int add_role_id_recursively(const uint64_t tenant_id,
                               const uint64_t role_id,
-                              ObSessionPrivInfo &s_priv);
+                              ObSessionPrivInfo &s_priv,
+                              common::ObIArray<uint64_t> &enable_role_id_array);
   int get_simple_trigger_schema(const uint64_t tenant_id,
                                 const uint64_t trigger_id,
                                 const ObSimpleTriggerSchema *&simple_trigger);
@@ -1209,12 +1359,14 @@ private:
   bool ignore_tenant_not_exist_error(const uint64_t tenant_id);
 
   int check_priv_db_or_(const ObSessionPrivInfo &session_priv,
+                        const common::ObIArray<uint64_t> &enable_role_id_array,
                         const ObNeedPriv &need_priv,
                         const ObPrivMgr &priv_mgr,
                         const uint64_t tenant_id,
                         const uint64_t user_id,
                         bool& pass);
   int check_priv_table_or_(const ObSessionPrivInfo &session_priv,
+                           const common::ObIArray<uint64_t> &enable_role_id_array,
                            const ObNeedPriv &need_priv,
                            const ObPrivMgr &priv_mgr,
                            const uint64_t tenant_id,
@@ -1224,6 +1376,7 @@ private:
                                    const bool only_view_schema,
                                    common::ObIArray<const ObTableSchema *> &table_schemas);
   int check_single_table_priv_for_update_(const ObSessionPrivInfo &session_priv,
+                                          const common::ObIArray<uint64_t> &enable_role_id_array,
                                           const ObNeedPriv &table_need_priv,
                                           const ObPrivMgr &priv_mgr);
   int check_activate_all_role_var(uint64_t tenant_id, bool &activate_all_role);

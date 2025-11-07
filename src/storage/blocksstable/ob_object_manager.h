@@ -16,7 +16,9 @@
 #include "storage/blocksstable/ob_storage_object_rw_info.h"
 #include "storage/blocksstable/ob_storage_object_handle.h"
 #include "storage/blocksstable/ob_super_block_buffer_holder.h"
+#include "storage/slog_ckpt/ob_linked_macro_block_struct.h"
 #include "storage/ob_super_block_struct.h"
+#include "storage/blocksstable/ob_storage_object_type.h"
 
 
 namespace oceanbase
@@ -44,25 +46,50 @@ public:
     private_opt_.tablet_id_ = tablet_id;
     private_opt_.tablet_trasfer_seq_ = tablet_transfer_seq;
   }
-  void set_ss_share_data_macro_object_opt(
+  void set_private_ckpt_opt(const uint64_t tenant_id, const int64_t tenant_epoch_id, const int64_t file_id)
+  {
+    object_type_ = ObStorageObjectType::PRIVATE_CKPT_FILE;
+    ss_slog_ckpt_obj_opt_.tenant_id_ = tenant_id;
+    ss_slog_ckpt_obj_opt_.tenant_epoch_id_ = tenant_epoch_id;
+    ss_slog_ckpt_obj_opt_.file_id_ = file_id;
+  }
+  void set_private_slog_opt(const uint64_t tenant_id, const int64_t tenant_epoch_id, const int64_t file_id)
+  {
+    object_type_ = ObStorageObjectType::PRIVATE_SLOG_FILE;
+    ss_slog_ckpt_obj_opt_.tenant_id_ = tenant_id;
+    ss_slog_ckpt_obj_opt_.tenant_epoch_id_ = tenant_epoch_id;
+    ss_slog_ckpt_obj_opt_.file_id_ = file_id;
+  }
+  void set_ss_share_object_opt(
+      const ObStorageObjectType obj_type,
+      const bool is_ls_inner_tablet,
+      const int64_t ls_id,
       const int64_t tablet_id,
       const int64_t data_seq,
-      const int64_t column_group_id)
+      const int64_t column_group_id,
+      const int64_t reorganization_scn)
   {
-    object_type_ = ObStorageObjectType::SHARED_MAJOR_DATA_MACRO;
+    object_type_ = obj_type;
+    ss_share_opt_.is_ls_inner_tablet_ = is_ls_inner_tablet;
+    ss_share_opt_.ls_id_ = ls_id;
     ss_share_opt_.tablet_id_ = tablet_id;
     ss_share_opt_.data_seq_ = data_seq;
     ss_share_opt_.column_group_id_ = column_group_id;
+    ss_share_opt_.reorganization_scn_ = reorganization_scn;
+  }
+  void set_ss_share_data_macro_object_opt(
+     const int64_t tablet_id,
+     const int64_t data_seq,
+     const int64_t column_group_id)
+  {
+    set_ss_share_object_opt(ObStorageObjectType::SHARED_MAJOR_DATA_MACRO, false, 0, tablet_id, data_seq, column_group_id, 0);
   }
   void set_ss_share_meta_macro_object_opt(
       const int64_t tablet_id,
       const int64_t data_seq,
       const int64_t column_group_id)
   {
-    object_type_ = ObStorageObjectType::SHARED_MAJOR_META_MACRO;
-    ss_share_opt_.tablet_id_ = tablet_id;
-    ss_share_opt_.data_seq_ = data_seq;
-    ss_share_opt_.column_group_id_ = column_group_id;
+    set_ss_share_object_opt(ObStorageObjectType::SHARED_MAJOR_META_MACRO, false, 0, tablet_id, data_seq, column_group_id, 0);
   }
   void set_ss_tmp_file_object_opt()
   {
@@ -97,110 +124,84 @@ public:
     ss_private_tablet_opt_.version_ = version;
     ss_private_tablet_opt_.tablet_transfer_seq_ = tablet_trasfer_seq;
   }
-  void set_ss_private_tablet_meta_current_verison_object_opt(
-      const int64_t ls_id, const uint64_t tablet_id)
-  {
-    object_type_ = ObStorageObjectType::PRIVATE_TABLET_CURRENT_VERSION;
-    ss_private_tablet_current_version_opt_.ls_id_ = ls_id;
-    ss_private_tablet_current_version_opt_.tablet_id_ = tablet_id;
-  }
 
-  void set_ss_share_tablet_meta_object_opt(
-      const uint64_t tablet_id,
-      const int64_t version)
-  {
-    object_type_ = ObStorageObjectType::SHARED_MAJOR_TABLET_META;
-    ss_share_tablet_opt_.tablet_id_ = tablet_id;
-    ss_share_tablet_opt_.version_ = version;
-  }
-  void set_ss_shared_tablet_id_object_opt(
-    const uint64_t tablet_id)
-  {
-    object_type_ = ObStorageObjectType::SHARED_TABLET_ID;
-    ss_shared_tablet_id_opt_.tablet_id_ = tablet_id;
-  }
-  void set_ss_is_deleted_object_opt(
-    const uint64_t tablet_id)
-  {
-    object_type_ = ObStorageObjectType::IS_SHARED_TABLET_DELETED;
-    ss_shared_tablet_id_opt_.tablet_id_ = tablet_id;
-  }
   void set_ss_is_shared_tenant_deleted_object_opt(
     const uint64_t tenant_id)
   {
     object_type_ = ObStorageObjectType::IS_SHARED_TENANT_DELETED;
     ss_shared_tenant_id_opt_.tenant_id_ = tenant_id;
   }
-  void set_ss_compaction_scheduler_object_opt(
-      const ObStorageObjectType object_type, const int64_t ls_id)
-  {
-    object_type_ = object_type;
-    ss_compaction_scheduler_opt_.ls_id_ = ls_id;
-  };
-  void set_ss_compactor_svr_object_opt(
-      const ObStorageObjectType object_type, const int64_t server_id)
-  {
-    object_type_ = object_type;
-    ss_svr_compactor_opt_.server_id_ = server_id;
-  };
-  void set_ss_compactor_ls_svr_object_opt(
-    const ObStorageObjectType object_type,  const int64_t ls_id, const int64_t server_id)
-  {
-    object_type_ = object_type;
-    ss_ls_svr_compactor_opt_.ls_id_ = ls_id;
-    ss_ls_svr_compactor_opt_.server_id_ = server_id;
-  };
-  void set_ss_gc_info_object_opt(
-    const uint64_t tablet_id)
-  {
-    object_type_ = ObStorageObjectType::SHARED_MAJOR_GC_INFO;
-    ss_gc_info_opt_.tablet_id_ = tablet_id;
-  }
-  void set_ss_meta_list_object_opt(
-    const uint64_t tablet_id)
-  {
-    object_type_ = ObStorageObjectType::SHARED_MAJOR_META_LIST;
-    ss_meta_list_opt_.tablet_id_ = tablet_id;
-  }
-  void set_ss_tablet_compaction_status_object_opt(
-    const uint64_t tablet_id,
-    const int64_t scn_id)
-  {
-    object_type_ = ObStorageObjectType::TABLET_COMPACTION_STATUS;
-    ss_tablet_compaction_status_opt_.tablet_id_ = tablet_id;
-    ss_tablet_compaction_status_opt_.scn_id_ = scn_id;
-  }
 
   void set_ss_major_prewarm_opt(
-    const ObStorageObjectType object_type, const uint64_t tablet_id, const uint64_t compaction_scn)
+    const ObStorageObjectType object_type, const uint64_t tablet_id, const uint64_t compaction_scn,
+    const uint64_t reorganization_scn)
   {
     object_type_ = object_type;
     ss_major_prewarm_opt_.tablet_id_ = tablet_id;
     ss_major_prewarm_opt_.compaction_scn_ = compaction_scn;
+    ss_major_prewarm_opt_.reorganization_scn_ = reorganization_scn;
   }
 
-  void set_ss_checksum_error_dump_macro_opt(
-    const ObStorageObjectType object_type,
+  void set_ss_tablet_sub_meta_opt(
+    const uint64_t ls_id,
     const uint64_t tablet_id,
-    const uint64_t cg_id,
-    const uint64_t compaction_scn,
-    const uint64_t block_seq)
+    const uint32_t op_id,
+    const uint32_t data_seq,
+    const bool is_inner_tablet,
+    const int64_t reorganization_scn)
+  {
+    object_type_ = ObStorageObjectType::SHARED_TABLET_SUB_META;
+    ss_tablet_sub_meta_opt_.ls_id_ = ls_id;
+    ss_tablet_sub_meta_opt_.tablet_id_ = tablet_id;
+    ss_tablet_sub_meta_opt_.is_inner_tablet_ = is_inner_tablet;
+    ss_tablet_sub_meta_opt_.op_id_ = op_id;
+    ss_tablet_sub_meta_opt_.data_seq_ = data_seq;
+    ss_tablet_sub_meta_opt_.reorganization_scn_ = reorganization_scn;
+  }
+
+  void set_ss_root_key_object_opt()
+  {
+    object_type_ = ObStorageObjectType::TENANT_ROOT_KEY;
+  }
+
+  void set_ss_external_table_file_opt(const uint64_t server_seq_id, const int64_t offset_idx)
+  {
+    object_type_ = ObStorageObjectType::EXTERNAL_TABLE_FILE;
+    ss_external_table_file_opt_.server_seq_id_ = server_seq_id;
+    ss_external_table_file_opt_.offset_idx_ = offset_idx;
+  }
+
+  void set_ss_macro_cache_ckpt_opt(
+      const bool is_meta, const uint64_t version_id, const uint64_t seq_id)
+  {
+    object_type_ = (is_meta
+        ? ObStorageObjectType::MACRO_CACHE_CKPT_META
+        : ObStorageObjectType::MACRO_CACHE_CKPT_DATA);
+    ss_macro_cache_ckpt_opt_.version_id_ = version_id;
+    ss_macro_cache_ckpt_opt_.seq_id_ = seq_id;
+  }
+
+  void set_ss_tablet_meta_opt(
+      const ObStorageObjectType object_type,
+      const uint64_t ls_id,
+      const uint64_t tablet_id,
+      const uint64_t op_id,
+      const bool is_inner_tablet,
+      const int64_t reorganization_scn)
   {
     object_type_ = object_type;
-    ss_ckm_error_dump_macro_id_opt_.tablet_id_ = tablet_id;
-    ss_ckm_error_dump_macro_id_opt_.cg_id_ = cg_id;
-    ss_ckm_error_dump_macro_id_opt_.compaction_scn_ = compaction_scn;
-    ss_ckm_error_dump_macro_id_opt_.block_seq_ = block_seq;
+    ss_tablet_meta_opt_.tablet_id_ = tablet_id;
+    ss_tablet_meta_opt_.op_id_ = op_id;
+    ss_tablet_meta_opt_.ls_id_ = ls_id;
+    ss_tablet_meta_opt_.is_inner_tablet_ = is_inner_tablet;
+    ss_tablet_meta_opt_.reorganization_scn_ = reorganization_scn;
   }
+
   int64_t to_string(char *buf, const int64_t buf_len) const;
 
 public:
   static constexpr uint64_t INVALID_TABLET_VERSION = (1llu << ((MacroBlockId::SF_BIT_META_VERSION_ID) + 1)) - 1;
   static const int64_t INVALID_TABLET_TRANSFER_SEQ = -1;
-  static bool is_inaccurate_tablet_addr(const storage::ObMetaDiskAddr &tablet_meta_addr)
-  {
-    return tablet_meta_addr.is_block() && tablet_meta_addr.block_id().meta_version_id() == INVALID_TABLET_VERSION;
-  }
 
 private:
   struct PrivateObjectOpt
@@ -210,9 +211,12 @@ private:
   };
   struct SSShareObjectOpt
   {
+    bool is_ls_inner_tablet_;
+    uint64_t ls_id_;          // only valid for inner tablet
     uint64_t tablet_id_;
     int64_t data_seq_;
     int64_t column_group_id_;
+    int64_t reorganization_scn_;
   };
   struct SSTmpFileObjectOpt
   {
@@ -227,6 +231,14 @@ private:
   {
     uint64_t tenant_id_;
     int64_t tenant_epoch_id_;
+  };
+
+  // tenant slog/ckpt object
+  struct SSTenantSlogCkptObjectOpt
+  {
+    uint64_t tenant_id_;
+    int64_t tenant_epoch_id_;
+    uint64_t file_id_;
   };
   // ls level meta include:
   // ls_meta/dup_table_meta/active_tablet_array/pending_free_tablet_array/tansfer_id_array
@@ -248,59 +260,46 @@ private:
     uint64_t tablet_id_;
   };
 
-  struct SSShareTabletMetaObjectOpt
-  {
-    uint64_t tablet_id_;
-    int64_t version_;
-  };
-
-  struct SSCompactionSchedulerObjectOpt
-  {
-    uint64_t ls_id_;
-  };
-  struct SSCompactorSvrObjectOpt
-  {
-    int64_t server_id_;
-  };
-  struct SSCompactorLSSvrObjectOpt
-  {
-    uint64_t ls_id_;
-    int64_t server_id_;
-  };
-  struct SSGCInfoObjectOpt
-  {
-    uint64_t tablet_id_;
-  };
-  struct SSGCMetaListObjectOpt
-  {
-    uint64_t tablet_id_;
-  };
-  struct SSTabletCompactionStatusObjectOpt
-  {
-    uint64_t tablet_id_;
-    int64_t scn_id_;
-  };
   struct SSMajorPrewarmObjectOpt
   {
     uint64_t tablet_id_;
     uint64_t compaction_scn_;
-  };
-  struct SSSharedTabletIdOpt
-  {
-    uint64_t tablet_id_;
+    uint64_t reorganization_scn_;
   };
 
   struct SSSharedTenantIdOpt
   {
     uint64_t tenant_id_;
   };
-  struct SSCkmErrorDumpMacroObjectOpt
+
+  struct SSTabletSubMetaObjectOpt
+  {
+    uint64_t ls_id_;
+    uint64_t tablet_id_;
+    uint32_t op_id_;
+    uint32_t data_seq_;
+    bool is_inner_tablet_;
+    int64_t reorganization_scn_;
+  };
+  struct SSExternalTableFileObjectOpt
+  {
+    uint64_t server_seq_id_;
+    int64_t offset_idx_;
+  };
+  struct SSMacroCacheCkptObjectOpt
+  {
+    uint64_t version_id_;
+    uint64_t seq_id_;
+  };
+  struct SSTabletMetaObjectOpt
   {
     uint64_t tablet_id_;
-    uint64_t cg_id_;
-    uint64_t compaction_scn_;
-    uint64_t block_seq_;
+    uint64_t op_id_;
+    uint64_t ls_id_;
+    bool is_inner_tablet_;
+    int64_t reorganization_scn_;
   };
+
 public:
   ObStorageObjectType object_type_;
   union
@@ -313,17 +312,13 @@ public:
     SSLSLevelMetaObjectOpt ss_ls_level_opt_;
     SSPrivateTabletMetaObjectOpt ss_private_tablet_opt_;
     SSPrivateTabletCurrentVersionObjectOpt ss_private_tablet_current_version_opt_;
-    SSShareTabletMetaObjectOpt ss_share_tablet_opt_;
-    SSCompactionSchedulerObjectOpt ss_compaction_scheduler_opt_;
-    SSCompactorSvrObjectOpt ss_svr_compactor_opt_;
-    SSCompactorLSSvrObjectOpt ss_ls_svr_compactor_opt_;
-    SSGCInfoObjectOpt ss_gc_info_opt_;
-    SSGCMetaListObjectOpt ss_meta_list_opt_;
-    SSTabletCompactionStatusObjectOpt ss_tablet_compaction_status_opt_;
     SSMajorPrewarmObjectOpt ss_major_prewarm_opt_;
-    SSSharedTabletIdOpt ss_shared_tablet_id_opt_;
     SSSharedTenantIdOpt ss_shared_tenant_id_opt_;
-    SSCkmErrorDumpMacroObjectOpt ss_ckm_error_dump_macro_id_opt_;
+    SSTabletSubMetaObjectOpt ss_tablet_sub_meta_opt_;
+    SSTenantSlogCkptObjectOpt ss_slog_ckpt_obj_opt_;
+    SSExternalTableFileObjectOpt ss_external_table_file_opt_;
+    SSMacroCacheCkptObjectOpt ss_macro_cache_ckpt_opt_;
+    SSTabletMetaObjectOpt ss_tablet_meta_opt_;
   };
 
 };
@@ -368,14 +363,23 @@ public:
       const int64_t new_device_disk_percentage,
       const int64_t reserved_size);
   int check_disk_space_available();
-  int update_super_block(const common::ObLogCursor &replay_start_point,
-                         const blocksstable::MacroBlockId &tenant_meta_entry);
+  int update_super_block(
+      const common::ObLogCursor &replay_start_point,
+      const blocksstable::MacroBlockId &tenant_meta_entry,
+      const storage::ObSlogCheckpointFdDispenser &fd_dispenser);
 
   static ObObjectManager &get_instance();
 
   const storage::ObServerSuperBlock &get_server_super_block() const
   {
     return super_block_;
+  }
+
+  void set_min_max_file_id_in_server_super_block(const int64_t min_file_id, const int64_t max_file_id)
+  {
+    SpinWLockGuard guard(lock_);
+    super_block_.min_file_id_ = min_file_id;
+    super_block_.max_file_id_ = max_file_id;
   }
 
   void get_server_super_block_by_copy(storage::ObServerSuperBlock &other) const
@@ -398,15 +402,17 @@ public:
   int read_or_format_super_block_(const bool need_format);
 
 #ifdef OB_BUILD_SHARED_STORAGE
-  int create_super_block_tenant_item(const uint64_t tenant_id, int64_t &tenant_epoch);
-  int update_super_block_tenant_item(
-      const uint64_t tenant_id, const int64_t tenant_epoch,
+  int alloc_tenant_epoch(const uint64_t tenant_id, int64_t &tenant_epoch);
+  int create_super_block_tenant_item(
+      const uint64_t tenant_id,
+      const int64_t tenant_epoch,
       const storage::ObTenantCreateStatus status);
   int delete_super_block_tenant_item(
       const uint64_t tenant_id, const int64_t tenant_epoch);
   static int ss_get_object_id(const ObStorageObjectOpt &opt, MacroBlockId &object_id);
   static int ss_is_exist_object(const MacroBlockId &object_id, const int64_t ls_epoch, bool &is_exist);
   static int seal_object(const MacroBlockId &object_id, const int64_t ls_epoch_id);
+  static int delete_object(const MacroBlockId &object_id, const int64_t ls_epoch_id);
   static int async_write_object(
     const blocksstable::MacroBlockId &macro_block_id,
     const ObStorageObjectWriteInfo &write_info,

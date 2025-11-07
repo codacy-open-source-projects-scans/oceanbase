@@ -12,33 +12,10 @@
 
 #define USING_LOG_PREFIX SERVER
 
-#include <stdlib.h>
 #include "util/easy_mod_stat.h"
 #include "observer/mysql/obmp_connect.h"
-#include "lib/mysqlclient/ob_mysql_result.h"
-#include "lib/net/ob_net_util.h"
-#include "lib/string/ob_sql_string.h"
-#include "lib/oblog/ob_log.h"
-#include "lib/stat/ob_session_stat.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "common/object/ob_object.h"
-#include "common/ob_string_buf.h"
-#include "share/schema/ob_multi_version_schema_service.h"
-#include "share/schema/ob_schema_getter_guard.h"
-#include "share/ob_cluster_version.h"
-#include "share/ob_get_compat_mode.h"
-#include "share/resource_manager/ob_resource_manager.h"
-#include "rpc/ob_request.h"
-#include "rpc/obmysql/packet/ompk_ok.h"
-#include "rpc/obmysql/packet/ompk_error.h"
-#include "sql/engine/expr/ob_expr_operator.h"
-#include "sql/session/ob_sql_session_mgr.h"
-#include "sql/ob_sql.h"
 #include "observer/ob_server.h"
-#include "rpc/obmysql/obsm_struct.h"
-#include "observer/omt/ob_multi_tenant.h"
 #include "observer/omt/ob_tenant.h"
-#include "observer/ob_req_time_service.h"
 #include "storage/tx/wrs/ob_weak_read_util.h"      //ObWeakReadUtil
 #ifdef OB_BUILD_AUDIT_SECURITY
 #include "sql/monitor/ob_security_audit_utils.h"
@@ -46,7 +23,10 @@
 #endif
 #include "sql/privilege_check/ob_privilege_check.h"
 #include "sql/privilege_check/ob_ora_priv_check.h"
-#include "lib/utility/ob_backtrace.h"
+#include "rpc/obmysql/packet/ompk_auth_switch.h"
+#include "sql/engine/dml/ob_trigger_handler.h"
+#include "share/ob_license_utils.h"
+#include "share/ob_tenant_info_proxy.h"
 
 using namespace oceanbase::share;
 using namespace oceanbase::common;
@@ -260,7 +240,7 @@ int ObMPConnect::init_process_single_stmt(const ObMultiStmtItem &multi_stmt_item
 
     //对于tracelog的处理，不影响正常逻辑，错误码无须赋值给ret
     int tmp_ret = OB_SUCCESS;
-    tmp_ret = do_after_process(session, ctx, false); // 不是异步回包
+    tmp_ret = do_after_process(session, false); // 不是异步回包
     UNUSED(tmp_ret);
   }
   return ret;
@@ -337,7 +317,7 @@ int ObMPConnect::process()
   } else if (OB_FAIL(conn->ret_)) {
     LOG_WARN("connection fail at obsm_handle process", K(conn->ret_));
   } else {
-    ObDiagnosticInfoSwitchGuard di_guard(conn->di_);
+    ObDiagnosticInfoSwitchGuard di_guard(conn->get_diagnostic_info());
     if (OB_FAIL(get_user_tenant(*conn))) {
       LOG_WARN("get user name and tenant name failed", K(ret));
     } else if ((SS_INIT == GCTX.status_ || SS_STARTING == GCTX.status_)
@@ -349,6 +329,9 @@ int ObMPConnect::process()
     } else if (SS_STOPPING == GCTX.status_) {
       ret = OB_SERVER_IS_STOPPING;
       LOG_WARN("server is stopping", K(ret));
+    } else if (GCTX.in_replace_sys()) {
+      ret = OB_SERVER_IS_INIT;
+      LOG_WARN("server is replacing sys tenant", KR(ret));
     } else if (OB_FAIL(extract_service_name(*conn, service_name, failover_mode))) {
       LOG_WARN("fail to extraxt service name", KR(ret));
     } else if (OB_FAIL(check_update_tenant_id(*conn, tenant_id))) {
@@ -376,8 +359,8 @@ int ObMPConnect::process()
       LOG_WARN("client session has been killed", K(ret));
     } else if (OB_FAIL(update_transmission_checksum_flag(*session))) {
       LOG_WARN("update transmisson checksum flag failed", K(ret));
-    } else if (OB_FAIL(update_proxy_sys_vars(*session))) {
-      LOG_WARN("update_proxy_sys_vars failed", K(ret));
+    } else if (OB_FAIL(update_proxy_and_client_sys_vars(*session))) {
+      LOG_WARN("update_proxy_and_client_sys_vars failed", K(ret));
     } else if (OB_FAIL(update_charset_sys_vars(*conn, *session))) {
       LOG_WARN("fail to update charset sys vars", K(ret));
     } else if (OB_FAIL(setup_user_resource_group(*conn, tenant_id, session))) {
@@ -404,6 +387,9 @@ int ObMPConnect::process()
       conn->set_auth_phase();
       conn->set_logined(true);
       session->get_autocommit(autocommit);
+    }
+    if (FAILEDx(execute_trigger(tenant_id, *session))) {
+      LOG_WARN("execute trigger failed");
     }
 
     int proc_ret = ret;
@@ -437,6 +423,16 @@ int ObMPConnect::process()
       ObOKPParam ok_param;
       ok_param.is_on_connect_ = true;
       ok_param.affected_rows_ = 0;
+      const int login_warning_buf_len = 50;
+      char login_warning[login_warning_buf_len];
+      int tmp_ret = OB_SUCCESS;
+
+      if (OB_TMP_FAIL(ObLicenseUtils::get_login_message(login_warning, login_warning_buf_len))) {
+        LOG_WARN("fail to get login warning message", KR(ret));
+        login_warning[0] = '\0';
+      } else {
+        ok_param.message_ = login_warning;
+      }
       if (OB_FAIL(send_ok_packet(*session, ok_param))) {
         LOG_WARN("fail to send ok packet", K(ok_param), K(ret));
       }
@@ -541,10 +537,11 @@ inline void reset_inner_proxyro_scramble(
     oceanbase::share::schema::ObUserLoginInfo &login_info)
 {
   const ObString PROXYRO_OLD_SCRAMBLE("aaaaaaaabbbbbbbbbbbb");
-  MEMCPY(conn.scramble_buf_, PROXYRO_OLD_SCRAMBLE.ptr(), PROXYRO_OLD_SCRAMBLE.length());
-  login_info.scramble_str_.assign_ptr(conn.scramble_buf_, sizeof(conn.scramble_buf_));
+  MEMCPY(conn.scramble_result_buf_, PROXYRO_OLD_SCRAMBLE.ptr(), PROXYRO_OLD_SCRAMBLE.length());
+  login_info.scramble_str_.assign_ptr(conn.scramble_result_buf_, sizeof(conn.scramble_result_buf_));
 }
 
+const char *AUTH_PLUGIN_MYSQL_NATIVE_PASSWORD = "mysql_native_password";
 int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
 {
   LOG_DEBUG("load privilege info");
@@ -603,39 +600,43 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
           db_name_.assign_ptr(db_name_var_, db_name_.length());
         }
       }
-
+      ObString proxied_user;
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(get_proxy_user_name(proxied_user))) {
+        LOG_WARN("get proxy user info failed", K(ret));
+      }
       lib::Worker::CompatMode compat_mode = lib::Worker::CompatMode::INVALID;
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(ObCompatModeGetter::get_tenant_mode(conn->tenant_id_, compat_mode))) {
         LOG_WARN("fail to get tenant mode in convert_oracle_object_name", K(ret));
-      } else if (compat_mode == lib::Worker::CompatMode::ORACLE) {
-        ObString proxied_user;
-        if (OB_FAIL(get_proxy_user_name(proxied_user))) {
-          LOG_WARN("get proxy user info failed", K(ret));
-        } else if (!proxied_user.empty()) {
-          uint64_t tenant_data_version = 0;
-          if (OB_FAIL(GET_MIN_DATA_VERSION(conn->tenant_id_, tenant_data_version))) {
-            LOG_WARN("get tenant data version failed", K(ret));
-          } else if (!ObSQLUtils::is_data_version_ge_423_or_432(tenant_data_version)) {
-            ret = OB_PASSWORD_WRONG;
-            LOG_WARN("tenant version is below 423 or 432", K(ret));
-            LOG_USER_ERROR(OB_NOT_SUPPORTED, "connect proxy user is not supported when data version is below 4.2.3 or 4.3.2");
-          } else if (proxied_user.length() > OB_MAX_USER_NAME_BUF_LENGTH) {
-            ret = OB_SIZE_OVERFLOW;
-            LOG_WARN("proxy user name too long", K(ret));
-          } else {
-            MEMCPY(proxied_user_name_var_, proxied_user.ptr(), proxied_user.length());
-            proxied_user_name_var_[proxied_user.length()] = '\0';
-            proxied_user_name_.assign(proxied_user_name_var_, proxied_user.length());
-            if (OB_FAIL(convert_oracle_object_name(conn->tenant_id_, proxied_user_name_))) {
-              LOG_WARN("fail to convert oracle db name", K(ret));
-            }
-          }
+      } else if (!proxied_user.empty()) {
+        uint64_t tenant_data_version = 0;
+        if (compat_mode == lib::Worker::CompatMode::MYSQL) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("mysql mode use proxy user name is not supported", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "mysql mode use proxy user name");
+        } else if (OB_FAIL(GET_MIN_DATA_VERSION(conn->tenant_id_, tenant_data_version))) {
+          LOG_WARN("get tenant data version failed", K(ret));
+        } else if (!ObSQLUtils::is_data_version_ge_423_or_432(tenant_data_version)) {
+          ret = OB_PASSWORD_WRONG;
+          LOG_WARN("tenant version is below 423 or 432", K(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "connect proxy user is not supported when data version is below 4.2.3 or 4.3.2");
+        } else if (proxied_user.length() > OB_MAX_USER_NAME_LENGTH) {
+          ret = OB_SIZE_OVERFLOW;
+          LOG_WARN("proxy user name too long", K(ret));
         } else {
-          proxied_user_name_.reset();
+          MEMCPY(proxied_user_name_var_, proxied_user.ptr(), proxied_user.length());
+          proxied_user_name_var_[proxied_user.length()] = '\0';
+          proxied_user_name_.assign(proxied_user_name_var_, proxied_user.length());
+          if (OB_FAIL(convert_oracle_object_name(conn->tenant_id_, proxied_user_name_))) {
+            LOG_WARN("fail to convert oracle db name", K(ret));
+          }
         }
+      } else {
+        proxied_user_name_.reset();
       }
       share::schema::ObSessionPrivInfo session_priv;
+      EnableRoleIdArray enable_role_id_array;
       const ObSysVariableSchema *sys_variable_schema = NULL;
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(convert_oracle_object_name(conn->tenant_id_, user_name_))) {
@@ -680,17 +681,20 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
           } else if (OB_FAIL(ObSQLUtils::check_and_convert_db_name(
                       cs_type, perserve_lettercase, db_name))) {
             LOG_WARN("fail to check and convert database name", K(db_name), K(ret));
-          } else if (OB_FAIL(ObSQLUtils::cvt_db_name_to_org(schema_guard, &session, db_name, NULL/*allocator*/))) {
-            LOG_WARN("fail to convert db name to org");
+          } else if (OB_FAIL(ObSQLUtils::cvt_db_name_to_org(schema_guard, &session, db_name, &allocator_))) {
+            LOG_WARN("fail to convert db name to org", K(ret));
           } else {
             login_info.db_ = db_name;
           }
         }
-        LOG_TRACE("some important information required for login verification, print it before doing login", K(ret), K(ObString(sizeof(conn->scramble_buf_), conn->scramble_buf_)), K(conn->is_proxy_), K(conn->client_type_), K(hsr_.get_auth_plugin_name()), K(hsr_.get_auth_response()));
+        LOG_TRACE("some important information required for login verification, print it before doing login", K(ret),
+          K(ObString(sizeof(conn->scramble_buf_), conn->scramble_buf_)),
+          K(ObString(sizeof(conn->scramble_result_buf_), conn->scramble_result_buf_)), K(conn->is_proxy_),
+          K(conn->client_type_), K(hsr_.get_auth_plugin_name()), K(hsr_.get_auth_response()));
         if (OB_FAIL(ret)) {
           // Do nothing
         } else {
-          login_info.scramble_str_.assign_ptr(conn->scramble_buf_, sizeof(conn->scramble_buf_));
+          login_info.scramble_str_.assign_ptr(conn->scramble_result_buf_, sizeof(conn->scramble_result_buf_));
           login_info.passwd_ = hsr_.get_auth_response();// Assume client is use mysql_native_password
           bool is_empty_passwd = false;
           if (OB_FAIL(schema_guard.is_user_empty_passwd(login_info, is_empty_passwd))) {
@@ -698,7 +702,9 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
           } else if (!is_empty_passwd && // user account with empty password do not need auth switch, same as MySQL 5.7 and 8.x
                     OB_CLIENT_NON_STANDARD == conn->client_type_ && // client is not OB's C/JAVA client
                     !hsr_.get_auth_plugin_name().empty() && // client do not use mysql_native_method
-                    hsr_.get_auth_plugin_name().compare(AUTH_PLUGIN_MYSQL_NATIVE_PASSWORD)) {
+                    hsr_.get_auth_plugin_name().compare(AUTH_PLUGIN_MYSQL_NATIVE_PASSWORD) &&
+                    GCONF._enable_auth_switch &&
+                    (!conn->is_proxy_ || conn->proxy_version_ >= PROXY_VERSION_4_3_3_0)) {
             // Client is not use mysql_native_password method,
             // but observer only support mysql_native_password in user account's authentication,
             // so observer need tell client use mysql_native_password method by sending "AuthSwitchRequest"
@@ -707,7 +713,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
             OMPKAuthSwitch auth_switch;
             auth_switch.set_plugin_name(ObString(AUTH_PLUGIN_MYSQL_NATIVE_PASSWORD));
             // "AuthSwitchRequest" carry 20 bit random salt value(MySQL call it scramble) to client which has sent in "Initial Handshake Packet"
-            auth_switch.set_scramble(ObString(sizeof(conn->scramble_buf_), conn->scramble_buf_));
+            auth_switch.set_scramble(ObString(sizeof(conn->scramble_result_buf_), conn->scramble_result_buf_));
             /*-------------------START-----------------If error occur, disconnect-------------------START-----------------*/
             if (OB_FAIL(packet_sender_.response_packet(auth_switch, &session))) {
               RPC_LOG(WARN, "failed to send auth switch request packet, disconnect", K(auth_switch), K(ret));
@@ -726,7 +732,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
               int receive_asr_times = 0;
               while (OB_SUCC(ret) && OB_ISNULL(asr_pkt)) {
                 ++receive_asr_times;
-                usleep(10 * 1000); // Sleep 10 ms at every time trying receive auth-switch-response mysql pkt
+                ob_usleep(10 * 1000); // Sleep 10 ms at every time trying receive auth-switch-response mysql pkt
                 // TO DO:
                 // In most unix system, The max TCP Retransmission Timeout is under 240 seconds,
                 // we need to set a suitable timeout, what should this be?
@@ -770,7 +776,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
                 } else {
                   // packet_sender_.release_packet will recycle mem of auth_data, need using mem allocated by asr_mem_pool_ to save it
                   MEMCPY(auth_buf, auth_data, auth_data_len);
-                  login_info.scramble_str_.assign_ptr(conn->scramble_buf_, sizeof(conn->scramble_buf_));
+                  login_info.scramble_str_.assign_ptr(conn->scramble_result_buf_, sizeof(conn->scramble_result_buf_));
                   login_info.passwd_.assign_ptr(static_cast<const char*>(auth_buf), auth_data_len);
                 }
                 packet_sender_.release_packet(asr_pkt);
@@ -782,8 +788,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
           }
         }
         if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(schema_guard.check_user_access(login_info, session_priv, ssl_st, user_info))) {
-
+        } else if (OB_FAIL(schema_guard.check_user_access(login_info, session_priv, enable_role_id_array, ssl_st, user_info))) {
           int inner_ret = OB_SUCCESS;
           bool is_unlocked = false;
           if (ORACLE_MODE == session.get_compatibility_mode()
@@ -823,7 +828,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
             } else if (OB_SUCCESS == inner_ret) {
               //schema刷新成功，并且内部执行也没有出错，尝试重新登录
               if (OB_FAIL(schema_guard.check_user_access(login_info, session_priv,
-                    ssl_st, user_info))) {
+                    enable_role_id_array, ssl_st, user_info))) {
                 LOG_WARN("User access denied", K(login_info), K(ret));
               }
             }
@@ -834,7 +839,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
               reset_inner_proxyro_scramble(*conn, login_info);
               int pre_ret = ret;
               if (OB_FAIL(schema_guard.check_user_access(login_info, session_priv,
-                    ssl_st, user_info))) {
+                    enable_role_id_array, ssl_st, user_info))) {
                 LOG_WARN("User access denied", K(login_info), K(pre_ret),K(ret));
               }
             } else {
@@ -851,7 +856,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
 
 
       if (ORACLE_MODE == session.get_compatibility_mode()
-          && (OB_SUCC(ret) || OB_PASSWORD_WRONG == ret)) {
+          && (OB_SUCC(ret) || OB_PASSWORD_WRONG == ret || OB_ERR_USER_IS_LOCKED == ret)) {
         int login_ret = ret;
         if (OB_FAIL(update_login_stat_in_trans(conn->tenant_id_, OB_SUCCESS == login_ret, schema_guard))) {
           LOG_WARN("fail to update login stat in trans", K(ret));
@@ -891,7 +896,7 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
         session.set_capability(hsr_.get_capability_flags());
         session.set_user_priv_set(session_priv.user_priv_set_);
         session.set_db_priv_set(session_priv.db_priv_set_);
-        session.set_enable_role_array(session_priv.enable_role_id_array_);
+        session.set_enable_role_array(enable_role_id_array);
         host_name = session_priv.host_name_;
         uint64_t db_id = OB_INVALID_ID;
         const ObTenantSchema *tenant_schema = NULL;
@@ -930,6 +935,8 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
                                                  session))) {
           LOG_WARN("failed to load audit log filter", K(ret));
         } else if (OB_FAIL(get_client_attribute_capability(client_attr_cap_flags))) {
+          LOG_WARN("failed to get client attribute capability", K(ret));
+        } else if (OB_FAIL(check_update_client_capability(client_attr_cap_flags))) {
           LOG_WARN("failed to get client attribute capability", K(ret));
         } else {
           session.set_client_attrbuite_capability(client_attr_cap_flags);
@@ -993,7 +1000,7 @@ int ObMPConnect::switch_lock_status_for_user(const uint64_t tenant_id, const ObS
                                              ObCompatibilityMode compat_mode, bool do_lock)
 {
   int ret = OB_SUCCESS;
-
+  bool is_standby_tenant = false;
   ObSqlString lock_user_sql;
   common::ObMySQLProxy *sql_proxy = nullptr;
   int64_t affected_rows = 0;
@@ -1002,6 +1009,11 @@ int ObMPConnect::switch_lock_status_for_user(const uint64_t tenant_id, const ObS
   if (!is_valid_tenant_id(tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid id", K(tenant_id), K(ret));
+  } else if (OB_FAIL(ObAllTenantInfoProxy::is_standby_tenant(gctx_.sql_proxy_, tenant_id, is_standby_tenant))) {
+    LOG_WARN("fail to check if tenant is standby", K(ret), K(tenant_id));
+  } else if (is_standby_tenant) {
+    // do nothing for standby tenant
+    LOG_INFO("standby tenant cannot switch user lock status", K(tenant_id), K(do_lock));
   } else if (OB_FAIL(lock_user_sql.append_fmt("ALTER USER %s%.*s%s", name_quote,
                                               user_name_.length(), user_name_.ptr(), name_quote))) {
     LOG_WARN("append string failed", K(ret));
@@ -1015,9 +1027,10 @@ int ObMPConnect::switch_lock_status_for_user(const uint64_t tenant_id, const ObS
     LOG_WARN("sql proxy is null", K(ret));
   } else if (OB_FAIL(sql_proxy->write(tenant_id, lock_user_sql.ptr(), affected_rows, compat_mode))) {
     LOG_WARN("fail to execute lock user", K(ret));
+  } else {
+    LOG_INFO("user ddl has been sent, change user lock status to ",
+             K(tenant_id), K(user_name_), K(host_name), K(do_lock));
   }
-  LOG_INFO("user ddl has been sent, change user lock status to ", K(tenant_id), K(user_name_),
-                                                                  K(host_name), K(do_lock));
 
   return ret;
 }
@@ -1103,8 +1116,8 @@ int ObMPConnect::unlock_user_if_time_is_up_mysql(const uint64_t tenant_id,
   int64_t current_failed_login_num = 0;
   int64_t last_failed_login_timestamp = 0;
   const ObUserInfo *user_info = NULL;
-  bool need_lock;
-  bool is_locked_now;
+  bool need_lock = false; // useless here
+  bool is_locked_now = false;
   is_unlock = false;
   ObMySQLTransaction trans;
 
@@ -1128,12 +1141,14 @@ int ObMPConnect::unlock_user_if_time_is_up_mysql(const uint64_t tenant_id,
                                                 current_failed_login_num,
                                                 last_failed_login_timestamp))) {
     LOG_WARN("fail to get current user failed login num", K(ret));
-  } else if (OB_FAIL(get_connection_control_stat(tenant_id, current_failed_login_num,
-                                                 last_failed_login_timestamp,
-                                                 need_lock, is_locked_now))) {
+  } else if (OB_FAIL(get_connection_control_stat_mysql(tenant_id,
+                                                       current_failed_login_num,
+                                                       last_failed_login_timestamp,
+                                                       is_locked_now))) {
     LOG_WARN("fail to get current user failed login num", K(ret));
   } else if (!is_locked_now) { // time's up
-    if (OB_FAIL(clear_current_user_failed_login_num(tenant_id, user_id, trans))) {
+    if (OB_UNLIKELY(current_failed_login_num != 0)
+        && OB_FAIL(clear_current_user_failed_login_num(tenant_id, user_id, trans))) {
       LOG_WARN("fail to clear failed login num", K(ret));
     } else if (OB_FAIL(switch_lock_status_for_user(tenant_id, user_info->get_host_name_str(),
                                                    MYSQL_MODE, false))) {
@@ -1207,6 +1222,9 @@ int ObMPConnect::update_login_stat_in_trans(const uint64_t tenant_id,
   int64_t last_failed_login_timestamp = INT64_MAX;
   int64_t failed_login_limit_num = INT64_MAX;
   int64_t failed_login_limit_time = INT64_MAX;
+  int64_t current_gmt = ObTimeUtil::current_time();
+  bool is_standby_tenant = false;
+  bool is_locked_now = false;
   ObMySQLTransaction trans;
   bool commit = true;
 
@@ -1230,19 +1248,32 @@ int ObMPConnect::update_login_stat_in_trans(const uint64_t tenant_id,
     LOG_WARN("fail to get user id and profile limit", K(ret), K(tenant_id), K(user_id));
   } else if (failed_login_limit_num == INT64_MAX) {
     //unlimited do nothing
+  } else if (OB_FAIL(ObAllTenantInfoProxy::is_standby_tenant(gctx_.sql_proxy_, tenant_id, is_standby_tenant))) {
+    LOG_WARN("fail to check if tenant is standby", K(ret), K(tenant_id));
   } else if (OB_FAIL(trans.start(gctx_.sql_proxy_, gen_meta_tenant_id(tenant_id)))) {
     LOG_WARN("fail to start transaction", K(ret));
   } else if (OB_FAIL(get_last_failed_login_info(tenant_id, user_id, trans,
              current_failed_login_num, last_failed_login_timestamp))) {
     LOG_WARN("fail to get current user failed login num", K(ret));
-  } else if (OB_LIKELY(is_login_succ)) {
+  } else if (FALSE_IT(is_locked_now = (failed_login_limit_num != 0
+                                       && current_failed_login_num >= failed_login_limit_num
+                                       && current_gmt - last_failed_login_timestamp < failed_login_limit_time))) {
+  } else if (OB_UNLIKELY(is_locked_now && is_standby_tenant)) {
+    // mimic user lock mechanism for standby tenant
+    // because standby tenant cannot execute DDL to lock/unlock user
+    ret = OB_ERR_USER_IS_LOCKED;
+    LOG_WARN("user locked by failed login attempts",
+             K(ret), K(tenant_id), K(user_name_), K(client_ip_),
+             K(is_login_succ), K(current_failed_login_num), K(failed_login_limit_num),
+             K(last_failed_login_timestamp), K(failed_login_limit_time));
+  } else if (OB_LIKELY(!is_locked_now && is_login_succ)) {
     //如果登录成功了，清除之前登录失败的统计信息
     if (OB_UNLIKELY(current_failed_login_num != 0)) {
       if (OB_FAIL(clear_current_user_failed_login_num(tenant_id, user_id, trans))) {
         LOG_WARN("fail to clear current user failed login", K(ret));
       }
     }
-  } else { //login failed with wrong password
+  } else if (OB_LIKELY(!is_locked_now && !is_login_succ)) {
     //如果登录失败了，统计失败登录次数，达到阈值锁定用户
     if (OB_FAIL(update_current_user_failed_login_num(
         tenant_id, user_id, trans, current_failed_login_num + 1))) {
@@ -1254,7 +1285,7 @@ int ObMPConnect::update_login_stat_in_trans(const uint64_t tenant_id,
         LOG_WARN("fail to lock current login user", K(ret));
       }
     }
-    commit = (current_failed_login_num < failed_login_limit_num);
+    commit = (current_failed_login_num < failed_login_limit_num) || is_standby_tenant;
   }
 
   if (trans.is_started()) {
@@ -1313,40 +1344,51 @@ int ObMPConnect::update_login_stat_in_trans_mysql(const uint64_t tenant_id,
   int64_t current_failed_login_num = INT64_MAX;
   int64_t last_failed_login_timestamp = INT64_MAX;
   bool need_lock = false; // true if need to lock user
+  bool is_standby_tenant = false;
   is_locked_now = false;  // true if exceed the threshold and time's not up
   ObMySQLTransaction trans;
   if (OB_FAIL(trans.start(gctx_.sql_proxy_, gen_meta_tenant_id(tenant_id)))) {
     LOG_WARN("fail to start transaction", K(ret));
+  } else if (OB_FAIL(ObAllTenantInfoProxy::is_standby_tenant(gctx_.sql_proxy_, tenant_id, is_standby_tenant))) {
+    LOG_WARN("fail to check if tenant is standby", K(ret), K(tenant_id));
   } else if (OB_FAIL(get_last_failed_login_info(tenant_id, user_info.get_user_id(),
                                                 trans, current_failed_login_num,
                                                 last_failed_login_timestamp))) {
     LOG_WARN("fail to get current user failed login num", K(ret));
-  } else if (OB_FAIL(get_connection_control_stat(tenant_id, current_failed_login_num,
-                                                 last_failed_login_timestamp,
-                                                 need_lock, is_locked_now))) {
+  } else if (OB_FAIL(get_connection_control_stat_mysql(tenant_id,
+                                                       current_failed_login_num,
+                                                       last_failed_login_timestamp,
+                                                       is_locked_now))) {
     LOG_WARN("fail to get current user failed login num", K(ret));
-  } else if (OB_UNLIKELY(is_locked_now)) {
-    // do nothing
-    LOG_WARN("user locked by connection control", K(tenant_id), K(user_info), K(client_ip_),
-        K(is_login_succ), K(current_failed_login_num), K(last_failed_login_timestamp), K(ret));
-  } else if (OB_LIKELY(is_login_succ)) {
+  } else if (OB_UNLIKELY(is_standby_tenant && is_locked_now)) {
+    // mimic user lock mechanism for standby tenant
+    // because standby tenant cannot execute DDL to lock/unlock user
+    ret = OB_ERR_USER_IS_LOCKED;
+    LOG_WARN("user locked by connection control",
+             K(tenant_id), K(user_info), K(client_ip_),
+             K(is_login_succ), K(current_failed_login_num), K(last_failed_login_timestamp), K(ret));
+  } else if (OB_LIKELY(!is_locked_now && is_login_succ)) {
     // clear the failed login num if login succ
     if (OB_UNLIKELY(current_failed_login_num != 0)) {
       if (OB_FAIL(clear_current_user_failed_login_num(tenant_id, user_info.get_user_id(), trans))) {
         LOG_WARN("fail to clear current user failed login", K(ret));
       }
     }
-  } else {
-    // increase login failed num if login with wrong password
+  } else if (OB_LIKELY(!is_locked_now && !is_login_succ)) {
+    // if user is not locked, increase login failed num if login failed
+    // and lock user if reached the failed login num threshold
     if (OB_FAIL(update_current_user_failed_login_num(
         tenant_id, user_info.get_user_id(), trans, current_failed_login_num + 1))) {
       LOG_WARN("fail to clear current user failed login", K(ret));
-    }
-  }
-  if (OB_SUCC(ret) && need_lock && !user_info.get_is_locked()) {
-    if (OB_FAIL(switch_lock_status_for_user(tenant_id, user_info.get_host_name(),
-                                            MYSQL_MODE, true))) {
-      LOG_WARN("fail to lock user", K(ret));
+    } else if (OB_FAIL(is_need_lock_user_mysql(tenant_id,
+                                               current_failed_login_num + 1,
+                                               last_failed_login_timestamp,
+                                               need_lock))) {
+      LOG_WARN("fail to check if need to lock user", K(ret));
+    } else if (need_lock && !user_info.get_is_locked()) {
+      if (OB_FAIL(switch_lock_status_for_user(tenant_id, user_info.get_host_name(), MYSQL_MODE, true))) {
+        LOG_WARN("fail to lock user", K(ret));
+      }
     }
   }
 
@@ -1514,12 +1556,12 @@ bool ObMPConnect::is_connection_control_enabled(const uint64_t tenant_id)
   return is_enabled;
 }
 
-int ObMPConnect::get_connection_control_stat(const uint64_t tenant_id,
-    const int64_t current_failed_login_num, const int64_t last_failed_login_timestamp,
-    bool &need_lock, bool &is_locked)
+int ObMPConnect::get_connection_control_stat_mysql(const uint64_t tenant_id,
+                                                   const int64_t current_failed_login_num,
+                                                   const int64_t last_failed_login_timestamp,
+                                                   bool &is_locked)
 {
   int ret = OB_SUCCESS;
-  need_lock = false;
   is_locked = false;
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
   if (tenant_config.is_valid()) {
@@ -1528,18 +1570,33 @@ int ObMPConnect::get_connection_control_stat(const uint64_t tenant_id,
     int64_t min_delay = tenant_config->connection_control_min_connection_delay;
     int64_t max_delay = tenant_config->connection_control_max_connection_delay;
     int64_t current_gmt = ObTimeUtil::current_time();
-    if (threshold <= 0 || current_failed_login_num + 1 < threshold) {
-      // do nothing
-    } else if (current_failed_login_num + 1 == threshold ||
-              (current_failed_login_num + 1 > threshold &&
-              current_gmt - last_failed_login_timestamp > USECS_PER_SEC * 10)) {
-      // 1. failed_login_num achieve the threshold exactly
-      // 2. user is unlocked manually need to be locked again, the interval 10s is used to reduce
-      //    concurrent ddl operation
-      need_lock = true;
+    if (threshold <= 0 || current_failed_login_num < threshold) {
+      // do nothing if no failed connections threshold or not reached the threshold
     } else {
       delay = MIN(MAX((current_failed_login_num + 1 - threshold) * MSECS_PER_SEC, min_delay), max_delay);
       is_locked = current_gmt <= delay * USECS_PER_MSEC + last_failed_login_timestamp;
+    }
+  }
+  return ret;
+}
+
+int ObMPConnect::is_need_lock_user_mysql(const uint64_t tenant_id,
+                                         const int64_t current_failed_login_num,
+                                         const int64_t last_failed_login_timestamp,
+                                         bool &need_lock)
+{
+  int ret = OB_SUCCESS;
+  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+  need_lock = false;
+  if (tenant_config.is_valid()) {
+    int64_t threshold = tenant_config->connection_control_failed_connections_threshold;
+    if (threshold <= 0) {
+      // do nothing if no failed connections threshold
+    } else if (current_failed_login_num == threshold
+               || (current_failed_login_num > threshold
+                   && ObTimeUtil::current_time() - last_failed_login_timestamp > USECS_PER_SEC * 10)) {
+      // the 10 sec delay is to reduce parallel DDL
+      need_lock = true;
     }
   }
   return ret;
@@ -1859,6 +1916,27 @@ int ObMPConnect::get_client_attribute_capability(uint64_t &cap) const
   return ret;
 }
 
+int ObMPConnect::check_update_client_capability(uint64_t &cap) const
+{
+  int ret = OB_SUCCESS;
+
+  // set client_capability_ to tell client which features observer supports
+  ObClientAttributeCapabilityFlags server_client_cap_flag;
+  // version control need change 425
+  server_client_cap_flag.cap_flags_.OB_CLIENT_SUPPORT_JDBC_BINARY_DOUBLE = 1;
+  if (GET_MIN_CLUSTER_VERSION() >= MOCK_CLUSTER_VERSION_4_2_5_0
+      || GET_MIN_CLUSTER_VERSION() > CLUSTER_VERSION_4_3_5_0) {
+    server_client_cap_flag.cap_flags_.OB_CLIENT_CAP_NEW_RESULT_META_DATA = 1;
+  } else {
+    server_client_cap_flag.cap_flags_.OB_CLIENT_CAP_NEW_RESULT_META_DATA = 0;
+  }
+
+  cap = (server_client_cap_flag.capability_ & cap);//if old java client, set it 0
+
+  LOG_DEBUG("debug client capability", K(cap));
+  return ret;
+}
+
 int ObMPConnect::check_update_proxy_capability(ObSMConnection &conn) const
 {
   int ret = OB_SUCCESS;
@@ -1899,10 +1977,15 @@ int ObMPConnect::check_update_proxy_capability(ObSMConnection &conn) const
     } else {
       server_proxy_cap_flag.cap_flags_.OB_CAP_PROXY_CLIENT_SESSION_ID = 0;
     }
-    if (GET_MIN_CLUSTER_VERSION() >= MOCK_DATA_VERSION_4_2_5_0) {
+    if (GET_MIN_CLUSTER_VERSION() >= MOCK_CLUSTER_VERSION_4_2_5_0) {
       server_proxy_cap_flag.cap_flags_.OB_CAP_FEEDBACK_PROXY_SHIFT = 1;
     } else {
       server_proxy_cap_flag.cap_flags_.OB_CAP_FEEDBACK_PROXY_SHIFT = 0;
+    }
+    if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_4_0_0) {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_CHANGE_USER_CONN_ATTRS = 1;
+    } else {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_CHANGE_USER_CONN_ATTRS = 0;
     }
     server_proxy_cap_flag.cap_flags_.OB_CAP_OB_PROTOCOL_V2_COMPRESS = 1;
     conn.proxy_cap_flags_.capability_ = (server_proxy_cap_flag.capability_ & client_proxy_cap);  // if old java client, set it 0
@@ -2026,8 +2109,8 @@ int ObMPConnect::check_common_property(ObSMConnection &conn, ObMySQLCapabilityFl
     conn.client_addr_port_ = client_addr_port;
     conn.client_create_time_ = client_create_time;
     conn.sess_create_time_ = sess_create_time;
-    if (conn.di_!= nullptr) {
-      conn.di_->get_ash_stat().proxy_sid_ = proxy_sessid;
+    if (conn.get_diagnostic_info() != nullptr) {
+      conn.get_diagnostic_info()->get_ash_stat().proxy_sid_ = proxy_sessid;
     }
     int64_t code = 0;
     LOG_INFO("construct session id", K(conn.client_sessid_), K(conn.sessid_),
@@ -2095,6 +2178,12 @@ int ObMPConnect::check_client_property(ObSMConnection &conn)
     // do nothing
   }
 
+  if (!conn.is_proxy_) {
+    // copy scramble_buf_ to scramble_result_buf_ when is not proxy
+    // becsuse now is use scramble_result_buf_ in login_info
+    MEMCPY(conn.scramble_result_buf_, conn.scramble_buf_, ObSMConnection::SCRAMBLE_BUF_SIZE);
+  }
+
   if (client_ip.empty()) {
     get_peer().ip_to_string(client_ip_buf_, common::MAX_IP_ADDR_LENGTH);
     const char *peer_ip = client_ip_buf_;
@@ -2133,11 +2222,11 @@ int ObMPConnect::extract_real_scramble(const ObString &proxy_scramble)
           real_scramble_buf))) {
         LOG_WARN("failed to calc xor real_scramble_buf", K(ret));
       } else {
-        MEMCPY(conn.scramble_buf_, real_scramble_buf, ObSMConnection::SCRAMBLE_BUF_SIZE);
+        MEMCPY(conn.scramble_result_buf_, real_scramble_buf, ObSMConnection::SCRAMBLE_BUF_SIZE);
       }
     } else {
       const ObString old_scramble("aaaaaaaabbbbbbbbbbbb");
-      MEMCPY(conn.scramble_buf_, old_scramble.ptr(), old_scramble.length());
+      MEMCPY(conn.scramble_result_buf_, old_scramble.ptr(), old_scramble.length());
     }
   }
   return ret;
@@ -2547,6 +2636,22 @@ int ObMPConnect::set_service_name(const uint64_t tenant_id, ObSQLSessionInfo &se
     LOG_WARN("fail to set service_name", KR(ret), K(service_name), K(tenant_id));
   } else if (OB_FAIL(session.check_service_name_and_failover_mode(tenant_id))) {
     LOG_WARN("fail to execute check_service_name_and_failover_mode", KR(ret), K(service_name), K(tenant_id));
+  }
+  return ret;
+}
+
+int ObMPConnect::execute_trigger(const uint64_t tenant_id,
+                                 sql::ObSQLSessionInfo &session)
+{
+  int ret = OB_SUCCESS;
+  ObSchemaGetterGuard schema_guard;
+  if (OB_ISNULL(gctx_.schema_service_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(gctx_.schema_service_));
+  } else if (OB_FAIL(gctx_.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
+    LOG_WARN("get schema guard failed", K(ret));
+  } else if (OB_FAIL(TriggerHandle::calc_system_trigger_logon(session))) {
+    LOG_WARN("calc system trigger failed", K(ret));
   }
   return ret;
 }

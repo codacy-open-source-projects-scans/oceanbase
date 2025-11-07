@@ -13,12 +13,7 @@
 #define USING_LOG_PREFIX SERVER
 
 #include "ob_agent_table_base.h"
-#include "share/ob_i_tablet_scan.h"
-#include "observer/ob_server_struct.h"
-#include "observer/ob_inner_sql_result.h"
-#include "lib/string/ob_sql_string.h"
-#include "share/schema/ob_schema_utils.h"
-#include "common/object/ob_object.h"
+#include "src/share/interrupt/ob_interrupt_rpc_proxy.h"
 
 namespace oceanbase
 {
@@ -246,6 +241,7 @@ int ObAgentTableBase::construct_columns(
       query_timeout = query_timeout * 10;
       rest_time = rest_time / 10;
     }
+    query_timeout = MIN(query_timeout, OB_MAX_USER_SPECIFIED_TIMEOUT);
     if (OB_ISNULL(buf = static_cast<char*>(allocator_->alloc(buf_len)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc buf", KR(ret), K(buf_len));

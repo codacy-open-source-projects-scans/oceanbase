@@ -288,6 +288,11 @@ public:
   static const int64_t MIN_VERSION = 0;
 
   ObVersionRange();
+  ObVersionRange(const int64_t base_version, const int64_t snapshot_version)
+    : multi_version_start_(base_version),
+      base_version_(base_version),
+      snapshot_version_(snapshot_version)
+  {}
   OB_INLINE void reset();
   OB_INLINE bool is_valid() const;
   int64_t hash() const;
@@ -380,10 +385,6 @@ public:
     return end_key_;
   }
 
-  inline int32_t get_group_idx() const
-  {
-    return group_idx_;
-  }
   inline int32_t get_index_ordered_idx() const
   {
     return index_ordered_idx_;

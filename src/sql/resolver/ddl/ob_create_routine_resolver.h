@@ -57,6 +57,10 @@ public:
   
   virtual int resolve(const ParseNode &parse_tree);
   virtual int resolve_impl(const ParseNode &parse_tree, obrpc::ObCreateRoutineArg *crt_routine_arg) = 0;
+  static int check_external_udf_version(uint64_t tenant_id, bool is_py, bool is_af_or_tf = false);
+protected:
+  int resolve_sp_body(const ParseNode *parse_node, share::schema::ObRoutineInfo &routine_info);
+  int resolve_external_udf(const ParseNode &parse_tree, obrpc::ObCreateRoutineArg &crt_routine_arg);
 
 private:
   int check_dup_routine_param(const common::ObIArray<share::schema::ObRoutineParam*> &params,
@@ -68,10 +72,9 @@ private:
   int analyze_router_sql(obrpc::ObCreateRoutineArg *crt_routine_arg);
   int resolve_sp_definer(const ParseNode *parse_node, share::schema::ObRoutineInfo &routine_info);
   int resolve_sp_name(const ParseNode *parse_node, obrpc::ObCreateRoutineArg *crt_routine_arg);
-  int resolve_sp_body(const ParseNode *parse_node, share::schema::ObRoutineInfo &routine_info);
   int resolve_ret_type(const ParseNode *ret_type_node, share::schema::ObRoutineInfo &func_info);
   int analyze_expr_type(ObRawExpr *&expr, share::schema::ObRoutineInfo &routine_info);
-  int resolve_param_list(const ParseNode *param_list, share::schema::ObRoutineInfo &routine_info);
+  int resolve_param_list(const ParseNode *param_list, obrpc::ObCreateRoutineArg &crt_routine_arg);
   int resolve_replace(const ParseNode *parse_node, obrpc::ObCreateRoutineArg *crt_routine_arg);
   int resolve_editionable(const ParseNode *parse_node, obrpc::ObCreateRoutineArg *crt_routine_arg);
   int resolve_param_type(const ParseNode *type_node, const common::ObString &param_name,
@@ -82,6 +85,8 @@ private:
   int set_routine_param(const ObIArray<pl::ObObjAccessIdx> &access_idxs,
                         share::schema::ObRoutineParam &routine_param);
   int resolve_aggregate_body(const ParseNode *parse_node, share::schema::ObRoutineInfo &routine_info);
+
+  int resolve_external_routine_type(const ObString &udf_type, const ObString &file, share::schema::ObRoutineInfo &routine_info);
 };
 
 class ObCreateProcedureResolver: public ObCreateRoutineResolver

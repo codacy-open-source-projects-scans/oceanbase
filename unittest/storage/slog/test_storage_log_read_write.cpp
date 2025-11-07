@@ -12,36 +12,12 @@
 
 #define USING_LOG_PREFIX STORAGE_REDO
 
-#include <gtest/gtest.h>
-#include "lib/list/ob_list.h"
-#include "lib/file/file_directory_utils.h"
-#include "lib/file/ob_file.h"
-#include "lib/ob_define.h"
 #include "storage/blocksstable/ob_data_file_prepare.h"
 #include "storage/slog/simple_ob_storage_log.h"
-#include "storage/slog/ob_storage_log_batch_header.h"
-#include "lib/container/ob_se_array.h"
-#include "storage/meta_mem/ob_meta_obj_struct.h"
-#include <thread>
-#include "lib/oblog/ob_log.h"
-#include "share/ob_force_print_log.h"
 
-#include "share/rc/ob_tenant_base.h"
-#include "logservice/palf/palf_options.h"
-#include "share/ob_alive_server_tracer.h"
-#include "share/allocator/ob_tenant_mutil_allocator_mgr.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "storage/blocksstable/ob_log_file_spec.h"
-#include "lib/file/file_directory_utils.h"
-#include "storage/mock_ob_meta_report.h"
-#include "share/ob_simple_mem_limit_getter.h"
 
 #define private public
-#include "storage/slog/ob_storage_logger_manager.h"
-#include "storage/slog/ob_storage_logger.h"
-#include "storage/slog/ob_storage_log_writer.h"
 #include "storage/slog/ob_storage_log_reader.h"
-#include "storage/slog/ob_storage_log_replayer.h"
 #undef private
 
 namespace oceanbase
@@ -106,7 +82,7 @@ void TestStorageLogRW::SetUp()
   TestDataFilePrepare::SetUp();
   slogger_ = OB_NEW(ObStorageLogger, ObModIds::TEST);
   ObStorageLoggerManager &slogger_mgr = SERVER_STORAGE_META_SERVICE.get_slogger_manager();
-  ASSERT_EQ(OB_SUCCESS, slogger_->init(slogger_mgr, OB_SERVER_TENANT_ID));
+  ASSERT_EQ(OB_SUCCESS, slogger_->init(slogger_mgr, OB_SERVER_TENANT_ID, 0/*tenant epoch*/));
   ASSERT_EQ(OB_SUCCESS, slogger_->start());
 
   slogger_->start_log(start_cursor_);
@@ -162,7 +138,7 @@ TEST_F(TestStorageLogRW, test_basic)
 
   // test write single-param large-size log and read it
 
-  static const int single_large_size = 40 << 20;
+  static const int single_large_size = 30 << 20;
   // test write single-param large-size log
   SimpleObSlog simple_slog2(single_large_size, 'g');
   log_param.data_ = &simple_slog2;
@@ -404,10 +380,10 @@ TEST_F(TestStorageLogRW, test_switch_file)
   int cmp = 0;
   void *buf = nullptr;
 
-  SimpleObSlog simple_slog((32<<20) - (10<<10), 'p');
+  SimpleObSlog simple_slog((16<<20) - (10<<10), 'p');
   log_param.data_ = &simple_slog;
 
-  for (int i = 0; i < 8; i++) { // 4 * 64M slog file
+  for (int i = 0; i < 8; i++) { // 4 * 32M slog file
     slogger_->write_log(log_param);
   }
 
@@ -466,7 +442,7 @@ TEST_F(TestStorageLogRW, test_iter_read_switch_file)
   read_cursor.offset_ = 0;
 
   // write six huge single-slogs
-  SimpleObSlog huge_slog((32<<20) - (10<<10), 'p');
+  SimpleObSlog huge_slog((31<<20) - (10<<10), 'p');
   log_param.data_ = &huge_slog;
   for (int i = 0; i < 6; i++) { //  3 * 64M slog file
     ASSERT_EQ(OB_SUCCESS, slogger_->write_log(log_param));
@@ -477,7 +453,7 @@ TEST_F(TestStorageLogRW, test_iter_read_switch_file)
     ObSEArray<ObStorageLogParam, 8> param_arr;
     SimpleObSlog slog_arr[8];
     for (int j = 0; j < 8; j++) {
-      slog_arr[i].set((4<<20) - (4<<10), 'g');
+      slog_arr[i].set((2<<20) - (4<<10), 'g');
       log_param.data_ = &(slog_arr[i]);
       param_arr.push_back(log_param);
     }
@@ -496,18 +472,18 @@ TEST_F(TestStorageLogRW, test_iter_read_switch_file)
     ASSERT_EQ(OB_SUCCESS, reader.read_log(entry, read_buf, disk_addr));
     if (29 == entry.cmd_) {
       ASSERT_EQ(index + 1, entry.seq_);
-      ASSERT_EQ(0, MEMCMP(huge_slog.buf_, read_buf, (32<<20) - (10<<10)));
+      ASSERT_EQ(0, MEMCMP(huge_slog.buf_, read_buf, (31<<20) - (10<<10)));
       index++;
     }
   }
 
   // iter read four huge batch-slogs
-  SimpleObSlog tmp_slog((4<<20) - (4<<10), 'g');
+  SimpleObSlog tmp_slog((2<<20) - (4<<10), 'g');
   while (index < 46) {
     ASSERT_EQ(OB_SUCCESS, reader.read_log(entry, read_buf, disk_addr));
     if (29 == entry.cmd_) {
       ASSERT_EQ(index + 1, entry.seq_);
-      ASSERT_EQ(0, MEMCMP(tmp_slog.buf_, read_buf, (4<<20) - (4<<10)));
+      ASSERT_EQ(0, MEMCMP(tmp_slog.buf_, read_buf, (2<<20) - (4<<10)));
       index++;
     }
   }
@@ -534,7 +510,7 @@ TEST_F(TestStorageLogRW, test_iter_read_switch_file)
       ASSERT_EQ(index + 47, entry.seq_);
       ASSERT_EQ(0, MEMCMP(slog_arr[index].buf_, read_buf, data_len[index]));
       ASSERT_EQ(param_arr[index].disk_addr_, disk_addr);
-      ASSERT_EQ(6, disk_addr.file_id_);
+      ASSERT_EQ(9, disk_addr.file_id_);
       index++;
     }
   }

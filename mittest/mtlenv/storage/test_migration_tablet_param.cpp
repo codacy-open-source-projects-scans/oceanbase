@@ -18,15 +18,9 @@
 #define private public
 #define protected public
 
-#include "lib/ob_errno.h"
-#include "lib/allocator/page_arena.h"
-#include "lib/oblog/ob_log.h"
-#include "share/rc/ob_tenant_base.h"
-#include "mtlenv/mock_tenant_module_env.h"
 #include "mtlenv/storage/medium_info_helper.h"
 #include "unittest/storage/test_tablet_helper.h"
 #include "unittest/storage/test_dml_common.h"
-#include "storage/tablet/ob_tablet.h"
 
 #define USING_LOG_PREFIX STORAGE
 
@@ -358,7 +352,8 @@ TEST_F(TestMigrationTabletParam, empty_shell_transfer)
   ret = TestTabletHelper::create_tablet(ls_handle, tablet_id, schema, allocator_, ObTabletStatus::Status::DELETED);
   ASSERT_EQ(OB_SUCCESS, ret);
 
-  ret = ls_tablet_service->update_tablet_to_empty_shell(tablet_id);
+  const uint64_t data_version = DATA_CURRENT_VERSION;
+  ret = ls_tablet_service->update_tablet_to_empty_shell(data_version, tablet_id);
   ASSERT_EQ(OB_SUCCESS, ret);
 
   ObTabletHandle empty_shell_tablet_handle;

@@ -12,11 +12,9 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_plugin_vector_index_serialize.h"
-#include "sql/engine/expr/ob_expr_lob_utils.h"
-#include "storage/lob/ob_lob_manager.h"
-#include "deps/oblib/src/lib/vector/ob_vector_util.h"
 #include "share/vector_index/ob_vector_index_util.h"
 #include "storage/access/ob_table_scan_iterator.h"
+#include "share/vector_index/ob_plugin_vector_index_adaptor.h"
 
 namespace oceanbase
 {
@@ -29,7 +27,9 @@ std::streamsize ObOStreamBuf::xsputn(const char* s, std::streamsize count)
 {
   std::streamsize written_size = 0;
   std::streamsize left_size = 0;
-  if (OB_ISNULL(s)) {
+  if (count == 0) {
+    // do nothing
+  } else if (OB_ISNULL(s)) {
     last_error_code_ = OB_INVALID_ARGUMENT;
   }
   while (is_valid() && is_success() && written_size < count) {
@@ -125,7 +125,9 @@ std::streamsize ObIStreamBuf::xsgetn(char* s, std::streamsize n)
 {
   std::streamsize get_size = 0;
   std::streamsize data_size = 0;
-  if (OB_ISNULL(s)) {
+  if (n == 0) {
+    // do nothing
+  } else if (OB_ISNULL(s)) {
     last_error_code_ = OB_INVALID_ARGUMENT;
   } else if (is_success() && !is_valid()) {
     last_error_code_ = do_callback();
@@ -191,9 +193,13 @@ int ObVectorIndexSerializer::serialize(void *index, ObOStreamBuf::CbParam &cb_pa
     ObOStreamBuf streambuf(data, capacity, cb_param, cb);
     std::ostream out(&streambuf);
     lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "VIndexVsagADP"));
+    lib::ObLightBacktraceGuard light_backtrace_guard(false);
     if (OB_FAIL(obvectorutil::fserialize(index, out))) {
-      ret = ObPluginVectorIndexHelper::vsag_errcode_2ob(ret);
       LOG_WARN("fail to do vsag serialize", K(ret));
+      if (streambuf.get_error_code() != OB_SUCCESS && streambuf.get_error_code() != OB_ITER_END) {
+        ret = streambuf.get_error_code();
+        LOG_WARN("serialize streambuf has fail", K(ret));
+      }
     } else {
       streambuf.check_finish(); // do last callback to ensure all the data is written
       if (OB_FAIL(streambuf.get_error_code())) {
@@ -208,34 +214,33 @@ int ObVectorIndexSerializer::deserialize(void *&index, ObIStreamBuf::CbParam &cb
 {
   int ret = OB_SUCCESS;
   char *data = nullptr;
-  if (OB_ISNULL(index)) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(index));
-  } else {
-    ObIStreamBuf streambuf(nullptr, 0, cb_param, cb);
-    std::istream in(&streambuf);
-    if (OB_FAIL(streambuf.init())) {
-      if (ret == OB_ITER_END) {
-        LOG_INFO("[vec index deserialize] read table is empty, just return");
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("failed to init istreambuf", K(ret));
-      }
+  ObIStreamBuf streambuf(nullptr, 0, cb_param, cb);
+  std::istream in(&streambuf);
+  if (OB_FAIL(streambuf.init())) {
+    if (ret == OB_ITER_END) {
+      LOG_INFO("[vec index deserialize] read table is empty, just return");
+      ret = OB_SUCCESS;
     } else {
-      lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "VIndexVsagADP"));
-      if (OB_FAIL(obvectorutil::fdeserialize(index, in))) {
-        ret = ObPluginVectorIndexHelper::vsag_errcode_2ob(ret);
-        LOG_WARN("fail to do vsag deserialize", K(ret));
+      LOG_WARN("failed to init istreambuf", K(ret));
+    }
+  } else {
+    lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(tenant_id, "VIndexVsagADP"));
+    lib::ObLightBacktraceGuard light_backtrace_guard(false);
+    if (OB_FAIL(obvectorutil::fdeserialize(index, in))) {
+      LOG_WARN("fail to do vsag deserialize", K(ret));
+      if (streambuf.get_error_code() != OB_SUCCESS && streambuf.get_error_code() != OB_ITER_END) {
+        ret = streambuf.get_error_code();
+        LOG_WARN("deserialize streambuf has fail", K(ret));
       }
     }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(streambuf.get_error_code())) {
-      if (ret == OB_ITER_END) {
-        LOG_INFO("[vec index deserialize] read table finish, just return");
-        ret = OB_SUCCESS;
-      } else {
-        LOG_WARN("failed to deserialize", K(ret));
-      }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(streambuf.get_error_code())) {
+    if (ret == OB_ITER_END) {
+      LOG_INFO("[vec index deserialize] read table finish, just return");
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("failed to deserialize", K(ret));
     }
   }
   return ret;
@@ -252,6 +257,8 @@ int ObHNSWDeserializeCallback::operator()(char*& data, const int64_t data_size, 
   ObTableScanIterator *row_iter = static_cast<ObTableScanIterator *>(param.iter_);
   ObIAllocator *allocator = param.allocator_;
   ObTextStringIter *&str_iter = param.str_iter_;
+  bool is_vec_tablet_rebuild = param.is_vec_tablet_rebuild_;
+  bool is_need_unvisible_row = param.is_need_unvisible_row_;
   ObTextStringIterState state;
   ObString src_block_data;
   if (!param.is_valid()) {
@@ -294,18 +301,93 @@ int ObHNSWDeserializeCallback::operator()(char*& data, const int64_t data_size, 
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("invalid row", K(ret), K(row));
         } else {
+          bool skip_this_row = false;
           key_datum = row->storage_datums_[0];
           data_datum = row->storage_datums_[1];
-          LOG_INFO("[vec index debug] show key and data for vsag deserialize", K(key_datum), K(data_datum));
-          if (OB_ISNULL(str_iter = OB_NEWx(ObTextStringIter, allocator, ObLongTextType, CS_TYPE_BINARY, data_datum.get_string(), true))) {
+
+          LOG_INFO("[vec index debug] show key and data for vsag deserialize", K(key_datum), K(data_datum), K(is_need_unvisible_row), K(is_vec_tablet_rebuild));
+
+          if (OB_FALSE_IT(ObVecIndexAsyncTaskUtil::get_row_need_skip_for_compatibility(*row, is_need_unvisible_row, skip_this_row))) {
+          } else if (skip_this_row) {
+            LOG_INFO("skip deseriable row", K(key_datum), K(is_need_unvisible_row), K(is_vec_tablet_rebuild)); // continue;
+          } else if (OB_ISNULL(str_iter = OB_NEWx(ObTextStringIter, allocator, ObLongTextType, CS_TYPE_BINARY, data_datum.get_string(), true))) {
             ret = OB_ALLOCATE_MEMORY_FAILED;
             LOG_WARN("fail to new ObTextStringIter", KR(ret));
           } else if (OB_FAIL(str_iter->init(0, NULL, allocator))) {
             LOG_WARN("init lob str iter failed ", K(ret));
+          } else if (index_type_ == VIAT_MAX) {
+            ObPluginVectorIndexAdaptor *adp = static_cast<ObPluginVectorIndexAdaptor*>(adp_);
+            ObCollationType calc_cs_type = CS_TYPE_UTF8MB4_GENERAL_CI;
+            uint32_t idx_ipivf = ObCharset::locate(calc_cs_type, key_datum.get_string().ptr(), key_datum.get_string().length(),
+                                       "ipivf", 5, 1);
+            uint32_t idx_sq = ObCharset::locate(calc_cs_type, key_datum.get_string().ptr(), key_datum.get_string().length(),
+                                       "hnsw_sq", 7, 1);
+            uint32_t idx_bq = ObCharset::locate(calc_cs_type, key_datum.get_string().ptr(), key_datum.get_string().length(),
+                                       "hnsw_bq", 7, 1);
+            uint32_t hgraph_idx = ObCharset::locate(calc_cs_type, key_datum.get_string().ptr(), key_datum.get_string().length(),
+                                       "hgraph", 6, 1);
+            if (OB_ISNULL(adp)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("get invalid adp", K(ret));
+            } else if (idx_ipivf > 0) {
+              index_type_ = VIAT_IPIVF;
+              if (OB_FAIL(adp->try_init_snap_data(VIAT_IPIVF))) {
+                LOG_WARN("failed to init sparse vector snap data", K(ret), K(index_type_));
+              }
+            } else if (idx_sq > 0) {
+              index_type_ = VIAT_HNSW_SQ;
+              if (OB_FAIL(adp->try_init_snap_data(VIAT_HNSW_SQ))) {
+                LOG_WARN("failed to init snap data", K(ret), K(index_type_));
+              }
+            } else if (idx_bq > 0) {
+              index_type_ = VIAT_HNSW_BQ;
+              if (OB_FAIL(adp->try_init_snap_data(VIAT_HNSW_BQ))) {
+                LOG_WARN("failed to init snap data", K(ret), K(index_type_));
+              }
+            } else if (hgraph_idx > 0) {
+              index_type_ = VIAT_HGRAPH;
+              if (OB_FAIL(adp->try_init_snap_data(VIAT_HGRAPH))) {
+                LOG_WARN("failed to init snap data", K(ret), K(index_type_));
+              }
+            } else {
+              index_type_ = VIAT_HNSW;
+              if (OB_FAIL(adp->try_init_snap_data(VIAT_HNSW))) {
+                LOG_WARN("failed to init snap data", K(ret), K(index_type_));
+              }
+            }
+
+            LOG_INFO("HgraphIndex vector index get key data from snap_index_table", K(ret), K(is_vec_tablet_rebuild), K(index_type_), K(key_datum.get_string()));
+            if (OB_FAIL(ret)) {
+            } else if (is_vec_tablet_rebuild) { // only do once
+              if (OB_FAIL(ObVecIndexAsyncTaskUtil::init_tablet_rebuild_new_adapter(adp, key_datum.get_string()))) {
+                LOG_WARN("fail to init tablet rebuild new adpater", K(ret));
+              } else {
+                LOG_INFO("init tablet rebuild new adapter", K(ret), KPC(adp));
+              }
+            }
           }
         }
       }
     } while (OB_SUCC(ret) && OB_ISNULL(data));
+
+    if (ret == OB_ITER_END) {
+      ret = OB_SUCCESS;
+      ObPluginVectorIndexAdaptor *adp_ptr = static_cast<ObPluginVectorIndexAdaptor*>(adp_);
+      if (OB_ISNULL(adp_ptr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get invalid adp", K(ret));
+      } else if (!adp_ptr->is_mem_data_init_atomic(VIRT_SNAP) && !is_vec_tablet_rebuild) {
+        // If it’s vec tablet rebuild and nothing was deserialized, then there’s no need to create snap_index here; the outer layer will create it.
+        // Otherwise, it may cause a mismatch between the index data and the index type.
+        if (OB_FAIL(adp_ptr->init_snap_data_without_lock(VIAT_HNSW))) {
+          LOG_WARN("failed to init hnsw mem data", K(ret));
+        } else {
+          ret = OB_ITER_END;
+        }
+      } else {
+        ret = OB_ITER_END;
+      }
+    }
   }
   return ret;
 }

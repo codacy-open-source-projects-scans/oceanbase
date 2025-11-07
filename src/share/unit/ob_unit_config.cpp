@@ -12,10 +12,8 @@
 
 #define USING_LOG_PREFIX  SHARE
 
-#include "ob_unit_config.h"
 
-#include "lib/oblog/ob_log_module.h"        // *_LOG
-#include "share/config/ob_server_config.h"  // GCONF
+#include "ob_unit_config.h"
 #include "observer/ob_server_struct.h"      // GCTX
 
 namespace oceanbase
@@ -82,6 +80,19 @@ int ObUnitConfig::set(
   } else {
     unit_config_id_ = unit_config_id;
     resource_ = resource;
+  }
+  return ret;
+}
+
+int ObUnitConfig::set(
+    const uint64_t unit_config_id,
+    const ObUnitConfigName &name)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(name_.assign(name))) {
+    LOG_WARN("assign name fail", KR(ret), K(name));
+  } else {
+    unit_config_id_ = unit_config_id;
   }
   return ret;
 }

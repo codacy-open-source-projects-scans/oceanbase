@@ -13,10 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_restore_struct.h"
 #include "storage/restore/ob_ls_restore_args.h"
-#include "storage/backup/ob_backup_data_store.h"
-#include "storage/blocksstable/ob_logic_macro_id.h"
 #include "share/backup/ob_backup_connectivity.h"
-#include "storage/backup/ob_backup_data_struct.h"
 #include "storage/backup/ob_backup_factory.h"
 #include "storage/backup/ob_backup_meta_cache.h"
 namespace oceanbase
@@ -322,6 +319,28 @@ int ObTabletRestoreAction::trans_restore_action_to_restore_status(
   return ret;
 }
 
+bool ObTabletRestoreAction::is_restore_status_match(
+      const ACTION &action, const ObTabletRestoreStatus::STATUS &status)
+{
+  bool b_ret = false;
+  if (!is_valid(action) || !ObTabletRestoreStatus::is_valid(status)) {
+    b_ret = false;
+  } else if (is_restore_all(action)) {
+    b_ret = status == ObTabletRestoreStatus::EMPTY;
+  } else if (is_restore_minor(action)) {
+    b_ret = status == ObTabletRestoreStatus::EMPTY;
+  } else if (is_restore_major(action)) {
+    b_ret = status == ObTabletRestoreStatus::MINOR_AND_MAJOR_META;
+  } else if (is_restore_tablet_meta(action)) {
+    b_ret =  status == ObTabletRestoreStatus::PENDING;
+  } else if (is_restore_remote_sstable(action)) {
+    b_ret = status == ObTabletRestoreStatus::EMPTY;
+  } else if (is_restore_replace_remote_sstable(action)) {
+    b_ret = status == ObTabletRestoreStatus::REMOTE;
+  }
+  return b_ret;
+}
+
 bool ObTabletRestoreAction::need_restore_mds_sstable(const ACTION &action)
 {
   return ACTION::RESTORE_MINOR == action
@@ -339,6 +358,22 @@ bool ObTabletRestoreAction::need_restore_minor_sstable(const ACTION &action)
 }
 
 bool ObTabletRestoreAction::need_restore_ddl_sstable(const ACTION &action)
+{
+  return ACTION::RESTORE_MINOR == action
+         || ACTION::RESTORE_ALL == action
+         || ACTION::RESTORE_REMOTE_SSTABLE == action
+         || ACTION::RESTORE_REPLACE_REMOTE_SSTABLE == action;
+}
+
+bool ObTabletRestoreAction::need_restore_inc_major_ddl_sstable(const ACTION &action)
+{
+  return ACTION::RESTORE_MINOR == action
+         || ACTION::RESTORE_ALL == action
+         || ACTION::RESTORE_REMOTE_SSTABLE == action
+         || ACTION::RESTORE_REPLACE_REMOTE_SSTABLE == action;
+}
+
+bool ObTabletRestoreAction::need_restore_inc_major_sstable(const ACTION &action)
 {
   return ACTION::RESTORE_MINOR == action
          || ACTION::RESTORE_ALL == action
@@ -380,11 +415,13 @@ int ObRestoreUtils::get_backup_data_type(
     data_type.set_sys_data_backup();
   } else if (table_key.is_minor_sstable()) {
     data_type.set_minor_data_backup();
-  } else if (table_key.is_major_sstable()) {
+  } else if (table_key.is_major_sstable() || table_key.is_inc_major_type_sstable()) {
     data_type.set_major_data_backup();
   } else if (table_key.is_ddl_dump_sstable()) {
     data_type.set_minor_data_backup();
   } else if (table_key.is_mds_sstable()) {
+    data_type.set_minor_data_backup();
+  } else if (table_key.is_inc_major_ddl_sstable()) {
     data_type.set_minor_data_backup();
   } else {
     ret = OB_ERR_UNEXPECTED;
@@ -1015,6 +1052,9 @@ int ObRestoreMacroBlockIdMgr::get_macro_block_index_list_from_iter_(
       logic_id = data_macro_block_meta.get_logic_id();
       if (OB_FAIL(macro_id.set(data_macro_block_meta.get_macro_id()))) {
         LOG_WARN("failed to set macro id", K(ret), K(data_macro_block_meta.get_macro_id()));
+      } else if (macro_id.block_type_ != backup::ObBackupDeviceMacroBlockId::DATA_BLOCK) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected error, invalid block type", K(ret), K(data_macro_block_meta), K(macro_id));
       } else if (OB_FAIL(restore_macro_id.set(logic_id, macro_id))) {
         LOG_WARN("failed to set restore macro id", K(ret), K(logic_id), K(macro_id));
       } else if (OB_FAIL(macro_id_list.push_back(restore_macro_id))) {

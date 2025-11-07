@@ -37,6 +37,7 @@
 #include "pl/pl_cache/ob_pl_cache_object.h"
 #ifdef OB_BUILD_ORACLE_PL
 #include "pl/ob_pl_call_stack_trace.h"
+#include "pl/ob_pl_code_coverage.h"
 #endif
 #include "pl/ob_pl_allocator.h"
 
@@ -70,6 +71,10 @@ class ObPLAllocator1;
 
 class ObPLProfilerTimeStack;
 
+class ObPLExecuteArg;
+#ifdef OB_BUILD_ORACLE_PL
+struct CoverageData;
+#endif
 enum ObPLObjectType
 {
   INVALID_OBJECT_TYPE = -1,
@@ -243,6 +248,8 @@ public:
 
   inline bool get_can_cached() { return can_cached_; }
   inline void set_can_cached(bool can_cached) { can_cached_ = can_cached; }
+  inline bool has_incomplete_rt_dep_error() { return has_incomplete_rt_dep_error_; }
+  inline void set_has_incomplete_rt_dep_error(bool has_incomplete_rt_dep_error) { has_incomplete_rt_dep_error_ = has_incomplete_rt_dep_error; }
   inline const ObIArray<ObPLFunction*> &get_routine_table() const { return routine_table_; }
   inline ObIArray<ObPLFunction*> &get_routine_table() { return routine_table_; }
   inline int set_routine_table(ObIArray<ObPLFunction*> &table)
@@ -272,8 +279,20 @@ public:
   OB_INLINE void set_profiler_unit_info(uint64_t unit_id, ObProcType type) { profiler_unit_info_ = std::make_pair(unit_id, type); }
   OB_INLINE void set_profiler_unit_info(const std::pair<uint64_t, ObProcType> &unit_info) { profiler_unit_info_ = unit_info; }
 
-  TO_STRING_KV(K_(routine_table), K_(can_cached),
-               K_(tenant_schema_version), K_(sys_schema_version));
+  OB_INLINE int32_t get_stack_size() const { return stack_size_; }
+  OB_INLINE void set_stack_size(int64_t stack_size) { stack_size_ = stack_size; }
+  OB_INLINE bool get_is_wrap() const { return is_wrap_; }
+  OB_INLINE void set_is_wrap(bool is_wrap) { is_wrap_ = is_wrap; }
+#ifdef OB_BUILD_ORACLE_PL
+  OB_INLINE const common::ObArray<CoverageData>& get_vaild_rows_info() const { return vaild_rows_info_; }
+  int add_vaild_rows_info(ObIArray<CoverageData> &vaild_row_info_array);
+#endif
+  TO_STRING_KV(K_(routine_table),
+               K_(can_cached),
+               K_(tenant_schema_version),
+               K_(sys_schema_version),
+               K_(stat),
+               K_(stack_size));
 
 protected:
 
@@ -286,10 +305,15 @@ protected:
   jit::ObLLVMDIHelper di_helper_;
 
   bool can_cached_;
+  bool has_incomplete_rt_dep_error_;
   sql::ObExecEnv exec_env_;
 
   std::pair<uint64_t, ObProcType> profiler_unit_info_;
-
+#ifdef OB_BUILD_ORACLE_PL
+  common::ObArray<CoverageData> vaild_rows_info_;
+#endif
+  int32_t stack_size_;
+  bool is_wrap_;
   DISALLOW_COPY_AND_ASSIGN(ObPLCompileUnit);
 };
 
@@ -405,6 +429,8 @@ public:
   ObString routine_name_;
 };
 
+typedef common::ObFixedArray<common::ObFixedArray<std::pair<ObString, bool>, common::ObIAllocator>, common::ObIAllocator> TriggerRefColsTable;
+
 class ObPLFunction : public ObPLFunctionBase, public ObPLCompileUnit
 {
 public:
@@ -424,7 +450,10 @@ public:
     is_pipelined_(false),
     name_debuginfo_(),
     function_name_(),
-    has_parallel_affect_factor_(false) { }
+    has_parallel_affect_factor_(false),
+    trigger_ref_cols_(allocator_),
+    definer_user_id_(OB_INVALID_ID),
+    is_special_pkg_invoke_right_(false) { }
   virtual ~ObPLFunction();
 
   inline const common::ObIArray<ObPLDataType> &get_variables() const { return variables_; }
@@ -488,6 +517,8 @@ public:
   {
     return ob_write_string(get_allocator(), priv_user, priv_user_);
   }
+  inline uint64_t get_definer_user_id() const { return definer_user_id_; }
+  inline void set_definer_user_id(uint64_t definer_user_id) { definer_user_id_ = definer_user_id; }
 
   inline bool need_register_debug_info()
   {
@@ -506,7 +537,8 @@ public:
   * we hacked it using name compared, for the interface funtion can't get the origin db name and id
   * test -> oceanbase, we see oceanbase in interface but can't see test.
   */
-  int is_special_pkg_invoke_right(ObSchemaGetterGuard &guard, bool &flag);
+  int set_special_pkg_invoke_right(ObSchemaGetterGuard &guard);
+  inline bool is_special_pkg_invoke_right() const { return is_special_pkg_invoke_right_; }
 
   int gen_action_from_precompiled(const ObString &name, size_t length, const char *ptr);
 
@@ -514,6 +546,8 @@ public:
   {
     return sql_infos_;
   }
+
+  inline TriggerRefColsTable &get_trigger_ref_cols() { return trigger_ref_cols_; }
 
   TO_STRING_KV(K_(ns),
                K_(ref_count),
@@ -525,7 +559,9 @@ public:
                K_(variables),
                K_(default_idxs),
                K_(function_name),
-               K_(priv_user));
+               K_(priv_user),
+               K_(stat),
+               K_(stack_size));
 
 private:
   //符号表信息
@@ -548,6 +584,9 @@ private:
   common::ObString database_name_;
   common::ObString priv_user_;
   bool has_parallel_affect_factor_;
+  TriggerRefColsTable trigger_ref_cols_;
+  uint64_t definer_user_id_;
+  bool is_special_pkg_invoke_right_;
 
   DISALLOW_COPY_AND_ASSIGN(ObPLFunction);
 };
@@ -575,7 +614,7 @@ private:
 struct ObPLSqlCodeInfo
 {
 public:
-  ObPLSqlCodeInfo() : sqlcode_(OB_SUCCESS), sqlmsg_() {}
+  ObPLSqlCodeInfo() : sqlcode_(OB_SUCCESS), sqlmsg_(), stakced_warning_buff_() {}
   inline void set_sqlcode(int sqlcode, const ObString &sqlmsg = ObString(""))
   {
     sqlcode_ = sqlcode;
@@ -634,6 +673,7 @@ class ObPLPackageGuard;
 #define IDX_PLEXECCTX_FUNC 6
 #define IDX_PLEXECCTX_IN 7
 #define IDX_PLEXECCTX_PL_CTX 8
+#define IDX_PLEXECCTX_TMP_ALLOCATOR 9
 
 struct ObPLExecCtx : public ObPLINS
 {
@@ -646,14 +686,18 @@ struct ObPLExecCtx : public ObPLINS
               bool in_function = false,
               const common::ObIArray<int64_t> *nocopy_params = NULL,
               ObPLPackageGuard *guard = NULL) :
-    allocator_(allocator), exec_ctx_(exec_ctx), params_(params),
-    result_(result), status_(status), func_(func),
-    in_function_(in_function), pl_ctx_(NULL), nocopy_params_(nocopy_params), guard_(guard),
-    expr_alloc_("PlBlockExpr", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()) {
-      if (NULL != exec_ctx && NULL != exec_ctx_->get_my_session()) {
-        pl_ctx_ = exec_ctx_->get_my_session()->get_pl_context();
-      }
+      allocator_(allocator), exec_ctx_(exec_ctx), params_(params),
+      result_(result), status_(status), func_(func),
+      in_function_(in_function), pl_ctx_(NULL), tmp_allocator_(NULL),
+      nocopy_params_(nocopy_params), guard_(guard),
+      local_expr_alloc_("PLBlockExpr", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+      tmp_alloc_for_copy_param_("PLTmpAlloc", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID())
+  {
+    if (NULL != exec_ctx && NULL != exec_ctx_->get_my_session()) {
+      pl_ctx_ = exec_ctx_->get_my_session()->get_pl_context();
+      tmp_allocator_ = &tmp_alloc_for_copy_param_;
     }
+  }
 
   static uint32_t allocator_offset_bits() { return offsetof(ObPLExecCtx, allocator_) * 8; }
   static uint32_t exec_ctx_offset_bits() { return offsetof(ObPLExecCtx, exec_ctx_) * 8; }
@@ -663,14 +707,21 @@ struct ObPLExecCtx : public ObPLINS
 
   bool valid();
 
-  ObArenaAllocator *get_top_expr_allocator();
+  ObIAllocator *get_top_expr_allocator() { return &local_expr_alloc_; }
 
   virtual int get_user_type(uint64_t type_id,
-                                const ObUserDefinedType *&user_type,
-                                ObIAllocator *allocator = NULL) const;
+                            const ObUserDefinedType *&user_type,
+                            ObIAllocator *allocator = NULL) const;
   virtual int calc_expr(uint64_t package_id, int64_t expr_idx, ObObjParam &result);
+  void set_is_sensitive(bool is_sensitive) const
+  {
+    if (OB_NOT_NULL(exec_ctx_) && OB_NOT_NULL(exec_ctx_->get_sql_ctx())) {
+      exec_ctx_->get_sql_ctx()->is_sensitive_ = is_sensitive;
+    }
+  }
+  inline sql::ObExecContext *get_exec_ctx() const { return exec_ctx_; }
 
-  common::ObIAllocator *allocator_;
+  common::ObIAllocator *allocator_; // Symbol Allocator
   sql::ObExecContext *exec_ctx_;
   ParamStore *params_; // param stroe, 对应PL Function的符号表
   common::ObObj *result_;
@@ -678,15 +729,17 @@ struct ObPLExecCtx : public ObPLINS
   ObPLFunction *func_; // 对应该执行上下文的func_
   bool in_function_; //记录当前是否在function中
   ObPLContext *pl_ctx_; // for error stack
+  common::ObIAllocator *tmp_allocator_; // tmp allocator for copy param
   const common::ObIArray<int64_t> *nocopy_params_; //用于描述nocopy参数
   ObPLPackageGuard *guard_; //对应该次执行的package_guard
-  ObArenaAllocator expr_alloc_;
+  ObArenaAllocator local_expr_alloc_;
+  ObArenaAllocator tmp_alloc_for_copy_param_;
 };
 
 // backup and restore ObExecContext attributes
 struct ExecCtxBak
 {
-#define PL_EXEC_CTX_BAK_ATTRS phy_plan_ctx_,expr_op_ctx_store_,expr_op_size_,has_non_trivial_expr_op_ctx_,frames_,frame_cnt_
+#define PL_EXEC_CTX_BAK_ATTRS phy_plan_ctx_,expr_op_ctx_store_,expr_op_size_,has_non_trivial_expr_op_ctx_,frames_,frame_cnt_,pl_expr_allocator_
 
 #define DEF_BACKUP_ATTR(x) typeof(sql::ObExecContext::x) x = 0
   LST_DO_CODE(DEF_BACKUP_ATTR, EXPAND(PL_EXEC_CTX_BAK_ATTRS));
@@ -714,12 +767,14 @@ public:
                 uint64_t loc = 0,
                 bool is_called_from_sql = false) :
     func_(func),
-    phy_plan_ctx_(in_allocator),
+    phy_plan_ctx_(NULL),
     eval_ctx_(ctx),
     result_(result),
     ctx_(&allocator,
          &ctx,
-         &phy_plan_ctx_.get_param_store_for_update(),
+         func.is_function()
+          ? &ctx.get_physical_plan_ctx()->get_param_store_for_update()
+            : NULL,
          &result,
          &status,
          &func_,
@@ -737,39 +792,40 @@ public:
     pure_plsql_exec_time_(0),
     pure_sub_plsql_exec_time_(0),
     profiler_time_stack_(nullptr),
-    need_free_()
+    need_free_(),
+    param_converted_(),
+    coverage_info_(),
+    cur_complex_obj_count_(INT64_MAX)
   { }
   virtual ~ObPLExecState();
 
   int init(const ParamStore *params = NULL, bool is_anonymous = false);
-  int defend_stored_routine_change(const ObObjParam &actual_param, const ObPLDataType &formal_param_type);
-  int check_routine_param_legal(ParamStore *params = NULL);
+  int defend_stored_routine_change(const ObObjParam &actual_param, const ObPLDataType &formal_param_type, int64_t param_idx, bool is_anonymous);
   int check_anonymous_collection_compatible(const ObPLComposite &composite, const ObPLDataType &dest_type, bool &need_cast);
-  int convert_composite(ObObjParam &param, const ObPLDataType &dest_type);
+  static int convert_composite(ObPLExecCtx &ctx, ObObjParam &param, int64_t dest_type_id);
+  int init_params_simple(const ParamStore *params = NULL, bool is_anonymous = false);
   int init_params(const ParamStore *params = NULL, bool is_anonymous = false);
-  int execute();
+  int execute(bool is_first_execute = true);
   int final(int ret);
   int deep_copy_result_if_need(common::ObIAllocator &allocator);
   int init_complex_obj(common::ObIAllocator &allocator, const ObPLDataType &pl_type, common::ObObjParam &obj, bool set_null = true);
   inline const common::ObObj &get_result() const { return result_; }
   inline common::ObIAllocator *get_allocator() { return ctx_.allocator_; }
-  inline const sql::ObPhysicalPlanCtx &get_physical_plan_ctx() const { return phy_plan_ctx_; }
-  inline sql::ObPhysicalPlanCtx &get_physical_plan_ctx() { return phy_plan_ctx_; }
-  inline const ParamStore &get_params() const { return phy_plan_ctx_.get_param_store(); }
-  inline ParamStore &get_params() { return phy_plan_ctx_.get_param_store_for_update(); }
+  inline const ParamStore &get_params() const { return phy_plan_ctx_->get_param_store(); }
+  inline ParamStore &get_params() { return phy_plan_ctx_->get_param_store_for_update(); }
   ObPLFunction &get_function() { return func_; }
   int get_var(int64_t var_idx, ObObjParam& result);
-  int set_var(int64_t var_idx, const ObObjParam& value);
+  int set_var(int64_t var_idx, const ObObjParam& value, bool set_var_from_local = false);
   ObPLExecCtx& get_exec_ctx() { return ctx_; }
   int check_pl_execute_priv(ObSchemaGetterGuard &guard,
-                                          const uint64_t tenant_id,
-                                          const uint64_t user_id,
-                                          const ObSchemaObjVersion &schema_obj,
-                                          const ObIArray<uint64_t> &role_id_array);
+                            const uint64_t tenant_id,
+                            const uint64_t user_id,
+                            const ObSchemaObjVersion &schema_obj,
+                            const ObIArray<uint64_t> &role_id_array);
   int check_pl_priv(share::schema::ObSchemaGetterGuard &guard,
-                        const uint64_t tenant_id,
-                        const uint64_t user_id,
-                        const sql::DependenyTableStore &dep_obj);
+                    const uint64_t tenant_id,
+                    const uint64_t user_id,
+                    const sql::DependenyTableStore &dep_obj);
 
   inline bool is_top_call() const { return top_call_; }
   inline uint64_t get_loc() const { return loc_; }
@@ -785,7 +841,7 @@ public:
 
   inline bool is_called_from_sql() const { return is_called_from_sql_; }
   inline void set_is_called_from_sql(bool flag) { is_called_from_sql_ = flag; }
-
+  inline bool is_for_trigger() const { return ObTriggerInfo::is_trigger_package_id(func_.get_package_id());}
   inline void set_dwarf_helper(jit::ObDWARFHelper *dwarf_helper)
   {
     dwarf_helper_ = dwarf_helper;
@@ -812,12 +868,19 @@ public:
   inline void set_profiler_time_stack(ObPLProfilerTimeStack *time_stack) { profiler_time_stack_ = time_stack;}
 
   inline ObPLProfilerTimeStack *get_profiler_time_stack() { return profiler_time_stack_; }
+  inline hash::ObHashSet<std::pair<uint64_t, uint64_t>>& get_coverage_info() { return coverage_info_; }
 
   bool need_free_arg(int64_t i)
   {
     return need_free_.count() > i ? need_free_.at(i) : false;
   }
+  bool param_converted(int64_t i)
+  {
+    return param_converted_.count() > i ? param_converted_.at(i) : false;
+  }
   ObPLContext *get_top_pl_context() { return top_context_; }
+  ExecCtxBak &get_exec_ctx_bak() { return self_exec_ctx_bak_; }
+  void try_clear_complex_obj();
 
   TO_STRING_KV(K_(inner_call),
                K_(top_call),
@@ -828,9 +891,8 @@ public:
                K_(pure_plsql_exec_time),
                K_(pure_sub_plsql_exec_time));
 private:
-private:
   ObPLFunction &func_;
-  sql::ObPhysicalPlanCtx phy_plan_ctx_; //运行态的param值放在这里面，跟ObPLFunction里的variables_一一对应，初始化的时候需要设置default值
+  sql::ObPhysicalPlanCtx *phy_plan_ctx_; //运行态的param值放在这里面，跟ObPLFunction里的variables_一一对应，初始化的时候需要设置default值
   sql::ObEvalCtx eval_ctx_;
   common::ObObj &result_;
   ObPLExecCtx ctx_;
@@ -838,6 +900,7 @@ private:
   bool top_call_;
 
   ExecCtxBak exec_ctx_bak_;
+  ExecCtxBak self_exec_ctx_bak_;
   bool need_reset_physical_plan_;
 
   ObPLContext *top_context_;
@@ -849,6 +912,9 @@ private:
   int64_t pure_sub_plsql_exec_time_;
   ObPLProfilerTimeStack *profiler_time_stack_;
   common::ObSEArray<bool,8> need_free_;
+  common::ObSEArray<bool,8> param_converted_;
+  hash::ObHashSet<std::pair<uint64_t, uint64_t>> coverage_info_;
+  int64_t cur_complex_obj_count_; // for destory plctx record's obj
 };
 
 class ObPLCallStackTrace;
@@ -856,12 +922,19 @@ class ObPLContext
 {
   friend class LinkPLStackGuard;
 public:
-  ObPLContext()
+  ObPLContext() :
+    saved_session_(nullptr),
+    session_info_(nullptr),
 #ifdef OB_BUILD_ORACLE_PL
-      : call_stack_trace_(nullptr),
-        alloc_("PlCallStack", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID())
+    call_stack_trace_(nullptr),
 #endif
-      { reset(); }
+    alloc_("PlCallStack", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+    parent_stack_ctx_(nullptr),
+    top_stack_ctx_(nullptr),
+    my_exec_ctx_(nullptr)
+  {
+    reset();
+  }
   virtual ~ObPLContext() { reset(); }
   void reset()
   {
@@ -873,8 +946,14 @@ public:
     is_top_stack_ = false;
     exception_handler_illegal_ = false;
     need_reset_exec_env_ = false;
+    if (!database_name_.empty()) {
+      database_name_.reset();
+    }
     is_autonomous_ = false;
-    saved_session_.reset();
+    if (saved_session_ != nullptr) {
+      saved_session_->~TransSavedValue();
+      saved_session_ = nullptr;
+    }
     saved_has_implicit_savepoint_ = false;
     database_id_ = OB_INVALID_ID;
     need_reset_default_database_ = false;
@@ -896,12 +975,14 @@ public:
     parent_stack_ctx_ = nullptr;
     top_stack_ctx_ = nullptr;
     my_exec_ctx_ = nullptr;
-    cur_query_.reset();
     is_function_or_trigger_ = false;
     last_insert_id_ = 0;
     trace_id_.reset();
     old_user_priv_set_ = OB_PRIV_SET_EMPTY;
     old_db_priv_set_ = OB_PRIV_SET_EMPTY;
+    is_inner_mock_ = false;
+    is_system_trigger_ = false;
+    saved_pl_internal_time_split_point_ = 0;
   }
 
   int is_inited() { return session_info_ != NULL; }
@@ -947,6 +1028,11 @@ public:
                                     int64_t package_id,
                                     int64_t routine_id,
                                     ObPLFunction *&routine);
+  static int get_subprogram_var_type(ObExecContext *exec_ctx,
+                                      uint64_t package_id,
+                                      uint64_t routine_id,
+                                      int64_t var_idx,
+                                      pl::ObPLDataType &type);
   static int get_subprogram_var_from_local(sql::ObSQLSessionInfo &session_info,
                                     int64_t package_id,
                                     int64_t routine_id,
@@ -957,6 +1043,11 @@ public:
                                     int64_t routine_id,
                                     int64_t var_idx,
                                     const ObObjParam &value);
+  static int set_subprogram_var(sql::ObSQLSessionInfo &session_info,
+                                      int64_t package_id,
+                                      int64_t routine_id,
+                                      int64_t var_idx,
+                                      const ObObjParam &value);
   static int check_debug_priv(ObSchemaGetterGuard *guard,
                               sql::ObSQLSessionInfo *sess_info,
                               ObPLFunction *func);
@@ -997,6 +1088,8 @@ public:
   inline ObString get_database_name() const { return database_name_.string(); }
   inline uint64_t get_database_id() const { return database_id_; }
   inline bool is_function_or_trigger() const { return is_function_or_trigger_; }
+  inline bool is_system_trigger() const { return is_system_trigger_; }
+  inline void set_is_system_trigger(bool v) { is_system_trigger_ = v; }
   bool is_autonomous() const { return is_autonomous_; }
   void clear_autonomous() { is_autonomous_ = false; }
   bool in_autonomous() const;
@@ -1007,9 +1100,14 @@ public:
   pl::ObPLContext *get_top_stack_ctx() { return top_stack_ctx_; }
   sql::ObExecContext *get_my_exec_ctx() { return my_exec_ctx_; }
   ObCurTraceId::TraceId get_trace_id() const { return trace_id_; }
+  void set_is_inner_mock(bool is_inner_mock) { is_inner_mock_ = is_inner_mock; }
+  bool get_is_inner_mock() const { return is_inner_mock_; }
+  const ObIArray<uint64_t> &get_old_role_id_array() const { return old_role_id_array_; }
+  const ObSQLSessionInfo *get_session_info() const { return session_info_; }
 
 #ifdef OB_BUILD_ORACLE_PL
   ObPLCallStackTrace *get_call_stack_trace();
+  ObPLCallStackTrace *get_call_stack_trace_directly() { return call_stack_trace_; }
   ObIAllocator &get_allocator() { return alloc_; }
 #endif
 
@@ -1036,7 +1134,7 @@ private:
   bool has_inner_dml_write_;
   bool is_top_stack_;
   bool is_autonomous_;
-  sql::ObBasicSessionInfo::TransSavedValue saved_session_;
+  sql::ObBasicSessionInfo::TransSavedValue *saved_session_;
   bool saved_has_implicit_savepoint_;
   bool exception_handler_illegal_;
 
@@ -1059,19 +1157,20 @@ private:
 
   sql::ObSQLSessionInfo *session_info_;
 
-  common::ObString cur_query_;
-
   common::ObSEArray<ObPLExecState*, 4> exec_stack_;
 #ifdef OB_BUILD_ORACLE_PL
   ObPLCallStackTrace *call_stack_trace_;
-  ObArenaAllocator alloc_;
 #endif
+  ObArenaAllocator alloc_;
   ObPLContext *parent_stack_ctx_;
   ObPLContext *top_stack_ctx_;
   sql::ObExecContext *my_exec_ctx_; //my exec context
   bool is_function_or_trigger_;
   uint64_t last_insert_id_;
   ObCurTraceId::TraceId trace_id_;
+  bool is_inner_mock_;
+  bool is_system_trigger_;
+  int64_t saved_pl_internal_time_split_point_;
 };
 
 struct PlTransformTreeCtx
@@ -1088,6 +1187,9 @@ struct PlTransformTreeCtx
   int64_t copied_idx_;
   ParamList *p_list_; // 存储匿名块内部所有expr和sql语句fast parser后得到的raw param node
   int64_t raw_param_num_; // 匿名块内部单个expr或者sql fast parser后raw param node的个数, 每个expr和sql fast parser后, 会将param num存储在node节点中
+  bool is_ps_mode_;
+  int64_t total_param_nums_;
+  ObPlanCacheCtx *ps_pc_ctx_;
   PlTransformTreeCtx() :
     allocator_(NULL),
     params_(NULL),
@@ -1100,7 +1202,10 @@ struct PlTransformTreeCtx
     no_param_sql_(),
     copied_idx_(0),
     p_list_(NULL),
-    raw_param_num_(0)
+    raw_param_num_(0),
+    is_ps_mode_(false),
+    total_param_nums_(0),
+    ps_pc_ctx_(nullptr)
   {}
 };
 
@@ -1111,8 +1216,7 @@ public:
   ObPL() :
     sql_proxy_(NULL),
     package_manager_(),
-    interface_service_(),
-    codegen_lock_() {}
+    interface_service_() {}
   virtual ~ObPL() {}
 
   int init(common::ObMySQLProxy &sql_proxy);
@@ -1129,7 +1233,9 @@ public:
                               const ObStmtNodeTree *block,
                               ParamStore &params,
                               ObIAllocator &allocator,
-                              ObCacheObjGuard &cacheobj_guard);
+                              bool is_ps_mode,
+                              ObString &parameter_sql,
+                              ObPlanCacheCtx *pc_ctx = nullptr);
   int transform_tree(PlTransformTreeCtx &trans_ctx, ParseNode *block, ParseNode *no_param_root, ObExecContext &ctx, ParseResult &parse_result);
   int trans_sql(PlTransformTreeCtx &trans_ctx, ParseNode *root, ObExecContext &ctx);
   // for anonymous
@@ -1146,26 +1252,29 @@ public:
               ParamStore &params,
               const ObIArray<int64_t> &nocopy_params,
               common::ObObj &result,
+              ObPLExecuteArg &pl_execute_arg,
               int *status = NULL,
               bool inner_call = false,
               bool in_function = false,
               uint64_t loc = 0,
               bool is_called_from_sql = false,
               uint64_t dblink_id = OB_INVALID_ID,
-              const ObRoutineInfo *dblink_routine_info = NULL);
+              const ObRoutineInfo *dblink_routine_info = NULL,
+              bool is_first_execute = true);
   int check_exec_priv(sql::ObExecContext &ctx,
                       const ObString &database_name,
                       ObPLFunction *routine);
 
-private:
   // for normal routine
   int get_pl_function(sql::ObExecContext &ctx,
-                      ObPLPackageGuard &package_guard,
-                      int64_t package_id,
-                      int64_t routine_id,
-                      const ObIArray<int64_t> &subprogram_path,
-                      ObCacheObjGuard& cacheobj_guard,
-                      ObPLFunction *&local_routine);
+    ObPLPackageGuard &package_guard,
+    int64_t package_id,
+    int64_t routine_id,
+    const ObIArray<int64_t> &subprogram_path,
+    ObCacheObjGuard& cacheobj_guard,
+    ObPLFunction *&local_routine);
+
+private:
 
   // for anonymous + ps
   int get_pl_function(sql::ObExecContext &ctx,
@@ -1197,7 +1306,8 @@ private:
               bool is_in_function = false,
               bool is_anonymous = false,
               uint64_t loc = 0,
-              bool is_called_from_sql = false);
+              bool is_called_from_sql = false,
+              bool is_first_execute = true);
 
 public:
   // for normal routine
@@ -1217,6 +1327,19 @@ public:
                           int64_t *nocopy_argv,
                           uint64_t dblink_id);
 
+#if defined(__aarch64__)
+    static int execute_proc_arm(ObPLExecCtx &ctx,
+                                uint64_t package_id,
+                                uint64_t proc_id,
+                                int64_t *subprogram_path,
+                                int64_t path_length,
+                                uint64_t line_num, /* call position line number, for call_stack info*/
+                                int64_t argc,
+                                common::ObObjParam **argv,
+                                int64_t *nocopy_argv,
+                                uint64_t dblink_id);
+#endif // defined(__aarch64__)
+
   static int set_user_type_var(ObPLExecCtx *ctx,
                                int64_t var_index,
                                int64_t var_addr,
@@ -1232,17 +1355,23 @@ public:
 
   static int simple_execute(ObPLExecCtx *ctx, int64_t argc, int64_t *argv);
 
-  static int check_trigger_arg(ParamStore &params, const ObPLFunction &func);
+  static int check_trigger_arg(ParamStore &params, const ObPLFunction &func, ObPLContext &pl_ctx, ObExecContext &ctx);
 
   std::pair<common::ObBucketLock, common::ObBucketLock>& get_jit_lock() { return jit_lock_; }
 
   static int check_session_alive(const ObBasicSessionInfo &session);
 
+  bool forbid_anony_parameter(ObSQLSessionInfo &session, bool is_ps_mode, bool forbid);
+  bool parameter_ps_anonymous_block(ObExecContext &ctx,
+                                            ObIAllocator &allocator,
+                                            ParseResult &parse_result,
+                                            ObString &no_param_sql,
+                                            ObPlanCacheCtx &pc_ctx);
+
 private:
   common::ObMySQLProxy *sql_proxy_;
   ObPLPackageManager package_manager_;
   ObPLInterfaceService interface_service_;
-  common::ObBucketLock codegen_lock_;
 
   // first bucket is for deduplication, second bucket is for concurrency control
   std::pair<common::ObBucketLock, common::ObBucketLock> jit_lock_;
@@ -1286,6 +1415,42 @@ private:
   ObPLContext *parent_stack_;
 };
 
+class ObPLConcurrentGuard
+{
+public:
+  ObPLConcurrentGuard(): inner_obj_(NULL), save_ret_(OB_ERROR) {}
+  ~ObPLConcurrentGuard();
+  int set_concurrent_num(ObPLFunction &routine, ObExecContext &ctx, ObPLPackageGuard &package_guard);
+
+private:
+  ObPLCacheObject* inner_obj_;
+  int64_t save_ret_;
+};
+
+class ObPLExecuteArg
+{
+public:
+  ObPLExecuteArg() :
+  cacheobj_guard_(PL_ROUTINE_HANDLE),
+  routine_(NULL)
+  {}
+
+  void reuse() { pl_ctx_.reset(); }
+  int obtain_routine(ObExecContext &ctx,
+                      uint64_t package_id,
+                      uint64_t routine_id,
+                      const ObIArray<int64_t> &subprogram_path);
+  ~ObPLExecuteArg() { routine_ = NULL; }
+
+  ObCacheObjGuard &get_cacheobj_guard() { return cacheobj_guard_; }
+  ObPLFunction *get_routine() const { return routine_; }
+  ObPLContext &get_pl_ctx() { return pl_ctx_; }
+private:
+  ObCacheObjGuard cacheobj_guard_;
+  ObPLFunction *routine_;
+  ObPLContext pl_ctx_;
+};
+
 class ObPLASHGuard
 {
 public:
@@ -1311,6 +1476,8 @@ private:
   bool set_entry_name_;
   bool set_current_name_;
   ObPLASHStatus pl_ash_status_;
+public:
+  inline bool is_set_entry_info() const {return set_entry_info_;}
 };
 }
 }

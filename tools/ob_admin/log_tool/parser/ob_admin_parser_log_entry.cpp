@@ -12,51 +12,69 @@
 
 #define USING_LOG_PREFIX CLOG
 #include "ob_admin_parser_log_entry.h"
-#include "lib/ob_errno.h"
-#include "lib/utility/ob_print_utils.h"
-#include "share/ob_rpc_struct.h"
 #include "storage/ob_sync_tablet_seq_clog.h"
-#include "storage/ddl/ob_ddl_clog.h"
-#include "storage/tx/ob_tx_log.h"
-#include "share/ob_admin_dump_helper.h"
 #include "storage/tx/ob_id_service.h"
 #include "storage/memtable/ob_memtable_mutator.h"
 #include "storage/tx/ob_keep_alive_ls_handler.h"
 #include "storage/tx/ob_dup_table_dump.h"
-#include "logservice/ob_log_base_header.h"
 #include "logservice/ob_garbage_collector.h"
 #ifdef OB_BUILD_LOG_STORAGE_COMPRESS
 #include "logservice/ob_log_compression.h"
 #endif
 #include "logservice/data_dictionary/ob_data_dict_iterator.h"     // ObDataDictIterator
-#include "share/scn.h"
 #include "share/vector_index/ob_plugin_vector_index_scheduler.h"
-
-#include <rapidjson/prettywriter.h>
-#include <rapidjson/stringbuffer.h>
-
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+#include "palf_ffi.h"
+#endif
 namespace oceanbase
 {
 using namespace share;
 using namespace transaction;
 using namespace logservice;
 using namespace palf;
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+using namespace libpalf;
+#endif
 
 namespace tools
 {
-ObAdminParserLogEntry::ObAdminParserLogEntry(const LogEntry &entry,
+ObAdminParserLogEntry::ObAdminParserLogEntry(const LogEntry *entry,
                                              const char *block_name,
                                              const LSN lsn,
                                              const ObAdminMutatorStringArg &str_arg)
-    : scn_val_(entry.get_scn().get_val_for_logservice()), entry_(entry), lsn_(lsn), str_arg_()
+: entry_(entry), lsn_(lsn), str_arg_()
 {
-  buf_ = entry.get_data_buf();
-  buf_len_ = entry.get_data_len();
+  assert(nullptr != entry);
+  scn_val_ = (*entry).get_scn().get_val_for_logservice();
+  buf_ = entry->get_data_buf();
+  buf_len_ = entry->get_data_len();
   pos_ = 0;
   memset(block_name_, '\0', OB_MAX_FILE_NAME_LENGTH);
   memcpy(block_name_, block_name, OB_MAX_FILE_NAME_LENGTH);
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+  libpalf_entry_ = nullptr;
+#endif
   str_arg_ = str_arg;
 }
+
+#ifdef OB_BUILD_SHARED_LOG_SERVICE
+ObAdminParserLogEntry::ObAdminParserLogEntry(const LibPalfLogEntry *entry,
+                                             const char *block_name,
+                                             const LSN lsn,
+                                             const ObAdminMutatorStringArg &str_arg)
+: libpalf_entry_(entry), lsn_(lsn), str_arg_()
+{
+  assert(nullptr != entry);
+  scn_val_ = entry->header.scn;
+  buf_ = reinterpret_cast<const char *>(entry->data_buf);
+  buf_len_ = entry->header.data_size;
+  pos_ = 0;
+  memset(block_name_, '\0', OB_MAX_FILE_NAME_LENGTH);
+  memcpy(block_name_, block_name, OB_MAX_FILE_NAME_LENGTH);
+  entry_ = nullptr;
+  str_arg_ = str_arg;
+}
+#endif
 
 ObAdminParserLogEntry::~ObAdminParserLogEntry()
 {}
@@ -203,6 +221,20 @@ int ObAdminParserLogEntry::parse_trans_service_log_(ObTxLogBlock &tx_log_block, 
               } else if (OB_FAIL(ms_log.ob_admin_dump(str_arg_))) {
                 LOG_WARN("failed to dump ObTxMultiDataSourceLog", K(ret), K(ms_log), K(str_arg_));
               } else {/*do nothing*/}
+              break;
+            }
+            case transaction::ObTxLogType::TX_DIRECT_LOAD_INC_LOG: {
+              ObTxDirectLoadIncLog::TempRef temp_ref;
+              ObTxDirectLoadIncLog::ConstructArg arg(temp_ref);
+              ObTxDirectLoadIncLog dli_log(arg);
+
+              if (OB_FAIL(dump_tx_id_ts_(str_arg_.writer_ptr_, tx_id, has_dumped_tx_id))) {
+                LOG_WARN("failed to dump_tx_id_ts_", K(ret));
+              } else if (OB_FAIL(tx_log_block.deserialize_log_body(dli_log))) {
+                LOG_WARN("tx_log_block.deserialize_log_body failed", K(ret), K(dli_log));
+              } else if (OB_FAIL(dli_log.ob_admin_dump(str_arg_))) {
+                LOG_WARN("failed to dump ObTxMultiDataSourceLog", K(ret), K(dli_log), K(str_arg_));
+              } else { /*do nothing*/}
               break;
             }
             case transaction::ObTxLogType::TX_ACTIVE_INFO_LOG: {
@@ -448,6 +480,17 @@ int ObAdminParserLogEntry::parse_ddl_log_()
         }
         break;
       }
+#ifdef OB_BUILD_SHARED_STORAGE
+      case ObDDLClogType::DDL_FINISH_LOG: {
+        ObDDLFinishLog log;
+        if (OB_FAIL(log.deserialize(buf_, buf_len_, pos_))) {
+          LOG_WARN("deserialize tablet freeze log failed", K(ret), KP(buf_), K(buf_len_), K(pos_));
+        } else {
+          fprintf(stdout, " ###<ObFinishLog>: %s\n", helper.convert(log));
+        }
+        break;
+      }
+#endif
       default: {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("Unknown log type", K(ret), K(type));

@@ -315,7 +315,7 @@ TEST_F(TestTG, map_queue_thread)
   ASSERT_EQ(OB_SUCCESS, TG_SET_HANDLER(tg_id, handler));
   ASSERT_EQ(OB_SUCCESS, TG_START(tg_id));
   ASSERT_EQ(OB_SUCCESS, TG_PUSH_TASK(tg_id, &tg_id, 0));
-  ::usleep(50000);
+  ::usleep(500000);
   ASSERT_EQ(OB_SUCCESS, TG_STOP_R(tg_id));
   ASSERT_EQ(OB_SUCCESS, TG_WAIT_R(tg_id));
   ASSERT_EQ(1, handler.handle_count_);
@@ -324,7 +324,7 @@ TEST_F(TestTG, map_queue_thread)
   ASSERT_EQ(OB_SUCCESS, TG_SET_HANDLER(tg_id, handler));
   ASSERT_EQ(OB_SUCCESS, TG_START(tg_id));
   ASSERT_EQ(OB_SUCCESS, TG_PUSH_TASK(tg_id, &tg_id, 1));
-  ::usleep(50000);
+  ::usleep(500000);
   ASSERT_EQ(OB_SUCCESS, TG_STOP_R(tg_id));
   ASSERT_EQ(OB_SUCCESS, TG_WAIT_R(tg_id));
   ASSERT_EQ(2, handler.handle_count_);
@@ -332,6 +332,39 @@ TEST_F(TestTG, map_queue_thread)
   ASSERT_TRUE(TG_EXIST(tg_id));
   TG_DESTROY(tg_id);
   ASSERT_FALSE(TG_EXIST(tg_id));
+}
+
+TEST_F(TestTG, alloc_tg_id_inc)
+{
+  const int max_tg_count = 122880;
+  int test_tg_id = 137;
+  // occupy all tg_ids
+  for (int i = 0; i < test_tg_id; i++) {
+    int tg_id = TG_MGR.alloc_tg_id(0);
+    TG_MGR.free_tg_id(tg_id);
+  }
+  int alloc_tg_id = TG_MGR.alloc_tg_id(0);
+  EXPECT_EQ(test_tg_id + TGDefIDs::END, alloc_tg_id);
+  TG_MGR.free_tg_id(alloc_tg_id);
+}
+
+TEST_F(TestTG, alloc_tg_id_overflow)
+{
+  const int max_tg_count = 122880;
+  // make tg_seq_ overflow
+  for (int i = 0; i < max_tg_count; i++) {
+    int tg_id = TG_MGR.alloc_tg_id(0);
+    TG_MGR.free_tg_id(tg_id);
+    if (tg_id == max_tg_count - 1) {
+      break;
+    }
+  }
+
+  TG_MGR.free_tg_id(0);
+  // start from 0 after tg_seq_ overflow
+  int alloc_tg_id = TG_MGR.alloc_tg_id(0);
+  EXPECT_EQ(alloc_tg_id, 0);
+  TG_MGR.free_tg_id(alloc_tg_id);
 }
 
 int main(int argc, char *argv[])

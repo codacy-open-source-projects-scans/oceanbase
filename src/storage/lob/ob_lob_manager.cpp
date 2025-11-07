@@ -12,20 +12,10 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "lib/oblog/ob_log.h"
 #include "ob_lob_manager.h"
-#include "share/ob_tablet_autoincrement_service.h"
-#include "lib/objectpool/ob_server_object_pool.h"
 #include "observer/ob_server.h"
-#include "storage/tx_storage/ob_ls_service.h"
-#include "sql/engine/expr/ob_expr_util.h"
-#include "storage/lob/ob_lob_persistent_iterator.h"
 #include "storage/lob/ob_lob_location.h"
-#include "storage/lob/ob_lob_retry.h"
-#include "storage/lob/ob_lob_remote.h"
 #include "storage/lob/ob_lob_handler.h"
-#include "sql/das/ob_das_utils.h"
-#include "storage/lob/ob_lob_persistent_iterator.h"
 #include "storage/lob/ob_lob_locator_struct.h"
 #include "storage/lob/ob_lob_tablet_dml.h"
 
@@ -115,11 +105,10 @@ int ObLobManager::init()
     LOG_WARN("ObLobManager init twice.", K(ret));
   } else if (OB_FAIL(allocator_.init(common::ObMallocAllocator::get_instance(), OB_MALLOC_MIDDLE_BLOCK_SIZE, mem_attr))) {
     LOG_WARN("init allocator failed.", K(ret));
-  } else if (OB_FAIL(ext_info_log_allocator_.init(
-      common::ObMallocAllocator::get_instance(),
-      OB_MALLOC_NORMAL_BLOCK_SIZE,
-      lib::ObMemAttr(tenant_id, "ExtInfoLog", ObCtxIds::LOB_CTX_ID)))) {
-    LOG_WARN("init ext info log allocator failed.", K(ret));
+  } else if (OB_FAIL(throttle_tool_.init(&ext_info_log_allocator_))) {
+    LOG_WARN("init throttle_tool fail", K(ret));
+  } else if (OB_FAIL(ext_info_log_allocator_.init(&throttle_tool_))) {
+    LOG_WARN("init ext info log fail", K(ret));
   } else {
     OB_ASSERT(sizeof(ObLobCommon) == sizeof(uint32));
     lob_ctx_.lob_meta_mngr_ = &meta_manager_;
@@ -830,18 +819,29 @@ int ObLobManager::check_need_out_row(
     bool &need_out_row)
 {
   int ret = OB_SUCCESS;
-  need_out_row = (param.byte_size_ + add_len) > param.get_inrow_threshold();
-  if (param.lob_locator_ != nullptr) {
-    // TODO @lhd remove after tmp lob support outrow
-    if (!param.lob_locator_->is_persist_lob()) {
-      need_out_row = false;
+  if (param.main_table_rowkey_col_) {
+    need_out_row = false;
+  } else {
+    need_out_row = (param.byte_size_ + add_len) > param.get_inrow_threshold();
+    if (param.lob_locator_ != nullptr) {
+      // TODO @lhd remove after tmp lob support outrow
+      if (!param.lob_locator_->is_persist_lob()) {
+        need_out_row = false;
+      }
     }
   }
+  LOG_DEBUG("check lob outrow", K(need_out_row), K(add_len), K(param));
   // in_row : 0 | need_out_row : 0  --> invalid
   // in_row : 0 | need_out_row : 1  --> do nothing, keep out_row
   // in_row : 1 | need_out_row : 0  --> do nothing, keep in_row
   // in_row : 1 | need_out_row : 1  --> in_row to out_row
-  if (!param.lob_common_->in_row_ && !need_out_row) {
+  if (need_out_row && param.is_index_table_) {
+    // The inrow datum may read from a table with different lob_inrow_threshold, which need out row in current table.
+    // If the column is outrow in main table, the index table can not be written data.
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "outrow lob in index table");
+    LOG_WARN("outrow lob in index table is not supported", K(ret));
+  } else if (!param.lob_common_->in_row_ && !need_out_row) {
     if (!param.lob_common_->is_init_) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid lob data", K(ret), KPC(param.lob_common_), K(data));
@@ -2228,10 +2228,11 @@ int ObLobManager::query_outrow(ObLobAccessParam& param, ObLobQueryIter *&result)
   ObLobQueryIterHandler handler(param);
   if (OB_FAIL(handler.init(lob_ctx_.lob_meta_mngr_))) {
     LOG_WARN("init handler fail", K(ret), K(param));
-  } else  if (OB_FAIL(handler.execute())) {
+  } else if (OB_FAIL(handler.execute())) {
     LOG_WARN("handler execute fail", K(ret), K(param));
   } else {
     result = handler.result_;
+    EVENT_INC(ObStatEventIds::OUTROW_LOB_CNT);
   }
   return ret;
 }
@@ -2242,8 +2243,10 @@ int ObLobManager::query_outrow(ObLobAccessParam& param, ObString &buffer)
   ObLobQueryDataHandler handler(param, buffer);
   if (OB_FAIL(handler.init(lob_ctx_.lob_meta_mngr_))) {
     LOG_WARN("init handler fail", K(ret), K(param));
-  } else  if (OB_FAIL(handler.execute())) {
+  } else if (OB_FAIL(handler.execute())) {
     LOG_WARN("handler execute fail", K(ret), K(param));
+  } else {
+    EVENT_INC(ObStatEventIds::OUTROW_LOB_CNT);
   }
   return ret;
 }
@@ -2293,6 +2296,12 @@ int ObLobManager::prepare_insert_task(
     LOG_WARN("fail to get lob byte len", K(ret), K(task));
   } else if (new_byte_len <= lob_inrow_threshold) {
     // skip if inrow store
+  } else if (param.is_mlog_) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                   "columns more than lob inrow threshold in materialized view log is");
+    LOG_WARN("columns more than lob inrow threshold in materialized view log is not supported ",
+        KR(ret), K(new_byte_len), K(lob_inrow_threshold), K(lbt()));
   } else if (OB_FAIL(prepare_outrow_locator(param, task))) {
     LOG_WARN("prepare_outrow_locator fail", K(ret), K(task), K(param));
   } else {

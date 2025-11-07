@@ -19,6 +19,7 @@
 #include "share/ob_cluster_role.h"              // ObClusterRole
 #include "share/ob_rpc_struct.h"
 #include "share/ob_server_status.h"
+#include "observer/omt/ob_multi_tenant.h"
 
 namespace oceanbase
 {
@@ -109,6 +110,11 @@ class ObResourceInnerSQLConnectionPool;
 class ObStartupAccelTaskHandler;
 } // end of namespace observer
 
+namespace plugin
+{
+class ObPluginMgr;
+}
+
 namespace share
 {
 class ObResourcePlanManager;
@@ -147,7 +153,8 @@ public:
       log_level_(0),
       use_ipv6_(false),
       flashback_scn_(0),
-      local_ip_(NULL)
+      local_ip_(NULL),
+      plugins_load_(NULL)
   {
   }
   ObServerOptions(int rpc_port,
@@ -167,7 +174,8 @@ public:
                   const char *mode,
                   bool use_ipv6,
                   int64_t flashback_scn,
-                  const char *local_ip)
+                  const char *local_ip,
+                  const char *plugins_load)
   {
     rpc_port_ = rpc_port;
     elect_port_ = elect_port;
@@ -186,6 +194,7 @@ public:
     use_ipv6_ = use_ipv6;
     flashback_scn_ = flashback_scn;
     local_ip_ = local_ip;
+    plugins_load_ = plugins_load;
   }
   virtual ~ObServerOptions() {}
 
@@ -206,6 +215,7 @@ public:
   bool use_ipv6_;
   int64_t flashback_scn_;
   const char *local_ip_;
+  const char *plugins_load_;
 };
 
 struct ObGlobalContext
@@ -228,6 +238,7 @@ struct ObGlobalContext
   obrpc::ObLoadDataRpcProxy *load_data_proxy_;
   sql::ObExecutorRpcImpl *executor_rpc_;
   common::ObMySQLProxy *sql_proxy_;
+  common::ObOracleSqlProxy *oracle_sql_proxy_;
   common::ObMySQLProxy *ddl_sql_proxy_;
   common::ObOracleSqlProxy *ddl_oracle_sql_proxy_;
   common::ObDbLinkProxy *dblink_proxy_;
@@ -272,6 +283,9 @@ struct ObGlobalContext
   obrpc::ObExtenralTableRpcProxy *external_table_proxy_;
   share::ObWorkloadRepositoryService *wr_service_;
   observer::ObStartupAccelTaskHandler* startup_accel_handler_;
+  bool in_bootstrap_;
+  bool in_replace_sys_;
+  plugin::ObPluginMgr *plugin_mgr_ = nullptr;
 
   static ObGlobalContext& get_instance();
   void init();
@@ -287,6 +301,10 @@ struct ObGlobalContext
   */
   inline uint64_t get_server_id() const { return ATOMIC_LOAD(&server_id_); }
   inline void set_server_id(const uint64_t id) { ATOMIC_SET(&server_id_, id); }
+  inline uint64_t in_replace_sys() const { return ATOMIC_LOAD(&in_replace_sys_); }
+  inline bool atomic_set_replace_sys(const bool orig_in_replace, const bool in_replace) {
+    return ATOMIC_BCAS(&in_replace_sys_, orig_in_replace, in_replace);
+  }
   /*
   Returns a currently unique server index within the cluster.
   This index is unique among current servers in the cluster, but may be reused if a server is removed from the cluster.

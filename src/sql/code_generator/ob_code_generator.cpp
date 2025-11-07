@@ -13,10 +13,7 @@
 #define USING_LOG_PREFIX SQL_CG
 
 #include "sql/code_generator/ob_code_generator.h"
-#include "sql/code_generator/ob_static_engine_expr_cg.h"
 #include "sql/code_generator/ob_static_engine_cg.h"
-#include "sql/optimizer/ob_log_plan.h"
-#include "observer/omt/ob_tenant_config_mgr.h"
 
 namespace oceanbase
 {
@@ -55,6 +52,9 @@ int ObCodeGenerator::generate_exprs(const ObLogPlan &log_plan,
   int ret = OB_SUCCESS;
   ObExecContext *exec_ctx = log_plan.get_optimizer_context().get_exec_ctx();
   CK(NULL != exec_ctx && NULL != exec_ctx->get_physical_plan_ctx());
+  CK(exec_ctx->get_my_session() != NULL);
+  CK(exec_ctx->get_my_session()->use_rich_format() == exec_ctx->get_physical_plan_ctx()->is_rich_format()
+     && exec_ctx->get_my_session()->use_rich_format() == phy_plan.get_use_rich_format());
   if (OB_SUCC(ret)) {
     ObStaticEngineExprCG expr_cg(
         phy_plan.get_allocator(),
@@ -65,6 +65,7 @@ int ObCodeGenerator::generate_exprs(const ObLogPlan &log_plan,
         min_cluster_version_);
     // init ctx for operator cg
     expr_cg.set_batch_size(phy_plan.get_batch_size());
+    expr_cg.set_log_plan(&log_plan);
     if (OB_FAIL(expr_cg.generate(log_plan.get_optimizer_context().get_all_exprs(),
                                  phy_plan.get_expr_frame_info()))) {
       LOG_WARN("fail to generate expr", K(ret));

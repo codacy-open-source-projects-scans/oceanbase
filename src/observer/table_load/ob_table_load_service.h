@@ -23,6 +23,7 @@
 #include "observer/table_load/resource/ob_table_load_resource_rpc_proxy.h"
 #include "observer/table_load/resource/ob_table_load_resource_service.h"
 #include "storage/direct_load/ob_direct_load_struct.h"
+#include "src/observer/table_load/ob_table_load_assigned_memory_manager.h"
 
 namespace oceanbase
 {
@@ -43,7 +44,8 @@ public:
                                        const storage::ObDirectLoadInsertMode::Type insert_mode,
                                        const storage::ObDirectLoadMode::Type load_mode,
                                        const storage::ObDirectLoadLevel::Type load_level,
-                                       const common::ObIArray<uint64_t> &column_ids);
+                                       const common::ObIArray<uint64_t> &column_ids,
+                                       bool enable_inc_major);
   // 业务层指定schema_guard进行检查
   static int check_support_direct_load(share::schema::ObSchemaGetterGuard &schema_guard,
                                        uint64_t table_id,
@@ -51,18 +53,29 @@ public:
                                        const storage::ObDirectLoadInsertMode::Type insert_mode,
                                        const storage::ObDirectLoadMode::Type load_mode,
                                        const storage::ObDirectLoadLevel::Type load_level,
-                                       const common::ObIArray<uint64_t> &column_ids);
+                                       const common::ObIArray<uint64_t> &column_ids,
+                                       bool enable_inc_major);
   static int check_support_direct_load(share::schema::ObSchemaGetterGuard &schema_guard,
                                        const share::schema::ObTableSchema *table_schema,
                                        const storage::ObDirectLoadMethod::Type method,
                                        const storage::ObDirectLoadInsertMode::Type insert_mode,
                                        const storage::ObDirectLoadMode::Type load_mode,
                                        const storage::ObDirectLoadLevel::Type load_level,
-                                       const common::ObIArray<uint64_t> &column_ids);
+                                       const common::ObIArray<uint64_t> &column_ids,
+                                       bool enable_inc_major);
+  static int check_support_direct_load_for_columns(const share::schema::ObTableSchema *table_schema,
+                                                   const ObDirectLoadMethod::Type method,
+                                                   const storage::ObDirectLoadMode::Type load_mode);
+  static int check_support_direct_load_for_default_value(const share::schema::ObTableSchema *table_schema,
+                                                         const common::ObIArray<uint64_t> &column_ids);
   static int check_support_direct_load_for_partition_level(ObSchemaGetterGuard &schema_guard,
                                                            const ObTableSchema *table_schema,
                                                            const ObDirectLoadMethod::Type method,
                                                            const uint64_t compat_version);
+  static int check_support_direct_load_for_fts_index(ObSchemaGetterGuard &schema_guard,
+                                                     const ObTableSchema *table_schema,
+                                                     const ObDirectLoadMethod::Type method,
+                                                     const storage::ObDirectLoadMode::Type load_mode);
 
   static int alloc_ctx(ObTableLoadTableCtx *&table_ctx);
   static void free_ctx(ObTableLoadTableCtx *table_ctx);
@@ -176,11 +189,14 @@ private:
     ObTableLoadService &service_;
   };
 private:
+  static const int64_t INVALID_TG_ID = -1;
+private:
   const uint64_t tenant_id_;
   ObTableLoadManager manager_;
   ObTableLoadAssignedMemoryManager assigned_memory_manager_;
   ObTableLoadAssignedTaskManager assigned_task_manager_;
   common::ObTimer timer_;
+  int tg_id_;
   ObCheckTenantTask check_tenant_task_;
   ObHeartBeatTask heart_beat_task_;
   ObGCTask gc_task_;

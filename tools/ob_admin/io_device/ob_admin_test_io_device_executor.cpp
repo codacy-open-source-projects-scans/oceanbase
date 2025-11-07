@@ -10,12 +10,8 @@
  * See the Mulan PubL v2 for more details.
  */
 
-#include <time.h>
 #include "ob_admin_test_io_device_executor.h"
-#include "share/backup/ob_backup_io_adapter.h"
 #include "src/logservice/archiveservice/ob_archive_file_utils.h"
-#include "src/share/backup/ob_backup_path.h"
-#include "src/share/backup/ob_backup_clean_util.h"
 #include "src/share/io/ob_io_manager.h"
 #include "src/share/ob_device_manager.h"
 
@@ -36,42 +32,72 @@ ObAdminTestIODeviceExecutor::ObAdminTestIODeviceExecutor()
 ObAdminTestIODeviceExecutor::~ObAdminTestIODeviceExecutor()
 {}
 
+int set_io_timeout(const int64_t tenant_id, const int64_t timeout_ms)
+{
+  int ret = OB_SUCCESS;
+  ObRefHolder<ObTenantIOManager> tenant_holder;
+  const int64_t MIN_IO_TIMEOUT_MS = 1000LL;
+  const int64_t MAX_IO_TIMEOUT_MS = 1200 * 1000LL;
+  if (OB_UNLIKELY(timeout_ms < MIN_IO_TIMEOUT_MS || timeout_ms > MAX_IO_TIMEOUT_MS)) {
+    ret = OB_INVALID_ARGUMENT;
+    STORAGE_LOG(WARN, "invalid io timeout", KR(ret), K(tenant_id), K(timeout_ms));
+  } else if (OB_FAIL(OB_IO_MANAGER.get_tenant_io_manager(tenant_id, tenant_holder))) {
+    STORAGE_LOG(WARN, "failed to get tenant io manager", KR(ret), K(tenant_id));
+  } else if (OB_ISNULL(tenant_holder.get_ptr())) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "tenant io manager is null", KR(ret), K(tenant_id));
+  } else {
+    ObTenantIOConfig::ParamConfig io_param_config(tenant_holder.get_ptr()->get_io_config().param_config_);
+    io_param_config.object_storage_io_timeout_ms_ = timeout_ms;
+    if (OB_FAIL(tenant_holder.get_ptr()->update_basic_io_param_config(io_param_config))) {
+      STORAGE_LOG(WARN, "failed to update basic io param config", KR(ret), K(tenant_id));
+    }
+  }
+  return ret;
+}
+
 int ObAdminTestIODeviceExecutor::execute(int argc, char *argv[])
 {
   int ret = OB_SUCCESS;
-  lib::set_memory_limit(4 * 1024 * 1024 * 1024LL);
-  lib::set_tenant_memory_limit(500, 4 * 1024 * 1024 * 1024LL);
-
-  ObTenantBase *tenant_base = new ObTenantBase(OB_SERVER_TENANT_ID);
-  ObMallocAllocator *malloc = ObMallocAllocator::get_instance();
-  if (OB_ISNULL(malloc->get_tenant_ctx_allocator(OB_SERVER_TENANT_ID, 0))) {
-    if (OB_FAIL(malloc->create_and_add_tenant_allocator(OB_SERVER_TENANT_ID))) {
-      STORAGE_LOG(WARN, "failed to create_and_add_tenant_allocator", K(ret));
-    }
-  }
-
-  if (FAILEDx(tenant_base->init())) {
-    STORAGE_LOG(WARN, "failed to init tenant base", K(ret));
-  } else if (FALSE_IT(ObTenantEnv::set_tenant(tenant_base))) {
-  } else if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
-    STORAGE_LOG(WARN, "init device manager failed", KR(ret));
-  } else if (OB_FAIL(ObIOManager::get_instance().init())) {
-    STORAGE_LOG(WARN, "failed to init io manager", K(ret));
-  } else if (OB_FAIL(ObIOManager::get_instance().start())) {
-    STORAGE_LOG(WARN, "failed to start io manager", K(ret));
-  }
-
-  if (FAILEDx(parse_cmd_(argc, argv))) {
-    STORAGE_LOG_FILTER(ERROR, "failed to parse cmd", K(ret), K(argc), K(argv));
-  } else if (is_quiet_) {
-    OB_LOGGER.set_log_level("WARN");
+  if (OB_FAIL(parse_cmd_(argc, argv))) {
+    OB_LOG(WARN, "failed to parse cmd", K(ret), K(argc), K(argv));
   } else {
-    OB_LOGGER.set_log_level("INFO");
-  }
+    lib::set_memory_limit(4 * 1024 * 1024 * 1024LL);
+    lib::set_tenant_memory_limit(500, 4 * 1024 * 1024 * 1024LL);
 
-  if(OB_FAIL(ret)) {
-  } else if (OB_FAIL(run_all_tests_())) {
-    STORAGE_LOG(ERROR, "failed to pass all tests", K(ret), K_(backup_path));
+    ObTenantBase *tenant_base = new ObTenantBase(OB_SERVER_TENANT_ID);
+    ObMallocAllocator *malloc = ObMallocAllocator::get_instance();
+    if (OB_ISNULL(malloc->get_tenant_ctx_allocator(OB_SERVER_TENANT_ID, 0))) {
+      if (FAILEDx(malloc->create_and_add_tenant_allocator(OB_SERVER_TENANT_ID))) {
+        STORAGE_LOG(WARN, "failed to create_and_add_tenant_allocator", K(ret));
+      }
+    }
+
+    if (FAILEDx(tenant_base->init())) {
+      STORAGE_LOG(WARN, "failed to init tenant base", K(ret));
+    } else if (FALSE_IT(ObTenantEnv::set_tenant(tenant_base))) {
+    } else if (OB_FAIL(ObDeviceManager::get_instance().init_devices_env())) {
+      STORAGE_LOG(WARN, "init device manager failed", KR(ret));
+    } else if (OB_FAIL(ObIOManager::get_instance().init())) {
+      STORAGE_LOG(WARN, "failed to init io manager", K(ret));
+    } else if (OB_FAIL(ObIOManager::get_instance().start())) {
+      STORAGE_LOG(WARN, "failed to start io manager", K(ret));
+    }  else if (OB_FAIL(ObObjectStorageInfo::register_cluster_state_mgr(&ObClusterStateBaseMgr::get_instance()))) {
+      STORAGE_LOG(WARN, "fail to register cluster version mgr", KR(ret));
+    } else if (OB_FAIL(set_io_timeout(OB_SERVER_TENANT_ID, IO_TIMEOUT_MS))) {
+      STORAGE_LOG(WARN, "failed to set io timeout", KR(ret));
+    }
+
+    if (is_quiet_) {
+      OB_LOGGER.set_log_level("WARN");
+    } else {
+      OB_LOGGER.set_log_level("INFO");
+    }
+
+    if(OB_FAIL(ret)) {
+    } else if (OB_FAIL(run_all_tests_())) {
+      STORAGE_LOG(ERROR, "failed to pass all tests", K(ret), K_(backup_path));
+    }
   }
   return ret;
 }
@@ -81,19 +107,22 @@ int ObAdminTestIODeviceExecutor::parse_cmd_(int argc, char *argv[])
   int ret = OB_SUCCESS;
   int opt = 0;
   int index = -1;
-  const char *opt_str = "h:d:s:q:e:f:";
+  const char *opt_str = "hd:s:q:e:f:i:a";
   struct option longopts[] = {{"help", 0, NULL, 'h'},
       {"backup_path", 1, NULL, 'd'},
       {"storage_info", 1, NULL, 's'},
       {"quiet", 0, NULL, 'q' },
       {"s3_url_encode_type", 0, NULL, 'e'},
       {"trigger_freq", 0, NULL, 'f'}, // used for internal testing only
+      {"sts_credential", 0, NULL, 'i'},
+      {"enable_obdal", 0, NULL, 'a'},
       {NULL, 0, NULL, 0}};
   while (OB_SUCC(ret) && -1 != (opt = getopt_long(argc, argv, opt_str, longopts, &index))) {
     switch (opt) {
       case 'h': {
+        ret = OB_INVALID_ARGUMENT;
         print_usage_();
-        exit(1);
+        break;
       }
       case 'd': {
         time_t timestamp = time(NULL);
@@ -135,9 +164,20 @@ int ObAdminTestIODeviceExecutor::parse_cmd_(int argc, char *argv[])
         }
         break;
       }
+      case 'i': {
+        if (OB_FAIL(set_sts_credential_key(optarg))) {
+          STORAGE_LOG(WARN, "failed to set sts credential", KR(ret));
+        }
+        break;
+      }
+      case 'a': {
+        cluster_enable_obdal_config = &ObClusterEnableObdalConfigBase::get_instance();
+        break;
+      }
       default: {
+        ret = OB_INVALID_ARGUMENT;
         print_usage_();
-        exit(1);
+        break;
       }
     }
   }
@@ -436,6 +476,9 @@ int ObAdminTestIODeviceExecutor::test_clean_backup_file_()
 
   if (OB_FAIL(storage_info.set(backup_path_, storage_info_))) {
     STORAGE_LOG_FILTER(ERROR, "failed to set storage info", K_(backup_path));
+  } else if (storage_info.is_enable_worm()
+                && ObStorageDeleteMode::STORAGE_DELETE_MODE == storage_info.get_delete_mode()) {
+    //enable oss worm, do not delete
   } else if (OB_FAIL(databuff_printf(check_file_dir_path, OB_MAX_URI_LENGTH, "%s%s%s",
              backup_path_, "/", check_file_dir_name))) {
     STORAGE_LOG_FILTER(ERROR, "fail to databuff printf", K(ret));
@@ -585,10 +628,10 @@ int ObAdminTestIODeviceExecutor::test_archive_log_() {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "tenant holder ptr is null", K(ret));
   } else {
-    ObTenantIOConfig io_config(tenant_holder.get_ptr()->get_io_config());
-    io_config.object_storage_io_timeout_ms_ = MAX_OB_ADMIN_TIMEOUT;
-    if (OB_FAIL(tenant_holder.get_ptr()->update_basic_io_config(io_config))) {
-      STORAGE_LOG(WARN, "update tenant io config failed", K(ret), K(io_config));
+    ObTenantIOConfig::ParamConfig io_param_config(tenant_holder.get_ptr()->get_io_config().param_config_);
+    io_param_config.object_storage_io_timeout_ms_ = MAX_OB_ADMIN_TIMEOUT;
+    if (OB_FAIL(tenant_holder.get_ptr()->update_basic_io_param_config(io_param_config))) {
+      STORAGE_LOG(WARN, "update tenant io config failed", K(ret), K(io_param_config));
     }
   }
   if (OB_FAIL(ret)) {
@@ -790,7 +833,9 @@ int ObAdminTestIODeviceExecutor::print_usage_()
   printf("options:\n");
   printf(HELP_FMT, "-d,--backup-file-path", "absolute backup file path with file prefix");
   printf(HELP_FMT, "-s,--storage-info", "oss/cos should provide storage info");
+  printf(HELP_FMT, "-i, --sts_credential", "set STS credential");
   printf(HELP_FMT, "-e,--s3_url_encode_type", "set S3 protocol url encode type");
+  printf(HELP_FMT, "-a", "enable obdal");
   printf("samples:\n");
   printf("  test nfs device: \n");
   printf("\tob_admin test_io_device -dfile:///home/admin/backup_info \n");
@@ -799,6 +844,12 @@ int ObAdminTestIODeviceExecutor::print_usage_()
          "-s'host=xxx.com&access_id=111&access_key=222'\n");
   printf("\tob_admin test_io_device -d'cos://home/admin/backup_info' "
          "-s'host=xxx.com&access_id=111&access_key=222&appid=333'\n");
+  printf("\tob_admin test_io_device -d'cos://home/admin/backup_info' "
+         "-s'host=xxx.com&role_arn=xxx&appid=333'\n"
+         "-i'sts_url=xxx&sts_ak=aaa&sts_sk=bbb'");
+  printf("\tob_admin test_io_device -d'cos://home/admin/backup_info' "
+         "-s'host=xxx.com&role_arn=xxx&external_id=xxx&appid=333'\n"
+         "-i'sts_url=xxx&sts_ak=aaa&sts_sk=bbb'");
   printf("\tob_admin test_io_device -d's3://home/admin/backup_info' "
          "-s'host=xxx.com&access_id=111&access_key=222&region=333'\n"
          "-e'compliantRfc3986Encoding'");

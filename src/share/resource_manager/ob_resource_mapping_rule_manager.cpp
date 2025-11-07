@@ -12,12 +12,11 @@
 
 #define USING_LOG_PREFIX SHARE
 #include "ob_resource_mapping_rule_manager.h"
-#include "lib/string/ob_string.h"
 #include "share/resource_manager/ob_resource_manager_proxy.h"
-#include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "share/io/ob_io_manager.h"
+#include "share/resource_manager/ob_cgroup_ctrl.h"
 #include "observer/ob_server_struct.h"
-
+#include "observer/omt/ob_tenant.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share;
@@ -114,15 +113,28 @@ int ObResourceMappingRuleManager::clear_deleted_group(
           uint64_t deleted_group_id = group_id_keys.at(i).group_id_;
           ObGroupName deleted_group_name = group_names.at(i);
           LOG_INFO("group_id need to be cleared", K(tenant_id), K(deleted_group_id), K(deleted_group_name));
-          if (OB_FAIL(GCTX.cgroup_ctrl_->remove_cgroup(tenant_id, deleted_group_id))) {
-            LOG_WARN("failed to remove cgroup", K(ret), K(tenant_id), K(deleted_group_id));
-          } else if (OB_FAIL(tenant_holder.get_ptr()->delete_consumer_group_config(deleted_group_id))) {
-            LOG_WARN("delete consumer group config failed", K(ret), K(tenant_id), K(deleted_group_id));
-          } else if (OB_FAIL(group_id_name_map_.erase_refactored(group_id_keys.at(i)))) {
-            LOG_WARN("fail erase group mapping from group_map", K(deleted_group_id), K(ret));
-          } else if (OB_FAIL(
-                         group_name_id_map_.erase_refactored(share::ObTenantGroupKey(tenant_id, deleted_group_name)))) {
-            LOG_WARN("fail erase group name mapping from group id", K(deleted_group_name), K(ret));
+          MTL_SWITCH(tenant_id) {
+            omt::ObTenant *tenant = static_cast<omt::ObTenant*>(MTL_CTX());
+            if (OB_FAIL(tenant->mark_group_deleted(deleted_group_id))) {
+              LOG_WARN("fail to mark group deleted", K(tenant_id), K(deleted_group_id));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            if (GCTX.cgroup_ctrl_->is_valid()) {
+              if (OB_FAIL(GCTX.cgroup_ctrl_->remove_cgroup(tenant_id, deleted_group_id))) {
+                LOG_WARN("failed to remove cgroup", K(ret), K(tenant_id), K(deleted_group_id));
+              }
+            }
+          }
+          if (OB_SUCC(ret)) {
+            if (OB_FAIL(tenant_holder.get_ptr()->delete_consumer_group_config(deleted_group_id))) {
+              LOG_WARN("delete consumer group config failed", K(ret), K(tenant_id), K(deleted_group_id));
+            } else if (OB_FAIL(group_id_name_map_.erase_refactored(group_id_keys.at(i)))) {
+              LOG_WARN("fail erase group mapping from group_map", K(deleted_group_id), K(ret));
+            } else if (OB_FAIL(
+                          group_name_id_map_.erase_refactored(share::ObTenantGroupKey(tenant_id, deleted_group_name)))) {
+              LOG_WARN("fail erase group name mapping from group id", K(deleted_group_name), K(ret));
+            }
           }
         }
       }

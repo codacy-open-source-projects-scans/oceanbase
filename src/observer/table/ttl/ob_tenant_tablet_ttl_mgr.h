@@ -74,7 +74,9 @@ class OBTTLTimerPeriodicTask : public common::ObTimerTask {
 public:
   OBTTLTimerPeriodicTask(ObTabletTTLScheduler &tablet_ttl_mgr)
   : tablet_ttl_mgr_(tablet_ttl_mgr)
-  {}
+  {
+    disable_timeout_check();
+  }
   virtual ~OBTTLTimerPeriodicTask() {}
   virtual void runTimerTask() override;
 private:
@@ -137,7 +139,7 @@ public:
   void inc_dag_ref() { ATOMIC_INC(&dag_ref_cnt_); }
   void dec_dag_ref() { ATOMIC_DEC(&dag_ref_cnt_); }
   int64_t get_dag_ref() const { return ATOMIC_LOAD(&dag_ref_cnt_); }
-  int safe_to_destroy(bool &is_safe);
+  virtual int safe_to_destroy(bool &is_safe);
   int sync_all_dirty_task(common::ObIArray<ObTabletID>& dirty_tasks);
   void run_task();
 
@@ -165,9 +167,8 @@ public:
 
   virtual int check_is_ttl_table(const ObTableSchema &table_schema, bool &is_ttl_table)
   {
-    return ObTTLUtil::check_is_ttl_table(table_schema, is_ttl_table);
+    return ObTTLUtil::check_is_normal_ttl_table(table_schema, is_ttl_table);
   }
-
 private:
   typedef common::hash::ObHashMap<ObTabletID, ObTTLTaskCtx*> TabletTaskMap;
   typedef TabletTaskMap::iterator tablet_task_iter;
@@ -269,7 +270,7 @@ protected:
   OB_INLINE bool need_skip_run() { return ATOMIC_LOAD(&need_do_for_switch_); }
 protected:
   void mark_ttl_ctx_dirty(ObTTLTenantInfo& tenant_info, ObTTLTaskCtx& ctx);
-  int deep_copy_task(ObTTLTaskCtx* ctx, table::ObTTLTaskInfo& task_info, const table::ObTTLTaskParam &task_param);
+  int deep_copy_task(ObTTLTaskCtx* ctx, table::ObTTLTaskInfo& task_info, const table::ObTTLTaskParam &task_param, bool with_rowkey_copy = true);
   int try_schedule_remaining_tasks(const ObTTLTaskCtx *current_ctx);
 
 protected:
@@ -321,6 +322,7 @@ public:
   virtual int64_t get_tenant_task_table_id() override { return common::ObTTLUtil::TTL_ROWKEY_TASK_TABLE_ID; }
   virtual int64_t get_tenant_task_tablet_id() override { return common::ObTTLUtil::TTL_ROWKEY_TASK_TABLET_ID; }
   virtual int do_after_leader_switch() override;
+  virtual int safe_to_destroy(bool &is_safe) override;
   virtual int check_is_ttl_table(const ObTableSchema &table_schema, bool &is_ttl_table) override;
 
 private:

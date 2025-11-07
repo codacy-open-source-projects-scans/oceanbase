@@ -61,7 +61,8 @@ struct ObRetryParam
                const int64_t local_retry_times,
                const int err,
                ObQueryRetryType &retry_type,
-               int &client_ret)
+               int &client_ret,
+               bool is_interrupted_by_outer_query)
       : no_more_test_(false),
         force_local_retry_(force_local_retry),
         is_inner_sql_(is_inner_sql),
@@ -77,7 +78,8 @@ struct ObRetryParam
         local_retry_times_(local_retry_times),
         err_(err),
         retry_type_(retry_type),
-        client_ret_(client_ret)
+        client_ret_(client_ret),
+        is_interrupted_by_outer_query_(is_interrupted_by_outer_query)
   {}
   // stop testing more policy if set to TRUE
   // We use this variable to enable chaining multipy policies
@@ -103,8 +105,9 @@ struct ObRetryParam
   const int err_;
   ObQueryRetryType &retry_type_;
   int &client_ret_;
+  bool is_interrupted_by_outer_query_;
   TO_STRING_KV(K_(force_local_retry), K_(stmt_retry_times), K_(local_retry_times),
-               KR(err_), K_(retry_type), K_(client_ret));
+               KR(err_), K_(retry_type), K_(client_ret), K_(is_interrupted_by_outer_query));
 };
 
 class ObRetryPolicy
@@ -269,6 +272,7 @@ public:
   static void start_rowlock_retry_wait_event(sql::ObSQLSessionInfo &session);
   static void start_px_worker_insufficient_retry_wait_event(sql::ObSQLSessionInfo &session, const sql::ObSqlCtx& sql_ctx);
   static void start_gts_not_ready_retry_wait_event(sql::ObSQLSessionInfo &session, const int error_code);
+  static void start_log_cb_not_ready_retry_wait_event(sql::ObSQLSessionInfo &session, const int error_code);
   static void start_replica_not_readable_retry_wait_event(sql::ObSQLSessionInfo &session);
   static void start_other_retry_wait_event(sql::ObSQLSessionInfo &session, const int error_code);
 public:

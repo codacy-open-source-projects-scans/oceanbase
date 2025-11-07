@@ -35,6 +35,7 @@ struct AChunk;
 struct ABlock;
 struct AObject;
 class ObTenantCtxAllocator;
+class ObTenantCtxAllocatorV2;
 }
 namespace common
 {
@@ -67,6 +68,7 @@ public:
                K(dump_tenant_ctx_), K(tenant_id_), K(ctx_id_), KP(p_chunk_));
   DumpType type_;
   bool dump_all_;
+  uint64_t min_print_size_;
   union
   {
     struct {
@@ -135,6 +137,7 @@ public:
 private:
 friend class observer::ObAllVirtualMemoryInfo;
 friend class lib::ObTenantCtxAllocator;
+friend class lib::ObTenantCtxAllocatorV2;
 friend class lib::ObMallocAllocator;
 
 static const int64_t TASK_NUM = 8;
@@ -207,7 +210,7 @@ public:
     lib::ObMutexGuard guard(task_mutex_);
     avaliable_task_set_ |= (1 << pos);
   }
-  int generate_mod_stat_task(ObMemoryCheckContext *memory_check_ctx = NULL);
+  int generate_mod_stat_task(ObMemoryCheckContext *memory_check_ctx = NULL, uint64_t min_print_size = 0);
   int check_sql_memory_leak();
   int load_malloc_sample_map(lib::ObMallocSampleMap &malloc_sample_map)
   {

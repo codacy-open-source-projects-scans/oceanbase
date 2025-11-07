@@ -21,6 +21,7 @@ namespace oceanbase
 {
 namespace sql
 {
+struct DeducedExprInfo;
 
 class ObTransformOrExpansion: public ObTransformRule
 {
@@ -115,6 +116,7 @@ public:
   virtual int transform_one_stmt(common::ObIArray<ObParentDMLStmt> &parent_stmts,
                                  ObDMLStmt *&stmt,
                                  bool &trans_happened) override;
+  virtual int check_rule_bypass(const ObDMLStmt &stmt, bool &reject) override;
 protected:
   virtual int adjust_transform_types(uint64_t &transform_types) override;
   virtual int is_expected_plan(ObLogPlan *plan, void *check_ctx, bool is_trans_plan, bool &is_valid) override;
@@ -398,7 +400,8 @@ private:
                               TableItem *rel_table,
                               TableItem *table,
                               bool &left_bottom);
-  int check_stmt_valid_for_expansion(ObDMLStmt *stmt, bool &is_stmt_valid);
+  int build_deduced_index_expr_equal_sets(ObIArray<DeducedExprInfo> &deduced_exprs_info,
+                                          EqualSets &equal_sets);
   DISALLOW_COPY_AND_ASSIGN(ObTransformOrExpansion);
 private:
   int64_t try_times_;

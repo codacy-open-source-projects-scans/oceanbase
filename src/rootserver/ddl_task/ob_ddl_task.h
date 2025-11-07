@@ -108,12 +108,13 @@ public:
 struct ObDDLTaskInfo final
 {
 public:
-  ObDDLTaskInfo() : row_scanned_(0), row_inserted_(0), physical_row_count_(0) {}
+  ObDDLTaskInfo() : row_scanned_(0), row_inserted_(0), cg_row_inserted_(0), physical_row_count_(0) {}
   ~ObDDLTaskInfo() {}
-  TO_STRING_KV(K_(row_scanned), K_(row_inserted), K_(physical_row_count), K_(ls_id), K_(ls_leader_addr), K_(partition_ids));
+  TO_STRING_KV(K_(row_scanned), K_(row_inserted), K_(cg_row_inserted), K_(physical_row_count), K_(ls_id), K_(ls_leader_addr), K_(partition_ids));
 public:
   int64_t row_scanned_;
   int64_t row_inserted_;
+  int64_t cg_row_inserted_;
   int64_t physical_row_count_;
   share::ObLSID ls_id_;
   common::ObAddr ls_leader_addr_;
@@ -200,10 +201,12 @@ struct ObDDLTaskSerializeField final
   OB_UNIS_VERSION(1);
 public:
   TO_STRING_KV(K_(task_version), K_(parallelism), K_(data_format_version), K_(consumer_group_id),
-               K_(is_abort), K_(sub_task_trace_id), K_(is_unique_index), K_(is_global_index) ,K_(is_pre_split), K_(is_no_logging));
+               K_(is_abort), K_(sub_task_trace_id), K_(is_unique_index), K_(is_global_index) ,K_(is_pre_split),
+               K_(is_no_logging), K_(target_cg_cnt));
   ObDDLTaskSerializeField() : task_version_(0), parallelism_(0), data_format_version_(0),
                               consumer_group_id_(0), is_abort_(false), sub_task_trace_id_(0),
-                              is_unique_index_(false), is_global_index_(false), is_pre_split_(false), is_no_logging_(false) {}
+                              is_unique_index_(false), is_global_index_(false), is_pre_split_(false),
+                              is_no_logging_(false), target_cg_cnt_(0) {}
   ObDDLTaskSerializeField(const int64_t task_version,
                           const int64_t parallelism,
                           const uint64_t data_format_version,
@@ -213,7 +216,8 @@ public:
                           const bool is_unique_index,
                           const bool is_global_index,
                           const bool is_pre_split,
-                          const bool is_no_logging_);
+                          const bool is_no_logging,
+                          const int64_t target_cg_cnt);
   ~ObDDLTaskSerializeField() = default;
   void reset();
 public:
@@ -227,6 +231,7 @@ public:
   bool is_global_index_;
   bool is_pre_split_;
   bool is_no_logging_;
+  int64_t target_cg_cnt_;
 };
 
 struct ObCreateDDLTaskParam final
@@ -253,7 +258,8 @@ public:
                K_(type), KPC_(src_table_schema), KPC_(dest_table_schema), KPC_(ddl_arg), K_(tenant_data_version),
                K_(sub_task_trace_id), KPC_(aux_rowkey_doc_schema), KPC_(aux_doc_rowkey_schema), KPC_(fts_index_aux_schema), KPC_(aux_doc_word_schema),
                K_(vec_rowkey_vid_schema), K_(vec_vid_rowkey_schema), K_(vec_domain_index_schema), K_(vec_index_id_schema), K_(vec_snapshot_data_schema),
-               K_(ddl_need_retry_at_executor), K_(is_pre_split));
+               K_(vec_centroid_schema), K_(vec_cid_vector_schema), K_(vec_rowkey_cid_schema), K_(vec_sq_meta_schema), K_(vec_pq_centroid_schema), K_(vec_pq_code_schema),
+               K_(ddl_need_retry_at_executor), K_(is_pre_split), K_(new_snapshot_version), K_(hybrid_vec_embedded_schema));
 public:
   int32_t sub_task_trace_id_;
   uint64_t tenant_id_;
@@ -277,9 +283,18 @@ public:
   const ObTableSchema *vec_domain_index_schema_;
   const ObTableSchema *vec_index_id_schema_;
   const ObTableSchema *vec_snapshot_data_schema_;
+  const ObTableSchema *vec_centroid_schema_;
+  const ObTableSchema *vec_cid_vector_schema_;
+  const ObTableSchema *vec_rowkey_cid_schema_;
+  const ObTableSchema *vec_sq_meta_schema_;
+  const ObTableSchema *vec_pq_centroid_schema_;
+  const ObTableSchema *vec_pq_code_schema_;
+  const ObTableSchema *hybrid_vec_embedded_schema_;
+
   uint64_t tenant_data_version_;
   bool ddl_need_retry_at_executor_;
   bool is_pre_split_;
+  int64_t new_snapshot_version_;  // fts rowkey doc or vec rowkey vid index build snapshot version
 };
 
 class ObDDLTaskRecordOperator final
@@ -353,11 +368,12 @@ public:
       ObIAllocator &allocator,
       common::ObISQLClient &proxy);
 
-  static int get_schedule_info_for_update(
+  static int get_schedule_info(
       common::ObISQLClient &proxy,
       const uint64_t tenant_id,
       const int64_t task_id,
       ObIAllocator &allocator,
+      const bool is_for_update,
       ObDDLSliceInfo &ddl_slice_info,
       bool &is_idempotence_mode);
 
@@ -403,7 +419,8 @@ public:
       const int64_t task_id,
       int64_t &task_status,
       int64_t &execution_id,
-      int64_t &ret_code);
+      int64_t &ret_code,
+      int64_t &snapshot_version);
 
   static int get_ddl_task_record(
       const uint64_t tenant_id,
@@ -531,6 +548,7 @@ public:
     MIN_WAIT_TYPE = 0,
     WAIT_SCHEMA_TRANS,
     WAIT_SSTABLE_TRANS,
+    WAIT_SCHEMA_TRANS_WITHOUT_WRITE_DEFENSIVE,
     MAX_WAIT_TYPE
   };
 public:
@@ -539,12 +557,14 @@ public:
   int init(
       const uint64_t tenant_id,
       const int64_t ddl_task_id,
+      const share::ObDDLTaskStatus ddl_task_status,
       const uint64_t table_id,
       const WaitTransType wait_trans_type,
       const int64_t wait_version);
   int init(
       const uint64_t tenant_id,
       const int64_t ddl_task_id,
+      const share::ObDDLTaskStatus ddl_task_status,
       const uint64_t table_id,
       const common::ObIArray<common::ObTabletID> &tablet_ids,
       const WaitTransType wait_trans_type,
@@ -554,20 +574,8 @@ public:
   int try_wait(bool &is_trans_end, int64_t &snapshot_version, const bool need_wait_trans_end = true);
   transaction::ObTransID get_pending_tx_id() const { return pending_tx_id_; }
   TO_STRING_KV(K(is_inited_), K_(tenant_id), K(table_id_), K(is_trans_end_), K(wait_type_),
-      K(wait_version_), K_(pending_tx_id), K(tablet_ids_.count()), K(snapshot_array_.count()), K(ddl_task_id_));
+      K(wait_version_), K_(pending_tx_id), K(tablet_ids_.count()), K(snapshot_array_.count()), K(ddl_task_id_), K_(ddl_task_status), K_(is_write_defensive_done));
 
-public:
-  /**
-   * To calculate the final snapshot version used for writing macro block.
-   * @param [in] tenant_id
-   * @param [in] trans_end_snapshot: usually the snapshot version obtained after wait trans end.
-   * @param [out] snapshot: used for data scan, row trans version for ddl.
-  */
-  static int calc_snapshot_with_gts(
-      const uint64_t tenant_id,
-      const int64_t ddl_task_id,
-      const int64_t trans_end_snapshot,
-      int64_t &snapshot);
 private:
   static bool is_wait_trans_type_valid(const WaitTransType wait_trans_type);
   int get_snapshot_check_list(
@@ -584,7 +592,8 @@ private:
       const uint64_t tenant_id,
       obrpc::ObSrvRpcProxy *rpc_proxy,
       share::ObLocationService *location_service,
-      const bool need_wait_trans_end);
+      const bool need_wait_trans_end,
+      const bool need_write_defensive);
 
   // check if all transactions before a timestamp have ended
    int check_sstable_trans_end(
@@ -595,6 +604,13 @@ private:
       share::ObLocationService *location_service,
       common::ObIArray<int> &ret_array,
       common::ObIArray<int64_t> &snapshot_array);
+
+  static int do_write_defensive(
+      const uint64_t tenant_id,
+      const int64_t ddl_task_id,
+      const share::ObDDLTaskStatus ddl_task_status,
+      const ObIArray<ObTabletID> &tablet_ids,
+      const int64_t schema_version);
 private:
   static const int64_t INDEX_SNAPSHOT_VERSION_DIFF = 100 * 1000 * 1000; // 100ms
   bool is_inited_;
@@ -607,6 +623,8 @@ private:
   common::ObArray<common::ObTabletID> tablet_ids_;
   common::ObArray<int64_t> snapshot_array_;
   int64_t ddl_task_id_;
+  share::ObDDLTaskStatus ddl_task_status_;
+  bool is_write_defensive_done_;
 };
 
 class ObDDLTask;
@@ -669,24 +687,6 @@ private:
   bool is_task_span_flushed_;
 };
 
-struct ObDDLTaskStatInfo final
-{
-public:
-  ObDDLTaskStatInfo();
-  ~ObDDLTaskStatInfo() = default;
-  int init(const char *&ddl_type_str, const uint64_t table_id);
-  TO_STRING_KV(K_(start_time), K_(finish_time), K_(time_remaining), K_(percentage),
-               K_(op_name), K_(target), K_(message));
-public:
-  int64_t start_time_;
-  int64_t finish_time_;
-  int64_t time_remaining_;
-  int64_t percentage_;
-  char op_name_[common::MAX_LONG_OPS_NAME_LENGTH];
-  char target_[common::MAX_LONG_OPS_TARGET_LENGTH];
-  char message_[common::MAX_LONG_OPS_MESSAGE_LENGTH];
-};
-
 class ObDDLTask : public common::ObDLinkBase<ObDDLTask>
 {
 public:
@@ -698,12 +698,13 @@ public:
       allocator_(lib::ObLabel("DdlTask")), compat_mode_(lib::Worker::CompatMode::INVALID), err_code_occurence_cnt_(0),
       longops_stat_(nullptr), gmt_create_(0), stat_info_(), delay_schedule_time_(0), next_schedule_ts_(0),
       execution_id_(-1), start_time_(0), data_format_version_(0), is_pre_split_(false), wait_trans_ctx_(), is_unique_index_(false),
-      is_global_index_(false), consensus_schema_version_(OB_INVALID_VERSION), is_no_logging_(false)
+      is_global_index_(false), consensus_schema_version_(OB_INVALID_VERSION), is_no_logging_(false), target_cg_cnt_(0)
   {}
   ObDDLTask():
     ObDDLTask(share::DDL_INVALID)
   {}
   virtual ~ObDDLTask() {}
+  virtual int init(const ObDDLTaskRecord &task_record) { return common::OB_NOT_IMPLEMENT; }
   virtual int on_child_task_finish(const uint64_t child_task_key, const int ret_code) { return common::OB_NOT_SUPPORTED; }
   virtual int process() { return OB_NOT_SUPPORTED; }
   virtual bool is_valid() const { return is_inited_; }
@@ -798,6 +799,7 @@ public:
   bool is_global_index() { return is_global_index_; }
   int64_t get_consensus_schema_version() { return consensus_schema_version_; }
   bool get_is_no_logging() const { return is_no_logging_; }
+  int64_t get_target_cg_cnt() const { return target_cg_cnt_; }
   #ifdef ERRSIM
   int check_errsim_error();
   #endif
@@ -809,32 +811,11 @@ public:
       K_(task_version), K_(parallelism), K_(ddl_stmt_str), K_(compat_mode),
       K_(sys_task_id), K_(err_code_occurence_cnt), K_(stat_info),
       K_(next_schedule_ts), K_(delay_schedule_time), K(execution_id_), K(sql_exec_addrs_), K_(data_format_version), K(consumer_group_id_),
-      K_(dst_tenant_id), K_(dst_schema_version), K_(is_pre_split), K_(is_unique_index), K_(is_global_index), K_(consensus_schema_version), K(is_no_logging_));  static const int64_t MAX_ERR_TOLERANCE_CNT = 3L; // Max torlerance count for error code.
+      K_(dst_tenant_id), K_(dst_schema_version), K_(is_pre_split), K_(is_unique_index), K_(is_global_index), K_(consensus_schema_version),
+      K(is_no_logging_), K_(target_cg_cnt));
+  static const int64_t MAX_ERR_TOLERANCE_CNT = 3L; // Max torlerance count for error code.
   static const int64_t DEFAULT_TASK_IDLE_TIME_US = 10L * 1000L; // 10ms
 protected:
-  int gather_redefinition_stats(const uint64_t tenant_id,
-                                const int64_t task_id,
-                                ObMySQLProxy &sql_proxy,
-                                int64_t &row_scanned,
-                                int64_t &row_sorted,
-                                int64_t &row_inserted_cg,
-                                int64_t &row_inserted_file);
-  int gather_scanned_rows(
-      const uint64_t tenant_id,
-      const int64_t task_id,
-      ObMySQLProxy &sql_proxy,
-      int64_t &row_scanned);
-  int gather_sorted_rows(
-      const uint64_t tenant_id,
-      const int64_t task_id,
-      ObMySQLProxy &sql_proxy,
-      int64_t &row_sorted);
-  int gather_inserted_rows(
-      const uint64_t tenant_id,
-      const int64_t task_id,
-      ObMySQLProxy &sql_proxy,
-      int64_t &row_inserted_cg,
-      int64_t &row_inserted_file);
   int copy_longops_stat(share::ObLongopsValue &value);
   virtual bool is_error_need_retry(const int ret_code)
   {
@@ -843,9 +824,11 @@ protected:
   }
   int init_ddl_task_monitor_info(const uint64_t target_table_id);
   virtual bool is_ddl_retryable() const { return true; }
+  virtual int refresh_task_context(const share::ObDDLTaskStatus status) { return OB_SUCCESS; }
 private:
   virtual int cleanup_impl() { return OB_NOT_SUPPORTED; }
   virtual bool task_can_retry() const { return true; }
+  int inner_refresh_task_context(const share::ObDDLTaskStatus status);
 protected:
   virtual void clear_old_status_context();
 protected:
@@ -880,7 +863,7 @@ protected:
   int64_t err_code_occurence_cnt_; // occurence count for all error return codes not in white list.
   share::ObDDLLongopsStat *longops_stat_;
   uint64_t gmt_create_;
-  ObDDLTaskStatInfo stat_info_;
+  share::ObDDLTaskStatInfo stat_info_;
   int64_t delay_schedule_time_;
   int64_t next_schedule_ts_;
   int64_t execution_id_; // guarded by lock_
@@ -894,6 +877,7 @@ protected:
   bool is_global_index_;
   int64_t consensus_schema_version_;
   bool is_no_logging_;
+  int64_t target_cg_cnt_; // only use for 4.3.x recover table
 };
 
 enum ColChecksumStat
@@ -954,14 +938,15 @@ public:
       const int64_t schema_version,
       const int64_t snapshot_version,
       const int64_t execution_id,
-      const int64_t timeout_us);
+      const int64_t timeout_us,
+      const int64_t parallelism);
   void reset();
   bool is_inited() const { return is_inited_; }
   int try_wait(bool &is_column_checksum_ready);
   int update_status(const common::ObTabletID &tablet_id, const int ret_code);
   TO_STRING_KV(K(is_inited_), K(source_table_id_), K(target_table_id_),
       K(schema_version_), K(snapshot_version_), K(execution_id_), K(timeout_us_),
-      K(last_drive_ts_), K(stat_array_), K_(tenant_id));
+      K(last_drive_ts_), K(stat_array_), K_(tenant_id), K_(parallelism));
 
 private:
   int send_calc_rpc(int64_t &send_succ_count);
@@ -980,6 +965,7 @@ private:
   int64_t task_id_;
   uint64_t tenant_id_;
   common::SpinRWLock lock_;
+  int64_t parallelism_;
 };
 
 } // end namespace rootserver

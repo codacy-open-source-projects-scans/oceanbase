@@ -11,7 +11,6 @@
  */
 
 #include "common/cell/ob_cell_reader.h"
-#include "common/cell/ob_cell_writer.h"
 
 namespace oceanbase
 {
@@ -584,6 +583,12 @@ int ObCellReader::parse(uint64_t *column_id)
         ret = read_decimal_int(obj_);
         break;
       }
+      case ObMySQLDateType:
+        READ_COMMON(set_mysql_date, int32_t, int32_t, obj_);
+        break;
+      case ObMySQLDateTimeType:
+        READ_COMMON(set_mysql_datetime, int64_t, int64_t, obj_);
+        break;
       default:
         ret = OB_NOT_SUPPORTED;
         COMMON_LOG(WARN, "not supported type.", K(ret), "type", meta->type_);
@@ -775,6 +780,11 @@ int ObCellReader::read_cell(common::ObObj &obj)
         break;
       case ObDecimalIntType:
         ret = read_decimal_int(obj);
+      case ObMySQLDateType:
+        READ_COMMON(set_mysql_date, int32_t, int32_t, obj);
+        break;
+      case ObMySQLDateTimeType:
+        READ_COMMON(set_mysql_datetime, int64_t, int64_t, obj);
         break;
       default:
         ret = OB_NOT_SUPPORTED;

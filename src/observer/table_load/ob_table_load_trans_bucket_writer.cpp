@@ -14,19 +14,14 @@
 
 #include "observer/table_load/ob_table_load_autoinc_nextval.h"
 #include "observer/table_load/ob_table_load_trans_bucket_writer.h"
-#include "observer/table_load/ob_table_load_coordinator.h"
 #include "observer/table_load/ob_table_load_coordinator_ctx.h"
 #include "observer/table_load/ob_table_load_error_row_handler.h"
 #include "observer/table_load/ob_table_load_obj_cast.h"
-#include "observer/table_load/ob_table_load_partition_calc.h"
 #include "observer/table_load/ob_table_load_stat.h"
 #include "observer/table_load/ob_table_load_store_ctx.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 #include "observer/table_load/ob_table_load_trans_ctx.h"
-#include "share/ob_autoincrement_service.h"
 #include "share/sequence/ob_sequence_cache.h"
-#include "sql/ob_sql_utils.h"
-#include "lib/number/ob_number_v2.h"
 
 namespace oceanbase
 {
@@ -104,7 +99,7 @@ int ObTableLoadTransBucketWriter::init()
     const ObTableLoadSchema &schema = coordinator_ctx_->ctx_->schema_;
     is_partitioned_ = schema.is_partitioned_table_;
     column_count_ =
-      (!schema.is_heap_table_ ? schema.store_column_count_ : schema.store_column_count_ - 1);
+      (!schema.is_table_without_pk_ ? schema.store_column_count_ : schema.store_column_count_ - 1);
     if (OB_FAIL(ObSQLUtils::get_default_cast_mode(coordinator_ctx_->ctx_->session_info_, cast_mode_))) {
       LOG_WARN("fail to get_default_cast_mode", KR(ret));
     } else if (OB_FAIL(init_session_ctx_array())) {
@@ -248,7 +243,11 @@ int ObTableLoadTransBucketWriter::handle_partition_with_autoinc_identity(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected obj index", KR(ret), K(index_and_type), K(column_count_));
     } else if (column_schema->is_autoincrement()) {
-      if (obj.is_null() || obj.is_nop_value()) {
+      // mysql模式还不支持快速删列, 先加个拦截
+      if (OB_UNLIKELY(column_schema->is_unused())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected unused identity column", KR(ret), KPC(column_schema));
+      } else if (obj.is_null() || obj.is_nop_value()) {
         tmp_obj = obj;
       } else if (OB_FAIL(ObTableLoadObjCaster::cast_obj(cast_obj_ctx,
                                                         column_schema,
@@ -266,8 +265,13 @@ int ObTableLoadTransBucketWriter::handle_partition_with_autoinc_identity(
         }
       }
     } else if (column_schema->is_identity_column()) {
+      // identity列在快速删除的时候会抹去identity属性
+      if (OB_UNLIKELY(column_schema->is_unused())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected unused identity column", KR(ret), KPC(column_schema));
+      }
       // 生成的seq_value是number, 可能需要转换成decimal int
-      if (OB_FAIL(handle_identity_column(column_schema, obj, tmp_obj, autoinc_allocator))) {
+      else if (OB_FAIL(handle_identity_column(column_schema, obj, tmp_obj, autoinc_allocator))) {
         LOG_WARN("fail to handle identity column", KR(ret), K(obj));
       } else if (OB_FAIL(ObTableLoadObjCaster::cast_obj(cast_obj_ctx,
                                                         column_schema,
@@ -330,7 +334,8 @@ int ObTableLoadTransBucketWriter::handle_identity_column(const ObColumnSchemaV2 
     ObSequenceValue seq_value;
     if (OB_FAIL(ObSequenceCache::get_instance().nextval(coordinator_ctx_->sequence_schema_,
                                                         cast_allocator,
-                                                        seq_value))) {
+                                                        seq_value,
+                                                        coordinator_ctx_->ctx_->session_info_))) {
       LOG_WARN("fail get nextval for seq", KR(ret));
     } else if (obj.is_nop_value() || obj.is_null()) {
       ObNumber number;
@@ -397,11 +402,12 @@ int ObTableLoadTransBucketWriter::write_for_partitioned(SessionContext &session_
     } else if (OB_ISNULL(part_key.cells_)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc memory", KR(ret));
-    } else if (OB_FAIL(coordinator_ctx_->partition_calc_.get_part_key(obj_rows.at(i), part_key))) {
-      LOG_WARN("fail to get part key", KR(ret));
+    } else if (OB_FAIL(coordinator_ctx_->partition_calc_.get_part_key(row, part_key))) {
+      LOG_WARN("fail to get part key", KR(ret), K(i), K(row));
     } else if (OB_FAIL(coordinator_ctx_->partition_calc_.cast_part_key(part_key, allocator))) {
+      LOG_INFO("cast part key error", K(ret), K(part_key), K(row));
       if (OB_FAIL(error_row_handler->handle_error_row(ret))) {
-        LOG_WARN("failed to handle error row", K(ret), K(part_key));
+        LOG_WARN("failed to handle error row", K(ret), K(part_key), K(row));
       } else {
         ret = OB_SUCCESS;
       }
@@ -423,8 +429,9 @@ int ObTableLoadTransBucketWriter::write_for_partitioned(SessionContext &session_
     bool need_write = false;
     if (OB_UNLIKELY(!partition_id.is_valid())) {
       ret = OB_NO_PARTITION_FOR_GIVEN_VALUE;
+      LOG_INFO("no partition for given value", K(ret), K(partition_id), K(part_keys.at(i)), K(row));
       if (OB_FAIL(error_row_handler->handle_error_row(ret))) {
-        LOG_WARN("failed to handle error row", K(ret), K(part_keys.at(i)));
+        LOG_WARN("failed to handle error row", K(ret), K(part_keys.at(i)), K(row));
       } else {
         ret = OB_SUCCESS;
       }

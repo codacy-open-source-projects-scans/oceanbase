@@ -41,7 +41,7 @@ public:
       ObExprJoinFilterContext() : ObExprOperatorCtx(),
           rf_msg_(nullptr), rf_key_(), hash_funcs_(), cmp_funcs_(), start_time_(0),
           filter_count_(0), total_count_(0), check_count_(0),
-          n_times_(0), ready_ts_(0), slide_window_(total_count_), flag_(0), max_wait_time_ms_(0),
+          n_times_(0), ready_ts_(0), by_pass_count_before_ready_(0), slide_window_(total_count_), flag_(0), max_wait_time_ms_(0),
           cur_row_(), cur_row_with_hash_(nullptr), skip_vector_(nullptr)
         {
           cur_row_.set_attr(ObMemAttr(MTL_ID(), "RfCurRow"));
@@ -50,6 +50,7 @@ public:
           is_first_ = true;
           is_partition_wise_jf_ = false;
           is_active_ = true;
+          skip_during_rescan_ = false;
         }
       virtual ~ObExprJoinFilterContext();
     public:
@@ -95,13 +96,16 @@ public:
         check_count_ = 0;
         n_times_ = 0;
         ready_ts_ = 0;
+        by_pass_count_before_ready_ = 0;
         is_ready_ = false;
       }
 
       inline void collect_sample_info(const int64_t filter_count,
                                       const int64_t total_count) override final
       {
-        (void)slide_window_.update_slide_window_info(filter_count, total_count);
+        if (enable_slide_window_) {
+          (void)slide_window_.update_slide_window_info(filter_count, total_count);
+        }
       }
 
     public:
@@ -115,12 +119,13 @@ public:
       int64_t check_count_;
       int64_t n_times_;
       int64_t ready_ts_;
+      int64_t by_pass_count_before_ready_;
 
       ObAdaptiveFilterSlideWindow slide_window_;
 
       union {
         uint64_t flag_;
-        struct {
+        struct { // FARM COMPAT WHITELIST
           bool is_ready_:1;
           bool is_first_:1;
           // whether need to sync wait
@@ -131,7 +136,9 @@ public:
           // pushdown filter parameters
           bool is_partition_wise_jf_ : 1;
           bool is_active_ : 1;
-          uint64_t reserved_:58;
+          bool enable_slide_window_ : 1;
+          bool skip_during_rescan_ : 1;
+          uint64_t reserved_:56;
         };
       };
       int64_t max_wait_time_ms_;

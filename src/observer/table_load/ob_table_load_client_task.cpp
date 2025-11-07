@@ -14,13 +14,10 @@
 
 #include "observer/table_load/ob_table_load_client_task.h"
 #include "observer/ob_server.h"
-#include "observer/table_load/ob_table_load_exec_ctx.h"
-#include "observer/table_load/ob_table_load_schema.h"
 #include "observer/table_load/ob_table_load_service.h"
 #include "observer/table_load/ob_table_load_table_ctx.h"
 #include "observer/table_load/ob_table_load_task.h"
 #include "observer/table_load/ob_table_load_task_scheduler.h"
-#include "observer/table_load/ob_table_load_utils.h"
 #include "share/stat/ob_dbms_stats_utils.h"
 #include "share/schema/ob_part_mgr_util.h"
 
@@ -189,7 +186,8 @@ public:
                                                                    load_param.insert_mode_,
                                                                    load_param.load_mode_,
                                                                    load_param.load_level_,
-                                                                   column_ids))) {
+                                                                   column_ids,
+                                                                   load_param.enable_inc_major_))) {
       LOG_WARN("fail to check support direct load", KR(ret));
     }
     // begin
@@ -286,6 +284,19 @@ public:
     } else if (OB_FAIL(resolve_part_names(table_schema, task_param.get_part_names(), tablet_ids))) {
       LOG_WARN("fail to resolve part name", KR(ret));
     }
+    if (OB_SUCC(ret) && ObDirectLoadMethod::INCREMENTAL == method) {
+      if (ObDirectLoadInsertMode::NORMAL == insert_mode
+          && ObLoadDupActionType::LOAD_REPLACE == task_param.get_dup_action()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace for inc load method in direct load is");
+        LOG_WARN("replace for inc load method in direct load is not supported", KR(ret));
+      } else if (ObDirectLoadInsertMode::INC_REPLACE == insert_mode
+                 && ObLoadDupActionType::LOAD_STOP_ON_DUP != task_param.get_dup_action()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace or ignore for inc_replace load method in direct load is");
+        LOG_WARN("replace or ignore for inc_replace load method in direct load is not supported", KR(ret));
+      }
+    }
     if (OB_SUCC(ret)) {
       load_param.tenant_id_ = tenant_id;
       load_param.table_id_ = table_schema->get_table_id();
@@ -310,6 +321,8 @@ public:
       load_param.online_sample_percent_ = online_sample_percent;
       load_param.load_level_ = tablet_ids.empty() ? ObDirectLoadLevel::TABLE
                                                   : ObDirectLoadLevel::PARTITION;
+      omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+      load_param.enable_inc_major_ = tenant_config->_enable_inc_major_direct_load;
     }
     return ret;
   }
@@ -477,6 +490,7 @@ ObTableLoadClientTask::ObTableLoadClientTask()
     task_scheduler_(nullptr),
     session_count_(0),
     next_batch_id_(0),
+    rw_lock_(common::ObLatchIds::TABLE_LOAD_CLIENT_LOCK),
     client_status_(ObTableLoadClientStatus::MAX_STATUS),
     error_code_(OB_SUCCESS),
     ref_count_(0),
@@ -595,8 +609,15 @@ int ObTableLoadClientTask::init_exec_ctx()
     exec_ctx_.set_sql_ctx(&sql_ctx_);
     exec_ctx_.set_physical_plan_ctx(&plan_ctx_);
     exec_ctx_.set_my_session(session_info_);
-    client_exec_ctx_.exec_ctx_ = &exec_ctx_;
-    client_exec_ctx_.init_heart_beat(param_.get_heartbeat_timeout_us());
+    if (OB_FAIL(session_info_->set_cur_phy_plan(&plan_))) {
+      LOG_WARN("fail to set cur phy plan", KR(ret));
+    } else if (FALSE_IT(exec_ctx_.reference_my_plan(&plan_))) {
+    } else if (OB_FAIL(exec_ctx_.init_phy_op(1))) {
+      LOG_WARN("fail to init phy op", KR(ret));
+    } else {
+      client_exec_ctx_.exec_ctx_ = &exec_ctx_;
+      client_exec_ctx_.init_heart_beat(param_.get_heartbeat_timeout_us());
+    }
   }
   return ret;
 }
@@ -606,8 +627,11 @@ int ObTableLoadClientTask::init_task_scheduler()
   int ret = OB_SUCCESS;
   const int64_t origin_timeout_ts = THIS_WORKER.get_timeout_ts();
   THIS_WORKER.set_timeout_ts(ObTimeUtil::current_time() + param_.get_timeout_us());
-  if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (&allocator_), 1,
-                                          param_.get_task_id(), "Executor"))) {
+  if (OB_ISNULL(task_scheduler_ = OB_NEWx(ObTableLoadTaskThreadPoolScheduler, (&allocator_),
+                                          1 /*thread_count*/,
+                                          param_.get_task_id(),
+                                          "Executor",
+                                          session_info_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to new ObTableLoadTaskThreadPoolScheduler", KR(ret));
   } else if (OB_FAIL(task_scheduler_->init())) {
@@ -687,7 +711,7 @@ int ObTableLoadClientTask::commit()
     ret = OB_NOT_INIT;
     LOG_WARN("ObTableLoadClientTask not init", KR(ret));
   } else {
-    obsys::ObWLockGuard guard(rw_lock_);
+    obsys::ObWLockGuard<> guard(rw_lock_);
     if (ObTableLoadClientStatus::COMMITTING == client_status_ ||
         ObTableLoadClientStatus::COMMIT == client_status_) {
       LOG_INFO("client task already commit", K(client_status_));
@@ -737,7 +761,7 @@ int ObTableLoadClientTask::advance_status_nolock(const ObTableLoadClientStatus e
 int ObTableLoadClientTask::advance_status(const ObTableLoadClientStatus expected,
                                           const ObTableLoadClientStatus updated)
 {
-  obsys::ObWLockGuard guard(rw_lock_);
+  obsys::ObWLockGuard<> guard(rw_lock_);
 
   return advance_status_nolock(expected, updated);
 }
@@ -769,13 +793,14 @@ int ObTableLoadClientTask::set_status_error(int error_code)
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(error_code));
   } else {
-    obsys::ObWLockGuard guard(rw_lock_);
+    obsys::ObWLockGuard<> guard(rw_lock_);
     if (ObTableLoadClientStatus::ERROR == client_status_ ||
         ObTableLoadClientStatus::ABORT == client_status_) {
       // ignore
     } else {
       client_status_ = ObTableLoadClientStatus::ERROR;
       error_code_ = error_code;
+      FLOG_INFO("LOAD DATA CLIENT status error", KR(error_code_), K(lbt()));
     }
   }
   return ret;
@@ -783,7 +808,7 @@ int ObTableLoadClientTask::set_status_error(int error_code)
 
 void ObTableLoadClientTask::set_status_abort(int error_code)
 {
-  obsys::ObWLockGuard guard(rw_lock_);
+  obsys::ObWLockGuard<> guard(rw_lock_);
   if (ObTableLoadClientStatus::ABORT == client_status_) {
     // ignore
   } else {
@@ -791,13 +816,14 @@ void ObTableLoadClientTask::set_status_abort(int error_code)
     if (OB_SUCCESS == error_code_) {
       error_code_ = error_code;
     }
+    FLOG_INFO("LOAD DATA CLIENT status abort", KR(error_code_), K(lbt()));
   }
 }
 
 int ObTableLoadClientTask::check_status(ObTableLoadClientStatus client_status)
 {
   int ret = OB_SUCCESS;
-  obsys::ObRLockGuard guard(rw_lock_);
+  obsys::ObRLockGuard<> guard(rw_lock_);
   if (OB_UNLIKELY(client_status != client_status_)) {
     if (ObTableLoadClientStatus::ERROR == client_status_ ||
         ObTableLoadClientStatus::ABORT == client_status_) {
@@ -811,20 +837,20 @@ int ObTableLoadClientTask::check_status(ObTableLoadClientStatus client_status)
 
 ObTableLoadClientStatus ObTableLoadClientTask::get_status() const
 {
-  obsys::ObRLockGuard guard(rw_lock_);
+  obsys::ObRLockGuard<> guard(rw_lock_);
   return client_status_;
 }
 
 int ObTableLoadClientTask::get_error_code() const
 {
-  obsys::ObRLockGuard guard(rw_lock_);
+  obsys::ObRLockGuard<> guard(rw_lock_);
   return error_code_;
 }
 
 void ObTableLoadClientTask::get_status(ObTableLoadClientStatus &client_status,
                                        int &error_code) const
 {
-  obsys::ObRLockGuard guard(rw_lock_);
+  obsys::ObRLockGuard<> guard(rw_lock_);
   client_status = client_status_;
   error_code = error_code_;
 }

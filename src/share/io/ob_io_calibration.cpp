@@ -12,17 +12,9 @@
 
 #define USING_LOG_PREFIX COMMON
 
-#include "share/io/ob_io_calibration.h"
 
-#include "lib/time/ob_time_utility.h"
-#include "lib/thread/ob_thread_name.h"
-#include "lib/thread/thread_mgr.h"
-#include "lib/utility/ob_tracepoint.h"
-#include "share/config/ob_config_helper.h"
-#include "share/io/ob_io_struct.h"
-#include "share/io/ob_io_manager.h"
+#include "ob_io_calibration.h"
 #include "observer/ob_server.h"
-#include "share/ob_io_device_helper.h"
 
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/shared_storage/ob_file_manager.h"
@@ -501,6 +493,12 @@ int ObIOBenchController::start_io_bench()
       ret = OB_SUCCESS;
     }
   } else {
+    if (-1 != tg_id_) {
+      TG_STOP(tg_id_);
+      TG_WAIT(tg_id_);
+      TG_DESTROY(tg_id_);
+      tg_id_ = -1;
+    }
     if (OB_FAIL(TG_CREATE(TGDefIDs::IO_BENCHMARK, tg_id_))) {
       LOG_WARN("create tg failed", K(ret));
     } else if (OB_FAIL(TG_SET_RUNNABLE_AND_START(tg_id_, *this))) {
@@ -743,8 +741,11 @@ void ObIOCalibration::get_iops_scale(const ObIOMode mode, const int64_t size, do
   iops_scale = 1.0 * BASELINE_IO_SIZE / size;
   if (OB_UNLIKELY(!is_inited_)) {
     // do nothing
-  } else if (OB_UNLIKELY(mode >= ObIOMode::MAX_MODE || size <= 0)) {
+  } else if (OB_UNLIKELY(mode >= ObIOMode::MAX_MODE)) {
     // do nothing
+  } else if (size <= 0) {
+    iops_scale = 1.0;
+    LOG_WARN("invalid size", K(mode), K(size), K(iops_scale));
   } else {
     DRWLock::RDLockGuard guard(lock_);
     if (!io_ability_.is_valid()) {
@@ -785,7 +786,7 @@ int ObIOCalibration::write_into_table(ObMySQLTransaction &trans, const ObAddr &a
   // otherwise replace the calibration data
   ObSqlString delete_sql, insert_sql;
   int64_t affected_rows = 0;
-  char ip_str[32] = { 0 };
+  char ip_str[MAX_IP_ADDR_LENGTH] = { 0 };
   if (OB_UNLIKELY(!trans.is_started() || !addr.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(trans.is_started()), K(addr));

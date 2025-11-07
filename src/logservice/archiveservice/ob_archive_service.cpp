@@ -11,17 +11,7 @@
  */
 
 #include "ob_archive_service.h"
-#include "lib/ob_define.h"                          // is_meta_tenant is_sys_tenant
-#include "lib/compress/ob_compress_util.h"          // ObCompressorType
-#include "lib/ob_errno.h"
-#include "share/backup/ob_archive_struct.h"         // ObTenantArchiveRoundAttr
-#include "share/backup/ob_tenant_archive_round.h"   // ObArchiveRoundHandler
-#include "share/rc/ob_tenant_base.h"                // MTL_*
-#include "observer/ob_server_struct.h"              // GCTX
-#include "logservice/palf/lsn.h"                    // LSN
-#include "share/scn.h"                    // LSN
 #include "share/backup/ob_backup_connectivity.h"
-#include "share/ob_debug_sync.h"
 #include "lib/ash/ob_active_session_guard.h"
 
 namespace oceanbase
@@ -84,7 +74,7 @@ int ObArchiveService::init(logservice::ObLogService *log_service,
   } else if (OB_FAIL(ls_mgr_.init(tenant_id, log_service, ls_svr, &allocator_,
                                   &sequencer_, &archive_round_mgr_, &persist_mgr_))) {
     ARCHIVE_LOG(WARN, "ls mgr init failed", K(ret));
-  } else if (OB_FAIL(sender_.init(tenant_id, &allocator_, &ls_mgr_,
+  } else if (OB_FAIL(sender_.init(tenant_id, &allocator_, &ls_mgr_, &fetcher_,
                                   &persist_mgr_, &archive_round_mgr_))) {
     ARCHIVE_LOG(WARN, "sender init failed", K(ret));
   } else if (OB_FAIL(fetcher_.init(tenant_id, log_service, &allocator_, &sender_,
@@ -215,6 +205,7 @@ int ObArchiveService::iterate_ls(const std::function<int (const ObLSArchiveTask 
 void ObArchiveService::run1()
 {
   ARCHIVE_LOG(INFO, "ObArchiveService thread start", K_(tenant_id));
+  ObDIActionGuard ag("LogService", "LogArchiveService", "ArchiveScheduler");
   lib::set_thread_name("ArcSrv");
   ObCurTraceId::init(GCONF.self_addr_);
 

@@ -12,10 +12,6 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_update_resolver.h"
-#include "sql/session/ob_sql_session_info.h"
-#include "sql/resolver/dml/ob_select_stmt.h"
-#include "sql/resolver/dml/ob_select_resolver.h"
-#include "sql/resolver/ob_resolver_utils.h"
 
 namespace oceanbase
 {
@@ -66,10 +62,9 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
-  // resolve outline data hints first
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(resolve_outline_data_hints())) {
-      LOG_WARN("resolve outline data hints failed", K(ret));
+    if (OB_FAIL(pre_process_hints(parse_tree))) {
+      LOG_WARN("pre process hints failed", K(ret));
     }
   }
 
@@ -122,7 +117,7 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
-  if (OB_SUCC(ret) && !has_tg) {
+  if (OB_SUCC(ret) && !has_tg && !is_prepare_stage_) {
     // 解析级联更新的列
     if (OB_FAIL(resolve_additional_assignments(tables_assign,
                                                T_UPDATE_SCOPE))) {
@@ -150,7 +145,7 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
 
   // 3. resolve other clauses
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(try_add_remove_const_expr_for_assignments())) {
+    if (!is_prepare_stage_ && OB_FAIL(try_add_remove_const_expr_for_assignments())) {
       LOG_WARN("failed to add remove const expr", K(ret));
     } else if (OB_FAIL(resolve_update_constraints())) {
       LOG_WARN("failed to resolve check exprs", K(ret));
@@ -461,6 +456,11 @@ int ObUpdateResolver::resolve_table_list(const ParseNode &parse_tree)
        */
         LOG_DEBUG("succ to add from item", KPC(table_item));
       }
+    }
+    if (OB_ISNULL(table_item) || session_info_->is_inner()) {
+    } else if (OB_UNLIKELY(table_item->is_system_table_ && table_item->table_name_.case_compare(OB_ALL_LICENSE_TNAME) == 0)) {
+      ret = OB_OP_NOT_ALLOW;
+      LOG_WARN("modify license table is not allowed", KR(ret), K(table_item->table_name_), K(table_item->is_system_table_));
     }
   }
   if (OB_SUCC(ret) && is_mysql_mode() && 1 == update_stmt->get_from_item_size()) {

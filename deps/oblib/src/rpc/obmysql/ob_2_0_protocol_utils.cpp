@@ -13,15 +13,8 @@
 #define USING_LOG_PREFIX RPC_OBMYSQL
 
 #include "ob_2_0_protocol_utils.h"
-#include "lib/stat/ob_diagnose_info.h"
 #include "lib/checksum/ob_crc16.h"
-#include "lib/checksum/ob_crc64.h"
-#include "rpc/ob_request.h"
 #include "rpc/obmysql/ob_mysql_util.h"
-#include "rpc/obmysql/ob_mysql_request_utils.h"
-#include "rpc/obmysql/ob_2_0_protocol_struct.h"
-#include "rpc/obmysql/ob_mysql_packet.h"
-#include "rpc/obmysql/obsm_struct.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 
 using namespace oceanbase::common;
@@ -209,7 +202,7 @@ inline int ObProto20Utils::do_proto20_packet_encode(ObProtoEncodeParam &param)
       }
     }
     LOG_DEBUG("proto20 encode", "current next step",
-              get_proto20_encode_step_name(proto20_context.next_step_));
+              get_proto20_encode_step_name(proto20_context.next_step_), K(need_break), K(param.need_flush_));
   }
 
   if (OB_SUCC(ret)) {
@@ -496,6 +489,11 @@ inline int ObProto20Utils::fill_proto20_payload(ObProtoEncodeParam &param, bool 
         ret = OB_ERR_UNEXPECTED;
         LOG_ERROR("impossible", "read_avail", easy_buffer.read_avail_size(),
                   "header len", proto20_context.header_len_, K(ret));
+      } else if (param.is_composed_ok_pkt_) {
+        // 遇到了err+ok，但是ok包过大且已经写入了err包的内容，这里不可以变为FILL_TAILER_STEP状态，
+        // 否则err和ok就不算在一个包里面了
+        param.need_flush_ = true; // break, alloc more memory
+        need_break = true;
       } else {
         // there must be enough space for tailer
         proto20_context.next_step_ = FILL_TAILER_STEP;
@@ -567,6 +565,7 @@ inline int ObProto20Utils::fill_proto20_header(ObProtoEncodeParam &param) {
                                       || OB_UNLIKELY(param.proto20_context_->is_filename_packet_) ? 1 : 0);
   flag.st_flags_.OB_IS_NEW_EXTRA_INFO = proto20_context.is_new_extra_info_;
   flag.st_flags_.OB_TXN_FREE_ROUTE = proto20_context.txn_free_route_ ? 1 : 0;
+  flag.st_flags_.OB_IS_DUP_LS_MODIFIED = proto20_context.is_dup_ls_modified_ ? 1 : 0;
   uint16_t reserved = 0;
   uint16_t header_checksum = 0;
   int64_t pos = 0;

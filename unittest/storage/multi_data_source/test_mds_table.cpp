@@ -9,38 +9,21 @@
  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
  * See the Mulan PubL v2 for more details.
  */
-#include "storage/multi_data_source/test/example_user_data_define.h"
 #include "storage/multi_data_source/runtime_utility/common_define.h"
+#include <ratio>
 #define UNITTEST_DEBUG
-#include "lib/utility/utility.h"
 #include <gtest/gtest.h>
 #define private public
 #define protected public
-#include "share/ob_ls_id.h"
-#include "storage/multi_data_source/mds_writer.h"
-#include <thread>
-#include <iostream>
-#include <vector>
-#include <chrono>
-#include <exception>
-#include "lib/ob_errno.h"
-#include "share/ob_errno.h"
-#include "storage/multi_data_source/adapter_define/mds_dump_node.h"
-#include "lib/allocator/ob_malloc.h"
-#include "storage/multi_data_source/mds_node.h"
-#include "common/ob_clock_generator.h"
-#include "storage/multi_data_source/mds_row.h"
-#include "storage/multi_data_source/mds_unit.h"
-#include "storage/multi_data_source/mds_table_handle.h"
 #include "storage/multi_data_source/mds_table_handler.h"
-#include "storage/tx/ob_trans_define.h"
-#include <algorithm>
-#include <numeric>
-#include "storage/multi_data_source/runtime_utility/mds_lock.h"
-#include "storage/tablet/ob_tablet_meta.h"
-#include "storage/multi_data_source/mds_table_iterator.h"
+#include "src/storage/multi_data_source/mds_table_iterator.ipp"
 #include "storage/tablet/ob_mds_schema_helper.h"
+#include "src/share/scn.h"
+#include "storage/meta_mem/ob_tablet_pointer.h"
+#include "storage/ls/ob_ls.h"
+
 namespace oceanbase {
+using namespace share;
 namespace storage {
 namespace mds {
 void *DefaultAllocator::alloc(const int64_t size) {
@@ -75,6 +58,11 @@ using namespace storage;
 using namespace mds;
 using namespace transaction;
 
+storage::ObLS FAKE_LS;
+storage::mds::ObMdsTableMgr FAKE_MDS_TABLE_MGR;
+ObMdsTableHandler mds_table_hanlder;
+MdsTableHandle &mds_table_ = mds_table_hanlder.mds_table_handle_;
+
 class TestMdsTable: public ::testing::Test
 {
 public:
@@ -82,10 +70,8 @@ public:
     ObMdsSchemaHelper::get_instance().init();
   }
   virtual ~TestMdsTable() {}
-  virtual void SetUp() {
-  }
-  virtual void TearDown() {
-  }
+  virtual void SetUp() {}
+  virtual void TearDown() {}
   static void compare_binary_key();
   static void set();
   static void replay();
@@ -107,8 +93,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(TestMdsTable);
 };
 
-ObMdsTableHandler mds_table_hanlder;
-MdsTableHandle &mds_table_ = mds_table_hanlder.mds_table_handle_;
 
 /***********************************************Single Row*************************************************************/
 struct A { ObSpinLock lock_; };
@@ -169,7 +153,7 @@ void TestMdsTable::compare_binary_key() {
 }
 
 void TestMdsTable::set() {
-  ASSERT_EQ(OB_SUCCESS, mds_table_.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, mds_table_.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MDS_LOG(INFO, "test sizeof", K(sizeof(MdsTableImpl<UnitTestMdsTable>)), K(sizeof(B)), K(mds_table_.p_mds_table_base_.ctrl_ptr_->ref_));
   ExampleUserData1 data1(1);
   ExampleUserData2 data2;
@@ -186,6 +170,9 @@ void TestMdsTable::set() {
   MdsCtx ctx2(mds::MdsWriter(ObTransID(2)));// abort by RAII finally
   ASSERT_EQ(OB_SUCCESS, mds_table_.set(data1, ctx2));
   ctx2.on_abort(mock_scn(8));
+
+  FAKE_MDS_TABLE_MGR.ls_ = &FAKE_LS;
+  mds_table_.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
 }
 // <DummyKey, ExampleUserData1>: (data:1, writer:1, ver:10)
 // <DummyKey, ExampleUserData2>: (data:2, writer:1, ver:10)
@@ -641,7 +628,7 @@ TEST_F(TestMdsTable, test_recycle) {
 
 TEST_F(TestMdsTable, test_recalculate_flush_scn_op) {
   MdsTableHandle mds_table;
-  ASSERT_EQ(OB_SUCCESS, mds_table.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletPointer*)0x111));
+  ASSERT_EQ(OB_SUCCESS, mds_table.init<UnitTestMdsTable>(MdsAllocator::get_instance(), ObTabletID(1), share::ObLSID(1), share::SCN::min_scn(), (ObTabletBasePointer*)0x111));
   MdsCtx ctx1(mds::MdsWriter(ObTransID(1)));
   MdsCtx ctx2(mds::MdsWriter(ObTransID(2)));
   MdsCtx ctx3(mds::MdsWriter(ObTransID(3)));
@@ -654,6 +641,9 @@ TEST_F(TestMdsTable, test_recalculate_flush_scn_op) {
   ASSERT_EQ(OB_SUCCESS, mds_table.set(ExampleUserData1(3), ctx3));
   ctx3.on_redo(mock_scn(9));
   ctx3.on_commit(mock_scn(11), mock_scn(11));
+
+  FAKE_MDS_TABLE_MGR.ls_ = &FAKE_LS;
+  mds_table.get_mds_table_ptr()->mgr_handle_.mgr_ = &FAKE_MDS_TABLE_MGR;
   ASSERT_EQ(OB_SUCCESS, mds_table.flush(mock_scn(4), mock_scn(4)));
   ASSERT_EQ(mock_scn(4), mds_table.p_mds_table_base_->flushing_scn_);
   mds_table.on_flush(mock_scn(4), OB_SUCCESS);
@@ -756,11 +746,150 @@ TEST_F(TestMdsTable, test_rvalue_set) {
   }, writer, trans_stat, trans_version));
 }
 
+void write_key_and_data2(
+  const int64_t key,
+  const char *val,
+  const share::SCN version,
+  MdsCtx &ctx,
+  mds::TwoPhaseCommitState state)
+{
+  ExampleUserKey tmp_key(key);
+  ExampleUserData2 data;
+  ASSERT_EQ(OB_SUCCESS, data.assign(MdsAllocator::get_instance(), val));
+  ObString str = data.data_;
+  ASSERT_EQ(OB_SUCCESS, mds_table_.set(tmp_key, data, ctx));
+  ctx.on_redo(version);
+  ctx.before_prepare();
+  if (state == TwoPhaseCommitState::BEFORE_PREPARE) {
+    return;
+  }
+  ctx.on_prepare(version);
+  if (state == TwoPhaseCommitState::ON_PREPARE) {
+    return;
+  }
+  if (state == TwoPhaseCommitState::ON_COMMIT) {
+    ctx.on_commit(version, version);
+  } else if (state == TwoPhaseCommitState::ON_ABORT) {
+    ctx.on_abort(version);
+  } else {
+    ob_abort();
+  }
+}
+
+class ObTestVersionNodeFilter
+{
+public:
+  ObTestVersionNodeFilter(const share::SCN base_version,
+                          const share::SCN snapshot_version,
+                          bool &has_uncommitted_flag,
+                          bool &has_lager_committed_flag)
+    : base_version_(base_version),
+      snapshot_version_(snapshot_version),
+      has_uncommitted_flag_(has_uncommitted_flag),
+      has_lager_committed_flag_(has_lager_committed_flag) {}
+  int operator()(mds::UserMdsNode<ExampleUserKey, ExampleUserData2> &node,
+                 bool &need_skip) {
+    int ret = common::OB_SUCCESS;
+    if (!node.is_decided_()) {
+      if (node.get_prepare_version_() <= snapshot_version_) {
+        ret = OB_EAGAIN;// release row latch and see if status is decided
+      } else {
+        has_uncommitted_flag_ = true;
+        need_skip = true;
+      }
+    } else if (node.is_committed_()) {
+      if (node.get_commit_version_() > snapshot_version_) {
+        has_lager_committed_flag_ = true;
+        need_skip = true;
+      } else if (node.get_commit_version_() <= base_version_) {
+        need_skip = true;
+      } else {
+        need_skip = false;
+      }
+    } else {
+      MDS_LOG(WARN, "aborted node should not seen", K(node));
+    }
+    return ret;
+  }
+private:
+  share::SCN base_version_;
+  share::SCN snapshot_version_;
+  bool &has_uncommitted_flag_;
+  bool &has_lager_committed_flag_;
+};
+
+TEST_F(TestMdsTable, write_multi_version_row)
+{
+  std::vector<MdsCtx*> ctx_vec;
+  for (int64_t idx = 0; idx < 7; ++idx) {
+    ctx_vec.push_back(new MdsCtx(mds::MdsWriter(ObTransID(idx + 1))));
+  }
+  write_key_and_data2(1, "100", mock_scn(100), *ctx_vec[0], mds::TwoPhaseCommitState::ON_COMMIT);
+  write_key_and_data2(1, "200", mock_scn(200), *ctx_vec[1], mds::TwoPhaseCommitState::ON_COMMIT);
+  write_key_and_data2(1, "300", mock_scn(300), *ctx_vec[2], mds::TwoPhaseCommitState::BEFORE_PREPARE);
+  write_key_and_data2(2, "400", mock_scn(400), *ctx_vec[3], mds::TwoPhaseCommitState::ON_PREPARE);
+  write_key_and_data2(3, "100", mock_scn(100), *ctx_vec[4], mds::TwoPhaseCommitState::ON_COMMIT);
+  write_key_and_data2(3, "280", mock_scn(280), *ctx_vec[5], mds::TwoPhaseCommitState::ON_PREPARE);
+  write_key_and_data2(4, "500", mock_scn(500), *ctx_vec[6], mds::TwoPhaseCommitState::ON_PREPARE);
+  std::thread t1([]() {
+    ObMdsUnitRowNodeScanIterator<ExampleUserKey, ExampleUserData2> iter;
+    ExampleUserKey key;
+    UserMdsNode<ExampleUserKey, ExampleUserData2> *p_node = nullptr;
+    bool has_uncommitted_flag = false;
+    bool has_lager_committed_flag = false;
+    ObTestVersionNodeFilter filter(mock_scn(200), mock_scn(300), has_uncommitted_flag, has_lager_committed_flag);
+    ASSERT_EQ(OB_SUCCESS, iter.init(mds_table_, filter, 1_ms));
+    ASSERT_EQ(OB_TIMEOUT, iter.get_next(key, p_node));
+    iter.~ObMdsUnitRowNodeScanIterator();
+    new (&iter) ObMdsUnitRowNodeScanIterator<ExampleUserKey, ExampleUserData2>();
+    ASSERT_EQ(OB_SUCCESS, iter.init(mds_table_, filter));
+    ASSERT_EQ(OB_SUCCESS, iter.get_next(key, p_node));
+    ASSERT_EQ(ExampleUserKey(1).value_, key.value_);
+    {
+      MDS_LOG(INFO, "print iter kv", K(key), K(p_node->user_data_.data_.ptr()));
+      ObString tmp_str("300");
+      ASSERT_EQ(0, tmp_str.compare(p_node->user_data_.data_));
+      ASSERT_EQ(true, p_node->is_committed_());
+      ASSERT_EQ(mock_scn(300), p_node->get_commit_version_());
+    }
+
+    ASSERT_EQ(OB_SUCCESS, iter.get_next(key, p_node));
+    ASSERT_EQ(ExampleUserKey(3).value_, key.value_);
+    {
+      MDS_LOG(INFO, "print iter kv", K(key), K(p_node->user_data_.data_.ptr()));
+      ObString tmp_str("280");
+      ASSERT_EQ(0, tmp_str.compare(p_node->user_data_.data_));
+      ASSERT_EQ(true, p_node->is_committed_());
+      ASSERT_EQ(mock_scn(280), p_node->get_commit_version_());
+    }
+    ASSERT_EQ(OB_ITER_END, iter.get_next(key, p_node));
+    ASSERT_EQ(true, has_uncommitted_flag);
+    ASSERT_EQ(false, has_lager_committed_flag);
+  });
+  std::thread t2([&ctx_vec]() {
+    sleep(1);
+    ctx_vec[2]->on_prepare(mock_scn(300));
+    sleep(1);
+    ctx_vec[2]->on_commit(mock_scn(300), mock_scn(300));
+    sleep(1);
+    ctx_vec[3]->on_commit(mock_scn(400), mock_scn(400));
+    sleep(1);
+    ctx_vec[5]->on_commit(mock_scn(280), mock_scn(280));
+    sleep(1);
+    ctx_vec[6]->on_abort(mock_scn(500));
+  });
+  t1.join();
+  t2.join();
+  for (MdsCtx *iter : ctx_vec) {
+    delete iter;
+  }
+}
 }
 }
 
 int main(int argc, char **argv)
 {
+  oceanbase::common::ObClockGenerator::get_instance().init();
   system("rm -rf test_mds_table.log");
   oceanbase::common::ObLogger &logger = oceanbase::common::ObLogger::get_logger();
   logger.set_file_name("test_mds_table.log", false);

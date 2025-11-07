@@ -13,10 +13,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "share/tablet/ob_tablet_to_ls_operator.h"
-#include "share/ob_ddl_common.h"
-#include "observer/ob_inner_sql_connection.h"
 #include "storage/ddl/ob_ddl_lock.h"
-#include "storage/tablelock/ob_table_lock_rpc_struct.h"
 #include "storage/tablelock/ob_lock_inner_connection_util.h"
 #include "storage/tablelock/ob_lock_utils.h"
 
@@ -468,6 +465,19 @@ int ObDDLLock::lock_for_modify_auto_part_size_in_trans(
   return ret;
 }
 
+int ObDDLLock::lock_for_modify_truncate_info_in_trans(
+    const uint64_t tenant_id,
+    const uint64_t global_index_table_id,
+    ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  const int64_t timeout_us = DEFAULT_TIMEOUT;
+  if (OB_FAIL(ObOnlineDDLLock::lock_table_in_trans(tenant_id, global_index_table_id, EXCLUSIVE, timeout_us, trans))) {
+    LOG_WARN("failed to lock online ddl table", K(ret));
+  }
+  return ret;
+}
+
 int ObDDLLock::lock_for_add_lob_in_trans(
     const ObTableSchema &data_table_schema,
     ObMySQLTransaction &trans)
@@ -488,6 +498,73 @@ int ObDDLLock::lock_for_add_lob_in_trans(
   } else if (OB_FAIL(ObOnlineDDLLock::lock_tablets_in_trans(tenant_id, data_tablet_ids, ROW_EXCLUSIVE, timeout_us, trans))) {
     LOG_WARN("failed to lock data table tablets", K(ret));
   }
+  return ret;
+}
+
+int ObDDLLock::lock_for_online_drop_column_in_trans(const ObTableSchema &table_schema, ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = table_schema.get_tenant_id();
+  const uint64_t table_id = table_schema.get_table_id();
+  const int64_t timeout_us = DEFAULT_TIMEOUT;
+  ObSEArray<ObTabletID, 1> tablet_ids;
+  if (!need_lock(table_schema)) {
+    LOG_INFO("skip ddl lock for non-user table", K(table_schema.get_table_id()));
+  } else if (OB_FAIL(table_schema.get_tablet_ids(tablet_ids))) {
+    LOG_WARN("failed to get tablet ids", K(ret));
+  } else if (OB_FAIL(lock_table_lock_in_trans(tenant_id, table_id, tablet_ids, ROW_EXCLUSIVE, timeout_us, trans))) {
+    LOG_WARN("failed to lock table", K(ret));
+  } else if (OB_FAIL(ObOnlineDDLLock::lock_table_in_trans(tenant_id, table_id, EXCLUSIVE, timeout_us, trans))) {
+    LOG_WARN("failed to lock ddl table", K(ret));
+  }
+  ret = share::ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
+  return ret;
+}
+
+int ObDDLLock::lock_for_drop_lob(
+    const ObTableSchema &data_table_schema,
+    const ObTableLockOwnerID lock_owner,
+    ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = data_table_schema.get_tenant_id();
+  const uint64_t data_table_id = data_table_schema.get_table_id();
+  const int64_t timeout_us = DEFAULT_TIMEOUT;
+  ObSEArray<ObTabletID, 1> data_tablet_ids;
+  if (!need_lock(data_table_schema)) {
+    LOG_INFO("skip ddl lock", K(data_table_id));
+  } else if (OB_FAIL(data_table_schema.get_tablet_ids(data_tablet_ids))) {
+    LOG_WARN("failed to get tablet ids", K(ret));
+  } else if (OB_FAIL(do_table_lock(tenant_id, data_table_id, data_tablet_ids, ROW_EXCLUSIVE, lock_owner, timeout_us, true/*is_lock*/, trans))) {
+    LOG_WARN("failed to lock data tablet", K(ret));
+  } else if (OB_FAIL(ObOnlineDDLLock::lock_table(tenant_id, data_table_id, EXCLUSIVE, lock_owner, timeout_us, trans))) {
+    LOG_WARN("failed to lock data table", K(ret));
+  }
+  ret = share::ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
+  return ret;
+}
+
+int ObDDLLock::unlock_for_drop_lob(
+    const ObTableSchema &data_table_schema,
+    const ObTableLockOwnerID lock_owner,
+    ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = data_table_schema.get_tenant_id();
+  const uint64_t data_table_id = data_table_schema.get_table_id();
+  const int64_t timeout_us = DEFAULT_TIMEOUT;
+  bool some_lock_not_exist = false;
+  ObSEArray<ObTabletID, 1> data_tablet_ids;
+  if (!need_lock(data_table_schema)) {
+    LOG_INFO("skip ddl lock", K(data_table_id));
+  } else if (OB_FAIL(data_table_schema.get_tablet_ids(data_tablet_ids))) {
+    LOG_WARN("failed to get tablet ids", K(ret));
+  } else if (OB_FAIL(do_table_lock(tenant_id, data_table_id, data_tablet_ids, ROW_EXCLUSIVE, lock_owner, timeout_us, false/*is_lock*/, trans))) {
+    LOG_WARN("failed to unlock data tablet", K(ret));
+  } else if (OB_FAIL(ObOnlineDDLLock::unlock_table(tenant_id, data_table_id, EXCLUSIVE, lock_owner, timeout_us, trans, some_lock_not_exist))) {
+    LOG_WARN("failed to unlock data table", K(ret));
+  }
+  ret = share::ObDDLUtil::is_table_lock_retry_ret_code(ret) ? OB_EAGAIN : ret;
   return ret;
 }
 
@@ -642,6 +719,27 @@ int ObDDLLock::unlock_for_offline_ddl(
     if (OB_FAIL(do_table_lock(tenant_id, OB_INVALID_ID/*table_id*/, *hidden_tablet_ids_alone, EXCLUSIVE, lock_owner, timeout_us, false/*is_lock*/, trans))) {
       LOG_WARN("failed to unlock tablets", K(ret), K(tenant_id), KPC(hidden_tablet_ids_alone), K(lock_owner));
     }
+  }
+  return ret;
+}
+
+int ObDDLLock::lock_table_in_trans(
+    const ObTableSchema &table_schema,
+    const ObTableLockMode lock_mode,
+    ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = table_schema.get_tenant_id();
+  const uint64_t table_id = table_schema.get_table_id();
+  const int64_t timeout_us = DEFAULT_TIMEOUT;
+  ObInnerSQLConnection *iconn = nullptr;
+  if (!need_lock(table_schema)) {
+    LOG_INFO("skip ddl lock for non-user table", K(table_id));
+  } else if (OB_ISNULL(iconn = static_cast<ObInnerSQLConnection *>(trans.get_connection()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid conn", K(ret), K(tenant_id));
+  } else if (OB_FAIL(ObInnerConnectionLockUtil::lock_table(tenant_id, table_id, lock_mode, timeout_us, iconn))) {
+    LOG_WARN("failed to lock table", K(ret), K(tenant_id), K(table_id));
   }
   return ret;
 }

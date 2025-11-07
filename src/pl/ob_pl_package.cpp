@@ -13,12 +13,7 @@
 #define USING_LOG_PREFIX PL
 
 #include "pl/ob_pl_package.h"
-#include "pl/ob_pl_exception_handling.h"
-#include "lib/oblog/ob_log_module.h"
-#include "share/schema/ob_package_info.h"
-#include "sql/engine/ob_exec_context.h"
-#include "sql/plan_cache/ob_cache_object_factory.h"
-
+#include "pl/ob_pl_dependency_util.h"
 namespace oceanbase
 {
 using namespace common;
@@ -52,6 +47,10 @@ int ObPLPackageAST::init(const ObString &db_name,
     parent_user_type_table = &parent_package_ast->get_user_type_table();
     parent_routine_table = &parent_package_ast->get_routine_table();
     parent_condition_table = &parent_package_ast->get_condition_table();
+    if (parent_package_ast->get_compile_flag().compile_with_invoker_right()) {
+      set_invoker_db_name(parent_package_ast->get_invoker_db_name());
+      set_invoker_db_id(parent_package_ast->get_invoker_db_id());
+    }
   }
   if (OB_NOT_NULL(parent_user_type_table)) {
     user_type_table_.set_type_start_gen_id(parent_user_type_table->get_type_start_gen_id());
@@ -71,7 +70,7 @@ int ObPLPackageAST::init(const ObString &db_name,
     obj_version.object_id_ = parent_package_ast->get_id();
     obj_version.version_ = parent_package_ast->get_version();
     obj_version.object_type_ = DEPENDENCY_PACKAGE;
-    if (OB_FAIL(add_dependency_object(obj_version))) {
+    if (OB_FAIL(ObPLDependencyUtil::add_dependency_object_impl(dependency_table_, obj_version))) {
       LOG_WARN("add dependency table failed", K(ret));
     }
   }
@@ -90,7 +89,7 @@ int ObPLPackageAST::init(const ObString &db_name,
       obj_version.object_type_ = (PL_PACKAGE_SPEC == package_type) ? DEPENDENCY_PACKAGE : DEPENDENCY_PACKAGE_BODY;
     }
     obj_version.version_ = package_version;
-    if (OB_FAIL(add_dependency_object(obj_version))) {
+    if (OB_FAIL(ObPLDependencyUtil::add_dependency_object_impl(dependency_table_, obj_version))) {
       LOG_WARN("add dependency table failed", K(ret));
     }
   }
@@ -122,14 +121,14 @@ int ObPLPackageAST::process_generic_type()
     " SYS$REC_V2TABLE",
     "<ASSOC_ARRAY_1>"
   };
-  if (0 == get_name().case_compare("STANDARD")
-      && 0 == get_db_name().case_compare(OB_SYS_DATABASE_NAME)) {
+  if (get_name().case_compare_equal("STANDARD")
+      && get_db_name().case_compare_equal(OB_SYS_DATABASE_NAME)) {
     const ObPLUserTypeTable &user_type_table = get_user_type_table();
     const ObUserDefinedType *user_type = NULL;
     for (int64_t i = 0; OB_SUCC(ret) && i < user_type_table.get_count(); ++i) {
       if (OB_NOT_NULL(user_type = user_type_table.get_type(i))) {
         for (int64_t j = 0; OB_SUCC(ret) && j < PL_GENERIC_MAX; ++j) {
-          if (0 == user_type->get_name().case_compare(generic_type_table[j])) {
+          if (user_type->get_name().case_compare_equal(generic_type_table[j])) {
             (const_cast<ObUserDefinedType *>(user_type))
               ->set_generic_type(static_cast<ObPLGenericType>(j));
           }
@@ -174,7 +173,9 @@ int ObPLPackage::init(const ObPLPackageAST &package_ast)
 
 int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
                                            ObExecContext &exec_ctx,
-                                           ObPLPackageState &package_state)
+                                           ObPLPackageState &package_state,
+                                           const ObPLPackage *spec,
+                                           const ObPLPackage *body)
 {
   int ret = OB_SUCCESS;
   ObString key;
@@ -182,10 +183,19 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
   ARRAY_FOREACH(var_table_, var_idx) {
     const ObPLVar *var = var_table_.at(var_idx);
     const ObPLDataType &var_type = var->get_type();
+    OZ (package_state.add_package_var_val(value, var_type.get_type()));
+  }
+  ARRAY_FOREACH(var_table_, var_idx) {
+    const ObPLVar *var = var_table_.at(var_idx);
+    const ObPLDataType &var_type = var->get_type();
     value.reset();
     if (OB_ISNULL(var)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("variable is null", K(ret), KPC(var), K(var_idx));
+    } else if (resolve_ctx.is_sync_package_var_ && var->is_default_expr_access_external_state()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("package var default expr access external state not support", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "package var default expr access external state");
     } else if (var_type.is_cursor_type()
         && OB_FAIL(resolve_ctx.session_info_.init_cursor_cache())) {
       LOG_WARN("failed to init cursor cache", K(ret));
@@ -203,7 +213,8 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
       LOG_WARN("cannot assign null to var with not null attribution", K(ret));
     }
     //NOTE: do not remove package user variable! distribute plan will sync it to remote if needed!
-    OZ (package_state.add_package_var_val(value, var_type.get_type()));
+    //OZ (package_state.add_package_var_val(value, var_type.get_type()));
+    OZ (package_state.set_package_var_val(var_idx, value, resolve_ctx, false));
     if (OB_NOT_NULL(var) && var->get_type().is_cursor_type() && !var->get_type().is_cursor_var()) {
       // package ref cursor variable, refrence outside, do not destruct it.
     } else if (OB_FAIL(ret)) {
@@ -211,19 +222,68 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
     }
   }
   if (OB_SUCC(ret) && !package_state.get_serially_reusable()) {
+    const ObObj *cur_ser_val = nullptr;
+    bool is_oversize_value = false;
+    hash::ObHashMap<int64_t, ObPackageVarEncodeInfo> value_map;
+    ObPackageStateVersion state_version(OB_INVALID_VERSION, OB_INVALID_VERSION);
+    bool valid = false;
+    if (OB_FAIL(package_state.encode_pkg_var_key(resolve_ctx.allocator_, key))) {
+      LOG_WARN("fail to encode pkg var key", K(ret));
+    } else if (OB_ISNULL(cur_ser_val = exec_ctx.get_my_session()->get_user_variable_value(key))) {
+      // do nothing
+    } else if (cur_ser_val->is_null()) {
+      // do nothing
+    } else if (OB_FAIL(ObPLPackageState::is_oversize_value(*cur_ser_val, is_oversize_value))) {
+      LOG_WARN("fail to check value oversize", K(ret));
+    } else if (is_oversize_value) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("package serialize value is oversize", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "package sync oversize value");
+    } else if (OB_FAIL(value_map.create(4, ObModIds::OB_PL_TEMP, ObModIds::OB_HASH_NODE, MTL_ID()))) {
+      LOG_WARN("fail to create hash map", K(ret));
+    } else if (OB_FAIL(ObPLPackageState::decode_pkg_var_value(*cur_ser_val, state_version, value_map))) {
+      LOG_WARN("fail to decode pkg var value", K(ret));
+    } else if (OB_FAIL(package_state.check_version(package_state.get_state_version(),
+                                                   state_version,
+                                                   resolve_ctx.schema_guard_,
+                                                   *spec,
+                                                   body,
+                                                   valid))) {
+      LOG_WARN("fail to check package state version",
+                  K(ret), KPC(cur_ser_val), K(package_state.get_state_version()), K(state_version));
+    } else if (!valid) {
+      // discard user var value
+      LOG_INFO("===henry:invalid user var===", K(package_state.get_state_version()), K(state_version));
+      if (OB_FAIL(value_map.clear())) {
+        LOG_WARN("fail to clear hash map", K(ret));
+      } else if (OB_FAIL(ObPLPackageState::disable_expired_user_variables(*exec_ctx.get_my_session(), key))) {
+        LOG_WARN("fail to disable expired user var", K(ret));
+      }
+    }
     ARRAY_FOREACH(var_table_, var_idx) {
       const ObPLVar *var = var_table_.at(var_idx);
       const ObPLDataType &var_type = var->get_type();
       const ObObj *ser_value = NULL;
+      ObPackageVarEncodeInfo *pkg_var_info = nullptr;
       bool need_deserialize = false;
+      bool is_invalid = false;
       key.reset();
       value.reset();
       if (OB_ISNULL(var)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("variable is null", K(ret), KPC(var), K(var_idx));
+      } else if (!value_map.empty() && OB_NOT_NULL(pkg_var_info = value_map.get(var_idx))) {
+        ser_value = &(pkg_var_info->encode_value_);
+        need_deserialize = true;
       } else if (OB_FAIL(package_state.make_pkg_var_kv_key(resolve_ctx.allocator_, var_idx, VARIABLE, key))) {
         LOG_WARN("make package var name failed", K(ret));
-      } else if (OB_NOT_NULL(ser_value = resolve_ctx.session_info_.get_user_variable_value(key))) {
+      } else if (OB_ISNULL(ser_value = resolve_ctx.session_info_.get_user_variable_value(key))) {
+        // do nothing
+      } else if (ser_value->is_null()) {
+        // do nothing
+      } else if (OB_FAIL(ObPLPackageState::is_invalid_value(*ser_value, is_invalid))) {
+        LOG_WARN("fail to check value validation", K(ret));
+      } else if (!is_invalid) {
         need_deserialize = true;
       }
       if (OB_FAIL(ret)) {
@@ -251,39 +311,12 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
             // sync other server modify for this server! (from porxy or distribute plan)
             if (var_type.is_obj_type()) {
               OZ (ObUserDefinedType::destruct_objparam(package_state.get_pkg_allocator(), value, &(resolve_ctx.session_info_)));
+              // set basic type value inside symbol table to null
+              OZ (package_state.set_package_var_val(var_idx, value, resolve_ctx, false));
             } else {
-              OZ (ObUserDefinedType::destruct_obj(value, &(resolve_ctx.session_info_), true));
-              if (OB_SUCC(ret) && var_type.is_record_type() && PL_RECORD_TYPE == value.get_meta().get_extend_type()) {
-                const ObUserDefinedType *user_type = NULL;
-                const ObRecordType *record_type = NULL;
-                ObObj *member = NULL;
-                ObPLRecord *record = reinterpret_cast<ObPLRecord *>(value.get_ext());
-                CK (OB_NOT_NULL(record));
-                OZ (var_type.get_external_user_type(resolve_ctx, user_type), KPC(this));
-                CK (OB_NOT_NULL(user_type));
-                CK (OB_NOT_NULL(record_type = static_cast<const ObRecordType *>(user_type)));
-                for (int64_t i = 0; OB_SUCC(ret) && i < record_type->get_member_count(); ++i) {
-                  const ObRecordMember* record_member = record_type->get_record_member(i);
-                  const ObPLDataType* member_type = record_type->get_record_member_type(i);
-                  CK (OB_NOT_NULL(record_type->get_member(i)));
-                  OZ (record->get_element(i, member));
-                  CK (OB_NOT_NULL(member));
-                  CK (OB_NOT_NULL(record_member));
-                  CK (OB_NOT_NULL(member_type));
-                  if (OB_SUCC(ret)) {
-                    if (record_type->get_member(i)->is_obj_type()) {
-                      OX (new (member) ObObj(ObNullType));
-                    } else {
-                      int64_t init_size = OB_INVALID_SIZE;
-                      int64_t member_ptr = 0;
-                      OZ (record_type->get_member(i)->get_size(PL_TYPE_INIT_SIZE, init_size));
-                      OZ (record_type->get_member(i)->newx(*record->get_allocator(), &resolve_ctx, member_ptr));
-                      OX (member->set_extend(member_ptr, record_type->get_member(i)->get_type(), init_size));
-                    }
-                  }
-                }
-              }
+              OZ (ObUserDefinedType::reset_composite(value, &(resolve_ctx.session_info_)));
             }
+            OV (ser_value->is_hex_string(), OB_ERR_UNEXPECTED, KPC(ser_value), K(key));
             OZ (var_type.deserialize(resolve_ctx,
                                     var_type.is_cursor_type() ?
                                       package_state.get_pkg_cursor_allocator()
@@ -310,6 +343,10 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
         }
       }
     }
+    if (value_map.created()) {
+      int tmp_ret = value_map.destroy();
+      ret = OB_SUCCESS != ret ? ret : tmp_ret;
+    }
   }
   if (OB_SUCC(ret) && !resolve_ctx.is_sync_package_var_) {
     if (OB_FAIL(execute_init_routine(resolve_ctx.allocator_, exec_ctx))) {
@@ -335,6 +372,11 @@ int ObPLPackage::execute_init_routine(ObIAllocator &allocator, ObExecContext &ex
       ObObj result;
       int status;
       ObSEArray<int64_t, 2> subp_path;
+      pl::ObPLExecuteArg pl_execute_arg;
+      OZ (pl_execute_arg.obtain_routine(exec_ctx,
+                                        init_routine->get_package_id(),
+                                        init_routine->get_routine_id(),
+                                        subp_path));
       OZ (pl_engine->execute(exec_ctx,
                              exec_ctx.get_allocator(),
                              init_routine->get_package_id(),
@@ -343,6 +385,7 @@ int ObPLPackage::execute_init_routine(ObIAllocator &allocator, ObExecContext &ex
                              params,
                              nocopy_param,
                              result,
+                             pl_execute_arg,
                              &status,
                              false,
                              init_routine->is_function()));
@@ -463,7 +506,7 @@ int ObPLPackage::get_cursor(
     const ObPLVar *v = NULL;
     CK (OB_NOT_NULL(it));
     CK (OB_NOT_NULL(v = get_var_table().at(it->get_index())));
-    if (OB_SUCC(ret) && 0 == v->get_name().case_compare(cursor_name)) {
+    if (OB_SUCC(ret) && v->get_name().case_compare_equal(cursor_name)) {
       cursor = it;
       cursor_idx = i;
       break;

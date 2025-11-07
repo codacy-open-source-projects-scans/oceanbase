@@ -13,12 +13,9 @@
 #define USING_LOG_PREFIX PL
 
 #include "pl/ob_pl_router.h"
-#include "share/schema/ob_routine_info.h"
-#include "parser/ob_pl_parser.h"
-#include "pl/ob_pl_resolver.h"
 #include "pl/ob_pl_package.h"
-#include "share/ob_errno.h"
-#include "sql/ob_sql_utils.h"
+#include "sql/resolver/ddl/ob_ddl_resolver.h"
+#include "pl/ob_pl_dependency_util.h"
 
 namespace oceanbase {
 using namespace common;
@@ -108,7 +105,7 @@ int ObPLRouter::check_error_in_resolve(int code)
   return ret;
 }
 
-int ObPLRouter::analyze(ObString &route_sql, ObIArray<ObDependencyInfo> &dep_info, ObRoutineInfo &routine_info)
+int ObPLRouter::analyze(ObString &route_sql, ObIArray<ObDependencyInfo> &dep_info, ObRoutineInfo &routine_info, obrpc::ObDDLArg *ddl_arg)
 {
   int ret = OB_SUCCESS;
   HEAP_VAR(ObPLFunctionAST, func_ast, inner_allocator_) {
@@ -130,6 +127,8 @@ int ObPLRouter::analyze(ObString &route_sql, ObIArray<ObDependencyInfo> &dep_inf
                                             dep_info,
                                             routine_info_.get_object_type(),
                                             0, dep_attr, dep_attr));
+      OZ (ObDDLResolver::ob_add_ddl_dependency(func_ast.get_dependency_table(),
+                                               *ddl_arg));
     }
     if (OB_SUCC(ret)) {
       if (func_ast.is_modifies_sql_data()) {
@@ -177,14 +176,15 @@ int ObPLRouter::simple_resolve(ObPLFunctionAST &func_ast)
   for (int64_t i = 0; OB_SUCC(ret) && i < routine_info_.get_routine_params().count(); ++i) {
     ObRoutineParam *param = routine_info_.get_routine_params().at(i);
     ObPLDataType param_type;
+    ObSEArray<ObSchemaObjVersion, 4> deps;
     CK (OB_NOT_NULL(param));
     OX (param_type.set_enum_set_ctx(&func_ast.get_enum_set_ctx()));
     OZ (pl::ObPLDataType::transform_from_iparam(param,
                                                 schema_guard_,
                                                 session_info_,
-                                                inner_allocator_,
                                                 sql_proxy_,
-                                                param_type));
+                                                param_type,
+                                                &deps));
     if (OB_SUCC(ret)) {
       if (param->is_ret_param()) {
         func_ast.set_ret_type(param_type);
@@ -201,10 +201,16 @@ int ObPLRouter::simple_resolve(ObPLFunctionAST &func_ast)
       } else {
         // do nothing
       }
+      if (OB_SUCC(ret)) {
+        if (OB_FAIL(ObPLDependencyUtil::add_dependency_objects(&func_ast.get_dependency_table(), deps))) {
+          LOG_WARN("fail to add dependency objects", K(ret));
+        }
+      }
     }
   }
   //Parser
   ObStmtNodeTree *parse_tree = NULL;
+  bool is_wrap = false;
   if (OB_SUCC(ret)) {
     ObString body = routine_info_.get_routine_body(); //获取body字符串
     ObPLParser parser(inner_allocator_, session_info_.get_charsets4parser(), session_info_.get_sql_mode());
@@ -213,7 +219,7 @@ int ObPLRouter::simple_resolve(ObPLFunctionAST &func_ast)
     if (OB_FAIL(ObSQLUtils::convert_sql_text_from_schema_for_resolve(
                   inner_allocator_, session_info_.get_dtc_params(), body))) {
       LOG_WARN("fail to get routine body", K(ret));
-    } else if (OB_FAIL(parser.parse_routine_body(body, parse_tree, session_info_.is_for_trigger_package()))) {
+    } else if (OB_FAIL(parser.parse_routine_body(body, parse_tree, session_info_.is_for_trigger_package(), is_wrap))) {
       LOG_WARN("parse routine body failed", K(ret), K(body));
     }
   }

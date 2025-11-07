@@ -82,6 +82,7 @@ int ObOrderPerservingEncoder::make_order_perserving_encode_from_object(
       break;
     }
     case ObDateType:
+    case ObMySQLDateType:
     case ObMediumIntType:
     case ObInt32Type: {
       if (to_len + sizeof(int32_t) > max_buf_len) {
@@ -95,6 +96,7 @@ int ObOrderPerservingEncoder::make_order_perserving_encode_from_object(
     case ObIntervalYMType:
     case ObTimeType:
     case ObDateTimeType:
+    case ObMySQLDateTimeType:
     case ObTimestampType:
     case ObIntType: {
       if (to_len + sizeof(int64_t) > max_buf_len) {
@@ -293,7 +295,7 @@ int ObOrderPerservingEncoder::convert_ob_charset_utf8mb4_bin_sp(unsigned char *d
                                                                 int64_t &to_len)
 {
   unsigned char *d_e = data + len;
-  while (*(d_e - 1) == 0x20 && d_e - 1 >= data)
+  while (d_e - 1 >= data && *(d_e - 1) == 0x20)
     d_e--;
 
   while (data < d_e) {
@@ -361,7 +363,7 @@ int ObOrderPerservingEncoder::encode_from_string_varlen(
     if (OB_FAIL(encode_tails(to, max_buf_len, to_len, param.is_memcmp_, cs, str.length()==1 && *str.ptr()=='\0'))) {
       LOG_WARN("failed to encode tails", K(ret));
     }
-  } else if (cs == CS_TYPE_COLLATION_FREE || cs == CS_TYPE_BINARY) {
+  } else if (cs == CS_TYPE_COLLATION_FREE || cs == CS_TYPE_BINARY || cs == CS_TYPE_UTF8MB4_0900_BIN) {
 #if OB_USE_MULTITARGET_CODE
     if (param.is_simdopt_ && common::is_arch_supported(ObTargetArch::AVX2)
       && specific::avx2::check_terminator_simd((unsigned char *)str.ptr(), str.length(), 0x00)) {
@@ -746,11 +748,24 @@ int ObOrderPerservingEncoder::encode_tails(unsigned char *to, int64_t max_buf_le
     *to = 0x00;
     *(to+1) = 0x00;
     to_len += 2;
+  } else if (cs == CS_TYPE_GBK_CHINESE_CI) {
+    if (with_empty_str) {
+      *to = 0x00;
+      to++;
+      to_len++;
+    }
+    if (is_mem) {
+      MEMSET(to, 0x00, 4);
+    } else {
+      MEMSET(to, 0x00, 4);
+      *(to+1) = 0x20;
+      *(to+3) = 0x20;
+    }
+    to_len += 4;
   } else if (cs == CS_TYPE_UTF8MB4_BIN
            || cs == CS_TYPE_GBK_BIN || cs == CS_TYPE_GB18030_BIN
            || cs == CS_TYPE_GB18030_2022_BIN
            || cs == CS_TYPE_UTF8MB4_GENERAL_CI
-           || cs == CS_TYPE_GBK_CHINESE_CI
            || cs == CS_TYPE_UTF16_GENERAL_CI
            || cs == CS_TYPE_UTF16_BIN
            || cs == CS_TYPE_GB18030_CHINESE_CI

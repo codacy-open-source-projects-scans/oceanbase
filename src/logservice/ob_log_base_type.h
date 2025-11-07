@@ -168,6 +168,26 @@ enum ObLogBaseType
   // for new DDL scheduler
   SYS_DDL_SCHEDULER_LOG_BASE_TYPE = 52,
 
+  // for tenant disaster recovery
+  DISASTER_RECOVERY_SERVICE_LOG_BASE_TYPE = 53,
+
+  // for new DDL service
+  DDL_SERVICE_LAUNCHER_LOG_BASE_TYPE = 54,
+#ifdef  OB_BUILD_SHARED_STORAGE
+  // storage cache policy
+  STORAGE_CACHE_POLICY_LOG_BASE_TYPE = 55,
+  // for sslog gts service
+  SSLOG_GTS_LOG_BASE_TYPE = 56,
+  // for sslog uid service
+  SSLOG_UID_LOG_BASE_TYPE = 57,
+#endif
+  // for obkv table async query session id service
+  TABLE_SESS_ID_LOG_BASE_TYPE = 58,
+    // for backup validate service
+    BACKUP_VALIDATE_SERVICE_LOG_BASE_TYPE = 59,
+  // for vector index scheduler
+  VEC_INDEX_SERVICE_LOG_BASE_TYPE = 60,
+
   // pay attention!!!
   // add log type in log_base_type_to_string
   // max value
@@ -281,6 +301,8 @@ int log_base_type_to_string(const ObLogBaseType log_type,
 #ifdef OB_BUILD_SHARED_STORAGE
   } else if (log_type == SHARE_STORAGE_PUBLIC_BLOCK_GC_SERVICE_LOG_BASE_TYPE) {
     strncpy(str ,"PUBLIC_BLOCK_GC_SERVICE", str_len);
+  } else if (log_type == SHARED_STORAGE_SSWRITER_LOG_BASE_TYPE) {
+    strncpy(str ,"SSWRITER_LS_HANDLER", str_len);
 #endif
   } else if (log_type == TABLE_LOCK_LOG_BASE_TYPE) {
     strncpy(str, "TABLE_LOCK_LOG_BASE_TYPE", str_len);
@@ -296,6 +318,22 @@ int log_base_type_to_string(const ObLogBaseType log_type,
 #endif
   } else if (log_type == SYS_DDL_SCHEDULER_LOG_BASE_TYPE) {
     strncpy(str ,"SYS_DDL_SCHEDULER", str_len);
+  } else if (log_type == DISASTER_RECOVERY_SERVICE_LOG_BASE_TYPE) {
+    strncpy(str ,"DISASTER_RECOVERY_SERVICE", str_len);
+  } else if (log_type == DDL_SERVICE_LAUNCHER_LOG_BASE_TYPE) {
+    strncpy(str ,"DDL_SERVICE_LAUNCHER", str_len);
+#ifdef OB_BUILD_SHARED_STORAGE
+  } else if (log_type == SSLOG_GTS_LOG_BASE_TYPE) {
+    strncpy(str ,"SSLOG_GTS", str_len);
+  } else if (log_type == SSLOG_UID_LOG_BASE_TYPE) {
+    strncpy(str ,"SSLOG_UID", str_len);
+#endif
+  } else if (log_type == TABLE_SESS_ID_LOG_BASE_TYPE) {
+    strncpy(str, "TABLE_SESS_ID", str_len);
+  } else if (log_type == BACKUP_VALIDATE_SERVICE_LOG_BASE_TYPE) {
+    strncpy(str, "BACKUP_VALIDATE_SERVICE", str_len);
+  } else if (log_type == VEC_INDEX_SERVICE_LOG_BASE_TYPE) {
+    strncpy(str, "VEC_INDEX_SERVICE", str_len);
   } else {
     ret = OB_INVALID_ARGUMENT;
   }

@@ -11,36 +11,19 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_storage_ha_utils.h"
-#include "observer/ob_server_struct.h"
-#include "share/config/ob_server_config.h"
-#include "share/location_cache/ob_location_service.h"
-#include "share/ob_zone_merge_info.h"
-#include "storage/tablet/ob_tablet.h"
 #include "share/tablet/ob_tablet_table_operator.h"
 #include "share/ob_global_merge_table_operator.h"
 #include "share/ob_tablet_replica_checksum_operator.h"
-#include "share/scn.h"
-#include "share/ls/ob_ls_info.h"
-#include "ob_storage_ha_struct.h"
-#include "share/ls/ob_ls_table_operator.h"
 #include "observer/ob_server_event_history_table_operator.h"
-#include "observer/ob_server_struct.h"
-#include "observer/ob_service.h"
-#include "share/ob_version.h"
-#include "share/ob_cluster_version.h"
-#include "storage/ob_storage_rpc.h"
 #include "storage/tx/ob_ts_mgr.h"
 #include "storage/tx_storage/ob_ls_service.h"
 #include "rootserver/ob_tenant_info_loader.h"
-#include "src/observer/omt/ob_tenant_config.h"
-#include "common/errsim_module/ob_errsim_module_type.h"
-#include "ob_storage_ha_diagnose_mgr.h"
-#include "share/ob_storage_ha_diagnose_struct.h"
-#include "common/ob_role.h"
-#include "share/rc/ob_tenant_base.h"
 #include "observer/omt/ob_tenant.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
-#include "storage/access/ob_table_read_info.h"
+#include "share/ob_io_device_helper.h"
+#include "storage/compaction/ob_partition_merge_policy.h"
+#include "storage/ddl/ob_direct_load_mgr_utils.h"
+#include "storage/ddl/ob_inc_ddl_merge_task_utils.h"
 
 using namespace oceanbase::share;
 
@@ -51,6 +34,7 @@ namespace storage
 
 ERRSIM_POINT_DEF(EN_TRANSFER_ALLOW_RETRY);
 ERRSIM_POINT_DEF(EN_CHECK_LOG_NEED_REBUILD);
+ERRSIM_POINT_DEF(EN_TRANSFER_INC_MAJOR_BACKFILL);
 
 int ObStorageHAUtils::get_ls_leader(const uint64_t tenant_id, const share::ObLSID &ls_id, common::ObAddr &leader)
 {
@@ -248,7 +232,7 @@ int ObStorageHAUtils::check_ls_deleted(
   if (!ls_id.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get ls status from inner table get invalid argument", K(ret), K(ls_id));
-  } else if (!REACH_TENANT_TIME_INTERVAL(60 * 1000L * 1000L)) { //60s
+  } else if (!REACH_THREAD_TIME_INTERVAL(60 * 1000L * 1000L)) { //60s
     is_deleted = false;
   } else if (OB_FAIL(ObLocationService::check_ls_exist(tenant_id, ls_id, state))) {
     LOG_WARN("failed to check ls exist", K(ret), K(tenant_id), K(ls_id));
@@ -388,7 +372,7 @@ int ObStorageHAUtils::check_disk_space()
   int ret = OB_SUCCESS;
   const int64_t required_size = 0;
   if (OB_FAIL(LOCAL_DEVICE_INSTANCE.check_space_full(required_size))) {
-    LOG_WARN("failed to check is disk full, cannot transfer in", K(ret));
+    LOG_WARN("failed to check is disk full, cannot do storage task", K(ret), K(required_size));
   }
   return ret;
 }
@@ -621,11 +605,11 @@ int ObStorageHAUtils::append_tablet_list(
   return ret;
 }
 
-int ObStorageHAUtils::get_tablet_size_in_bytes(
-    const ObLSID &ls_id, const ObTabletID &tablet_id, int64_t &tablet_size)
+int ObStorageHAUtils::get_tablet_backup_size_in_bytes(
+    const ObLSID &ls_id, const ObTabletID &tablet_id, int64_t &backup_size)
 {
   int ret = OB_SUCCESS;
-  tablet_size = 0;
+  backup_size = 0;
   ObTabletResidentInfo info;
   const ObTabletMapKey key(ls_id, tablet_id);
   ObTenantMetaMemMgr *t3m = MTL(ObTenantMetaMemMgr*);
@@ -638,10 +622,115 @@ int ObStorageHAUtils::get_tablet_size_in_bytes(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid resident_info", K(ret), K(key), K(info));
   } else {
-    tablet_size = info.get_occupy_size() + info.get_backup_size();
+    backup_size = info.get_backup_size();
   }
   return ret;
 }
+
+int ObStorageHAUtils::get_tablet_occupy_size_in_bytes(
+    const ObLSID &ls_id, const ObTabletID &tablet_id, int64_t &occupy_size)
+{
+  int ret = OB_SUCCESS;
+  occupy_size = 0;
+  ObTabletResidentInfo info;
+  const ObTabletMapKey key(ls_id, tablet_id);
+  ObTenantMetaMemMgr *t3m = MTL(ObTenantMetaMemMgr*);
+
+  if (!ls_id.is_valid() || !tablet_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (OB_FAIL(t3m->get_tablet_resident_info(key, info))) {
+    LOG_WARN("fail to get tablet resident_info", K(ret), K(key));
+  } else if (!info.is_valid()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid resident_info", K(ret), K(key), K(info));
+  } else {
+    occupy_size = info.get_occupy_size() + info.get_backup_size();
+  }
+  return ret;
+}
+
+int ObStorageHAUtils::deal_compat_with_ls_inner_tablet(const ObLSID &ls_id)
+{
+  int ret = OB_SUCCESS;
+  ObLSService *ls_svr = NULL;
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+  ObTabletHandle tablet_handle;
+  ObArray<ObTabletID> tablet_id_array;
+
+  if (!ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("deal compact with ls inner tablet get invalid argument", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls service should not be NULL", K(ret), KP(ls_svr));
+  } else if (OB_FAIL(ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::HA_MOD))) {
+    LOG_WARN("ls_srv->get_ls() fail", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls should not be NULL", K(ret), K(ls_id));
+  } else {
+    ObLS::ObLSInnerTabletIDIter tablet_iter;
+    ObTabletID tablet_id;
+    while (OB_SUCC(ret)) {
+      if (OB_FAIL(tablet_iter.get_next(tablet_id))) {
+        tablet_id.reset();
+        tablet_handle.reset();
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          break;
+        } else {
+          LOG_WARN("failed to get next tablet id", K(ret));
+        }
+      } else if (OB_FAIL(ls->ha_get_tablet(tablet_id, tablet_handle))) {
+        if (OB_TABLET_NOT_EXIST == ret) {
+          //overwrite ret
+          if (OB_FAIL(tablet_id_array.push_back(tablet_id))) {
+            LOG_WARN("failed to push tablet id into array", K(ret));
+          }
+        } else {
+          LOG_WARN("failed to get tablet", K(ret), K(tablet_id));
+        }
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(create_ls_inner_tablet_for_compat_(tablet_id_array, ls))) {
+      LOG_WARN("failed to create ls inner tablet for compat", K(ret), K(tablet_id_array));
+    }
+  }
+  return ret;
+}
+
+int ObStorageHAUtils::create_ls_inner_tablet_for_compat_(
+    const common::ObIArray<ObTabletID> &tablet_id_array,
+    ObLS *ls)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(ls)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("create ls inner tablet for compat get invalid argument", K(ret), KP(ls));
+  } else if (tablet_id_array.empty()) {
+    //do nothing
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < tablet_id_array.count(); ++i) {
+      const ObTabletID &tablet_id = tablet_id_array.at(i);
+      switch (tablet_id.id()) {
+      case ObTabletID::LS_REORG_INFO_TABLET_ID: {
+        if (OB_FAIL(ls->get_reorg_info_table()->init_tablet_for_compat())) {
+          LOG_WARN("failed to create reorg info table", K(ret), KPC(ls));
+        }
+        break;
+      }
+      default: {
+        ret = OB_NOT_SUPPORTED;
+        LOG_ERROR("ls inner tablet create do not supported", K(ret), K(tablet_id));
+      }
+      }
+    }
+  }
+  return ret;
+}
+
 
 bool ObTransferUtils::is_need_retry_error(const int err)
 {
@@ -755,6 +844,8 @@ int ObTransferUtils::unblock_tx(const uint64_t tenant_id, const share::ObLSID &l
 int ObTransferUtils::get_gts(const uint64_t tenant_id, SCN &gts)
 {
   int ret = OB_SUCCESS;
+  const int64_t start_ts = ObTimeUtil::current_time();
+  int64_t retry_count = 0;
   if (OB_INVALID_TENANT_ID == tenant_id) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("tenant id is invalid", K(ret), K(tenant_id));
@@ -773,12 +864,14 @@ int ObTransferUtils::get_gts(const uint64_t tenant_id, SCN &gts)
           LOG_WARN("failed to get gts", KR(ret), K(tenant_id));
         } else {
           // waiting 10ms
+          ++retry_count;
           ob_usleep(10L * 1000L);
         }
       }
     }
   }
-  LOG_INFO("get tenant gts", KR(ret), K(tenant_id), K(gts));
+  LOG_INFO("get tenant gts", KR(ret), K(tenant_id), K(gts), "cost_ts",
+            ObTimeUtil::current_time() - start_ts, K(retry_count));
   return ret;
 }
 
@@ -1470,9 +1563,8 @@ int ObStorageHAUtils::build_major_sstable_reuse_info(
   // 2. iterate these major sstables' macro blocks (if not co, there is only one major sstable), update reuse map
   int ret = OB_SUCCESS;
   ObTablet *tablet = nullptr;
-  ObITable *latest_major = nullptr;
   ObTabletMemberWrapper<ObTabletTableStore> wrapper;
-  int64_t major_cnt = 0;
+  ObTableHandleV2 latest_major;
 
   if (!tablet_handle.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
@@ -1485,37 +1577,40 @@ int ObStorageHAUtils::build_major_sstable_reuse_info(
       LOG_WARN("failed to init reuse info mgr", K(ret));
     }
 
-    // when restore, we won't build reuse info for lastest major sstable, because restore always read all sstable from backup media
+    // 1. for shared storage mode, we won't build reuse info
+    // 2. when restore, we won't build reuse info for lastest major sstable, because restore always read all sstable from backup media
     // (i.e. will scan all sstables' macro block again when tablet restore dag retry)
     // when migrate, we will keep the major sstable already been copied to dest server, so we need to build reuse info for lastest major sstable
     // that already been copied to dest server
-    if (OB_SUCC(ret) && !is_restore) {
-      common::ObArray<const ObSSTable *> major_sstables;
+    if (OB_SUCC(ret) && !GCTX.is_shared_storage_mode() && !is_restore) {
+      common::ObArray<ObSSTableWrapper> major_sstables;
       int64_t reuse_info_count = 0;
+      ObTableStoreIterator major_sstable_iter;
 
       if (OB_FAIL(tablet->fetch_table_store(wrapper))) {
         LOG_WARN("failed to fetch table store", K(ret), KPC(tablet));
       } else if (!wrapper.is_valid()) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("table store wrapper is invalid", K(ret), K(wrapper), KPC(tablet));
-      } else if (FALSE_IT(major_cnt = wrapper.get_member()->get_major_sstables().count())) {
-      } else if (0 == major_cnt) {
-        LOG_INFO("no major sstable, skip build reuse info", K(ret), K(wrapper), KPC(tablet));
-      } else if (OB_FAIL(get_latest_available_major_(wrapper.get_member()->get_major_sstables(), latest_major))) {
+      } else if (OB_FAIL(wrapper.get_member()->get_major_sstables(major_sstable_iter, false /*unpack_co_table*/))) {
+        LOG_WARN("failed to get major sstables", K(ret), K(wrapper), KPC(tablet));
+      } else if (0 == major_sstable_iter.count()) {
+        LOG_INFO("no major sstable, skip build reuse info", K(ret), KPC(tablet));
+      } else if (OB_FAIL(get_latest_available_major_(major_sstable_iter, latest_major))) {
         // get_major_sstables return major sstables ordered by snapshot version in ascending order
         LOG_WARN("failed to get latest available major sstable", K(ret), K(wrapper), KPC(tablet));
-      } else if (OB_ISNULL(latest_major)) {
+      } else if (!latest_major.is_valid()) {
         // skip, first major sstable has backup data, no need to build reuse info
         LOG_INFO("first major sstable has backup data, no need to build reuse info", K(ret), K(wrapper), KPC(tablet));
       } else if (OB_FAIL(get_latest_major_sstable_array_(latest_major, major_sstables))){
-        LOG_WARN("failed to get latest major sstable array", K(ret), KPC(latest_major));
+        LOG_WARN("failed to get latest major sstable array", K(ret), K(latest_major));
       } else {
         if (OB_FAIL(build_reuse_info_(major_sstables, tablet_handle, macro_block_reuse_mgr))) {
-          LOG_WARN("failed to build reuse info", K(ret), K(major_sstables), KPC(tablet), KPC(latest_major));
+          LOG_WARN("failed to build reuse info", K(ret), K(major_sstables), KPC(tablet), K(latest_major));
         } else if (OB_FAIL(macro_block_reuse_mgr.count(reuse_info_count))) {
-          LOG_WARN("failed to count reuse info", K(ret), K(major_sstables), KPC(tablet), KPC(latest_major));
+          LOG_WARN("failed to count reuse info", K(ret), K(major_sstables), KPC(tablet), K(latest_major));
         } else {
-          LOG_INFO("succeed to build reuse info", K(ret), K(major_sstables), KPC(tablet), KPC(latest_major), K(reuse_info_count));
+          LOG_INFO("succeed to build reuse info", K(ret), K(major_sstables), KPC(tablet), K(latest_major), K(reuse_info_count));
         }
 
         // if build reuse info failed, reset reuse mgr
@@ -1529,89 +1624,108 @@ int ObStorageHAUtils::build_major_sstable_reuse_info(
   return ret;
 }
 
-int ObStorageHAUtils::get_latest_available_major_(const storage::ObSSTableArray &major_sstables, ObITable *&latest_major)
+int ObStorageHAUtils::get_latest_available_major_(
+  storage::ObTableStoreIterator &major_sstables_iter,
+  ObTableHandleV2 &latest_major)
 {
   int ret = OB_SUCCESS;
-  latest_major = nullptr;
+  latest_major.reset();
+  ObTableHandleV2 cur_major_handle;
+  ObSSTableMetaHandle sst_meta_hdl;
 
   // major sstables must be sorted by snapshot version in ascending order
   // get the latest major sstable that has no backup data and all previous major sstables have backup data
-  for(int64_t i = 0; OB_SUCC(ret) && i < major_sstables.count(); ++i) {
-    ObITable *cur_major = major_sstables.at(i);
-    ObSSTable *sstable = nullptr;
-    ObSSTableMetaHandle sst_meta_hdl;
-
-    if (OB_ISNULL(cur_major) || !ObITable::is_major_sstable(cur_major->get_key().table_type_)) {
+  while (OB_SUCC(ret)) {
+    cur_major_handle.reset();
+    sst_meta_hdl.reset();
+    const ObSSTable *sstable = nullptr;
+    if (OB_FAIL(major_sstables_iter.get_next(cur_major_handle))) {
+      if (OB_ITER_END == ret) {
+        // no more major sstables
+        ret = OB_SUCCESS;
+        break;
+      } else {
+        LOG_WARN("failed to get next major sstable handle", K(ret), K(cur_major_handle));
+      }
+    } else if (OB_FAIL(cur_major_handle.get_sstable(sstable))) {
+      LOG_WARN("failed to get sstable from handle", K(ret), K(cur_major_handle));
+    } else if (OB_ISNULL(sstable) || !ObITable::is_major_sstable(sstable->get_key().table_type_)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid major sstable", K(ret), K(i), KPC(cur_major));
-    } else if (FALSE_IT(sstable = static_cast<ObSSTable *>(cur_major))) {
+      LOG_WARN("invalid major sstable", K(ret), KPC(sstable));
     } else if (OB_FAIL(sstable->get_meta(sst_meta_hdl))) {
       LOG_WARN("failed to get sstable meta", K(ret), KPC(sstable));
     } else if (sst_meta_hdl.get_sstable_meta().get_basic_meta().table_backup_flag_.has_backup()) {
       // stop at the first major sstable that has backup data
       break;
     } else {
-      latest_major = cur_major;
+      latest_major = cur_major_handle;
     }
   }
 
   return ret;
 }
 
-int ObStorageHAUtils::get_latest_major_sstable_array_(const ObITable *latest_major, common::ObArray<const ObSSTable *> &major_sstables)
+int ObStorageHAUtils::get_latest_major_sstable_array_(
+    ObTableHandleV2 &latest_major,
+    common::ObArray<ObSSTableWrapper> &major_sstables)
 {
   int ret = OB_SUCCESS;
-  ObITable::TableKey table_key = latest_major->get_key();
+  major_sstables.reset();
+  ObITable *latest_major_table = nullptr;
+  ObITable::TableKey table_key;
+  ObITable::TableType table_type = ObITable::MAX_TABLE_TYPE;
+
+  if (OB_ISNULL(latest_major_table = latest_major.get_table())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("latest major sstable should not be null", K(ret), K(latest_major));
+  } else if (FALSE_IT(table_key = latest_major_table->get_key())) {
+  } else if (FALSE_IT(table_type = table_key.table_type_)) {
+  }
   // table type of the local major sstable which has max snapshot version
   // could be normal major sstable (row store) or co sstable (column store)
-  ObITable::TableType table_type = table_key.table_type_;
-
-  if (table_type != ObITable::COLUMN_ORIENTED_SSTABLE && table_type != ObITable::MAJOR_SSTABLE) {
+  else if (table_type != ObITable::COLUMN_ORIENTED_SSTABLE && table_type != ObITable::MAJOR_SSTABLE) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid table type", K(ret), K(table_type));
+    LOG_WARN("invalid table type", K(ret), K(table_key));
   } else if (table_type == ObITable::MAJOR_SSTABLE) {
-    const ObSSTable *sstable = static_cast<const ObSSTable *> (latest_major);
-    if (!ObITable::is_major_sstable(sstable->get_key().table_type_)) {
+    ObSSTable *sstable = static_cast<ObSSTable *> (latest_major_table);
+    ObSSTableWrapper major_sstable_wrapper;
+
+    if (OB_ISNULL(sstable) || !sstable->is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("sstable should not be null or invalid", K(ret), K(latest_major), KPC(sstable));
+    } else if (!ObITable::is_major_sstable(sstable->get_key().table_type_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid sstable type, not major sstable", K(ret), KPC(sstable));
-    } else if(OB_FAIL(major_sstables.push_back(sstable))) {
-      LOG_WARN("failed to push back sstable", K(ret), KPC(sstable));
+    }
+    // won't set meta hdl here, because meta hdl is already hold by outer table handle (latest_major)
+    else if (OB_FAIL(major_sstable_wrapper.set_sstable(sstable))) {
+      LOG_WARN("failed to set sstable for major sstable wrapper", K(ret), KPC(sstable));
+    } else if (OB_FAIL(major_sstables.push_back(major_sstable_wrapper))) {
+      LOG_WARN("failed to push back major sstable wrapper", K(ret), K(major_sstable_wrapper));
     }
   } else if (table_type == ObITable::COLUMN_ORIENTED_SSTABLE) {
-    const ObCOSSTableV2 *co_sstable = static_cast<const ObCOSSTableV2 *> (latest_major);
-    ObArray<ObSSTableWrapper> sstable_wrappers;
+    const ObCOSSTableV2 *co_sstable = static_cast<const ObCOSSTableV2 *> (latest_major_table);
 
-    if (OB_FAIL(co_sstable->get_all_tables(sstable_wrappers))) {
-      LOG_WARN("failed to get all co & cg tables", K(ret), K(table_key), KPC(latest_major));
-    } else {
-      ObSSTable *sstable = nullptr;
-
-      // add all cg sstable and the lastest co sstable to build reuse info
-      for (int64_t i = 0; OB_SUCC(ret) && i < sstable_wrappers.count(); ++i) {
-        sstable = sstable_wrappers.at(i).get_sstable();
-
-        if (OB_ISNULL(sstable)) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("sstable is null", K(ret), KP(sstable));
-        } else if (!sstable->is_column_store_sstable()) {
-          ret = OB_INVALID_ARGUMENT;
-          LOG_WARN("invalid sstable type, not column store sstable", K(ret), KPC(sstable));
-        } else if (OB_FAIL(major_sstables.push_back(sstable))) {
-          LOG_WARN("failed to push back sstable", K(ret), KPC(sstable));
-        }
-      }
+    if (OB_ISNULL(co_sstable) || !co_sstable->is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("co sstable should not be null or invalid", K(ret), K(latest_major), KPC(co_sstable));
+    } else if (OB_FAIL(co_sstable->get_all_tables(major_sstables))) {
+      LOG_WARN("failed to get all co & cg tables", K(ret), K(table_key), KPC(co_sstable));
     }
   }
 
   return ret;
 }
 
-int ObStorageHAUtils::build_reuse_info_(const common::ObArray<const ObSSTable *> &major_sstables, const ObTabletHandle &tablet_handle, ObMacroBlockReuseMgr &macro_block_reuse_mgr)
+int ObStorageHAUtils::build_reuse_info_(
+    const common::ObArray<ObSSTableWrapper> &major_sstables,
+    const ObTabletHandle &tablet_handle,
+    ObMacroBlockReuseMgr &macro_block_reuse_mgr)
 {
   int ret = OB_SUCCESS;
 
   for (int64_t i = 0; OB_SUCC(ret) && i < major_sstables.count(); ++i) {
-    const ObSSTable *sstable = major_sstables.at(i);
+    const ObSSTable *sstable = major_sstables.at(i).get_sstable();
     if (OB_ISNULL(sstable) || !ObITable::is_major_sstable(sstable->get_key().table_type_)) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("sstable should not be NULL and should be major" , K(ret), KPC(sstable));
@@ -1629,6 +1743,27 @@ void ObStorageHAUtils::sort_table_key_array_by_snapshot_version(common::ObArray<
   lib::ob_sort(table_key_array.begin(), table_key_array.end(), cmp);
 }
 
+#ifdef ERRSIM
+int ObStorageHAUtils::is_errsim_transfer_server(bool &is_errsim_server)
+{
+  int ret = OB_SUCCESS;
+  is_errsim_server = false;
+  const ObString &errsim_addr_str = GCONF.errsim_transfer_backfill_server_addr.str();
+  common::ObAddr errsim_addr;
+  const common::ObAddr &self_addr = GCONF.self_addr_;
+
+  if (errsim_addr_str.empty()) {
+    is_errsim_server = true;
+  } else if (OB_FAIL(errsim_addr.parse_from_string(errsim_addr_str))) {
+    LOG_WARN("failed to parse errsim addr", K(errsim_addr_str));
+  } else if (self_addr == errsim_addr) {
+    is_errsim_server = true;
+  }
+
+  return ret;
+}
+#endif
+
 bool ObTransferUtils::enable_transfer_dml_ctrl(const uint64_t data_version)
 {
   bool b_ret = false;
@@ -1639,6 +1774,164 @@ bool ObTransferUtils::enable_transfer_dml_ctrl(const uint64_t data_version)
     b_ret = false;
   }
   return b_ret;
+}
+
+int ObTransferUtils::get_ls_leader(const share::ObLSID &ls_id, common::ObAddr &addr)
+{
+  int ret = OB_SUCCESS;
+  const int64_t cluster_id = GCONF.cluster_id;
+  const uint64_t tenant_id = MTL_ID();
+  share::ObLocationService *location_service = nullptr;
+  const bool force_renew = true;
+
+  if (!ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get ls leader get invalid argument", K(ret), K(ls_id));
+  } else if (OB_ISNULL(location_service = GCTX.location_service_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("location service should not be NULL", K(ret), KP(location_service));
+  } else if (OB_FAIL(location_service->get_leader(cluster_id, tenant_id, ls_id, force_renew, addr))) {
+    LOG_WARN("fail to get ls leader server", K(ret), K(tenant_id), K(ls_id));
+  }
+  return ret;
+}
+
+int ObTransferUtils::get_ls_member_list(const share::ObLSID &ls_id, common::ObMemberList &member_list)
+{
+  int ret = OB_SUCCESS;
+  ObLSService *ls_service = nullptr;
+  int64_t cluster_id = GCONF.cluster_id;
+  uint64_t tenant_id = MTL_ID();
+  ObStorageHASrcInfo src_info;
+  obrpc::ObFetchLSMemberListInfo member_info;
+  src_info.cluster_id_ = cluster_id;
+
+  if (!ls_id.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get src ls member list get invalid argument", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls_service = MTL(ObLSService*))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls service should not be NULL", K(ret), KP(ls_service));
+  } else if (OB_FAIL(get_ls_leader(ls_id, src_info.src_addr_))) {
+    LOG_WARN("failed to get src ls leaer", K(ret), K(ls_id));
+  } else if (OB_FAIL(ls_service->get_storage_rpc()->post_ls_member_list_request(tenant_id, src_info, ls_id, member_info))) {
+    LOG_WARN("failed to get ls member info", K(ret), K(ls_id));
+  } else if (member_info.member_list_.get_member_number() <= 0) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("member list number is unexpected", K(ret), K(member_info), K(ls_id));
+  } else if (OB_FAIL(member_list.deep_copy(member_info.member_list_))) {
+    LOG_WARN("failed to copy member list", K(ret), K(ls_id));
+  }
+  return ret;
+}
+
+int ObTransferUtils::check_inc_major_backfill(
+    const share::ObLSID &ls_id,
+    const share::SCN &backfill_scn,
+    ObTableHandleV2 &table_handle,
+    bool &need_backfill,
+    bool &is_trans_abort)
+{
+  int ret = OB_SUCCESS;
+  need_backfill = true;
+  is_trans_abort = false;
+  ObSSTable *sstable = nullptr;
+  ObLSService *ls_svr = NULL;
+  ObLSHandle ls_handle;
+  ObLS *ls = nullptr;
+  int64_t trans_state = ObTxData::MAX_STATE_CNT;
+  int64_t commit_version = -1;
+
+  if (!ls_id.is_valid() || !backfill_scn.is_valid() ||!table_handle.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("check inc major backfill get invalid argument", K(ret), K(ls_id), K(backfill_scn), K(table_handle));
+  } else if (OB_ISNULL(ls_svr = (MTL(ObLSService *)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls service should not be NULL", K(ret), KP(ls_svr));
+  } else if (OB_FAIL(ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::HA_MOD))) {
+    LOG_WARN("ls_srv->get_ls() fail", K(ret), K(ls_id));
+  } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ls should not be NULL", K(ret), K(ls_id));
+  } else if (OB_FAIL(table_handle.get_sstable(sstable))) {
+    LOG_WARN("failed to get sstable", K(ret), K(table_handle));
+  } else if (!sstable->is_inc_major_type_sstable()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sstable is not inc major type sstable, unexpected", K(ret), K(table_handle), KPC(sstable));
+  } else if (INT64_MAX != sstable->get_upper_trans_version()) {
+    need_backfill = false;
+  } else if (OB_UNLIKELY(!sstable->is_loaded())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get tiny inc major unexpectedlly from iter", K(ret), KPC(sstable));
+  } else if (OB_FAIL(compaction::ObIncMajorTxHelper::get_inc_major_commit_version(*ls, *sstable, backfill_scn, trans_state, commit_version))) {
+    LOG_WARN("failed to get inc major's commit version", K(ret), KPC(sstable));
+  } else if (ObTxData::ABORT == trans_state) {
+    need_backfill = false;
+    is_trans_abort = true;
+    FLOG_INFO("meet abort inc major, ignore it", K(ret), K(commit_version), KPC(sstable));
+  } else if (ObTxData::COMMIT != trans_state) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("inc major trans state is not commit, unexpected", K(ret), K(trans_state));
+  } else {
+    need_backfill = true;
+  }
+
+#ifdef ERRSIM
+  if (OB_SUCC(ret)) {
+    int tmp_ret = OB_SUCCESS;
+    tmp_ret = EN_TRANSFER_INC_MAJOR_BACKFILL ? : OB_SUCCESS;
+    if (OB_TMP_FAIL(tmp_ret)) {
+      need_backfill = true;
+    }
+  }
+#endif
+
+  return ret;
+}
+
+int ObTransferUtils::check_ddl_merge_finished(
+    const ObTablet *tablet)
+{
+  int ret = OB_SUCCESS;
+  ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
+  bool ddl_need_merge = false;
+
+  // check major sstable exist
+  if (OB_ISNULL(tablet)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("check ddl dump exist get invalid argument", K(ret), KP(tablet));
+  } else if (OB_FAIL(tablet->fetch_table_store(table_store_wrapper))) {
+    LOG_WARN("fetch table store fail", K(ret), KPC(tablet));
+  } else if (!table_store_wrapper.get_member()->get_major_sstables().empty()) {
+    //do nothing
+  } else if (OB_FAIL(ObDirectLoadMgrUtil::is_ddl_need_major_merge(*tablet, ddl_need_merge))) {
+    LOG_WARN("failed to check ddl need major merge", K(ret), K(tablet));
+  } else if (ddl_need_merge) {
+    ret = OB_MAJOR_SSTABLE_NOT_EXIST;
+    LOG_WARN("major sstable do not exit, need to wait ddl merge", K(ret), "tablet_id", tablet->get_tablet_meta().tablet_id_);
+  } else if (tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
+    ret = OB_INVALID_TABLE_STORE;
+    LOG_WARN("neither major sstable nor ddl sstable exists", K(ret), KPC(tablet));
+  }
+
+  // check inc major merge finished
+  if (OB_SUCC(ret)) {
+    ObArray<ObDDLKVHandle> ddl_kvs;
+    if (!table_store_wrapper.get_member()->get_inc_major_ddl_sstables().empty()) {
+      ret = OB_EAGAIN;
+      LOG_WARN("tablet still has inc major ddl sstable, cannot transfer", K(ret), KPC(tablet));
+#ifdef OB_BUILD_SHARED_STORAGE
+    } else if (tablet->is_ss_tablet()) {
+      // do nothing
+#endif
+    } else if (OB_FAIL(ObIncDDLMergeTaskUtils::get_all_inc_major_ddl_kvs(tablet, ddl_kvs))) {
+      LOG_WARN("failed to get all inc major ddl kvs", K(ret), KPC(tablet));
+    } else if (!ddl_kvs.empty()) {
+      ret = OB_EAGAIN;
+      LOG_WARN("tablet still has inc major ddl kv, cannot transfer", K(ret), KPC(tablet), K(ddl_kvs));
+    }
+  }
+  return ret;
 }
 
 } // end namespace storage

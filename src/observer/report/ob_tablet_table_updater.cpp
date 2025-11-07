@@ -12,19 +12,12 @@
 
 #define USING_LOG_PREFIX SERVER
 
-#include "ob_tablet_table_updater.h"
 
-#include "lib/utility/ob_tracepoint.h"
-#include "share/tablet/ob_tablet_info.h"            // for ObTabletInfo
+#include "ob_tablet_table_updater.h"
 #include "share/tablet/ob_tablet_table_operator.h"  // for ObTabletOperator
 #include "observer/ob_service.h"                    // for is_mini_mode
 #include "share/ob_tablet_replica_checksum_operator.h" // for ObTabletReplicaChecksumItem
-#include "lib/mysqlclient/ob_mysql_transaction.h" // ObMySQLTransaction
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "lib/thread_local/ob_tsi_factory.h"
-#include "share/ob_tablet_meta_table_compaction_operator.h"
 #include "storage/compaction/ob_compaction_diagnose.h"
-#include "share/compaction/ob_compaction_locality_cache.h" // ObCompactionLocalityCache
 
 namespace oceanbase
 {
@@ -390,13 +383,14 @@ int ObTabletTableUpdater::reput_to_queue_(
 int ObTabletTableUpdater::check_tenant_status_(
     const uint64_t tenant_id,
     bool &tenant_dropped,
-    bool &schema_not_ready)
+    bool &tenant_not_ready)
 {
   int ret = OB_SUCCESS;
   schema::ObMultiVersionSchemaService *schema_service = GCTX.schema_service_;
   schema::ObSchemaGetterGuard guard;
+  const share::schema::ObSimpleTenantSchema *tenant_info = nullptr;
   tenant_dropped = false;
-  schema_not_ready = false;
+  tenant_not_ready = true;
   if (OB_ISNULL(schema_service)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema_service is null", KR(ret));
@@ -404,9 +398,12 @@ int ObTabletTableUpdater::check_tenant_status_(
     LOG_WARN("fail to get schema guard", KR(ret), K(tenant_id));
   } else if (OB_FAIL(guard.check_if_tenant_has_been_dropped(tenant_id, tenant_dropped))) {
     LOG_WARN("fail to check if tenant has been dropped", KR(ret), K(tenant_id));
-  } else if (!schema_service->is_tenant_full_schema(tenant_id)) {
-    // need wait schema refresh
-    schema_not_ready = true;
+  } else if (!tenant_dropped) {
+    if (OB_FAIL(guard.get_tenant_info(tenant_id, tenant_info))) {
+      LOG_WARN("fail to get tenant info", K(ret), K(tenant_id));
+    } else if (OB_NOT_NULL(tenant_info) && tenant_info->is_normal()) {
+      tenant_not_ready = !schema_service->is_tenant_full_schema(tenant_id);
+    }
   }
   return ret;
 }
@@ -534,32 +531,7 @@ void ObTabletTableUpdater::check_remove_task_(
     bool &is_remove_task)
 {
   int ret = OB_SUCCESS;
-  is_remove_task = false;
-
-  if (!GCTX.is_shared_storage_mode()) {
-    is_remove_task = true;
-  } else {
-#ifdef OB_BUILD_SHARED_STORAGE
-    share::ObLSInfo ls_info;
-    const ObLSReplica *replica = nullptr;
-
-    if (!locality_is_valid) {
-      // locality cache not valid, ignore to check the remove task temporarily
-    } else if (OB_FAIL(locality_cache.get_ls_info(ls_id, ls_info))) {
-      if (OB_HASH_NOT_EXIST == ret) {
-        is_remove_task = true;
-      } else {
-        LOG_WARN("failed to get ls info", K(ret), K(ls_id));
-      }
-    } else if (is_ls_not_exist) {
-      // no need to check whether ls is leader
-    } else if (OB_FAIL(ls_info.find_leader(replica))) {
-      LOG_WARN("failed to find leader", K(ret), K(ls_id), K(ls_info));
-    } else if (replica->get_server() == GCTX.self_addr()) {
-      is_remove_task = true; // ls leader is on cur server
-    }
-#endif
-  }
+  is_remove_task = true;
 }
 
 int ObTabletTableUpdater::push_task_info_(
@@ -595,7 +567,7 @@ int ObTabletTableUpdater::generate_tasks_(
   int tmp_ret = OB_SUCCESS;
   ObCompactionLocalityCache locality_cache;
   bool locality_is_valid = false;
-
+  int64_t retry_tablet_replica_count = 0;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObTabletTableUpdater is not inited", KR(ret));
@@ -625,14 +597,16 @@ int ObTabletTableUpdater::generate_tasks_(
                                                                  replica,
                                                                  checksum_item))) {
       bool is_remove_task = false;
-      if (OB_TENANT_NOT_IN_SERVER != ret && OB_LS_NOT_EXIST != ret && OB_TABLET_NOT_EXIST != ret) {
-        LOG_WARN("failed to fill tablet replica info", KR(ret), KPC(task));
-      } else if (OB_EAGAIN == ret) {
+      if (OB_EAGAIN == ret) {
+        (void) throttle_(ret, 0);
         if (OB_TMP_FAIL(add_task_(*task))) {
           LOG_WARN("fail to add task", KR(tmp_ret), KPC(task));
         } else {
+          retry_tablet_replica_count++;
           ret = OB_SUCCESS; // do not affect report of other tablets
         }
+      } else if (OB_TENANT_NOT_IN_SERVER != ret && OB_LS_NOT_EXIST != ret && OB_TABLET_NOT_EXIST != ret) {
+        LOG_WARN("failed to fill tablet replica info", KR(ret), KPC(task));
       } else if (OB_TENANT_NOT_IN_SERVER == ret) {
         is_remove_task = true;
         ret = OB_SUCCESS;
@@ -673,14 +647,14 @@ int ObTabletTableUpdater::generate_tasks_(
   if (OB_FAIL(ret)) {
   } else if (update_tablet_tasks.count() != update_tablet_replicas.count()
           || update_tablet_tasks.count() != update_tablet_checksums.count()
-          || (!GCTX.is_shared_storage_mode() &&
-              (update_tablet_tasks.count() + remove_tablet_tasks.count() != batch_tasks.count()))) {
+          || (update_tablet_tasks.count() + remove_tablet_tasks.count() + retry_tablet_replica_count != batch_tasks.count())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet task count and replica count not match", KR(ret),
              "tablet_update_tasks count", update_tablet_tasks.count(),
              "tablet_update_replicas count", update_tablet_replicas.count(),
              "tablet_update_checksums count", update_tablet_checksums.count(),
              "tablet_remove_tasks count", remove_tablet_tasks.count(),
+             K(retry_tablet_replica_count),
              "batch_tasks count", batch_tasks.count());
   }
   return ret;
@@ -694,7 +668,7 @@ int ObTabletTableUpdater::batch_process_tasks(
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   bool tenant_dropped = false;
-  bool schema_not_ready = false;
+  bool tenant_not_ready = false;
   const uint64_t meta_tenant_id = gen_meta_tenant_id(tenant_id_);
   const int64_t start_time = ObTimeUtility::current_time();
   ObArray<ObTabletReplica> update_tablet_replicas;
@@ -719,7 +693,7 @@ int ObTabletTableUpdater::batch_process_tasks(
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid batch_tasks", KR(ret), "task count", batch_tasks.count());
   } else {
-    (void)check_tenant_status_(meta_tenant_id, tenant_dropped, schema_not_ready);
+    (void)check_tenant_status_(meta_tenant_id, tenant_dropped, tenant_not_ready);
   }
   if (OB_FAIL(ret)) {
     // do nothing
@@ -728,10 +702,10 @@ int ObTabletTableUpdater::batch_process_tasks(
       FLOG_INFO("REPORT: tasks can't be processed because it's superior tenant has been dropped",
           KR(ret), K(meta_tenant_id), K(batch_tasks));
     }
-  } else if (schema_not_ready) { // need wait schema refresh
+  } else if (tenant_not_ready) { // need wait schema refresh
     ret = OB_NEED_WAIT;
     if (REACH_TIME_INTERVAL(1_s)) { // 1s
-      LOG_WARN("tenant schema is not ready, need wait", KR(ret), K(meta_tenant_id), K(batch_tasks));
+      LOG_WARN("tenant is not ready, need wait", KR(ret), K(meta_tenant_id), K(batch_tasks));
     }
     (void) throttle_(ret, ObTimeUtility::current_time() - start_time);
     if (OB_FAIL(reput_to_queue_(batch_tasks))) {
@@ -880,16 +854,6 @@ int ObTabletTableUpdater::do_batch_update_(
     common::ObMySQLTransaction trans;
     const uint64_t meta_tenant_id = gen_meta_tenant_id(tenant_id_);
     if (OB_FAIL(ret)) {
-    } else if (GCTX.is_shared_storage_mode()) {
-#ifdef OB_BUILD_SHARED_STORAGE
-      if (OB_FAIL(ObTabletReplicaChecksumOperator::batch_select_and_update_with_trans(tenant_id_, checksums))) {
-        LOG_WARN("do tablet table checksum update failed, try to reput to queue", KR(ret),
-             "escape time", ObTimeUtility::current_time() - start_time);
-      }
-#else
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("not support shared storage mode", KR(ret));
-#endif
     } else {
       if (OB_FAIL(trans.start(GCTX.sql_proxy_, meta_tenant_id))) {
         LOG_WARN("fail to start transaction", KR(ret), K_(tenant_id), K(meta_tenant_id));

@@ -12,26 +12,22 @@
 
 #define USING_LOG_PREFIX COMMON
 #define _GNU_SOURCE 1
-#include "lib/signal/ob_signal_handlers.h"
-#include <sys/prctl.h>
+#include "ob_signal_handlers.h"
 #include <dirent.h>
-#include <unistd.h>
-#include <fstream>
 #include <sys/wait.h>
-#include "lib/profile/ob_trace_id.h"
 #include "lib/utility/utility.h"
 #include "lib/signal/ob_libunwind.h"
-#include "lib/signal/ob_signal_struct.h"
-#include "lib/signal/ob_signal_utils.h"
 #include "lib/signal/ob_signal_worker.h"
 #include "lib/utility/ob_hang_fatal_error.h"
 #include "common/ob_common_utility.h"
-#include <unistd.h>
+#include "share/config/ob_server_config.h"
 
 namespace oceanbase
 {
 namespace common
 {
+
+bool need_close_socket_fd_when_core_dump = true;
 
 ObSigFaststack::ObSigFaststack()
     : min_interval_(30 * 60 * 1000 * 1000UL) // 30min
@@ -62,7 +58,7 @@ static constexpr char FASTSTACK_SCRIPT[] =
 "  path_to_obstack=$(command -v obstack)\n"
 "fi\n"
 "if [ -x \"$path_to_obstack\" ]; then\n"
-"  $path_to_obstack `cat $(pwd)/run/observer.pid` > stack.`cat $(pwd)/run/observer.pid`.`date +%Y%m%d%H%M%S`\n"
+"  $path_to_obstack -o `cat $(pwd)/run/observer.pid` > stack.`cat $(pwd)/run/observer.pid`.`date +%Y%m%d%H%M%S`\n"
 "fi\n"
 "[ $(ls -1 stack.* 2>/dev/null | wc -l) -gt 100 ] && ls -1 stack.* -t | tail -n 1 | xargs rm -f";
 const char *const FASTSTACK_SCRIPT_ARGV[] = {"/bin/sh", "-c", FASTSTACK_SCRIPT, NULL};
@@ -178,7 +174,15 @@ void coredump_cb(volatile int sig, volatile int sig_code, void* volatile sig_add
   int ret = OB_SUCCESS;
   if (g_coredump_num++ < 1) {
     pid_t pid;
+    // TODO by qingxia: tmp deactivate close_socket_fd() for shared log service
+    // revert it by complete fixing way
+#ifdef FATAL_ERROR_HANG
+    if (need_close_socket_fd_when_core_dump) {
+      close_socket_fd();
+    } else { } // do nothing
+#else
     close_socket_fd();
+#endif
     ret = minicoredump(sig, GETTID(), pid);
     //send_request_and_wait(VERB_LEVEL_2,
     //                      syscall(SYS_gettid)/*exclude_id*/);

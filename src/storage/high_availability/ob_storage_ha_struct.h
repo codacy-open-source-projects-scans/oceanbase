@@ -23,11 +23,13 @@
 #include "storage/blocksstable/ob_datum_rowkey.h"
 #include "storage/blocksstable/ob_logic_macro_id.h"
 #include "share/ls/ob_ls_i_life_manager.h"
+#include "share/ob_rpc_struct.h"
 #include "share/scheduler/ob_dag_scheduler_config.h"
 #include "ob_ls_transfer_info.h"
 #include "share/rebuild_tablet/ob_rebuild_tablet_location.h"
 #include "common/ob_learner_list.h"
 #include "storage/high_availability/ob_tablet_ha_status.h"
+#include "share/rebuild_tablet/ob_rebuild_tablet_location.h"
 
 namespace oceanbase
 {
@@ -50,6 +52,10 @@ enum ObMigrationStatus
   OB_MIGRATION_STATUS_ADD_WAIT = 11,
   OB_MIGRATION_STATUS_REBUILD_WAIT = 12,
   OB_MIGRATION_STATUS_GC = 13,  // ls wait allow gc
+  OB_MIGRATION_STATUS_REPLACE = 14,
+  OB_MIGRATION_STATUS_REPLACE_WAIT = 15,
+  OB_MIGRATION_STATUS_REPLACE_FAIL = 16,
+  OB_MIGRATION_STATUS_REPLACE_HOLD = 17,
   OB_MIGRATION_STATUS_MAX,
 };
 
@@ -64,13 +70,15 @@ struct ObMigrationOpType
     REMOVE_LS_OP = 4,
     RESTORE_STANDBY_LS_OP = 5,
     REBUILD_TABLET_OP = 6,
+    REPLACE_LS_OP = 7,
     MAX_LS_OP,
   };
   static const char *get_str(const TYPE &status);
   static TYPE get_type(const char *type_str);
   static OB_INLINE bool is_valid(const TYPE &type) { return type >= 0 && type < MAX_LS_OP; }
-  static bool need_keep_old_tablet(const TYPE &type);
   static int get_ls_wait_status(const TYPE &type, ObMigrationStatus &wait_status);
+  static int get_ls_hold_status(const TYPE &type, ObMigrationStatus &hold_status);
+  static int convert_to_dr_type(const TYPE &type, obrpc::ObDRTaskType &dr_type);
 };
 
 struct ObMigrationStatusHelper
@@ -106,10 +114,16 @@ public:
   static bool check_is_running_migration(const ObMigrationStatus &cur_status);
   static bool can_gc_ls_without_check_dependency(
       const ObMigrationStatus &cur_status);
+  static bool can_gc_ls_without_member_verification(
+      const ObMigrationStatus &cur_status);
+  static bool check_can_report_readable_scn(
+      const ObMigrationStatus &cur_status);
+  static bool is_in_rebuild(
+      const ObMigrationStatus &cur_status);
+  static bool is_in_replace(const ObMigrationStatus &cur_status);
 private:
   static int check_ls_transfer_tablet_(
       const share::ObLSID &ls_id,
-      const ObMigrationStatus &migration_status,
       bool &allow_gc);
   static int check_transfer_dest_tablet_for_ls_gc(
       ObLS *ls,
@@ -134,9 +148,11 @@ private:
   static int check_ls_transfer_tablet_v1_(
       const share::ObLSID &ls_id,
       const ObMigrationStatus &migration_status,
+      const bool allow_gc_v2,
       bool &allow_gc);
   static int check_ls_with_transfer_task_v1_(
       ObLS &ls,
+      const bool allow_gc_v2,
       bool &need_check_allow_gc,
       bool &need_wait_dest_ls_replay);
   static int check_transfer_dest_ls_status_for_ls_gc_v1_(
@@ -169,6 +185,12 @@ struct ObMigrationOpArg
   virtual ~ObMigrationOpArg() = default;
   bool is_valid() const;
   void reset();
+
+  int init(const obrpc::ObLSMigrateReplicaArg &arg);
+  int init(const obrpc::ObLSAddReplicaArg &arg);
+  int init(const obrpc::ObLSReplaceReplicaArg &arg);
+
+
   VIRTUAL_TO_STRING_KV(
       K_(ls_id),
       "type",
@@ -178,7 +200,9 @@ struct ObMigrationOpArg
       K_(src),
       K_(dst),
       K_(data_src),
-      K_(paxos_replica_number));
+      K_(paxos_replica_number),
+      K_(tablet_id_array),
+      K_(member_list_config_version));
   share::ObLSID ls_id_;
   ObMigrationOpType::TYPE type_;
   int64_t cluster_id_;
@@ -188,6 +212,12 @@ struct ObMigrationOpArg
   common::ObReplicaMember data_src_;
   int64_t paxos_replica_number_;
   bool prioritize_same_zone_src_;
+  common::ObArray<ObTabletID> tablet_id_array_;
+
+  // The member list config version in palf when rs sends the migration operation tasks.
+  // Now only used for replace ls operation. Only if the config version is the same, then
+  // the replica can forcibly change the member list to only include itself.
+  palf::LogConfigVersion member_list_config_version_;
 };
 
 struct ObTabletsTransferArg
@@ -425,7 +455,8 @@ public:
   TYPE get_type() const { return type_; }
   int set_type(int32_t type);
   void reset();
-
+  bool is_rebuild_ls_type() const { return ObLSRebuildType::CLOG == type_ || ObLSRebuildType::TRANSFER == type_; }
+  bool is_rebuild_rebuild_type() const { return ObLSRebuildType::TABLET == type_; }
   TO_STRING_KV(K_(type));
 private:
   TYPE type_;
@@ -484,7 +515,11 @@ public:
   bool operator ==(const ObLSRebuildInfo &other) const;
   int assign(const ObLSRebuildInfo &info);
 
+  bool is_rebuild_ls() const { return type_.is_rebuild_ls_type(); }
+  bool is_rebuild_tablet() const { return type_.is_rebuild_rebuild_type(); }
+
   TO_STRING_KV(K_(status), K_(type), K_(tablet_id_array), K_(src));
+public:
   ObLSRebuildStatus status_;
   ObLSRebuildType type_;
   ObRebuildTabletIDArray tablet_id_array_;
@@ -493,19 +528,33 @@ public:
 
 struct ObTabletBackfillInfo final
 {
-  OB_UNIS_VERSION(1);
 public:
   ObTabletBackfillInfo();
-  virtual ~ObTabletBackfillInfo() = default;
-  int init(const common::ObTabletID &tablet_id, bool is_committed);
+  ~ObTabletBackfillInfo() = default;
   bool is_valid() const;
   void reset();
   bool operator == (const ObTabletBackfillInfo &other) const;
+  uint64_t hash() const;
   TO_STRING_KV(
       K_(tablet_id),
-      K_(is_committed));
+      K_(is_committed),
+      K_(is_shared_storage),
+      K_(relative_ls_id),
+      K_(reorganization_scn),
+      K_(backfill_scn),
+      K_(tablet_status),
+      K_(src_reorganization_scn),
+      K_(transfer_seq));
+
   common::ObTabletID tablet_id_;
   bool is_committed_;
+  bool is_shared_storage_;
+  share::ObLSID relative_ls_id_;
+  share::SCN reorganization_scn_;
+  share::SCN backfill_scn_;
+  ObTabletStatus tablet_status_;
+  share::SCN src_reorganization_scn_;
+  int64_t transfer_seq_;
 };
 
 class ObBackfillTabletsTableMgr final
@@ -722,6 +771,22 @@ public:
   common::ObArray<common::ObAddr> member_list_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLSMemberListInfo);
+};
+
+struct ObCopySSTableMacroIdInfo final
+{
+public:
+  ObCopySSTableMacroIdInfo();
+  ~ObCopySSTableMacroIdInfo();
+  void reset();
+  int assign(const ObCopySSTableMacroIdInfo &other);
+  TO_STRING_KV(K_(data_block_ids), K_(other_block_ids));
+private:
+  static const int64_t DEFAULT_MACRO_BLOCK_CNT = 64L;
+public:
+  common::ObSEArray<blocksstable::MacroBlockId, DEFAULT_MACRO_BLOCK_CNT> data_block_ids_;
+  common::ObSEArray<blocksstable::MacroBlockId, DEFAULT_MACRO_BLOCK_CNT> other_block_ids_;
+  DISALLOW_COPY_AND_ASSIGN(ObCopySSTableMacroIdInfo);
 };
 
 }

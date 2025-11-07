@@ -12,17 +12,13 @@
 
 #define USING_LOG_PREFIX STORAGE
 
-#include "storage/blocksstable/ob_storage_object_handle.h"
-#include "lib/oblog/ob_log_module.h"
-#include "lib/utility/ob_macro_utils.h"
-#include "share/io/ob_io_manager.h"
-#include "storage/blocksstable/ob_block_manager.h"
-#include "storage/blocksstable/ob_storage_object_rw_info.h"
-#include "storage/backup/ob_backup_data_struct.h"
+#include "ob_storage_object_handle.h"
 #include "storage/backup/ob_backup_device_wrapper.h"
 #include "share/ob_io_device_helper.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/shared_storage/ob_file_manager.h"
+#include "storage/shared_storage/ob_ss_object_access_util.h"
+#include "storage/blocksstable/ob_ss_obj_util.h"
+#include "storage/shared_storage/ob_ss_local_cache_service.h"
 #endif
 
 namespace oceanbase
@@ -157,7 +153,12 @@ int ObStorageObjectHandle::async_read(const ObStorageObjectReadInfo &read_info)
     LOG_WARN("invalid io argument", K(ret), K(read_info), KCSTRING(lbt()));
   } else {
     if (read_info.macro_block_id_.is_id_mode_local()) {
-      if (OB_FAIL(sn_async_read(read_info))) {
+      // Since read_info is valid, offset and size are already validated,
+      // so we only need to check if the read range is within bounds
+      if (OB_UNLIKELY(read_info.offset_ + read_info.size_ > OB_STORAGE_OBJECT_MGR.get_macro_block_size())) {
+        ret = OB_INVALID_ARGUMENT;
+        LOG_WARN("invalid read range", KR(ret), K(read_info));
+      } else if (OB_FAIL(sn_async_read(read_info))) {
         LOG_WARN("fail to sn_async_read", K(ret), K(read_info));
       }
     } else if (read_info.macro_block_id_.is_id_mode_backup()) {
@@ -317,13 +318,10 @@ int ObStorageObjectHandle::sn_async_write(const ObStorageObjectWriteInfo &write_
 int ObStorageObjectHandle::ss_async_read(const ObStorageObjectReadInfo &read_info)
 {
   int ret = OB_SUCCESS;
-  ObBaseFileManager *file_manager = nullptr;
   if (OB_UNLIKELY(!read_info.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid io argument", K(ret), K(read_info), KCSTRING(lbt()));
-  } else if (OB_FAIL(get_file_manager(read_info.mtl_tenant_id_, file_manager))) {
-    LOG_WARN("fail to get file manager", KR(ret), "tenant_id", read_info.mtl_tenant_id_, K(read_info));
-  } else if (OB_FAIL(file_manager->async_pread_file(read_info, *this))) {
+  } else if (OB_FAIL(ObSSObjectAccessUtil::async_pread_file(read_info, *this))) {
     LOG_WARN("fail to async pread file", KR(ret), K(read_info), KPC(this));
   }
   return ret;
@@ -332,38 +330,48 @@ int ObStorageObjectHandle::ss_async_read(const ObStorageObjectReadInfo &read_inf
 int ObStorageObjectHandle::ss_async_write(const ObStorageObjectWriteInfo &write_info)
 {
   int ret = OB_SUCCESS;
-  ObBaseFileManager *file_manager = nullptr;
-  ObStorageObjectType object_type = macro_id_.storage_object_type();
   if (OB_UNLIKELY(!write_info.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(write_info));
-  } else if (OB_FAIL(get_file_manager(write_info.mtl_tenant_id_, file_manager))) {
-    LOG_WARN("fail to get file manager", KR(ret), "tenant_id", write_info.mtl_tenant_id_, K(write_info));
-  } else if (ObStorageObjectType::TMP_FILE == object_type) {
-    if (OB_FAIL(file_manager->async_append_file(write_info, *this))) {
+  } else if (SSObjUtil::is_tmp_file(macro_id_)) {
+    if (OB_FAIL(ObSSObjectAccessUtil::async_append_file(write_info, *this))) {
       LOG_WARN("fail to async append file", KR(ret), K(write_info), KPC(this));
     }
   } else {
-    if (OB_FAIL(file_manager->async_write_file(write_info, *this))) {
+    if (OB_FAIL(ObSSObjectAccessUtil::async_write_file(write_info, *this))) {
       LOG_WARN("fail to async write file", KR(ret), K(write_info), KPC(this));
     }
   }
   return ret;
 }
 
-int ObStorageObjectHandle::get_file_manager(
-    const uint64_t tenant_id,
-    ObBaseFileManager *&file_manager)
+int ObStorageObjectHandle::ss_update_object_type_rw_stat(const blocksstable::ObStorageObjectType &object_type,
+    const int result, const int64_t delta_cnt)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid tenant id", KR(ret), K(tenant_id));
-  } else if (OB_SERVER_TENANT_ID == tenant_id) {
-    file_manager = &OB_SERVER_FILE_MGR;
-  } else if (OB_ISNULL(file_manager = MTL(ObTenantFileManager *))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("file manager is null", KR(ret), K(tenant_id));
+  // 500 tenant not have local cache service
+  if ((is_meta_tenant(MTL_ID()) || is_sys_tenant(MTL_ID()) || is_user_tenant(MTL_ID())) && macro_id_.is_id_mode_share()) {
+    ObSSLocalCacheService *local_cache_service = nullptr;
+    if (OB_ISNULL(local_cache_service = MTL(ObSSLocalCacheService *))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("local cache service is null", KR(ret));
+    } else {
+      ObIOFlag io_flag;
+      if (OB_FAIL(io_handle_.get_io_flag(io_flag))) {
+        LOG_WARN("fail to get io flag", KR(ret));
+      } else {
+        ObIOMode mode = io_flag.get_mode();
+        if (mode == ObIOMode::READ) {
+          IGNORE_RETURN local_cache_service->update_object_type_stat(object_type, ObSSObjectTypeStatType::READ,
+            io_flag.is_sync(), result, delta_cnt, get_data_size());
+        } else if (mode == ObIOMode::WRITE) {
+          IGNORE_RETURN local_cache_service->update_object_type_stat(object_type, ObSSObjectTypeStatType::WRITE,
+            io_flag.is_sync(), result, delta_cnt, get_data_size());
+        } else {
+          LOG_WARN("unexpected io mode", KR(ret), K(mode));
+        }
+      }
+    }
   }
   return ret;
 }
@@ -380,8 +388,23 @@ int ObStorageObjectHandle::wait()
     if (OB_SUCCESS != (tmp_ret = report_bad_block())) {
       LOG_WARN("fail to report bad block", K(tmp_ret), K(ret));
     }
-    io_handle_.reset();
+    if ((macro_id_.is_id_mode_share()) &&
+        (ObStorageObjectType::PRIVATE_SLOG_FILE == macro_id_.storage_object_type()) &&
+        (OB_DATA_OUT_OF_RANGE == ret)) {
+      // cannot reset io_handle_ for slog, cuz io_handle_.get_data_size() will be called
+    } else {
+      io_handle_.reset();
+    }
+  } else if ((macro_id_.is_id_mode_share()) &&
+             (ObStorageObjectType::PRIVATE_SLOG_FILE == macro_id_.storage_object_type()) &&
+             (get_data_size() < get_user_io_size())) {
+    ret = OB_DATA_OUT_OF_RANGE;
+    LOG_WARN("real read size is smaller than expected read size", KR(ret), "real_read_size",
+             get_data_size(), "expected_read_size", get_user_io_size());
   }
+#ifdef OB_BUILD_SHARED_STORAGE
+  IGNORE_RETURN ss_update_object_type_rw_stat(macro_id_.storage_object_type(), ret, 1/*delta_cnt*/);
+#endif
   return ret;
 }
 

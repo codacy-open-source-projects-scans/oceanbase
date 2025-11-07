@@ -12,10 +12,8 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "share/stat/ob_dbms_stats_preferences.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
 #include "observer/ob_sql_client_decorator.h"
 #include "share/stat/ob_dbms_stats_utils.h"
-#include "share/ob_dml_sql_splicer.h"
 #include "sql/parser/ob_parser.h"
 
 namespace oceanbase {
@@ -27,8 +25,7 @@ namespace common {
 #define FETCH_USER_PREFS "SELECT /*+ OPT_PARAM(\'USE_DEFAULT_OPT_STAT\',\'TRUE\') */ valchar FROM %s WHERE tenant_id = %lu and \
                           table_id = %lu and pname = upper('%.*s')"
 
-#define UPDATE_GLOBAL_PREFS "UPDATE %s SET spare4 = upper('%.*s'), \
-                             sval2 = usec_to_time('%ld') WHERE sname = upper('%.*s')"
+#define UPDATE_GLOBAL_PREFS "REPLACE INTO %s(sname, sval1, sval2, spare4) VALUES ('%.*s', NULL, CURRENT_TIMESTAMP, '%.*s');"
 
 #define UPDATE_USER_PREFS "REPLACE INTO %s(tenant_id,\
                                            table_id,\
@@ -154,11 +151,10 @@ int ObDbmsStatsPreferences::set_prefs(ObExecContext &ctx,
   } else {//update global prefs
     if (OB_FAIL(raw_sql.append_fmt(UPDATE_GLOBAL_PREFS,
                                    share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,
-                                   opt_value.length(),
-                                   opt_value.ptr(),
-                                   current_time,
                                    opt_name.length(),
-                                   opt_name.ptr()))) {
+                                   opt_name.ptr(),
+                                   opt_value.length(),
+                                   opt_value.ptr()))) {
       LOG_WARN("failed to append", K(ret), K(raw_sql));
     } else if (OB_FAIL(mysql_proxy->write(session->get_effective_tenant_id(),
                                           raw_sql.ptr(),
@@ -416,7 +412,9 @@ int ObDbmsStatsPreferences::gen_init_global_prefs_sql(ObSqlString &raw_sql,
   init_perfs_value(ObAsyncStaleMaxTableSizePrefs, false/*last value*/);//init async stale max table size
   init_perfs_value(ObHistEstPercentPrefs, false/*last value*/);//init hist_est_percent
   init_perfs_value(ObHistBlockSamplePrefs, false/*last value*/);//init hist_block_sample
-  init_perfs_value(ObAutoSampleRowCountPrefs, true/*last value*/);//init auto_sample_row_count
+  init_perfs_value(ObGatherStatBatchSizePrefs, false/*last value*/);//init async/auto gather batch size
+  init_perfs_value(ObAutoSampleRowCountPrefs, false/*last value*/);//init auto_sample_row_count
+  init_perfs_value(ObSkipRateSamplePrefs, true/*last value*/);//init skip_rate_sample_count
   if (OB_SUCC(ret)) {
     if (OB_FAIL(raw_sql.append_fmt(INIT_GLOBAL_PREFS,
                                    share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,
@@ -965,7 +963,7 @@ int ObAsyncGatherStaleRatioPrefs::check_pref_value_validity(ObTableStatParam *pa
       LOG_WARN("failed to type", K(ret), K(src_obj));
     } else if (OB_FAIL(ObDbmsStatsUtils::cast_number_to_double(dest_obj.get_number(), dst_val))) {
       LOG_WARN("failed to cast number to double", K(ret), K(src_obj));
-    } else if (dst_val < MINIMUM_OF_ASYNC_GATHER_STALE_RATIO) {
+    } else if (dst_val <= MINIMUM_OF_ASYNC_GATHER_STALE_RATIO) {
       ret = OB_ERR_DBMS_STATS_PL;
       LOG_WARN("Illegal async gather stale ratio", K(ret), K(dst_val));
     } else if (param != NULL) {
@@ -974,7 +972,7 @@ int ObAsyncGatherStaleRatioPrefs::check_pref_value_validity(ObTableStatParam *pa
     if (OB_FAIL(ret)) {
       ret = OB_ERR_DBMS_STATS_PL;
       LOG_WARN("Illegal async gather stale ratio", K(ret), K(pvalue_));
-      LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Illegal async gather stale ration, the minimum of stale ratio is not less than 2");
+      LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Illegal async gather stale ration, the minimum of stale ratio is not less than 0");
     }
   }
   return ret;
@@ -1116,6 +1114,40 @@ int ObHistBlockSamplePrefs::check_pref_value_validity(ObTableStatParam *param/*d
   return ret;
 }
 
+int ObGatherStatBatchSizePrefs::check_pref_value_validity(ObTableStatParam *param)
+{
+  int ret = OB_SUCCESS;
+  if (!pvalue_.empty()) {
+    ObObj src_obj;
+    ObObj dest_obj;
+    src_obj.set_string(ObVarcharType, pvalue_);
+    ObArenaAllocator calc_buf("AutoBatchSize");
+    ObCastCtx cast_ctx(&calc_buf, NULL, CM_NONE, ObCharset::get_system_collation());
+    int64_t batch_part_size = 0;
+    int64_t int_part = 0;
+    if (OB_FAIL(ObObjCaster::to_type(ObNumberType, cast_ctx, src_obj, dest_obj))) {
+      LOG_WARN("failed to type", K(ret), K(src_obj));
+    } else if (!dest_obj.get_number().is_valid_int64(int_part)) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN("Illegal auto gather stats batch size must be interger", K(ret));
+    } else if (OB_FAIL(dest_obj.get_number().extract_valid_int64_with_trunc(batch_part_size))) {
+      LOG_WARN("failed to extract valid int64 with trunc", K(ret), K(src_obj));
+    } else if (batch_part_size < 0) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN("Illegal auto gather stats batch size must greater than 0", K(ret), K(batch_part_size));
+    } else if (NULL != param) {
+      // do nothing
+    } else { /*do nothing*/
+    }
+    if (OB_FAIL(ret)) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN("Illegal auto gather stats batch size.", K(ret), K(pvalue_));
+      LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Illegal auto gather stats batch size.");
+    }
+  }
+  return ret;
+}
+
 int ObAutoSampleRowCountPrefs::check_pref_value_validity(ObTableStatParam *param)
 {
   int ret = OB_SUCCESS;
@@ -1148,6 +1180,46 @@ int ObAutoSampleRowCountPrefs::check_pref_value_validity(ObTableStatParam *param
   }
   return ret;
 }
+
+int ObSkipRateSamplePrefs::check_pref_value_validity(ObTableStatParam *param/*default null*/)
+{
+  int ret = OB_SUCCESS;
+  if (!pvalue_.empty()) {
+    ObObj src_obj;
+    ObObj dest_obj;
+    src_obj.set_string(ObVarcharType, pvalue_);
+    ObArenaAllocator calc_buf("SkipRateCnt");
+    ObCastCtx cast_ctx(&calc_buf, NULL, CM_NONE, ObCharset::get_system_collation());
+    int64_t block_count = 0;
+    int64_t int_part = 0;
+    //no gather skip rate with tracepoint to keep mysqltest stable
+    bool no_cg_skip_rate = (OB_E(EventTable::EN_LEADER_STORAGE_ESTIMATION) OB_SUCCESS) != OB_SUCCESS;
+    if (OB_FAIL(ObObjCaster::to_type(ObNumberType, cast_ctx, src_obj, dest_obj))) {
+      LOG_WARN("failed to type", K(ret), K(src_obj));
+    } else if (!dest_obj.get_number().is_valid_int64(int_part)) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN("Illegal skip rate sample count must interger", K(ret));
+    } else if (OB_FAIL(dest_obj.get_number().extract_valid_int64_with_trunc(block_count))) {
+      LOG_WARN("failed to extract valid int64 with trunc", K(ret), K(src_obj));
+    } else if (block_count < 0 || block_count > MAX_SKIP_RATE_SAMPLE_COUNT) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN( "Illegal skip rate sample count, must in [0,MAX_SKIP_RATE_SAMPLE_COUNT]", K(ret), K(block_count));
+    } else if (NULL != param) {
+      if (no_cg_skip_rate) {
+        param->skip_rate_sample_cnt_ = 0;
+      } else {
+        param->skip_rate_sample_cnt_ = block_count;
+      }
+    }
+    if (OB_FAIL(ret)) {
+      ret = OB_ERR_DBMS_STATS_PL;
+      LOG_WARN( "Illegal skip rate sample count", K(ret), K(pvalue_));
+      LOG_USER_ERROR(OB_ERR_DBMS_STATS_PL, "Illegal skip rate sample count");
+    }
+  }
+  return ret;
+}
+
 #define ISSPACE(c) ((c) == ' ' || (c) == '\n' || (c) == '\r' || (c) == '\t' || (c) == '\f' || (c) == '\v')
 
 //compatible oracle, global prefs/schema prefs just only can set "for all columns...."
@@ -1325,6 +1397,56 @@ int ObDbmsStatsPreferences::get_extra_stats_perfs_for_upgrade_425(ObSqlString &r
                                           null_str,
                                           time_str,
                                           "0"))) {
+    LOG_WARN("failed to append", K(ret));
+  } else if (OB_FAIL(raw_sql.append_fmt(INIT_GLOBAL_PREFS,
+                                        share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,
+                                        value_str.ptr()))) {
+    LOG_WARN("failed to append fmt", K(ret));
+  }
+  return ret;
+}
+
+int ObDbmsStatsPreferences::get_extra_stats_perfs_for_upgrade_4351(ObSqlString &raw_sql)
+{
+  int ret = OB_SUCCESS;
+  const char *null_str = "NULL";
+  const char *time_str = "CURRENT_TIMESTAMP";
+  ObSqlString value_str;
+  ObGatherStatBatchSizePrefs prefs;
+  if (OB_ISNULL(prefs.get_stat_pref_name()) || OB_ISNULL(prefs.get_stat_pref_default_value())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected error", K(ret), K(prefs.get_stat_pref_name()),
+                                      K(prefs.get_stat_pref_default_value()));
+  } else if (OB_FAIL(value_str.append_fmt("('%s', %s, %s, '%s');",
+                                          prefs.get_stat_pref_name(),
+                                          null_str,
+                                          time_str,
+                                          "0"))) {
+    LOG_WARN("failed to append", K(ret));
+  } else if (OB_FAIL(raw_sql.append_fmt(INIT_GLOBAL_PREFS,
+                                        share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,
+                                        value_str.ptr()))) {
+    LOG_WARN("failed to append fmt", K(ret));
+  }
+  return ret;
+}
+
+int ObDbmsStatsPreferences::get_extra_stats_perfs_for_upgrade_4352(ObSqlString &raw_sql)
+{
+  int ret = OB_SUCCESS;
+  const char *null_str = "NULL";
+  const char *time_str = "CURRENT_TIMESTAMP";
+  ObSqlString value_str;
+  ObSkipRateSamplePrefs prefs;
+  if (OB_ISNULL(prefs.get_stat_pref_name()) || OB_ISNULL(prefs.get_stat_pref_default_value())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected error", K(ret), K(prefs.get_stat_pref_name()),
+                                      K(prefs.get_stat_pref_default_value()));
+  } else if (OB_FAIL(value_str.append_fmt("('%s', %s, %s, '%s');",
+                                          prefs.get_stat_pref_name(),
+                                          null_str,
+                                          time_str,
+                                          prefs.get_stat_pref_default_value()))) {
     LOG_WARN("failed to append", K(ret));
   } else if (OB_FAIL(raw_sql.append_fmt(INIT_GLOBAL_PREFS,
                                         share::OB_ALL_OPTSTAT_GLOBAL_PREFS_TNAME,

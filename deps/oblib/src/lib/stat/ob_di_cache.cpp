@@ -13,9 +13,7 @@
 #define USING_LOG_PREFIX COMMON
 
 #include "lib/stat/ob_di_cache.h"
-#include "lib/random/ob_random.h"
 #include "lib/stat/ob_session_stat.h"
-#include "lib/ob_lib_config.h"
 #include "lib/utility/ob_tracepoint.h" // for ERRSIM_POINT_DEF
 
 namespace oceanbase
@@ -37,6 +35,7 @@ ObDISessionCollect::~ObDISessionCollect()
 void ObDISessionCollect::clean()
 {
   session_id_ = 0;
+  client_sid_ = INVALID_SESSID;
   base_value_.reset();
 }
 

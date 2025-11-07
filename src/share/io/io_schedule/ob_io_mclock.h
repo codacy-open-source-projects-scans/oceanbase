@@ -17,6 +17,7 @@
 #include "lib/container/ob_heap.h"
 #include "lib/container/ob_array_iterator.h"
 #include "lib/container/ob_array_wrap.h"
+#include "lib/lock/ob_drw_lock.h"
 
 namespace oceanbase
 {
@@ -73,18 +74,10 @@ public:
   int64_t get_max_proportion_ts();
   bool is_unlimited_config(const ObMClock &clock, const ObTenantIOConfig::GroupConfig &cur_config);
   void stop_clock(const uint64_t index);
-  int64_t get_group_clocks_count() { return group_clocks_.count(); }
-  int get_group_limit(const int64_t idx, int64_t &group_limit) const {
-    int ret = OB_SUCCESS;
-    if (idx >= group_clocks_.count()) {
-      ret = OB_INNER_STAT_ERROR;
-    } else {
-      group_limit = group_clocks_.at(idx).get_limit();
-    }
-    return ret;
-  }
+  int64_t get_group_clocks_count();
+  int get_group_limit(const int64_t idx, int64_t &group_limit);
   int64_t get_unit_limit(const ObIOMode mode) const { return unit_clocks_[static_cast<int>(mode)].iops_; }
-  TO_STRING_KV(K(is_inited_), K(io_config_), K(io_usage_), K(group_clocks_));
+  TO_STRING_KV(K(is_inited_), K(io_usage_), K(group_clocks_));
 private:
   int get_mclock(const int64_t queue_index, ObMClock *&mclock);
   int64_t calc_iops(const int64_t iops, const int64_t percentage);
@@ -95,9 +88,9 @@ private:
 private:
   bool is_inited_;
   uint64_t tenant_id_;
+  DRWLock group_clocks_lock_;
   ObSEArray<ObMClock, GROUP_START_NUM> group_clocks_;
   ObAtomIOClock unit_clocks_[static_cast<int>(ObIOMode::MAX_MODE) + 1];
-  ObTenantIOConfig io_config_;
   const ObIOUsage *io_usage_;
   int64_t last_sync_clock_ts_;
 };

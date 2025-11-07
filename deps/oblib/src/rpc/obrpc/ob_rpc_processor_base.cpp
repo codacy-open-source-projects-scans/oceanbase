@@ -11,19 +11,9 @@
  */
 
 #define USING_LOG_PREFIX RPC_FRAME
-#include "io/easy_io.h"
-#include "lib/ob_define.h"
-#include "lib/allocator/ob_malloc.h"
-#include "lib/profile/ob_trace_id.h"
-#include "lib/oblog/ob_warning_buffer.h"
-#include "lib/compress/ob_compressor_pool.h"
-#include "lib/statistic_event/ob_stat_event.h"
-#include "lib/stat/ob_diagnose_info.h"
-#include "lib/trace/ob_trace_event.h"
 #include "lib/trace/ob_trace.h"
 #include "common/data_buffer.h"
 #include "common/ob_tenant_data_version_mgr.h"
-#include "rpc/obrpc/ob_rpc_req_context.h"
 #include "rpc/obrpc/ob_rpc_stream_cond.h"
 #include "rpc/obrpc/ob_rpc_result_code.h"
 #include "rpc/obrpc/ob_rpc_stat.h"
@@ -32,6 +22,7 @@
 #include "rpc/obrpc/ob_rpc_net_handler.h"
 #include "rpc/obrpc/ob_poc_rpc_server.h"
 #include "lib/ash/ob_active_session_guard.h"
+#include "lib/stat/ob_diagnostic_info_guard.h"
 
 using namespace oceanbase::common;
 
@@ -80,7 +71,10 @@ int ObRpcProcessorBase::run()
 {
   int ret = OB_SUCCESS;
   bool deseri_succ = true;
-
+  if (ObQueryRetryAshGuard::get_info_ptr() != nullptr) {
+    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "retry info ptr is not null, maybe crash", K(ObLocalDiagnosticInfo::get()->get_ash_stat()));
+    ObQueryRetryAshGuard::reset_info();
+  }
   run_timestamp_ = ObTimeUtility::current_time();
   if (OB_FAIL(check_timeout())) {
     LOG_WARN("req timeout", K(ret));
@@ -148,6 +142,16 @@ int ObRpcProcessorBase::check_cluster_id()
       LOG_WARN("packet dst_cluster_id not match", K(ret), "self.dst_cluster_id", ObRpcNetHandler::CLUSTER_ID,
               "pkt.dst_cluster_id", rpc_pkt_->get_dst_cluster_id(), "pkt", *rpc_pkt_);
     }
+  } else if (OB_UNLIKELY(!is_arb
+            && INVALID_CLUSTER_ID == rpc_pkt_->get_dst_cluster_id() // the rpc is not for standby fetchlog
+            && INVALID_CLUSTER_ID != rpc_pkt_->get_src_cluster_id() // the rpc is from observer
+            && ObRpcNetHandler::CLUSTER_ID != rpc_pkt_->get_src_cluster_id())) { // the rpc is from another cluster
+      ret = OB_PACKET_CLUSTER_ID_NOT_MATCH;
+      if (REACH_TIME_INTERVAL(500 * 1000)) {
+        LOG_WARN("packet dst_cluster_id not match", "self.dst_cluster_id", ObRpcNetHandler::CLUSTER_ID,
+                "pkt.dst_cluster_id", rpc_pkt_->get_dst_cluster_id(), "pkt.src_cluster_id", rpc_pkt_->get_src_cluster_id(), "pkt", *rpc_pkt_,
+                "peer", get_peer());
+      }
   }
   return ret;
 }
@@ -358,8 +362,11 @@ int ObRpcProcessorBase::do_response(const Response &rsp)
             packet->set_stream_last();
           }
         }
-        if (rsp.require_rerouting_) {
+        if (require_rerouting_) {
           packet->set_require_rerouting();
+        }
+        if (kv_route_meta_error_) {
+          packet->set_kv_route_meta_error(); // reuse IS_KV_REQUEST_FALG flag as KV_ROUTE_META_ERROR_FLAG
         }
         packet->set_unis_version(0);
         packet->calc_checksum();
@@ -528,7 +535,7 @@ int ObRpcProcessorBase::part_response(const int retcode, bool is_last)
     if (OB_SUCC(ret)) {
       const int64_t sessid = sc_ ? sc_->sessid() : 0;
       ObRpcPacket *pkt = new (pkt_buf) ObRpcPacket();
-      Response rsp(sessid, is_stream_, is_last, require_rerouting_, pkt);
+      Response rsp(sessid, is_stream_, is_last, pkt);
       if ((need_compressed) && NULL != tmp_buf) {
         // compress the serialized result buffer
         char *dst_buf = pkt_buf + sizeof(ObRpcPacket) + ez_rpc_header_size;
@@ -576,7 +583,7 @@ int ObRpcProcessorBase::part_response_error(rpc::ObRequest* req, const int retco
   } else {
     ObRpcPacket pkt;
     pkt.set_content(tbuf, pos);
-    Response err_rsp(sessid, is_stream_, is_last, require_rerouting_, &pkt);
+    Response err_rsp(sessid, is_stream_, is_last, &pkt);
     if (OB_FAIL(do_response(err_rsp))) {
       RPC_OBRPC_LOG(WARN, "response data fail", K(ret));
     }

@@ -13,14 +13,8 @@
 #define USING_LOG_PREFIX LIB_MYSQLC
 #include "lib/mysqlclient/ob_isql_connection_pool.h"
 #include "lib/mysqlclient/ob_mysql_connection.h"
-#include "lib/mysqlclient/ob_mysql_connection_pool.h"
 #include "lib/mysqlclient/ob_server_connection_pool.h"
-#include "lib/mysqlclient/ob_mysql_statement.h"
-#include "lib/mysqlclient/ob_mysql_prepared_statement.h"
-#include "lib/profile/ob_trace_id.h"
-#include "lib/string/ob_sql_string.h"
 #include "lib/mysqlclient/ob_mysql_read_context.h"
-#include "lib/mysqlclient/ob_dblink_error_trans.h"
 #include "share/schema/ob_routine_info.h"
 
 namespace oceanbase
@@ -116,11 +110,13 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     close();
     LOG_INFO("connecting to mysql server", "ip", host_name, "port", port);
     mysql_init(&mysql_);
+    closed_ = false;
     timeout_ = timeout;
 #ifdef OB_BUILD_TDE_SECURITY
     int64_t ssl_enforce = 1;
 #endif
     mysql_options(&mysql_, MYSQL_OPT_CONNECT_TIMEOUT,  &timeout_);
+    mysql_options(&mysql_, MYSQL_OPT_NONBLOCK, 0);
     if (read_write_no_timeout) {
       int64_t zero_second = 0;
       mysql_options(&mysql_, MYSQL_OPT_READ_TIMEOUT, &zero_second);
@@ -146,11 +142,12 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
 #ifdef OB_BUILD_TDE_SECURITY
     mysql_options(&mysql_, MYSQL_OPT_SSL_ENFORCE, &ssl_enforce);
 #endif
-    MYSQL *mysql = mysql = mysql_real_connect(&mysql_, host_name, user, pass, db, port, NULL, 0);
+    MYSQL *mysql = mysql_real_connect(&mysql_, host_name, user, pass, db, port, NULL, 0);
     if (OB_ISNULL(mysql)) {
       ret = -mysql_errno(&mysql_);
       LOG_WARN("fail to connect to mysql server", K(get_sessid()), KCSTRING(host_name), KCSTRING(user), KCSTRING(db), K(port),
                "info", mysql_error(&mysql_), K(ret));
+      close();  // revoke close() to release resource
     } else {
       /*Note: mysql_real_connect() incorrectly reset the MYSQL_OPT_RECONNECT option
        * to its default value before MySQL 5.0.19. Therefore, prior to that version,
@@ -161,7 +158,6 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
        */
       my_bool reconnect = 0; // in OB, do manual reconnect. xiaochu.yh
       mysql_options(&mysql_, MYSQL_OPT_RECONNECT, &reconnect);
-      closed_ = false;
       set_usable(true);
       tenant_id_ = OB_SYS_TENANT_ID;
       read_consistency_ = -1;
@@ -195,6 +191,7 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     LOG_INFO("connecting to mysql server", "ip", host, "port", root_->get_server().get_port(),
               "host_name", root_->get_host_name(), "host port", root_->get_port());
     mysql_init(&mysql_);
+    closed_ = false;
 #ifdef OB_BUILD_TDE_SECURITY
     int64_t ssl_enforce = 1;
     if (! use_ssl) {
@@ -202,6 +199,7 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
     }
 #endif
     mysql_options(&mysql_, MYSQL_OPT_CONNECT_TIMEOUT,  &timeout_);
+    mysql_options(&mysql_, MYSQL_OPT_NONBLOCK, 0);
     if (read_write_no_timeout) {
       int64_t zero_second = 0;
       mysql_options(&mysql_, MYSQL_OPT_READ_TIMEOUT, &zero_second);
@@ -256,6 +254,7 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
                                             K(errmsg));
         TRANSLATE_CLIENT_ERR_2(ret, false, errmsg);
       }
+      close();  // revoke close() to release resource
     } else {
       /*Note: mysql_real_connect() incorrectly reset the MYSQL_OPT_RECONNECT option
        * to its default value before MySQL 5.0.19. Therefore, prior to that version,
@@ -266,7 +265,6 @@ int ObMySQLConnection::connect(const char *user, const char *pass, const char *d
        */
       my_bool reconnect = 0; // in OB, do manual reconnect. xiaochu.yh
       mysql_options(&mysql_, MYSQL_OPT_RECONNECT, &reconnect);
-      closed_ = false;
       set_usable(true);
       db_name_ = db;
       tenant_id_ = OB_SYS_TENANT_ID;
@@ -283,7 +281,7 @@ void ObMySQLConnection::close()
     closed_ = true;
     sessid_ = 0;
     memset(&mysql_, 0, sizeof(MYSQL));
-    set_session_init_status(false);
+    reset_init_variables();
   }
 }
 

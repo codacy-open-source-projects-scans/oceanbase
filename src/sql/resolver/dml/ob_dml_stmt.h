@@ -25,6 +25,8 @@
 #include "sql/resolver/dml/ob_raw_expr_sets.h"
 #include "sql/resolver/expr/ob_raw_expr_copier.h"
 #include "sql/resolver/dml/ob_stmt_expr_visitor.h"
+#include "share/catalog/ob_catalog_properties.h"
+#include "share/vector_index/ob_vector_index_param.h"
 
 namespace oceanbase
 {
@@ -34,122 +36,24 @@ class ObStmtResolver;
 class ObDMLStmt;
 class ObStmtExprVisitor;
 class ObStmtExprGetter;
+struct TransposeDef;
 
-struct TransposeItem
+struct ObUnpivotItem
 {
-  enum UnpivotNullsType
-  {
-    UNT_NOT_SET = 0,
-    UNT_EXCLUDE,
-    UNT_INCLUDE,
-  };
+public:
+  ObUnpivotItem() : is_include_null_(false) {}
 
-  struct AggrPair
-  {
-    ObRawExpr *expr_;
-    ObString alias_name_;
-    AggrPair() : expr_(NULL), alias_name_() {}
-    ~AggrPair() {}
-    TO_STRING_KV(KPC_(expr), K_(alias_name));
-  };
+  void reset() { new (this) ObUnpivotItem(); }
 
-  struct ForPair
-  {
-    ObString column_name_;
-    ForPair() : column_name_() {}
-    ~ForPair() {}
-
-    TO_STRING_KV(K_(column_name));
-  };
-
-
-  struct InPair
-  {
-    common::ObSEArray<ObRawExpr*, 1, common::ModulePageAllocator, true> exprs_;
-    ObString pivot_expr_alias_;
-    common::ObSEArray<ObString, 1, common::ModulePageAllocator, true> column_names_;
-    InPair() : pivot_expr_alias_() {}
-    ~InPair() {}
-    int assign(const InPair &other);
-    TO_STRING_KV(K_(exprs), K_(pivot_expr_alias), K_(column_names));
-  };
-
-  TransposeItem()
-      : old_column_count_(0), is_unpivot_(false), is_incude_null_(false)
-  {}
-  void reset()
-  {
-    old_column_count_ = 0;
-    is_unpivot_ = false;
-    is_incude_null_ = false;
-    aggr_pairs_.reset();
-    for_columns_.reset();
-    in_pairs_.reset();
-    unpivot_columns_.reset();
-  }
-  inline bool is_pivot() const { return !is_unpivot_; }
-  inline bool is_unpivot() const { return is_unpivot_; }
-  inline bool is_include_null() const { return is_incude_null_; }
-  inline bool is_exclude_null() const { return !is_incude_null_; }
-  inline bool need_use_unpivot_op() const
-  {
-    return is_unpivot_ && in_pairs_.count() > 1;
-  }
-  void set_pivot() { is_unpivot_ = false; }
-  void set_unpivot() { is_unpivot_ = true; }
-  void set_include_nulls(const bool is_include_nulls)
-  {
-    is_incude_null_ = is_include_nulls;
-  }
-  int assign(const TransposeItem &other);
   int deep_copy(ObIRawExprCopier &expr_copier,
-                const TransposeItem &other);
-  TO_STRING_KV(K_(old_column_count), K_(is_unpivot), K_(is_incude_null), K_(aggr_pairs),
-               K_(for_columns), K_(in_pairs), K_(unpivot_columns), K_(alias_name));
+                const ObUnpivotItem &other);
 
-  int64_t old_column_count_;
-  bool is_unpivot_;
-  bool is_incude_null_;
-
-  common::ObSEArray<AggrPair, 16, common::ModulePageAllocator, true> aggr_pairs_;
-  common::ObSEArray<ObString, 16, common::ModulePageAllocator, true> for_columns_;
-  common::ObSEArray<InPair, 16, common::ModulePageAllocator, true> in_pairs_;
-  common::ObSEArray<ObString, 16, common::ModulePageAllocator, true> unpivot_columns_;
-
-  ObString alias_name_;
-};
-
-struct ObUnpivotInfo
-{
-public:
-  OB_UNIS_VERSION(1);
-public:
-  ObUnpivotInfo()
-    : is_include_null_(false),
-      old_column_count_(0),
-      for_column_count_(0),
-      unpivot_column_count_(0)
-  {}
-  ObUnpivotInfo(const bool is_include_null, const int64_t old_column_count,
-                const int64_t for_column_count, const int64_t unpivot_column_count)
-    : is_include_null_(is_include_null), old_column_count_(old_column_count),
-      for_column_count_(for_column_count), unpivot_column_count_(unpivot_column_count)
-  {}
-
-  void reset() { new (this) ObUnpivotInfo(); }
-  OB_INLINE bool has_unpivot() const
-  { return old_column_count_>= 0 && unpivot_column_count_ > 0 && for_column_count_ > 0; };
-  OB_INLINE int64_t get_new_column_count() const
-  { return unpivot_column_count_ + for_column_count_; }
-  OB_INLINE int64_t get_output_column_count() const
-  { return old_column_count_ + get_new_column_count(); }
-  TO_STRING_KV(K_(is_include_null), K_(old_column_count), K_(unpivot_column_count),
-               K_(for_column_count));
+  TO_STRING_KV(K_(is_include_null), K_(origin_exprs), K_(label_exprs), K_(value_exprs));
 
   bool is_include_null_;
-  int64_t old_column_count_;
-  int64_t for_column_count_;
-  int64_t unpivot_column_count_;
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> origin_exprs_;
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> label_exprs_;
+  common::ObSEArray<ObRawExpr *, 4, common::ModulePageAllocator, true> value_exprs_;
 };
 
 enum MulModeTableType {
@@ -235,7 +139,7 @@ struct ObValuesTableDef {
   int64_t row_cnt_;
   TableAccessType access_type_;
   bool is_const_; // values table’s outputs are all params.
-  common::ObArray<ObExprResType, common::ModulePageAllocator, true> column_types_;
+  common::ObArray<ObRawExprResType, common::ModulePageAllocator, true> column_types_;
   virtual TO_STRING_KV(K(column_cnt_), K(row_cnt_), K(access_exprs_), K(start_param_idx_),
                        K(end_param_idx_), K(access_objs_), K(column_ndvs_), K(column_nnvs_),
                        K(access_type_), K(is_const_), K(column_types_));
@@ -259,6 +163,7 @@ struct TableItem
     skip_locked_ = false;
     need_expand_rt_mv_ = false;
     mview_id_ = common::OB_INVALID_ID;
+    mr_mv_flags_ = 0;
     node_ = NULL;
     view_base_item_ = NULL;
     flashback_query_expr_ = nullptr;
@@ -270,8 +175,13 @@ struct TableItem
     ddl_table_id_ = common::OB_INVALID_ID;
     json_table_def_ = nullptr;
     table_type_ = MAX_TABLE_TYPE;
+    lake_table_format_ = share::ObLakeTableFormat::INVALID;
     values_table_def_ = NULL;
     sample_info_ = nullptr;
+    transpose_table_def_ = NULL;
+    // assign default value for compatibility
+    catalog_name_ = lib::is_oracle_mode() ? OB_INTERNAL_CATALOG_NAME_UPPER : OB_INTERNAL_CATALOG_NAME;
+    external_location_id_ = common::OB_INVALID_ID;  // 检查权限时临时外表拿不到tableschema
   }
 
   virtual TO_STRING_KV(N_TID, table_id_,
@@ -295,7 +205,7 @@ struct TableItem
                KPC_(function_table_expr),
                K_(flashback_query_type), KPC_(flashback_query_expr), K_(table_type),
                K_(exec_params), KPC_(sample_info), K_(mview_id), K_(need_expand_rt_mv),
-               K_(external_table_partition));
+               K_(external_table_partition), K_(catalog_name), K_(external_location_id));
 
   enum TableType
   {
@@ -305,7 +215,7 @@ struct TableItem
     JOINED_TABLE,
     CTE_TABLE,
     FUNCTION_TABLE,
-    UNPIVOT_TABLE,
+    TRANSPOSE_TABLE,
     TEMP_TABLE,
     LINK_TABLE,
     JSON_TABLE,
@@ -344,6 +254,7 @@ struct TableItem
   bool is_has_sample_info() const { return sample_info_ != nullptr; }
   bool is_joined_table() const { return JOINED_TABLE == type_; }
   bool is_function_table() const { return FUNCTION_TABLE == type_; }
+  bool is_transpose_table() const { return TRANSPOSE_TABLE == type_; }
   bool is_link_table() const { return OB_INVALID_ID != dblink_id_; } // why not use type_, cause type_ will be changed in dblink transform rule, but dblink id don't change
   bool is_link_type() const { return LINK_TABLE == type_; } // after dblink transformer, LINK_TABLE will be BASE_TABLE, BASE_TABLE will be LINK_TABLE
   bool is_json_table() const { return JSON_TABLE == type_; }  // json_table_def_->table_type_ == MulModeTableType::OB_ORA_JSON_TABLE_TYPE
@@ -376,6 +287,10 @@ struct TableItem
   {
     return synonym_name_.empty() ? database_name_ : synonym_db_name_;
   }
+  const common::ObString &get_catalog_name() const
+  {
+    return catalog_name_;
+  }
   // only can be used in resolve phase
   const TableItem &get_base_table_item() const
   {
@@ -401,7 +316,7 @@ struct TableItem
   // type == BASE_TABLE? ref_id_ is the real Id of the schema
   // type == ALIAS_TABLE? ref_id_ is the real Id of the schema, while table_id_ new generated
   // type == GENERATED_TABLE? ref_id_ is the reference of the sub-query.
-  // type == UNPIVOT_TABLE? ref_id_ is the reference of the sub-query,
+  // type == TRANSPOSE_TABLE? ref_id_ is the reference of the sub-query,
   // which like   SELECT  "normal_column",
   //                      'in_pair_literal1' AS "for_column1", 'in_pair_literal2' AS "for_column2",
   //                      "in_pair_column1" AS "unpivot_column1", "in_pair_column2" AS "unpivot_column2"
@@ -414,6 +329,7 @@ struct TableItem
   bool is_view_table_; //for VIEW privilege check
   bool is_recursive_union_fake_table_; //mark whether this table is a tmp fake table for resolve the recursive cte table
   share::schema::ObTableType table_type_;
+  share::ObLakeTableFormat lake_table_format_;
   CTEType cte_type_;
   common::ObString database_name_;
   /* FOR UPDATE clause */
@@ -422,6 +338,7 @@ struct TableItem
   bool skip_locked_;
   bool need_expand_rt_mv_; // for real-time materialized view
   uint64_t mview_id_; // for materialized view, ref_id_ is mv container table id, mview_id_ is the view id
+  uint64_t mr_mv_flags_; // for major refresh mview
   const ParseNode* node_;
   // base table item for updatable view, can not access after the resolve phase
   const TableItem *view_base_item_;
@@ -444,9 +361,14 @@ struct TableItem
   // values table
   ObValuesTableDef *values_table_def_;
   // external table
+  common::ObString catalog_name_;
   common::ObString external_table_partition_;
   // sample scan infos
   SampleInfo *sample_info_;
+  // transpose table
+  TransposeDef *transpose_table_def_;
+  // external location
+  uint64_t external_location_id_;
 };
 
 struct ColumnItem
@@ -468,10 +390,7 @@ struct ColumnItem
   bool is_invalid() const { return NULL == expr_; }
   const ObColumnRefRawExpr *get_expr() const { return expr_; }
   ObColumnRefRawExpr *get_expr() { return expr_; }
-  void set_default_value(const common::ObObj &val)
-  {
-    default_value_ = val;
-  }
+  void set_default_value(const common::ObObj &val);
   void set_default_value_expr(ObRawExpr *expr)
   {
     default_value_expr_ = expr;
@@ -479,6 +398,7 @@ struct ColumnItem
   bool is_auto_increment() const { return expr_ != NULL && expr_->is_auto_increment(); }
   bool is_not_null_for_write() const { return expr_ != NULL && expr_->is_not_null_for_write(); }
   bool is_not_null_for_read() const { return expr_ != NULL && expr_->is_not_null_for_read(); }
+  bool is_hidden_clustering_key_column() const { return expr_ != NULL && expr_->is_hidden_clustering_key_column(); }
   int deep_copy(ObIRawExprCopier &expr_copier,
                 const ColumnItem &other);
   void reset()
@@ -502,9 +422,9 @@ struct ColumnItem
     table_id_ = table_id; column_id_ = column_id;
     (NULL != expr_) ? expr_->set_ref_id(table_id, column_id) : (void) 0;
   }
-  const ObExprResType *get_column_type() const
+  const ObRawExprResType *get_column_type() const
   {
-    const ObExprResType *column_type = NULL;
+    const ObRawExprResType *column_type = NULL;
     if (expr_ != NULL) {
       column_type = &(expr_->get_result_type());
     }
@@ -643,70 +563,70 @@ public:
   common::ObSEArray<ObRawExpr*, 16, common::ModulePageAllocator, true> semi_conditions_;
 };
 
-/// In fact, ObStmt is ObDMLStmt.
+struct PartExprItem
+{
+  PartExprItem()
+      : table_id_(common::OB_INVALID_ID),
+        index_tid_(common::OB_INVALID_ID),
+        part_expr_(NULL),
+        subpart_expr_(NULL)
+  {
+  }
+  uint64_t table_id_;
+  uint64_t index_tid_;
+  ObRawExpr *part_expr_;
+  ObRawExpr *subpart_expr_;
+  void reset() {
+    table_id_ = common::OB_INVALID_ID;
+    index_tid_ = common::OB_INVALID_ID;
+    part_expr_ = NULL;
+    subpart_expr_ = NULL;
+  }
+  int deep_copy(ObIRawExprCopier &expr_copier,
+                const PartExprItem &other);
+  TO_STRING_KV(K_(table_id),
+                K_(index_tid),
+                KPC_(part_expr),
+                KPC_(subpart_expr));
+};
+
+enum CheckConstraintFlag
+{
+  IS_ENABLE_CHECK       = 1,
+  IS_VALIDATE_CHECK     = 1 << 1,
+  IS_RELY_CHECK         = 1 << 2
+};
+struct CheckConstraintItem
+{
+  CheckConstraintItem()
+      : table_id_(common::OB_INVALID_ID),
+        ref_table_id_(common::OB_INVALID_ID),
+        check_constraint_exprs_(),
+        check_flags_()
+  {
+  }
+  void reset() {
+    table_id_ = common::OB_INVALID_ID;
+    ref_table_id_ = common::OB_INVALID_ID;
+    check_constraint_exprs_.reset();
+    check_flags_.reset();
+  }
+  int deep_copy(ObIRawExprCopier &expr_copier,
+                const CheckConstraintItem &other);
+  int assign(const CheckConstraintItem &other);
+  TO_STRING_KV(K_(table_id),
+                K_(ref_table_id),
+                K_(check_constraint_exprs),
+                K_(check_flags));
+  uint64_t table_id_;
+  uint64_t ref_table_id_;
+  ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> check_constraint_exprs_;
+  ObSEArray<int64_t, 4,common::ModulePageAllocator, true> check_flags_;
+};
+
 class ObDMLStmt : public ObStmt
 {
 public:
-  struct PartExprItem
-  {
-    PartExprItem()
-        : table_id_(common::OB_INVALID_ID),
-          index_tid_(common::OB_INVALID_ID),
-          part_expr_(NULL),
-          subpart_expr_(NULL)
-    {
-    }
-    uint64_t table_id_;
-    uint64_t index_tid_;
-    ObRawExpr *part_expr_;
-    ObRawExpr *subpart_expr_;
-    void reset() {
-      table_id_ = common::OB_INVALID_ID;
-      index_tid_ = common::OB_INVALID_ID;
-      part_expr_ = NULL;
-      subpart_expr_ = NULL;
-    }
-    int deep_copy(ObIRawExprCopier &expr_copier,
-                  const PartExprItem &other);
-    TO_STRING_KV(K_(table_id),
-                 K_(index_tid),
-                 KPC_(part_expr),
-                 KPC_(subpart_expr));
-  };
-
-  enum CheckConstraintFlag
-  {
-    IS_ENABLE_CHECK       = 1,
-    IS_VALIDATE_CHECK     = 1 << 1,
-    IS_RELY_CHECK         = 1 << 2
-  };
-  struct CheckConstraintItem
-  {
-    CheckConstraintItem()
-        : table_id_(common::OB_INVALID_ID),
-          ref_table_id_(common::OB_INVALID_ID),
-          check_constraint_exprs_(),
-          check_flags_()
-    {
-    }
-    void reset() {
-      table_id_ = common::OB_INVALID_ID;
-      ref_table_id_ = common::OB_INVALID_ID;
-      check_constraint_exprs_.reset();
-      check_flags_.reset();
-    }
-    int deep_copy(ObIRawExprCopier &expr_copier,
-                  const CheckConstraintItem &other);
-    int assign(const CheckConstraintItem &other);
-    TO_STRING_KV(K_(table_id),
-                 K_(ref_table_id),
-                 K_(check_constraint_exprs),
-                 K_(check_flags));
-    uint64_t table_id_;
-    uint64_t ref_table_id_;
-    ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> check_constraint_exprs_;
-    ObSEArray<int64_t, 4,common::ModulePageAllocator, true> check_flags_;
-  };
 
   typedef common::hash::ObHashMap<uint64_t, int64_t, common::hash::NoPthreadDefendMode,
                                   common::hash::hash_func<uint64_t>,
@@ -835,6 +755,11 @@ public:
   common::ObIArray<JoinedTable*> &get_joined_tables() { return joined_tables_; }
   inline int64_t get_order_item_size() const { return order_items_.count(); }
   inline bool is_single_table_stmt() const { return (1 == get_table_size()); }
+  inline bool has_multi_base_tables() const {
+    return !get_semi_infos().empty() ||
+           get_from_item_size() > 1 ||
+           (get_from_item_size() == 1 && get_from_item(0).is_joined_);
+  }
   int add_semi_info(SemiInfo* info) { return semi_infos_.push_back(info); }
   int remove_semi_info(SemiInfo* info);
   inline common::ObIArray<SemiInfo*> &get_semi_infos() { return semi_infos_; }
@@ -869,8 +794,8 @@ public:
   int get_order_exprs(common::ObIArray<ObRawExpr*> &order_exprs) const;
   //提取该stmt中所有表达式的relation id
   int pull_all_expr_relation_id();
-  int formalize_stmt(ObSQLSessionInfo *session_info);
-  int formalize_relation_exprs(ObSQLSessionInfo *session_info);
+  int formalize_stmt(ObSQLSessionInfo *session_info, bool need_deduce_type = true);
+  int formalize_relation_exprs(ObSQLSessionInfo *session_info, bool need_deduce_type = true);
   int formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
                                     ObSQLSessionInfo *session_info,
                                     bool explicit_for_col = false);
@@ -878,6 +803,9 @@ public:
                                           ObSQLSessionInfo *session_info);
   int set_sharable_expr_reference(ObRawExpr &expr, ExplicitedRefType ref_type);
   int check_pseudo_column_valid();
+  int check_stmt_valid();
+  int recursively_check_stmt_valid();
+  int check_unpivot_valid();
   int get_target_pseudo_column(const ObItemType target_type,
                                const uint64_t table_id,
                                ObPseudoColumnRawExpr *&pseudo_col);
@@ -1011,6 +939,7 @@ public:
   int assign_tables_hash(const ObDMLStmtTableHash &tables_hash);
   ColumnItem *get_column_item(uint64_t table_id, const common::ObString &col_name);
   ColumnItem *get_column_item(uint64_t table_id, uint64_t column_id);
+  const ColumnItem *get_column_item(uint64_t table_id, uint64_t column_id) const;
   int add_column_item(ColumnItem &column_item);
   int add_column_item(ObIArray<ColumnItem> &column_items);
   int remove_column_item(uint64_t table_id, uint64_t column_id);
@@ -1030,6 +959,7 @@ public:
   { return match_exprs_; }
   common::ObIArray<ObMatchFunRawExpr *> &get_match_exprs()
   { return match_exprs_; }
+  bool has_es_match() const { return match_exprs_.count() > 0 && match_exprs_.at(0) != nullptr && match_exprs_.at(0)->is_es_match(); }
   int get_match_expr_on_table(uint64_t table_id, ObIArray<ObRawExpr *> &match_exprs) const;
   int get_table_pseudo_column_like_exprs(uint64_t table_id, ObIArray<ObRawExpr *> &pseudo_columns);
   int get_table_pseudo_column_like_exprs(ObIArray<uint64_t> &table_id, ObIArray<ObRawExpr *> &pseudo_columns);
@@ -1088,6 +1018,9 @@ public:
   inline bool is_reverse_link() const { return is_reverse_link_; }
   inline void set_has_vec_approx(bool has_vec_approx) { has_vec_approx_ = has_vec_approx; }
   inline bool has_vec_approx() const { return has_vec_approx_; }
+  const share::ObVectorIndexQueryParam& get_vector_index_query_param() const { return vector_index_query_param_; }
+  share::ObVectorIndexQueryParam& get_vector_index_query_param() { return vector_index_query_param_; }
+  bool is_contain_vector_origin_distance_calc() const;
   int add_subquery_ref(ObQueryRefRawExpr *query_ref);
   virtual int get_child_stmt_size(int64_t &child_size) const;
   int64_t get_subquery_expr_size() const { return subquery_exprs_.count(); }
@@ -1116,7 +1049,14 @@ public:
   int get_relation_exprs(common::ObIArray<ObRawExprPointer> &relation_expr_ptrs,
                          ObStmtExprGetter &visitor);
   int get_relation_exprs(common::ObIArray<ObRawExpr *> &relation_exprs) const;
+  int get_relation_exprs(common::ObIArray<ObRawExpr *> &relation_exprs,
+                         const ObExprInfo &flags,
+                         bool match_any_flag = true) const;
   int get_relation_exprs(common::ObIArray<ObRawExprPointer> &relation_expr_ptrs);
+  int get_relation_exprs(common::ObIArray<ObRawExprPointer> &relation_expr_ptrs,
+                         const ObExprInfo &flags,
+                         bool match_any_flag = true);
+  int get_relation_exprs(common::ObIArray<ObRawExpr *> &relation_exprs, DmlStmtScope scope) const;
   //this func is used for enum_set_wrapper to get exprs which need to be handled
   int get_relation_exprs_for_enum_set_wrapper(common::ObIArray<ObRawExpr*> &rel_array);
   int check_relation_exprs_deterministic(bool &is_deterministic) const;
@@ -1161,9 +1101,13 @@ public:
                N_USER_VARS, user_var_exprs_,
                K_(dblink_id),
                K_(is_reverse_link),
-               K_(has_vec_approx));
+               K_(has_vec_approx),
+               K_(vector_index_query_param));
 
   int check_if_contain_inner_table(bool &is_contain_inner_table) const;
+#ifdef OB_BUILD_SHARED_STORAGE
+  bool check_if_contain_sslog_table() const;
+#endif
   int check_if_contain_select_for_update(bool &is_contain_select_for_update) const;
   int check_if_table_exists(uint64_t table_id, bool &is_existed) const;
   bool has_for_update() const;
@@ -1177,22 +1121,9 @@ public:
                         const uint64_t seq_id) const;
   int get_sequence_exprs(common::ObIArray<ObRawExpr *> &exprs) const;
   int get_udf_exprs(common::ObIArray<ObRawExpr *> &exprs) const;
-  const TransposeItem *get_transpose_item() const { return transpose_item_; }
-  void set_transpose_item(const TransposeItem *transpose_item) { transpose_item_ = transpose_item; }
-  const ObUnpivotInfo get_unpivot_info() const
-  {
-    return (transpose_item_ != NULL
-            ? ObUnpivotInfo(transpose_item_->is_include_null(),
-                            transpose_item_->old_column_count_,
-                            transpose_item_->for_columns_.count(),
-                            transpose_item_->unpivot_columns_.count())
-            : ObUnpivotInfo());
-  }
-  bool is_unpivot_select() const
-  {
-    const ObUnpivotInfo &unpivot_info = get_unpivot_info();
-    return unpivot_info.has_unpivot();
-  }
+  const ObUnpivotItem *get_unpivot_item() const { return unpivot_item_; }
+  void set_unpivot_item(ObUnpivotItem *unpivot_item) { unpivot_item_ = unpivot_item; }
+  bool is_unpivot_select() const { return unpivot_item_ != NULL; }
   int remove_subquery_expr(const ObRawExpr *expr);
   // rebuild query ref exprs
   int adjust_subquery_list();
@@ -1205,9 +1136,9 @@ public:
                                        const bool check_having = false) const;
   int get_where_scope_conditions(ObIArray<ObRawExpr *> &conditions,
                                  bool outer_semi_only = false) const;
-  static int extract_equal_condition_from_joined_table(const TableItem *table,
-                                                       ObIArray<ObRawExpr *> &equal_set_conditions,
-                                                       const bool is_strict);
+  static int extract_on_condition_from_joined_table(const TableItem *table,
+                                                    ObIArray<ObRawExpr *> &equal_set_conditions,
+                                                    const bool is_strict);
   virtual bool is_returning() const { return false; }
   virtual bool has_instead_of_trigger() const { return false; }
   int has_lob_column(int64_t table_id, bool &has_lob)const;
@@ -1283,6 +1214,7 @@ public:
                                 ObIArray<ColumnItem> &partition_columns,
                                 ObIArray<ColumnItem> &generate_columns,
                                 const bool is_generate_column = false) const;
+  int formalize_special_domain_index_fields();
 
 protected:
   int create_table_item(TableItem *&table_item);
@@ -1355,7 +1287,7 @@ protected:
   common::ObSEArray<ObRawExpr *, 8, common::ModulePageAllocator, true> pseudo_column_like_exprs_;
   ObDMLStmtTableHash tables_hash_;
   common::ObSEArray<ObQueryRefRawExpr*, 4, common::ModulePageAllocator, true> subquery_exprs_;
-  const TransposeItem *transpose_item_;
+  ObUnpivotItem *unpivot_item_;
 
   common::ObSEArray<ObUserVarIdentRawExpr *, 4, common::ModulePageAllocator, true> user_var_exprs_;
   common::ObSEArray<CheckConstraintItem, 8, common::ModulePageAllocator, true> check_constraint_items_;
@@ -1372,6 +1304,7 @@ protected:
   bool has_vec_approx_;
   // fulltext search exprs
   common::ObSEArray<ObMatchFunRawExpr*, 2, common::ModulePageAllocator, true> match_exprs_;
+  share::ObVectorIndexQueryParam vector_index_query_param_;
 };
 
 template <typename T>

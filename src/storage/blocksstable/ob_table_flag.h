@@ -69,6 +69,7 @@ public:
   void set_has_local() { has_local_flag_ = ObTableHasLocalFlag::HAS_LOCAL; }
   void set_no_local() { has_local_flag_ = ObTableHasLocalFlag::NO_LOCAL; }
   bool is_shared_sstable() const { return has_backup() && !has_local(); }
+  int32_t get_flag() const { return flag_; }
 
 private:
   static const uint64_t SF_BIT_HAS_BACKUP = 1;
@@ -120,6 +121,7 @@ public:
   void set_private() { shared_flag_ = PRIVATE; }
   void set_shared_sstable() { shared_flag_ = SHARED_SSTABLE; }
   void set_share_macro_blocks() { shared_flag_ = SHARED_MACRO_BLOCKS; }
+  void set_is_split_sstable() { is_split_sstable_ = true; }
   bool is_shared_macro_blocks() const {
     return SHARED_SSTABLE == shared_flag_
         || SHARED_MACRO_BLOCKS == shared_flag_; }
@@ -127,15 +129,19 @@ public:
   bool is_only_shared_macro_blocks() const {
     return SHARED_SSTABLE != shared_flag_
         && SHARED_MACRO_BLOCKS == shared_flag_; }
+  int32_t get_flag() const { return flag_; }
+  bool is_split_sstable() const { return is_split_sstable_; }
   TO_STRING_KV(K_(shared_flag), K_(reserved));
 
 private:
   static const uint64_t SF_BIT_IS_SHARED = 8;
-  static const uint64_t SF_BIT_RESERVED = 24;
+  static const uint64_t SF_BIT_IS_SPLIT_SSTABLE = 1;
+  static const uint64_t SF_BIT_RESERVED = 23;
   union {
     int32_t flag_;
     struct {;
       FLAG shared_flag_ : SF_BIT_IS_SHARED;
+      int32_t is_split_sstable_: SF_BIT_IS_SPLIT_SSTABLE;
       int32_t reserved_: SF_BIT_RESERVED;
     };
   };

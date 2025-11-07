@@ -8,12 +8,8 @@
 // MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
 // See the Mulan PubL v2 for more details.
 #define USING_LOG_PREFIX STORAGE_COMPACTION
-#include "storage/compaction/ob_progressive_merge_helper.h"
-#include "storage/compaction/ob_tablet_merge_task.h"
-#include "storage/blocksstable/ob_sstable.h"
-#include "storage/blocksstable/index_block/ob_index_block_macro_iterator.h"
+#include "ob_progressive_merge_helper.h"
 #include "storage/compaction/ob_partition_merger.h"
-#include "storage/compaction/ob_basic_tablet_merge_ctx.h"
 #include "observer/ob_server_event_history_table_operator.h"
 
 namespace oceanbase
@@ -132,19 +128,23 @@ void ObProgressiveMergeHelper::reset()
 }
 
 int ObProgressiveMergeHelper::init(
-  const ObSSTable &sstable,
-  const ObMergeParameter &merge_param,
-  ObProgressiveMergeMgr *mgr)
+    ObIArray<ObITable*> &tables,
+    const ObMergeParameter &merge_param,
+    ObProgressiveMergeMgr *mgr)
 {
   int ret = OB_SUCCESS;
   const ObStaticMergeParam &static_param = merge_param.static_param_;
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObProgressiveMergeHelper init twice", K(ret));
+  } else if (OB_UNLIKELY(tables.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("input tables is empty", K(ret));
   } else if (OB_UNLIKELY(NULL != mgr && !mgr->is_inited())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("input progressive mgr is invalid", KR(ret), KPC(mgr));
   } else if (FALSE_IT(reset())) {
+  } else if (static_param.for_unittest_) {
   } else if (static_param.is_full_merge_) {
     full_merge_ = check_macro_need_merge_ = true;
   } else if (merge_param.is_mv_merge()) {
@@ -152,9 +152,18 @@ int ObProgressiveMergeHelper::init(
   } else {
     mgr_ = mgr; // init mgr first
     int64_t rewrite_macro_cnt = 0, reduce_macro_cnt = 0, rewrite_block_cnt_for_progressive = 0;
-
-    if (OB_FAIL(collect_macro_info(sstable, merge_param, rewrite_macro_cnt, reduce_macro_cnt, rewrite_block_cnt_for_progressive))) {
-      LOG_WARN("Fail to scan secondary meta", K(ret), K(merge_param));
+    for (int64_t i = 0; OB_SUCC(ret) && i < tables.count(); ++i) {
+      ObSSTable *sstable = nullptr;
+      if (OB_ISNULL(tables.at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("Unexpected null table", K(ret));
+      } else if (!tables.at(i)->is_sstable()) {
+      } else if (FALSE_IT(sstable = static_cast<ObSSTable *>(tables.at(i)))) {
+      } else if (OB_FAIL(collect_macro_info(*sstable, merge_param, rewrite_macro_cnt, reduce_macro_cnt, rewrite_block_cnt_for_progressive))) {
+        LOG_WARN("Fail to scan secondary meta", K(ret), K(merge_param));
+      }
+    }
+    if (OB_FAIL(ret)) {
     } else if (need_calc_progressive_merge()) {
       if (rewrite_block_cnt_for_progressive > 0) {
         need_rewrite_block_cnt_ = MAX(rewrite_block_cnt_for_progressive /
@@ -170,7 +179,7 @@ int ObProgressiveMergeHelper::init(
     } else {
       check_macro_need_merge_ = rewrite_macro_cnt <= (reduce_macro_cnt * 2);
       if (static_param.data_version_ < DATA_VERSION_4_3_2_0
-          && sstable.is_normal_cg_sstable() && rewrite_macro_cnt < CG_TABLE_CHECK_REWRITE_CNT_) {
+          && tables.at(0)->is_normal_cg_sstable() && rewrite_macro_cnt < CG_TABLE_CHECK_REWRITE_CNT_) {
         check_macro_need_merge_ = true;
       }
       FLOG_INFO("finish macro block need merge check", "tablet_id", static_param.get_tablet_id(), K(check_macro_need_merge_), K(rewrite_macro_cnt), K(reduce_macro_cnt), K(table_idx_));
@@ -238,25 +247,28 @@ int ObProgressiveMergeHelper::open_macro_iter(
   int ret = OB_SUCCESS;
   const ObStaticMergeParam &static_param = merge_param.static_param_;
   const storage::ObITableReadInfo *index_read_info = nullptr;
+  const blocksstable::ObDatumRange *merge_range = nullptr;
   if (sstable.is_normal_cg_sstable()) {
     if (OB_FAIL(MTL(ObTenantCGReadInfoMgr *)->get_index_read_info(index_read_info))) {
       LOG_WARN("failed to get index read info from ObTenantCGReadInfoMgr", KR(ret));
+    } else if (OB_FAIL(merge_param.get_rowid_range_by_scn_range(sstable.get_key().scn_range_, merge_range))) {
+      LOG_WARN("failed to get rowid range by scn range", KR(ret), K(sstable.get_key().scn_range_));
     }
   } else {
     index_read_info = static_param.rowkey_read_info_;
+    merge_range = &merge_param.merge_range_;
   }
-  const ObDatumRange &merge_range = sstable.is_normal_cg_sstable() ? merge_param.merge_rowid_range_ : merge_param.merge_range_;
   if (OB_FAIL(ret)) {
   } else if (OB_ISNULL(index_read_info)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("index read info is unexpected null", KR(ret), KP(index_read_info), K(sstable), K(merge_param));
   } else if (OB_FAIL(sstable.scan_secondary_meta(
           allocator,
-          merge_range,
+          *merge_range,
           *index_read_info,
           DATA_BLOCK_META,
           sec_meta_iter))) {
-    LOG_WARN("Fail to scan secondary meta", K(ret), K(merge_range));
+    LOG_WARN("Fail to scan secondary meta", K(ret), KPC(merge_range));
   }
   return ret;
 }

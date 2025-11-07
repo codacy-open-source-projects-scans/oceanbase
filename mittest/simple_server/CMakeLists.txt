@@ -62,6 +62,11 @@ function(ob_offline_observer case case_file)
     gmock)
 endfunction()
 
+function(ob_truncate_case case)
+  ob_unittest(${ARGV})
+  target_link_libraries(${case} PRIVATE gtest gmock observer_test truncate_info_helper oceanbase)
+endfunction()
+
 ob_offline_observer(test_simple_ob test_ob_simple_cluster.cpp)
 ob_offline_observer(test_transfer_tx test_transfer_tx.cpp)
 ob_offline_observer(test_tx_data test_tx_data.cpp)
@@ -70,7 +75,7 @@ ob_offline_observer(test_collect_mv mv/test_collect_mv.cpp)
 ob_unittest_observer(test_transfer_no_kill_tx test_transfer_tx.cpp)
 ob_unittest_observer(test_ls_recover test_ls_recover.cpp)
 ob_unittest_observer(test_ob_simple_cluster test_ob_simple_cluster.cpp)
-ob_unittest_observer(test_ob_partition_balance test_ob_partition_balance.cpp)
+ob_unittest_observer(test_ai_model_privilege test_ai_model_privilege.cpp)
 ob_unittest_observer(test_mds_table_checkpoint test_mds_table_checkpoint.cpp)
 ob_unittest_observer(test_ob_black_list_service test_ob_black_list_service.cpp)
 ob_unittest_observer(test_ob_queuing_table test_ob_queuing_table.cpp)
@@ -81,6 +86,7 @@ ob_unittest_observer(test_replay_from_middle test_replay_from_middle.cpp)
 ob_unittest_observer(test_special_tablet_flush test_special_tablet_flush.cpp)
 ob_unittest_observer(test_table_lock_split test_table_lock_split.cpp)
 ob_unittest_observer(test_tx_data_table_mit test_tx_data_table_mit.cpp)
+ob_unittest_observer(test_tx_data_minor test_tx_data_minor.cpp)
 ob_unittest_observer(test_tx_ctx_table_mit test_tx_ctx_table_mit.cpp)
 ob_unittest_observer(test_lock_table_persistence test_lock_table_persistence.cpp)
 ob_unittest_observer(test_tx_recover test_tx_recovery.cpp)
@@ -109,6 +115,8 @@ ob_unittest_observer(test_transfer_commit_action test_transfer_with_commit_actio
 ob_unittest_observer(test_transfer_rollback_to test_transfer_between_rollback_to.cpp)
 ob_unittest_observer(test_memtable_new_safe_to_destroy test_memtable_new_safe_to_destroy.cpp)
 ob_unittest_observer(test_tablet_to_ls_cache test_tablet_to_ls_cache.cpp)
+ob_unittest_observer(test_update_tablet_directly_when_mini test_update_tablet_directly_when_mini.cpp)
+ob_unittest_observer(test_ai_service test_ai_service.cpp)
 
 ####### freeze case #######
 #ob_freeze_observer(test_frequently_freeze freeze/test_frequently_freeze.cpp)
@@ -127,6 +135,8 @@ ob_ha_unittest_observer(test_transfer_doing_stage_restart_with_mds_flush storage
 ob_ha_unittest_observer(test_transfer_complete_restart_with_mds_flush storage_ha/test_transfer_complete_restart_with_mds_flush.cpp)
 ob_ha_unittest_observer(test_transfer_with_empty_shell storage_ha/test_transfer_with_empty_shell.cpp)
 ob_ha_unittest_observer(test_mds_transaction test_mds_transaction.cpp)
+ob_ha_unittest_observer(test_reorg_info_table_basic storage_ha/test_reorg_info_table_basic.cpp)
+ob_ha_unittest_observer(test_reorg_info_table_mini_and_minor storage_ha/test_reorg_info_table_mini_and_minor.cpp)
 errsim_ha_unittest_observer(errsim_test_transfer_handler errsim/storage_ha/errsim_test_transfer_handler.cpp)
 
 ob_farm_observer(test_collect_mv_farm mv/test_collect_mv.cpp)
@@ -151,7 +161,20 @@ ob_unittest_observer(test_standby_balance rootservice/test_standby_balance_ls_gr
 ob_unittest_observer(test_balance_operator rootservice/test_tenant_balance_operator.cpp)
 ob_unittest_observer(test_tenant_transfer_service rootservice/test_tenant_transfer_service.cpp)
 ob_unittest_observer(test_transfer_partition_task rootservice/test_transfer_partition_task.cpp)
+ob_unittest_observer(test_dup_table_partition_balance rootservice/test_dup_table_partition_balance.cpp)
 ob_unittest_observer(test_transfer_task_operator rootservice/test_transfer_task_operator.cpp)
 ob_unittest_observer(test_ob_parallel_migration_mode rootservice/test_ob_parallel_migration_mode.cpp)
 ob_unittest_observer(test_ls_status_operator rootservice/test_ls_status_operator.cpp)
+ob_unittest_observer(test_external_resource_schema rootservice/test_external_resource_schema.cpp)
+ob_unittest_observer(test_location_schema_refresh rootservice/test_location_schema_refresh.cpp)
+ob_unittest_observer(test_create_tenant_compare rootservice/test_create_tenant_compare.cpp)
+ob_unittest_observer(test_bootstrap_hang rootservice/test_bootstrap_hang.cpp)
+ob_unittest_observer(test_ob_partition_balance rootservice/test_ob_partition_balance.cpp)
+ob_unittest_observer(test_object_balance_weight rootservice/test_object_balance_weight.cpp)
 ####### rootservice case #########
+
+
+####### truncate case #########
+ob_truncate_case(test_truncate_partition_filter test_truncate_partition_filter.cpp)
+ob_truncate_case(test_truncate_info_service test_truncate_info_service.cpp)
+####### truncate case #########

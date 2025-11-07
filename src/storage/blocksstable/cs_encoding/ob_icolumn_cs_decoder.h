@@ -30,6 +30,7 @@ namespace storage
 class ObAggCell;
 class ObGroupByCell;
 class ObAggCellBase;
+struct ObPushdownRowIdCtx;
 }
 namespace blocksstable
 {
@@ -39,9 +40,8 @@ public:
   ObIColumnCSDecoder() {}
   virtual ~ObIColumnCSDecoder() {}
   OB_INLINE void reuse() {}
-
   VIRTUAL_TO_STRING_KV(K(this));
-  virtual int decode(const ObColumnCSDecoderCtx &ctx, const int32_t row_id, common::ObDatum &datum) const = 0;
+  virtual int decode(const ObColumnCSDecoderCtx &ctx, const int32_t row_id, ObStorageDatum &datum) const = 0;
 
   virtual ObCSColumnHeader::Type get_type() const = 0;
 
@@ -94,15 +94,19 @@ public:
 
   virtual int get_aggregate_result(
       const ObColumnCSDecoderCtx &ctx,
-      const int32_t *row_ids,
-      const int64_t row_cap,
+      const ObPushdownRowIdCtx &pd_row_id_ctx,
       storage::ObAggCellBase &agg_cell) const
   {
-    UNUSEDx(ctx, row_ids, row_cap, agg_cell);
+    UNUSEDx(ctx, pd_row_id_ctx, agg_cell);
     return common::OB_NOT_SUPPORTED;
   }
 
-  virtual int get_null_count(
+  int get_null_count(
+      const ObColumnCSDecoderCtx &ctx,
+      const int32_t *row_ids,
+      const int64_t row_cap,
+      int64_t &null_count) const;
+  virtual int inner_get_null_count(
       const ObColumnCSDecoderCtx &ctx,
       const int32_t *row_ids,
       const int64_t row_cap,
@@ -131,6 +135,13 @@ public:
     UNUSEDx(ctx, row_ids, row_cap, group_by_cell);
     return OB_NOT_SUPPORTED;
   }
+
+  virtual bool is_new_column() const { return false; }
+
+  static bool need_padding(const bool is_padding_mode, const ObObjMeta &obj_meta)
+  {
+    return is_padding_mode && obj_meta.is_fixed_len_char_type();
+  }
 };
 
 class ObNoneExistColumnCSDecoder : public ObIColumnCSDecoder
@@ -138,16 +149,14 @@ class ObNoneExistColumnCSDecoder : public ObIColumnCSDecoder
 public:
   static const ObCSColumnHeader::Type type_ = ObCSColumnHeader::MAX_TYPE;
 
-  virtual int decode(const ObColumnCSDecoderCtx &ctx, const int32_t row_id, common::ObDatum &datum) const override
+  virtual int decode(const ObColumnCSDecoderCtx &ctx, const int32_t row_id, ObStorageDatum &datum) const override
   {
-    datum.set_ext();
-    datum.no_cv(datum.extend_obj_)->set_ext(common::ObActionFlag::OP_NOP);
+    datum.set_nop();
     return common::OB_SUCCESS;
   }
   virtual ObCSColumnHeader::Type get_type() const { return type_; }
   virtual bool can_vectorized() const override { return false; }
 };
-
 
 } // end namespace blocksstable
 } // end namespace oceanbase

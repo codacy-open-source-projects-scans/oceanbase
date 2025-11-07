@@ -55,6 +55,7 @@ enum SelectParserOffset
   PARSE_SELECT_ORDER,
   PARSE_SELECT_APPROX,
   PARSE_SELECT_LIMIT,
+  PARSE_SELECT_VECTOR_INDEX_PARAMS,
   PARSE_SELECT_FOR_UPD,
   PARSE_SELECT_HINTS,
   PARSE_SELECT_WHEN, // I find that it is no longer used.
@@ -62,7 +63,7 @@ enum SelectParserOffset
   PARSE_SELECT_FETCH_TEMP, //use to temporary store fetch clause in parser
   PARSE_SELECT_WITH_CHECK_OPTION,
   PARSE_SELECT_INTO_EXTRA,// ATTENTION!! SELECT_INTO_EXTRA must be the last one
-  PARSE_SELECT_MAX_IDX  // = 24, ATTENTION!! adjust malloc_select_node(node, malloc_pool) after adding a new enum value
+  PARSE_SELECT_MAX_IDX  // = 25, ATTENTION!! adjust malloc_select_node(node, malloc_pool) after adding a new enum value
 };
 
 enum GrantParseOffset
@@ -146,6 +147,7 @@ typedef struct _ParseNode
       uint32_t is_forbid_anony_parameter_ : 1; // 1 表示禁止匿名块参数化
       uint32_t is_input_quoted_ : 1; // indicate name_ob input whether with double quote
       uint32_t is_forbid_parameter_ : 1; //1 indicate forbid parameter
+      uint32_t is_default_literal_expression_ : 1; // 1 indicate in default literal expression, "DEFAULT NOW()"
       uint32_t reserved_;
     };
   };
@@ -220,6 +222,7 @@ typedef struct _PLParseInfo
   bool is_forbid_pl_fp_;
   bool is_inner_parse_;
   int last_pl_symbol_pos_; //上一个pl变量的结束位置
+  bool is_parse_dynamic_sql_;
   int plsql_line_;
   /*for mysql pl*/
   void *pl_ns_; //ObPLBlockNS
@@ -325,6 +328,8 @@ typedef struct
     uint32_t may_contain_sensitive_data_       : 1;
     uint32_t is_external_table_                : 1;
     uint32_t is_returning_                     : 1;
+    uint32_t is_into_cluster_                  : 1;
+    uint32_t is_oracle_compat_groupby_         : 1; // true if has rollup/cube/grouping sets in mysql mode
   };
 
   ParseNode *result_tree_;
@@ -400,6 +405,7 @@ extern int check_mem_status();
 extern int try_check_mem_status(int64_t check_try_times);
 
 int get_deep_copy_size(const ParseNode *node, int64_t *size);
+int deep_copy_parse_node_base(void *malloc_pool, const ParseNode *src_node, ParseNode *dst_node);
 int deep_copy_parse_node(void *malloc_pool, const ParseNode *src, ParseNode *dst);
 
 /// convert x'42ab' to binary string
@@ -444,6 +450,7 @@ extern bool nodename_is_sdo_geometry_type(const ParseNode *node);
 #define OB_NODE_CAST_C_LEN_IDX 1
 #define OB_NODE_CAST_GEO_TYPE_IDX 1
 #define OB_NODE_CAST_CS_LEVEL_IDX 2
+#define OB_NODE_CAST_COLLECTION_TYPE_IDX 3
 
 typedef enum ObNumberParseType
 {

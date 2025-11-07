@@ -313,9 +313,10 @@ public:
   static int json_base_replace(ObIJsonBase *json_old, ObIJsonBase *json_new,
                                ObIJsonBase *&json_doc);
 
-  static int find_and_add_cache(ObJsonPathCache* path_cache, ObJsonPath*& res_path,
+  static int find_and_add_cache(ObIAllocator &allocator,
+                                ObJsonPathCache* path_cache, ObJsonPath*& res_path,
                                 ObString& path_str, int arg_idx, bool enable_wildcard,
-                                bool is_const = false);
+                                bool is_const);
   static int find_and_add_schema_cache(ObJsonSchemaCache* schema_cache, ObIJsonBase*& j_schema,
                                       ObString& schema_str, int arg_idx, const ObJsonInType& in_type);
 
@@ -511,6 +512,17 @@ public:
       ObExpr &rt_expr);
 
   static int get_session_query_timeout_ts(ObEvalCtx &ctx, int64_t &timeout_ts);
+  static bool is_json_special_same_as_expr(ObItemType type, int64_t index);
+  static bool check_json_inner_same_as(const ObSysFunRawExpr *expr1,
+                                       const ObSysFunRawExpr *expr2,
+                                       int64_t index,
+                                       ObExprEqualCheckContext *check_context);
+  static bool check_json_path_can_pushdown(const ObRawExpr &path_expr);
+  static bool check_json_expr_can_pushdown(const ObRawExpr &json_expr);
+  static int get_sub_column_path_from_json_expr(ObIAllocator& allocator, const ObRawExpr &json_expr, share::ObSubColumnPath& sub_col_path);
+
+public:
+  uint64_t tenant_id;
 
 private:
   const static uint32_t RESERVE_MIN_BUFF_SIZE = 32;

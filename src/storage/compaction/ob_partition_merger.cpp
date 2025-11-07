@@ -12,17 +12,8 @@
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "ob_partition_merger.h"
-#include "lib/file/file_directory_utils.h"
-#include "logservice/ob_log_service.h"
 #include "ob_tenant_tablet_scheduler.h"
-#include "ob_tablet_merge_task.h"
-#include "ob_tablet_merge_ctx.h"
-#include "ob_i_compaction_filter.h"
-#include "storage/tx/ob_trans_service.h"
 #include "storage/blocksstable/ob_data_macro_block_merge_writer.h"
-#include "storage/blocksstable/ob_sstable_private_object_cleaner.h"
-#include "storage/tablet/ob_tablet.h"
-#include "storage/column_store/ob_column_oriented_sstable.h"
 
 namespace oceanbase
 {
@@ -66,24 +57,58 @@ int ObDataDescHelper::build(
 }
 
 /*
- *ObMerger
+ *ObMergerBasic
  */
-ObMerger::ObMerger(
-  compaction::ObLocalArena &allocator,
-  const ObStaticMergeParam &static_param)
-  : merger_arena_(allocator),
-    merge_ctx_(nullptr),
-    task_idx_(0),
-    merge_param_(static_param),
-    partition_fuser_(nullptr),
-    merge_helper_(nullptr),
-    base_iter_(nullptr),
-    trans_state_mgr_(merger_arena_),
-    start_time_(ObTimeUtility::current_time()),
-    force_flat_format_(false)
+void ObMergerBasic::reset()
 {
+  merge_param_.reset();
+  task_idx_ = 0;
+  merge_ctx_ = nullptr;
 }
 
+int ObMergerBasic::basic_prepare(ObBasicTabletMergeCtx &ctx, const int64_t idx)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_UNLIKELY(!ctx.is_valid() || idx < 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid argument to init ObRowStoreMerger", K(ret), K(ctx), K(idx));
+  } else {
+    merge_ctx_ = &ctx;
+    task_idx_ = idx;
+
+    if (OB_FAIL(merge_param_.init(ctx, task_idx_, &merger_arena_))) {
+      LOG_WARN("Failed to assign the merge param", K(ret), KPC(merge_ctx_), K_(task_idx));
+    }
+  }
+  return ret;
+}
+
+int ObMergerBasic::get_all_majors(ObIArray<ObITable*> &tables)
+{
+  int ret = OB_SUCCESS;
+  ObITable *table = nullptr;
+  if (OB_UNLIKELY(!merge_param_.is_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("merge_param not valid", K(ret), K(merge_param_));
+  } else {
+    const ObTablesHandleArray &tables_handle = merge_param_.get_tables_handle();
+    int64_t table_cnt = tables_handle.get_count();
+    for (int64_t i = table_cnt - 1; OB_SUCC(ret) && i >= 0; --i) {
+      if (OB_ISNULL(table = tables_handle.get_table(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null table", K(ret), K(i));
+      } else if (!table->is_major_type_sstable()) {
+      } else if (OB_FAIL(tables.push_back(table))) {
+        LOG_WARN("failed to push back array", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+/*
+ *ObMerger
+ */
 void ObMerger::reset()
 {
   if (OB_NOT_NULL(merge_helper_)) {
@@ -97,48 +122,85 @@ void ObMerger::reset()
     merger_arena_.free(partition_fuser_);
     partition_fuser_ = nullptr;
   }
-
-  trans_state_mgr_.destroy();
-  base_iter_ = nullptr;
-  merge_param_.reset();
-  force_flat_format_ = false;
-  task_idx_ = 0;
-  merge_ctx_ = nullptr;
+  ObMergerBasic::reset();
 }
 
-int ObMerger::prepare_merge(ObBasicTabletMergeCtx &ctx, const int64_t idx)
+int ObMerger::basic_prepare(ObBasicTabletMergeCtx &ctx, const int64_t idx)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObMergerBasic::basic_prepare(ctx, idx))) {
+    LOG_WARN("Failed to do basic prepare", K(ret));
+  } else if (OB_FAIL(ObMergeFuserBuilder::build(merge_param_, ctx.static_desc_.major_working_cluster_version_ ,merger_arena_, partition_fuser_))) {
+    LOG_WARN("failed to build partition fuser", K(ret), K(merge_param_));
+  }
+  return ret;
+}
+
+int ObMerger::try_filter_row(
+    const ObDatumRow &row,
+    ObICompactionFilter::ObFilterRet &filter_ret)
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(merge_ctx_) && merge_ctx_->has_filter()) {
+    if (OB_FAIL(merge_ctx_->filter(
+        row,
+        filter_ret))) {
+      STORAGE_LOG(WARN, "failed to filter row", K(ret), K(filter_ret));
+    } else if (OB_UNLIKELY(!ObICompactionFilter::is_valid_filter_ret(filter_ret))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "get wrong filter ret", K(filter_ret));
+    } else {
+      filter_statistics_.inc(filter_ret);
+    }
+  }
+  return ret;
+}
+
+/*
+ *ObRowStoreMerger
+ */
+ObRowStoreMerger::ObRowStoreMerger(
+  compaction::ObLocalArena &allocator,
+  const ObStaticMergeParam &static_param)
+  : ObMerger(allocator, static_param),
+    base_iter_(nullptr),
+    trans_state_mgr_(merger_arena_),
+    start_time_(ObTimeUtility::current_time()),
+    force_flat_format_(false)
+{
+}
+
+void ObRowStoreMerger::reset()
+{
+  ObMerger::reset();
+  trans_state_mgr_.destroy();
+  base_iter_ = nullptr;
+  force_flat_format_ = false;
+}
+
+int ObRowStoreMerger::prepare_merge(ObBasicTabletMergeCtx &ctx, const int64_t idx)
 {
   int ret = OB_SUCCESS;
 
-  if (OB_UNLIKELY(!ctx.is_valid() || idx < 0)) {
-    ret = OB_INVALID_ARGUMENT;
-    STORAGE_LOG(WARN, "Invalid argument to init ObMerger", K(ret), K(ctx), K(idx));
+  if (OB_FAIL(basic_prepare(ctx, idx))) {
+    LOG_WARN("Failed to do basic prepare", K(ret), K(ctx), K(idx));
   } else {
-    merge_ctx_ = &ctx;
-    task_idx_ = idx;
-
-    if (OB_FAIL(merge_param_.init(ctx, task_idx_, &merger_arena_))) {
-      STORAGE_LOG(WARN, "Failed to assign the merge param", K(ret), KPC(merge_ctx_), K_(task_idx));
+    int tmp_ret = OB_SUCCESS;
+    if (OB_TMP_FAIL(trans_state_mgr_.init(CACHED_TRANS_STATE_MAX_CNT))) {
+      STORAGE_LOG(WARN, "failed to init merge trans state mgr", K(tmp_ret));
     } else {
-      int tmp_ret = OB_SUCCESS;
-      if (OB_TMP_FAIL(trans_state_mgr_.init(CACHED_TRANS_STATE_MAX_CNT))) {
-        STORAGE_LOG(WARN, "failed to init merge trans state mgr", K(tmp_ret));
-      } else {
-        merge_param_.trans_state_mgr_ = &trans_state_mgr_;
-      }
-      if (OB_FAIL(ObMergeFuserBuilder::build(merge_param_, ctx.static_desc_.major_working_cluster_version_ ,merger_arena_, partition_fuser_))) {
-        STORAGE_LOG(WARN, "failed to build partition fuser", K(ret), K(merge_param_));
-      } else if (OB_FAIL(inner_prepare_merge(ctx, idx))) {
-        STORAGE_LOG(WARN, "failed to inner prepare merge", K(ret), K(ctx));
-        CTX_SET_DIAGNOSE_LOCATION(ctx);
-      }
+      merge_param_.trans_state_mgr_ = &trans_state_mgr_;
+    }
+    if (OB_FAIL(inner_prepare_merge(ctx, idx))) {
+      STORAGE_LOG(WARN, "failed to inner prepare merge", K(ret), K(ctx));
+      CTX_SET_DIAGNOSE_LOCATION(ctx);
     }
   }
 
   return ret;
 }
 
-int ObMerger::get_base_iter_curr_macro_block(const blocksstable::ObMacroBlockDesc *&macro_desc)
+int ObRowStoreMerger::get_base_iter_curr_macro_block(const blocksstable::ObMacroBlockDesc *&macro_desc)
 {
   int ret = OB_SUCCESS;
 
@@ -154,7 +216,16 @@ int ObMerger::get_base_iter_curr_macro_block(const blocksstable::ObMacroBlockDes
   return ret;
 }
 
-
+int ObRowStoreMerger::close()
+{
+  int ret = OB_SUCCESS;
+  if (OB_SUCC(inner_close()) && OB_NOT_NULL(merge_ctx_) && merge_ctx_->has_filter()) {
+    merge_ctx_->collect_filter_statistics(filter_statistics_);
+    FLOG_INFO("[COMPACTION_FILTER] filter statistics after merger closed", KR(ret),
+      "merge_range", merge_param_.merge_range_, K_(filter_statistics));
+  }
+  return ret;
+}
 /*
  *ObPartitionMerger
  */
@@ -162,14 +233,15 @@ int ObMerger::get_base_iter_curr_macro_block(const blocksstable::ObMacroBlockDes
 ObPartitionMerger::ObPartitionMerger(
   compaction::ObLocalArena &allocator,
   const ObStaticMergeParam &static_param)
-  : ObMerger(allocator, static_param),
+  : ObRowStoreMerger(allocator, static_param),
     merge_progress_(nullptr),
     data_store_desc_(),
     macro_writer_(nullptr),
     minimum_iters_(DEFAULT_ITER_ARRAY_SIZE, ModulePageAllocator(allocator)),
     progressive_merge_helper_(),
-    filter_statistics_(),
-    validator_(nullptr)
+    validator_(nullptr),
+    uncommit_tx_info_collector_(),
+    sstable_merge_block_info_array_()
 {
 }
 
@@ -189,12 +261,13 @@ void ObPartitionMerger::reset()
     macro_writer_ = nullptr;
   }
   progressive_merge_helper_.reset();
-  ObMerger::reset();
+  ObRowStoreMerger::reset();
   if (OB_NOT_NULL(validator_)) {
     validator_->~ObIMacroBlockValidator();
     merger_arena_.free(validator_);
     validator_ = nullptr;
   }
+  sstable_merge_block_info_array_.reset();
 }
 
 int ObPartitionMerger::inner_prepare_merge(ObBasicTabletMergeCtx &ctx, const int64_t idx)
@@ -208,6 +281,9 @@ int ObPartitionMerger::inner_prepare_merge(ObBasicTabletMergeCtx &ctx, const int
     STORAGE_LOG(WARN, "Unexpected invalid merge param", K(ret), K(merge_param_));
   } else if (OB_FAIL(inner_open_macro_writer(ctx, merge_param_))) {
     STORAGE_LOG(WARN, "failed to open macro writer", KR(ret), K(ctx));
+  } else if (OB_FAIL(ObSSTableMergeHistory::init_sstable_merge_block_info_array(
+        merge_param_.static_param_.merge_sstable_status_array_.count(), sstable_merge_block_info_array_))) {
+    STORAGE_LOG(WARN, "failed to init sstable merge block info array", K(ret));
   } else if (OB_FAIL(inner_init())) {
     STORAGE_LOG(WARN, "Failed to inner init", K(ret));
   } else {
@@ -240,21 +316,13 @@ int ObPartitionMerger::inner_open_macro_writer(
       data_store_desc_.force_flat_store_type();//temp code
     }
     if ((data_store_desc_.is_major_merge_type() && data_store_desc_.get_major_working_cluster_version() <= DATA_VERSION_4_0_0_0)
-      || !data_store_desc_.is_use_pct_free()) {
+      || !data_store_desc_.is_use_pct_free()
+      || (merge_ctx_->get_major_sstable_count() > 1)) {
       const bool is_use_macro_writer_buffer = true;
       macro_writer_ = alloc_helper<ObMacroBlockWriter>(merger_arena_, is_use_macro_writer_buffer);
     } else {
       macro_writer_ = alloc_helper<ObDataMacroBlockMergeWriter>(merger_arena_);
     }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (is_validate_exec_mode(merge_ctx_->get_exec_mode())) {
-      ObTabletMajorValidateMergeCtx *validate_ctx = static_cast<ObTabletMajorValidateMergeCtx *>(merge_ctx_);
-      if (OB_FAIL(validate_ctx->alloc_validator(merge_param, merger_arena_.get_arena_allocator(), validator_))) {
-        LOG_WARN("failed to alloc verifyer", KR(ret));
-      }
-    }
-#endif
 
     ObSSTablePrivateObjectCleaner *object_cleaner = nullptr;
     if (OB_ISNULL(macro_writer_)) {
@@ -283,15 +351,24 @@ int ObPartitionMerger::inner_open_macro_writer(
   return ret;
 }
 
-int ObPartitionMerger::close()
+int ObPartitionMerger::inner_close()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(macro_writer_->close())) {
+  ObTabletMergeCtx *tablet_merge_ctx = static_cast<ObTabletMergeCtx *>(merge_ctx_);
+  if (uncommit_tx_info_collector_.is_inited_ && OB_NOT_NULL(tablet_merge_ctx->uncommit_tx_info_)) {
+    const compaction::ObMemUncommitTxInfo &tmp_uncommit_tx_info = get_uncommit_tx_info();
+    if (tmp_uncommit_tx_info.is_info_overflow()) {
+    } else if (OB_FAIL(tablet_merge_ctx->uncommit_tx_info_[task_idx_].assign(tmp_uncommit_tx_info))) {
+      STORAGE_LOG(WARN, "failed to summarize uncommit txinfo to merge ctx", K(ret), K(tmp_uncommit_tx_info), K(*tablet_merge_ctx->uncommit_tx_info_));
+    }
+  }
+  if (FAILEDx(macro_writer_->close())) {
     STORAGE_LOG(WARN, "Failed to close macro block writer", K(ret));
-  } else if (OB_FAIL(merge_ctx_->update_block_info(
-    macro_writer_->get_merge_block_info(),
-    ObTimeUtility::fast_current_time() - start_time_))) {
-    STORAGE_LOG(WARN, "Failed to add macro blocks", K(ret));
+  } else {
+    tablet_merge_ctx->update_block_info_with_sstable_block_info(
+      macro_writer_->get_merge_block_info(),
+      ObTimeUtility::fast_current_time() - start_time_,
+      sstable_merge_block_info_array_);
   }
   return ret;
 }
@@ -309,7 +386,8 @@ int ObPartitionMerger::check_row_columns(const ObDatumRow &row)
 
 int ObPartitionMerger::process(
     const ObMacroBlockDesc &macro_desc,
-    const ObMicroBlockData *micro_block_data)
+    const ObMicroBlockData *micro_block_data,
+    const int64_t sstable_idx)
 {
   int ret = OB_SUCCESS;
 
@@ -332,13 +410,13 @@ int ObPartitionMerger::process(
     LOG_WARN("Invalid argument to append macro block", K(ret), K(macro_desc));
   } else if (OB_FAIL(macro_writer_->append_macro_block(macro_desc, micro_block_data))) {
     LOG_WARN("Failed to append to macro block writer", K(ret));
-  } else {
-    LOG_DEBUG("Success to append macro block", K(ret), K(macro_desc));
+  } else if (sstable_idx >= 0 && sstable_idx < sstable_merge_block_info_array_.count()) {
+    sstable_merge_block_info_array_.at(sstable_idx).inc_multiplexed_macro_block_count();
   }
   return ret;
 }
 
-int ObPartitionMerger::process(const ObMicroBlock &micro_block)
+int ObPartitionMerger::process(const ObMicroBlock &micro_block, const int64_t sstable_idx)
 {
   int ret = OB_SUCCESS;
   const blocksstable::ObMacroBlockDesc *macro_desc;
@@ -349,7 +427,11 @@ int ObPartitionMerger::process(const ObMicroBlock &micro_block)
     STORAGE_LOG(WARN, "invalid argument to append micro block", K(ret), K(micro_block));
   } else if (OB_FAIL(macro_writer_->append_micro_block(micro_block, macro_desc))) {
     STORAGE_LOG(WARN, "Failed to append micro block to macro block writer", K(ret), K(micro_block));
-  } else {
+  } else if (sstable_idx >= 0 && sstable_idx < sstable_merge_block_info_array_.count()) {
+    // micro block maybe merged, but we don't consider it here
+    sstable_merge_block_info_array_.at(sstable_idx).inc_multiplexed_micro_count_in_new_macro();
+  }
+  if (OB_SUCC(ret)) {
     LOG_DEBUG("append micro block", K(ret), K(micro_block));
   }
 
@@ -435,7 +517,7 @@ int ObPartitionMerger::merge_macro_block_iter(MERGE_ITER_ARRAY &minimum_iters, i
       ret = OB_ERR_UNEXPECTED;
       STORAGE_LOG(WARN, "Unexpected invalid clustered leaf block desc",
         K(ret), KPC(micro_block_data), KPC(iter));
-    } else if (OB_FAIL(process(*macro_desc, micro_block_data))) {
+    } else if (OB_FAIL(process(*macro_desc, micro_block_data, iter->get_sstable_idx()))) {
       STORAGE_LOG(WARN, "Failed to append macro block", K(ret));
     } else if (FALSE_IT(reuse_row_cnt += macro_desc->row_count_)) {
     } else if (OB_FAIL(iter->next())) {
@@ -459,27 +541,6 @@ int ObPartitionMerger::check_macro_block_op(const ObMacroBlockDesc &macro_desc, 
     STORAGE_LOG(WARN, "failed to check macro operation", K(ret), K(macro_desc));
   }
 
-  return ret;
-}
-
-int ObPartitionMerger::try_filter_row(
-    const ObDatumRow &row,
-    ObICompactionFilter::ObFilterRet &filter_ret)
-{
-  int ret = OB_SUCCESS;
-  if (merge_ctx_->has_filter()) {
-    if (OB_FAIL(merge_ctx_->filter(
-        row,
-        filter_ret))) {
-      STORAGE_LOG(WARN, "failed to filter row", K(ret), K(filter_ret));
-    } else if (OB_UNLIKELY(filter_ret >= ObICompactionFilter::FILTER_RET_MAX
-        || filter_ret < ObICompactionFilter::FILTER_RET_NOT_CHANGE)) {
-      ret = OB_ERR_UNEXPECTED;
-      STORAGE_LOG(WARN, "get wrong filter ret", K(filter_ret));
-    } else {
-      filter_statistics_.inc(filter_ret);
-    }
-  }
   return ret;
 }
 
@@ -651,7 +712,7 @@ int ObPartitionMajorMerger::merge_partition(
     }
     if (OB_ITER_END != ret || OB_FAIL(merge_helper_->check_iter_end())) { //verify merge end
       STORAGE_LOG(WARN, "Partition merge did not end normally", K(ret));
-      if (GCONF._enable_compaction_diagnose) {
+      if (OB_ALLOCATE_MEMORY_FAILED != ret && GCONF._enable_compaction_diagnose) {
         ObPartitionMergeDumper::print_error_info(ret, merge_helper_->get_merge_iters(), *merge_ctx_);
         macro_writer_->dump_block_and_writer_buffer();
       }
@@ -674,13 +735,16 @@ int ObPartitionMajorMerger::merge_partition(
 int ObPartitionMajorMerger::init_progressive_merge_helper()
 {
   int ret = OB_SUCCESS;
+  ObSEArray<ObITable*, 8> tables;
   ObSSTable *first_sstable = nullptr;
   const ObTablesHandleArray &tables_handle = merge_ctx_->get_tables_handle();
   if (tables_handle.get_count() == 0) {
   } else if (OB_ISNULL(first_sstable = static_cast<ObSSTable *>(tables_handle.get_table(0)))) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected null first sstable", K(ret), K(tables_handle));
-  } else if (OB_FAIL(progressive_merge_helper_.init(*first_sstable, merge_param_, &merge_ctx_->progressive_merge_mgr_))) {
+  } else if (OB_FAIL(get_all_majors(tables))) {
+    STORAGE_LOG(WARN, "failed to get all majors", K(ret));
+  } else if (OB_FAIL(progressive_merge_helper_.init(tables, merge_param_, &merge_ctx_->progressive_merge_mgr_))) {
     STORAGE_LOG(WARN, "failed to init progressive_merge_helper", K(ret));
   }
 
@@ -702,6 +766,10 @@ int ObPartitionMajorMerger::merge_same_rowkey_iters(
 
   if (OB_FAIL(partition_fuser_->fuse_row(merge_iters))) {
     STORAGE_LOG(WARN, "Failed to fuse row", KPC_(partition_fuser), K(ret));
+    for (int64_t i = 0; i < merge_iters.count(); i++) {
+      const blocksstable::ObDatumRow *merge_row = merge_iters.at(i)->get_curr_row();
+      STORAGE_LOG(WARN, "dump merge rows", K(ret), K(i), KPC(merge_iters.at(i)), KPC(merge_row));
+    }
   } else if (OB_FAIL(process(partition_fuser_->get_result_row(), is_incremental_row))) {
     STORAGE_LOG(WARN, "Failed to process row", K(ret), K(partition_fuser_->get_result_row()));
   } else if (OB_FAIL(merge_helper_->move_iters_next(merge_iters))) {
@@ -719,7 +787,7 @@ int ObPartitionMajorMerger::merge_micro_block_iter(ObPartitionMergeIter &iter, i
   } else if (OB_ISNULL(micro_block)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected null micro block", K(ret), K(iter));
-  } else if (OB_FAIL(process(*micro_block))) {
+  } else if (OB_FAIL(process(*micro_block, iter.get_sstable_idx()))) {
     STORAGE_LOG(WARN, "Failed to append micro block", K(ret), K(micro_block));
   } else if (FALSE_IT(reuse_row_cnt += micro_block->header_.row_count_)) {
   } else if (OB_FAIL(iter.next())) {
@@ -729,6 +797,7 @@ int ObPartitionMajorMerger::merge_micro_block_iter(ObPartitionMergeIter &iter, i
       STORAGE_LOG(WARN, "Failed to get next row", K(ret));
     }
   }
+
   return ret;
 }
 
@@ -776,6 +845,33 @@ int ObPartitionMajorMerger::rewrite_macro_block(MERGE_ITER_ARRAY &minimum_iters)
   return ret;
 }
 
+int ObPartitionMajorMerger::reuse_base_small_sstable(ObPartitionMergeIter *base_iter)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_UNLIKELY(nullptr == base_iter || !base_iter->is_macro_block_opened())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected base iter stat for small sstable", K(ret), K(base_iter));
+  }
+
+  while (OB_SUCC(ret)) {
+    const blocksstable::ObMicroBlock *micro_block = nullptr;
+    if (OB_FAIL(base_iter->get_curr_micro_block(micro_block))) {
+      STORAGE_LOG(WARN, "failed to get_curr_micro_block", K(ret), KPC(base_iter));
+    } else if (OB_ISNULL(micro_block) || !micro_block->is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "unexpected micro block", K(ret), KPC(base_iter), KPC(micro_block));
+    } else if (OB_FAIL(process(*micro_block, base_iter->get_sstable_idx()))) {
+      STORAGE_LOG(WARN, "failed to process micro block", K(ret));
+    } else if (OB_FAIL(base_iter->next())) {
+      if (OB_ITER_END != ret) {
+        STORAGE_LOG(WARN, "Failed to get next", K(ret), KPC(base_iter));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObPartitionMajorMerger::reuse_base_sstable(ObPartitionMergeHelper &merge_helper)
 {
   int ret = OB_SUCCESS;
@@ -783,6 +879,7 @@ int ObPartitionMajorMerger::reuse_base_sstable(ObPartitionMergeHelper &merge_hel
   ObPartitionMergeIter *base_iter = nullptr;
   const ObMacroBlockDesc *macro_desc = nullptr;
   const ObMicroBlockData *micro_block_data = nullptr;
+  const uint64_t compat_version = merge_param_.static_param_.data_version_;
 
   if (OB_FAIL(merge_helper.find_rowkey_minimum_iters(minimum_iters))) {
     STORAGE_LOG(WARN, "failed to find_rowkey_minimum_iters", K(ret), K(merge_helper));
@@ -795,15 +892,10 @@ int ObPartitionMajorMerger::reuse_base_sstable(ObPartitionMergeHelper &merge_hel
     while (OB_SUCC(ret)) {
       if (base_iter->is_iter_end()) {
         ret = OB_ITER_END;
-      } else if (base_table->is_small_sstable()
-          && !base_iter->is_macro_block_opened()
-          && merge_param_.static_param_.concurrent_cnt_ > 1) { // small_sstable should not reuse macro in concurrency
-        if (OB_FAIL(base_iter->open_curr_range(true/*for_rewrite*/))) {
-          LOG_WARN("failed to open curr range", KR(ret), K(base_iter));
+      } else if (base_table->is_small_sstable() && compat_version >= DATA_VERSION_4_3_5_1 && nullptr == base_iter->get_curr_row()) {
+        if (OB_FAIL(reuse_base_small_sstable(base_iter))) {
+          LOG_WARN("failed to reuse base small sstable", K(ret));
         }
-      }
-
-      if (OB_FAIL(ret)) {
       } else if (base_iter->is_macro_block_opened()) { // opend for cross range
         // flush all row in curr macro block
         while (OB_SUCC(ret) && base_iter->is_macro_block_opened()) {
@@ -826,7 +918,7 @@ int ObPartitionMajorMerger::reuse_base_sstable(ObPartitionMergeHelper &merge_hel
       } else if (OB_ISNULL(macro_desc) || OB_UNLIKELY(!macro_desc->is_valid())) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Invalid macro block descriptor", K(ret), KPC(macro_desc), KPC(base_iter));
-      } else if (OB_FAIL(process(*macro_desc, micro_block_data))) {
+      } else if (OB_FAIL(process(*macro_desc, micro_block_data, base_iter->get_sstable_idx()))) {
         STORAGE_LOG(WARN, "Fail to append macro block", K(ret), KPC(base_iter));
       } else if (OB_FAIL(base_iter->next())) {
         if (OB_ITER_END != ret) {
@@ -847,18 +939,32 @@ ObPartitionMinorMerger::ObPartitionMinorMerger(
     compaction::ObLocalArena &allocator,
     const ObStaticMergeParam &static_param)
   : ObPartitionMerger(allocator, static_param),
-    minimum_iter_idxs_(DEFAULT_ITER_COUNT * sizeof(int64_t), ModulePageAllocator(allocator))
+    minimum_iter_idxs_(DEFAULT_ITER_COUNT * sizeof(int64_t), ModulePageAllocator(allocator)),
+    obj_copy_allocator_("MinorMergeObj", OB_MALLOC_MIDDLE_BLOCK_SIZE, MTL_ID(), ObCtxIds::MERGE_NORMAL_CTX_ID),
+    nop_pos_(),
+    row_queue_()
 {
+  for (int i = 0; i < ObRowQueue::QI_MAX; ++i) {
+    nop_pos_[i] = nullptr;
+  }
 }
 
 ObPartitionMinorMerger::~ObPartitionMinorMerger()
 {
+  for (int i = 0; i < ObRowQueue::QI_MAX; ++i) {
+    if (nullptr != nop_pos_[i]) {
+      nop_pos_[i]->~ObNopPos();
+      nop_pos_[i] = nullptr;
+    }
+  }
   reset();
 }
 
 void ObPartitionMinorMerger::reset()
 {
   minimum_iter_idxs_.reset();
+  row_queue_.reset();
+  obj_copy_allocator_.reset();
   ObPartitionMerger::reset();
 }
 
@@ -867,6 +973,8 @@ int ObPartitionMinorMerger::inner_init()
   int ret = OB_SUCCESS;
   merge_helper_ = OB_NEWx(ObPartitionMinorMergeHelper, (&merger_arena_), merge_ctx_->read_info_, merger_arena_);
 
+  void *buf = nullptr;
+  int64_t row_column_cnt = 0;
   if (OB_ISNULL(merge_helper_)) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     STORAGE_LOG(WARN, "Failed to allocate memory for partition helper", K(ret));
@@ -874,6 +982,29 @@ int ObPartitionMinorMerger::inner_init()
     STORAGE_LOG(WARN, "Failed to init progressive_merge_helper", K(ret));
   } else if (OB_FAIL(merge_helper_->init(merge_param_))) {
     STORAGE_LOG(WARN, "Failed to init merge helper", K(ret));
+  } else if (OB_FAIL(merge_param_.get_schema()->get_stored_column_count_in_sstable(row_column_cnt))) {
+    LOG_WARN("Failed to get full store column count", K(ret));
+  } else if (OB_FAIL(row_queue_.init(row_column_cnt))) {
+    LOG_WARN("failed to init row_queue", K(ret), K(row_column_cnt));
+  } else if (OB_ISNULL(buf = merger_arena_.alloc(sizeof(ObNopPos) * ObRowQueue::QI_MAX))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    STORAGE_LOG(ERROR, "Failed to alloc memory for noppos", K(ret));
+  } else { // read flat row
+    char *buf_pos = (char *)buf;
+    for (int i = 0; OB_SUCC(ret) && i < ObRowQueue::QI_MAX; ++i) { // init nop pos
+      nop_pos_[i] = new (buf_pos) ObNopPos();
+      if (OB_FAIL(nop_pos_[i]->init(merger_arena_, OB_ROW_MAX_COLUMNS_COUNT))) {
+        LOG_WARN("failed to init first row nop pos", K(ret));
+      } else {
+        buf_pos += sizeof(ObNopPos);
+      }
+    }
+    // Only not inner tablet and mini/minor merge need to collect uncommit tx info
+    if (OB_SUCC(ret) && !data_store_desc_.get_tablet_id().is_inner_tablet() && need_collect_uncommit_tx_info(data_store_desc_.static_desc_->merge_type_)) {
+      if (OB_FAIL(uncommit_tx_info_collector_.init(data_store_desc_.get_schema_rowkey_col_cnt() + ObMultiVersionExtraRowkeyIds::SQL_SEQUENCE_COL))) {
+        STORAGE_LOG(WARN, "Failed to init uncommit tx info collector", K(ret));
+      }
+    }
   }
 
   return ret;
@@ -882,6 +1013,7 @@ int ObPartitionMinorMerger::inner_init()
 int ObPartitionMinorMerger::init_progressive_merge_helper()
 {
   int ret = OB_SUCCESS;
+  ObSEArray<ObITable*, 1> tables;
   ObSSTable *first_sstable = nullptr;
   const ObTablesHandleArray &tables_handle = merge_ctx_->get_tables_handle();
   if (tables_handle.get_count() == 0 || is_mini_merge(merge_param_.static_param_.get_merge_type())) {
@@ -889,7 +1021,9 @@ int ObPartitionMinorMerger::init_progressive_merge_helper()
   } else if (OB_ISNULL(first_sstable = static_cast<ObSSTable *>(tables_handle.get_table(0)))) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected null first sstable", K(ret), K(tables_handle));
-  } else if (OB_FAIL(progressive_merge_helper_.init(*first_sstable, merge_param_, NULL/*progressive_mgr*/))) {
+  } else if (OB_FAIL(tables.push_back(first_sstable))) {
+    STORAGE_LOG(WARN, "failed to push back table", K(ret));
+  } else if (OB_FAIL(progressive_merge_helper_.init(tables, merge_param_, NULL/*progressive_mgr*/))) {
     STORAGE_LOG(WARN, "failed to init progressive_merge_helper", K(ret));
   }
 
@@ -917,13 +1051,17 @@ int ObPartitionMinorMerger::inner_process(
   UNUSED(is_incremental_row);
 
   const blocksstable::ObMacroBlockDesc *macro_desc;
-  if (OB_FAIL(get_base_iter_curr_macro_block(macro_desc))) {
+  if (FAILEDx(get_base_iter_curr_macro_block(macro_desc))) {
     STORAGE_LOG(WARN, "Failed to get base iter macro", K(ret));
   } else if (OB_FAIL(macro_writer_->append_row(row, macro_desc))) {
     STORAGE_LOG(WARN, "Failed to append row to macro writer", K(ret));
   } else {
     macro_writer_->inc_incremental_row_count();
     STORAGE_LOG(DEBUG, "Success to append row to minor macro writer", K(ret), K(row));
+    if (!uncommit_tx_info_collector_.is_inited_) { // skip
+    } else if (OB_FAIL(uncommit_tx_info_collector_.collect_uncommit_tx_info(row))) {
+      STORAGE_LOG(WARN, "Failed to collect_uncommit tx info", K(ret), K(uncommit_tx_info_collector_));
+    }
   }
 
   return ret;
@@ -943,7 +1081,6 @@ int ObPartitionMinorMerger::merge_partition(
     int64_t reuse_row_cnt = 0;
     int64_t macro_block_count = 0;
     MERGE_ITER_ARRAY rowkey_minimum_iters(DEFAULT_ITER_ARRAY_SIZE, ModulePageAllocator(local_arena));
-
     while (OB_SUCC(ret)) {
       macro_block_count = macro_writer_->get_merge_block_info().macro_block_count_;
       ctx.mem_ctx_.mem_click();
@@ -985,7 +1122,7 @@ int ObPartitionMinorMerger::merge_partition(
 
     if (OB_ITER_END != ret || OB_FAIL(merge_helper_->check_iter_end())) {
       STORAGE_LOG(WARN, "Partition merge did not end normally", K(ret));
-      if (GCONF._enable_compaction_diagnose) {
+      if (OB_ALLOCATE_MEMORY_FAILED != ret && GCONF._enable_compaction_diagnose) {
         ObPartitionMergeDumper::print_error_info(ret, merge_helper_->get_merge_iters(), *merge_ctx_);
         macro_writer_->dump_block_and_writer_buffer();
       }
@@ -1152,7 +1289,7 @@ int ObPartitionMinorMerger::check_first_committed_row(const MERGE_ITER_ARRAY &me
       if (OB_ISNULL(merge_iter = merge_iters.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Unexpected null merge iter", K(ret), K(merge_iters));
-      } else if (merge_iter->is_compact_completed_row()) {
+      } else if (merge_iter->is_compacted_row()) {
         // do nothing
       } else if (OB_UNLIKELY(!merge_iter->get_curr_row()->is_ghost_row())) {
         ret = OB_INNER_STAT_ERROR;
@@ -1188,11 +1325,7 @@ int ObPartitionMinorMerger::set_result_flag(MERGE_ITER_ARRAY &fuse_iters,
     if (!base_row->is_uncommitted_row() && !base_row->is_ghost_row()) {
       row_flag.set_compacted_multi_version_row(is_result_compact);
     }
-    if (rowkey_first_row) {
-      row_flag.set_first_multi_version_row(true);
-    } else {
-      row_flag.set_first_multi_version_row(false);
-    }
+    row_flag.set_first_multi_version_row(rowkey_first_row);
     if (base_row->is_ghost_row()) {
     } else if (!base_row->is_last_multi_version_row()) {
     } else if (!need_check_last) {
@@ -1267,7 +1400,6 @@ int ObPartitionMinorMerger::try_remove_ghost_iters(MERGE_ITER_ARRAY &merge_iters
     }
   }
 
-
   return ret;
 }
 
@@ -1286,14 +1418,36 @@ int ObPartitionMinorMerger::merge_same_rowkey_iters(
       STORAGE_LOG(WARN, "Failed to merge single merge iter", K(ret));
     }
   } else {
+    obj_copy_allocator_.reuse();
     bool rowkey_first_row = true;
     bool shadow_already_output = false;
     ObPartitionMergeIter *base_iter = nullptr;
     // base iter always iters the row with newer version
-    while (OB_SUCC(ret) && !merge_iters.empty()) {
+    while (OB_SUCC(ret) && (!merge_iters.empty() || row_queue_.has_next())) {
       bool add_shadow_row = false;
       MERGE_ITER_ARRAY *fuse_iters = &minimum_iters_;
-      if (OB_FAIL(try_remove_ghost_iters(merge_iters, rowkey_first_row, minimum_iters_, minimum_iter_idxs_))) {
+      if (row_queue_.has_next()) {
+        const ObDatumRow *curr_row = nullptr;
+        if (OB_FAIL(row_queue_.get_next_row(curr_row))) {
+          LOG_WARN("Failed to get next row from row_queue", K(ret));
+        } else {
+          // set result flag
+          ObMultiVersionRowFlag row_flag = curr_row->mvcc_row_flag_;
+          row_flag.set_first_multi_version_row(rowkey_first_row);
+          if (!row_queue_.has_next() && merge_iters.empty()) {
+            row_flag.set_last_multi_version_row(true);
+          } else {
+            row_flag.set_last_multi_version_row(false);
+          }
+          const_cast<ObDatumRow *>(curr_row)->set_multi_version_flag(row_flag);
+          if (OB_FAIL(process(*curr_row))) {
+            STORAGE_LOG(WARN, "Failed to process row", K(ret), K(curr_row));
+          } else {
+            rowkey_first_row = false;
+            continue;
+          }
+        }
+      } else if (OB_FAIL(try_remove_ghost_iters(merge_iters, rowkey_first_row, minimum_iters_, minimum_iter_idxs_))) {
         STORAGE_LOG(WARN, "Failed to check and remove ghost iters", K(ret));
       } else if (OB_UNLIKELY(merge_iters.empty())) {
         // all the iters are ghost row iter
@@ -1306,25 +1460,36 @@ int ObPartitionMinorMerger::merge_same_rowkey_iters(
       } else if (OB_ISNULL(base_iter = minimum_iters_.at(0))) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Unexpected null merge iter", K(ret), K_(minimum_iters));
-      } else if (!shadow_already_output && base_iter->is_compact_completed_row()) {
+      } else if (shadow_already_output && base_iter->get_curr_row()->is_shadow_row()) {
+        if (OB_UNLIKELY(1 != minimum_iters_.count())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("Unexpected minimum shadow row iters", K(ret), K(minimum_iters_));
+        } else if (OB_FAIL(move_and_remove_unused_iters(merge_iters, minimum_iters_, minimum_iter_idxs_))) {
+          LOG_WARN("Failed to move and remove iters", K(ret));
+        } else {
+          continue;
+        }
+      } else if (!shadow_already_output && base_iter->is_compacted_row()) {
         if (OB_FAIL(check_add_shadow_row(merge_iters,
                                          minimum_iters_.count() != merge_iters.count(),
                                          add_shadow_row))) {
           LOG_WARN("Failed to merge shadow row", K(ret), K(merge_iters));
         } else {
           fuse_iters = &merge_iters;
+          shadow_already_output = true;
         }
       }
 
       if (OB_FAIL(ret)) {
-      } else if (OB_ISNULL(base_iter)) {
-        ret = OB_ERR_UNEXPECTED;
-        STORAGE_LOG(WARN, "Unexpected null base iter", K(ret), K(merge_iters));
-      } else if (shadow_already_output && base_iter->get_curr_row()->is_shadow_row()) {
-        if (OB_UNLIKELY(1 != minimum_iters_.count())) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("Unexpected minimum shadow row iters", K(ret), K(minimum_iters_));
+      } else if (merge_param_.is_delete_insert_merge() && 1 < minimum_iters_.count()) {
+        if (OB_FAIL(compact_delete_insert_iters(merge_iters, minimum_iters_, minimum_iter_idxs_, add_shadow_row))) {
+          LOG_WARN("Fail to compact delete insert iters", K(ret));
+        } else if (add_shadow_row) {
+          if (OB_FAIL(skip_shadow_row(*fuse_iters))) {
+            LOG_WARN("Failed to skip shadow row", K(ret), K(merge_iters));
+          }
         }
+        // continue and get row from the row_queue
       } else if (OB_FAIL(partition_fuser_->fuse_row(*fuse_iters))) {
         STORAGE_LOG(WARN, "Failed to fuse rowkey minimum iters", K(ret), KPC(fuse_iters));
       } else if (OB_FAIL(set_result_flag(*fuse_iters, rowkey_first_row, add_shadow_row,
@@ -1332,12 +1497,9 @@ int ObPartitionMinorMerger::merge_same_rowkey_iters(
         STORAGE_LOG(WARN, "Failed to calc multi version row flag", K(ret), K(add_shadow_row),
                     K(shadow_already_output), KPC(fuse_iters));
       } else if (OB_FAIL(process(partition_fuser_->get_result_row()))) {
-        STORAGE_LOG(WARN, "Failed to process row", K(ret), K(partition_fuser_->get_result_row()), KPC(fuse_iters));
-      } else if (!shadow_already_output && base_iter->is_compact_completed_row()) {
-        shadow_already_output = true;
-      }
-
-      if (OB_SUCC(ret)) {
+        STORAGE_LOG(WARN, "Failed to process row", K(ret), K(partition_fuser_->get_result_row()),
+                    K(shadow_already_output), K(rowkey_first_row), KPC(fuse_iters), K(merge_iters));
+      } else {
         rowkey_first_row = false;
         if (add_shadow_row) {
           if (OB_FAIL(skip_shadow_row(*fuse_iters))) {
@@ -1349,7 +1511,98 @@ int ObPartitionMinorMerger::merge_same_rowkey_iters(
       }
     }
   }
+  return ret;
+}
 
+int ObPartitionMinorMerger::compact_delete_insert_iters(MERGE_ITER_ARRAY &merge_iters,
+                                                        MERGE_ITER_ARRAY &minimum_iters,
+                                                        const ObIArray<int64_t> &iter_idxs,
+                                                        bool need_add_shadow_row)
+{
+  int ret = OB_SUCCESS;
+  if (minimum_iters.count() <= 1) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected minimum iters count");
+  } else if (OB_UNLIKELY(nullptr == minimum_iters.at(0) || nullptr == minimum_iters.at(0)->get_curr_row())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected minimum iter", K(ret), KPC(minimum_iters.at(0)));
+  } else {
+    row_queue_.reuse();
+    bool need_remove = false;
+    const ObDatumRow *merge_row = nullptr;
+    ObPartitionMergeIter *merge_iter = nullptr;
+    int schema_rowkey_column_cnt = data_store_desc_.get_schema_rowkey_col_cnt();
+    const blocksstable::ObDatumRow *base_row = minimum_iters.at(0)->get_curr_row();
+    const int64_t base_version = base_row->storage_datums_[schema_rowkey_column_cnt].get_int();
+    const int64_t base_seq = base_row->storage_datums_[schema_rowkey_column_cnt + 1].get_int();
+
+    if (base_row->row_flag_.is_insert() || base_row->is_uncommitted_row()) {
+      if (OB_FAIL(row_queue_.add_empty_row(obj_copy_allocator_))) {
+        LOG_WARN("Failed to add empty row into row queue", K(ret));
+      } else if (OB_FAIL(row_queue_.compact_border_row(base_row, false/*last_row*/, nop_pos_[ObRowQueue::QI_FIRST_ROW], obj_copy_allocator_))) {
+        LOG_WARN("Failed to compact first row", K(ret));
+      } else if (need_add_shadow_row &&
+                 OB_FAIL(row_queue_.add_shadow_row(
+                         data_store_desc_.get_schema_rowkey_col_cnt() + 1,
+                         obj_copy_allocator_))) {
+        LOG_WARN("Failed to add shadow row", K(ret));
+      } else {
+        need_add_shadow_row = false;
+      }
+    }
+    // find and compact the last delete row
+    for (int64_t iter_idx = minimum_iters.count() - 1; OB_SUCC(ret) && iter_idx >= 0; iter_idx--) {
+      if (OB_ISNULL(merge_iter = minimum_iters.at(iter_idx))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("Unexpected null merge iter", K(ret), K(iter_idx), K(minimum_iters));
+      } else{
+        need_remove = false;
+        while (OB_SUCC(ret) && !need_remove) {
+          if (OB_ISNULL(merge_row = merge_iter->get_curr_row())) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("Unexpected null merge row", K(ret), KPC(merge_iter));
+          } else if (base_row->is_uncommitted_row()) {
+            if (merge_row->storage_datums_[schema_rowkey_column_cnt + 1].get_int() == base_seq) {
+              // skip
+            } else {
+              break;
+            }
+          } else if (merge_row->storage_datums_[schema_rowkey_column_cnt].get_int() != base_version) {
+            break;
+          } else if (merge_row->row_flag_.is_insert()) {
+            // skip
+          } else if (merge_row->row_flag_.is_delete()) {
+            if (!row_queue_.is_empty() &&
+                (row_queue_.get_last()->row_flag_.is_delete() ||
+                 (row_queue_.get_last()->row_flag_.is_insert() && iter_idx != minimum_iters_.count() - 1))) {
+              // only compact the last delete row in the last iter
+            } else if (OB_FAIL(row_queue_.add_empty_row(obj_copy_allocator_))) {
+              LOG_WARN("Failed to add empty row into row queue", K(ret));
+            } else if (OB_FAIL(row_queue_.compact_border_row(merge_row, true/*last_row*/, nop_pos_[ObRowQueue::QI_LAST_ROW], obj_copy_allocator_))) {
+              LOG_WARN("Failed to compact current row to last row", K(ret));
+            }
+          } else {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("Unexpected row flag", K(ret), KPC(merge_iter->get_curr_row()));
+          }
+          if (FAILEDx(move_and_remove_unused_iter(merge_iters, merge_iter, iter_idxs.at(iter_idx), need_remove))) {
+            LOG_WARN("Fail to move_and_remove_unused_iter", K(ret));
+          }
+        }
+      }
+    }
+
+    if (OB_SUCC(ret) && need_add_shadow_row) {
+      if (OB_UNLIKELY(!row_queue_.get_last()->row_flag_.is_delete()))  {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("Unexpected last row", K(ret), KPC(row_queue_.get_last()));
+      } else if (OB_FAIL(row_queue_.add_shadow_row(
+                  data_store_desc_.get_schema_rowkey_col_cnt() + 1,
+                  obj_copy_allocator_))) {
+        LOG_WARN("Failed to add shadow row", K(ret));
+      }
+    }
+  }
   return ret;
 }
 
@@ -1382,33 +1635,48 @@ int ObPartitionMinorMerger::move_and_remove_unused_iters(MERGE_ITER_ARRAY &merge
                                                          ObIArray<int64_t> &iter_idxs)
 {
   int ret = OB_SUCCESS;
-  ObPartitionMergeIter *merge_iter = nullptr;
-
-  for (int64_t i = minimum_iters.count() - 1; OB_SUCC(ret) && i >= 0; i--) {
-    bool need_remove = false;
-    if (OB_ISNULL(merge_iter = minimum_iters.at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      STORAGE_LOG(WARN, "Unexpected null merge iter", K(ret), K(i), K(minimum_iters));
-    } else if (FALSE_IT(need_remove = (merge_iter->get_curr_row()->is_last_multi_version_row()))) {
-    } else if (OB_FAIL(merge_iter->next())) {
-      if (OB_ITER_END == ret && need_remove) {
-        ret = OB_SUCCESS;
-      } else {
-        STORAGE_LOG(WARN, "Failed to next merge iter", K(ret), KPC(merge_iter));
-      }
-    } else if (!need_remove && nullptr == merge_iter->get_curr_row()) {
-      if (OB_FAIL(merge_iter->open_curr_range(false /*for_rewrite*/))) {
-        STORAGE_LOG(WARN, "Failed to open curr range", K(ret));
-      }
-    }
-    if (OB_SUCC(ret) && need_remove) {
-      if (OB_FAIL(merge_iters.remove(iter_idxs.at(i)))) {
-        STORAGE_LOG(WARN, "Failed to remove merge iter", K(ret), K(i), K(iter_idxs),
-                    K(merge_iters));
+  bool need_remove = false;
+  if (merge_param_.is_delete_insert_merge() && 1 < minimum_iters.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected merge iters in delete insert", K(ret), K(minimum_iters));
+  } else {
+    for (int64_t i = minimum_iters.count() - 1; OB_SUCC(ret) && i >= 0; i--) {
+      if (OB_FAIL(move_and_remove_unused_iter(merge_iters, minimum_iters.at(i), iter_idxs.at(i), need_remove))) {
+        LOG_WARN("Fail to move_and_remove_unused_iter", K(ret));
       }
     }
   }
+  return ret;
+}
 
+int ObPartitionMinorMerger::move_and_remove_unused_iter(MERGE_ITER_ARRAY &merge_iters,
+                                                        ObPartitionMergeIter *merge_iter,
+                                                        int64_t iter_idx,
+                                                        bool &need_remove)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(merge_iter)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected null merge iter", K(ret));
+  } else {
+    need_remove = merge_iter->get_curr_row()->is_last_multi_version_row();
+    if (OB_FAIL(merge_iter->next())) {
+      if (OB_ITER_END == ret && need_remove) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("Failed to next merge iter", K(ret), KPC(merge_iter));
+      }
+    } else if (!need_remove && nullptr == merge_iter->get_curr_row()) {
+      if (OB_FAIL(merge_iter->open_curr_range(false /*for_rewrite*/))) {
+        LOG_WARN("Failed to open curr range", K(ret));
+      }
+    }
+    if (OB_SUCC(ret) && need_remove) {
+      if (OB_FAIL(merge_iters.remove(iter_idx))) {
+        LOG_WARN("Failed to remove merge iter", K(ret), K(iter_idx), K(merge_iters));
+      }
+    }
+  }
   return ret;
 }
 

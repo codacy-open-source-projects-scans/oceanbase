@@ -11,10 +11,7 @@
  */
 
 #include "ob_reconfig_checker_adapter.h"
-#include "logservice/palf/log_define.h"
 #include "rootserver/mview/ob_collect_mv_merge_info_task.h"
-#include "share/ob_rpc_struct.h"
-#include "storage/mview/ob_major_mv_merge_info.h"
 
 namespace oceanbase
 {
@@ -67,7 +64,7 @@ int ObReconfigCheckerAdapter::check_can_add_member(const ObAddr &server,
     }
     // if check failed, retry to timeout
     if (OB_FAIL(ret) && ret != OB_TIMEOUT) {
-      usleep(sleep_time);
+      ob_usleep(sleep_time);
     }
   } while (OB_FAIL(ret) && ret != OB_TIMEOUT);
 
@@ -78,11 +75,13 @@ int ObReconfigCheckerAdapter::check_can_add_member(const ObAddr &server,
   return ret;
 }
 
-int ObReconfigCheckerAdapter::check_can_change_memberlist(const ObMemberList &new_member_list,
-                                                          const int64_t paxos_replica_num,
-                                                          const int64_t timeout_us)
+int ObReconfigCheckerAdapter::check_can_change_memberlist(
+    const ObMemberList &new_member_list,
+    const int64_t paxos_replica_num,
+    const palf::LogConfigVersion &config_version,
+    const int64_t timeout_us)
 {
-  return guard_.check_can_change_member(new_member_list, paxos_replica_num, timeout_us);
+  return guard_.check_can_change_member(new_member_list, paxos_replica_num, config_version, timeout_us);
 }
 
 } // end namespace logservice

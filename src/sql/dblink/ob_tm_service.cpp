@@ -9,10 +9,6 @@
 // See the Mulan PubL v2 for more details.
 
 #include "sql/dblink/ob_tm_service.h"
-#include "share/ob_define.h"
-#include "lib/mysqlclient/ob_mysql_proxy.h"
-#include "observer/ob_server_struct.h"
-#include "pl/sys_package/ob_dbms_xa.h"
 #include "storage/tx/ob_xa_service.h"
 
 #define USING_LOG_PREFIX SQL
@@ -113,8 +109,8 @@ int ObTMService::tm_rm_start(ObExecContext &exec_ctx,
         ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
         my_session->get_tx_desc() = NULL;
       }
-      if (OB_FAIL(xa_service->xa_start_for_tm(0, timeout_seconds, my_session->get_sessid(),
-              tx_param, tx_desc, xid, my_session->get_data_version()))) {
+      if (OB_FAIL(xa_service->xa_start_for_tm(0, timeout_seconds, my_session->get_server_sid(),
+              my_session->get_sid(), tx_param, tx_desc, xid, my_session->get_data_version()))) {
         LOG_WARN("xa start for dblink failed", K(ret), K(tx_param));
         // TODO, reset
         ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
