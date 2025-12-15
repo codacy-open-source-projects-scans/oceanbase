@@ -15,7 +15,7 @@
 #include "sql/engine/ob_exec_context.h"
 #include "pl/sys_package/ob_dbms_upgrade.h"
 #include "pl/sys_package/ob_dbms_stats.h"
-#include "pl/sys_package/ob_dbms_scheduler_mysql.h"
+#include "pl/sys_package/ob_dbms_scheduler.h"
 #include "pl/sys_package/ob_dbms_application.h"
 #include "pl/sys_package/ob_dbms_session.h"
 #include "pl/sys_package/ob_dbms_monitor.h"
@@ -35,8 +35,6 @@
 #include "pl/sys_package/ob_dbms_anytype.h"
 #include "pl/sys_package/ob_dbms_anydata.h"
 #include "pl/sys_package/ob_dbms_xmlgen.h"
-#include "pl/sys_package/ob_dbms_scheduler.h"
-#include "pl/sys_package/ob_dbms_scheduler_mysql.h"
 #include "pl/sys_package/ob_dbms_crypto.h"
 #include "pl/sys_package/ob_dbms_ddl.h"
 #include "pl/sys_package/ob_dbms_job.h"
@@ -65,6 +63,7 @@
 #include "pl/sys_package/ob_json_array_type.h"
 #include "pl/sys_package/ob_xml_type.h"
 #include "pl/sys_package/ob_sdo_geom.h"
+#include "close_modules/oracle_pl/pl/sys_package/ob_sdo_util.h"
 #include "pl/sys_package/ob_dbms_profiler.h"
 #include "pl/sys_package/ob_utl_tcp.h"
 #include "pl/sys_package/ob_utl_smtp.h"
@@ -499,7 +498,14 @@
 
   //start of sdo_geom
   INTERFACE_DEF(INTERFACE_SDO_GEOM_DISTANCE, "SDO_GEOM_DISTANCE", (ObSdoGeom::sdo_distance))
+  INTERFACE_DEF(INTERFACE_SDO_GEOM_AREA, "SDO_GEOM_AREA", (ObSdoGeom::sdo_area))
   //end of sdo_geom
+
+#ifdef OB_BUILD_ORACLE_PL
+  //start of sdo_util
+  INTERFACE_DEF(INTERFACE_SDO_UTIL_GETVERTICES, "SDO_UTIL_GETVERTICES", (ObSdoUtil::get_vertices))
+  //end of sdo_util
+#endif
 
   //start of xmltype
   INTERFACE_DEF(INTERFACE_XML_TYPE_TRANSFORM, "XML_TYPE_TRANSFORM", (ObXmlType::transform))
@@ -537,6 +543,7 @@
 
 #undef DEFINE_DBMS_JOB_INTERFACE
   //end of dbms_job
+#endif
 
   //start of dbms_scheduler
 #define DEFINE_DBMS_SCHEDULER_INTERFACE(symbol, func) \
@@ -561,19 +568,6 @@
 
 #undef DEFINE_DBMS_SCHEDULER_INTERFACE
   //end of dbms_scheduler
-#endif
-
-  //start of dbms_scheduler_mysql
-#define DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE(symbol, func) \
-  INTERFACE_DEF(INTERFACE_##symbol, #symbol, (func))
-
-  DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE(DBMS_SCHEDULER_MYSQL_DISABLE, ObDBMSSchedulerMysql::disable)
-  DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE(DBMS_SCHEDULER_MYSQL_ENABLE, ObDBMSSchedulerMysql::enable)
-  DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE(DBMS_SCHEDULER_MYSQL_SET_ATTRIBUTE, ObDBMSSchedulerMysql::set_attribute)
-  DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE(DBMS_SCHEDULER_MYSQL_GET_AND_INCREASE_JOB_ID, ObDBMSSchedulerMysql::get_and_increase_job_id)
-
-#undef DEFINE_DBMS_SCHEDULER_MYSQL_INTERFACE
-  //end of dbms_scheduler_mysql
 
 #ifdef OB_BUILD_ORACLE_PL
   //start of utl_file

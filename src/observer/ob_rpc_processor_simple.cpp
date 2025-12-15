@@ -45,6 +45,7 @@
 #include "sql/plan_cache/ob_ps_cache.h"
 #include "pl/pl_cache/ob_pl_cache_mgr.h"
 #include "rootserver/ob_admin_drtask_util.h"  // ObAdminDRTaskUtil
+#include "rootserver/ob_admin_switch_replica_role.h" // ObAdminSwitchReplicaRole
 #include "rootserver/ob_disaster_recovery_task_utils.h" // DisasterRecoveryUtils
 #include "rootserver/ob_disaster_recovery_service.h" // for ObDRService
 #include "rootserver/ob_split_partition_helper.h"
@@ -58,7 +59,6 @@
 #include "storage/high_availability/ob_storage_ha_utils.h"
 #include "rootserver/standby/ob_recovery_ls_service.h"
 #include "logservice/ob_server_log_block_mgr.h"
-#include "rootserver/ob_admin_drtask_util.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "close_modules/shared_storage/storage/shared_storage/ob_ss_micro_cache.h"
 #include "close_modules/shared_storage/storage/shared_storage/ob_ss_micro_cache_io_helper.h"
@@ -88,8 +88,7 @@
 #include "close_modules/arbitration/share/arbitration_service/ob_arbitration_service_utils.h" // for ObArbitrationServiceUtils
 #endif
 #include "share/backup/ob_backup_connectivity.h"
-
-
+#include "rootserver/mview/ob_mview_maintenance_service.h"
 
 namespace oceanbase
 {
@@ -352,6 +351,21 @@ int ObAdminDRTaskP::process()
     LOG_WARN("fail to handle ob admin command", KR(ret), K_(arg));
   }
   LOG_INFO("finish handle ls replica task triggered by ob_admin", K_(arg));
+  return ret;
+}
+
+int ObAdminSwitchReplicaRoleP::process()
+{
+  int ret = OB_SUCCESS;
+  ObCurTraceId::init(GCONF.self_addr_);
+  LOG_INFO("start to handle switch replica role command triggered by ob_admin", K_(arg));
+  if (OB_UNLIKELY(!arg_.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K_(arg));
+  } else if (OB_FAIL(rootserver::ObAdminSwitchReplicaRole::handle_switch_replica_role_obadmin_command(arg_))) {
+    LOG_WARN("fail to handle switch replica role command", KR(ret), K_(arg));
+  }
+  LOG_INFO("finish handle switch replica role command triggered by ob_admin", KR(ret), K_(arg));
   return ret;
 }
 
@@ -3932,17 +3946,17 @@ int ObCollectMvMergeInfoP::process()
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
-  ObMajorMVMergeInfo merge_info;
+  storage::ObMajorMVMergeInfo merge_info;
   const share::ObLSID ls_id = arg_.get_ls_id();
   const uint64_t tenant_id = arg_.get_tenant_id();
   int64_t proposal_id = 0;
 
   MTL_SWITCH(tenant_id) {
     if (arg_.need_update() &&
-        OB_FAIL(ObMVCheckReplicaHelper::get_and_update_merge_info(ls_id, merge_info))) {
+        OB_FAIL(storage::ObMVCheckReplicaHelper::get_and_update_merge_info(ls_id, merge_info))) {
       LOG_WARN("get and update merge info failed", K(ret));
     } else if (!arg_.need_update() &&
-        OB_FAIL(ObMVCheckReplicaHelper::get_merge_info(ls_id, merge_info))) {
+        OB_FAIL(storage::ObMVCheckReplicaHelper::get_merge_info(ls_id, merge_info))) {
       LOG_WARN("get merge info failed", K(ret));
     } else if (arg_.need_check_leader()) {
       ObRole role;
@@ -4874,6 +4888,54 @@ int ObRpcUploadRootKeyP::process()
 }
 #endif
 #endif
+
+int ObCheckNestedMViewMdsP::process()
+{
+  int ret = OB_SUCCESS;
+  if (!arg_.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(arg_));
+  } else {
+    MTL_SWITCH(arg_.tenant_id_) {
+      common::ObRole role, new_role;
+      int64_t proposal_id, new_proposal_id;
+      share::SCN min_target_scn;
+      rootserver::ObMViewMaintenanceService *mview_maintenance_service =
+                  MTL(rootserver::ObMViewMaintenanceService*);
+      if (OB_ISNULL(mview_maintenance_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("mview maintenance service is null", KR(ret), K(arg_));
+      } else if (OB_FAIL(MTL(logservice::ObLogService *)->
+                 get_palf_role(share::SYS_LS, role, proposal_id))) {
+        LOG_WARN("fail to get palf role", K(ret), K(arg_));
+      } else if (common::ObRole::LEADER != role ||
+                 mview_maintenance_service->get_proposal_id() != proposal_id) {
+        ret = OB_NOT_MASTER;
+        LOG_WARN("not leader", K(ret), K(arg_), K(role), K(proposal_id));
+      } else if (arg_.refresh_id_ != OB_INVALID_ID &&
+                 OB_FAIL(mview_maintenance_service->
+                 check_nested_mview_mds_exists(arg_.refresh_id_,
+                 arg_.target_data_sync_scn_))) {
+        LOG_WARN("fail to check nested mview mds exists", K(ret), K(arg_));
+      } else if (arg_.refresh_id_ == OB_INVALID_ID &&
+                 OB_FAIL(mview_maintenance_service->
+                 get_min_target_data_sync_scn(arg_.mview_id_, min_target_scn))) {
+        LOG_WARN("fail to get min target scn", K(ret), K(arg_), K(min_target_scn));
+      } else if (MTL(logservice::ObLogService *)->
+                 get_palf_role(share::SYS_LS, new_role, new_proposal_id)) {
+        LOG_WARN("fail to get palf role again", K(ret), K(arg_));
+      } else if (role != new_role && proposal_id != new_proposal_id) {
+        ret = OB_NOT_MASTER;
+        LOG_WARN("fail to check leader again", K(ret),
+                 K(role), K(new_role), K(proposal_id), K(new_proposal_id));
+      }
+      result_.ret_ = ret;
+      result_.target_data_sync_scn_ = min_target_scn;
+      ret = OB_SUCCESS; // cover_ret
+    }
+  }
+  return ret;
+}
 
 } // end of namespace observer
 } // end of namespace oceanbase

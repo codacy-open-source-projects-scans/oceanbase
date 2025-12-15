@@ -63,6 +63,7 @@
 #include "rootserver/ob_heartbeat_service.h"
 #include "share/tenant_snapshot/ob_tenant_snapshot_table_operator.h"
 #include "rootserver/restore/ob_tenant_clone_util.h"
+#include "rootserver/ob_admin_switch_replica_role.h" // ObAdminSwitchReplicaRole
 #include "ob_disaster_recovery_task_utils.h" // DisasterRecoveryUtils
 #include "rootserver/ob_disaster_recovery_worker.h" // ObDRWorker
 
@@ -4330,6 +4331,12 @@ int ObRootService::execute_ddl_task(const obrpc::ObAlterTableArg &arg,
         }
         break;
       }
+      case share::SWITCH_MLOG_NAME_TASK: {
+        if (OB_FAIL(ddl_service_.switch_index_name_and_status_for_mlog_table(const_cast<ObAlterTableArg &>(arg)))) {
+          LOG_WARN("failed to switch index name and status for mlog table", K(ret), K(arg));
+        }
+        break;
+      }
       default:
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unknown ddl task type", K(ret), K(arg.ddl_task_type_));
@@ -4906,7 +4913,7 @@ int ObRootService::create_mlog(const obrpc::ObCreateMLogArg &arg, obrpc::ObCreat
       LOG_WARN("check parallel ddl conflict failed", K(ret));
     } else if (OB_FAIL(mlog_builder.init())) {
       LOG_WARN("failed to init mlog builder", KR(ret));
-    } else if (OB_FAIL(mlog_builder.create_mlog(schema_guard, arg, res))) {
+    } else if (OB_FAIL(mlog_builder.create_or_replace_mlog(schema_guard, arg, res))) {
       LOG_WARN("failed to create mlog", KR(ret), K(arg));
     }
   }
@@ -6092,6 +6099,7 @@ int ObRootService::init_debug_database()
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_SKIP_SET_RS_STATUS_FULL_SERVICE)
 int ObRootService::do_restart()
 {
   int ret = OB_SUCCESS;
@@ -6319,7 +6327,9 @@ int ObRootService::do_restart()
   }
 #endif
 
-  if (FAILEDx(rs_status_.set_rs_status(status::FULL_SERVICE))) {
+  if (OB_UNLIKELY(ERRSIM_SKIP_SET_RS_STATUS_FULL_SERVICE)) {
+    LOG_INFO("errsim skip set rs status full service");
+  } else if (FAILEDx(rs_status_.set_rs_status(status::FULL_SERVICE))) {
     FLOG_WARN("fail to set rs status", KR(ret));
   } else {
     FLOG_INFO("full_service !!! start to work!!");
@@ -8684,16 +8694,8 @@ int ObRootService::admin_switch_replica_role(const obrpc::ObAdminSwitchReplicaRo
   } else if (!arg.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(arg), K(ret));
-  } else {
-    ObSystemAdminCtx ctx;
-    if (OB_FAIL(init_sys_admin_ctx(ctx))) {
-      LOG_WARN("init_sys_admin_ctx failed", K(ret));
-    } else {
-      ObAdminSwitchReplicaRole admin_util(ctx);
-      if (OB_FAIL(admin_util.execute(arg))) {
-        LOG_WARN("execute switch replica role failed", K(arg), K(ret));
-      }
-    }
+  } else if (OB_FAIL(ObAdminSwitchReplicaRole::handle_switch_replica_role_sql_command(arg))) {
+    LOG_WARN("execute switch replica role failed", K(arg), K(ret));
   }
   ROOTSERVICE_EVENT_ADD("root_service", "admin_switch_replica_role", K(ret), K(arg));
   return ret;
@@ -11747,7 +11749,7 @@ int ObRootService::set_config_after_bootstrap_()
     LOG_WARN("push _ob_enable_pl_dynamic_stack_check failed", KR(ret));
   } else if (OB_FAIL(configs.push_back({"_system_trig_enabled", "false"}))) {
     LOG_WARN("push _system_trig_enabled failed", KR(ret));
-  } else if (OB_FAIL(configs.push_back({"_update_all_columns_for_trigger", "false"}))) {
+  } else if (OB_FAIL(configs.push_back({"_update_all_columns_for_trigger", "true"}))) {
     LOG_WARN("push _update_all_columns_for_trigger failed", KR(ret));
   } else if (OB_FAIL(configs.push_back({"_enable_spf_batch_rescan", "true"}))) {
     LOG_WARN("push _enable_spf_batch_rescan failed", KR(ret));

@@ -104,7 +104,8 @@ struct ObSPICursor
   ObSPICursor(ObIAllocator &allocator, sql::ObSQLSessionInfo* session_info) :
     row_store_(), row_desc_(), allocator_(&allocator), cur_(0), fields_(allocator), complex_objs_(),
     session_info_(session_info),
-    plan_type_(ObPhyPlanType::OB_PHY_PLAN_UNINITIALIZED), plan_id_(OB_INVALID_ID), plan_hash_(OB_INVALID_ID)
+    plan_type_(ObPhyPlanType::OB_PHY_PLAN_UNINITIALIZED), plan_id_(OB_INVALID_ID), plan_hash_(OB_INVALID_ID),
+    subschema_ctx_(allocator)
   {
     row_desc_.set_tenant_id(MTL_ID());
     complex_objs_.reset();
@@ -119,7 +120,7 @@ struct ObSPICursor
       (void)release_complex_obj(complex_objs_.at(i));
     }
   }
-  int init_row_desc(const common::ColumnsFieldIArray &fields);
+  int init_row_desc(ObResultSet &result_set);
 
   int release_complex_obj(ObObj &complex_obj);
 
@@ -135,6 +136,7 @@ struct ObSPICursor
   uint64_t plan_id_;
   uint64_t plan_hash_;
   char sql_id_[OB_MAX_SQL_ID_LENGTH + 1];
+  ObSubSchemaCtx subschema_ctx_;
 };
 
 struct ObSPIOutParams
@@ -617,7 +619,8 @@ public:
                         ObSPIOutParams &out_params,
                         bool is_forall,
                         bool is_dynamic_sql,
-                        bool is_dbms_sql);
+                        bool is_dbms_sql,
+                        ParamStore **array_params = NULL);
 
   static int prepare_static_sql_params(pl::ObPLExecCtx *ctx,
                                        ObIAllocator &param_allocator,
@@ -1113,6 +1116,7 @@ private:
                                    ObSPIOutParams &out_params,
                                    bool is_forall = false);
 
+  static void release_batch_params(pl::ObPLExecCtx *ctx, ParamStore *array_params);
   static int inner_fetch(pl::ObPLExecCtx *ctx,
                          bool &can_retry,
                          ObSPIResultSet &spi_result,

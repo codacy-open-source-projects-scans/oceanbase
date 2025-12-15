@@ -168,6 +168,8 @@ int ObDbmsXprofile::flatten_op_profile(const ObIArray<ObProfileItem> &profile_it
   metric::Level display_level = profile_text.display_level_;
   const char *json = nullptr;
   ObArenaAllocator arena_alloc;
+  arena_alloc.set_tenant_id(MTL_ID());
+  arena_alloc.set_label("ObXprofile");
   for (int64_t i = 0; i < profile_items.count() && OB_SUCC(ret); ++i) {
     if (i % 32 == 0) {
       arena_alloc.reset_remain_one_page();
@@ -269,8 +271,10 @@ int ObDbmsXprofile::format_summary_info(const ObMergedProfileItem *compile_profi
   if (OB_SUCC(ret) && (OB_NOT_NULL(compile_profile))) {
     OZ(BUF_PRINTF("\nGenerate Plan Cost: "));
     ObArenaAllocator arena_alloc;
+    arena_alloc.set_tenant_id(MTL_ID());
+    arena_alloc.set_label("ObXprofile");
     const char *plan_info = nullptr;
-    OZ(compile_profile->profile_->pretty_print(&arena_alloc, plan_info, "", "  ",
+    OZ(compile_profile->profile_->pretty_print(&arena_alloc, plan_info, "", "", "  ",
                                                profile_text.display_level_));
     OZ(BUF_PRINTF("\n%s", plan_info));
   }
@@ -306,12 +310,18 @@ int ObDbmsXprofile::format_agg_profiles(const ObIArray<ObMergedProfileItem> &mer
   metric::Level display_level = profile_text.display_level_;
   const char *text = nullptr;
   ObArenaAllocator arena_alloc;
+  arena_alloc.set_tenant_id(MTL_ID());
+  arena_alloc.set_label("ObXprofile");
 
   ProfilePrefixHelper prefix_helper(arena_alloc);
   if (OB_FAIL(ret)) {
   } else if (ProfileDisplayType::AGGREGATED_PRETTY == profile_text.type_) {
     if (OB_FAIL(prefix_helper.prepare_pretty_prefix(merged_items))) {
       LOG_WARN("failed to prepare pretty prefix");
+    } else if (!prefix_helper.is_full_plan()) {
+      OZ(BUF_PRINTF(
+          "Note that some operators in the plan have been deprecated, the "
+          "structural lines of the plan will not be displayed.\n"));
     }
   }
 
@@ -335,9 +345,12 @@ int ObDbmsXprofile::format_agg_profiles(const ObIArray<ObMergedProfileItem> &mer
         OZ(BUF_PRINTF("%s\n", text));
       }
     } else if (ProfileDisplayType::AGGREGATED_PRETTY == profile_text.type_) {
+      const ProfilePrefixHelper::PrefixInfo &prefix = prefix_helper.get_prefixs().at(i);
       if (OB_FAIL(item.profile_->pretty_print(
-              &arena_alloc, text, prefix_helper.get_prefixs().at(i).profile_prefix_,
-              prefix_helper.get_prefixs().at(i).metric_prefix_, display_level))) {
+              &arena_alloc, text, prefix.profile_prefix_,
+              prefix.profile_suffix_,
+              prefix.metric_prefix_,
+              display_level))) {
         LOG_WARN("failed to format profile", K(item.profile_->get_name_str()), K(buf_len), K(pos));
       } else {
         OZ(BUF_PRINTF("%s\n", text));
@@ -461,6 +474,9 @@ int ProfilePrefixHelper::prepare_pretty_prefix(const ObIArray<ObMergedProfileIte
 {
   int ret = OB_SUCCESS;
   // init prefix_infos_
+  int64_t max_op_id = merged_items.at(merged_items.count() - 1).op_id_;
+  is_full_plan_ = (max_op_id == merged_items.count() - 1);
+
   if (OB_FAIL(prefix_infos_.reserve(merged_items.count()))) {
     LOG_WARN("failed to reserve", K(merged_items.count()));
   }
@@ -473,55 +489,67 @@ int ProfilePrefixHelper::prepare_pretty_prefix(const ObIArray<ObMergedProfileIte
     }
   }
 
-  // for each child operator, find its parent
-  // for each parent operator, find its last child
-  for (int64_t i = 0; i < prefix_infos_.count() && OB_SUCC(ret); ++i) {
-    PrefixInfo &child = prefix_infos_.at(i);
-    for (int64_t j = i - 1; j >= 0 && OB_SUCC(ret); --j) {
-      PrefixInfo &parent = prefix_infos_.at(j);
-      if (parent.plan_depth_ + 1 == child.plan_depth_) {
-        child.parent_op_id_ = parent.op_id_;
-        parent.last_child_op_id_ = child.op_id_;
-        break;
+  if (!is_full_plan_) {
+    for (int64_t i = 0; i < prefix_infos_.count() && OB_SUCC(ret); ++i) {
+      PrefixInfo &current_op = prefix_infos_.at(i);
+      if (OB_FAIL(append_profile_prefix(current_op, current_op.plan_depth_))) {
+        LOG_WARN("failed to append profile prefix");
+      } else if (OB_FAIL(append_profile_suffix(current_op, merged_items.at(i)))) {
+        LOG_WARN("failed to append profile suffix");
+      } else if (OB_FAIL(append_metric_prefix(current_op, current_op.plan_depth_))) {
+        LOG_WARN("failed to append metric prefix");
       }
     }
-  }
-
-  int64_t current_depth = 0;
-  for (int64_t i = 0; OB_SUCC(ret) && i < prefix_infos_.count(); ++i) {
-    PrefixInfo &current_op = prefix_infos_.at(i);
-    if (current_op.plan_depth_ > current_depth) {
-      // child
-      ++current_depth;
-    } else if (current_op.plan_depth_ == current_depth) {
-      // brother
-    } else {
-      // brother of ancestor
-      while (current_op.plan_depth_ <= current_depth) {
-        --current_depth;
-        ancestors_stack_.pop_back();
+  } else {
+    // for each child operator, find its parent
+    // for each parent operator, find its last child
+    for (int64_t i = 0; i < prefix_infos_.count() && OB_SUCC(ret); ++i) {
+      PrefixInfo &child = prefix_infos_.at(i);
+      for (int64_t j = i - 1; j >= 0 && OB_SUCC(ret); --j) {
+        PrefixInfo &parent = prefix_infos_.at(j);
+        if (parent.plan_depth_ + 1 == child.plan_depth_) {
+          child.parent_op_id_ = parent.op_id_;
+          parent.last_child_op_id_ = child.op_id_;
+          break;
+        }
       }
-      ++current_depth;
     }
 
-    bool last_child_processed = true;
-    if (i + 1 < prefix_infos_.count()) {
-      PrefixInfo &next = prefix_infos_.at(i + 1);
-      if (next.plan_depth_ > current_op.plan_depth_) {
-        // has child not processed
-        last_child_processed = false;
+    // prepare ancestors stack
+    // if current operator's depth is n, the ancestors stack should have n elements
+    int64_t current_depth = 0;
+    for (int64_t i = 0; OB_SUCC(ret) && i < prefix_infos_.count(); ++i) {
+      PrefixInfo &current_op = prefix_infos_.at(i);
+      if (current_op.plan_depth_ > current_depth) {
+        // child
+        current_depth = current_op.plan_depth_;
+      } else if (current_op.plan_depth_ == current_depth) {
+        // brother
       } else {
-        // no child
+        // brother of ancestor
+        current_depth = current_op.plan_depth_;
+        while (ancestors_stack_.count() > current_depth) {
+          ancestors_stack_.pop_back();
+        }
       }
-    } else {
-      // no child
-    }
 
-    if (OB_FAIL(ancestors_stack_.push_back({current_op.op_id_, last_child_processed}))) {
-    } else if (OB_FAIL(append_profile_prefix(current_op, current_depth))) {
-      LOG_WARN("failed to append profile prefix");
-    } else if (OB_FAIL(append_metric_prefix(current_op, current_depth))) {
-      LOG_WARN("failed to append metric prefix");
+      bool last_child_processed = false;
+      if (current_op.last_child_op_id_ == -1) {
+        // no child
+        last_child_processed = true;
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(append_profile_prefix(current_op, current_depth))) {
+        LOG_WARN("failed to append profile prefix");
+      } else if (OB_FAIL(append_profile_suffix(current_op, merged_items.at(i)))) {
+        LOG_WARN("failed to append profile suffix");
+      } else if (OB_FAIL(append_metric_prefix(current_op, current_depth))) {
+        LOG_WARN("failed to append metric prefix");
+      } else if (OB_FAIL(ancestors_stack_.push_back(
+                    {current_op.op_id_, current_op.last_child_op_id_, last_child_processed}))) {
+        LOG_WARN("failed to push back ancestors stack");
+      }
     }
   }
   return ret;
@@ -537,23 +565,26 @@ int ProfilePrefixHelper::append_profile_prefix(PrefixInfo &current_profile,
   if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(buf_len)))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("allocate buffer failed", K(buf_len));
-  } else {
+  } else if (!is_full_plan_) {
     for (int64_t j = 0; OB_SUCC(ret) && j < current_depth; ++j) {
-      if (j >= ancestors_stack_.count()
-          || ancestors_stack_.at(j).op_id_ >= prefix_infos_.count()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpect idx", K(j), K(current_depth), K(ancestors_stack_.count()),
-                 K(ancestors_stack_.at(j).op_id_), K(prefix_infos_.count()));
-      } else if (!ancestors_stack_.at(j).last_child_processed_) {
+      OZ(BUF_PRINTF("  "));
+    }
+    OZ(BUF_PRINTF("%d.", current_profile.op_id_));
+    if (OB_SUCC(ret)) {
+      (void)current_profile.profile_prefix_.assign(buf, pos);
+    }
+  } else {
+    for (int64_t j = 0; OB_SUCC(ret) && j < ancestors_stack_.count(); ++j) {
+      Ancestor &ancestor = ancestors_stack_.at(j);
+       if (!ancestor.last_child_processed_) {
         // means ancestor has not processed its last child
-        const PrefixInfo &parent_item = prefix_infos_.at(ancestors_stack_.at(j).op_id_);
         const char *prefix = nullptr;
-        if (current_profile.parent_op_id_ != parent_item.op_id_) {
+        if (current_profile.parent_op_id_ != ancestor.op_id_) {
           // ancestor but not direct parent, add "│ "
           prefix = "│ ";
-        } else if (current_profile.parent_op_id_ == parent_item.op_id_) {
+        } else if (current_profile.parent_op_id_ == ancestor.op_id_) {
           // this ancestor is direct parent
-          if (parent_item.last_child_op_id_ == current_profile.op_id_) {
+          if (ancestor.last_child_op_id_ == current_profile.op_id_) {
             /* e.g.
                 └─PHY_VEC_GRANULE_ITERATOR
                   └─PHY_VEC_TABLE_SCAN
@@ -562,7 +593,7 @@ int ProfilePrefixHelper::append_profile_prefix(PrefixInfo &current_profile,
             */
             prefix = "└─";
             // set last child processed for this ancestor
-            ancestors_stack_.at(j).last_child_processed_ = true;
+            ancestor.last_child_processed_ = true;
           } else {
             /* e.g.
               └─PHY_VEC_HASH_JOIN
@@ -589,6 +620,26 @@ int ProfilePrefixHelper::append_profile_prefix(PrefixInfo &current_profile,
   return ret;
 }
 
+int ProfilePrefixHelper::append_profile_suffix(PrefixInfo &current_profile,
+                                               const ObMergedProfileItem &merged_item)
+
+{
+  int ret = OB_SUCCESS;
+  char *buf = NULL;
+  int64_t buf_len = 32;
+  int64_t pos = 0;
+  if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(buf_len)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("allocate buffer failed", K(buf_len));
+  } else {
+    OZ(BUF_PRINTF("(dop=%ld)", merged_item.parallel_));
+  }
+  if (OB_SUCC(ret)) {
+    (void)current_profile.profile_suffix_.assign(buf, pos);
+  }
+  return ret;
+}
+
 int ProfilePrefixHelper::append_metric_prefix(PrefixInfo &current_profile,
                                               int64_t current_depth)
 {
@@ -599,12 +650,17 @@ int ProfilePrefixHelper::append_metric_prefix(PrefixInfo &current_profile,
   if (OB_ISNULL(buf = static_cast<char *>(allocator_.alloc(buf_len)))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("allocate buffer failed", K(buf_len));
+  } else if (!is_full_plan_) {
+    for (int64_t j = 0; OB_SUCC(ret) && j <= current_depth; ++j) {
+      OZ(BUF_PRINTF("  "));
+    }
+    if (OB_SUCC(ret)) {
+      OZ(BUF_PRINTF(" "));
+      (void)current_profile.metric_prefix_.assign(buf, pos);
+    }
   } else {
-    for (int64_t j = 0; OB_SUCC(ret) && j < current_depth; ++j) {
-      if (j >= prefix_infos_.count()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpect idx", K(j), K(current_depth), K(prefix_infos_.count()));
-      } else if (!ancestors_stack_.at(j).last_child_processed_) {
+    for (int64_t j = 0; OB_SUCC(ret) && j < ancestors_stack_.count(); ++j) {
+      if (!ancestors_stack_.at(j).last_child_processed_) {
         /* e.g.
             └─PHY_VEC_HASH_JOIN
               ├─PHY_VEV_JOIN_FILTER(CREATE)

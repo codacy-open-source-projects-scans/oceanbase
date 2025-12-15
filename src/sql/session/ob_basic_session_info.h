@@ -1957,6 +1957,7 @@ public:
       character_set_client_ = ObCharsetType::CHARSET_INVALID;
       collation_database_ = CS_TYPE_INVALID;
       plsql_optimize_level_ = 0;
+      ob_enable_pl_async_commit_ = false;
     }
 
     inline bool operator==(const SysVarsCacheData &other) const {
@@ -2015,7 +2016,8 @@ public:
             plsql_can_transform_sql_to_assign_ == other.plsql_can_transform_sql_to_assign_ &&
             character_set_client_ == other.character_set_client_ &&
             collation_database_ == other.collation_database_ &&
-            plsql_optimize_level_ == other.plsql_optimize_level_;
+            plsql_optimize_level_ == other.plsql_optimize_level_ &&
+            ob_enable_pl_async_commit_ == other.ob_enable_pl_async_commit_;
       bool equal2 = true;
       for (int64_t i = 0; i < ObNLSFormatEnum::NLS_MAX; ++i) {
         if (nls_formats_[i] != other.nls_formats_[i]) {
@@ -2172,7 +2174,7 @@ public:
     int64_t character_set_client_;
     int64_t collation_database_;
     int64_t plsql_optimize_level_;
-
+    bool ob_enable_pl_async_commit_;
     //==========  需要序列化  ============
     bool autocommit_;
     bool ob_enable_trace_log_;
@@ -2212,11 +2214,84 @@ public:
     char nls_formats_buf_[ObNLSFormatEnum::NLS_MAX][MAX_NLS_FORMAT_STR_LEN];
   };
 private:
+
+
+#define DEF_SYS_VAR_BIT_ENUM(VAR_NAME, BIT_POS) BIT_##VAR_NAME = BIT_POS,
+
+  enum SysVarBitPos {
+    DEF_SYS_VAR_BIT_ENUM(auto_increment_increment, 0)
+    DEF_SYS_VAR_BIT_ENUM(sql_throttle_current_priority, 1)
+    DEF_SYS_VAR_BIT_ENUM(ob_last_schema_version, 2)
+    DEF_SYS_VAR_BIT_ENUM(sql_select_limit, 3)
+    DEF_SYS_VAR_BIT_ENUM(oracle_sql_select_limit, 4)
+    DEF_SYS_VAR_BIT_ENUM(auto_increment_offset, 5)
+    DEF_SYS_VAR_BIT_ENUM(last_insert_id, 6)
+    DEF_SYS_VAR_BIT_ENUM(binlog_row_image, 7)
+    DEF_SYS_VAR_BIT_ENUM(foreign_key_checks, 8)
+    DEF_SYS_VAR_BIT_ENUM(default_password_lifetime, 9)
+    DEF_SYS_VAR_BIT_ENUM(tx_read_only, 10)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_plan_cache, 11)
+    DEF_SYS_VAR_BIT_ENUM(optimizer_use_sql_plan_baselines, 12)
+    DEF_SYS_VAR_BIT_ENUM(optimizer_capture_sql_plan_baselines, 13)
+    DEF_SYS_VAR_BIT_ENUM(is_result_accurate, 14)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_transmission_checksum, 15)
+    DEF_SYS_VAR_BIT_ENUM(character_set_results, 16)
+    DEF_SYS_VAR_BIT_ENUM(character_set_connection, 17)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_jit, 18)
+    DEF_SYS_VAR_BIT_ENUM(cursor_sharing_mode, 19)
+    DEF_SYS_VAR_BIT_ENUM(timestamp, 20)
+    DEF_SYS_VAR_BIT_ENUM(tx_isolation, 21)
+    DEF_SYS_VAR_BIT_ENUM(autocommit, 22)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_trace_log, 23)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_sql_audit, 24)
+    DEF_SYS_VAR_BIT_ENUM(nls_length_semantics, 25)
+    DEF_SYS_VAR_BIT_ENUM(ob_org_cluster_id, 26)
+    DEF_SYS_VAR_BIT_ENUM(ob_query_timeout, 27)
+    DEF_SYS_VAR_BIT_ENUM(ob_trx_timeout, 28)
+    DEF_SYS_VAR_BIT_ENUM(collation_connection, 29)
+    DEF_SYS_VAR_BIT_ENUM(sql_mode, 30)
+    DEF_SYS_VAR_BIT_ENUM(nls_date_format, 31)
+    DEF_SYS_VAR_BIT_ENUM(nls_timestamp_format, 32)
+    DEF_SYS_VAR_BIT_ENUM(nls_timestamp_tz_format, 33)
+    DEF_SYS_VAR_BIT_ENUM(ob_trx_idle_timeout, 34)
+    DEF_SYS_VAR_BIT_ENUM(ob_trx_lock_timeout, 35)
+    DEF_SYS_VAR_BIT_ENUM(nls_collation, 36)
+    DEF_SYS_VAR_BIT_ENUM(nls_nation_collation, 37)
+    DEF_SYS_VAR_BIT_ENUM(ob_trace_info, 38)
+    DEF_SYS_VAR_BIT_ENUM(ob_pl_block_timeout, 39)
+    DEF_SYS_VAR_BIT_ENUM(plsql_ccflags, 40)
+    DEF_SYS_VAR_BIT_ENUM(iso_nls_currency, 41)
+    DEF_SYS_VAR_BIT_ENUM(log_row_value_option, 42)
+    DEF_SYS_VAR_BIT_ENUM(ob_max_read_stale_time, 43)
+    DEF_SYS_VAR_BIT_ENUM(runtime_filter_type, 44)
+    DEF_SYS_VAR_BIT_ENUM(runtime_filter_wait_time_ms, 45)
+    DEF_SYS_VAR_BIT_ENUM(runtime_filter_max_in_num, 46)
+    DEF_SYS_VAR_BIT_ENUM(runtime_bloom_filter_max_size, 47)
+    DEF_SYS_VAR_BIT_ENUM(enable_rich_vector_format, 48)
+    DEF_SYS_VAR_BIT_ENUM(ncharacter_set_connection, 49)
+    DEF_SYS_VAR_BIT_ENUM(default_lob_inrow_threshold, 50)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_pl_cache, 51)
+    DEF_SYS_VAR_BIT_ENUM(compat_type, 52)
+    DEF_SYS_VAR_BIT_ENUM(compat_version, 53)
+    DEF_SYS_VAR_BIT_ENUM(enable_sql_plan_monitor, 54)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_parameter_anonymous_block, 55)
+    DEF_SYS_VAR_BIT_ENUM(security_version, 56)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_ps_parameter_anonymous_block, 57)
+    DEF_SYS_VAR_BIT_ENUM(current_default_catalog, 58)
+    DEF_SYS_VAR_BIT_ENUM(plsql_can_transform_sql_to_assign, 59)
+    DEF_SYS_VAR_BIT_ENUM(character_set_client, 60)
+    DEF_SYS_VAR_BIT_ENUM(collation_database, 61)
+    DEF_SYS_VAR_BIT_ENUM(plsql_optimize_level, 62)
+    DEF_SYS_VAR_BIT_ENUM(ob_enable_pl_async_commit, 63)
+    BIT_MAX_POSITION = 128  // max position is 128 now
+  };
+#undef DEF_SYS_VAR_BIT_ENUM
+
 #define DEF_SYS_VAR_CACHE_FUNCS(SYS_VAR_TYPE, SYS_VAR_NAME)                           \
   void set_##SYS_VAR_NAME(SYS_VAR_TYPE value)                                         \
   {                                                                                   \
     inc_data_.SYS_VAR_NAME##_ = (value);                                              \
-    bits_.inc_##SYS_VAR_NAME##_ = true;                                               \
+    set_bit(BIT_##SYS_VAR_NAME);                                                      \
   }                                                                                   \
   void set_base_##SYS_VAR_NAME(SYS_VAR_TYPE value)                                    \
   {                                                                                   \
@@ -2224,7 +2299,7 @@ private:
   }                                                                                   \
   const SYS_VAR_TYPE &get_##SYS_VAR_NAME() const                                      \
   {                                                                                   \
-    return get_##SYS_VAR_NAME(bits_.inc_##SYS_VAR_NAME##_);                           \
+    return get_##SYS_VAR_NAME(bit_is_true(BIT_##SYS_VAR_NAME));                        \
   }                                                                                   \
   const SYS_VAR_TYPE &get_##SYS_VAR_NAME(bool is_inc) const                           \
   {                                                                                   \
@@ -2238,12 +2313,12 @@ private:
   }                                                                                   \
   void set_##SYS_VAR_NAME(const common::ObString &value)                 \
   {                                                                                   \
-      inc_data_.set_##SYS_VAR_NAME(value);                                            \
-      bits_.inc_##SYS_VAR_NAME##_ = true;                                             \
+    inc_data_.set_##SYS_VAR_NAME(value);                                              \
+    set_bit(BIT_##SYS_VAR_NAME);                                                      \
   }                                                                                   \
   const common::ObString &get_##SYS_VAR_NAME() const                                  \
   {                                                                                   \
-    return get_##SYS_VAR_NAME(bits_.inc_##SYS_VAR_NAME##_);                           \
+    return get_##SYS_VAR_NAME(bit_is_true(BIT_##SYS_VAR_NAME));                        \
   }                                                                                   \
   const common::ObString &get_##SYS_VAR_NAME(bool is_inc) const                       \
   {                                                                                   \
@@ -2254,7 +2329,7 @@ private:
   {
   public:
     SysVarsCache()
-      : inc_flags_(0)
+      : inc_flags_(0), ext_inc_flags_(0)
     {}
     ~SysVarsCache()
     {}
@@ -2263,16 +2338,42 @@ private:
     {
       inc_data_.reset();
       inc_flags_ = 0;
+      ext_inc_flags_ = 0;
     }
     void clean_inc()
     {
       ob_assert(sizeof(IncBits) <= sizeof(uint64_t));
       inc_flags_ = 0;
+      ext_inc_flags_ = 0;
     }
     bool is_inc_empty() const
     {
-      return inc_flags_ == 0;
+      return inc_flags_ == 0 && ext_inc_flags_ == 0;
     }
+
+  private:
+
+    inline void set_bit(int bit_pos) {
+      if (bit_pos < 64) {
+        // use inc_flags_ to store the bit
+        inc_flags_ |= (1ULL << bit_pos);
+      } else {
+        // use ext_inc_flags_ to store the bit
+        ext_inc_flags_ |= (1ULL << (bit_pos - 64));
+      }
+    }
+
+    inline bool bit_is_true(int bit_pos) const {
+      if (bit_pos < 64) {
+        // check inc_flags_
+        return (inc_flags_ >> bit_pos) & 1ULL;
+      } else {
+        // check ext_inc_flags_
+        return (ext_inc_flags_ >> (bit_pos - 64)) & 1ULL;
+      }
+    }
+
+  public:
     DEF_SYS_VAR_CACHE_FUNCS(uint64_t, auto_increment_increment);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, sql_throttle_current_priority);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, ob_last_schema_version);
@@ -2336,6 +2437,7 @@ private:
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, character_set_client);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, collation_database);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, plsql_optimize_level);
+    DEF_SYS_VAR_CACHE_FUNCS(bool, ob_enable_pl_async_commit);
     void set_autocommit_info(bool inc_value)
     {
       inc_data_.autocommit_ = inc_value;
@@ -2417,14 +2519,15 @@ private:
       bool inc_character_set_client_:1;
       bool inc_collation_database_:1;
       bool inc_plsql_optimize_level_:1;
-      // when add new inc bit, please update reserved_bits_,
-      // so that the total bits is 64
-      int reserved_bits_:1;
+      bool inc_ob_enable_pl_async_commit_:1;
+      // total bits has been used out !!!
+      // can not add new inc bit !!!
     };
     union { // FARM COMPAT WHITELIST
       uint64_t inc_flags_;
       IncBits bits_;
     };
+    uint64_t ext_inc_flags_;
   };
 protected:
   const uint64_t orig_tenant_id_;     // which tenant new me
@@ -2694,6 +2797,7 @@ private:
   int64_t sql_mem_used_;
   bool shadow_top_query_string_;
   bool use_pl_inner_info_string_;
+  bool route_to_column_replica_;
 public:
   bool get_enable_hyperscan_regexp_engine() const;
   int8_t get_min_const_integer_precision() const;
@@ -2896,7 +3000,6 @@ public:
     COLLATION_DATABASE,
     PLSQL_CCFLAGS,
     PLSQL_OPTIMIZE_LEVEL,
-    PLSQL_CAN_TRANSFORM_TO_ASSIGN,
     MAX_ENV,
   };
 
@@ -2907,7 +3010,6 @@ public:
     share::SYS_VAR_COLLATION_DATABASE,
     share::SYS_VAR_PLSQL_CCFLAGS,
     share::SYS_VAR_PLSQL_OPTIMIZE_LEVEL,
-    share::SYS_VAR_PLSQL_CAN_TRANSFORM_SQL_TO_ASSIGN,
     share::SYS_VAR_INVALID
   };
 
@@ -2917,8 +3019,7 @@ public:
     collation_connection_(CS_TYPE_INVALID),
     collation_database_(CS_TYPE_INVALID),
     plsql_ccflags_(),
-    plsql_optimize_level_(0),  // default PLSQL_OPTIMIZE_LEVEL = 0
-    plsql_can_transform_to_assign_(1)  // default PLSQL_CAN_TRANSFORM_TO_ASSIGN = 1
+    plsql_optimize_level_(0)  // default PLSQL_OPTIMIZE_LEVEL = 0
   { }
 
   virtual ~ObExecEnv() {}
@@ -2928,8 +3029,7 @@ public:
                K_(collation_connection),
                K_(collation_database),
                K_(plsql_ccflags),
-               K_(plsql_optimize_level),
-               K_(plsql_can_transform_to_assign));
+               K_(plsql_optimize_level));
 
   void reset();
 
@@ -2957,9 +3057,6 @@ public:
   int64_t get_plsql_optimize_level() { return plsql_optimize_level_; }
   void set_plsql_optimize_level(int64_t level) { plsql_optimize_level_ = plsql_optimize_level_; }
 
-  bool get_plsql_can_transform_to_assign() { return plsql_can_transform_to_assign_; }
-  void set_plsql_can_transform_to_assign(bool can_transform) { plsql_can_transform_to_assign_ = can_transform; }
-
 private:
   ObSQLMode sql_mode_;
   ObCollationType charset_client_;
@@ -2967,7 +3064,6 @@ private:
   ObCollationType collation_database_;
   ObString plsql_ccflags_;
   int64_t plsql_optimize_level_;
-  bool plsql_can_transform_to_assign_;
 };
 
 

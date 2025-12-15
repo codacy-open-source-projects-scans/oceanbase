@@ -979,6 +979,7 @@ int ObBasicStatsEstimator::check_table_statistics_state(ObExecContext &ctx,
                                                         const uint64_t table_id,
                                                         const int64_t global_part_id,
                                                         bool &is_locked,
+                                                        bool is_async_gather,
                                                         ObIArray<ObPartitionStatInfo> &partition_stat_infos)
 {
   int ret = OB_SUCCESS;
@@ -1036,7 +1037,11 @@ int ObBasicStatsEstimator::check_table_statistics_state(ObExecContext &ctx,
           } else if (global_part_id == part_val && lock_val > 0) {
             is_locked = true;
           } else {
-            ObPartitionStatInfo partition_stat_info(part_val, row_cnt, lock_val > 0, false, consecutive_failed_count >= 5);
+            ObPartitionStatInfo partition_stat_info(part_val,
+                                                    row_cnt,
+                                                    lock_val > 0,
+                                                    false,
+                                                    is_async_gather ? consecutive_failed_count >= 5 : false);
             if (OB_FAIL(partition_stat_infos.push_back(partition_stat_info))) {
               LOG_WARN("failed to push back", K(ret));
             } else {/*do nothing*/}
@@ -1292,15 +1297,12 @@ int ObBasicStatsEstimator::get_need_stats_tables(ObExecContext &ctx,
                                            " FROM   %s t "\
                                            " WHERE  table_id > %ld"
                                            "  AND  table_type IN %s"\
-                                           " AND table_id  not in (select distinct table_id from %s "\
-                                           " WHERE table_id > %ld AND spare2 >= 5) "\
                                            " ORDER  BY tenant_id, table_id "\
                                            " LIMIT  %ld;",
                                            share::OB_ALL_TABLE_TNAME,
                                            last_table_id,
                                            gather_table_type_list.ptr(),
                                            share::OB_ALL_TABLE_STAT_TNAME,
-                                           last_table_id,
                                            slice_cnt))) {
     LOG_WARN("failed to append fmt", K(ret));
   } else {
@@ -1592,7 +1594,7 @@ int ObBasicStatsEstimator::get_async_gather_stats_tables(ObExecContext &ctx,
           "  JOIN      %s gp "\
           "  ON        gp.sname = 'ASYNC_GATHER_STALE_RATIO' "\
           "  where m.tenant_id = %lu AND "\
-          " (CASE WHEN (m.last_inserts-m.last_deletes) = 0 THEN 1 + cast(coalesce(up.valchar, gp.spare4) as "\
+          " (CASE WHEN (m.last_inserts-m.last_deletes) = 0 and (m.inserts - m.deletes) > 0 THEN 1 + cast(coalesce(up.valchar, gp.spare4) as "\
           " double) "\
           "    ELSE (m.inserts - m.last_inserts + m.updates - m.last_updates + m.deletes - m.last_deletes) * 1.0 "\
           " / (m.last_inserts-m.last_deletes) END) > cast(coalesce(up.valchar, gp.spare4) as double) "\

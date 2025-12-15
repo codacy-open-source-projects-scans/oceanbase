@@ -170,19 +170,21 @@ int ObTabletSplitMdsArg::get_partkey_projector(
 }
 
 int ObTabletSplitMdsArg::prepare_basic_args(
+    const ObIArray<ObTableSchema *> &new_table_schemas,
     const ObIArray<ObTableSchema *> &upd_table_schemas,
     const ObIArray<const ObTableSchema *> &inc_table_schemas,
     ObIArray<ObTabletID> &src_tablet_ids,
     ObIArray<ObArray<ObTabletID>> &dst_tablet_ids,
-    ObIArray<ObRowkey> &dst_high_bound_vals)
+    ObIArray<blocksstable::ObDatumRowkey> &dst_end_partkey_vals,
+    common::ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
   src_tablet_ids.reset();
   dst_tablet_ids.reset();
-  dst_high_bound_vals.reset();
-  if (OB_UNLIKELY(upd_table_schemas.count() != inc_table_schemas.count())) {
+  dst_end_partkey_vals.reset();
+  if (OB_UNLIKELY(new_table_schemas.count() != upd_table_schemas.count() || upd_table_schemas.count() != inc_table_schemas.count())) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid schema count", K(ret), K(upd_table_schemas.count()), K(inc_table_schemas.count()));
+    LOG_WARN("invalid schema count", K(ret), K(new_table_schemas.count()), K(upd_table_schemas.count()), K(inc_table_schemas.count()));
   }
 
   for (int64_t i = 0; OB_SUCC(ret) && i < upd_table_schemas.count(); i++) {
@@ -212,18 +214,21 @@ int ObTabletSplitMdsArg::prepare_basic_args(
   }
 
   for (int64_t i = 0; OB_SUCC(ret) && i < inc_table_schemas.count(); i++) {
-    const ObTableSchema *table_schema = nullptr;
+    const ObTableSchema *inc_table_schema = nullptr;
+    const ObTableSchema *new_table_schema = nullptr;
     const ObArray<ObTabletID> empty_array;
     const bool is_data_table = i == 0;
-    if (OB_ISNULL(table_schema = inc_table_schemas.at(i))
-        || OB_UNLIKELY(table_schema->get_table_id() != upd_table_schemas.at(i)->get_table_id())) {
+    if (OB_ISNULL(inc_table_schema = inc_table_schemas.at(i))
+        || OB_ISNULL(new_table_schema = new_table_schemas.at(i))
+        || OB_UNLIKELY(inc_table_schema->get_table_id() != upd_table_schemas.at(i)->get_table_id()
+            || new_table_schema->get_table_id() != upd_table_schemas.at(i)->get_table_id())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid table schema", K(ret), K(i), K(dst_tablet_ids));
     } else if (OB_FAIL(dst_tablet_ids.push_back(empty_array))) {
       LOG_WARN("failed to push back", K(ret));
     } else {
-      ObTabletSplitMdsArgPrepareDstOp op(is_data_table, dst_tablet_ids.at(i), dst_high_bound_vals);
-      if (OB_FAIL(foreach_part(*table_schema, PartitionType::PARTITION_TYPE_NORMAL, op))) {
+      ObTabletSplitMdsArgPrepareDstOp op(is_data_table, new_table_schema->get_partition_key_info(), dst_tablet_ids.at(i), dst_end_partkey_vals, allocator);
+      if (OB_FAIL(foreach_part(*inc_table_schema, PartitionType::PARTITION_TYPE_NORMAL, op))) {
         LOG_WARN("failed to foreach part", K(ret));
       } else if (OB_UNLIKELY(dst_tablet_ids.at(i).count() != dst_tablet_ids.at(0).count())) {
         ret = OB_ERR_UNEXPECTED;
@@ -302,7 +307,7 @@ int ObTabletSplitMdsArg::init_split_start_dst(
     const ObIArray<const ObTableSchema *> &inc_table_schemas,
     const ObIArray<ObTabletID> &src_tablet_ids,
     const ObIArray<ObArray<ObTabletID>> &dst_tablet_ids,
-    const ObIArray<ObRowkey> &dst_high_bound_vals)
+    const ObIArray<ObDatumRowkey> &dst_end_partkey_vals)
 {
   int ret = OB_SUCCESS;
   ObArenaAllocator allocator;
@@ -315,24 +320,21 @@ int ObTabletSplitMdsArg::init_split_start_dst(
   for (int64_t i = 0; OB_SUCC(ret) && i < inc_table_schemas.count(); i++) {
     const ObTableSchema *inc_table_schema = inc_table_schemas.at(i);
     const ObTabletID &src_tablet_id = src_tablet_ids.at(i);
-    if (OB_UNLIKELY(nullptr == inc_table_schema || dst_tablet_ids.at(i).count() != dst_high_bound_vals.count())) {
+    const ObPartitionKeyInfo &partition_key_info = inc_table_schema->get_partition_key_info();
+    if (OB_UNLIKELY(nullptr == inc_table_schema || dst_tablet_ids.at(i).count() != dst_end_partkey_vals.count())) {
       ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid argument", KP(inc_table_schema), K(dst_tablet_ids), K(i), K(dst_high_bound_vals.count()));
+      LOG_WARN("invalid argument", KP(inc_table_schema), K(dst_tablet_ids), K(i), K(dst_end_partkey_vals.count()));
     }
     for (int64_t j = 0; OB_SUCC(ret) && j < dst_tablet_ids.at(i).count(); j++) {
       const int64_t part_idx = j;
       const ObTabletID &dst_tablet_id = dst_tablet_ids.at(i).at(part_idx);
-      const ObRowkey &high_bound_val = dst_high_bound_vals.at(part_idx);
       ObTabletSplitMdsUserData data;
       if (OB_FAIL(split_data_tablet_ids_.push_back(dst_tablet_id))) {
         LOG_WARN("failed to push back", K(ret));
       } else if (is_split_data_table(*inc_table_schema)) {
         const int64_t auto_part_size = inc_table_schema->is_auto_partitioned_table() ? inc_table_schema->get_auto_part_size() : OB_INVALID_SIZE;
-        ObDatumRowkey end_partkey;
         allocator.reuse();
-        if (OB_FAIL(end_partkey.from_rowkey(high_bound_val, allocator))) {
-          LOG_WARN("failed to convert", K(ret));
-        } else if (OB_FAIL(data.init_range_part_split_dst(auto_part_size, src_tablet_id, end_partkey))) {
+        if (OB_FAIL(data.init_range_part_split_dst(auto_part_size, src_tablet_id, dst_end_partkey_vals.at(part_idx)))) {
           LOG_WARN("failed to assign", K(ret));
         } else if (OB_FAIL(split_datas_.push_back(data))) {
           LOG_WARN("failed to push back", K(ret));
@@ -524,8 +526,48 @@ int ObTabletSplitMdsArgPrepareDstOp::operator()(const int64_t part_idx, ObBasePa
   if (OB_FAIL(dst_tablet_ids_.push_back(part.get_tablet_id()))) {
     LOG_WARN("failed to push back", K(ret));
   } else if (is_data_table_) {
-    if (OB_FAIL(dst_high_bound_vals_.push_back(part.get_high_bound_val()))) {
+    const ObRowkey &high_bound_val = part.get_high_bound_val();
+    blocksstable::ObDatumRowkey end_partkey;
+    if (OB_FAIL(end_partkey.from_rowkey(high_bound_val, allocator_))) {
+      LOG_WARN("failed to convert", K(ret), K(high_bound_val));
+    } else if (OB_FAIL(check_and_cast_end_partkey(partition_key_info_, end_partkey, allocator_))) {
+      LOG_WARN("failed to check and cast end partkey", K(ret), K(end_partkey), K(partition_key_info_), K(high_bound_val));
+    } else if (OB_FAIL(dst_end_partkey_vals_.push_back(end_partkey))) {
       LOG_WARN("failed to push back", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObTabletSplitMdsArgPrepareDstOp::check_and_cast_end_partkey(const ObPartitionKeyInfo &partition_key_info,
+                                                                blocksstable::ObDatumRowkey &end_partkey,
+                                                                common::ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  void *buf = nullptr;
+  if (OB_UNLIKELY(!partition_key_info.is_valid() && partition_key_info.get_size() != end_partkey.datum_cnt_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid partition key info", K(ret), K(partition_key_info), K(end_partkey.datum_cnt_));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < end_partkey.datum_cnt_; ++i) {
+    ObStorageDatum &storage_datum = end_partkey.datums_[i];
+    ObRowkeyColumn column;
+    if (OB_FAIL(partition_key_info.get_column(i, column))) {
+      LOG_WARN("failed to get column", K(ret), K(partition_key_info), K(i));
+    } else if (column.get_meta_type().is_timestamp_ltz()) {
+      /*need to convert the high bound from timestamp_tz to timestamp_ltz*/
+      if (OB_ISNULL(buf = allocator.alloc(sizeof(ObObj)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocat memory for storage datum", K(ret));
+      } else {
+        const ObOTimestampData & ts_data = storage_datum.get_otimestamp_tz();
+        ObObj *timestamp_ltz_obj = new (buf) ObObj();
+        timestamp_ltz_obj->set_timestamp_ltz(ts_data);
+        storage_datum.reuse();
+        if (OB_FAIL(storage_datum.from_obj_enhance(*timestamp_ltz_obj))) {
+          LOG_WARN("failed to from obj", K(ret), K(*timestamp_ltz_obj));
+        }
+      }
     }
   }
   return ret;

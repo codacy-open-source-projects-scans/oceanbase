@@ -866,7 +866,7 @@ int ObTscCgService::generate_tsc_filter(const ObLogTableScan &op, ObTableScanSpe
     if (OB_ISNULL(attach_ctdef)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("attach ctdef is null", K(ret));
-    } else if (op.is_vec_adaptive_scan() && OB_FAIL(lookup_pushdown_filters.assign(full_filters))) {
+    } else if (op.is_vec_adaptive_scan() && OB_FAIL(lookup_pushdown_filters.assign(op.get_full_filters()))) {
       LOG_WARN("failed to assign full filter to pushdown filters", K(ret));
     } else if (attach_ctdef->op_type_ == ObDASOpType::DAS_OP_INDEX_PROJ_LOOKUP) {
       if (OB_FAIL(nonpushdown_filters.assign(full_filters))) {
@@ -1261,7 +1261,7 @@ int ObTscCgService::extract_das_access_exprs(const ObLogTableScan &op,
     }
   }
   // store group_id_expr when use group id
-  if (OB_SUCC(ret) && op.use_group_id()) {
+  if (OB_SUCC(ret) && op.use_group_id() && !op.is_scan_domain_id_table(scan_ctdef.ref_table_id_)) {
     const ObRawExpr* group_id_expr = op.get_group_id_expr();
     if (group_id_expr != nullptr &&
         OB_FAIL(add_var_to_array_no_dup(access_exprs, const_cast<ObRawExpr*>(group_id_expr)))) {
@@ -1368,7 +1368,7 @@ int ObTscCgService::extract_das_access_exprs(const ObLogTableScan &op,
   }
 
   // extract match columns for vector adaptive scan on data table
-  if (scan_ctdef.ref_table_id_ == op.get_real_ref_table_id() && op.is_vec_adaptive_scan()) {
+  if (scan_ctdef.ref_table_id_ == op.get_real_ref_table_id() && op.is_vec_adaptive_scan() && scan_ctdef.ir_scan_type_ == OB_NOT_A_SPEC_SCAN) {
     if (OB_FAIL(extract_match_columns_from_filters(op, access_exprs))) {
       LOG_WARN("failed to extract match columns from filters", K(ret));
     }
@@ -1723,7 +1723,7 @@ int ObTscCgService::generate_das_scan_ctdef(const ObLogTableScan &op,
   }
 
   //4. generate batch scan ctdef
-  if (OB_SUCC(ret) && op.use_group_id()) {
+  if (OB_SUCC(ret) && op.use_group_id() && !op.is_scan_domain_id_table(scan_ctdef.ref_table_id_)) {
     if (OB_FAIL(cg_.generate_rt_expr(*op.get_group_id_expr(), scan_ctdef.group_id_expr_))) {
       LOG_WARN("generate group id expr failed", K(ret));
     }
@@ -1867,7 +1867,7 @@ int ObTscCgService::extract_das_output_column_ids(const ObLogTableScan &op,
       LOG_WARN("unexpected nullptr to table schema", K(ret));
     } else if (OB_FAIL(table_schema->get_rowkey_column_ids(output_cids))) {
       LOG_WARN("get rowkey column ids failed", K(ret));
-    } else if (nullptr != op.get_group_id_expr() && op.use_group_id()) {
+    } else if (nullptr != op.get_group_id_expr() && op.use_group_id() && !op.is_scan_domain_id_table(scan_ctdef.ref_table_id_)) {
       if (OB_FAIL(output_cids.push_back(OB_HIDDEN_GROUP_IDX_COLUMN_ID))) {
         LOG_WARN("store group column id failed", K(ret));
       }
@@ -1931,7 +1931,7 @@ int ObTscCgService::extract_das_output_column_ids(const ObLogTableScan &op,
         LOG_WARN("store real output colum id failed", K(ret), KPC(mapping_expr));
       }
     }
-  } else if (nullptr != op.get_group_id_expr() && op.use_group_id() &&
+  } else if (nullptr != op.get_group_id_expr() && op.use_group_id() && !op.is_scan_domain_id_table(scan_ctdef.ref_table_id_) &&
       OB_FAIL(das_output_cols.push_back(const_cast<ObRawExpr*>(op.get_group_id_expr())))) {
     LOG_WARN("store group id expr failed", K(ret));
   } else if (OB_FAIL(extract_das_column_ids(das_output_cols, output_cids))) {
@@ -5105,6 +5105,7 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
     scan_ctdef->ref_table_id_ = rowkey_domain_id_tid;
     ObDASTableLocMeta *scan_loc_meta =
       OB_NEWx(ObDASTableLocMeta, &cg_.phy_plan_->get_allocator(), cg_.phy_plan_->get_allocator());
+    share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
     if (OB_ISNULL(scan_loc_meta)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate scan location meta failed", K(ret));
@@ -5118,6 +5119,12 @@ int ObTscCgService::generate_rowkey_domain_id_ctdef(
       LOG_WARN("generate table loc meta failed", K(ret));
     } else if (OB_FAIL(tsc_ctdef.attach_spec_.attach_loc_metas_.push_back(scan_loc_meta))) {
       LOG_WARN("store scan loc meta failed", K(ret));
+    } else if (cur_type == ObDomainIdUtils::ObDomainIDType::EMB_VEC &&
+               OB_FAIL(semantic_index_info.generate(data_schema,
+                                                    rowkey_domain_id_schema,
+                                                    scan_ctdef->result_output_.count(),
+                                                    OB_NOT_NULL(scan_ctdef->trans_info_expr_)))) {
+      LOG_WARN("fail to generate semantic index info", K(ret));
     } else {
       rowkey_domain_scan_ctdef = scan_ctdef;
     }
@@ -5448,6 +5455,25 @@ int ObTscCgService::extract_match_columns_from_filters(const ObLogTableScan &op,
       }
     }
   }
+  // extract columns from full filter expressions
+  if (OB_SUCC(ret)) {
+    const ObIArray<ObRawExpr*> &full_filters = op.get_full_filters();
+    for (int64_t i = 0; OB_SUCC(ret) && i < full_filters.count(); ++i) {
+      ObRawExpr *full_filter_expr = full_filters.at(i);
+      if (OB_ISNULL(full_filter_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null full filter expr", K(ret), K(i));
+      } else {
+        ObArray<ObRawExpr *> filter_columns;
+        if (OB_FAIL(ObRawExprUtils::extract_column_exprs(full_filter_expr, filter_columns))) {
+          LOG_WARN("failed to extract column exprs from full filter expr", K(ret), K(i));
+        } else if (OB_FAIL(append_array_no_dup(access_exprs, filter_columns))) {
+          LOG_WARN("failed to append full filter columns to access exprs", K(ret));
+        }
+      }
+    }
+  }
+
   return ret;
 }
 

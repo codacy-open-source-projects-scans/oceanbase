@@ -2284,7 +2284,7 @@ int ObTenantDDLService::add_extra_tenant_init_config_(
   ObString config_name_partition_balance_schedule_interval("partition_balance_schedule_interval");
   ObString config_value_partition_balance_schedule_interval("0");
   ObString config_name_update_trigger("_update_all_columns_for_trigger");
-  ObString config_value_update_trigger("false");
+  ObString config_value_update_trigger("true");
   ObString config_name_ddl_thread_isolution("_enable_ddl_worker_isolation");
   ObString config_value_ddl_thread_isolution("true");
   ObString config_name_spill_compression_codec("spill_compression_codec");
@@ -2295,6 +2295,8 @@ int ObTenantDDLService::add_extra_tenant_init_config_(
   ObString config_value_spf_batch_rescan("true");
   ObString config_name_batch_rescan_flag("_enable_das_batch_rescan_flag");
   ObString config_value_batch_rescan_flag("15");
+  ObString config_name_enable_mlog_auto_maintenance("enable_mlog_auto_maintenance");
+  ObString config_value_enable_mlog_auto_maintenance("true");
 
   if (OB_FAIL(ObParallelDDLControlMode::generate_parallel_ddl_control_config_for_create_tenant(config_value))) {
     LOG_WARN("fail to generate parallel ddl control config value", KR(ret));
@@ -2327,6 +2329,8 @@ int ObTenantDDLService::add_extra_tenant_init_config_(
         LOG_WARN("fail to add config", KR(ret), K(config_name_spf_batch_rescan), K(config_value_spf_batch_rescan));
       } else if (OB_FAIL(tenant_init_config.add_config(config_name_batch_rescan_flag, config_value_batch_rescan_flag))) {
         LOG_WARN("fail to add config", KR(ret), K(config_name_batch_rescan_flag), K(config_value_batch_rescan_flag));
+      } else if (OB_FAIL(tenant_init_config.add_config(config_name_enable_mlog_auto_maintenance, config_value_enable_mlog_auto_maintenance))) {
+        LOG_WARN("fail to add config", KR(ret), K(config_name_enable_mlog_auto_maintenance), K(config_value_enable_mlog_auto_maintenance));
       }
       // ---- Add new tenant init config above this line -----
       // At the same time, to verify modification, you need modify test case tenant_init_config(_oracle).test
@@ -3409,7 +3413,8 @@ int ObTenantDDLService::modify_and_cal_resource_pool_diff(
       } else {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("invalid argument", K(ret), K(new_pool_name_list), K(old_pool_name_list));
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "resource pool list");
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT,
+            "resource pool list: only one resource pool can be added or reduced at a time");
       }
     }
     LOG_INFO("cal resource pool list result",

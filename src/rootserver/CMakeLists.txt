@@ -30,6 +30,7 @@ ob_set_subtarget(ob_rootserver backup
 ob_set_subtarget(ob_rootserver common
   ob_bootstrap.cpp
   ob_admin_drtask_util.cpp
+  ob_admin_switch_replica_role.cpp
   ob_disaster_recovery_task_table_operator.cpp
   ob_balance_group_ls_stat_operator.cpp
   ob_disaster_recovery_sslog_service.cpp
@@ -247,6 +248,9 @@ ob_set_subtarget(ob_rootserver mview
   mview/ob_mview_update_cache_task.cpp
   mview/ob_mview_mds_op_task.cpp
   mview/ob_mview_alter_service.cpp
+  mview/ob_mview_update_deps_task.cpp
+  mview/ob_mview_trim_mlog_task.cpp
+  mview/ob_mview_utils.cpp
 )
 
 ob_set_subtarget(ob_rootserver direct_load

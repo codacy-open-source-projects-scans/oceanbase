@@ -515,6 +515,7 @@ struct ObDDLTableSchema
 public:
   static int fill_ddl_table_schema(const uint64_t tenant_id,
                                    const uint64_t table_id,
+                                   const uint64_t tenant_data_version,
                                    common::ObArenaAllocator &allocator,
                                    ObDDLTableSchema &ddl_table_schema);
 private:
@@ -526,8 +527,8 @@ private:
                                            ObDDLTableSchema &ddl_table_schema);
 
 public:
-  ObDDLTableSchema() : storage_schema_(nullptr), lob_meta_storage_schema_(nullptr) {}
-  TO_STRING_KV(K_(table_id), K_(table_item), KPC_(storage_schema), KPC_(lob_meta_storage_schema), K_(reshape_column_idxs), K_(lob_column_idxs), K_(column_items));
+  ObDDLTableSchema() : storage_schema_(nullptr), lob_meta_storage_schema_(nullptr), src_tenant_id_(MTL_ID()), dst_tenant_id_(MTL_ID()) {}
+  TO_STRING_KV(K_(src_tenant_id), K_(dst_tenant_id), K_(table_id), K_(table_item), KPC_(storage_schema), KPC_(lob_meta_storage_schema), K_(reshape_column_idxs), K_(lob_column_idxs), K_(column_items));
   void reset();
   int assign(const ObDDLTableSchema &other);
 
@@ -545,6 +546,11 @@ public:
   ObArray<int64_t> reshape_column_idxs_;
   ObArray<int64_t> lob_column_idxs_;
   ObArray<share::schema::ObColDesc> column_descs_;
+
+
+  // src_tenant_id, used for restore tenant table
+  uint64_t src_tenant_id_;
+  uint64_t dst_tenant_id_;
 };
 
 // transaction info for inc direct load

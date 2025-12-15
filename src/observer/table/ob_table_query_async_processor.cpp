@@ -162,9 +162,10 @@ int ObTableQueryAsyncP::init_tb_ctx(ObIAllocator* allocator,
     LOG_WARN("fail to alloc expr memory", K(ret));
   } else if (OB_FAIL(ctx.init_exec_ctx())) {
     LOG_WARN("fail to init exec ctx", K(ret), K(ctx));
+  } else if (OB_FAIL(ctx.init_expr_frame_info(expr_frame_info))) {
+    LOG_WARN("fail to init expr frame info", K(ret));
   } else {
     ctx.set_init_flag(true);
-    ctx.set_expr_info(expr_frame_info);
   }
 
   return ret;
@@ -1173,6 +1174,21 @@ int ObTableQueryAsyncP::new_try_process()
 
     if (OB_SUCC(ret) && ObQueryOperationType::QUERY_START == arg_.query_type_) {
       set_timeout(model->get_lease_timeout_period());
+    }
+  }
+
+  if (OB_NOT_NULL(model) && OB_NOT_NULL(model->get_query_session())) {
+    int64_t session_id = model->get_query_session()->get_session_id();
+    if (OB_FAIL(ret)) {
+      int tmp_ret = ret;
+      if (OB_FAIL(MTL(ObTableQueryASyncMgr*)->destory_query_session(model->get_query_session()))) {
+        LOG_WARN("faild to destory query session", K(ret), K(session_id));
+      }
+      ret = tmp_ret;
+    } else if (result_.is_end_) {
+      if (OB_FAIL(MTL(ObTableQueryASyncMgr*)->destory_query_session(model->get_query_session()))) {
+        LOG_WARN("fail to destory query session", K(ret), K(session_id));
+      }
     }
   }
 

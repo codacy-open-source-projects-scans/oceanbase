@@ -32,6 +32,7 @@
 #include "rootserver/ob_disaster_recovery_worker.h" // ObDRWorker
 #include "rootserver/ob_disaster_recovery_task_utils.h" // DisasterRecoveryUtils
 #include "rootserver/ob_disaster_recovery_replace_tenant.h" // ObDRReplaceTenant
+#include "rootserver/ob_admin_switch_replica_role.h" // ObAdminSwitchReplicaRole
 #include "rootserver/backup/ob_backup_param_operator.h" // ObBackupParamOperator
 #include "share/table/ob_redis_importer.h"
 #include "share/ob_timezone_importer.h"
@@ -161,7 +162,7 @@ int ObFreezeExecutor::execute(ObExecContext &ctx, ObFreezeStmt &stmt)
           LOG_WARN("minor freeze rpc failed", K(arg), K(ret), K(timeout), "dst", common_rpc_proxy->get_server());
         }
       }
-    } else if (stmt.get_tablet_id().is_valid()) {
+    } else if (stmt.get_tablet_id().is_valid()) { // tablet major freeze
       if (OB_UNLIKELY(1 != stmt.get_tenant_ids().count())) {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support schedule tablet major freeze for several tenant", K(ret), K(stmt));
@@ -660,6 +661,10 @@ int ObFlushSSMicroCacheExecutor::execute(ObExecContext &ctx, ObFlushSSMicroCache
     ObArray<ObAddr> server_list;
     ObArray<ObUnit> tenant_units;
     ObUnitTableOperator unit_op;
+    if (is_meta_tenant(tenant_id)) {
+      tenant_id += 1; // handle meta tenant
+    }
+
     if (OB_FAIL(unit_op.init(*GCTX.sql_proxy_))) {
       LOG_WARN("failed to init unit op", KR(ret));
     } else if (OB_FAIL(unit_op.get_units_by_tenant(tenant_id, tenant_units))) {
@@ -731,6 +736,10 @@ int ObFlushSSLocalCacheExecutor::execute(ObExecContext &ctx, ObFlushSSLocalCache
     ObArray<ObAddr> server_list;
     ObArray<ObUnit> tenant_units;
     ObUnitTableOperator unit_op;
+    if (is_meta_tenant(tenant_id)) {
+      tenant_id += 1; // handle meta tenant
+    }
+
     if (OB_FAIL(unit_op.init(*GCTX.sql_proxy_))) {
       LOG_WARN("failed to init unit op", KR(ret));
     } else if (OB_FAIL(unit_op.get_units_by_tenant(tenant_id, tenant_units))) {
@@ -1248,23 +1257,12 @@ int ObAdminStorageExecutor::execute(ObExecContext &ctx, ObAdminStorageStmt &stmt
 int ObSwitchReplicaRoleExecutor::execute(ObExecContext &ctx, ObSwitchReplicaRoleStmt &stmt)
 {
   int ret = OB_SUCCESS;
-
   if (OB_ISNULL(ctx.get_my_session())) {
     ret = OB_NOT_INIT;
     LOG_WARN("session should not be null");
-  } else {
-    ObTaskExecutorCtx *task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx);
-    obrpc::ObCommonRpcProxy *common_rpc = NULL;
-    if (OB_ISNULL(task_exec_ctx)) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get task executor context failed");
-    } else if (OB_ISNULL(common_rpc = task_exec_ctx->get_common_rpc())) {
-      ret = OB_NOT_INIT;
-      LOG_WARN("get common rpc proxy failed", K(task_exec_ctx));
-    } else if (OB_FAIL(common_rpc->admin_switch_replica_role(
-                           stmt.get_rpc_arg()))) {
-      LOG_WARN("switch replica role rpc failed", K(ret), "rpc_arg", stmt.get_rpc_arg());
-    }
+  } else if (OB_FAIL(ObAdminSwitchReplicaRole::handle_switch_replica_role_sql_command(stmt.get_rpc_arg()))) {
+    // not sending RPC to RS, execute locally
+    LOG_WARN("fail to handle switch replica role sql command", KR(ret), K(stmt.get_rpc_arg()));
   }
   return ret;
 }

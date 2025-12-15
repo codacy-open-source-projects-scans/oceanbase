@@ -1389,7 +1389,6 @@ int ObTableLocation::init(
       if (OB_SUCC(ret) && !is_dbms_stats_partition) {
         bool is_in_range_optimization_enabled = false;
         bool use_new_query_range = (session_info->is_enable_new_query_range()
-                              && ObSQLUtils::is_opt_feature_version_ge_425_or_435(stmt.get_query_ctx()->optimizer_features_enable_version_)
                               && ObSQLUtils::is_min_cluster_version_ge_425_or_435());
         if (OB_FAIL(ObOptimizerUtil::is_in_range_optimization_enabled(stmt.get_query_ctx()->get_global_hint(),
                                                                       session_info,
@@ -6262,8 +6261,7 @@ int ObTableLocation::get_list_value_node(const ObPartitionLevel part_level,
         LOG_WARN("failed to push back part column expr");
       } else if ((ObIntTC == cur_col_expr->get_type_class() && ObIntType != cur_col_expr->get_data_type()) ||
                  (ObUIntTC == cur_col_expr->get_type_class() && ObUInt64Type != cur_col_expr->get_data_type()) ||
-                 ObTimestampLTZType == cur_col_expr->get_data_type()
-                 ) {
+                 (!loc_meta_.is_external_table_ && ObTimestampLTZType == cur_col_expr->get_data_type())) {
         /*对于int类型分区键，OB内部存储的分区定义值是用INT64保存的，因此这里需要把column expr也mock成int64的，
           否则表达式计算时会出现column的预期类型与实际类型不符的问题*/
         need_replace_column = true;

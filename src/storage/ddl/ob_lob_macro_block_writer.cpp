@@ -70,7 +70,6 @@ int ObLobMacroBlockWriter::init(const ObWriteMacroParam &param,
     ls_id_ = param.ls_id_;
     tablet_id_ = param.tablet_id_;
     param_ = param;
-
     // init lob id generator if need
     if (OB_SUCC(ret) && param.slice_count_ > 0) {
       if (slice_idx_ >= param.slice_count_) { // idem mode, for table with primary key
@@ -136,9 +135,9 @@ int ObLobMacroBlockWriter::write(const ObColumnSchemaItem &column_schema, ObIAll
                                                                   datum,
                                                                   timeout_ts,
                                                                   true/*has_lob_header*/,
-                                                                  MTL_ID(),
+                                                                  param_.ddl_table_schema_.src_tenant_id_,
                                                                   meta_write_iter_))) {
-      LOG_WARN("insert lob column failed", K(ret));
+      LOG_WARN("insert lob column failed", K(ret), K(param_));
     }
     ObLobMetaWriteResult lob_meta_write_result;
     bool first_get_next = true;
@@ -194,6 +193,7 @@ int ObLobMacroBlockWriter::transform_lob_meta_row(ObLobMetaWriteResult &lob_meta
       LOG_WARN("invalid lob meta row", KR(ret), K(lob_meta_row_));
     } else if (OB_FAIL(ObDDLUtil::check_null_and_length(false/*is_index_table*/,
                                                         false/*has_lob_rowkey*/,
+                                                        false/*is_table_with_clustering_key*/,
                                                         ObLobMetaUtil::LOB_META_SCHEMA_ROWKEY_COL_CNT,
                                                         lob_meta_row_))) {
       LOG_WARN("fail to check rowkey null value and length in row", KR(ret), K(lob_meta_row_));

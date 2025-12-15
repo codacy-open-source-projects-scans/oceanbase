@@ -3173,7 +3173,16 @@ int ObPLResolver::resolve_sp_row_type(const ParseNode *sp_data_type_node,
                     K(ret), K(access_idxs));
           }
         } else {
-          if (ObObjAccessIdx::is_table(access_idxs)) {
+          const ObPLDataType &final_type = ObObjAccessIdx::get_final_type(access_idxs);
+          if ((ObObjAccessIdx::is_local_variable(access_idxs)
+               || ObObjAccessIdx::is_package_variable(access_idxs)
+               || ObObjAccessIdx::is_subprogram_variable(access_idxs))
+              && final_type.is_rowtype_type()) {
+            OZ (pl_type.deep_copy(*resolve_ctx_.enum_set_ctx_, final_type));
+            OX (pl_type.set_type_from_orgin(pl_type.get_type_from()));
+            OX (pl_type.set_type_from(PL_TYPE_ATTR_ROWTYPE));
+            OZ (resolve_extern_type_info(resolve_ctx_.schema_guard_, access_idxs, extern_type_info));
+          } else if (ObObjAccessIdx::is_table(access_idxs)) {
             ObSQLSessionInfo &session_info = resolve_ctx_.session_info_;
             ObSchemaGetterGuard &schema_guard = resolve_ctx_.schema_guard_;
             uint64_t db_id = OB_INVALID_ID;
@@ -3275,7 +3284,7 @@ int ObPLResolver::resolve_sp_row_type(const ParseNode *sp_data_type_node,
             CK (OB_NOT_NULL(current_block_->get_namespace().get_type_table()));
             OX ((const_cast<ObRecordType*>(record_type))->set_type_from(PL_TYPE_ATTR_ROWTYPE));
             OZ (current_block_->get_namespace().get_type_table()->add_external_type(record_type));
-            OX (pl_type.set_type_from_orgin(pl_type.get_type_from()));
+            OX (pl_type.set_type_from_orgin(record_type->get_type_from_origin()));
             OX (pl_type.set_type_from(PL_TYPE_ATTR_ROWTYPE));
             OZ (pl_type.get_all_depended_user_type(resolve_ctx_, current_block_->get_namespace()));
             if (!ObObjAccessIdx::is_subprogram_cursor_variable(access_idxs)) {
@@ -4413,6 +4422,20 @@ int ObPLResolver::resolve_assign(const ObStmtNodeTree *parse_tree, ObPLAssignStm
                     ObDataType data_type;
                     ObPLDataType pl_type;
                     OZ (ObRawExprUtils::extract_real_result_type(*value_expr, resolve_ctx_.session_info_, data_type));
+                    sql::ObRawExprResType& res_type = const_cast<sql::ObRawExprResType&>(value_expr->get_result_type());
+                    if (OB_SUCC(ret)
+                        && is_question_mark_value(value_expr, &(current_block_->get_namespace()))
+                        && ob_is_numeric_type(res_type.get_type())
+                        && res_type.get_scale() < 0) {
+                      ObScale default_scale =
+                        ObAccuracy::DDL_DEFAULT_ACCURACY2[lib::is_oracle_mode()][res_type.get_type()].get_scale();
+                      if (ob_is_integer_type(res_type.get_type())) {
+                        OX (res_type.set_scale(default_scale);)
+                      } else {
+                        OX (res_type.set_scale(0));
+                      }
+                    }
+                    OX (data_type.set_accuracy(res_type.get_accuracy()));
                     OX (pl_type.set_data_type(data_type));
                     OX (set_question_mark_type(resolve_ctx_.schema_guard_,
                                                 into_expr,
@@ -6353,7 +6376,7 @@ int ObPLResolver::resolve_using(const ObStmtNodeTree *using_node,
             OX (legal_extend = user_type->is_udt_type()
                                || user_type->is_package_type()
                                || user_type->is_sys_refcursor_type()
-                               || user_type->is_rowtype_type());
+                               || (user_type->is_rowtype_type() && user_type->get_user_type_id() == extract_type_id(user_type->get_user_type_id()))); //table%rowtype is allowed, but cursor%rowtype is not allowed
           } else {
             legal_extend = true; // for anonymous collection
           }
@@ -7425,6 +7448,7 @@ int ObPLResolver::resolve_inout_param(ObRawExpr *param_expr, ObPLRoutineParamMod
         int64_t var_idx
           = access_idxs.at(ObObjAccessIdx::get_local_variable_idx(access_idxs)).var_index_;
         CK (var_idx >= 0 && var_idx < obj_expr->get_var_indexs().count());
+        OZ (check_update_column(current_block_->get_namespace(), obj_expr->get_var_indexs().at(var_idx), access_idxs));
         OZ (check_local_variable_read_only(
           current_block_->get_namespace(),
           obj_expr->get_var_indexs().at(var_idx),
@@ -8072,6 +8096,7 @@ int ObPLResolver::resolve_cursor_def(const ObString &cursor_name,
         record_type = new(record_type)ObRecordType();
         record_type->set_name(ObString(record_name.length(), name_buf));
         record_type->set_type_from(PL_TYPE_ATTR_ROWTYPE);
+        func.is_package() ? record_type->set_type_from_orgin(PL_TYPE_PACKAGE) : record_type->set_type_from_orgin(PL_TYPE_LOCAL);
         prepare_result.record_type_ = record_type;
         prepare_result.tg_timing_event_ =
                                 static_cast<TgTimingEvent>(resolve_ctx_.params_.tg_timing_event_);
@@ -12731,6 +12756,10 @@ int ObPLResolver::resolve_udf_without_brackets(
   OV (access_idxs.at(access_idxs.count() - 1).is_udf_type(), OB_ERR_UNEXPECTED, K(access_idxs));
   OX (expr = access_idxs.at(access_idxs.count() - 1).get_sysfunc_);
   CK (OB_NOT_NULL(expr));
+  OZ (try_sql_transpiler(access_idxs.at(access_idxs.count() - 1), unit_ast, expr));
+  if (OB_SUCC(ret) && expr != access_idxs.at(access_idxs.count() - 1).get_sysfunc_) {
+    OZ (expr->formalize(&resolve_ctx_.session_info_));
+  }
   if ((OB_FAIL(ret) && ret != OB_ERR_INSUFFICIENT_PRIVILEGE)
       || (OB_NOT_NULL(expr) && T_FUN_PL_COLLECTION_CONSTRUCT == expr->get_expr_type())
       || (OB_NOT_NULL(expr) && T_FUN_PL_OBJECT_CONSTRUCT == expr->get_expr_type())) {
@@ -12848,17 +12877,25 @@ int ObPLResolver::resolve_qualified_name(ObQualifiedName &q_name,
             OZ (resolve_name(q_name, current_block_->get_namespace(), expr_factory_, &resolve_ctx_.session_info_, access_idxs, unit_ast));
             if (OB_FAIL(ret)) {
               if (OB_ERR_SP_UNDECLARED_VAR == ret) {
-                // try sequence expression with brackets, such as seq.nextval() or seq.currval()
-                if (2 == q_name.access_idents_.count() && q_name.access_idents_.at(1).params_.empty()) {
-                  ObQualifiedName tmp_name = q_name;
-                  tmp_name.format_qualified_name();
-                  if (OB_FAIL(resolve_sequence_object(tmp_name, unit_ast, expr))) {
-                    LOG_WARN("failed to resolve sequence object", K(ret));
+                if(lib::is_oracle_mode()) {
+                  // try sequence expression with brackets, such as seq.nextval() or seq.currval()
+                  if (2 == q_name.access_idents_.count() && q_name.access_idents_.at(1).params_.empty()) {
+                    ObQualifiedName tmp_name = q_name;
+                    tmp_name.format_qualified_name();
+                    if (OB_FAIL(resolve_sequence_object(tmp_name, unit_ast, expr))) {
+                      LOG_WARN("failed to resolve sequence object", K(ret));
+                    }
                   }
                 }
               }
             } else if (access_idxs.at(access_idxs.count() - 1).is_udf_type()) {
-              OX (expr = reinterpret_cast<ObRawExpr*>(access_idxs.at(access_idxs.count() - 1).get_sysfunc_));
+              ObObjAccessIdx &access_id = access_idxs.at(access_idxs.count() - 1);
+              OX (expr = reinterpret_cast<ObRawExpr*>(access_id.get_sysfunc_));
+              OZ (try_sql_transpiler(access_id, unit_ast, expr));
+
+              if (OB_SUCC(ret) && expr != access_id.get_sysfunc_) {
+                OZ (expr->formalize(&resolve_ctx_.session_info_));
+              }
             } else {
               OZ (make_var_from_access(access_idxs,
                                       expr_factory_,
@@ -15224,6 +15261,7 @@ int ObPLResolver::resolve_function(ObObjAccessIdent &access_ident,
                                      access_ident.udf_info_.udf_name_,
                                      return_type,
                                      reinterpret_cast<int64_t>(access_ident.udf_info_.ref_expr_)));
+  OX (access_idx.routine_info_ = routine_info);
   OZ (access_idxs.push_back(access_idx));
 
   if (OB_SUCC(ret) && access_ident.is_pl_udf()) {
@@ -18300,7 +18338,8 @@ int ObPLResolver::resolve_routine_block(const ObStmtNodeTree *parse_tree,
         OX (const_cast<ObPLBlockNS &>(routine_ast.get_body()->get_namespace()).set_external_ns(NULL));
       }
     }
-    if (resolve_ctx_.session_info_.is_pl_debug_on()) {
+    if (OB_SUCC(ret) &&
+        (resolve_ctx_.session_info_.is_pl_debug_on() || (resolve_ctx_.session_info_.get_pl_code_coverage() != nullptr))) {
       if (OB_FAIL(routine_ast.generate_symbol_debuginfo())) {
         LOG_WARN("failed to generate symbol debuginfo", K(ret));
       }
@@ -19372,6 +19411,205 @@ int ObPLResolver::fast_check_status(uint64_t n) const
   if (OB_UNLIKELY((++fast_check_status_times_ & n) == n)) {
     ret = THIS_WORKER.check_status();
   }
+  return ret;
+}
+
+int ObPLResolver::try_sql_transpiler(ObObjAccessIdx &access_idx,
+                                     ObPLCompileUnitAST &mock_ast,
+                                     sql::ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+
+  ObObj sql_transpiler;
+  ObUDFRawExpr *udf_expr = nullptr;
+
+  if (ObObjAccessIdx::IS_UDF_NS != access_idx.access_type_) {
+    // do nothing
+  } else if (!resolve_ctx_.is_sql_scope_) {
+    // do nothing
+  } else if (OB_NOT_NULL(get_resolve_ctx().params_.query_ctx_)
+               && get_resolve_ctx().params_.query_ctx_->forbid_pl_sql_transpiler_) {
+    // do nothing
+  } else if (OB_ISNULL(access_idx.get_sysfunc_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected NULL sysfunc_expr", K(ret), K(access_idx));
+  } else if (ObRawExpr::EXPR_UDF != access_idx.get_sysfunc_->get_expr_class()) {
+    // do nothing
+  } else if (FALSE_IT(udf_expr = static_cast<ObUDFRawExpr *>(access_idx.get_sysfunc_))) {
+    // unreachable
+  } else if (OB_ISNULL(access_idx.routine_info_)) {
+    // do nothing
+  } else if (!access_idx.routine_info_->is_sql_transpiler_eligible()) {
+    // do nothing
+  } else if (OB_FAIL(resolve_ctx_.session_info_.get_sys_variable(SYS_VAR_SQL_TRANSPILER, sql_transpiler))) {
+    LOG_WARN("failed to get sql_transpiler", K(ret));
+  } else if (0 == sql_transpiler.get_int()) {
+    // SQL Transpiler is OFF, do nothing
+  } else {
+    ObArenaAllocator alloc;
+
+    // nested routines are not eligible for sql transpiler, so routine_info must be of ObRoutineInfo type
+    const ObRoutineInfo &routine_info = *static_cast<const ObRoutineInfo *>(access_idx.routine_info_);
+
+    ObPLRouter router(routine_info, resolve_ctx_.session_info_, resolve_ctx_.schema_guard_, resolve_ctx_.sql_proxy_);
+
+    SMART_VAR(ObPLFunctionAST, ast, alloc) {
+      bool eligible = false;
+      const ObPLReturnStmt *return_stmt = nullptr;
+      ObRawExpr *tmp_expr = nullptr;
+
+      if (OB_FAIL(router.simple_resolve(ast))) {
+        LOG_WARN("failed to simple_resolve", K(ret));
+      } else if (OB_FAIL(init_default_exprs(ast, routine_info.get_routine_params()))) {
+        LOG_WARN("failed to init_default_exprs", K(ret));
+      } else if (OB_FAIL(router.try_extract_sql_transpiler_expr(ast, eligible, return_stmt))) {
+        LOG_WARN("failed to try_extract_sql_transpiler_expr", K(ret));
+      } else if (!eligible || OB_ISNULL(return_stmt)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected AST structure", K(ret), K(ast), K(routine_info));
+      } else if (OB_FAIL(ObPLExprCopier::copy_expr(expr_factory_, return_stmt->get_ret_expr(), tmp_expr))){
+        LOG_WARN("failed to copy expr", K(ret), K(ast), K(return_stmt->get_ret_expr()), K(tmp_expr));
+      } else if (OB_FAIL(SMART_CALL(sql_transpiler_substitute(ast, *udf_expr, tmp_expr)))) {
+        LOG_WARN("failed to sql_transpiler_substitute", K(ret), K(ast), K(udf_expr), K(tmp_expr));
+      } else if (OB_ISNULL(tmp_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected NULL returned expr", K(ret), K(ast), KPC(return_stmt->get_ret_expr()), KPC(tmp_expr));
+      } else if (OB_FAIL(tmp_expr->add_flag(CNT_PL_UDF))) {
+        LOG_WARN("failed to add flag CNT_PL_UDF", K(ret), K(ast), K(tmp_expr));
+      } else if (OB_FAIL(tmp_expr->add_flag(IS_PL_SQL_TRANSPILED))) {
+        LOG_WARN("failed to add flag IS_PL_SQL_TRANSPILED", K(ret), K(ast), K(tmp_expr));
+      } else if (OB_ISNULL(get_resolve_ctx().params_.query_ctx_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected NULL query ctx", K(ret), K(ast), K(udf_expr), K(lbt()));
+      } else if (OB_FAIL(get_resolve_ctx().params_.query_ctx_->pl_sql_transpiled_exprs_.push_back(udf_expr))) {
+        LOG_WARN("failed to push back pl sql transpiled expr", K(ret), K(ast), K(udf_expr));
+      } else {
+        expr = tmp_expr;
+      }
+    }
+  }
+
+  return ret;
+}
+
+int ObPLResolver::sql_transpiler_substitute(const ObPLFunctionAST &ast,
+                                            ObUDFRawExpr &udf_expr,
+                                            ObRawExpr *&target_expr)
+{
+  int ret = OB_SUCCESS;
+
+  static constexpr int64_t COLUMN_CONV_REAL_EXPR_IDX = 4;
+  static constexpr int64_t CAST_REAL_EXPR_IDX = 0;
+
+  CK (OB_NOT_NULL(target_expr));
+
+  if (OB_FAIL(ret)) {
+    // do nothing
+  } else if (target_expr->has_flag(IS_PL_SQL_TRANSPILED)) {
+    // do nothing
+  } else if (T_QUESTIONMARK == target_expr->get_expr_type() && static_cast<ObConstRawExpr *>(target_expr)->get_value().is_unknown()) {
+    const ObConstRawExpr &sym_pos = *static_cast<ObConstRawExpr *>(target_expr);
+    int64_t pos = sym_pos.get_value().get_unknown();
+    const ObIArray<ObRawExprResType> &params_type = udf_expr.get_params_type();
+    const ObPLVar *sym_ptr = nullptr;
+
+    if (0 > pos || pos >= ast.get_symbol_table().get_count() || pos >= params_type.count()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected var pos", K(ret), K(pos), K(ast), K(params_type));
+    } else if (ast.get_symbol_table().get_count() != params_type.count()) {
+      // TODO(heyongyi.hyy): handle local vars and remove this check
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected symbol table count, may have local vars", K(ret), K(ast), K(params_type));
+    } else if (OB_ISNULL(sym_ptr = ast.get_symbol_table().get_symbol(pos))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected NULL symbol", K(ret), K(pos), K(ast));
+    } else {
+      const ObPLVar &symbol = *sym_ptr;
+      ObRawExpr *tmp_expr = nullptr;
+
+      if (params_type.at(pos).is_null()) {  // use default value expr
+        int64_t default_idx = symbol.get_default();
+
+        if (!symbol.is_default()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected symbol, not a default value", K(ret), K(pos), K(symbol), K(ast), K(params_type));
+        } else if (0 > default_idx || default_idx >= ast.get_expr_count()) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected default value index", K(ret), K(pos), K(symbol), K(ast), K(params_type));
+        } else if (OB_FAIL(ObPLExprCopier::copy_expr(expr_factory_, ast.get_expr(default_idx), tmp_expr))) {
+          LOG_WARN("failed to copy expr", K(ret), K(ast), K(default_idx), K(udf_expr), KPC(tmp_expr));
+        }
+      } else if (OB_ISNULL(udf_expr.get_param_expr(pos))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected NULL param expr", K(ret), K(pos), K(udf_expr));
+      } else {
+        tmp_expr = udf_expr.get_param_expr(pos);
+      }
+
+      CK (OB_NOT_NULL(tmp_expr));
+
+      if (OB_SUCC(ret) && tmp_expr->is_const_raw_expr()
+            && static_cast<ObConstRawExpr *>(tmp_expr)->get_value().is_unknown()) {
+        ObConstRawExpr* const_expr = static_cast<ObConstRawExpr*>(tmp_expr);
+        const_expr->set_obj_param(const_expr->get_value());
+      }
+
+      if (OB_NOT_NULL(tmp_expr) && lib::is_mysql_mode()) {
+        const ObDataType *type = symbol.get_type().get_data_type();
+
+        if (OB_ISNULL(type)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected NULL type ptr", K(ret), K(symbol), K(ast), K(tmp_expr), K(lbt()));
+        } else if (OB_FAIL(ObRawExprUtils::build_column_conv_expr(&resolve_ctx_.session_info_,
+                                                                  expr_factory_,
+                                                                  type->get_obj_type(),
+                                                                  type->get_collation_type(),
+                                                                  type->get_accuracy_value(),
+                                                                  true,
+                                                                  nullptr,
+                                                                  nullptr,
+                                                                  tmp_expr,
+                                                                  true))) {
+          LOG_WARN("failed to build column conv expr", K(ret), K(symbol), KPC(type), K(tmp_expr));
+        }
+      }
+
+      if (OB_FAIL(ret)) {
+        // do nothing
+      } else if (OB_FAIL(tmp_expr->add_flag(IS_PL_SQL_TRANSPILED))) {
+        LOG_WARN("failed to add flag IS_PL_SQL_TRANSPILED", K(ret), K(tmp_expr));
+      } else {
+        target_expr = tmp_expr;
+      }
+    }
+  } else if (T_FUN_COLUMN_CONV == target_expr->get_expr_type()) {
+    target_expr = target_expr->get_param_expr(COLUMN_CONV_REAL_EXPR_IDX);
+
+    if (OB_FAIL(SMART_CALL(sql_transpiler_substitute(ast, udf_expr, target_expr)))) {
+      LOG_WARN("failed to sql_transpiler_substitute after strip column conv",
+               K(ret), K(ast), K(udf_expr), K(target_expr));
+    }
+  } else if (T_FUN_SYS_CAST == target_expr->get_expr_type()
+               && !ob_is_decimal_int_tc(target_expr->get_result_type().get_type())) {
+    target_expr = target_expr->get_param_expr(CAST_REAL_EXPR_IDX);
+
+    if (OB_FAIL(SMART_CALL(sql_transpiler_substitute(ast, udf_expr, target_expr)))) {
+      LOG_WARN("failed to sql_transpiler_substitute after strip cast",
+               K(ret), K(ast), K(udf_expr), K(target_expr));
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < target_expr->get_param_count(); ++i) {
+      ObRawExpr *&child = target_expr->get_param_expr(i);
+
+      if (OB_ISNULL(child)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected NULL child", K(ret), K(i), K(target_expr));
+      } else if (OB_FAIL(SMART_CALL(sql_transpiler_substitute(ast, udf_expr, child)))) {
+        LOG_WARN("failed to sql_transpiler_substitute", K(ret), K(ast), K(udf_expr), K(child));
+      }
+    }
+  }
+
   return ret;
 }
 

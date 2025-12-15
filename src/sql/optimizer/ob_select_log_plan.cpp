@@ -2375,6 +2375,9 @@ int ObSelectLogPlan::get_distribute_distinct_method(ObLogicalOperator *top,
       distinct_dist_methods &= ~DistAlgo::DIST_HASH_HASH;
       OPT_TRACE("ignore hash dist distinct by hint");
     }
+    if (top->get_contains_fake_cte()) {
+      distinct_dist_methods &= (DistAlgo::DIST_BASIC_METHOD | DistAlgo::DIST_PULL_TO_LOCAL);
+    }
     can_re_parallel = top->can_re_parallel()
                       && (distinct_dist_methods & DistAlgo::DIST_HASH_HASH)
                       && !is_merge_without_sort
@@ -4064,6 +4067,9 @@ int ObSelectLogPlan::get_distributed_set_methods(const EqualSets &equal_sets,
       get_optimizer_context().has_var_assign()) {
     set_dist_methods &= DIST_PULL_TO_LOCAL | DIST_BASIC_METHOD;
   }
+  if (OB_SUCC(ret) && (left_child.get_contains_fake_cte() || right_child.get_contains_fake_cte())) {
+    set_dist_methods &= ~DistAlgo::DIST_HASH_HASH;
+  }
   if (OB_SUCC(ret) && (set_dist_methods & DistAlgo::DIST_NONE_ALL)) {
     OPT_TRACE("check NONE ALL method");
     bool is_compatible = false;
@@ -5517,14 +5523,12 @@ int ObSelectLogPlan::compute_set_exchange_info(const EqualSets &equal_sets,
         dist_method = ObPQDistributeMethod::HASH;
       }
       if (OB_SUCC(ret)) {
-        left_exch_info.unmatch_row_dist_method_ = dist_method;
         left_exch_info.strong_sharding_ = get_optimizer_context().get_distributed_sharding();
       }
     } else {
       if (OB_FAIL(left_exch_info.weak_sharding_.assign(right_child.get_weak_sharding()))) {
         LOG_WARN("failed to assign weak sharding", K(ret));
       } else {
-        left_exch_info.unmatch_row_dist_method_ = ObPQDistributeMethod::DROP;
         left_exch_info.strong_sharding_ = right_child.get_strong_sharding();
       }
     }
@@ -5550,14 +5554,12 @@ int ObSelectLogPlan::compute_set_exchange_info(const EqualSets &equal_sets,
         dist_method = ObPQDistributeMethod::HASH;
       }
       if (OB_SUCC(ret)) {
-        right_exch_info.unmatch_row_dist_method_ = dist_method;
         right_exch_info.strong_sharding_ = get_optimizer_context().get_distributed_sharding();
       }
     } else {
       if (OB_FAIL(right_exch_info.weak_sharding_.assign(left_child.get_weak_sharding()))) {
         LOG_WARN("failed to assign weak sharding", K(ret));
       } else {
-        right_exch_info.unmatch_row_dist_method_ = ObPQDistributeMethod::DROP;
         right_exch_info.strong_sharding_ = left_child.get_strong_sharding();
       }
     }
@@ -6838,6 +6840,9 @@ int ObSelectLogPlan::get_distribute_window_method(ObLogicalOperator *top,
       OPT_TRACE("config disable partition wise window function");
     }
   }
+  if (OB_SUCC(ret) && top->get_contains_fake_cte()) {
+    win_dist_methods &= DIST_PULL_TO_LOCAL | DIST_BASIC_METHOD;
+  }
   if (OB_SUCC(ret)) {
     can_re_parallel = top->can_re_parallel()
                       && (win_dist_methods & WinDistAlgo::WIN_DIST_HASH)
@@ -7888,7 +7893,7 @@ int ObSelectLogPlan::create_range_list_dist_win_func(ObLogicalOperator *top,
                                                      ObIArray<CandidatePlan> &all_plans)
 {
   int ret = OB_SUCCESS;
-  bool need_sort = false;
+  bool need_sort = true;
   int64_t prefix_pos = 0;
   ObSEArray<OrderItem, 8> range_dist_keys;
   int64_t pby_prefix = 0;
@@ -7905,16 +7910,6 @@ int ObSelectLogPlan::create_range_list_dist_win_func(ObLogicalOperator *top,
   } else if (OB_FAIL(get_range_dist_keys(win_func_helper, win_func_exprs.at(0),
                                          range_dist_keys, pby_prefix))) {
     LOG_WARN("failed to get range list keys", K(ret));
-  } else if (OB_FAIL(ObOptimizerUtil::check_need_sort(range_dist_keys,
-                                                      top->get_op_ordering(),
-                                                      top->get_fd_item_set(),
-                                                      top->get_output_equal_sets(),
-                                                      top->get_output_const_exprs(),
-                                                      get_onetime_query_refs(),
-                                                      top->get_is_at_most_one_row(),
-                                                      need_sort,
-                                                      prefix_pos))) {
-    LOG_WARN("failed to check if need sort", K(ret));
   } else if (OB_FAIL(get_range_list_win_func_exchange_info(win_func_helper.win_dist_method_,
                                                            range_dist_keys,
                                                            exch_info,
@@ -9821,7 +9816,8 @@ int ObSelectLogPlan::can_transform_distinct_agg(GroupingOpHelper &groupby_helper
   bool is_trans_distinct_valid =
     distinct_agg_items.count() > 0
     && groupby_helper.optimizer_features_enable_version_ >= COMPAT_VERSION_4_4_1
-    && !groupby_helper.force_use_merge_;
+    && !groupby_helper.force_use_merge_
+    && !get_stmt()->has_concat_agg(); // if concat_agg exists, can't use hash gby algorithm, disable distinct pushdown
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(check_basic_groupby_pushdown(
                non_distinct_agg_items, groupby_helper.grouping_set_info_ != nullptr,

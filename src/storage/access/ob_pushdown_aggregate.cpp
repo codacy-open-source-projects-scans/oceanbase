@@ -153,7 +153,7 @@ int ObAggCell::eval_index_info(const blocksstable::ObMicroIndexInfo &index_info,
 int ObAggCell::copy_output_rows(const int32_t start_offset, const int32_t end_offset)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(end_offset <= start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
+  if (OB_UNLIKELY(end_offset < start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(start_offset), K(end_offset), KPC(group_by_result_datum_buf_));
   } else {
@@ -615,7 +615,7 @@ int ObCountAggCell::eval_batch_in_group_by(
 int ObCountAggCell::copy_output_rows(const int32_t start_offset, const int32_t end_offset)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(end_offset <= start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
+  if (OB_UNLIKELY(end_offset < start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(start_offset), K(end_offset), KPC(group_by_result_datum_buf_));
   } else {
@@ -1972,7 +1972,7 @@ bool ObSumAggCell::can_use_index_info() const
 int ObSumAggCell::copy_output_rows(const int32_t start_offset, const int32_t end_offset)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(end_offset <= start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
+  if (OB_UNLIKELY(end_offset < start_offset || end_offset > group_by_result_datum_buf_->get_basic_count())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(start_offset), K(end_offset), KPC(group_by_result_datum_buf_));
   } else {
@@ -3019,6 +3019,7 @@ int ObGroupByCell::init(const ObTableAccessParam &param, const ObTableAccessCont
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(param.iter_param_));
   } else {
+    need_padding_ = is_pad_char_to_full_length(context.sql_mode_);
     common::ObDatum *group_by_col_datums = nullptr;
     group_by_col_offset_ = param.iter_param_.group_by_cols_project_->at(0);
     for (int64_t i = 0; OB_SUCC(ret) && i < param.output_exprs_->count(); ++i) {
@@ -3041,10 +3042,7 @@ int ObGroupByCell::init(const ObTableAccessParam &param, const ObTableAccessCont
               common::OBJ_DATUM_NUMBER_RES_SIZE, allocator_, group_by_col_datum_buf_))) {
             LOG_WARN("Failed to new buf", K(ret));
           } else {
-            const common::ObObjMeta &obj_meta = col_param->get_meta_type();
-            if (is_pad_char_to_full_length(context.sql_mode_) && obj_meta.is_fixed_len_char_type()) {
-              group_by_col_param_ = col_param;
-            }
+            group_by_col_param_ = col_param;
             group_by_col_expr_ = expr;
           }
         } else if (OB_FAIL(agg_cell_factory_.alloc_cell(basic_info, agg_cells_, false, true, &eval_ctx))) {
@@ -3313,7 +3311,7 @@ int ObGroupByCell::pad_column_in_group_by(const int64_t row_cap)
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObGroupByCell is not inited", K(ret), K_(is_inited));
-  } else if (nullptr != group_by_col_param_ &&
+  } else if (need_padding_ &&
       group_by_col_param_->get_meta_type().is_fixed_len_char_type() &&
       OB_FAIL(storage::pad_on_datums(
               group_by_col_param_->get_accuracy(),

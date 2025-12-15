@@ -76,6 +76,7 @@ void ObVecIndexAsyncTaskOption::destroy()
     ObVecIndexAsyncTaskCtx *&task_ctx = iter->second;
     LOG_DEBUG("dump task_ctx_map_ info", K(tablet_id), KP(task_ctx));
     if (OB_NOT_NULL(task_ctx)) {
+      task_ctx->~ObVecIndexAsyncTaskCtx();
       allocator_.free(task_ctx);
       task_ctx = nullptr;
     }
@@ -368,11 +369,11 @@ int ObVecIndexAsyncTaskUtil::init_tablet_rebuild_new_adapter(ObPluginVectorIndex
   } else if (OB_FALSE_IT(index_type = new_adapter->get_snap_index_type())) {
   } else if (OB_FAIL(ObPluginVectorIndexUtils::get_split_snapshot_prefix(index_type, key_prefix, target_prefix))) {
     LOG_WARN("fail to get split snapshot prefix", K(ret), K(index_type), K(key_prefix));
-  } else if (OB_FAIL(ObPluginVectorIndexUtils::get_key_prefix_scn(key_prefix, key_prefix_scn))) {
+  } else if (OB_FALSE_IT(ObPluginVectorIndexUtils::get_key_prefix_scn(key_prefix, key_prefix_scn))) {
     LOG_WARN("fail to get key prefix scn", K(ret), K(key_prefix));
   } else if (OB_FAIL(new_adapter->set_snapshot_key_prefix(target_prefix))) {
     LOG_WARN("failed to set snapshot key prefix", K(ret), K(index_type), K(target_prefix));
-  } else if (OB_FAIL(new_adapter->set_snapshot_key_scn(key_prefix_scn))) {
+  } else if (key_prefix_scn > 0 && OB_FAIL(new_adapter->set_snapshot_key_scn(key_prefix_scn))) {
     LOG_WARN("fail to set snapshot key scn", K(ret), K(key_prefix_scn));
   }
   return ret;
@@ -1729,6 +1730,7 @@ int ObVecIndexAsyncTask::do_work()
   bool task_started = false;
   bool has_visible_column = false;
   ObPluginVectorIndexAdapterGuard adpt_guard;
+  ObPluginVectorIndexAdapterGuard new_adpt_guard;
   ObPluginVectorIndexService *vector_index_service = MTL(ObPluginVectorIndexService *);
   ObPluginVectorIndexAdaptor *new_adapter = nullptr;
   LOG_INFO("start do_work", K(ret), K(ctx_->task_status_), K(ls_id_));
@@ -1772,9 +1774,11 @@ int ObVecIndexAsyncTask::do_work()
   } else if (OB_ISNULL(new_adapter)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr", K(ret), KP(new_adapter));
+  } else if (OB_FAIL(new_adpt_guard.set_adapter(new_adapter))) { // inc_ref + 1
+    LOG_WARN("fail to set new adpater to guard", K(ret));
   } else if (OB_FAIL(check_snapshot_table_has_visible_column(has_visible_column))) {
     LOG_WARN("fail to check snapshot table column", K(ret), K(ctx_));
-  } else if (has_visible_column && !new_adapter->is_hybrid_index()) {
+  } else if (has_visible_column && !new_adapter->is_hybrid_index()) { // inc_ref + 1
     if (OB_FAIL(parallel_optimize_vec_index())) {
       LOG_WARN("fail to inner do work", K(ret), K(ctx_));
     }
@@ -1785,12 +1789,6 @@ int ObVecIndexAsyncTask::do_work()
   if (task_started) {
     adpt_guard.get_adatper()->vector_index_task_finish();
     ctx_->task_status_.progress_info_.reset();
-  }
-  if (OB_FAIL(ret) && !has_replace_old_adapter_ && OB_NOT_NULL(new_adapter)) {
-    LOG_INFO("release new adapter memory in failure", K(ret));
-    new_adapter->~ObPluginVectorIndexAdaptor();
-    vector_index_service->get_allocator().free(new_adapter);
-    new_adapter = nullptr;
   }
 
   // clean tmp info
@@ -3381,12 +3379,13 @@ int ObVecIndexAsyncTask::optimize_vector_index(ObPluginVectorIndexAdaptor &adapt
   * Therefore, the order of these two locks must not be reversed;
   * otherwise, a deadlock could occur between the query and asynchronous tasks. */
   RWLock::WLockGuard query_lock_guard(old_adapter_->get_query_lock()); // lock for query before end trans
-  RWLock::WLockGuard lock_guard(vec_idx_mgr_->get_adapter_map_lock());
   int tmp_ret = OB_SUCCESS;
   if (trans_start && OB_SUCCESS != (tmp_ret = ObInsertLobColumnHelper::end_trans(tx_desc, OB_SUCCESS != ret, timeout_us))) {
     ret = tmp_ret;
     LOG_WARN("fail to end trans", K(ret), KPC(tx_desc));
   }
+
+  RWLock::WLockGuard lock_guard(vec_idx_mgr_->get_adapter_map_lock());
   if (OB_SUCC(ret)) {
     ctx_->task_status_.progress_info_.vec_opt_status_ = OB_VECTOR_ASYNC_OPT_REPLACE;
     if (OB_FAIL(vec_idx_mgr_->replace_old_adapter(&adaptor))) {

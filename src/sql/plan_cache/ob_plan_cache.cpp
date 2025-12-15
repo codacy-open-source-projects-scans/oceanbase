@@ -1249,6 +1249,7 @@ int ObPlanCache::add_cache_obj(ObILibCacheCtx &ctx,
     LOG_TRACE("inner add cache obj", K(key), K(cache_node));
     if (cache_node->is_invalid()) {
       ctx.need_destroy_node_ = true;
+      ret = OB_OLD_SCHEMA_VERSION;
     } else if (OB_FAIL(cache_node->add_cache_obj(ctx, key, cache_obj))) {
       SQL_PC_LOG(TRACE, "failed to add cache obj to lib cache node", K(ret));
     } else if (OB_FAIL(cache_node->update_node_stat(ctx))) {
@@ -2389,7 +2390,7 @@ int ObPlanCache::dump_all_objs() const
   if (OB_FAIL(co_mgr_.foreach_alloc_cache_obj(get_all_objs_op))) {
     LOG_WARN("failed to traverse alloc cache obj map", K(ret));
   } else {
-    LOG_INFO("Dumping All Cache Objs", K(alloc_obj_list.count()), K(alloc_obj_list));
+    LOG_DEBUG("Dumping All Cache Objs", K(alloc_obj_list.count()), K(alloc_obj_list));
   }
   return ret;
 }

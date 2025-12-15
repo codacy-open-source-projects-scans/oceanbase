@@ -36,6 +36,7 @@
 #include "share/storage_cache_policy/ob_storage_cache_common.h"
 #include "storage/ob_micro_block_format_version_helper.h"
 #include "share/semistruct/ob_semistruct_properties.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 namespace oceanbase
 {
 
@@ -699,13 +700,15 @@ public:
   virtual bool need_encrypt() const = 0;
   virtual inline bool is_global_index_table() const = 0;
   virtual inline common::ObRowStoreType get_row_store_type() const { return common::MAX_ROW_STORE; }
+  virtual inline common::ObRowStoreType get_minor_row_store_type() const { return common::MAX_ROW_STORE; }
   virtual inline const char *get_compress_func_name() const { return all_compressor_name[ObCompressorType::NONE_COMPRESSOR]; }
   virtual inline common::ObCompressorType get_compressor_type() const { return ObCompressorType::NONE_COMPRESSOR; }
   virtual inline int64_t get_progressive_merge_round() const { return INVAID_RET; }
   virtual inline int64_t get_progressive_merge_num() const { return INVAID_RET; }
   virtual inline ObMergeEngineType get_merge_engine_type() const { return ObMergeEngineType::OB_MERGE_ENGINE_MAX; }
   virtual inline bool is_delete_insert_merge_engine() const { return false; }
-  virtual inline bool is_insert_only_merge_engine() const { return false; }
+  virtual inline bool is_append_only_merge_engine() const { return false; }
+  virtual inline ObSkipIndexLevel get_skip_index_level() const { return ObSkipIndexLevel::OB_SKIP_INDEX_LEVEL_BASE_ONLY; }
   virtual inline ObTableModeFlag get_table_mode_flag() const { return TABLE_MODE_MAX; }
   virtual inline ObTableType get_table_type() const { return MAX_TABLE_TYPE; }
   virtual inline ObTableMode get_table_mode_struct() const = 0;
@@ -863,7 +866,7 @@ public:
   inline common::ObNameCaseMode get_name_case_mode() const { return name_case_mode_; }
   inline void set_table_type(const ObTableType table_type) { table_type_ = table_type; }
   virtual inline ObTableType get_table_type() const override { return table_type_; }
-  inline void set_table_mode(const int32_t table_mode) { table_mode_.mode_ = table_mode; }
+  inline void assign_table_mode_from_mysql_result(const int32_t table_mode) { table_mode_.mode_ = table_mode; }
   inline int32_t get_table_mode() const { return table_mode_.mode_; }
   inline void set_table_mode_struct(const ObTableMode table_mode) { table_mode_ = table_mode; }
   virtual inline ObTableMode get_table_mode_struct() const override { return table_mode_; }
@@ -1169,6 +1172,9 @@ public:
   inline bool is_mlog_table() const { return is_mlog_table(table_type_); }
   inline static bool is_mlog_table(share::schema::ObTableType table_type)
   { return MATERIALIZED_VIEW_LOG == table_type; }
+  inline bool is_tmp_mlog_table() const { return is_tmp_mlog_table(table_type_, table_name_); }
+  inline static bool is_tmp_mlog_table(share::schema::ObTableType table_type, ObString table_name)
+  { return is_mlog_table(table_type) && (table_name.prefix_match(OB_TMP_MLOG_PREFIX_MYSQL) || table_name.prefix_match(OB_TMP_MLOG_PREFIX_ORACLE)); }
   inline static bool is_user_data_table(share::schema::ObTableType table_type)
   { return USER_TABLE == table_type; }
   inline bool is_in_recyclebin() const
@@ -1376,6 +1382,7 @@ protected:
   // storage cache policy type
   storage::ObStorageCachePolicyType storage_cache_policy_type_;
   bool with_dynamic_partition_policy_; // do not persist to disk
+  ObRowStoreType minor_row_store_type_;
 };
 
 class ObTableSchema : public ObSimpleTableSchemaV2
@@ -1516,6 +1523,7 @@ public:
   inline void set_store_format(const common::ObStoreFormatType store_format) { store_format_ = store_format; }
   inline void set_storage_format_version(const int64_t storage_format_version) { storage_format_version_ = storage_format_version; }
   inline void set_merge_engine_type(const ObMergeEngineType merge_engine_type) { merge_engine_type_ = merge_engine_type; }
+  inline void set_skip_index_level(const ObSkipIndexLevel skip_index_level) { skip_index_level_ = skip_index_level; }
   int set_store_format(const common::ObString &store_format);
   inline void set_row_store_type(const common::ObRowStoreType row_store_type) { row_store_type_ = row_store_type; }
   int set_row_store_type(const common::ObString &row_store);
@@ -1558,6 +1566,7 @@ public:
   int add_subpartition_key(const common::ObString &column_name);
   int add_zone(const common::ObString &zone);
   int set_view_definition(const common::ObString &view_definition);
+  int set_expand_view_definition_for_mv(const common::ObString &expand_view_definition_for_mv);
   int set_parser_name_and_properties(const common::ObString &parser_name, const common::ObString &parser_properties);
   int set_parser_name(const common::ObString &parser_name) { return deep_copy_str(parser_name, parser_name_); }
   int set_parser_properties(const common::ObString &parser_properties) { return deep_copy_str(parser_properties, parser_properties_); }
@@ -1656,7 +1665,8 @@ public:
   inline int64_t get_storage_format_version() const { return storage_format_version_; }
   inline virtual ObMergeEngineType get_merge_engine_type() const override { return merge_engine_type_; }
   inline virtual bool is_delete_insert_merge_engine() const override { return ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT == merge_engine_type_; }
-  inline virtual bool is_insert_only_merge_engine() const override { return ObMergeEngineType::OB_MERGE_ENGINE_INSERT_ONLY == merge_engine_type_; }
+  inline virtual bool is_append_only_merge_engine() const override { return ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY == merge_engine_type_; }
+  inline virtual ObSkipIndexLevel get_skip_index_level() const override { return skip_index_level_; }
   inline const char *get_tablegroup_name_str() const { return extract_str(tablegroup_name_); }
   inline const common::ObString &get_tablegroup_name() const { return tablegroup_name_; }
   inline const char *get_comment() const { return extract_str(comment_); }
@@ -1678,6 +1688,8 @@ public:
   inline ObViewSchema &get_view_schema() { return view_schema_; }
   inline const ObViewSchema &get_view_schema() const { return view_schema_; }
   inline const common::ObString &get_ttl_definition() const { return ttl_definition_; }
+  inline ObTTLFlag get_ttl_flag() const { return ttl_flag_; }
+  inline void set_ttl_flag(const ObTTLFlag ttl_flag) { ttl_flag_ = ttl_flag; }
   inline const common::ObString &get_kv_attributes() const { return kv_attributes_; }
   inline const common::ObString &get_index_params() const { return index_params_; }
   inline const common::ObString &get_exec_env() const { return exec_env_; }
@@ -1834,7 +1846,7 @@ public:
   int get_sparse_vec_index_column_id(uint64_t &sparse_vec_col_id) const;
   int get_vec_index_column_id(uint64_t &with_cascaded_info_column_id) const;
   int get_vec_index_vid_col_id(uint64_t &vec_id_col_id, bool is_cid = false) const;
-  int get_hybrid_vec_chunk_column_id(uint64_t &hybrid_vec_chunk_col_id) const;
+  int get_hybrid_vec_chunk_column_id(const ObTableSchema &data_table_schema, uint64_t &hybrid_vec_chunk_col_id) const;
   int get_hybrid_vec_embedded_column_id(uint64_t &vec_id_col_id) const;
   // get columns for building rowid
   int get_column_ids_serialize_to_rowid(common::ObIArray<uint64_t> &col_ids,
@@ -1915,7 +1927,8 @@ public:
   static int build_mlog_table_name(Allocator &allocator,
                                    const common::ObString &base_table_name,
                                    common::ObString &mlog_table_name,
-                                   const bool is_oracle_mode);
+                                   const bool is_oracle_mode,
+                                   const bool is_tmp = false);
 
   //other methods
   int64_t get_convert_size() const;
@@ -2156,6 +2169,7 @@ public:
   int64_t get_lob_columns_count() const;
   bool has_lob_aux_table() const { return (aux_lob_meta_tid_ != OB_INVALID_ID && aux_lob_piece_tid_ != OB_INVALID_ID); }
   bool has_mlog_table() const { return (OB_INVALID_ID != mlog_tid_); }
+  bool has_tmp_mlog_table() const { return (OB_INVALID_ID != tmp_mlog_tid_); }
   bool required_by_mview_refresh() const { return has_mlog_table() || table_referenced_by_fast_lsm_mv(); }
   // ObColumnIterByPrevNextID's column id is not in order, it means table has add column instant and return true
   int has_add_column_instant(bool &add_column_instant) const;
@@ -2190,6 +2204,8 @@ public:
   }
   void set_mlog_tid(const uint64_t& table_id) { mlog_tid_ = table_id; }
   uint64_t get_mlog_tid() const { return mlog_tid_; }
+  void set_tmp_mlog_tid(const uint64_t& table_id) { tmp_mlog_tid_ = table_id; }
+  uint64_t get_tmp_mlog_tid() const { return tmp_mlog_tid_; }
   inline sql::ObLocalSessionVar &get_local_session_var() { return local_session_vars_; }
   inline const sql::ObLocalSessionVar &get_local_session_var() const { return local_session_vars_; }
   inline void set_mv_mode(const int64_t mv_mode) { mv_mode_.mode_ = mv_mode; }
@@ -2245,6 +2261,15 @@ public:
   }
   int64_t get_semistruct_encoding_flags() const { return semistruct_encoding_type_.flags_; }
   inline const ObSemiStructEncodingType& get_semistruct_encoding_type() const { return semistruct_encoding_type_; }
+  inline bool is_mv_cnt_proctime_table() const
+  {
+    return MV_CNT_PROCTIME_TABLE ==
+           (enum ObMvCntProctimeTableFlag)mv_mode_.cnt_proctime_table_;
+  }
+  inline void set_mv_cnt_proctime_table(const ObMvCntProctimeTableFlag flag)
+  {
+    mv_mode_.cnt_proctime_table_ = flag;
+  }
   inline int set_dynamic_partition_policy(const common::ObString &dynamic_partition_policy)
   {
     return deep_copy_str(dynamic_partition_policy, dynamic_partition_policy_);
@@ -2481,6 +2506,8 @@ protected:
   common::ObString external_sub_path_;
   uint64_t tmp_mlog_tid_;
   common::ObString semistruct_properties_;
+  ObTTLFlag ttl_flag_;
+  ObSkipIndexLevel skip_index_level_;
 };
 
 class ObPrintableTableSchema final : public ObTableSchema
@@ -3209,10 +3236,16 @@ template <typename Allocator>
 int ObTableSchema::build_mlog_table_name(Allocator &allocator,
                                          const common::ObString &base_table_name,
                                          common::ObString &mlog_table_name,
-                                         const bool is_oracle_mode)
+                                         const bool is_oracle_mode,
+                                         const bool is_tmp)
 {
   int ret = OB_SUCCESS;
-  const ObString prefix(is_oracle_mode ? common::OB_MLOG_PREFIX_ORACLE : common::OB_MLOG_PREFIX_MYSQL);
+  ObString prefix;
+  if (is_tmp) {
+    prefix = (is_oracle_mode ? common::OB_TMP_MLOG_PREFIX_ORACLE : common::OB_TMP_MLOG_PREFIX_MYSQL);
+  } else {
+    prefix = (is_oracle_mode ? common::OB_MLOG_PREFIX_ORACLE : common::OB_MLOG_PREFIX_MYSQL);
+  }
   int32_t buf_len = prefix.length() + base_table_name.length() + 1;
   char *name_buf = nullptr;
   if (OB_ISNULL(name_buf = static_cast<char *>(allocator.alloc(buf_len)))) {

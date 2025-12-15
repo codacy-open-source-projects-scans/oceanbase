@@ -106,6 +106,7 @@ OB_DEF_SERIALIZE(ObAggrInfo)
   if (grouping_set_info_ != nullptr) {
     OB_UNIS_ENCODE(*grouping_set_info_);
   }
+  OB_UNIS_ENCODE(enable_fast_bypass_);
   return ret;
 }
 
@@ -191,6 +192,7 @@ OB_DEF_DESERIALIZE(ObAggrInfo)
       }
     }
   }
+  OB_UNIS_DECODE(enable_fast_bypass_);
   return ret;
 }
 
@@ -249,6 +251,7 @@ OB_DEF_SERIALIZE_SIZE(ObAggrInfo)
   if (grouping_set_info_ != nullptr) {
     OB_UNIS_ADD_LEN(*grouping_set_info_);
   }
+  OB_UNIS_ADD_LEN(enable_fast_bypass_);
   return len;
 }
 
@@ -283,7 +286,8 @@ int64_t ObAggrInfo::to_string(char *buf, const int64_t buf_len) const
        K_(external_routine_url),
        K_(external_routine_resource),
        KP_(hash_rollup_info),
-       KP_(grouping_set_info)
+       KP_(grouping_set_info),
+       K_(enable_fast_bypass)
        );
   J_OBJ_END();
   return pos;
@@ -319,6 +323,7 @@ int ObAggrInfo::assign(const ObAggrInfo &rhs)
   with_unique_keys_ = rhs.with_unique_keys_;
   max_disuse_param_expr_ = rhs.max_disuse_param_expr_;
   hash_rollup_info_ = nullptr;
+  enable_fast_bypass_ = rhs.enable_fast_bypass_;
   if (OB_FAIL(param_exprs_.assign(rhs.param_exprs_))) {
     LOG_WARN("fail to assign param exprs", K(ret));
   } else if (OB_FAIL(distinct_collations_.assign(rhs.distinct_collations_))) {
@@ -1782,7 +1787,7 @@ int ObAggregateProcessor::inner_process(
         } else if (!is_prepare && OB_FAIL(process_aggr_result(*tmp_store_row_->get_store_row(),
                                         &(aggr_info.param_exprs_),
                                         aggr_cell, aggr_info))) {
-          LOG_WARN("failed to prepare_aggr_result", K(ret));
+          LOG_WARN("failed to process_aggr_result", K(ret));
         }
       }
     }
@@ -4239,7 +4244,25 @@ int ObAggregateProcessor::process_aggr_result(const ObChunkDatumStore::StoredRow
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("curr_row_results count is not 1", K(stored_row));
       } else {
-        ret = llc_add(aggr_cell.get_iter_result(), stored_row.cells()[0]);
+        int64_t llc_size = 0;
+        ObDatum &iter_result = aggr_cell.get_iter_result();
+        const ObDatum &src_datum = stored_row.cells()[0];
+        if (OB_FAIL(get_llc_buckets_num(llc_size))) {
+          LOG_WARN("get llc buckets number failed", K(ret));
+        } else if (iter_result.is_null() || iter_result.len_ == 0) {
+          if (!src_datum.is_null() && src_datum.len_ > 0) {
+            if (OB_UNLIKELY(src_datum.len_ != llc_size)) {
+              ret = OB_INVALID_ARGUMENT;
+              LOG_WARN("llc datum size mismatch", K(src_datum.len_), K(llc_size));
+            } else if (OB_FAIL(clone_aggr_cell(aggr_cell, src_datum))) {
+              LOG_WARN("failed to clone aggr cell", K(ret));
+            }
+          }
+        } else if (src_datum.is_null()) {
+          // do nothing
+        } else {
+          ret = llc_add(iter_result, src_datum);
+        }
       }
       break;
     }

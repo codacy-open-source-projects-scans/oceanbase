@@ -96,6 +96,13 @@ public:
   {
     return OB_NOT_SUPPORTED;
   }
+  static int get_co_major_minor_merge_tables(
+    const ObStorageSchema *storage_schema,
+    const int64_t merge_version,
+    const int64_t start_pos,
+    const ObTablesHandleArray &input_tables,
+    ObIArray<ObTableHandleV2> &output_tables);
+
   static int generate_parallel_minor_interval(
       const ObMergeType merge_type,
       const int64_t minor_compact_trigger,
@@ -204,6 +211,11 @@ private:
       const common::ObTabletID tablet_id,
       char *buf,
       const int64_t buf_len);
+
+  static int schedule_co_major_minor_errsim(
+    const ObTablesHandleArray &input_tables,
+    const int64_t start_pos,
+    ObIArray<ObTableHandleV2> &output_tables);
 public:
   static const int64_t OB_HIST_MINOR_FACTOR = 3;
   static const int64_t OB_UNSAFE_TABLE_CNT = 32;
@@ -214,6 +226,9 @@ public:
   static const int64_t OB_MINOR_PARALLEL_SSTABLE_CNT_IN_DAG = 10;
   static const int64_t OB_MINOR_PARALLEL_INFO_ARRAY_SIZE = MAX_SSTABLE_CNT_IN_STORAGE / OB_MINOR_PARALLEL_SSTABLE_CNT_IN_DAG;
   static const int64_t OB_LARGE_MINOR_SSTABLE_ROW_COUNT = 2000000;
+  static const int64_t SCHEDULE_CO_MAJOR_MINOR_CG_CNT_THREASHOLD = 20;
+  static const int64_t SCHEDULE_CO_MAJOR_MINOR_TRIGGER = 3;
+  static const int64_t SCHEDULE_CO_MAJOR_MINOR_ROW_CNT_THREASHOLD = 100 * 1000L;
 
   typedef int (*GetMergeTables)(const storage::ObGetMergeTablesParam&,
                                 storage::ObLS &ls,
@@ -432,6 +447,39 @@ private:
 };
 
 
+// Describes the strategy for this major merge
+struct ObCOMajorMergeStrategy
+{
+  OB_UNIS_VERSION(1);
+public:
+  ObCOMajorMergeStrategy() { reset(); }
+  void reset() {
+    MEMSET(this, 0, sizeof(*this));
+  }
+  // Set merge strategy
+  // @param build_all_cg_only: true = build ALL CG ONLY, false = build schema match merge
+  // @param only_use_row: true = only use row store data to build column store
+  void set(bool build_all_cg_only, bool only_use_row) {
+    is_valid_ = true;
+    build_all_cg_only_ = build_all_cg_only;
+    only_use_row_store_ = only_use_row;
+  }
+  inline bool is_valid() const { return is_valid_; }
+  inline bool is_build_all_cg_only() const { return build_all_cg_only_; }
+  inline bool only_use_row_store() const { return only_use_row_store_; }
+  void gene_info(char* buf, const int64_t buf_len, int64_t &pos) const {}
+  int64_t to_string(char *buf, const int64_t buf_len) const { return 0; }
+  ObCOMajorMergeStrategy &operator=(const ObCOMajorMergeStrategy &other) {
+    is_valid_ = other.is_valid_;
+    build_all_cg_only_ = other.build_all_cg_only_;
+    only_use_row_store_ = other.only_use_row_store_;
+    return *this;
+  }
+  bool is_valid_;
+  bool build_all_cg_only_;
+  bool only_use_row_store_;
+};
+
 class ObIncMajorTxHelper final
 {
 public:
@@ -497,6 +545,11 @@ public:
       const ObTablet &tablet,
       const blocksstable::ObSSTable &ddl_dump,
       bool &need_gc);
+  static int check_inc_major_included_by_major(
+      ObLS &ls,
+      const int64_t major_version,
+      const blocksstable::ObSSTable &sstable,
+      bool &is_included);
 private:
   static void dump_inc_major_error_info(
       const int64_t merge_snapshot_version,

@@ -434,8 +434,22 @@ int ObTableApiProcessorBase::check_user_access(const ObString &credential_str)
   } else if (OB_FAIL(check_mode())) {
     LOG_WARN("fail to check mode", K(ret));
   } else {
-    enable_query_response_time_stats_ = TABLEAPI_OBJECT_POOL_MGR->is_enable_query_response_time_stats();
-    LOG_DEBUG("user can access", K_(credential));
+    // 使用session中缓存的用户锁定状态，避免每次都访问schema
+    ObTableApiSessNodeVal* sess_node_val = sess_guard_.get_sess_node_val();
+    if (OB_ISNULL(sess_node_val)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("session node val is null", K(ret));
+    } else if (OB_ISNULL(sess_node_val->get_owner_node())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("session owner node is null", K(ret));
+    } else if (sess_node_val->get_owner_node()->is_user_locked()) {
+      ret = OB_ERR_USER_IS_LOCKED;
+      LOG_WARN("user is locked", K(ret), K(credential_.tenant_id_));
+      LOG_USER_ERROR(OB_ERR_USER_IS_LOCKED);
+    } else {
+      enable_query_response_time_stats_ = TABLEAPI_OBJECT_POOL_MGR->is_enable_query_response_time_stats();
+      LOG_DEBUG("user can access", K_(credential));
+    }
   }
   return ret;
 }
@@ -633,27 +647,15 @@ bool ObTableApiProcessorBase::can_retry(const int retcode, bool &did_local_retry
   bool can_retry = false;
   bool tmp_can_retry = false;
   bool tmp_local_retry = false;
-  if (OB_TRY_LOCK_ROW_CONFLICT == retcode ||
+  bool is_max_local_retry_count = retry_count_ >= retry_policy_.max_local_retry_count_;
+  if ((OB_TRY_LOCK_ROW_CONFLICT == retcode ||
       OB_TRANSACTION_SET_VIOLATION == retcode ||
-      OB_SCHEMA_EAGAIN == retcode) {
+      OB_SCHEMA_EAGAIN == retcode) && !is_max_local_retry_count) {
     tmp_can_retry = true;
-    if (OB_TRY_LOCK_ROW_CONFLICT == retcode) {
-      // throw to queue and retry
-      if (retry_policy_.allow_rpc_retry() && THIS_WORKER.can_retry()) {
-        THIS_WORKER.set_need_retry();
-        LOG_DEBUG("set retry flag and retry later when lock available");
-        need_retry_in_queue_ = true;
-      } else {
-        // retry in current thread
-        tmp_local_retry = true;
-      }
-    } else if (OB_TRANSACTION_SET_VIOLATION == retcode) {
+    // retry in current thread
+    tmp_local_retry = true;
+    if (OB_TRANSACTION_SET_VIOLATION == retcode) {
       EVENT_INC(TABLEAPI_TSC_VIOLATE_COUNT);
-      tmp_local_retry = true;
-      // @todo sleep for is_master_changed_error(ret) etc. ?
-    } else if (OB_SCHEMA_EAGAIN == retcode) {
-      // retry in current thread
-      tmp_local_retry = true;
     }
     // retry these error codes based on allow_retry_
     can_retry = tmp_can_retry && retry_policy_.allow_retry();

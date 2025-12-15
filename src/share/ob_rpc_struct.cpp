@@ -2616,7 +2616,8 @@ OB_DEF_SERIALIZE(ObAlterTableArg)
               is_alter_mlog_attributes_,
               alter_mlog_arg_,
               part_storage_cache_policy_,
-              data_version_);
+              data_version_,
+              enable_hidden_table_partition_pruning_);
 
   return ret;
 }
@@ -2728,7 +2729,8 @@ OB_DEF_DESERIALIZE(ObAlterTableArg)
               is_alter_mlog_attributes_,
               alter_mlog_arg_,
               part_storage_cache_policy_,
-              data_version_);
+              data_version_,
+              enable_hidden_table_partition_pruning_);
   return ret;
 }
 
@@ -2787,7 +2789,8 @@ OB_DEF_SERIALIZE_SIZE(ObAlterTableArg)
                 is_alter_mlog_attributes_,
                 alter_mlog_arg_,
                 part_storage_cache_policy_,
-                data_version_);
+                data_version_,
+                enable_hidden_table_partition_pruning_);
   }
 
   if (OB_FAIL(ret)) {
@@ -4792,6 +4795,32 @@ int ObAdminCommandArg::init(const ObString &admin_command, const ObAdminDRTaskTy
   return ret;
 }
 
+OB_SERIALIZE_MEMBER(ObAdminSwitchReplicaRoleStr, admin_command_);
+int ObAdminSwitchReplicaRoleStr::assign(const ObAdminSwitchReplicaRoleStr &other)
+{
+  int ret = OB_SUCCESS;
+  if (this == &other) {
+  } else if (OB_FAIL(admin_command_.assign(other.get_admin_command_str()))) {
+    LOG_WARN("fail to assign obadmin command string", KR(ret), K(other));
+  }
+  return ret;
+}
+
+int ObAdminSwitchReplicaRoleStr::init(const ObString &admin_command)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(admin_command.length() > OB_MAX_ADMIN_COMMAND_LENGTH)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(admin_command));
+  } else if (OB_UNLIKELY(admin_command.empty())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(admin_command));
+  } else if (OB_FAIL(admin_command_.assign(admin_command))) {
+    LOG_WARN("fali to assign admin command", KR(ret), K(admin_command));
+  }
+  return ret;
+}
+
 #ifdef OB_BUILD_ARBITRATION
 OB_SERIALIZE_MEMBER(ObAddArbArg,
                     tenant_id_,
@@ -5816,11 +5845,20 @@ OB_SERIALIZE_MEMBER((ObCreateRoleArg, ObDDLArg),
 
 bool ObAdminSwitchReplicaRoleArg::is_valid() const
 {
-  return ls_id_ >= 0 || server_.is_valid() || !zone_.is_empty();
+  return ls_id_ > 0 && server_.is_valid();
 }
 
 OB_SERIALIZE_MEMBER(ObAdminSwitchReplicaRoleArg,
     role_, ls_id_, server_, zone_, tenant_name_);
+
+void ObAdminSwitchReplicaRoleArg::reset()
+{
+  role_ = ObRole::FOLLOWER;
+  ls_id_ = -1;
+  server_.reset();
+  zone_.reset();
+  tenant_name_.reset();
+}
 
 bool ObAdminSwitchRSRoleArg::is_valid() const
 {
@@ -6230,7 +6268,8 @@ OB_SERIALIZE_MEMBER(ObTriggerStorageCacheArg,
                     op_,
                     tenant_id_);
 OB_SERIALIZE_MEMBER(ObAutoincSyncArg,
-                    tenant_id_, table_id_, column_id_, table_part_num_, auto_increment_, sync_value_);
+                    tenant_id_, table_id_, column_id_, table_part_num_, auto_increment_,
+                    sync_value_, autoinc_is_order_);
 
 OB_SERIALIZE_MEMBER(ObAdminChangeReplicaArg, force_cmd_);
 
@@ -10256,10 +10295,12 @@ int ObLSAccessModeInfo::assign(const ObLSAccessModeInfo &other)
     access_mode_ = other.access_mode_;
     ref_scn_ = other.ref_scn_;
     sys_ls_end_scn_ = other.sys_ls_end_scn_;
+    sync_mode_ = other.sync_mode_;
   }
   return ret;
 }
-OB_SERIALIZE_MEMBER(ObLSAccessModeInfo, tenant_id_, ls_id_, mode_version_, access_mode_, ref_scn_, addr_, sys_ls_end_scn_);
+OB_SERIALIZE_MEMBER(ObLSAccessModeInfo, tenant_id_, ls_id_, mode_version_, access_mode_, ref_scn_,
+    addr_, sys_ls_end_scn_, sync_mode_);
 
 bool ObChangeLSAccessModeRes::is_valid() const
 {
@@ -10299,7 +10340,8 @@ int ObChangeLSAccessModeRes::assign(const ObChangeLSAccessModeRes &other)
   return ret;
 }
 
-OB_SERIALIZE_MEMBER(ObChangeLSAccessModeRes, tenant_id_, ls_id_, ret_, wait_sync_scn_cost_, change_access_mode_cost_);
+OB_SERIALIZE_MEMBER(ObChangeLSAccessModeRes, tenant_id_, ls_id_, ret_, wait_sync_scn_cost_,
+    change_access_mode_cost_);
 
 int ObNotifySwitchLeaderArg::init(const uint64_t tenant_id, const share::ObLSID &ls_id,
     const common::ObAddr &leader, const SwitchLeaderComment &comment)
@@ -13306,7 +13348,7 @@ int ObSeqCleanCacheRes::assign(const ObSeqCleanCacheRes &other)
   return ret;
 }
 
-OB_SERIALIZE_MEMBER(ObTTLRequestArg, cmd_code_, trigger_type_, task_id_, tenant_id_);
+OB_SERIALIZE_MEMBER(ObTTLRequestArg, cmd_code_, trigger_type_, task_id_, tenant_id_, table_with_tablet_);
 
 int ObTTLRequestArg::assign(const ObTTLRequestArg &other)
 {
@@ -14416,6 +14458,8 @@ int ObFetchArbMemberArg::init(const uint64_t tenant_id, const ObLSID &ls_id)
 
 OB_SERIALIZE_MEMBER(ObFetchArbMemberArg, tenant_id_, ls_id_);
 #endif
+OB_SERIALIZE_MEMBER(ObCheckNestedMViewMdsArg, tenant_id_, mview_id_, refresh_id_, target_data_sync_scn_);
+OB_SERIALIZE_MEMBER(ObCheckNestedMViewMdsRes, target_data_sync_scn_, ret_);
 
 OB_SERIALIZE_MEMBER((ObCreateAiModelArg, ObDDLArg), model_info_);
 OB_SERIALIZE_MEMBER((ObDropAiModelArg, ObDDLArg), ai_model_name_);

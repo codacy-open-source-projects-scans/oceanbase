@@ -707,6 +707,8 @@ const char *const OB_INDEX_PREFIX = "__idx_";
 // internal materialized view log prefix
 const char *const OB_MLOG_PREFIX_MYSQL = "mlog$_";
 const char *const OB_MLOG_PREFIX_ORACLE = "MLOG$_";
+const char *const OB_TMP_MLOG_PREFIX_MYSQL = "tmlog$_";
+const char *const OB_TMP_MLOG_PREFIX_ORACLE = "TMLOG$_";
 
 // internal user
 const char *const OB_INTERNAL_USER = "__ob_server";
@@ -755,6 +757,7 @@ const char *const OB_DOC_ID_COLUMN_NAME = "__doc_id";
 const char *const OB_WORD_SEGMENT_COLUMN_NAME_PREFIX = "__word_segment";
 const char *const OB_WORD_COUNT_COLUMN_NAME_PREFIX = "__word_count";
 const char *const OB_DOC_LENGTH_COLUMN_NAME_PREFIX = "__doc_length";
+const char *const OB_POS_LIST_COLUMN_NAME_PREFIX = "__pos_list";
 const int64_t OB_DOC_ID_COLUMN_BYTE_LENGTH = (sizeof(uint64_t) * 2);
 constexpr int64_t OB_WORD_SEGMENT_COLUMN_NAME_PREFIX_LEN = sizeof("__word_segment") - 1;
 constexpr int64_t OB_WORD_COUNT_COLUMN_NAME_PREFIX_LEN = sizeof("__word_count") - 1;
@@ -2698,6 +2701,12 @@ OB_INLINE uint64_t& ob_get_tenant_id()
   return tenant_id;
 }
 
+OB_INLINE uint64_t& ob_get_origin_tenant_id()
+{
+  thread_local uint64_t origin_tenant_id = 0;
+  return origin_tenant_id;
+}
+
 OB_INLINE char* ob_get_tname()
 {
   thread_local char tname[oceanbase::OB_THREAD_NAME_BUF_LEN] = {0};
@@ -2755,6 +2764,7 @@ OB_INLINE uint64_t ob_set_thread_tenant_id(uint64_t tenant_id)
 #define GETTNAME() ob_get_tname()
 #define GETTNAME_V2() ob_get_tname_v2()
 #define GET_TENANT_ID() ob_get_tenant_id()
+#define GET_ORIGIN_TENANT_ID() ob_get_origin_tenant_id()
 #define gettid GETTID
 #define GET_CLUSTER_ID() ob_get_cluster_id()
 #define GET_ARB_TENANT_ID() ob_get_arb_tenant_id()

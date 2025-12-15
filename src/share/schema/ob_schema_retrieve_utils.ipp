@@ -65,6 +65,30 @@ namespace schema
     }  \
   }
 
+// refer to EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, table_mode, table_schema, int32_t, true /*skip_null_error*/, ObSchemaService::g_ignore_column_retrieve_error_, 0);
+// ObSimpleTableSchemaV2::set_table_mode and ObSimpleTableSchemaV2::set_table_mode_flag are easily confused, so we remove set_table_mode function
+#define EXTRACT_TABLE_MODE_FROM_MYSQL_RESULT(result, table_schema) \
+  if (OB_SUCC(ret)) { \
+    int64_t int_value = 0; \
+    if (OB_SUCC(result.get_int("table_mode", int_value))) { \
+      table_schema.assign_table_mode_from_mysql_result(static_cast<int32_t>(int_value)); \
+    } else if (OB_ERR_NULL_VALUE == ret) { \
+      SHARE_SCHEMA_LOG(TRACE, "null value, ignore table_mode"); \
+      table_schema.assign_table_mode_from_mysql_result(0); \
+      ret = OB_SUCCESS; \
+    } else if (OB_ERR_COLUMN_NOT_FOUND == ret) { \
+      if (ObSchemaService::g_ignore_column_retrieve_error_) { \
+        SHARE_SCHEMA_LOG(INFO, "column table_mode not found, ignore", K(ret)); \
+        table_schema.assign_table_mode_from_mysql_result(0); \
+        ret = OB_SUCCESS; \
+      } else { \
+        SHARE_SCHEMA_LOG(WARN, "column table_mode not found", K(ret)); \
+      } \
+    } else { \
+      SHARE_SCHEMA_LOG(WARN, "fail to get table_mode", K(ret)); \
+    } \
+  }
+
 /*********************************************************************
  *
  * for full schemas
@@ -1373,7 +1397,7 @@ int ObSchemaRetrieveUtils::fill_table_schema(
       result, store_format, table_schema, true, ObSchemaService::g_ignore_column_retrieve_error_, store_format);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, progressive_merge_round, table_schema, int64_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, storage_format_version, table_schema, int64_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
-    EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, table_mode, table_schema, int32_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
+    EXTRACT_TABLE_MODE_FROM_MYSQL_RESULT(result, table_schema);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, mv_mode, table_schema, int64_t, true, true, 0);
     if (OB_SUCC(ret)) {
       if (OB_FAIL(table_schema.set_expire_info(expire_info))) {
@@ -1534,12 +1558,21 @@ int ObSchemaRetrieveUtils::fill_table_schema(
       bool skip_null_error = true;
       bool skip_column_error = true;
       ObString local_session_var;
+      ObString mview_expand_definition;
       ObString default_session_var(""); //default value is empty string
+      ObString default_mview_expand_definition(""); //default value is empty string
       EXTRACT_VARCHAR_FIELD_MYSQL_WITH_DEFAULT_VALUE(result, "local_session_vars", local_session_var,
                                                     skip_null_error, skip_column_error, default_session_var);
-      if (OB_SUCC(ret) && !local_session_var.empty()
-          && OB_FAIL(table_schema.get_local_session_var().fill_local_session_var_from_str(local_session_var))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to deserialize mview_session_var", K(ret));
+      EXTRACT_VARCHAR_FIELD_MYSQL_WITH_DEFAULT_VALUE(result, "mview_expand_definition", mview_expand_definition,
+                                                     skip_null_error, skip_column_error, default_mview_expand_definition);
+      if (OB_SUCC(ret)) {
+        if (!local_session_var.empty()
+            && OB_FAIL(table_schema.get_local_session_var().fill_local_session_var_from_str(local_session_var))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to deserialize mview_session_var", K(ret));
+        } else if (!mview_expand_definition.empty()
+            && OB_FAIL(table_schema.get_view_schema().set_expand_view_definition_for_mv(mview_expand_definition))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to deserialize mview_expand_definition", K(ret));
+        }
       }
     }
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, semistruct_encoding_type, table_schema,
@@ -4618,7 +4651,7 @@ int ObSchemaRetrieveUtils::fill_table_schema(
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, partition_schema_version, table_schema, int64_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL(result, index_type, table_schema, ObIndexType);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, session_id, table_schema, uint64_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
-    EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_DEFAULT_VALUE(result, table_mode, table_schema, int32_t, true, ObSchemaService::g_ignore_column_retrieve_error_, 0);
+    EXTRACT_TABLE_MODE_FROM_MYSQL_RESULT(result, table_schema);
     EXTRACT_INT_FIELD_TO_CLASS_MYSQL_WITH_TENANT_ID_AND_DEFAULT_VALUE(result, tablespace_id,
         table_schema, tenant_id, true, ObSchemaService::g_ignore_column_retrieve_error_, common::OB_INVALID_ID);
     ObPartitionOption &partition_option = table_schema.get_part_option();
@@ -5216,6 +5249,7 @@ int ObSchemaRetrieveUtils::retrieve_aux_tables(
     uint64_t table_id = OB_INVALID_ID;
     ObTableType table_type = MAX_TABLE_TYPE;
     ObIndexType index_type = INDEX_TYPE_MAX;
+    ObString table_name;
 
     EXTRACT_INT_FIELD_MYSQL(result, "table_type", table_type, ObTableType);
 
@@ -5227,8 +5261,10 @@ int ObSchemaRetrieveUtils::retrieve_aux_tables(
 
       EXTRACT_INT_FIELD_MYSQL_WITH_TENANT_ID(result, "table_id", table_id, tenant_id);
       EXTRACT_INT_FIELD_MYSQL(result, "index_type", index_type, ObIndexType);
+      EXTRACT_VARCHAR_FIELD_MYSQL(result, "table_name", table_name);
+      const bool is_tmp_mlog = ObSimpleTableSchemaV2::is_tmp_mlog_table(table_type, table_name);
 
-      ObAuxTableMetaInfo aux_table_meta(table_id, table_type, index_type);
+      ObAuxTableMetaInfo aux_table_meta(table_id, table_type, index_type, is_tmp_mlog);
       if (FAILEDx(aux_tables.push_back(aux_table_meta))) {
         SHARE_SCHEMA_LOG(WARN, "fail to push back aux table", KR(ret), K(aux_table_meta));
       }

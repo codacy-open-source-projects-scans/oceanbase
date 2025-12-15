@@ -85,9 +85,49 @@ int ObAlterMviewUtils::resolve_mv_options(const ParseNode &node,
           OB_UNLIKELY(T_PARALLEL != parallel_node->type_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid parallel node", K(node.children_[0]), K(ret));
+      } else if (OB_UNLIKELY(parallel_node->children_[0]->value_ < 0)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("invalid refresh dop", K(parallel_node->children_[0]->value_), K(ret));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "value for PARALLEL or DEGREE must be equal to or greater than 0!");
       } else {
         const int64_t refresh_dop = parallel_node->children_[0]->value_;
         alter_mview_arg.set_refresh_dop(refresh_dop);
+      }
+    } else if (4 == node.int32_values_[0]) {
+      ParseNode *nest_refresh_node = node.children_[0];
+      if (OB_UNLIKELY(data_version < MOCK_DATA_VERSION_4_3_5_3
+                      || (data_version >= DATA_VERSION_4_4_0_0 && data_version < MOCK_DATA_VERSION_4_4_2_0)
+                      || (data_version >= DATA_VERSION_4_5_0_0 && data_version < DATA_VERSION_4_5_1_0))) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("tenant data version is less than 4.3.5.3 or between 4.4.0.0 and 4.4.2.0 or between 4.5.0.0 and 4.5.1.0, alter mv nested refresh mode is not supported",
+                K(ret), K(data_version));
+      } else if (OB_ISNULL(nest_refresh_node) ||
+                 OB_UNLIKELY(T_MV_NESTED_REFRESH_CLAUSE != nest_refresh_node->type_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid nested refresh node", KP(node.children_[0]), K(ret));
+      } else {
+        int32_t nested_refresh_mode_val = nest_refresh_node->int32_values_[0];
+        switch (nested_refresh_mode_val) {
+          case 0:
+            alter_mview_arg.set_alter_nested_refresh_mode(share::schema::ObMVNestedRefreshMode::INDIVIDUAL);
+            break;
+          case 1:
+            alter_mview_arg.set_alter_nested_refresh_mode(share::schema::ObMVNestedRefreshMode::INCONSISTENT);
+            break;
+          case 2:
+            // ret = OB_NOT_SUPPORTED;
+            // LOG_WARN("sync refresh not supported now", K(ret));
+            // LOG_USER_ERROR(OB_NOT_SUPPORTED, "nested sync refresh");
+            alter_mview_arg.set_alter_nested_refresh_mode(share::schema::ObMVNestedRefreshMode::CONSISTENT);
+            break;
+          default:
+            break;
+        }
+        // if (alter_mview_arg.get_nested_refresh_mode() == share::schema::ObMVNestedRefreshMode::CONSISTENT) {
+        //   ret = OB_NOT_SUPPORTED;
+        //   LOG_WARN("nested sync refresh not supported now", K(ret));
+        //   LOG_USER_ERROR(OB_NOT_SUPPORTED, "nested sync refresh");
+        // }
       }
     } else {
       ParseNode *refresh_info_node = node.children_[0];
@@ -204,6 +244,10 @@ int ObAlterMviewUtils::resolve_mlog_options(const ParseNode &node,
           OB_UNLIKELY(T_PARALLEL != parallel_node->type_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid parallel node", K(node.children_[0]), K(ret));
+      } else if (OB_UNLIKELY(parallel_node->children_[0]->value_ < 1)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("invalid table dop", K(parallel_node->children_[0]->value_), K(ret));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "value for PARALLEL or DEGREE must be greater than 0!");
       } else {
         const int64_t table_dop = parallel_node->children_[0]->value_;
         alter_mlog_arg.set_table_dop(table_dop);

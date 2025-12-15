@@ -255,6 +255,7 @@ syspack_config = [
     SysPackConfig(SysPackGroup.ORACLE, "utl_recomp", "utl_recomp.sql", "utl_recomp_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
     SysPackConfig(SysPackGroup.ORACLE, "sdo_geometry", "sdo_geometry.sql", "sdo_geometry_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
     SysPackConfig(SysPackGroup.ORACLE, "sdo_geom", "sdo_geom.sql", "sdo_geom_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
+    SysPackConfig(SysPackGroup.ORACLE, "sdo_util", "sdo_util.sql", "sdo_util_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
     SysPackConfig(SysPackGroup.ORACLE, "dbms_external_table", "dbms_external_table.sql", "dbms_external_table_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
     SysPackConfig(SysPackGroup.ORACLE, "dbms_profiler", "dbms_profiler.sql", "dbms_profiler_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
     SysPackConfig(SysPackGroup.ORACLE, "dbms_ddl", "dbms_ddl.sql", "dbms_ddl_body.sql", wrap=WrapType.BODY_ONLY, orc_build_req=True),
@@ -269,7 +270,6 @@ syspack_config = [
     # MySQL
     SysPackConfig(SysPackGroup.MYSQL, "dbms_stats", "dbms_stats_mysql.sql", "dbms_stats_body_mysql.sql"),
     SysPackConfig(SysPackGroup.MYSQL, "dbms_scheduler", "dbms_scheduler_mysql.sql", "dbms_scheduler_mysql_body.sql"),
-    SysPackConfig(SysPackGroup.MYSQL, "dbms_ischeduler", "dbms_ischeduler_mysql.sql", "dbms_ischeduler_mysql_body.sql"),
     SysPackConfig(SysPackGroup.MYSQL, "dbms_application", "dbms_application_mysql.sql", "dbms_application_body_mysql.sql"),
     SysPackConfig(SysPackGroup.MYSQL, "dbms_session", "dbms_session_mysql.sql", "dbms_session_body_mysql.sql"),
     SysPackConfig(SysPackGroup.MYSQL, "dbms_monitor", "dbms_monitor_mysql.sql", "dbms_monitor_body_mysql.sql"),

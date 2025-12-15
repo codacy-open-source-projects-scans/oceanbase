@@ -1418,6 +1418,7 @@ constexpr int OB_SEQ_NO_REORDER_UNDER_PDML = -6329;
 constexpr int OB_USER_OUTOF_DATA_DISK_SPACE = -6330;
 constexpr int OB_ARB_DEGRADE = -6331;
 constexpr int OB_OBJ_LOCK_WRONG_WORKER = -6332;
+constexpr int OB_ERR_TEMP_TABLE_BUSY = -6333;
 constexpr int OB_ELECTION_WARN_LOGBUF_FULL = -7000;
 constexpr int OB_ELECTION_WARN_LOGBUF_EMPTY = -7001;
 constexpr int OB_ELECTION_WARN_NOT_RUNNING = -7002;
@@ -2065,6 +2066,8 @@ constexpr int OB_HTTP_UNAUTHORIZED = -11123;
 constexpr int OB_HTTP_NOT_FOUND = -11124;
 constexpr int OB_HTTP_SERVER_ERROR = -11125;
 constexpr int OB_INVALID_DATE_TRUNC_FORMAT = -11126;
+constexpr int OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES = -11127;
+constexpr int OB_AP_QUERY_NEED_RETRY = -11128;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR = -20000;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR_NUM = -21000;
 constexpr int OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN = -22998;
@@ -2072,8 +2075,8 @@ constexpr int OB_ERR_UPDATE_TWICE = -30926;
 constexpr int OB_ERR_FLASHBACK_QUERY_WITH_UPDATE = -32491;
 constexpr int OB_ERR_UPDATE_ON_EXPR = -38104;
 constexpr int OB_ERR_SPECIFIED_ROW_NO_LONGER_EXISTS = -38105;
-constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
+constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 
 
 #define OB_SUCCESS__USER_ERROR_MSG "Success"
@@ -3537,7 +3540,7 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_ERR_ILLEGAL_PARAM_FOR_CBY_PATH__USER_ERROR_MSG "illegal parameter in SYS_CONNECT_BY_PATH function"
 #define OB_ERR_HOST_UNKNOWN__USER_ERROR_MSG "host %.*s unknown"
 #define OB_ERR_WINDOW_NAME_IS_NOT_DEFINE__USER_ERROR_MSG "Window name '%.*s' is not defined."
-#define OB_ERR_OPEN_CURSORS_EXCEEDED__USER_ERROR_MSG "maximum open cursors exceeded"
+#define OB_ERR_OPEN_CURSORS_EXCEEDED__USER_ERROR_MSG "maximum open %s exceeded"
 #define OB_ERR_FETCH_OUT_SEQUENCE__USER_ERROR_MSG "fetch out of sequence"
 #define OB_ERR_UNEXPECTED_NAME_STR__USER_ERROR_MSG "unexpected name string '%.*s'"
 #define OB_ERR_NO_PROGRAM_UNIT__USER_ERROR_MSG "PL/SQL: could not find program unit being called: '%.*s'"
@@ -3730,6 +3733,7 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_USER_OUTOF_DATA_DISK_SPACE__USER_ERROR_MSG "user data disk is almost full"
 #define OB_ARB_DEGRADE__USER_ERROR_MSG "logstream has been degraded due to error"
 #define OB_OBJ_LOCK_WRONG_WORKER__USER_ERROR_MSG "object lock worker thread wrong"
+#define OB_ERR_TEMP_TABLE_BUSY__USER_ERROR_MSG "attempt to access a transactional temp table already in use"
 #define OB_ELECTION_WARN_LOGBUF_FULL__USER_ERROR_MSG "The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_EMPTY__USER_ERROR_MSG "The log buffer is empty"
 #define OB_ELECTION_WARN_NOT_RUNNING__USER_ERROR_MSG "The object is not running"
@@ -4580,6 +4584,8 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_HTTP_NOT_FOUND__USER_ERROR_MSG "Http request not found: %s"
 #define OB_HTTP_SERVER_ERROR__USER_ERROR_MSG "Http server error: %s"
 #define OB_INVALID_DATE_TRUNC_FORMAT__USER_ERROR_MSG "unit \'%.*s\' not recognized"
+#define OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES__USER_ERROR_MSG "Privilege not allowed for sensitive rules"
+#define OB_AP_QUERY_NEED_RETRY__USER_ERROR_MSG "AP query will retry with column replica"
 #define OB_SP_RAISE_APPLICATION_ERROR__USER_ERROR_MSG "%.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__USER_ERROR_MSG "error number argument to raise_application_error of '%d' is out of range"
 #define OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN__USER_ERROR_MSG "CLOB or NCLOB in multibyte character set not supported"
@@ -4587,8 +4593,8 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_ERR_FLASHBACK_QUERY_WITH_UPDATE__USER_ERROR_MSG "snapshot expression not allowed here"
 #define OB_ERR_UPDATE_ON_EXPR__USER_ERROR_MSG "Columns referenced in the ON Clause cannot be updated:'%.*s'.'%.*s'"
 #define OB_ERR_SPECIFIED_ROW_NO_LONGER_EXISTS__USER_ERROR_MSG "specified row no longer exists"
-#define OB_ERR_INVALID_DATE_MSG_FMT_V2__USER_ERROR_MSG "Incorrect datetime value for column '%.*s' at row %ld"
 #define OB_ERR_DATA_TOO_LONG_MSG_FMT_V2__USER_ERROR_MSG "Data too long for column '%.*s' at row %ld"
+#define OB_ERR_INVALID_DATE_MSG_FMT_V2__USER_ERROR_MSG "Incorrect datetime value for column '%.*s' at row %ld"
 
 
 #define OB_SUCCESS__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: 0, Success"
@@ -7513,8 +7519,8 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_ERR_HOST_UNKNOWN__OBE_USER_ERROR_MSG "OBE-29257: host %.*s unknown"
 #define OB_ERR_WINDOW_NAME_IS_NOT_DEFINE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5929, Window name '%.*s' is not defined."
 #define OB_ERR_WINDOW_NAME_IS_NOT_DEFINE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -5929, Window name '%.*s' is not defined."
-#define OB_ERR_OPEN_CURSORS_EXCEEDED__ORA_USER_ERROR_MSG "ORA-01000: maximum open cursors exceeded"
-#define OB_ERR_OPEN_CURSORS_EXCEEDED__OBE_USER_ERROR_MSG "OBE-01000: maximum open cursors exceeded"
+#define OB_ERR_OPEN_CURSORS_EXCEEDED__ORA_USER_ERROR_MSG "ORA-01000: maximum open %s exceeded"
+#define OB_ERR_OPEN_CURSORS_EXCEEDED__OBE_USER_ERROR_MSG "OBE-01000: maximum open %s exceeded"
 #define OB_ERR_FETCH_OUT_SEQUENCE__ORA_USER_ERROR_MSG "ORA-01002: fetch out of sequence"
 #define OB_ERR_FETCH_OUT_SEQUENCE__OBE_USER_ERROR_MSG "OBE-01002: fetch out of sequence"
 #define OB_ERR_UNEXPECTED_NAME_STR__ORA_USER_ERROR_MSG "ORA-23481: unexpected name string '%.*s'"
@@ -7899,6 +7905,8 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_ARB_DEGRADE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -6331, logstream has been degraded due to error"
 #define OB_OBJ_LOCK_WRONG_WORKER__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -6332, object lock worker thread wrong"
 #define OB_OBJ_LOCK_WRONG_WORKER__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -6332, object lock worker thread wrong"
+#define OB_ERR_TEMP_TABLE_BUSY__ORA_USER_ERROR_MSG "ORA-14450: attempt to access a transactional temp table already in use"
+#define OB_ERR_TEMP_TABLE_BUSY__OBE_USER_ERROR_MSG "OBE-14450: attempt to access a transactional temp table already in use"
 #define OB_ELECTION_WARN_LOGBUF_FULL__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -7000, The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_FULL__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -7000, The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_EMPTY__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -7001, The log buffer is empty"
@@ -9599,6 +9607,10 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_HTTP_SERVER_ERROR__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11125, Http server error: %s"
 #define OB_INVALID_DATE_TRUNC_FORMAT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11126, unit \'%.*s\' not recognized"
 #define OB_INVALID_DATE_TRUNC_FORMAT__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11126, unit \'%.*s\' not recognized"
+#define OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11127, Privilege not allowed for sensitive rules"
+#define OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11127, Privilege not allowed for sensitive rules"
+#define OB_AP_QUERY_NEED_RETRY__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11128, AP query will retry with column replica"
+#define OB_AP_QUERY_NEED_RETRY__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11128, AP query will retry with column replica"
 #define OB_SP_RAISE_APPLICATION_ERROR__ORA_USER_ERROR_MSG "ORA%06ld: %.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR__OBE_USER_ERROR_MSG "ORA%06ld: %.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__ORA_USER_ERROR_MSG "ORA-21000: error number argument to raise_application_error of '%d' is out of range"
@@ -9613,12 +9625,12 @@ constexpr int OB_ERR_DATA_TOO_LONG_MSG_FMT_V2 = -5167;
 #define OB_ERR_UPDATE_ON_EXPR__OBE_USER_ERROR_MSG "OBE-38104: Columns referenced in the ON Clause cannot be updated:'%.*s'.'%.*s'"
 #define OB_ERR_SPECIFIED_ROW_NO_LONGER_EXISTS__ORA_USER_ERROR_MSG "ORA-08006: specified row no longer exists"
 #define OB_ERR_SPECIFIED_ROW_NO_LONGER_EXISTS__OBE_USER_ERROR_MSG "OBE-08006: specified row no longer exists"
-#define OB_ERR_INVALID_DATE_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-01861: Incorrect datetime value for column '%.*s' at row %ld"
-#define OB_ERR_INVALID_DATE_MSG_FMT_V2__OBE_USER_ERROR_MSG "OBE-01861: Incorrect datetime value for column '%.*s' at row %ld"
 #define OB_ERR_DATA_TOO_LONG_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-12899: value too large for column %.*s (actual: %ld, maximum: %ld)"
 #define OB_ERR_DATA_TOO_LONG_MSG_FMT_V2__OBE_USER_ERROR_MSG "OBE-12899: value too large for column %.*s (actual: %ld, maximum: %ld)"
+#define OB_ERR_INVALID_DATE_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-01861: Incorrect datetime value for column '%.*s' at row %ld"
+#define OB_ERR_INVALID_DATE_MSG_FMT_V2__OBE_USER_ERROR_MSG "OBE-01861: Incorrect datetime value for column '%.*s' at row %ld"
 
-extern int g_all_ob_errnos[2511];
+extern int g_all_ob_errnos[2514];
 
   const char *ob_error_name(const int oberr);
   const char* ob_error_cause(const int oberr);

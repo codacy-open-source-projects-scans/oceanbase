@@ -48,6 +48,7 @@
 #include "sql/resolver/dml/ob_transpose_resolver.h"
 #include "share/catalog/ob_catalog_utils.h"
 #include "share/ob_license_utils.h"
+#include "rootserver/mview/ob_mview_utils.h"
 #include "share/schema/ob_external_table_column_schema_helper.h"
 #include "src/share/hybrid_search/ob_hybrid_search_executor.h"
 
@@ -1827,6 +1828,7 @@ int ObDMLResolver::resolve_sql_expr(const ParseNode &node, ObRawExpr *&expr,
     }
     if (OB_SUCC(ret) &&
         current_scope_ != T_INSERT_SCOPE &&
+        current_scope_ != T_UPDATE_SCOPE &&
         !is_hierarchical_query &&
         !is_multi_stmt &&
         !params_.is_resolve_table_function_expr_ &&
@@ -2821,6 +2823,17 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
                                                  scope_name.length(), scope_name.ptr());
         }
       }
+      // special path for mview, mview would create sepcial hidden column when create,
+      // allow to access hidden column when refreshing mview or select mview table
+      if (session_info_->get_ddl_info().is_refreshing_mview() ||
+          (table_item.mview_id_ != OB_INVALID_ID &&
+           (current_scope_ != T_UPDATE_SCOPE && current_scope_ != T_INSERT_SCOPE))) {
+        if (rootserver::ObMViewUtils::is_hidden_column(column_name)) {
+          include_hidden = true;
+        }
+        LOG_INFO("include hidden column", K(include_hidden), K(current_scope_),
+                 K(table_item.mview_id_), K(session_info_->get_ddl_info().is_refreshing_mview()), K(column_name));
+      }
     }
     if (OB_FAIL(ret)) {
       //do nothing
@@ -3111,6 +3124,8 @@ int ObDMLResolver::replace_pl_relative_expr_to_question_mark(ObRawExpr *&real_re
   if (OB_ISNULL(real_ref_expr) || OB_ISNULL(params_.session_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("expr or params_.session_info_ is NULL", K(ret), K(real_ref_expr), K(params_.session_info_));
+  } else if (OB_UNLIKELY(real_ref_expr->has_flag(IS_PL_SQL_TRANSPILED))) {
+    // do nothing
   } else if (real_ref_expr->is_const_raw_expr() //local variable access
              || (real_ref_expr->is_obj_access_expr() && !check_expr_has_colref(real_ref_expr)) // composite variable access
              || T_OP_GET_PACKAGE_VAR == real_ref_expr->get_expr_type() //package variable access, must not (system/user variable)
@@ -3765,7 +3780,7 @@ int ObDMLResolver::resolve_basic_table_without_cte(const ParseNode &parse_tree, 
       } else if (params_.is_from_create_view_ && table_schema->is_mysql_tmp_table()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "View/Table's column refers to a temporary table");
-      } else if (params_.is_from_create_mview_
+      } else if (params_.is_mview_definition_sql_
                  && OB_FAIL(check_is_table_supported_for_mview(*table_item, *table_schema))) {
         LOG_WARN("failed to check is table supported for mview", K(ret));
       } else if (OB_FAIL(resolve_table_partition_expr(*table_item, *table_schema))) {
@@ -3828,7 +3843,7 @@ int ObDMLResolver::resolve_basic_table_without_cte(const ParseNode &parse_tree, 
         if (OB_FAIL(resolve_flashback_query_node(time_node, table_item))) {
           LOG_WARN("failed to resolve flashback query node", K(ret));
         //针对view需要递归的设置view对应查询的table的flashback query属性
-        } else if (table_item->is_view_table_) {
+        } else if (time_node->type_ != T_TABLE_FLASHBACK_PROCTIME && table_item->is_view_table_) {
           if (OB_FAIL(set_flashback_info_for_view(table_item->ref_query_, table_item))) {
             LOG_WARN("failed to set flashback info for view", K(ret));
           } else {
@@ -3877,7 +3892,8 @@ int ObDMLResolver::check_is_table_supported_for_mview(const ObItemType table_nod
   if (OB_UNLIKELY(T_RELATION_FACTOR != table_node_type
                   && T_SELECT != table_node_type
                   && T_JOINED_TABLE != table_node_type
-                  && T_JSON_TABLE_EXPRESSION != table_node_type)) {
+                  && T_JSON_TABLE_EXPRESSION != table_node_type
+                  && T_TABLE_COLLECTION_EXPRESSION != table_node_type)) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("unsupported table type in materialized view", K(ret), K(get_type_name(table_node_type)));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "non-user table in materialized view is");
@@ -4024,6 +4040,14 @@ int ObDMLResolver::resolve_flashback_query_node(const ParseNode *time_node, Tabl
           expr = dst_expr;
         }
       }
+    }
+  } else if (T_TABLE_FLASHBACK_PROCTIME == time_node->type_) {
+    if (OB_UNLIKELY(!(params_.is_mview_definition_sql_
+                      || session_info_->get_ddl_info().is_refreshing_mview()))) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "Using PROCTIME() out of CREATE MATERIALIZED VIEW is");
+    } else {
+      table_item->is_mv_proctime_table_ = true;
     }
   } else {
     ret = OB_ERR_UNEXPECTED;
@@ -5847,7 +5871,7 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
     if (!stmt->is_select_stmt() && OB_NOT_NULL(time_node)) {
       ret = OB_ERR_FLASHBACK_QUERY_WITH_UPDATE;
       LOG_WARN("snapshot expression not allowed here", K(ret));
-    } else if (params_.is_from_create_mview_ &&
+    } else if (params_.is_mview_definition_sql_ &&
               OB_FAIL(check_is_table_supported_for_mview(table_node->type_))) {
       LOG_WARN("failed to check is table supported for mview", K(ret));
     } else {
@@ -5901,6 +5925,8 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
           if (OB_FAIL(resolve_flashback_query_node(time_node, table_item))) {
             LOG_WARN("failed to resolve flashback query node", K(ret));
           //针对子查询的flashback属性需要递归的设置
+          } else if (time_node->type_ == T_TABLE_FLASHBACK_PROCTIME) {
+            // do nothing
           } else if (OB_FAIL(set_flashback_info_for_view(table_item->ref_query_, table_item))) {
             LOG_WARN("failed to set flashback info for view", K(ret));
           } else {
@@ -7779,12 +7805,21 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
         CK (OB_NOT_NULL(session_info_->get_cur_exec_ctx()));
         OZ (session_info_->get_cur_exec_ctx()->get_package_guard(package_guard));
         CK (OB_NOT_NULL(package_guard));
-        OZ (ObResolverUtils::get_user_type(
-          params_.allocator_, params_.session_info_, params_.sql_proxy_,
-          params_.schema_checker_->get_schema_guard(),
-          *package_guard,
-          function_table_expr->get_udt_id(),
-          user_type));
+        if (OB_FAIL(ret)) {
+        } else if (parse_tree.children_[0]->type_ == T_QUESTIONMARK
+          && function_table_expr->get_result_type().is_ext()
+          && is_mocked_anonymous_array_id(function_table_expr->get_udt_id())) {
+            const ObCollectionType *coll_type = NULL;
+            OZ (get_coll_type_from_anonymous_array(function_table_expr, coll_type, *package_guard));
+            OX (user_type = static_cast<const ObUserDefinedType*>(coll_type));
+        } else {
+          OZ (ObResolverUtils::get_user_type(
+            params_.allocator_, params_.session_info_, params_.sql_proxy_,
+            params_.schema_checker_->get_schema_guard(),
+            *package_guard,
+            function_table_expr->get_udt_id(),
+            user_type));
+        }
         if (OB_FAIL(ret)) {
         } else if (OB_UNLIKELY(NULL == user_type)) {
           ret = OB_ERR_WRONG_FUNC_ARGUMENTS_TYPE;
@@ -8097,7 +8132,7 @@ int ObDMLResolver::resolve_base_or_alias_table_item_dblink(uint64_t dblink_id,
   } else if (OB_FAIL(schema_checker_->get_link_table_schema(dblink_id, database_name,
                                                             table_name, table_schema, session_info_, dblink_name, is_reverse_link))) {
     LOG_WARN("get link table info failed", K(ret));
-  } else if (OB_UNLIKELY(params_.is_from_create_mview_)) {
+  } else if (OB_UNLIKELY(params_.is_mview_definition_sql_)) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("unsupported link table in materialized view", K(ret), K(dblink_name), K(table_name));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "unsupported link table in materialized view");
@@ -13149,6 +13184,53 @@ int ObDMLResolver::resolve_function_table_column_item(const TableItem &table_ite
   return ret;
 }
 
+int ObDMLResolver::get_coll_type_from_anonymous_array(ObRawExpr *table_expr,
+                                                      const pl::ObCollectionType *&coll_type,
+                                                      pl::ObPLPackageGuard &package_guard)
+{
+  int ret = OB_SUCCESS;
+  int64_t param_idx = OB_INVALID_INDEX;
+  ObPLDataType element_type;
+#ifdef OB_BUILD_ORACLE_PL
+  ObNestedTableType *nested_type = NULL;
+  const ObConstRawExpr *const_expr = static_cast<const ObConstRawExpr*>(table_expr);
+  CK (OB_NOT_NULL(const_expr));
+  if (OB_SUCC(const_expr->get_value().get_unknown(param_idx))) {
+    CK (OB_NOT_NULL(params_.param_list_));
+    CK (param_idx >= 0 && param_idx < params_.param_list_->count());
+    if (OB_SUCC(ret)) {
+      const ObObjParam &param = params_.param_list_->at(param_idx);
+      ObPLCollection *coll = reinterpret_cast<ObPLCollection *>(param.get_ext());
+      CK (OB_NOT_NULL(coll));
+      if (OB_SUCC(ret) && OB_ISNULL(nested_type =
+        reinterpret_cast<ObNestedTableType*>(params_.allocator_->alloc(sizeof(ObNestedTableType))))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to alloc memory for ObNestedTableType", K(ret));
+      }
+      OX (new(nested_type)ObNestedTableType());
+      OX (element_type.reset());
+      OX (element_type.set_data_type(coll->get_element_type()));
+      if (OB_FAIL(ret)) {
+      } else if (coll->get_element_desc().is_obj_type()) {
+        // do nothing
+      } else {
+        const ObUserDefinedType *user_type = nullptr;
+        OZ (ObResolverUtils::get_user_type(
+          params_.allocator_, params_.session_info_, params_.sql_proxy_,
+          schema_checker_->get_schema_guard(),
+          package_guard,
+          coll->get_element_type().get_udt_id(), user_type));
+        CK (OB_NOT_NULL(user_type));
+        OX (element_type = *user_type);
+      }
+      OX (nested_type->set_element_type(element_type));
+      OX (coll_type = static_cast<ObCollectionType*>(nested_type));
+    }
+  }
+#endif
+  return ret;
+}
+
 int ObDMLResolver::resolve_function_table_column_item_udf(const TableItem &table_item,
                                                           ObIArray<ColumnItem> &col_items)
 {
@@ -13157,30 +13239,36 @@ int ObDMLResolver::resolve_function_table_column_item_udf(const TableItem &table
   ColumnItem *col_item = NULL;
   ObDMLStmt *stmt = get_stmt();
   const ObUserDefinedType *user_type = NULL;
+  const ObCollectionType *coll_type = NULL;
 
   CK (OB_NOT_NULL(stmt));
 
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_expr = table_item.function_table_expr_));
   OZ (table_expr->deduce_type(session_info_));
-  CK (table_expr->get_udt_id() != OB_INVALID_ID);
-
   CK (OB_NOT_NULL(schema_checker_))
   ObPLPackageGuard package_guard(params_.session_info_->get_effective_tenant_id());
-  OZ (ObResolverUtils::get_user_type(
-    params_.allocator_, params_.session_info_, params_.sql_proxy_,
-    schema_checker_->get_schema_guard(),
-    package_guard,
-    table_expr->get_udt_id(), user_type));
-  CK (OB_NOT_NULL(user_type));
-  if (OB_SUCC(ret) && !user_type->is_collection_type()) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("function table get udf with return type is not table type",
-             K(ret), K(user_type->is_collection_type()));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "udf return type is not table type in function table");
+  if (OB_FAIL(ret)) {
+  } else if (T_QUESTIONMARK == table_expr->get_expr_type()
+            && table_expr->get_result_type().is_ext()
+            && is_mocked_anonymous_array_id(table_expr->get_udt_id())) {
+    OZ (get_coll_type_from_anonymous_array(table_expr, coll_type, package_guard));
+  } else {
+    CK (table_expr->get_udt_id() != OB_INVALID_ID);
+    OZ (ObResolverUtils::get_user_type(
+      params_.allocator_, params_.session_info_, params_.sql_proxy_,
+      schema_checker_->get_schema_guard(),
+      package_guard,
+      table_expr->get_udt_id(), user_type));
+    CK (OB_NOT_NULL(user_type));
+    if (OB_SUCC(ret) && !user_type->is_collection_type()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("function table get udf with return type is not table type",
+              K(ret), K(user_type->is_collection_type()));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "udf return type is not table type in function table");
+    }
+    CK (OB_NOT_NULL(coll_type = static_cast<const ObCollectionType*>(user_type)));
   }
-  const ObCollectionType *coll_type = NULL;
-  CK (OB_NOT_NULL(coll_type = static_cast<const ObCollectionType*>(user_type)));
   if (OB_SUCC(ret)
       && !coll_type->get_element_type().is_obj_type()
       && !coll_type->get_element_type().is_record_type()
@@ -13506,13 +13594,14 @@ int ObDMLResolver::resolve_generated_table_column_item(const TableItem &table_it
                 col_expr->set_lob_column(col_ref->is_lob_column());
                 col_expr->set_srs_id(col_ref->get_srs_id());
                 col_expr->set_udt_set_id(col_ref->get_udt_set_id());
+                if (col_ref->is_hidden_clustering_key_column()) {
+                  col_expr->set_heap_table_clustering_key_column();
+                  col_expr->set_hidden_column(col_ref->is_hidden_column());
+                }
                 if (stmt->get_stmt_type() == stmt::T_INSERT || stmt->get_stmt_type() == stmt::T_UPDATE) {
                   col_expr->set_hidden_column(col_ref->is_hidden_column());
                   // For clustering key table, we need to propagate column_flags (including clustering key flag)
                   // through view hierarchy to correctly identify hidden clustering key columns
-                  if (col_ref->is_hidden_clustering_key_column()) {
-                    col_expr->set_heap_table_clustering_key_column();
-                  }
                 }
                 ColumnItem *item = ref_stmt->get_column_item_by_id(col_ref->get_table_id(), col_ref->get_column_id());
                 if (OB_ISNULL(item)) {
@@ -14064,7 +14153,8 @@ int ObDMLResolver::resolve_external_name(ObQualifiedName &q_name,
                                                          params_.is_prepare_protocol_,
                                                          false, /*is_check_mode*/
                                                          current_scope_ != T_CURRENT_OF_SCOPE /*is_sql_scope*/,
-                                                         &dependency_objects))) {
+                                                         &dependency_objects,
+                                                         params_.query_ctx_))) {
       LOG_WARN_IGNORE_COL_NOTFOUND(ret, "failed to resolve var", K(q_name), K(ret));
     } else if (OB_ISNULL(expr)) {
       ret = OB_ERR_UNEXPECTED;
@@ -21332,9 +21422,6 @@ int ObDMLResolver::add_udt_dependency(const pl::ObUserDefinedType &udt_type)
   if (OB_ISNULL(stmt) || OB_ISNULL(allocator_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("resolver isn't init", K(ret), K(stmt), K(allocator_));
-  } else if (udt_id == OB_INVALID_ID) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected invalid udt id", K(udt_type));
   } else if (OB_ISNULL(params_.schema_checker_) || OB_ISNULL(params_.schema_checker_->get_schema_guard())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null schema checker or schema guard", K(params_.schema_checker_));
@@ -21452,10 +21539,33 @@ int ObDMLResolver::check_domain_id_need_column_ref_expr(ObDMLStmt &stmt, ObSchem
         LOG_WARN("get simple_index_infos failed", K(ret));
       }
       for (int64_t i = 0; OB_SUCC(ret) && !need_column_ref_expr && i < simple_index_infos.count(); ++i) {
-        ObAuxTableMetaInfo &index_info = simple_index_infos.at(i);
-        if (is_doc_rowkey_aux(index_info.index_type_) || is_fts_index_aux(index_info.index_type_) ||
-            is_fts_doc_word_aux(index_info.index_type_) || is_multivalue_index_aux(index_info.index_type_)) {
-          need_column_ref_expr = true;
+        const ObIndexType index_type = simple_index_infos.at(i).index_type_;
+        const uint64_t index_tid = simple_index_infos.at(i).table_id_;
+        if (is_fts_or_multivalue_index(index_type) && !is_rowkey_doc_aux(index_type)) {
+          // has doc_id column on table with valid fulltext / multivalue index
+          const share::schema::ObTableSchema *fts_index_schema = nullptr;
+          const share::schema::ObTableSchema *rowkey_doc_schema = nullptr;
+          uint64_t rowkey_doc_tid = OB_INVALID_ID;
+          if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(), index_tid, fts_index_schema))) {
+            LOG_WARN("failed to get index table schema", K(ret), K(index_tid));
+          } else if (OB_ISNULL(fts_index_schema)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected nullptr to index schema", K(ret));
+          } else if (OB_UNLIKELY(fts_index_schema->is_final_invalid_index())) {
+            // skip invalid index
+          } else if (OB_FAIL(table->get_rowkey_doc_tid(rowkey_doc_tid))) {
+            LOG_WARN("failed to get rowkey doc table id", K(ret));
+          } else if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(), rowkey_doc_tid, rowkey_doc_schema))) {
+            LOG_WARN("failed to get rowkey doc table schema", K(ret), K(rowkey_doc_tid));
+          } else if (OB_ISNULL(rowkey_doc_schema)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected nullptr to rowkey doc schema", K(ret));
+          } else if (OB_UNLIKELY(!rowkey_doc_schema->can_read_index() || !rowkey_doc_schema->is_index_visible())) {
+            // rowkey doc table is not readable or not visible, skip
+            LOG_TRACE("rowkey doc table is not readable or visible, skip", K(ret), KPC(rowkey_doc_schema));
+          } else {
+            need_column_ref_expr = true;
+          }
         }
       }
     } else if (col_schema->is_vec_ivf_center_id_column() || col_schema->is_vec_ivf_pq_center_ids_column()) {
@@ -21535,7 +21645,7 @@ int ObDMLResolver::check_domain_id_need_column_ref_expr(ObDMLStmt &stmt, ObSchem
       } else if (OB_ISNULL(ddl_table_schema) || OB_ISNULL(schema_guard)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("ddl table schema or schema guard is nullptr", K(ret), K(insert_stmt->get_table_item(0)->ddl_table_id_), K(ddl_table_schema));
-      } else if (ObDomainIdUtils::check_table_need_column_ref_in_ddl(*schema_guard, data_table, ddl_table_schema, col_schema)) {
+      } else if (ObDomainIdUtils::check_table_no_need_column_ref_in_ddl(*schema_guard, data_table, ddl_table_schema, col_schema)) {
         need_column_ref_expr = false;
       }
     }

@@ -1952,11 +1952,6 @@ int ObDDLResolver::resolve_table_option(const ParseNode *option_node, const bool
               ret = OB_NOT_SUPPORTED;
               LOG_USER_ERROR(OB_NOT_SUPPORTED, "set vertical partition table as queuing table mode");
               SQL_RESV_LOG(WARN, "Vertical partition table cannot set queuing table mode", K(ret));
-            } else { // 暂不支持用户在alter table时变更PK_MODE
-              // 设置Table当前的PK_MODE，组装最终态TableMode
-              table_mode_.pk_mode_ = tbl_schema->get_table_mode_struct().pk_mode_;
-              table_mode_.pk_exists_ = tbl_schema->get_table_mode_struct().pk_exists_;
-              table_mode_.table_organization_mode_ = tbl_schema->get_table_mode_struct().table_organization_mode_;
             }
           }
         }
@@ -2597,9 +2592,10 @@ int ObDDLResolver::resolve_table_option(const ParseNode *option_node, const bool
         } else {
           const int64_t table_dop = option_node->children_[0]->value_;
           if (table_dop <= 0) {
-            ret = OB_ERR_UNEXPECTED;
+            ret = OB_NOT_SUPPORTED;
             SQL_RESV_LOG(WARN, "invalid table dop", K(table_dop),
                 K(ret));
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "value for PARALLEL or DEGREE must be greater than 0!");
           } else {
             table_dop_ = table_dop;
             mv_refresh_dop_ = table_dop;
@@ -4375,8 +4371,7 @@ int ObDDLResolver::resolve_normal_column_attribute(ObColumnSchemaV2 &column,
         break;
       }
       case T_ON_UPDATE:
-        if (ObDateTimeType == column.get_data_type() || ObTimestampType == column.get_data_type()
-            || ObMySQLDateTimeType == column.get_data_type()) {
+        if (ObColumnSchemaV2::can_set_on_update_column_type(column.get_meta_type())) {
           if (T_FUN_SYS_CUR_TIMESTAMP != attr_node->children_[0]->type_) {
             ret = OB_ERR_PARSER_SYNTAX;
             SQL_RESV_LOG(WARN, "on_update attribute can only be timestamp or synonyms type",
@@ -6768,7 +6763,7 @@ int ObDDLResolver::init_empty_session(const common::ObTimeZoneInfoWrap &tz_info_
   if (OB_ISNULL(schema_checker)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get null schema checker", K(ret));
-  } else if (OB_FAIL(empty_session.test_init(0, 0, 0, &allocator))) {
+  } else if (OB_FAIL(empty_session.init(0, 0, &allocator))) {
     LOG_WARN("init empty session failed", K(ret));
   } else if (OB_FAIL(schema_checker->get_tenant_info(tenant_id, tenant_schema))) {
     LOG_WARN("get tenant_schema failed", K(ret));

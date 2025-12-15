@@ -190,6 +190,11 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
         } else if (1 == parse_tree.value_ && OB_ISNULL(index_schema_)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("table schema is NULL", K(ret));
+        } else if (OB_ISNULL(index_schema_) &&  // not index based table schema
+                   table_schema_->mv_container_table()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("alter mv container table not supported", K(ret), K(table_schema_->get_table_name_str()), K(table_name));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "Alter mv container table");
         } else if (table_schema_->is_external_table() != is_external_table_) {
           ret = OB_NOT_SUPPORTED;
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "alter table type");
@@ -3650,9 +3655,9 @@ int ObAlterTableResolver::resolve_alter_index_parallel_oracle(const ParseNode &n
     LOG_DEBUG("alter index table dop",
       K(ret), K(index_dop), K(index_name), K(index_schema_->get_table_name()));
     if (index_dop <= 0) {
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_NOT_SUPPORTED;
       LOG_WARN("the value of table dop should greater than 0", K(ret));
-      LOG_USER_ERROR(OB_ERR_UNEXPECTED, "The value of table dop should greater than 0");
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "The value of table dop should greater than 0");
     } else {
       ObAlterIndexParallelArg *alter_index_parallel_arg = NULL;
       void *tmp_ptr = NULL;
@@ -3707,7 +3712,8 @@ int ObAlterTableResolver::resolve_alter_index_parallel_mysql(const ParseNode &no
       ret = OB_ERR_UNEXPECTED;
       SQL_RESV_LOG(WARN, "child node is null", K(ret));
     } else if (parallel_node->children_[0]->value_ < 1) {
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "value for PARALLEL or DEGREE must be greater than 0!");
       SQL_RESV_LOG(WARN, "the parallel is invalid", K(ret), K(parallel_node->children_[0]->value_));
     } else {
       ObString index_name;
@@ -4375,8 +4381,6 @@ int ObAlterTableResolver::resolve_modify_clustering_key(const ParseNode &action_
 
 int ObAlterTableResolver::resolve_add_clustering_key(const ParseNode &node)
 {
-  return OB_NOT_SUPPORTED;
-  /*
   int ret = OB_SUCCESS;
   ParseNode *cluster_key_node = nullptr;
   // go through the node, find the clustering key node
@@ -4476,7 +4480,6 @@ int ObAlterTableResolver::resolve_add_clustering_key(const ParseNode &node)
     }
   }
   return ret;
-  */
 }
 
 

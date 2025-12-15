@@ -780,8 +780,7 @@ int ObLogPlan::pre_process_quals(const ObIArray<TableItem*> &table_items,
           LOG_WARN("failed to add startup filter", K(ret));
         }
       }
-    } else if (qual->has_flag(CNT_RAND_FUNC) ||
-               qual->has_flag(CNT_DYNAMIC_USER_VARIABLE)) {
+    } else if (!qual->is_deterministic() && !qual->has_flag(CNT_ASSIGN_EXPR)) {
       ret = add_special_expr(qual);
     } else if (ObOptimizerUtil::has_hierarchical_expr(*qual)) {
       ret = normal_quals.push_back(qual);
@@ -5619,6 +5618,8 @@ int ObLogPlan::perform_one_distinct_pushdown(ObLogicalOperator *op)
       if (OB_ISNULL(org_agg) || OB_ISNULL(new_agg)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid null exprs", K(ret));
+      } else if (OB_FAIL(onetime_replacer_.replace(org_agg))) {
+        LOG_WARN("failed to replace expr", K(ret));
       } else if (OB_FAIL(distinct_pushdown_replacer_.add_replace_expr(org_agg, new_agg))) {
         LOG_WARN("add replace expr failed", K(ret));
       }
@@ -5634,13 +5635,27 @@ int ObLogPlan::perform_groupingsets_replacement(ObLogicalOperator *op)
 {
   int ret = OB_SUCCESS;
   ObLogGroupBy *groupby = nullptr;
+  ObLogExpand *expand = nullptr;
+  if (NULL != (expand = dynamic_cast<ObLogExpand *>(op)) && expand->get_grouping_set_info() != nullptr) {
+    const ObIArray<ObTuple<ObRawExpr *, ObRawExpr *>> &replaced_aggr_items = expand->get_grouping_set_info()->replaced_agg_pairs_;
+    for (int64_t i = 0; OB_SUCC(ret) && i < replaced_aggr_items.count(); i++) {
+      ObRawExpr *org_agg = replaced_aggr_items.at(i).element<0>();
+      ObRawExpr *new_agg = replaced_aggr_items.at(i).element<1>();
+      if (OB_ISNULL(org_agg) || OB_ISNULL(new_agg)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid null agg exprs", K(ret));
+      } else if (OB_FAIL(onetime_replacer_.replace(org_agg))) {
+        LOG_WARN("replace expr failed", K(ret));
+      } else if (OB_FAIL(groupingset_agg_replacer_.add_replace_expr(org_agg, new_agg))) {
+        LOG_WARN("add replace expr failed", K(ret));
+      } else {
+        // do nothing
+      }
+    }
+  }
   if (NULL != (groupby = dynamic_cast<ObLogGroupBy *>(op))
-      && (groupby->get_hash_rollup_info() != nullptr
-          || groupby->get_grouping_set_info() != nullptr)) {
-    const ObIArray<ObTuple<ObRawExpr *, ObRawExpr *>> &replaced_aggr_items =
-      (groupby->get_hash_rollup_info() != nullptr ?
-         groupby->get_hash_rollup_info()->replaced_agg_pairs_ :
-         groupby->get_grouping_set_info()->replaced_agg_pairs_);
+      && (groupby->get_hash_rollup_info() != nullptr)) {
+    const ObIArray<ObTuple<ObRawExpr *, ObRawExpr *>> &replaced_aggr_items = groupby->get_hash_rollup_info()->replaced_agg_pairs_;
     for(int64_t i = 0; OB_SUCC(ret) && i < replaced_aggr_items.count(); i++) {
       ObRawExpr *org_agg = replaced_aggr_items.at(i).element<0>();
       ObRawExpr *new_agg = replaced_aggr_items.at(i).element<1>();
@@ -5892,6 +5907,9 @@ int ObLogPlan::get_distribute_group_by_method(ObLogicalOperator *top,
       }
     } else {
       group_dist_methods &= ~DistAlgo::DIST_PULL_TO_LOCAL;
+    }
+    if (top->get_contains_fake_cte()) {
+      group_dist_methods &= (DistAlgo::DIST_BASIC_METHOD | DistAlgo::DIST_PULL_TO_LOCAL);
     }
     can_re_parallel = (top->can_re_parallel()
                       && (group_dist_methods & DistAlgo::DIST_HASH_HASH)
@@ -8043,7 +8061,10 @@ int ObLogPlan::allocate_sort_and_exchange_as_top(ObLogicalOperator *&top,
     } else {
       has_allocated_range_shuffle_ = true;
     }
-  } else if (exch_info.is_pq_local() && NULL == topn_expr && get_optimizer_context().is_enable_px_ordered_coord()) {
+  } else if (exch_info.is_pq_local()
+             && NULL == topn_expr
+             && get_optimizer_context().is_enable_px_ordered_coord()
+             && !sort_keys.empty()) {
     if (OB_FAIL(allocate_dist_range_sort_as_top(top, sort_keys, need_sort, is_local_order))) {
       LOG_WARN("failed to allocate dist range sort as top", K(ret));
     } else { /*do nothing*/ }
@@ -15067,8 +15088,6 @@ int ObLogPlan::adjust_final_plan_info(ObLogicalOperator *&op)
     if (OB_SUCC(ret)) {
       if (op->is_plan_root() && OB_FAIL(op->set_plan_root_output_exprs())) {
         LOG_WARN("failed to add plan root exprs", K(ret));
-      } else if (OB_FAIL(op->get_plan()->perform_adjust_onetime_expr(op))) {
-        LOG_WARN("failed to perform adjust onetime expr", K(ret));
       } else if (OB_FAIL(op->get_plan()->perform_groupingsets_replacement(op))) {
         LOG_WARN("failed to perform grouping set replacement", K(ret));
       } else if (OB_FAIL(op->get_plan()->perform_one_distinct_pushdown(op))) {
@@ -15079,6 +15098,8 @@ int ObLogPlan::adjust_final_plan_info(ObLogicalOperator *&op)
         LOG_WARN("failed to perform simplify win expr", K(ret));
       } else if (OB_FAIL(op->get_plan()->perform_window_function_pushdown(op))) {
         LOG_WARN("failed to perform window function push down", K(ret));
+      } else if (OB_FAIL(op->get_plan()->perform_adjust_onetime_expr(op))) {
+        LOG_WARN("failed to perform adjust onetime expr", K(ret));
       } else if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_2_0_0 &&
                  get_optimizer_context().get_query_ctx()->get_global_hint().has_dbms_stats_hint() &&
                  OB_FAIL(op->get_plan()->perform_gather_stat_replace(op))) {
@@ -16002,7 +16023,9 @@ int ObLogPlan::add_direct_load_explain_note()
         opt_ctx.add_plan_note(DIRECT_MODE_INSERT_INTO_SELECT, "inc_replace");
       }
     } else {
-      if (direct_load_optimizer_ctx.can_use_direct_load()) {
+      if (direct_load_optimizer_ctx.is_disabled_by_transaction()) {
+        opt_ctx.add_plan_note(DIRECT_MODE_DISABLED_BY_TRANSACTION);
+      } else if (direct_load_optimizer_ctx.can_use_direct_load()) {
         opt_ctx.add_plan_note(DIRECT_MODE_DISABLED_BY_PDML);
       }
     }
@@ -19604,6 +19627,7 @@ int ObLogPlan::try_push_topn_into_index_merge_scan(ObLogicalOperator *&top,
     LOG_WARN("get unexpected access path", K(ret), KPC(table_scan->get_access_path()));
   } else if (table_scan->get_filter_exprs().count() != 0 ||
              table_scan->get_pushdown_filter_exprs().count() != 0 ||
+             table_scan->has_func_lookup() ||
              !ObJoinOrder::is_one_layer_intersect_with_fts(static_cast<const IndexMergePath *>(ap)->root_)) {
     // do nothing, topn pushdown requires that only match filter exists on the base table.
   } else if (OB_FAIL(static_cast<const IndexMergePath*>(ap)->get_all_match_exprs(merge_match_exprs,

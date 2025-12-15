@@ -1648,6 +1648,27 @@ int ObDmlCgService::add_vec_idx_col_projector(const ObIArray<ExprType*> &cur_row
   return ret;
 }
 
+int ObDmlCgService::set_embedded_vec_ref_flag(const ObIArray<ObRawExpr*> &cur_row,
+                                              ObDASDMLBaseCtDef &das_ctdef)
+{
+  int ret = OB_SUCCESS;
+  bool is_ref_column = false;
+  const uint64_t embedded_col_id = das_ctdef.table_param_.get_data_table().get_embedded_vec_col_id();
+  for (int64_t i = 0; OB_SUCC(ret) && i < cur_row.count(); ++i) {
+    ObRawExpr *expr = cur_row.at(i);
+    if (OB_NOT_NULL(expr) && expr->is_column_ref_expr()) {
+      const ObColumnRefRawExpr *col = static_cast<ObColumnRefRawExpr *>(expr);
+      if (col->get_column_id() == embedded_col_id && col->is_hybrid_embedded_vec_column()) {
+        is_ref_column = true;
+        LOG_DEBUG("has set the is_ref_column", K(embedded_col_id));
+        break;
+      }
+    }
+  }
+  das_ctdef.is_embedded_vec_ref_column_ = is_ref_column;
+  return ret;
+}
+
 int ObDmlCgService::append_all_pk_column_id(ObSchemaGetterGuard *schema_guard,
                                             const ObTableSchema *table_schema,
                                             ObIArray<uint64_t> &minimal_column_ids)
@@ -1798,11 +1819,7 @@ int ObDmlCgService::append_time_type_column_id(const ObTableSchema *table_schema
     if (OB_ISNULL(column)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid column schema", K(column));
-    } else if (column->get_meta_type().is_datetime() ||
-      column->get_meta_type().is_timestamp() ||
-      column->get_meta_type().is_time() ||
-      column->get_meta_type().is_date() ||
-      column->get_meta_type().is_otimestamp_type()) {
+    } else if (column->is_minimal_mode_related_time_column()) {
       // date/datatime and time/timestamp column need to be added to old_row
       if (OB_FAIL(add_var_to_array_no_dup(minimal_column_ids, column->get_column_id()))) {
         LOG_WARN("add time type column_id failed", K(ret), K(column->get_column_id()));
@@ -2261,6 +2278,7 @@ int ObDmlCgService::generate_das_projector(const ObIArray<uint64_t> &dml_column_
                           && !das_ctdef.table_param_.get_data_table().is_ivf_vector_index()
                           && das_ctdef.op_type_ == DAS_OP_TABLE_UPDATE;
   bool is_spatial_index = das_ctdef.table_param_.get_data_table().is_spatial_index();
+  bool is_semantic_embedded_index = das_ctdef.table_param_.get_data_table().is_hybrid_vector_index_embedded();
   uint8_t extra_geo = (is_spatial_index) ? 1 : 0;
   //generate old row projector
   if (!old_row.empty()) {
@@ -2345,6 +2363,10 @@ int ObDmlCgService::generate_das_projector(const ObIArray<uint64_t> &dml_column_
     if (OB_SUCC(ret) && is_vec_vid_index &&
         OB_FAIL(add_vec_idx_col_projector(new_row, full_row, dml_column_ids, das_ctdef, new_row_projector))) {
       LOG_WARN("add vec idx column for new projector failed", K(ret));
+    }
+    if (OB_SUCC(ret) && is_semantic_embedded_index &&
+        OB_FAIL(set_embedded_vec_ref_flag(new_row, das_ctdef))) {
+      LOG_WARN("fail to set embedded vec ref flag", K(ret));
     }
   }
 
@@ -4677,6 +4699,7 @@ int ObDmlCgService::generate_rowkey_domain_ctdef(
     loc_meta->is_external_table_ = rowkey_domain_schema->is_external_table();
     loc_meta->is_lake_table_ = (rowkey_domain_schema->get_lake_table_format() == share::ObLakeTableFormat::ICEBERG);
     ObString file_location;
+    share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
     OZ(ObExternalTableUtils::get_external_file_location(*rowkey_domain_schema, *schema_guard->get_schema_guard(), cg_.phy_plan_->get_allocator(), file_location));
     loc_meta->is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
     scan_ctdef->table_param_.get_enable_lob_locator_v2()
@@ -4695,6 +4718,12 @@ int ObDmlCgService::generate_rowkey_domain_ctdef(
                                                                       *scan_ctdef,
                                                                       nullptr))) {
       LOG_WARN("fail to generate das result output", K(ret));
+    } else if (rowkey_domain_schema->is_hybrid_vec_index_embedded_type() &&
+               OB_FAIL(semantic_index_info.generate(data_schema,
+                                                    rowkey_domain_schema,
+                                                    scan_ctdef->result_output_.count(),
+                                                    OB_NOT_NULL(scan_ctdef->trans_info_expr_)))) {
+      LOG_WARN("fail to generate semantic index info", K(ret));
     } else {
       rowkey_domain_scan_ctdef = scan_ctdef;
     }

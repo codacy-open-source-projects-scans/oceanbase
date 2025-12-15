@@ -24,7 +24,7 @@ ObScheduleTabletFunc::ObScheduleTabletFunc(
   const ObAdaptiveMergePolicy::AdaptiveMergeReason merge_reason,
   const int64_t loop_cnt)
   : ObBasicScheduleTabletFunc(merge_version, loop_cnt),
-    tablet_status_(),
+    tablet_status_(tenant_status_snapshot_),
     time_guard_(),
     clear_stat_tablets_(),
     merge_reason_(merge_reason)
@@ -339,6 +339,9 @@ int ObScheduleTabletFunc::schedule_merge_dag(
 {
   int ret = OB_SUCCESS;
   UNUSED(merge_reason);
+  if (is_major_merge(merge_type)) {
+    DEBUG_SYNC(BEFORE_SCHEDULE_TABLET_FUNC);
+  }
   if (GCTX.is_shared_storage_mode()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("this functor can not be used in shared-storage mode", K(ret));

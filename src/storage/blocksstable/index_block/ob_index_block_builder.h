@@ -359,6 +359,7 @@ public:
   static const int64_t MIN_INDEX_MICRO_BLOCK_ROW_CNT = 10;
 protected:
   static const int64_t ROOT_BLOCK_SIZE_LIMIT = 16 << 10; // 16KB
+  static const int64_t ROOT_BLOCK_SIZE_LIMIT_FOR_SHARED_STORAGE = 32 << 10; // 32KB
   static const int64_t MAX_LEVEL_LIMIT = 20;
 
   bool is_inited_;
@@ -396,7 +397,8 @@ public:
            ObIMacroBlockFlushCallback *ddl_callback);
   int append_row(const ObMicroBlockDesc &micro_block_desc,
                  const ObMacroBlock &macro_block);
-  int clustered_index_append_row(const ObMicroIndexData &micro_index_data, ObMicroBlockDesc &micro_block_desc);
+  int clustered_index_agg_micro_block(const ObMicroIndexData &micro_index_data, ObMicroBlockDesc &micro_block_desc);
+  int clustered_index_append_row(const ObMicroBlockDesc &micro_block_desc);
   int write_clustered_index_micro_block();
   int generate_macro_row(ObMacroBlock &macro_block, const int64_t ddl_start_row_offset, const bool need_write_macro_meta);
   int append_meta_row_to_dumper(const MacroBlockId &block_id);

@@ -159,14 +159,7 @@ int ObSql::stmt_query(const common::ObString &stmt, ObSqlCtx &context, ObResultS
   FLTSpanGuard(sql_compile);
   common::ObOpProfile<ObMetric> sql_compile_profile(ObProfileId::SQL_COMPILE,
                                                     &result.get_exec_context().get_allocator());
-  bool enable_monitor_profile = false;
-  if (GCONF.enable_sql_audit) {
-    int64_t tenant_id = result.get_session().get_effective_tenant_id();
-    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
-    if (tenant_config.is_valid() && tenant_config->_extend_sql_plan_monitor_metrics) {
-      enable_monitor_profile = true;
-    }
-  }
+  bool enable_monitor_profile = result.get_session().enable_monitor_profile();
   ObProfileSwitcher switcher(enable_monitor_profile ? &sql_compile_profile : nullptr);
   {
     ScopedTimer timer(ObMetricId::ELAPSED_TIME);
@@ -1709,6 +1702,7 @@ int ObSql::handle_pl_prepare(const ObString &sql,
     }
   }
   sess.set_query_start_time(old_query_start_time);
+  ObThreadLogLevelUtils::clear();
   return ret;
 }
 
@@ -1985,6 +1979,7 @@ int ObSql::handle_ps_prepare(const ObString &stmt,
                 && NEED_CHECK_SESS_MAX_PS_HANDLE_LIMIT(open_cursors_limit)
                 && cur_ps_handle_size >= open_cursors_limit) {
         ret = OB_ERR_OPEN_CURSORS_EXCEEDED;
+        LOG_USER_ERROR(OB_ERR_OPEN_CURSORS_EXCEEDED, "prepared statement handles");
         LOG_WARN("exceeds the maximum number of ps handles allowed to open on the session",
         K(ret), K(cur_ps_handle_size), K(open_cursors_limit));
       } else if (NULL != context.secondary_namespace_ || result.is_simple_ps_protocol()) {
@@ -5212,9 +5207,12 @@ int ObSql::need_add_plan(const ObPlanCacheCtx &pc_ctx,
                          bool &need_add_plan)
 {
   int ret = OB_SUCCESS;
-  result.get_exec_context().get_stmt_factory()->get_query_ctx();
+  ObPhysicalPlan *phy_plan = NULL;
   if (false == need_add_plan) {
     // do nothing
+  } else if (OB_ISNULL(phy_plan = result.get_physical_plan())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null phy plan", K(ret), K(phy_plan));
   } else if ((!is_enable_pc && !pc_ctx.add_with_compare_) || !pc_ctx.should_add_plan_) {
     need_add_plan = false;
   } else if (OB_ISNULL(result.get_exec_context().get_stmt_factory())
@@ -5225,6 +5223,11 @@ int ObSql::need_add_plan(const ObPlanCacheCtx &pc_ctx,
     need_add_plan = false;
   } else if (result.get_exec_context().get_stmt_factory()->get_query_ctx()->has_hybrid_search()) {
     need_add_plan = false;
+  } else if (OB_USE_PLAN_CACHE_DEFAULT != phy_plan->get_phy_plan_hint().plan_cache_policy_
+             && result.get_session().get_ddl_info().is_refreshing_mview()
+             && ObStmt::is_dml_write_stmt(result.get_stmt_type())) {
+    need_add_plan = false;
+    LOG_DEBUG("materialized view refresh plan not use plan cache");
   }
   return ret;
 }

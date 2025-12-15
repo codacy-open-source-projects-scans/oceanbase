@@ -4196,6 +4196,7 @@ int ObDDLOperator::inner_alter_table_rename_index_(
   int ret = OB_SUCCESS;
   int64_t new_schema_version = OB_INVALID_VERSION;
   ObSchemaService *schema_service = schema_service_.get_schema_service();
+  const bool in_offline_ddl_white_list = new_index_table_schema.get_in_offline_ddl_white_list();
   if (OB_ISNULL(schema_service)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema_service is NULL", K(ret));
@@ -4219,6 +4220,7 @@ int ObDDLOperator::inner_alter_table_rename_index_(
     }
     new_index_table_schema.set_is_in_deleting(is_in_deleting);
     new_index_table_schema.set_name_generated_type(GENERATED_TYPE_USER);
+    new_index_table_schema.set_in_offline_ddl_white_list(in_offline_ddl_white_list || new_index_table_schema.get_in_offline_ddl_white_list());
     if (OB_FAIL(new_index_table_schema.set_table_name(new_index_name))) {
       RS_LOG(WARN, "failed to set new table name!", K(new_index_table_schema), K(ret));
     } else if (OB_FAIL(schema_service->get_table_sql_service().update_table_options(
@@ -4570,8 +4572,8 @@ int ObDDLOperator::update_aux_table(
           new_aux_table_schema.set_store_format(new_table_schema.get_store_format());
           new_aux_table_schema.set_progressive_merge_round(new_table_schema.get_progressive_merge_round());
           new_aux_table_schema.set_storage_format_version(new_table_schema.get_storage_format_version());
-          // index table should only inherit table mode and table state flag from data table
-          new_aux_table_schema.set_table_mode(new_table_schema.get_table_mode_flag());
+          // index table should only inherit table mode flag and table state flag from data table
+          new_aux_table_schema.set_table_mode_flag(new_table_schema.get_table_mode_flag());
           new_aux_table_schema.set_table_state_flag(new_table_schema.get_table_state_flag());
           new_aux_table_schema.set_duplicate_attribute(new_table_schema.get_duplicate_scope(), new_table_schema.get_duplicate_read_consistency());
           new_aux_table_schema.set_enable_macro_block_bloom_filter(new_table_schema.get_enable_macro_block_bloom_filter());
@@ -4922,6 +4924,51 @@ int ObDDLOperator::update_indexes_type(const ObTableSchema &data_table_schema,
                                                       trans, tenant_id,
                                                       data_table_id,
                                                       data_table_schema.get_in_offline_ddl_white_list()))) {
+    LOG_WARN("update data table schema version failed", K(ret));
+  }
+  return ret;
+}
+
+int ObDDLOperator::switch_mlog_status(const share::schema::ObTableSchema &data_table_schema,
+                                      const uint64_t old_mlog_id,
+                                      const uint64_t new_mlog_id,
+                                      ObSchemaGetterGuard &schema_guard,
+                                      common::ObMySQLTransaction &trans)
+{
+  int ret = OB_SUCCESS;
+  ObSchemaService *schema_service = schema_service_.get_schema_service();
+  int64_t new_schema_version = OB_INVALID_VERSION;
+  const ObTableSchema *old_mlog_schema = nullptr;
+  const ObTableSchema *new_mlog_schema = nullptr;
+  uint64_t tenant_id = data_table_schema.get_tenant_id();
+  uint64_t data_table_id = data_table_schema.get_table_id();
+
+  if (OB_ISNULL(schema_service)) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("schema service should not be NULL");
+  } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, old_mlog_id, old_mlog_schema))) {
+    LOG_WARN("get table schema failed", K(ret));
+  } else if (nullptr == old_mlog_schema) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("error unexpected, table schema must not be nullptr", K(ret));
+  } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, new_mlog_id, new_mlog_schema))) {
+    LOG_WARN("get table schema failed", K(ret));
+  } else if (nullptr == new_mlog_schema) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("error unexpected, table schema must not be nullptr", K(ret));
+  } else if (OB_FAIL(schema_service_.gen_new_schema_version(tenant_id, new_schema_version))) {
+    LOG_WARN("fail to gen new schema_version", K(ret), K(tenant_id));
+  } else if (OB_FAIL(schema_service->get_table_sql_service().update_mlog_status(
+                 data_table_schema, new_mlog_id, old_mlog_schema->get_table_name(), new_schema_version, trans))) {
+    LOG_WARN("update mlog type failed", K(ret), K(data_table_schema));
+  } else if (OB_FAIL(schema_service_.gen_new_schema_version(tenant_id, new_schema_version))) {
+    LOG_WARN("fail to gen new schema_version", K(ret), K(tenant_id));
+  } else if (OB_FAIL(schema_service->get_table_sql_service().update_mlog_status(
+                 data_table_schema, old_mlog_id, new_mlog_schema->get_table_name(), new_schema_version, trans))) {
+    LOG_WARN("update mlog type failed", K(ret), K(data_table_schema));
+  } else if (OB_FAIL(schema_service->get_table_sql_service().update_data_table_schema_version(
+                 trans, tenant_id, data_table_id,
+                 data_table_schema.get_in_offline_ddl_white_list()))) {
     LOG_WARN("update data table schema version failed", K(ret));
   }
   return ret;
