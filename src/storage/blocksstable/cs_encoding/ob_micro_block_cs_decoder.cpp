@@ -1188,7 +1188,7 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::init_decoders()
       LOG_WARN("fail to alloc decoders buf", K(ret));
     } else {
       int i = 0;
-      for ( ; OB_SUCC(ret) && i < column_count_; ++i) {
+      for ( ; OB_SUCC(ret) && i < min(column_count_, request_cnt_); ++i) {
         col_type.set_type(static_cast<ObObjType>(transform_helper_.get_column_header(i).obj_type_));
         if (OB_FAIL(add_decoder(i, col_type, nullptr, decoders_buf_pos, decoders_[i]))) {
           LOG_WARN("add_decoder failed", K(ret), K(i), K(col_type));
@@ -1519,7 +1519,7 @@ const ObRowHeader ObMicroBlockCSDecoder<IS_MULTI_VERSION>::init_major_store_row_
 
 template<bool IS_MULTI_VERSION>
 int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::compare_rowkey(
-  const ObDatumRowkey &rowkey, const int64_t index, int32_t &compare_result)
+  const ObDatumRowkey &rowkey, const int64_t index, int32_t &compare_result, const int64_t common_prefix_len)
 {
   int ret = OB_SUCCESS;
   compare_result = 0;
@@ -1540,9 +1540,12 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::compare_rowkey(
       STORAGE_LOG(WARN, "Unexpectec compare columm count!",
                   K(compare_column_count), K(stored_rowkey_count),
                   "micro_header", *transform_helper_.get_micro_block_header());
+    } else if (OB_UNLIKELY(common_prefix_len < 0 || common_prefix_len >= compare_column_count)) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("invalid argument", K(ret), K(common_prefix_len), K(compare_column_count));
     } else {
       ObStorageDatum store_datum;
-      for (int64_t i = 0; OB_SUCC(ret) && i < compare_column_count && 0 == compare_result; ++i) {
+      for (int64_t i = common_prefix_len; OB_SUCC(ret) && i < compare_column_count && 0 == compare_result; ++i) {
         // before calling decode, datum ptr should point to the local buffer
         store_datum.reuse();
         int64_t decoder_idx = i;

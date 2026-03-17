@@ -765,6 +765,9 @@ constexpr int64_t OB_WORD_SEGMENT_COLUMN_NAME_PREFIX_LEN = sizeof("__word_segmen
 constexpr int64_t OB_WORD_COUNT_COLUMN_NAME_PREFIX_LEN = sizeof("__word_count") - 1;
 const char OB_FT_COL_ID_DELIMITER = '_';
 
+// hybrid search
+const char *const OB_HYBRID_SEARCH_SCORE_COLUMN_NAME = "__score";
+
 // backup and restore
 const int64_t OB_MAX_CLUSTER_NAME_LENGTH = OB_MAX_APP_NAME_LENGTH;
 const int64_t OB_MAX_URI_LENGTH = 2048;
@@ -794,6 +797,7 @@ const int64_t OB_INNER_TABLE_BACKUP_LEVEL_LENGTH = 64;
 const int64_t OB_INNER_TABLE_BACKUP_DEFAULT_FIELD_LENGTH = 256;
 const int64_t OB_MAX_BACKUP_PTAH_LIST_LENGTH = 8 * 1024;
 const int64_t OB_MAX_EXECUTOR_TENANT_LENGTH = 64 * 1024;
+const int64_t OB_BACKUP_FILE_LIST_TRIPLE_SIZE = 256;
 
 // object storage service
 const int64_t OB_MAX_STORAGE_OPERATION_INFO_LENGTH = 8 * 1024;
@@ -1811,7 +1815,7 @@ OB_INLINE bool is_bootstrap_resource_pool(const uint64_t resource_pool_id)
 const int64_t OB_MALLOC_NORMAL_BLOCK_SIZE = (1LL << 13) - 256;                 // 8KB
 const int64_t OB_MALLOC_MIDDLE_BLOCK_SIZE = (1LL << 16) - 256;                 // 64KB
 const int64_t OB_MALLOC_BIG_BLOCK_SIZE = (1LL << 21) - ACHUNK_PRESERVE_SIZE;// 2MB (-17KB)
-const int64_t OB_MALLOC_REQ_NORMAL_BLOCK_SIZE = (240LL << 10);                 // 240KB
+const int64_t OB_MALLOC_REQ_NORMAL_BLOCK_SIZE = (240LL << 10) - 256;                 // 240KB
 const int64_t WARMUP_MAX_KEY_SET_SIZE_IN_RPC = (1LL << 22);                    // 4M
 const int64_t OB_DEFAULT_STACK_SIZE = (1L << 19);                              // 512K
 const int64_t OB_MAX_CSV_BATCHLINE_BUF_SIZE = (1LL << 23); // 8M

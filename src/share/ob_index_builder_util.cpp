@@ -14,6 +14,7 @@
 #include "ob_index_builder_util.h"
 #include "ob_fts_index_builder_util.h"
 #include "ob_vec_index_builder_util.h"
+#include "search_index/ob_search_index_builder_util.h"
 
 #include "sql/resolver/ddl/ob_ddl_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
@@ -426,7 +427,11 @@ int ObIndexBuilderUtil::set_index_table_columns(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fts arg index type not expected", K(ret));
     }
-  } else { // not fts index or multivalue index
+  } else if (share::schema::is_search_data_index(arg.index_type_)) {
+    if (OB_FAIL(ObSearchIndexBuilderUtil::set_search_index_table_columns(arg, data_schema, index_schema))) {
+      LOG_WARN("failed to set search index table columns", K(ret));
+    }
+  } else {
     HEAP_VAR(ObRowDesc, row_desc) {
       bool is_index_column = false;
       // index columns
@@ -483,7 +488,7 @@ int ObIndexBuilderUtil::set_index_table_columns(
                    "table_name", data_schema.get_table_name(),
                    "column name", sort_item.column_name_,
                    "column length", sort_item.prefix_len_, K(ret));
-        } else if (ob_is_json_tc(data_column->get_data_type())) {
+        } else if (ob_is_json_tc(data_column->get_data_type()) && !arg.is_search_def_index()) {
           if (use_mysql_errno && data_column->is_func_idx_column()) {
             ret = OB_ERR_FUNCTIONAL_INDEX_ON_JSON_OR_GEOMETRY_FUNCTION;
             LOG_WARN("Cannot create a functional index on an expression that returns a JSON or GEOMETRY.",K(ret));
@@ -502,6 +507,14 @@ int ObIndexBuilderUtil::set_index_table_columns(
             LOG_WARN("add column failed", "data_column", *data_column, K(is_index_column),
                 K(is_rowkey), "rowkey_order_type", arg.index_columns_.at(i).order_type_,
                 K(row_desc), K(ret));
+        } else if (arg.is_search_def_index() && !sort_item.column_comment_.empty()) {
+          ObColumnSchemaV2 *index_column = index_schema.get_column_schema(data_column->get_column_name());
+          if (OB_ISNULL(index_column)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("failed to get column schema just added", K(ret), K(data_column->get_column_name()));
+          } else if (OB_FAIL(index_column->set_comment(sort_item.column_comment_))) {
+            LOG_WARN("failed to set column comment", K(ret), K(sort_item.column_comment_));
+          }
         }
       }
       if (OB_SUCC(ret)) {

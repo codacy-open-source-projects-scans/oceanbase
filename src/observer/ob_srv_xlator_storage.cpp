@@ -76,6 +76,10 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcBackupLSCleanP, gctx_);
     RPC_PROCESSOR(ObRpcBackupMetaP, gctx_);
     RPC_PROCESSOR(ObRpcBackupFuseTabletMetaP, gctx_);
+#ifdef OB_BUILD_SHARED_STORAGE
+    RPC_PROCESSOR(ObRpcSSHACopyMacroBlocksP, gctx_);
+    RPC_PROCESSOR(ObRpcSSHADeleteMacroBlocksP, gctx_);
+#endif
     RPC_PROCESSOR(ObRpcBackupLSDataResP, gctx_);
     RPC_PROCESSOR(ObRpcBackupCleanLSResP, gctx_);
     RPC_PROCESSOR(ObRpcNotifyArchiveP, gctx_);
@@ -152,6 +156,7 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObGetSSMicroCacheInfoP, gctx_);
     RPC_PROCESSOR(ObRpcClearSSMicroCacheP, gctx_);
     RPC_PROCESSOR(ObRpcFlushSSLocalCacheP, gctx_);
+    RPC_PROCESSOR(ObRpcPrewarmSSLocalCacheP, gctx_);
     RPC_PROCESSOR(ObDelSSLocalTmpFileP, gctx_);
     RPC_PROCESSOR(ObDelSSLocalMajorP, gctx_);
     RPC_PROCESSOR(ObCalibrateSSDiskSpaceP, gctx_);
@@ -162,6 +167,7 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcTabletSplitScheduleP, gctx_);
     RPC_PROCESSOR(ObRpcGetMinSSGCLastSuccScnP, gctx_);
     RPC_PROCESSOR(ObRpcGetSSGCLastSuccScnsP, gctx_);
+    RPC_PROCESSOR(ObRpcAdjustSSGCTabletVersionRetentionScnP, gctx_);
     RPC_PROCESSOR(ObRpcPushSSGCLastSuccScnP, gctx_);
     RPC_PROCESSOR(ObDelSSMacroCacheP, gctx_);
     RPC_PROCESSOR(ObDelSSTabletMacroCacheP, gctx_);

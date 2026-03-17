@@ -16,6 +16,7 @@
 #include "storage/tx/ob_trans_service.h"
 #include "share/table/ob_table_ddl_struct.h"
 #include "share/ob_heartbeat_handler.h"
+#include "storage/ddl/ob_inc_ddl_merge_task_utils.h"
 
 namespace oceanbase
 {
@@ -1398,7 +1399,7 @@ DEF_TO_STRING(ObCreateTenantArg)
        , K_(root_key_type)
        , K_(root_key)
 #endif
-      );
+       );
   return pos;
 }
 
@@ -1420,7 +1421,7 @@ OB_SERIALIZE_MEMBER((ObCreateTenantArg, ObDDLArg),
                     , root_key_type_
                     , root_key_
 #endif
-                    );
+                  );
 
 int ObCreateTenantEndArg::init(const uint64_t tenant_id)
 {
@@ -3150,7 +3151,8 @@ DEF_TO_STRING(ObColumnSortItem)
        K_(prefix_len),
        K_(order_type),
        K_(column_id),
-       K_(is_func_index));
+       K_(is_func_index),
+       K_(column_comment));
   J_OBJ_END();
   return pos;
 }
@@ -3160,7 +3162,8 @@ OB_SERIALIZE_MEMBER(ObColumnSortItem,
                                  prefix_len_,
                                  order_type_,
                                  column_id_,
-                                 is_func_index_);
+                                 is_func_index_,
+                                 column_comment_);
 
 bool ObTableOption::is_valid() const
 {
@@ -3449,7 +3452,8 @@ DEF_TO_STRING(ObDropIndexArg) {
        K_(index_ids),
        K_(table_id),
        K_(is_drop_in_rebuild_task),
-       K_(is_oracle_tmp_table_v2_index_table));
+       K_(is_oracle_tmp_table_v2_index_table),
+       K_(is_parent_task_dropping_search_index));
   J_OBJ_END();
   return pos;
 }
@@ -3472,7 +3476,8 @@ OB_SERIALIZE_MEMBER((ObDropIndexArg, ObIndexArg),
                     table_id_,
                     is_drop_in_rebuild_task_,
                     is_parent_task_dropping_spiv_index_,
-                    is_oracle_tmp_table_v2_index_table_);
+                    is_oracle_tmp_table_v2_index_table_,
+                    is_parent_task_dropping_search_index_);
 
 OB_SERIALIZE_MEMBER(ObDropIndexRes, tenant_id_, index_table_id_, schema_version_, task_id_);
 
@@ -3497,6 +3502,7 @@ int ObDropIndexArg::assign(const ObDropIndexArg &other)
     table_id_ = other.table_id_;
     is_drop_in_rebuild_task_ = other.is_drop_in_rebuild_task_;
     is_oracle_tmp_table_v2_index_table_ = other.is_oracle_tmp_table_v2_index_table_;
+    is_parent_task_dropping_search_index_ = other.is_parent_task_dropping_search_index_;
   }
   return ret;
 }
@@ -8691,7 +8697,10 @@ int ObLSBackupCleanArg::assign(const ObLSBackupCleanArg &arg)
 }
 
 OB_SERIALIZE_MEMBER(ObBackupDataArg, trace_id_, job_id_, tenant_id_, task_id_, backup_set_id_,
-    incarnation_id_, backup_type_, backup_date_, ls_id_, turn_id_, retry_id_, dst_server_, backup_path_, backup_data_type_);
+    incarnation_id_, backup_type_, backup_date_, ls_id_, turn_id_, retry_id_, dst_server_, backup_path_,
+    backup_data_type_,
+    start_scn_ // FARM COMPAT WHITELIST # TODO(yanfeng): remove later
+);
 
 bool ObBackupDataArg::is_valid() const
 {
@@ -8707,7 +8716,8 @@ bool ObBackupDataArg::is_valid() const
       && retry_id_ >= 0
       && dst_server_.is_valid()
       && !backup_path_.is_empty()
-      && backup_data_type_.is_valid();
+      && backup_data_type_.is_valid()
+      && start_scn_.is_valid();
 }
 
 int ObBackupDataArg::assign(const ObBackupDataArg &arg)
@@ -8732,6 +8742,7 @@ int ObBackupDataArg::assign(const ObBackupDataArg &arg)
     retry_id_ = arg.retry_id_;
     dst_server_ = arg.dst_server_;
     backup_data_type_ = arg.backup_data_type_;
+    start_scn_ = arg.start_scn_;
   }
   return ret;
 }
@@ -8745,8 +8756,8 @@ bool ObBackupTaskRes::is_valid() const
       && tenant_id_ > 0
       && src_server_.is_valid()
       && ls_id_.is_valid()
-      && !trace_id_.is_invalid()
-      && !dag_id_.is_invalid();
+      && !trace_id_.is_invalid();
+      // && !dag_id_.is_invalid(); // TODO(yanfeng.yyy): depends on mingqiao implement new dag framework code
 }
 
 int ObBackupTaskRes::assign(const ObBackupTaskRes &res)
@@ -8913,6 +8924,72 @@ int ObBackupFuseTabletMetaArg::assign(const ObBackupFuseTabletMetaArg &arg)
     turn_id_ = arg.turn_id_;
     retry_id_ = arg.retry_id_;
     dst_server_ = arg.dst_server_;
+  }
+  return ret;
+}
+
+OB_SERIALIZE_MEMBER(ObSSHAMacroBlocksArg, job_id_, ls_id_, task_id_, task_type_, retry_cnt_, trace_id_,
+  tenant_id_, backup_set_id_, backup_path_, dst_server_, macro_block_batch_, macro_list_addr_, macro_block_cnt_);
+
+ObSSHAMacroBlocksArg::ObSSHAMacroBlocksArg()
+  : job_id_(),
+    ls_id_(),
+    task_id_(),
+    task_type_(),
+    retry_cnt_(),
+    trace_id_(),
+    tenant_id_(),
+    backup_set_id_(),
+    backup_path_(),
+    dst_server_(),
+    macro_block_batch_(),
+    macro_list_addr_(),
+    macro_block_cnt_()
+{
+}
+
+bool ObSSHAMacroBlocksArg::is_valid() const
+{
+  bool valid = job_id_ > 0
+      && ls_id_ > 0
+      && task_id_ > 0
+      && retry_cnt_ >= 0
+      && trace_id_.is_valid()
+      && OB_INVALID_ID != tenant_id_
+      && backup_set_id_ > 0
+      && !backup_path_.is_empty()
+      && dst_server_.is_valid();
+  if (!valid) {
+  } else if (share::ObSSHAMacroTaskType::Type::BACKUP_CLEAN == task_type_) {
+    valid = macro_list_addr_.is_valid();
+  } else {
+    valid = !macro_block_batch_.is_empty() && macro_block_cnt_ > 0;
+  }
+  return valid;
+}
+
+int ObSSHAMacroBlocksArg::assign(const ObSSHAMacroBlocksArg &arg)
+{
+  int ret = OB_SUCCESS;
+  if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(arg));
+  } else if (OB_FAIL(backup_path_.assign(arg.backup_path_.ptr()))) {
+    LOG_WARN("fail to assgin backup dest", K(ret));
+  } else if (OB_FAIL(macro_block_batch_.assign(arg.macro_block_batch_))) {
+    LOG_WARN("failed to assign macro block batch", K(ret));
+  } else {
+    job_id_ = arg.job_id_;
+    ls_id_ = arg.ls_id_;
+    task_id_ = arg.task_id_;
+    task_type_ = arg.task_type_;
+    retry_cnt_ = arg.retry_cnt_;
+    trace_id_ = arg.trace_id_;
+    tenant_id_ = arg.tenant_id_;
+    backup_set_id_ = arg.backup_set_id_;
+    dst_server_ = arg.dst_server_;
+    macro_list_addr_ = arg.macro_list_addr_;
+    macro_block_cnt_ = arg.macro_block_cnt_;
   }
   return ret;
 }
@@ -9485,6 +9562,11 @@ OB_DEF_SERIALIZE_SIZE(ObRootKeyResult)
               key_type_,
               root_key_);
   return len;
+}
+
+bool ObRootKeyResult::is_valid() const
+{
+  return obrpc::RootKeyType::INVALID != key_type_ && !root_key_.empty();
 }
 
 int ObRootKeyResult::assign(const ObRootKeyResult &other)
@@ -11822,6 +11904,62 @@ void ObDetectSSlogLSArg::reset()
   addr_.reset();
 }
 
+OB_SERIALIZE_MEMBER(ObGetUnitInfoArg, tenant_id_);
+
+int ObGetUnitInfoArg::assign(const ObGetUnitInfoArg &other)
+{
+  int ret = OB_SUCCESS;
+  if (this == &other) {
+  } else {
+    tenant_id_ = other.tenant_id_;
+  }
+  return ret;
+}
+
+int ObGetUnitInfoArg::init(const uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id));
+  } else {
+    tenant_id_ = tenant_id;
+  }
+  return ret;
+}
+
+OB_SERIALIZE_MEMBER(ObGetUnitInfoResult, addr_, data_disk_size_limit_);
+
+int ObGetUnitInfoResult::assign(const ObGetUnitInfoResult &other)
+{
+  int ret = OB_SUCCESS;
+  if (this == &other) {
+  } else {
+    addr_ = other.addr_;
+    data_disk_size_limit_ = other.data_disk_size_limit_;
+  }
+  return ret;
+}
+
+int ObGetUnitInfoResult::init(const ObAddr &addr, const int64_t data_disk_size_limit)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!addr.is_valid() || data_disk_size_limit <= 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(addr), K(data_disk_size_limit));
+  } else {
+    addr_ = addr;
+    data_disk_size_limit_ = data_disk_size_limit;
+  }
+  return ret;
+}
+
+void ObGetUnitInfoResult::reset()
+{
+  addr_.reset();
+  data_disk_size_limit_ = 0;
+}
+
 OB_SERIALIZE_MEMBER(ObCheckServerAliveArg, addr_);
 
 int ObCheckServerAliveArg::assign(const ObCheckServerAliveArg &other)
@@ -12304,6 +12442,8 @@ OB_SERIALIZE_MEMBER(ObGetSSMicroCacheAllInfoArg, tenant_id_);
 OB_SERIALIZE_MEMBER(ObGetSSMicroCacheAllInfoResult, micro_cache_stat_, super_blk_, arc_info_);
 OB_SERIALIZE_MEMBER(ObClearSSMicroCacheArg, tenant_id_);
 OB_SERIALIZE_MEMBER(ObFlushSSLocalCacheArg, tenant_id_, flush_type_, rpc_abs_timeout_us_);
+OB_SERIALIZE_MEMBER(ObPrewarmSSLocalCacheArg, tenant_id_, req_start_us_, data_table_tablets_, index_table_tablets_);
+OB_SERIALIZE_MEMBER(ObPrewarmSSLocalCacheResult, ret_);
 OB_SERIALIZE_MEMBER(ObDelSSLocalTmpFileArg, tenant_id_, macro_id_);
 OB_SERIALIZE_MEMBER(ObDelSSLocalMajorArg, tenant_id_);
 OB_SERIALIZE_MEMBER(ObCalibrateSSDiskSpaceArg, tenant_id_);
@@ -12311,6 +12451,7 @@ OB_SERIALIZE_MEMBER(ObDelSSTabletMicroArg, tenant_id_, tablet_id_);
 OB_SERIALIZE_MEMBER(ObSetSSCkptCompressorArg, tenant_id_, block_type_, compressor_type_);
 OB_SERIALIZE_MEMBER(ObSetSSCacheSizeRatioArg, tenant_id_, micro_cache_size_ratio_, macro_cache_size_ratio_);
 OB_SERIALIZE_MEMBER(ObSSGCLastSuccScnArg, tenant_id_, is_for_sslog_table_);
+OB_SERIALIZE_MEMBER(ObSSGCAdjustRetentionScnArg, tenant_id_, task_type_, task_id_, preserve_scn_, ls_id_);
 OB_SERIALIZE_MEMBER(ObSSGCPushLastSuccScnArg, tenant_id_, succ_scn_ns_);
 OB_SERIALIZE_MEMBER(ObSSGCLastSuccSCNsRes, last_succ_scns_);
 OB_SERIALIZE_MEMBER(ObSSGCDetectInfoArg, tenant_id_);
@@ -12335,6 +12476,15 @@ ObRpcRemoteWriteDDLIncCommitLogArg::~ObRpcRemoteWriteDDLIncCommitLogArg()
   if (OB_FAIL(release())) {
     LOG_WARN("fail to release tx_desc", K(ret));
   }
+  if (!lob_inc_major_buffer_.empty()) {
+    allocator_.free(lob_inc_major_buffer_.ptr());
+    lob_inc_major_buffer_.reset();
+  }
+  if (!data_inc_major_buffer_.empty()) {
+    allocator_.free(data_inc_major_buffer_.ptr());
+    data_inc_major_buffer_.reset();
+  }
+  allocator_.reset();
 }
 
 int ObRpcRemoteWriteDDLIncCommitLogArg::init(const uint64_t tenant_id,
@@ -12380,6 +12530,30 @@ int ObRpcRemoteWriteDDLIncCommitLogArg::init(const uint64_t tenant_id,
   }
   return ret;
 }
+
+#ifdef OB_BUILD_SHARED_STORAGE
+int ObRpcRemoteWriteDDLIncCommitLogArg::set_ss_inc_major(
+    const blocksstable::ObSSTable *data_inc_major,
+    const blocksstable::ObSSTable *lob_inc_major)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObIncDDLMergeTaskUtils::serialize_inc_major_to_string(allocator_,
+                                                                    data_inc_major,
+                                                                    data_format_version_,
+                                                                    data_inc_major_buffer_))) {
+    LOG_WARN("fail to serialize inc major", KR(ret), K(data_format_version_));
+  } else if (lob_meta_tablet_id_.is_valid()
+             && OB_FAIL(ObIncDDLMergeTaskUtils::serialize_inc_major_to_string(allocator_,
+                                                                              lob_inc_major,
+                                                                              data_format_version_,
+                                                                              lob_inc_major_buffer_))) {
+    LOG_WARN("fail to serialize lob inc major", KR(ret), K(data_format_version_));
+  } else {
+    is_co_sstable_ = data_inc_major->is_co_sstable();
+  }
+  return ret;
+}
+#endif
 
 int ObRpcRemoteWriteDDLIncCommitLogArg::release()
 {
@@ -12454,6 +12628,15 @@ OB_DEF_DESERIALIZE(ObRpcRemoteWriteDDLIncCommitLogArg)
                 data_inc_major_buffer_,
                 lob_inc_major_buffer_);
   }
+#ifdef OB_BUILD_SHARED_STORAGE
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(ObIncDDLMergeTaskUtils::deep_copy_string_buffer(allocator_, data_inc_major_buffer_))) {
+      LOG_WARN("fail to deep copy string buffer", KR(ret));
+    } else if (OB_FAIL(ObIncDDLMergeTaskUtils::deep_copy_string_buffer(allocator_, lob_inc_major_buffer_))) {
+      LOG_WARN("fail to deep copy string buffer", KR(ret));
+    }
+  }
+#endif
   return ret;
 }
 

@@ -3956,6 +3956,7 @@ def_table_schema(
     ('major_turn_id', 'int', 'false', '0'),
     ('log_file_count', 'int', 'false', '0'),
     ('finish_log_file_count', 'int', 'false', '0'),
+    ('extra_info', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', ''),
     ],
 )
 def_table_schema(
@@ -4001,6 +4002,7 @@ def_table_schema(
     ('major_turn_id', 'int', 'false', '0'),
     ('log_file_count', 'int', 'false', '0'),
     ('finish_log_file_count', 'int', 'false', '0'),
+    ('extra_info', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'false', ''),
     ],
 )
 def_table_schema(
@@ -8747,7 +8749,6 @@ all_ai_model_endpoint_def = dict(
 def_table_schema(**all_ai_model_endpoint_def)
 
 # 573 : __wr_active_session_history_v2
-
 def_table_schema(
   owner = 'zhangyiqiang.zyq',
   table_id      = '573',
@@ -8811,9 +8812,97 @@ def_table_schema(
     ('weight', 'double', 'true')
   ],
 )
-# 574: __all_tenant_macro_block_ha_task
-# 575: __all_tenant_macro_block_ha_task_progress
-# 576: __all_tenant_macro_block_ha_task_history
+
+def_table_schema(
+  owner = 'haoyuanke.hyk',
+  table_name    = '__all_tenant_macro_block_ha_task',
+  table_id      = '574',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('tenant_id', 'int'),
+    ('parent_task_id', 'int'),
+    ('task_type', 'varchar:60'),
+    ('ls_id', 'int'),
+    ('task_id', 'int'),
+    ],
+  in_tenant_space = True,
+  is_cluster_private = True,
+  meta_record_in_sys = False,
+
+  normal_columns = [
+    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
+    ('svr_port', 'int'),
+    ('macro_block_cnt', 'int'),
+    ('macro_info', 'longblob'),
+    ('total_bytes', 'int', 'true', '0'),
+    ('finish_bytes', 'int', 'true', '0'),
+    ('task_status', 'varchar:OB_DEFAULT_STATUS_LENTH', 'true', ''),
+    ('start_time', 'timestamp'),
+    ('end_time', 'timestamp'),
+    ('retry_cnt', 'int', 'false', '0'),
+    ('result', 'int', 'true', '0'),
+    ('trace_id', 'varchar:OB_MAX_TRACE_ID_BUFFER_SIZE', 'true'),
+    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
+    ],
+)
+
+def_table_schema(
+  owner = 'haoyuanke.hyk',
+  table_name    = '__all_tenant_macro_block_ha_task_progress',
+  table_id      = '575',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('tenant_id', 'int'),
+    ('parent_task_id', 'int'),
+    ('task_type', 'varchar:60'),
+    ],
+  in_tenant_space = True,
+  is_cluster_private = True,
+  meta_record_in_sys = False,
+
+  normal_columns = [
+    ('task_status', 'int', 'true', '0'),
+    ('total_task_count', 'int', 'true', '0'),
+    ('finish_task_count', 'int', 'true', '0'),
+    ('total_macro_block_count', 'int', 'true', '0'),
+    ('finish_macro_block_count', 'int', 'true', '0'),
+    ('total_bytes', 'int', 'true', '0'),
+    ('finish_bytes', 'int', 'true', '0'),
+    ('result', 'int', 'true', '0'),
+    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
+    ],
+)
+
+def_table_schema(
+  owner = 'haoyuanke.hyk',
+  table_name    = '__all_tenant_macro_block_ha_task_history',
+  table_id      = '576',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('tenant_id', 'int'),
+    ('parent_task_id', 'int'),
+    ('task_type', 'varchar:60'),
+    ],
+  in_tenant_space = True,
+  is_cluster_private = True,
+  meta_record_in_sys = False,
+
+  normal_columns = [
+    ('task_status', 'int', 'true', '0'),
+    ('total_task_count', 'int', 'true', '0'),
+    ('finish_task_count', 'int', 'true', '0'),
+    ('total_macro_block_count', 'int', 'true', '0'),
+    ('finish_macro_block_count', 'int', 'true', '0'),
+    ('total_bytes', 'int', 'true', '0'),
+    ('finish_bytes', 'int', 'true', '0'),
+    ('result', 'int', 'true', '0'),
+    ('comment', 'varchar:OB_INNER_TABLE_DEFAULT_VALUE_LENTH', 'true', ''),
+    ],
+)
+
 def_table_schema(
   owner       = 'yunshan.tys',
   table_name  = '__all_tablet_to_global_temporary_table',
@@ -8970,7 +9059,25 @@ def_table_schema(
     ('last_error_msg', 'varchar:OB_MAX_ERROR_MSG_LEN', 'true'),
   ],
 )
-# 584: __all_ss_gc_reserved_snapshot
+def_table_schema(
+  owner = 'yangyifei.yyf',
+  table_name    = '__all_ss_gc_reserved_snapshot',
+  table_id      = '584',
+  table_type = 'SYSTEM_TABLE',
+  gm_columns = ['gmt_create', 'gmt_modified'],
+  rowkey_columns = [
+    ('task_type', 'int'),
+    ('task_id', 'int'),
+    ('tenant_id', 'int'),
+    ('ls_id', 'int')
+  ],
+  in_tenant_space = True,
+  is_cluster_private = True,
+  meta_record_in_sys = False,
+  normal_columns = [
+    ('snapshot_version', 'uint'),
+  ],
+)
 # 585: __all_table_archive_history
 # 586: __all_java_policy
 # 587: __all_java_policy_history
@@ -8978,7 +9085,8 @@ def_table_schema(
 # 589: __all_catalog_column_stat
 # 590: __all_catalog_table_opt_stat_gather_history
 # 591: __all_audit_log_encryption_password
-
+# 592: __all_direct_load_stream
+# 593: __all_optstat_catalog_user_prefs
 # 余留位置（此行之前占位）
 # 本区域占位建议：采用真实表名进行占位
 ################################################################################
@@ -17890,9 +17998,23 @@ def_table_schema(**gen_iterate_private_virtual_table_def(
   in_tenant_space = True,
   keywords = all_def_keywords['__wr_active_session_history_v2']))
 
-# 12577: __all_virtual_macro_block_ha_task
-# 12578: __all_virtual_macro_block_ha_task_progress
-# 12579: __all_virtual_macro_block_ha_task_history
+def_table_schema(**gen_iterate_private_virtual_table_def(
+  table_id = '12577',
+  table_name = '__all_virtual_macro_block_ha_task',
+  keywords = all_def_keywords['__all_tenant_macro_block_ha_task'],
+  in_tenant_space = True))
+
+def_table_schema(**gen_iterate_private_virtual_table_def(
+  table_id = '12578',
+  table_name = '__all_virtual_macro_block_ha_task_progress',
+  keywords = all_def_keywords['__all_tenant_macro_block_ha_task_progress'],
+  in_tenant_space = True))
+
+def_table_schema(**gen_iterate_private_virtual_table_def(
+  table_id = '12579',
+  table_name = '__all_virtual_macro_block_ha_task_history',
+  keywords = all_def_keywords['__all_tenant_macro_block_ha_task_history'],
+  in_tenant_space = True))
 
 def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12580',
@@ -18000,6 +18122,9 @@ def_table_schema(
     ('data_table_id', 'int'),
     ('occupy_size', 'int'),
     ('required_size', 'int'),
+    ('object_id', 'int'),
+    ('partition_name', 'varchar:OB_MAX_PARTITION_NAME_LENGTH'),
+    ('subpartition_name', 'varchar:OB_MAX_PARTITION_NAME_LENGTH'),
   ],
   partition_columns = ['svr_ip', 'svr_port'],
   vtable_route_policy = 'distributed',
@@ -18009,9 +18134,63 @@ def_table_schema(**gen_iterate_virtual_table_def(
   table_id = '12588',
   table_name = '__all_virtual_routine_load_job',
   keywords = all_def_keywords['__all_routine_load_job']))
-# 12589: __all_virtual_ss_macro_cache_info
-# 12590: __all_virtual_ss_local_cache_diagnose_info
-# 12591: __all_virtual_ddl_dag_monitor
+
+def_table_schema(
+  owner             = 'binifei.bnf',
+  table_name        = '__all_virtual_ss_macro_cache_info',
+  table_id          = '12589',
+  table_type        = 'VIRTUAL_TABLE',
+  in_tenant_space   = True,
+  gm_columns        = [],
+  rowkey_columns    = [
+    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
+    ('svr_port', 'int'),
+    ('tenant_id', 'int'),
+    ('macro_id', 'varchar:256'),
+  ],
+  normal_columns    = [
+    ('tablet_id', 'int'),
+    ('object_type', 'varchar:128'),
+    ('size', 'int'),
+    ('last_access_time', 'timestamp'),
+    ('cache_type', 'varchar:32'),
+    ('is_write_cache', 'bool'),
+    ('is_in_fifo_list', 'bool'),
+    ('ref_cnt', 'int'),
+    ('access_cnt', 'int'),
+    ('macro_id_str', 'varchar:256'),
+    ('local_path', 'varchar:1024'),
+    ('remote_path', 'varchar:1024'),
+    ('info', 'varchar:1024'),
+  ],
+  partition_columns = ['svr_ip', 'svr_port'],
+  vtable_route_policy = 'distributed',
+)
+
+def_table_schema(
+  owner             = 'donglou.zl',
+  table_name        = '__all_virtual_ss_local_cache_diagnose_info',
+  table_id          = '12590',
+  table_type        = 'VIRTUAL_TABLE',
+  in_tenant_space   = True,
+  gm_columns        = [],
+  rowkey_columns    = [
+    ('svr_ip', 'varchar:MAX_IP_ADDR_LENGTH'),
+    ('svr_port', 'int'),
+    ('tenant_id', 'int'),
+    ('mod_name', 'varchar:OB_MODULE_NAME_LENGTH'),
+    ('sub_mod_name', 'varchar:OB_MODULE_NAME_LENGTH'),
+  ],
+  normal_columns    = [
+    ('status', 'int'),
+    ('modify_time', 'timestamp'),
+    ('diagnose_info', 'varchar:OB_DIAGNOSE_INFO_LENGTH'),
+    ('extra_info', 'varchar:OB_DIAGNOSE_INFO_LENGTH'),
+  ],
+  partition_columns = ['svr_ip', 'svr_port'],
+  vtable_route_policy = 'distributed',
+)
+
 def_table_schema(
   owner = 'jianyun.sjy',
   table_name = '__all_virtual_ddl_dag_monitor',
@@ -18078,6 +18257,7 @@ def_table_schema(
 # 12597: __all_virtual_object_storage_stat
 # 12598: __all_virtual_object_storage_error_record
 # 12599: __all_virtual_audit_log_encryption_password
+# 12600: __all_virtual_optstat_catalog_user_prefs
 
 # 余留位置（此行之前占位）
 # 本区域占位建议：采用真实表名进行占位
@@ -18663,9 +18843,9 @@ def_table_schema(**gen_oracle_mapping_real_virtual_table_def('15539', all_def_ke
 # 15541: __all_sync_standby_status
 def_table_schema(**gen_oracle_mapping_virtual_table_def('15542', all_def_keywords['__all_virtual_tablet_window_loop_info']))
 
-# 15543: __all_virtual_macro_block_ha_task
-# 15544: __all_virtual_macro_block_ha_task_progress
-# 15545: __all_virtual_macro_block_ha_task_history
+def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15543', all_def_keywords['__all_virtual_macro_block_ha_task'])))
+def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15544', all_def_keywords['__all_virtual_macro_block_ha_task_progress'])))
+def_table_schema(**no_direct_access(gen_oracle_mapping_virtual_table_def('15545', all_def_keywords['__all_virtual_macro_block_ha_task_history'])))
 
 def_table_schema(**gen_oracle_mapping_real_virtual_table_def('15546', all_def_keywords['__all_routine_load_job']))
 # 15548: __all_virtual_ss_local_cache_diagnose_info
@@ -22143,7 +22323,8 @@ def_table_schema(
     CASE
       WHEN RECOVER_SCN IS NULL
         THEN NULL
-      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN')
+      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN',
+                      'SS_RESTORE_GEN_TASK', 'SS_RESTORE_DATA', 'SS_RESTORE_LS')
         THEN CAST(0 AS DECIMAL(6, 2))
       WHEN RESTORE_SCN = RECOVER_START_SCN
         THEN CAST(100 AS DECIMAL(6, 2))
@@ -24678,7 +24859,8 @@ def_table_schema(
       ,'SEQUENCE' AS OBJECT_TYPE
       ,'VALID' AS STATUS
       ,'N' AS TEMPORARY
-      ,'N' AS "GENERATED"
+      ,CASE WHEN IS_SYSTEM_GENERATED = 1 THEN 'Y'
+            ELSE 'N' END AS "GENERATED"
       ,'N' AS SECONDARY
       , 0 AS NAMESPACE
       ,NULL AS EDITION_NAME
@@ -24940,7 +25122,8 @@ SELECT
   CAST(CASE WHEN T.AUTO_PART = 1 THEN T.AUTO_PART_SIZE ELSE 0 END AS SIGNED) AS AUTO_SPLIT_TABLET_SIZE,
   CAST(NULL AS SIGNED) AS SKIP_INDEX_LEVEL,
   T.TTL_DEFINITION AS TTL_DEFINITION,
-  T.DELTA_FORMAT AS DELTA_FORMAT
+  T.DELTA_FORMAT AS DELTA_FORMAT,
+  CAST(T.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
 FROM
   (SELECT
      TENANT_ID,
@@ -24967,7 +25150,8 @@ FROM
      TABLE_MODE,
      INDEX_ATTRIBUTES_SET,
      TTL_DEFINITION,
-     DELTA_FORMAT
+     DELTA_FORMAT,
+     STORAGE_CACHE_POLICY
    FROM
      OCEANBASE.__ALL_VIRTUAL_CORE_ALL_TABLE
 
@@ -24987,7 +25171,8 @@ FROM
      TABLE_MODE,
      INDEX_ATTRIBUTES_SET,
      TTL_DEFINITION,
-     DELTA_FORMAT
+     DELTA_FORMAT,
+     STORAGE_CACHE_POLICY
    FROM OCEANBASE.__ALL_VIRTUAL_TABLE
    WHERE TABLE_MODE >> 12 & 15 in (0,1) AND INDEX_ATTRIBUTES_SET & 16 = 0) T
   ON
@@ -25831,7 +26016,8 @@ def_table_schema(
       CAST(NULL AS CHAR(12)) INMEMORY_SERVICE,
       CAST(NULL AS CHAR(100)) INMEMORY_SERVICE_NAME,
       CAST(NULL AS CHAR(8)) MEMOPTIMIZE_READ,
-      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE
+      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE,
+      CAST(PART.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
 
       FROM (SELECT DB.TENANT_ID,
                    DB.DATABASE_NAME,
@@ -25890,7 +26076,8 @@ def_table_schema(
                    ROW_NUMBER() OVER (
                      PARTITION BY TENANT_ID, TABLE_ID
                      ORDER BY PART_IDX, PART_ID ASC
-                   ) PARTITION_POSITION
+                   ) PARTITION_POSITION,
+                   STORAGE_CACHE_POLICY
             FROM OCEANBASE.__ALL_VIRTUAL_PART) PART
       ON DB_TB.TABLE_ID = PART.TABLE_ID AND PART.TENANT_ID = DB_TB.TENANT_ID
 
@@ -25967,7 +26154,8 @@ def_table_schema(
       CAST(NULL AS CHAR(1000)) INMEMORY_SERVICE_NAME,
       CAST(NULL AS CHAR(24)) CELLMEMORY,
       CAST(NULL AS CHAR(8)) MEMOPTIMIZE_READ,
-      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE
+      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE,
+      CAST(PART.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
       FROM
       (SELECT DB.TENANT_ID,
               DB.DATABASE_NAME,
@@ -26020,7 +26208,8 @@ def_table_schema(
               S_PART.LIST_VAL,
               S_PART.COMPRESS_FUNC_NAME,
               S_PART.TABLESPACE_ID,
-              S_PART.SUBPARTITION_POSITION
+              S_PART.SUBPARTITION_POSITION,
+              S_PART.STORAGE_CACHE_POLICY
        FROM (SELECT
                TENANT_ID,
                TABLE_ID,
@@ -26045,7 +26234,8 @@ def_table_schema(
                ROW_NUMBER() OVER (
                  PARTITION BY TENANT_ID, TABLE_ID, PART_ID
                  ORDER BY SUB_PART_IDX, SUB_PART_ID ASC
-               ) AS SUBPARTITION_POSITION
+               ) AS SUBPARTITION_POSITION,
+               STORAGE_CACHE_POLICY
              FROM OCEANBASE.__ALL_VIRTUAL_SUB_PART) S_PART
        WHERE P_PART.PART_ID = S_PART.PART_ID
              AND P_PART.TABLE_ID = S_PART.TABLE_ID
@@ -27433,7 +27623,8 @@ def_table_schema(
       CAST(NULL AS CHAR(12)) INMEMORY_SERVICE,
       CAST(NULL AS CHAR(100)) INMEMORY_SERVICE_NAME,
       CAST(NULL AS CHAR(8)) MEMOPTIMIZE_READ,
-      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE
+      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE,
+      CAST(PART.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
 
       FROM (SELECT DB.TENANT_ID,
                    DB.DATABASE_NAME,
@@ -27491,7 +27682,8 @@ def_table_schema(
                    ROW_NUMBER() OVER (
                      PARTITION BY TENANT_ID, TABLE_ID
                      ORDER BY PART_IDX, PART_ID ASC
-                   ) PARTITION_POSITION
+                   ) PARTITION_POSITION,
+                   STORAGE_CACHE_POLICY
             FROM OCEANBASE.__ALL_PART) PART
       ON DB_TB.TABLE_ID = PART.TABLE_ID AND PART.TENANT_ID = DB_TB.TENANT_ID
 
@@ -27569,7 +27761,8 @@ def_table_schema(
       CAST(NULL AS CHAR(1000)) INMEMORY_SERVICE_NAME,
       CAST(NULL AS CHAR(24)) CELLMEMORY,
       CAST(NULL AS CHAR(8)) MEMOPTIMIZE_READ,
-      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE
+      CAST(NULL AS CHAR(8)) MEMOPTIMIZE_WRITE,
+      CAST(PART.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
       FROM
       (SELECT DB.TENANT_ID,
               DB.DATABASE_NAME,
@@ -27621,7 +27814,8 @@ def_table_schema(
               S_PART.LIST_VAL,
               S_PART.COMPRESS_FUNC_NAME,
               S_PART.TABLESPACE_ID,
-              S_PART.SUBPARTITION_POSITION
+              S_PART.SUBPARTITION_POSITION,
+              S_PART.STORAGE_CACHE_POLICY
        FROM (SELECT
                TENANT_ID,
                TABLE_ID,
@@ -27631,7 +27825,8 @@ def_table_schema(
                ROW_NUMBER() OVER (
                  PARTITION BY TENANT_ID, TABLE_ID
                  ORDER BY PART_IDX, PART_ID ASC
-               ) AS PARTITION_POSITION
+               ) AS PARTITION_POSITION,
+               STORAGE_CACHE_POLICY
              FROM OCEANBASE.__ALL_PART) P_PART,
             (SELECT
                TENANT_ID,
@@ -27646,7 +27841,8 @@ def_table_schema(
                ROW_NUMBER() OVER (
                  PARTITION BY TENANT_ID, TABLE_ID, PART_ID
                  ORDER BY SUB_PART_IDX, SUB_PART_ID ASC
-               ) AS SUBPARTITION_POSITION
+               ) AS SUBPARTITION_POSITION,
+               STORAGE_CACHE_POLICY
              FROM OCEANBASE.__ALL_SUB_PART) S_PART
        WHERE P_PART.PART_ID = S_PART.PART_ID AND
              P_PART.TABLE_ID = S_PART.TABLE_ID
@@ -29254,8 +29450,8 @@ def_table_schema(
           USEC_TO_TIME(END_TS)
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       COMMENT,
       PATH
@@ -29289,8 +29485,8 @@ def_table_schema(
           USEC_TO_TIME(END_TS)
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       COMMENT,
       PATH
@@ -31107,8 +31303,8 @@ def_table_schema(
           USEC_TO_TIME(END_TS)
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       COMMENT,
       PATH
@@ -31143,8 +31339,8 @@ def_table_schema(
           USEC_TO_TIME(END_TS)
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       COMMENT,
       PATH
@@ -31279,7 +31475,8 @@ def_table_schema(
     CASE
       WHEN RECOVER_SCN IS NULL
         THEN NULL
-      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN')
+      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN',
+                      'SS_RESTORE_GEN_TASK', 'SS_RESTORE_DATA', 'SS_RESTORE_LS')
         THEN CAST(0 AS DECIMAL(6, 2))
       WHEN RESTORE_SCN = RECOVER_START_SCN
         THEN CAST(100 AS DECIMAL(6, 2))
@@ -45414,16 +45611,16 @@ def_table_schema(
       A.TENANT_ID,
       A.DATA_TABLE_ID,
       A.DATA_TABLET_ID,
-      T.TABLE_NAME,
-      SUBSTR(T1.TABLE_NAME, 7 + INSTR(SUBSTR(T1.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+      JSON_VALUE(A.STATISTICS, '$.table_name') AS TABLE_NAME,
+      JSON_VALUE(A.STATISTICS, '$.index_name') AS INDEX_NAME,
       (CASE M.ROLE WHEN 1 THEN 'LEADER' ELSE 'FOLLOWER' END) AS ROLE,
       JSON_VALUE(A.STATISTICS, '$.param') AS INDEX_PARAM,
       JSON_VALUE(A.STATISTICS, '$.incr_mem_used' RETURNING SIGNED) + JSON_VALUE(A.STATISTICS, '$.snap_mem_used' RETURNING SIGNED) AS MEMORY_USED,
       JSON_VALUE(A.STATISTICS, '$.incr_mem_hold' RETURNING SIGNED) + JSON_VALUE(A.STATISTICS, '$.snap_mem_hold' RETURNING SIGNED) AS MEMORY_HOLD,
       JSON_VALUE(A.STATISTICS, '$.incr_mem_hold' RETURNING SIGNED) AS INCR_MEM_HOLD,
       JSON_VALUE(A.STATISTICS, '$.snap_mem_hold' RETURNING SIGNED) AS SNAP_MEM_HOLD,
-      JSON_VALUE(A.STATISTICS, '$.incr_index_cnt' RETURNING SIGNED) AS INCR_INDEX_CNT,
-      JSON_VALUE(A.STATISTICS, '$.snap_index_cnt' RETURNING SIGNED) AS SNAP_INDEX_CNT,
+      JSON_VALUE(A.STATISTICS, '$.incr_vector_cnt' RETURNING SIGNED) AS INCR_VECTOR_CNT,
+      JSON_VALUE(A.STATISTICS, '$.snap_vector_cnt' RETURNING SIGNED) AS SNAP_VECTOR_CNT,
       JSON_VALUE(A.STATISTICS, '$.incr_data_scn' RETURNING UNSIGNED) AS INCR_DATA_SCN,
       JSON_VALUE(A.STATISTICS, '$.snap_data_scn' RETURNING UNSIGNED) AS SNAP_DATA_SCN,
       (CASE JSON_VALUE(A.SYNC_INFO, '$.last_succ_time' RETURNING SIGNED) WHEN 0 THEN NULL ELSE usec_to_time(JSON_VALUE(A.SYNC_INFO, '$.last_succ_time' RETURNING SIGNED)) END) as LAST_SUCC_SYNC_TIME,
@@ -45433,12 +45630,6 @@ def_table_schema(
       oceanbase.__all_virtual_vector_index_info A
   LEFT JOIN OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE M
       ON A.TENANT_ID = M.TENANT_ID AND A.LS_ID = M.LS_ID AND A.SVR_IP = M.SVR_IP AND A.SVR_PORT = M.SVR_PORT
-  LEFT JOIN oceanbase.__all_virtual_table T
-      ON A.TENANT_ID = T.TENANT_ID
-      AND A.DATA_TABLE_ID = T.TABLE_ID
-  LEFT JOIN oceanbase.__all_virtual_table T1
-      ON A.TENANT_ID = T1.TENANT_ID
-      AND A.inc_index_table_id = T1.TABLE_ID
   WHERE
       A.INDEX_TYPE IN (0,1,5,6);
 """.replace("\n", " ")
@@ -45468,8 +45659,8 @@ SELECT
     MEMORY_HOLD,
     INCR_MEM_HOLD,
     SNAP_MEM_HOLD,
-    INCR_INDEX_CNT,
-    SNAP_INDEX_CNT,
+    INCR_VECTOR_CNT,
+    SNAP_VECTOR_CNT,
     INCR_DATA_SCN,
     SNAP_DATA_SCN,
     LAST_SUCC_SYNC_TIME,
@@ -45498,9 +45689,9 @@ def_table_schema(
     A.SVR_IP,
     A.SVR_PORT,
     A.TENANT_ID,
-    T.TABLE_ID AS DATA_TABLE_ID,
-    T.TABLE_NAME AS TABLE_NAME,
-    SUBSTR(T1.TABLE_NAME, 7 + INSTR(SUBSTR(T1.TABLE_NAME, 7), '_')) AS INDEX_NAME,
+    A.DATA_TABLE_ID,
+    JSON_VALUE(A.STATISTICS, '$.table_name') AS TABLE_NAME,
+    JSON_VALUE(A.STATISTICS, '$.index_name') AS INDEX_NAME,
     A.ROWKEY_VID_TABLE_ID AS INDEX_TABLE_ID,
     A.ROWKEY_VID_TABLET_ID AS INDEX_TABLET_ID,
     JSON_VALUE(A.STATISTICS, '$.param') AS INDEX_PARAM,
@@ -45519,13 +45710,7 @@ def_table_schema(
     CAST(JT.MEMORY_HOLD AS SIGNED) AS MEMORY_HOLD,
     JSON_VALUE(JT.CACHE_INFO, '$') AS CACHE_INFO
   FROM
-    oceanbase.__all_virtual_vector_index_info A
-  LEFT JOIN oceanbase.__all_virtual_table T1
-      ON A.TENANT_ID = T1.TENANT_ID
-      AND A.ROWKEY_VID_TABLE_ID = T1.TABLE_ID
-  LEFT JOIN oceanbase.__all_virtual_table T
-      ON A.TENANT_ID = T.TENANT_ID
-      AND SUBSTR(T1.TABLE_NAME, 7, INSTR(SUBSTR(T1.TABLE_NAME, 7), '_') - 1) = T.TABLE_ID,
+    oceanbase.__all_virtual_vector_index_info A,
   JSON_TABLE(A.statistics, '$.cache_objs_info[*]' COLUMNS (
       CACHE_TYPE INT PATH '$.cache_type',
       MEMORY_USED INT UNSIGNED PATH '$.mem_used',
@@ -46029,7 +46214,8 @@ SELECT
   CAST(CASE WHEN T.AUTO_PART = 1 THEN T.AUTO_PART_SIZE ELSE 0 END AS CHAR(128)) AS AUTO_SPLIT_TABLET_SIZE,
   CAST(NULL AS SIGNED) AS SKIP_INDEX_LEVEL,
   T.TTL_DEFINITION AS TTL_DEFINITION,
-  T.DELTA_FORMAT AS DELTA_FORMAT
+  T.DELTA_FORMAT AS DELTA_FORMAT,
+  CAST(T.STORAGE_CACHE_POLICY AS CHAR(256)) AS STORAGE_CACHE_POLICY
 FROM
   (SELECT
      CAST(0 AS SIGNED) AS TENANT_ID,
@@ -46056,7 +46242,8 @@ FROM
      AUTO_PART_SIZE,
      INDEX_ATTRIBUTES_SET,
      TTL_DEFINITION,
-     DELTA_FORMAT
+     DELTA_FORMAT,
+     STORAGE_CACHE_POLICY
    FROM
      OCEANBASE.__ALL_VIRTUAL_CORE_ALL_TABLE
      WHERE TENANT_ID = EFFECTIVE_TENANT_ID()
@@ -46076,7 +46263,8 @@ FROM
      AUTO_PART_SIZE,
      INDEX_ATTRIBUTES_SET,
      TTL_DEFINITION,
-     DELTA_FORMAT
+     DELTA_FORMAT,
+     STORAGE_CACHE_POLICY
    FROM OCEANBASE.__ALL_TABLE
    WHERE TABLE_TYPE != 12 AND TABLE_TYPE != 13
    AND ((TABLE_MODE / 4096) & 15) IN (0,1)
@@ -46459,18 +46647,28 @@ def_table_schema(
     TENANT_ID,
     LS_ID,
     TABLET_ID,
-    ROLE,
+    CASE ROLE WHEN 1 THEN 'LEADER' ELSE 'FOLLOWER' END AS ROLE,
     ZONE,
     TABLE_ID,
     TABLE_NAME,
     DATABASE_ID,
     DATABASE_NAME,
-    TABLE_TYPE,
+    /* same with CDB_OB_TABLE_LOCATIONS */
+    CASE WHEN TABLE_TYPE IN (0) THEN 'SYSTEM TABLE'
+         WHEN TABLE_TYPE IN (3,6,8,9,16,17) THEN 'USER TABLE'
+         WHEN TABLE_TYPE IN (5) THEN 'INDEX'
+         WHEN TABLE_TYPE IN (12,13) THEN 'LOB AUX TABLE'
+         WHEN TABLE_TYPE IN (15) THEN 'MATERIALIZED VIEW LOG'
+         ELSE NULL
+    END AS TABLE_TYPE,
     TABLEGROUP_ID,
     TABLEGROUP_NAME,
     DATA_TABLE_ID,
     OCCUPY_SIZE,
-    REQUIRED_SIZE
+    REQUIRED_SIZE,
+    OBJECT_ID,
+    PARTITION_NAME,
+    SUBPARTITION_NAME
   FROM oceanbase.__all_virtual_tablet_replica_info
   """.replace("\n", " ")
 )
@@ -46501,7 +46699,10 @@ def_table_schema(
     TABLEGROUP_NAME,
     DATA_TABLE_ID,
     OCCUPY_SIZE,
-    REQUIRED_SIZE
+    REQUIRED_SIZE,
+    OBJECT_ID,
+    PARTITION_NAME,
+    SUBPARTITION_NAME
   FROM oceanbase.GV$OB_TABLET_REPLICA_INFO
   WHERE SVR_IP = host_ip() AND SVR_PORT = rpc_port()
   """.replace("\n", " ")
@@ -46580,6 +46781,140 @@ ORDER BY A.create_time
 # 21713: V$OB_SS_LOCAL_CACHE_DIAGNOSE
 # 21714: GV$OB_SINDI_INDEX_INFO
 # 21715: V$OB_SINDI_INDEX_INFO
+
+def_table_schema(
+  owner           = 'donglou.zl',
+  table_name      = 'GV$OB_SS_LOCAL_CACHE_DIAGNOSE',
+  table_id        = '21712',
+  table_type      = 'SYSTEM_VIEW',
+  rowkey_columns  = [],
+  normal_columns  = [],
+  gm_columns      = [],
+  in_tenant_space = True,
+  view_definition = """
+  SELECT
+    SVR_IP,
+    SVR_PORT,
+    TENANT_ID,
+    MOD_NAME,
+    SUB_MOD_NAME,
+    case status
+        when 1 then 'NORMAL'
+        when 2 then 'WARNING'
+        when 3 then 'ERROR'
+        else 'INVALID'
+    END AS STATUS,
+    MODIFY_TIME,
+    DIAGNOSE_INFO,
+    EXTRA_INFO
+  FROM oceanbase.__all_virtual_ss_local_cache_diagnose_info
+  """.replace("\n", " ")
+)
+
+def_table_schema(
+  owner           = 'donglou.zl',
+  table_name      = 'V$OB_SS_LOCAL_CACHE_DIAGNOSE',
+  table_id        = '21713',
+  table_type      = 'SYSTEM_VIEW',
+  rowkey_columns  = [],
+  normal_columns  = [],
+  gm_columns      = [],
+  in_tenant_space = True,
+  view_definition = """
+  SELECT
+    SVR_IP,
+    SVR_PORT,
+    TENANT_ID,
+    MOD_NAME,
+    SUB_MOD_NAME,
+    STATUS,
+    MODIFY_TIME,
+    DIAGNOSE_INFO,
+    EXTRA_INFO
+  FROM oceanbase.GV$OB_SS_LOCAL_CACHE_DIAGNOSE
+  WHERE SVR_IP = host_ip() AND SVR_PORT = rpc_port()
+  """.replace("\n", " ")
+)
+
+def_table_schema(
+  owner           = 'ningxin.ning',
+  table_name      = 'GV$OB_SINDI_INDEX_INFO',
+  table_id        = '21714',
+  table_type      = 'SYSTEM_VIEW',
+  rowkey_columns  = [],
+  normal_columns  = [],
+  gm_columns      = [],
+  in_tenant_space = True,
+  view_definition = """
+  SELECT
+      A.SVR_IP,
+      A.SVR_PORT,
+      A.TENANT_ID,
+      A.DATA_TABLE_ID,
+      A.DATA_TABLET_ID,
+      JSON_VALUE(A.STATISTICS, '$.table_name') AS TABLE_NAME,
+      JSON_VALUE(A.STATISTICS, '$.index_name') AS INDEX_NAME,
+      (CASE M.ROLE WHEN 1 THEN 'LEADER' ELSE 'FOLLOWER' END) AS ROLE,
+      JSON_VALUE(A.STATISTICS, '$.param') AS INDEX_PARAM,
+      JSON_VALUE(A.STATISTICS, '$.incr_mem_used' RETURNING SIGNED) + JSON_VALUE(A.STATISTICS, '$.snap_mem_used' RETURNING SIGNED) AS MEMORY_USED,
+      JSON_VALUE(A.STATISTICS, '$.incr_mem_hold' RETURNING SIGNED) + JSON_VALUE(A.STATISTICS, '$.snap_mem_hold' RETURNING SIGNED) AS MEMORY_HOLD,
+      JSON_VALUE(A.STATISTICS, '$.incr_mem_hold' RETURNING SIGNED) AS INCR_MEM_HOLD,
+      JSON_VALUE(A.STATISTICS, '$.snap_mem_hold' RETURNING SIGNED) AS SNAP_MEM_HOLD,
+      JSON_VALUE(A.STATISTICS, '$.incr_vector_cnt' RETURNING SIGNED) AS INCR_VECTOR_CNT,
+      JSON_VALUE(A.STATISTICS, '$.snap_vector_cnt' RETURNING SIGNED) AS SNAP_VECTOR_CNT,
+      JSON_VALUE(A.STATISTICS, '$.incr_data_scn' RETURNING UNSIGNED) AS INCR_DATA_SCN,
+      JSON_VALUE(A.STATISTICS, '$.snap_data_scn' RETURNING UNSIGNED) AS SNAP_DATA_SCN,
+      (CASE JSON_VALUE(A.SYNC_INFO, '$.last_succ_time' RETURNING SIGNED) WHEN 0 THEN NULL ELSE usec_to_time(JSON_VALUE(A.SYNC_INFO, '$.last_succ_time' RETURNING SIGNED)) END) as LAST_SUCC_SYNC_TIME,
+      (CASE JSON_VALUE(A.SYNC_INFO, '$.last_fail_time' RETURNING SIGNED) WHEN 0 THEN NULL ELSE usec_to_time(JSON_VALUE(A.SYNC_INFO, '$.last_fail_time' RETURNING SIGNED)) END) as LAST_FAILED_SYNC_TIME,
+      JSON_VALUE(A.SYNC_INFO, '$.last_fail_code' RETURNING SIGNED) as LAST_FAILED_CODE
+  FROM
+      oceanbase.__all_virtual_vector_index_info A
+  LEFT JOIN OCEANBASE.__ALL_VIRTUAL_LS_META_TABLE M
+      ON A.TENANT_ID = M.TENANT_ID AND A.LS_ID = M.LS_ID AND A.SVR_IP = M.SVR_IP AND A.SVR_PORT = M.SVR_PORT
+  WHERE
+      A.INDEX_TYPE IN (8,9);
+""".replace("\n", " ")
+)
+
+def_table_schema(
+  owner = 'ningxin.ning',
+  table_name      = 'V$OB_SINDI_INDEX_INFO',
+  table_id        = '21715',
+  table_type      = 'SYSTEM_VIEW',
+  rowkey_columns  = [],
+  normal_columns  = [],
+  gm_columns      = [],
+  in_tenant_space = True,
+  view_definition = """
+SELECT
+    SVR_IP,
+    SVR_PORT,
+    TENANT_ID,
+    DATA_TABLE_ID,
+    DATA_TABLET_ID,
+    TABLE_NAME,
+    INDEX_NAME,
+    ROLE,
+    INDEX_PARAM,
+    MEMORY_USED,
+    MEMORY_HOLD,
+    INCR_MEM_HOLD,
+    SNAP_MEM_HOLD,
+    INCR_VECTOR_CNT,
+    SNAP_VECTOR_CNT,
+    INCR_DATA_SCN,
+    SNAP_DATA_SCN,
+    LAST_SUCC_SYNC_TIME,
+    LAST_FAILED_SYNC_TIME,
+    LAST_FAILED_CODE
+FROM
+    OCEANBASE.GV$OB_SINDI_INDEX_INFO
+WHERE
+        SVR_IP=HOST_IP()
+    AND
+        SVR_PORT=RPC_PORT()
+""".replace("\n", " ")
+)
 
 def_table_schema(
   owner = 'yutong.lzs',
@@ -47174,7 +47509,8 @@ def_table_schema(
       ,'SEQUENCE' AS OBJECT_TYPE
       ,'VALID' AS STATUS
       ,'N' AS TEMPORARY
-      ,'N' AS "GENERATED"
+      ,CASE WHEN IS_SYSTEM_GENERATED = 1 THEN 'Y'
+            ELSE 'N' END AS "GENERATED"
       ,'N' AS SECONDARY
       , 0 AS NAMESPACE
       ,NULL AS EDITION_NAME
@@ -47733,7 +48069,8 @@ def_table_schema(
       ,'SEQUENCE' AS OBJECT_TYPE
       ,'VALID' AS STATUS
       ,'N' AS TEMPORARY
-      ,'N' AS "GENERATED"
+      ,CASE WHEN IS_SYSTEM_GENERATED = 1 THEN 'Y'
+            ELSE 'N' END AS "GENERATED"
       ,'N' AS SECONDARY
       , 0 AS NAMESPACE
       ,NULL AS EDITION_NAME
@@ -48283,7 +48620,8 @@ def_table_schema(
       ,'SEQUENCE' AS OBJECT_TYPE
       ,'VALID' AS STATUS
       ,'N' AS TEMPORARY
-      ,'N' AS "GENERATED"
+      ,CASE WHEN IS_SYSTEM_GENERATED = 1 THEN 'Y'
+            ELSE 'N' END AS "GENERATED"
       ,'N' AS SECONDARY
       , 0 AS NAMESPACE
       ,NULL AS EDITION_NAME
@@ -64103,8 +64441,8 @@ def_table_schema(
           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       "COMMENT",
       PATH
@@ -64141,8 +64479,8 @@ def_table_schema(
           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')
         END AS END_TIMESTAMP,
       STATUS,
-      TOTAL_LS_COUNT,
-      FINISH_LS_COUNT,
+      TOTAL_LS_COUNT AS TOTAL_TASK_COUNT,
+      FINISH_LS_COUNT AS FINISH_TASK_COUNT,
       RESULT,
       "COMMENT",
       PATH
@@ -64216,7 +64554,8 @@ def_table_schema(
     CASE
       WHEN RECOVER_SCN IS NULL
         THEN NULL
-      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN')
+      WHEN STATUS IN ('RESTORE_PRE', 'RESTORE_CREATE_INIT_LS', 'PHYSICAL_RESTORE_WAIT_RESTORE_TO_CONSISTENT_SCN',
+                      'SS_RESTORE_GEN_TASK', 'SS_RESTORE_DATA', 'SS_RESTORE_LS')
         THEN CAST(0 AS NUMBER(6, 2))
       WHEN RESTORE_SCN = RECOVER_START_SCN
         THEN CAST(100 AS NUMBER(6, 2))
@@ -82815,7 +83154,13 @@ def_sys_index_table(
   index_type = 'INDEX_TYPE_UNIQUE_LOCAL',
   keywords = all_def_keywords['__all_routine_load_job'])
 
-# 101125: __all_tenant_macro_block_ha_task
+def_sys_index_table(
+  index_name = 'idx_ha_task_status',
+  index_table_id = 101125,
+  index_columns = ['tenant_id', 'parent_task_id', 'task_type', 'task_status'],
+  index_using_type = 'USING_BTREE',
+  index_type = 'INDEX_TYPE_NORMAL_LOCAL',
+  keywords = all_def_keywords['__all_tenant_macro_block_ha_task'])
 
 # 余留位置（此行之前占位）
 # 索引表占位建议：基于基表（数据表）表名来占位，其他方式包括：索引名（index_name）、索引表表名

@@ -270,6 +270,10 @@ TEST_F(ObSharedStorageBlockCheckTest, add_tenant)
     ASSERT_EQ(OB_SUCCESS, ret);
     ASSERT_EQ(OB_SUCCESS, get_tenant_id(RunCtx.tenant_id_));
     ASSERT_EQ(OB_SUCCESS, get_curr_simple_server().init_sql_proxy2());
+    ObSqlString sql;
+    int64_t affected_rows = 0;
+    SYS_EXE_SQL("alter system set _ss_advance_checkpoint_interval = '1m' tenant tt1;");
+    SYS_EXE_SQL("alter system set_tp tp_name = EN_COMPACTION_SS_MINOR_MERGE_FAST_SKIP,error_code = 4016,frequency = 1;");
 }
 
 TEST_F(ObSharedStorageBlockCheckTest, test_inc_sstable)
@@ -295,7 +299,9 @@ TEST_F(ObSharedStorageBlockCheckTest, test_inc_sstable)
   EXE_SQL("alter system set inc_sstable_upload_thread_score = 20;");
   EXE_SQL("alter system set _ss_garbage_collect_interval = '10s';");
   EXE_SQL("alter system set _ss_garbage_collect_file_expiration_time = '10s';");
-  EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  //EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  EXE_SQL("alter system set _ss_tablet_version_retention_time = '10s';");
+  EXE_SQL("alter system set _ss_advance_checkpoint_interval = '1m';");
 
   sleep(5);
   EXE_SQL("insert into test_table values (1)");
@@ -369,7 +375,9 @@ TEST_F(ObSharedStorageBlockCheckTest, test_major_sstable)
   EXE_SQL("alter system set inc_sstable_upload_thread_score = 20;");
   EXE_SQL("alter system set _ss_garbage_collect_interval = '10s';");
   EXE_SQL("alter system set _ss_garbage_collect_file_expiration_time = '10s';");
-  EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  //EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  EXE_SQL("alter system set _ss_tablet_version_retention_time = '10s';");
+  EXE_SQL("alter system set _ss_advance_checkpoint_interval = '1m';");
 
   int64_t not_exist_block_seq = 0;
 
@@ -456,7 +464,9 @@ TEST_F(ObSharedStorageBlockCheckTest, test_tablet_gc)
   EXE_SQL("alter system set inc_sstable_upload_thread_score = 20;");
   EXE_SQL("alter system set _ss_garbage_collect_interval = '10s';");
   EXE_SQL("alter system set _ss_garbage_collect_file_expiration_time = '10s';");
-  EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  //EXE_SQL("alter system set _ss_enable_timeout_garbage_collection = true;");
+  EXE_SQL("alter system set _ss_tablet_version_retention_time = '10s';");
+  EXE_SQL("alter system set _ss_advance_checkpoint_interval = '1m';");
 
 
   sleep(5);

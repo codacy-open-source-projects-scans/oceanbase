@@ -36,7 +36,6 @@ public:
   static bool is_major(const ObStorageObjectType type);
   static bool is_mds(const ObStorageObjectType type);
   static bool is_direct_read(const ObStorageObjectType type);
-  static bool is_direct_write(const ObStorageObjectType type);
   static bool is_need_alloc_file_size(const ObStorageObjectType type);
   static bool is_pin_local(const ObStorageObjectType type);
   static bool is_overwrite(const ObStorageObjectType type);
@@ -58,7 +57,6 @@ public:
   static bool is_macro(const MacroBlockId &macro_id);
   static bool is_major(const MacroBlockId &macro_id);
   static bool need_fsync(const MacroBlockId &macro_id);
-  static bool is_direct_write(const MacroBlockId &macro_id);
   static bool server_tenant_can_have(const MacroBlockId &macro_id);
   static bool use_reserved_disk_space(const MacroBlockId &macro_id);
   static bool can_append_write(const MacroBlockId &macro_id);
@@ -70,7 +68,8 @@ public:
   static bool is_tablet_meta(const MacroBlockId &macro_id);
   static bool is_shared_tablet_sub_meta(const ObStorageObjectType type);
   static bool is_shared_tablet_sub_meta(const MacroBlockId &macro_id);
-
+  static bool is_shared_tablet_sub_meta_in_table(const ObStorageObjectType type);
+  static bool is_shared_tablet_sub_meta_in_table(const MacroBlockId &macro_id);
 #ifdef OB_BUILD_SHARED_STORAGE
   static int get_open_flag_for_write(const ObStorageObjectType type);
   static int get_open_flag_for_read(const ObStorageObjectType type);
@@ -94,6 +93,7 @@ public:
                             const uint64_t tenant_id, const uint64_t tenant_epoch_id, const int64_t ls_epoch_id);
   static int create_parent_dir(const MacroBlockId &macro_id, const uint64_t tenant_id,
                                const uint64_t tenant_epoch_id, const int64_t ls_epoch_id);
+  static int to_relative_remote_path_format(const MacroBlockId &macro_id, char *path, const int64_t length, int64_t &pos);
   // only macro bloclk in user tenant with type of SHARED_TABLET_SUB_META return true.
   static bool is_exist_store_in_table_object(const uint64_t tenant_id, const blocksstable::MacroBlockId &macro_id);
   static int get_store_in_table_macro_id(const uint64_t tenant_id, const blocksstable::MacroBlockId &macro_id,

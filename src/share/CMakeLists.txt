@@ -155,6 +155,7 @@ ob_set_subtarget(ob_share backup
   backup/ob_log_restore_config.cpp
   backup/ob_log_restore_struct.cpp
   backup/ob_archive_checkpoint_mgr.cpp
+  backup/ob_ss_ha_macro_block_struct.cpp
   backup/ob_backup_validate_struct.cpp
   backup/ob_backup_validate_table_operator.cpp
   backup/ob_backup_util.cpp
@@ -448,6 +449,10 @@ ob_set_subtarget(ob_share common_mixed
   table/redis/ob_redis_error.cpp
   table/ob_redis_importer.cpp
   restore/ob_restore_progress_display_mode.cpp
+  search_index/ob_search_index_encoder.cpp
+  search_index/ob_search_index_generator.cpp
+  search_index/ob_search_index_builder_util.cpp
+  search_index/ob_search_index_config_filter.cpp
 )
 
 ob_set_subtarget(ob_share tablet
@@ -616,6 +621,7 @@ ob_set_subtarget(ob_share schema
   schema/ob_schema_getter_guard_priv.cpp
   schema/ob_schema_getter_guard_ccl_rule.cpp
   schema/ob_schema_getter_guard_sensitive_rule.cpp
+  schema/ob_schema_getter_guard_user.cpp
   schema/ob_schema_struct.cpp
   schema/ob_schema_struct_fts.cpp
   schema/ob_sequence_sql_service.cpp

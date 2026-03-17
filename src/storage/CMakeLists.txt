@@ -255,6 +255,7 @@ ob_set_subtarget(ob_storage fts
   fts/ob_fts_plugin_helper.cpp
   fts/ob_fts_stop_token_check.cpp
   fts/ob_fts_struct.cpp
+  fts/ob_fts_tokenizer.cpp
   fts/ob_ngram_ft_parser.cpp
   fts/ob_whitespace_ft_parser.cpp
   fts/dict/ob_dic_loader.cpp
@@ -342,6 +343,9 @@ ob_set_subtarget(ob_storage restore
   restore/ob_ls_restore_task_mgr.cpp
   restore/ob_tenant_restore_info_mgr.cpp
   restore/ob_restore_compatibility_util.cpp
+  restore/ob_i_ls_restore_state.cpp
+  restore/ob_ls_restore_stat.cpp
+  restore/ob_sn_ls_restore_state.cpp
 )
 
 ob_set_subtarget(ob_storage backup
@@ -1206,6 +1210,9 @@ ob_set_subtarget(ob_storage retrieval
   retrieval/ob_block_stat_iter.cpp
   retrieval/ob_sparse_bmm_iter.cpp
   retrieval/ob_inv_idx_param_estimator.cpp
+  retrieval/ob_inv_idx_param_cache.cpp
+  retrieval/ob_disjunctive_max_iter.cpp
+  retrieval/ob_phrase_match_counter.cpp
   retrieval/ob_sparse_bmw_iter.cpp
   retrieval/ob_sparse_daat_iter.cpp
   retrieval/ob_sparse_taat_iter.cpp

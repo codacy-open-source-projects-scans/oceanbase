@@ -192,6 +192,7 @@ int ObDASHNSWScanIter::inner_init(ObDASIterParam &param)
     extra_column_count_ = vec_aux_ctdef_->extra_column_count_;
     is_primary_pre_with_rowkey_with_filter_ = vec_aux_ctdef_->can_use_vec_pri_opt();
     pre_scan_param_ = hnsw_scan_param.pre_scan_param_;
+    strategy_ = hnsw_scan_param.strategy_;
     adaptive_ctx_.selectivity_ = vec_aux_ctdef_->selectivity_;
     adaptive_ctx_.row_count_ = vec_aux_ctdef_->row_count_;
     adaptive_ctx_.can_extract_range_ = hnsw_scan_param.can_extract_range_;
@@ -377,7 +378,6 @@ int ObDASHNSWScanIter::inner_reuse()
   vec_op_alloc_.reset();
   query_cond_.reset();
   go_brute_force_ = false;
-  only_complete_data_ = false;
 
   if (OB_SUCC(ret) && OB_FAIL(set_vec_index_param(vec_aux_ctdef_->vec_index_param_))) {
     LOG_WARN("failed to set vec index param", K(ret));
@@ -795,8 +795,9 @@ int ObDASHNSWScanIter::check_iter_filter_need_retry()
             OB_VECTOR_INDEX_ADAPTIVE_NEED_RETRY : OB_SUCCESS;
     }
   }
-
-  LOG_TRACE("switch path check iter filter need retry:", K(ret), K(adaptive_ctx_), K(iter_selectivity), K(output_row_cnt));
+  if (OB_FAIL(ret)) {
+    LOG_INFO("[VEC_INDEX][ADAPTIVE] switch path check iter filter need retry", K(ret), K(delta_buf_tablet_id_), K(adaptive_ctx_), K(iter_selectivity), K(output_row_cnt));
+  }
   return ret;
 }
 
@@ -815,7 +816,9 @@ int ObDASHNSWScanIter::check_pre_filter_need_retry()
   } else if (pre_selectivity > ObVecIdxExtraInfo::DEFAULT_PRE_RATE_FILTER_WITH_ROWKEY) {
     ret = OB_VECTOR_INDEX_ADAPTIVE_NEED_RETRY;
   }
-  LOG_TRACE("switch path check pre filter need retry:", K(ret), K(adaptive_ctx_), K(pre_selectivity));
+  if (OB_FAIL(ret)) {
+    LOG_INFO("[VEC_INDEX][ADAPTIVE] switch path check pre filter need retry", K(ret), K(delta_buf_tablet_id_), K(adaptive_ctx_), K(pre_selectivity));
+  }
   return ret;
 }
 
@@ -846,7 +849,6 @@ int ObDASHNSWScanIter::reset_filter_path()
   } else {
     query_cond_.reset();
     go_brute_force_ = false;
-    only_complete_data_ = false;
     can_retry_ = false;
     if (OB_NOT_NULL(tmp_adaptor_vid_iter_)) {
       tmp_adaptor_vid_iter_->reset();
@@ -1519,9 +1521,10 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter(
     if (OB_FAIL(process_adaptor_state_pre_filter_brute_force(ada_ctx, adaptor, brute_vids, brute_cnt, need_complete_data, true))) {
       LOG_WARN("hnsw pre filter(brute force) failed to query result.", K(ret));
     } else if (need_complete_data) {
-      only_complete_data_ = true;
+      query_cond_.only_complete_data_ = true;
       if (OB_FAIL(process_adaptor_state_post_filter(ada_ctx, adaptor, is_vectorized))) {
         LOG_WARN("failed to process adaptor state post filter", K(ret));
+      } else if (OB_FALSE_IT(need_complete_data = false)) {
       } else if (OB_FAIL(process_adaptor_state_pre_filter_brute_force(ada_ctx, adaptor, brute_vids, brute_cnt, need_complete_data, false))) {
         LOG_WARN("hnsw pre filter(brute force) failed to query result.", K(ret));
       }
@@ -1755,7 +1758,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_with_rowkey(
         }
         if (OB_FAIL(ret)) {
         } else if (can_retry_ && !go_brute_force_ && OB_FAIL(check_pre_filter_need_retry())) {
-          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_));
+          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_), K(strategy_));
         }
       } // end while
     }
@@ -2058,7 +2061,7 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
       if (OB_FAIL(ret)) {
         LOG_WARN("failed to get next row.", K(ret));
       } else if (can_retry_ && !go_brute_force_ && OB_FAIL(check_pre_filter_need_retry())) {
-        LOG_WARN("ret of check pre filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_));
+        LOG_WARN("ret of check pre filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_), K(strategy_));
       } else {
         ObEvalCtx::BatchInfoScopeGuard guard(*vec_aux_rtdef_->eval_ctx_);
         guard.set_batch_size(scan_row_cnt);
@@ -2085,7 +2088,7 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
       for (int i = 0; OB_SUCC(ret) && i < batch_row_count; ++i) {
         int64_t vid = 0;
         if (can_retry_ && OB_FAIL(check_pre_filter_need_retry())) {
-          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_));
+          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_), K(strategy_));
         } else if (OB_FAIL(get_vid_from_rowkey_vid_table(vid))) {
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
             LOG_WARN("failed to get vector from rowkey vid table.", K(ret), K(i));
@@ -2940,7 +2943,7 @@ int ObDASHNSWScanIter::post_query_vid_with_filter(
       || (iter_scan_total_num > hnsw_max_iter_scan_nums && hnsw_max_iter_scan_nums > 0)) {
         // res is already less than limit, no need to find again
         query_cond_.query_limit_ = 0;
-        LOG_TRACE("iteractive filter log:", K(tmp_adaptor_vid_iter_->get_total()), K(query_cond_.query_limit_), K(total_before_add), K(adaptor_vid_iter_->get_total()));
+        LOG_TRACE("iteractive filter log:", K(iter_scan_total_num), K(hnsw_max_iter_scan_nums), K(query_cond_.query_limit_), K(tmp_adaptor_vid_iter_->get_total()), K(query_cond_.query_limit_), K(total_before_add), K(adaptor_vid_iter_->get_total()));
       } else if (is_ipivf()) {
         // for sparse vector index, iter filter is not supported
         query_cond_.query_limit_ = 0;
@@ -2953,36 +2956,46 @@ int ObDASHNSWScanIter::post_query_vid_with_filter(
         adaptive_ctx_.iter_res_row_cnt_ += added_cnt;
         adaptive_ctx_.iter_filter_row_cnt_ += unfiltered_vid_cnt;
         if (can_retry_ && OB_FAIL(check_iter_filter_need_retry())) {
-          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_));
+          LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_), K(strategy_));
         } else if (need_cnt_next > 0) {
           float need_ratio = static_cast<float>(need_cnt_next) / static_cast<float>(added_cnt);
           float select_ratio = static_cast<float>(added_cnt) / static_cast<float>(unfiltered_vid_cnt);
-          int need_res_cnt = select_ratio > 0 ? static_cast<int64_t>(std::ceil(need_cnt_next / select_ratio)) : need_cnt_next;
           uint32_t new_limit = 0;
           int64_t new_ef = old_ef;
           if (added_cnt == 0) {
             // selectivity is 0, amplify directly
-            new_limit = old_ef * FIXED_MAGNIFICATION_RATIO;
+            new_limit = (strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST && hnsw_max_iter_scan_nums > 0) ?
+                        OB_MIN(old_ef * FIXED_MAGNIFICATION_RATIO, static_cast<uint32_t>(hnsw_max_iter_scan_nums)) :
+                        old_ef * FIXED_MAGNIFICATION_RATIO;
             new_ef = std::max(query_cond_.ef_search_, static_cast<int64_t>(new_limit));
             new_ef = new_ef > VSAG_MAX_EF_SEARCH ? VSAG_MAX_EF_SEARCH : new_ef;
             query_cond_.is_last_search_ = false;
           } else {
-            int need_res_cnt = static_cast<int64_t>(std::ceil(need_cnt_next / select_ratio));
+            int64_t need_res_cnt = OB_MIN(static_cast<int64_t>(std::ceil(need_cnt_next / select_ratio)),
+                                   query_cond_.query_limit_ * FIXED_MAGNIFICATION_RATIO_EACH_ITERATIVE);
             if (can_be_last_search(old_ef, need_cnt_next, select_ratio)) {
               new_limit = old_ef;
               query_cond_.is_last_search_ = true;
             } else {
-              new_limit = need_res_cnt;
+              new_limit = (strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST && hnsw_max_iter_scan_nums > 0) ?
+                          OB_MIN(need_res_cnt, hnsw_max_iter_scan_nums) :
+                          need_res_cnt;
               new_ef = std::max(query_cond_.ef_search_, static_cast<int64_t>(new_limit));
               new_ef = new_ef > VSAG_MAX_EF_SEARCH ? VSAG_MAX_EF_SEARCH : new_ef;
             }
           }
           query_cond_.query_limit_ = new_limit;
           // hnsw_bq will reoder by top-N operator, so the limit needs to be increased
-          if (is_hnsw_bq()) query_cond_.query_limit_ = get_reorder_count(new_ef, new_limit, search_param_);
+          if (is_hnsw_bq()) {
+            if (strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST) {
+              query_cond_.query_limit_ = OB_MAX(new_limit, get_reorder_count(search_param_.ef_search_, limit_param_.limit_ + limit_param_.offset_, search_param_));
+            } else {
+              query_cond_.query_limit_ = get_reorder_count(new_ef, new_limit, search_param_);
+            }
+          }
           query_cond_.ef_search_ = new_ef;
           LOG_TRACE("iteractive filter arg log:", K(total_after_add), K(total_before_add), K(unfiltered_vid_cnt), K(select_ratio),  K(old_limit), K(new_limit),
-                                                  K(old_ef), K(new_ef), K(query_cond_.query_limit_), K(query_cond_.ef_search_));
+                                                  K(old_ef), K(new_ef), K(query_cond_.query_limit_), K(query_cond_.ef_search_), K(strategy_));
         } else {
           query_cond_.query_limit_ = 0;
         }
@@ -3294,7 +3307,6 @@ int ObDASHNSWScanIter::set_vector_query_condition(ObVectorQueryConditions &query
   } else {
     query_cond.query_order_ = true;
     query_cond.query_scn_ = snapshot_scan_param_.snapshot_.core_.version_;
-    query_cond.only_complete_data_ = only_complete_data_; // ture when search brute force
     query_cond.scan_param_ = &snapshot_scan_param_;
     query_cond.rel_count_ = vec_aux_ctdef_->relevance_col_cnt_;
     query_cond.rel_map_ptr_ = &rel_map_;
@@ -3322,14 +3334,14 @@ int ObDASHNSWScanIter::set_vector_query_condition(ObVectorQueryConditions &query
     query_cond.extra_column_count_ = extra_column_count_;
     if (OB_FAIL(ret)) {
     } else if (!OB_ISNULL(search_vec_)) {
-      if (OB_FAIL(ObDasVecScanUtils::get_real_search_vec(mem_context_->get_arena_allocator(), sort_rtdef_, search_vec_,
+      if (OB_FAIL(ObDasVecScanUtils::get_real_search_vec(mem_context_->get_arena_allocator(), sort_rtdef_->eval_ctx_, search_vec_,
                                                         query_cond.query_vector_))) {
         LOG_WARN("failed to get real search vec", K(ret));
       }
     } else {
       query_cond.query_vector_ = hybrid_search_vec_;
     }
-    LOG_TRACE("vector index show basic hnsw query cond", K(query_cond.only_complete_data_), K(query_cond.ef_search_), K(query_cond.query_limit_),
+    LOG_TRACE("vector index show basic hnsw query cond", K(query_cond.ef_search_), K(query_cond.query_limit_),
                                             K(query_cond.extra_column_count_), K(query_cond.query_vector_));
   }
   return ret;

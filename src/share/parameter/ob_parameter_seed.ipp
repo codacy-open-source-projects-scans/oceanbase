@@ -1360,6 +1360,11 @@ ERRSIM_DEF_INT(errsim_max_backup_retry_count, OB_CLUSTER_PARAMETER, "0", "[0,)",
         "Range: [0,) in integer",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
+ERRSIM_DEF_INT(errsim_ss_ha_macro_task_retry_count, OB_CLUSTER_PARAMETER, "64", "[0,)",
+        "ss ha macro task retry times in errsim mode. "
+        "Range: [0,) in integer",
+        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+
 ERRSIM_DEF_TIME(errsim_max_backup_meta_retry_time_interval, OB_CLUSTER_PARAMETER, "10s", "[1s,5m]",
         "max backup meta retry time interval in errsim mode"
         "Range: [1s, 5m]",
@@ -1676,6 +1681,10 @@ DEF_BOOL_WITH_CHECKER(suspend_storage_cache_task, OB_TENANT_PARAMETER, "False",
     common::ObConfigSuspendStorageCacheTaskChecker,
     "Suspend background caching tasks.",
     ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_TIME(storage_cache_clean_macro_interval, OB_TENANT_PARAMETER, "24h", "[0s,]",
+    "the time interval between the schedules of storage cache policy clean macro task. "
+    "Range: [0s, +∞)",
+     ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
 // for bloom filter
 DEF_BOOL(_bloom_filter_enabled, OB_TENANT_PARAMETER, "True",
@@ -2537,7 +2546,7 @@ DEF_INT(clog_io_isolation_mode, OB_CLUSTER_PARAMETER, "1", "[1,2]",
 DEF_BOOL(enable_ob_error_msg_style, OB_CLUSTER_PARAMETER, "True",
          "A switch that determines whether to use the ORA-xx or OBE-xx error code format for ORA error codes, with a default value of True to use the OBE-xx format."
          "The default value is True. Value: False means we use the ORA-xx format, True means we use the OBE-xx format.",
-         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::STATIC_EFFECTIVE));
+         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_BOOL(_enable_memleak_light_backtrace, OB_CLUSTER_PARAMETER, "True",
         "specifies whether allow memleak to get the backtrace of malloc by light_backtrace",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -3114,7 +3123,7 @@ DEF_STR_WITH_CHECKER(_server_full_schema_refresh_parallelism, OB_TENANT_PARAMETE
                      "values: REQUEST, OBJECT",
                      ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 
-DEF_INT_WITH_CHECKER(_hnsw_max_scan_vectors, OB_TENANT_PARAMETER, "20000",
+DEF_INT_WITH_CHECKER(_hnsw_max_scan_vectors, OB_TENANT_PARAMETER, "1000",
                     common::ObHNSWIterFilterScanNumChecker,
                     "The upper limit of hnsw iter-filter search nums. Range: [0,)",
                     ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
@@ -3315,7 +3324,8 @@ DEF_INT(default_skip_index_level, OB_TENANT_PARAMETER, "0", "[0, 1]",
 DEF_BOOL(enable_mv_binlog_minimal_mode, OB_TENANT_PARAMETER, "False",
          "Switch of the minimal mode for materialized view ",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-DEF_INT(_ivf_max_scan_vectors, OB_TENANT_PARAMETER, "100000",
+
+DEF_INT(_ivf_max_scan_vectors, OB_TENANT_PARAMETER, "1000",
         "The upper limit of ivf iter-filter search nums. Range: [0,)",
         ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_INT(_max_access_entries_for_external_table_partition, OB_TENANT_PARAMETER, "1000000", "[1,)",
@@ -3410,10 +3420,23 @@ DEF_BOOL(_enable_hash_gby_limit_pushdown, OB_TENANT_PARAMETER, "True",
 DEF_INT(_large_query_cpu_quota_adjustment_step, OB_TENANT_PARAMETER, "0", "[0,100]",
         "Large Query CPU Quota Tuning Step. Range: [0,100]",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
-
 DEF_BOOL(_enable_pl_sql_parameterize, OB_TENANT_PARAMETER, "False",
         "enable/disable pl sql parameterize optimization",
         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_BOOL(_ss_cold_tablet_delay_upload, OB_TENANT_PARAMETER, "false",
+         "enable or disable delay upload for cold tablet.",
+         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_BOOL(_ss_tablet_upload_follow_cache_policy, OB_TENANT_PARAMETER, "True",
+         "Enable or disable tablet upload follow cache policy",
+         ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
 DEF_BOOL(_enable_ss_fast_migration, OB_TENANT_PARAMETER, "True",
          "use fast migration in shared-storage if enable",
          ObParameterAttr(Section::TENANT, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));
+DEF_STR(ob_vector_search_strategy, OB_TENANT_PARAMETER, "LATENCY_FIRST",
+        "The strategy of vector index searching. If it is set to LATENCY_FIRST, which is default value, the search strategy is response-first mode."
+        "If it is set to RECALL_FIRST, the search strategy is deep-search mode.",
+        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE),
+        "RECALL_FIRST, LATENCY_FIRST");
+DEF_TIME(_vector_pre_filtering_timeout, OB_TENANT_PARAMETER, "50ms", "[10ms,)",
+        "Control the period of pre-filtering stage in vector index search. Range: [10ms, )",
+        ObParameterAttr(Section::OBSERVER, Source::DEFAULT, EditLevel::DYNAMIC_EFFECTIVE));

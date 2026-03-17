@@ -43,6 +43,10 @@ public:
   int process();
 private:
   int do_cancel_();
+#ifdef OB_BUILD_SHARED_STORAGE
+  int do_cancel_for_ss_set_();
+#endif
+  int do_cancel_for_ls_tasks_();
   int advance_task_status_(
       common::ObISQLClient &sql_proxy,
       const share::ObBackupCleanStatus &next_status, 
@@ -96,6 +100,7 @@ private:
   int delete_backup_set_meta_info_files_();
   int delete_backup_piece_meta_info_files_();
   int delete_backup_dir_(const share::ObBackupPath &path);
+  int check_backup_dir_clean_ready_(const share::ObBackupPath &path, bool &is_clean_ready);
   int check_backup_set_dir_empty_();
   int check_backup_piece_dir_empty_();
   int delete_backup_set_dir_();
@@ -106,6 +111,12 @@ private:
   int delete_piece_inner_placeholder_file_();
   int delete_piece_checkpoint_file_();
   bool is_can_retry_(const int error);
+#ifdef OB_BUILD_SHARED_STORAGE
+  int backup_clean_ss_set_macro_tasks_();
+  int delete_ss_backup_set_meta_info_files_();
+  int delete_ss_backup_logstream_();
+  int init_clean_macro_task_mgr_();
+#endif
 
 private:
   bool is_inited_;

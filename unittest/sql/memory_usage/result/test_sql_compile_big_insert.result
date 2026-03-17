@@ -9999,7 +9999,7 @@ INSERT /*+USE_PLAN_CACHE(none)*/ IGNORE INTO `track_metadata_mongo_new`(`stageDe
 ('2013', null, null, 'Cesar Alejandro Juarez Rivera SP7', null, '2023-08-09 21:57:07.200000000', 'operation_delivery_scan', null, 'Cesar Alejandro Juarez Rivera SP7', '{"driverCode": "D21045110", "isReverse": 0, "mobile": "+52 5620418921", "driverName": "Cesar Alejandro Juarez Rivera SP7", "deliveryCount": 0, "consigneeCountry": "MEX"}', 10, null, '1', '0', null, '2023-08-09 21:57:07.203000000', 'S210224', 'BG2307301086586', null, null, '0', 'D21045110', 'operation', 'D21045110', null, '1003', null, 'Mexico Dispatch Station 7', '64d39b337797df6f9975d8ca', 'com.imile.track.dao.mongo.model.TrackMetadataDO', null, '6073023283475', null),
 ('2060', null, null, 'RP-Yousif Gasmelsid', null, '2023-08-09 21:57:07.213000000', 'operation_delivered', null, 'RP-Yousif Gasmelsid', '{"orderType": "100", "collectingMoney": "0.0000", "deliveryMethod": "HomeDelivery", "isReverse": 0, "paymentMethod": "100", "scanType": "1200", "customerName": "العوفي عمر", "signer": ""}', 10, null, '1', '0', null, '2023-08-09 21:57:07.218000000', '66660012', 'BG2307230830902', null, null, '0', 'D21053075', 'operation', 'D21053075', null, '1007', null, 'Taif Station', '64d39b337797df6f9975d8cb', 'com.imile.track.dao.mongo.model.TrackMetadataDO', null, '6073023117679', null),
 ('2050', null, null, 'Shein BRA', null, '2023-08-09 21:57:07.284000000', 'client_submitted_order', null, 'Shein BRA', '{"orderType": "1200", "referenceNo": "PGC230809227299533220230809", "clientName": "Shein BRA", "clientCode": "C21036165", "referenceWaybillNo": "", "createUserCode": "C21036165", "uploadType": "interface", "createUserName": "Shein BRA", "operatorPhone": "", "orderNoType": "100", "consigneeCountry": "BRA"}', 10, null, '1', '0', null, '2023-08-09 21:57:07.288000000', null, 'PGC230809227299533220230809', null, null, '0', 'C21036165', 'client', 'C21036165', null, '1001', null, null, '64d39b337797df6f9975d8cd', 'com.imile.track.dao.mongo.model.TrackMetadataDO', null, '6080923337776', null);
-memory usage: parser = 118521601, resolve = 122480016, transform = 0, optimize = 23045936, total = 315549425
+memory usage: parser = 118521601, resolve = 122715216, transform = 0, optimize = 23035616, total = 315774305
 ***************   Case 2   ***************
 INSERT /*+USE_PLAN_CACHE(none)*/ IGNORE INTO t1 values
 (1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1),
@@ -20002,16 +20002,16 @@ INSERT /*+USE_PLAN_CACHE(none)*/ IGNORE INTO t1 values
 (9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998,9998),
 (9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999,9999),
 (10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000,10000);
-memory usage: parser = 88207604, resolve = 185758992, transform = 0, optimize = 28452656, total = 364407204
+memory usage: parser = 88207604, resolve = 185743152, transform = 0, optimize = 28437056, total = 364375764
 
 memory usage
 | query | parser | resolve | transform | optimize | total |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 118,521,601 | 122,480,016 | 0 | 23,045,936 | 315,549,425 |
-| 2 | 88,207,604 | 185,758,992 | 0 | 28,452,656 | 364,407,204 |
+| 1 | 118,521,601 | 122,715,216 | 0 | 23,035,616 | 315,774,305 |
+| 2 | 88,207,604 | 185,743,152 | 0 | 28,437,056 | 364,375,764 |
 
 max memory usage
 | query | parser | resolve | transform | optimize | total |
 | --- | --- | --- | --- | --- | --- |
-| 1 | 118,521,601 | 122,541,680 | 23,808 | 23,091,824 | 319,661,089 |
-| 2 | 88,207,604 | 185,820,656 | 23,808 | 28,506,352 | 368,526,676 |
+| 1 | 118,521,601 | 122,776,896 | 23,808 | 23,081,504 | 319,885,969 |
+| 2 | 88,207,604 | 185,804,832 | 23,808 | 28,490,752 | 368,495,236 |

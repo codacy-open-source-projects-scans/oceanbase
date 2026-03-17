@@ -113,15 +113,15 @@ ObBackupDeleteSelector::ObBackupDeleteSelector()
 ObBackupDeleteSelector::~ObBackupDeleteSelector()
 {
   if (OB_NOT_NULL(data_provider_)) {
-    OB_DELETE(IObBackupDataProvider, "BackupProvider", data_provider_);
+    OB_DELETE(IObBackupDataProvider, "BackupClean", data_provider_);
     data_provider_ = nullptr;
   }
   if (OB_NOT_NULL(connectivity_checker_)) {
-    OB_DELETE(IObConnectivityChecker, "ConnChecker", connectivity_checker_);
+    OB_DELETE(IObConnectivityChecker, "BackupClean", connectivity_checker_);
     connectivity_checker_ = nullptr;
   }
   if (OB_NOT_NULL(archive_helper_)) {
-    OB_DELETE(ObArchivePersistHelper, "ArchiveHelper", archive_helper_);
+    OB_DELETE(ObArchivePersistHelper, "BackupClean", archive_helper_);
     archive_helper_ = nullptr;
   }
 }
@@ -142,9 +142,9 @@ int ObBackupDeleteSelector::init(common::ObMySQLProxy &sql_proxy,
     job_attr_ = &job_attr;
     rpc_proxy_ = &rpc_proxy;
     delete_mgr_ = &delete_mgr;
-    ObBackupDataProvider *data_provider_impl = OB_NEW(ObBackupDataProvider, "BackupProvider");
-    ObConnectivityChecker *connectivity_checker_impl = OB_NEW(ObConnectivityChecker, "ConnChecker");
-    ObArchivePersistHelper *archive_helper_impl = OB_NEW(ObArchivePersistHelper, "ArchiveHelper");
+    ObBackupDataProvider *data_provider_impl = OB_NEW(ObBackupDataProvider, "BackupClean");
+    ObConnectivityChecker *connectivity_checker_impl = OB_NEW(ObConnectivityChecker, "BackupClean");
+    ObArchivePersistHelper *archive_helper_impl = OB_NEW(ObArchivePersistHelper, "BackupClean");
 
     if (OB_ISNULL(data_provider_impl) || OB_ISNULL(connectivity_checker_impl) || OB_ISNULL(archive_helper_impl)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -165,13 +165,13 @@ int ObBackupDeleteSelector::init(common::ObMySQLProxy &sql_proxy,
       is_inited_ = true;
     }
     if (OB_NOT_NULL(data_provider_impl)) {
-      OB_DELETE(ObBackupDataProvider, "BackupProvider", data_provider_impl);
+      OB_DELETE(ObBackupDataProvider, "BackupClean", data_provider_impl);
     }
     if (OB_NOT_NULL(connectivity_checker_impl)) {
-      OB_DELETE(ObConnectivityChecker, "ConnChecker", connectivity_checker_impl);
+      OB_DELETE(ObConnectivityChecker, "BackupClean", connectivity_checker_impl);
     }
     if (OB_NOT_NULL(archive_helper_impl)) {
-      OB_DELETE(ObArchivePersistHelper, "ArchiveHelper", archive_helper_impl);
+      OB_DELETE(ObArchivePersistHelper, "BackupClean", archive_helper_impl);
     }
   }
   return ret;
@@ -1641,9 +1641,8 @@ int ObBackupDeleteSelector::get_delete_obsolete_backup_piece_infos_log_only_(int
 #ifdef ERRSIM
   } else if (OB_FAIL(get_errsim_expired_parameter_(expired_scn_from_errsim))) {
     LOG_WARN("errsim failed to override expired time for errsim", K(ret));
-  } else if (OB_FAIL(clog_data_clean_point.convert_from_ts(
-                 static_cast<uint64_t>(expired_scn_from_errsim / 1000)))) {
-    LOG_WARN("errsim failed to convert from ts", K(ret), K(expired_scn_from_errsim));
+  } else if (expired_scn_from_errsim > 0 && OB_FAIL(clog_data_clean_point.convert_for_gts(expired_scn_from_errsim))) {
+    LOG_WARN("errsim failed to convert for gts", K(ret), K(expired_scn_from_errsim));
 #endif
   } else if (OB_FAIL(get_all_dest_backup_piece_infos_(clog_data_clean_point, backup_piece_infos, true))) {
     LOG_WARN("failed to get all dest backup piece infos", K(ret), K(clog_data_clean_point));

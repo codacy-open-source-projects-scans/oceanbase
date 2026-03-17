@@ -1759,7 +1759,8 @@ int ObSql::handle_pl_execute(const ObString &sql,
   if (!context.is_dbms_sql_ && !context.is_dynamic_sql_ && lib::is_oracle_mode()) {
     param_byorder = true;
   }
-  if (ObParser::is_pl_stmt(sql, nullptr, &is_call_procedure) || is_call_procedure) {
+  if (ObParser::is_pl_stmt(sql, nullptr, &is_call_procedure) || is_call_procedure
+      || session_info.is_for_trigger_package()) {
     try_paramlize = false;
   }
 
@@ -3284,6 +3285,8 @@ int ObSql::generate_stmt(ParseResult &parse_result,
       resolver_ctx.expr_factory_->set_query_ctx(resolver_ctx.query_ctx_);
       if (OB_FAIL(resolver_ctx.schema_checker_->init(resolver_ctx.query_ctx_->sql_schema_guard_, session_id))) {
         LOG_WARN("init schema checker failed", K(ret));
+      } else if (context.session_info_->get_ddl_info().is_search_index_ddl()) {
+        resolver_ctx.schema_checker_->set_search_index_ddl();
       }
     }
   }
@@ -6117,7 +6120,7 @@ int ObSql::create_expr_constraints(ObQueryCtx &query_ctx, ObExecContext &exec_ct
         LOG_WARN("failed to push back arr", K(ret));
       }
     }
-    for (int64_t i = PRE_CALC_JSON_CONTAINS_PRECISE; OB_SUCC(ret) && i <= PRE_CALC_JSON_TYPE; ++i) {
+    for (int64_t i = PRE_CALC_JSON_CONTAINS_PRECISE; OB_SUCC(ret) && i <= PRE_CALC_SEARCH_INDEX_CONSTRAINT; ++i) {
       if (OB_FAIL(pre_calc_result_arr.push_back(static_cast<PreCalcExprExpectResult>(i)))) {
         LOG_WARN("failed to push back arr", K(ret));
       }

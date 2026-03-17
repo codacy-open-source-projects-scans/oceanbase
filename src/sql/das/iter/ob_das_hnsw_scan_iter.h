@@ -79,7 +79,8 @@ public:
       func_lookup_rtdef_(nullptr),
       can_extract_range_(false),
       is_primary_index_(false),
-      use_vid_(false) {}
+      use_vid_(false),
+      strategy_(ObVecIdxQueryStrategy::LATENCY_FIRST) {}
 
   virtual bool is_valid() const override
   {
@@ -114,7 +115,8 @@ public:
                K_(vec_index_type),
                K_(vec_idx_try_path),
                K_(can_extract_range),
-               K_(is_primary_index));
+               K_(is_primary_index),
+               K_(strategy));
 
   share::ObLSID ls_id_;
   transaction::ObTxDesc *tx_desc_;
@@ -147,6 +149,7 @@ public:
   bool can_extract_range_;
   bool is_primary_index_;
   bool use_vid_;
+  ObVecIdxQueryStrategy strategy_;
 };
 class ObSimpleMaxHeap;
 
@@ -293,7 +296,6 @@ public:
       distance_calc_(nullptr),
       is_primary_pre_with_rowkey_with_filter_(false),
       go_brute_force_(false),
-      only_complete_data_(false),
       extra_column_count_(0),
       simple_cmp_info_(),
       vec_index_type_(ObVecIndexType::VEC_INDEX_INVALID),
@@ -304,7 +306,8 @@ public:
       idx_iter_first_scan_(true),
       rel_map_(),
       use_vid_(false),
-      distance_threshold_(FLT_MAX) {
+      distance_threshold_(FLT_MAX),
+      strategy_(ObVecIdxQueryStrategy::LATENCY_FIRST) {
         extra_in_rowkey_idxs_.set_attr(ObMemAttr(MTL_ID(), "ExtraIdx"));
       }
 
@@ -478,7 +481,9 @@ private:
   }
   inline bool check_if_can_retry() { return is_adaptive_filter() && (vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_ITERATIVE_FILTER
                                                                  || vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER)
-                                                                 && vec_aux_ctdef_->relevance_col_cnt_ == 0;}
+                                                                 && vec_aux_ctdef_->relevance_col_cnt_ == 0
+                                                                 && (strategy_ == ObVecIdxQueryStrategy::RECALL_FIRST ||
+                                                                    (strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST && vec_idx_try_path_ == ObVecIdxAdaTryPath::VEC_INDEX_PRE_FILTER)); }
   bool is_parallel_with_block_granule();
   bool check_need_force_switch_run_path();
   int check_iter_filter_need_retry();
@@ -503,6 +508,7 @@ private:
   static const uint64_t MAX_VSAG_QUERY_RES_SIZE = 16384;
   static const uint64_t VSAG_MAX_EF_SEARCH = 160000;
   static constexpr double FIXED_MAGNIFICATION_RATIO = 2.0;
+  static constexpr double FIXED_MAGNIFICATION_RATIO_EACH_ITERATIVE = 10.0;
   static constexpr double SPARSE_FIXED_MAGNIFICATION_RATIO = 50.0;
   static constexpr double ITER_CONSIDER_LAST_SEARCH_SELETIVITY = 0.05;
   static const uint64_t MAX_OPTIMIZE_BATCH_COUNT = 16;
@@ -586,7 +592,6 @@ private:
   ObExpr* distance_calc_;
   bool is_primary_pre_with_rowkey_with_filter_;
   bool go_brute_force_;
-  bool only_complete_data_;
   int64_t extra_column_count_;
   ObHnswSimpleCmpInfo simple_cmp_info_;
   // extra_info idx to rowkey idx, because of extra_info is sort by column id
@@ -601,6 +606,7 @@ private:
   common::hash::ObHashMap<int64_t, double*> rel_map_;
   bool use_vid_;
   float distance_threshold_;
+  ObVecIdxQueryStrategy strategy_;
 
 private:
 

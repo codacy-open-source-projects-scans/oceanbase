@@ -2150,6 +2150,7 @@ int ObLSTabletService::create_with_ss_tablet(
     } else {
       LOG_INFO("create ss tablet succeed", K(ret), K(key), K(disk_addr), K(meta_version),
         K(private_transfer_epoch), "ss_tablet_meta", ss_tablet.get_tablet_meta());
+        report_tablet_to_rs(tablet_id);
     }
   }
 
@@ -7061,7 +7062,8 @@ int ObLSTabletService::estimate_row_count(
     LOG_WARN("not inited", K(ret), K_(is_inited));
   } else if (OB_UNLIKELY(!param.is_estimate_valid() ||
                          !scan_range.is_valid() ||
-                         param.frozen_version_ == -1)) {
+                         param.frozen_version_ == -1 ||
+                         !param.est_row_count_param_.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(param), K(scan_range), K(param.frozen_version_));
   } else if (scan_range.is_empty()) {
@@ -7074,6 +7076,9 @@ int ObLSTabletService::estimate_row_count(
         LOG_WARN("failed to get tablet_iter", K(ret), K(snapshot_version), K(param));
       }
     } else {
+      ObITable *max_sstable = nullptr;
+      int64_t max_sstable_row_count = 0;
+      ObSSTableMetaHandle sstable_meta_handle;
       while(OB_SUCC(ret)) {
         ObITable *table = nullptr;
         if (OB_FAIL(tablet_iter.table_iter()->get_next(table))) {
@@ -7099,9 +7104,23 @@ int ObLSTabletService::estimate_row_count(
         } else if (table->no_data_to_read()) {
           LOG_DEBUG("cur table is empty", K(ret), K(*table));
           continue;
+        } else if (param.est_row_count_param_.is_loose() && table->is_sstable()) {
+          const ObSSTable *sstable = static_cast<const ObSSTable *>(table);
+          if (OB_FAIL(sstable->get_meta(sstable_meta_handle))) {
+            LOG_WARN("failed to get sstable meta", K(ret), K(table));
+          } else {
+            const ObSSTableMeta &sstable_meta = sstable_meta_handle.get_sstable_meta();
+            if (sstable_meta.get_row_count() > max_sstable_row_count) {
+              max_sstable = table;
+              max_sstable_row_count = sstable_meta.get_row_count();
+            }
+          }
         } else if (OB_FAIL(tables.push_back(table))) {
           LOG_WARN("failed to push back table", K(ret), K(tables));
         }
+      }
+      if (OB_SUCC(ret) && nullptr != max_sstable && OB_FAIL(tables.push_back(max_sstable))) {
+        LOG_WARN("failed to push back max sstable", K(ret), K(max_sstable));
       }
     }
     if (OB_SUCC(ret) && tables.count() > 0) {
@@ -9719,7 +9738,7 @@ int ObLSTabletService::update_tablet_ss_change_version(
       // This is because the min_ss_tablet_version_ of the sstablet is set to its initial value.
       // As a result, all tablets with a min_ss_tablet_version_ equal to the initial value are required to fully
       // rewrite their metadata to local device.
-      if (old_tablet.get_tablet_addr().is_sslog_tablet_meta() || old_tablet.is_min_ss_tablet_version_initial()) {
+      if (old_tablet.get_tablet_addr().is_sslog() || old_tablet.is_min_ss_tablet_version_initial()) {
         if (OB_FAIL(rewrite_tablet_for_ss_change_version_(data_version, reorg_scn, ss_change_version,
             tablet_pointer_ss_change_version, private_transfer_epoch, tablet_meta_version, old_handle))) {
           LOG_WARN("failed to rewrite tablet for ss change version", K(ret), K(old_handle), K(ss_change_version),

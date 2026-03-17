@@ -277,7 +277,7 @@ int ObBackupValidateBasicTask::do_basic_validate_(const ObBackupPathString &dir_
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ctx_ is null", KR(ret), KP_(ctx));
   } else {
-    ObSArray<ObBackupFileInfo> file_list;
+    ObSArray<ObBackupFilePathInfo> file_list;
     common::ObBackupIoAdapter io_adapter;
     int tmp_ret = OB_SUCCESS;
     const ObBackupBlockFileDataType data_type = ObBackupBlockFileDataType::FILE_PATH_INFO;
@@ -288,7 +288,7 @@ int ObBackupValidateBasicTask::do_basic_validate_(const ObBackupPathString &dir_
     ObBackupPath backup_path;
     ObBackupFileSuffix suffix = param_.task_type_.is_archivelog() ? ObBackupFileSuffix::ARCHIVE
                                                                   : ObBackupFileSuffix::BACKUP;
-    ObBackupFileInfo file_info;
+    ObBackupFilePathInfo file_info;
     int64_t actual_size = 0;
     share::ObBackupPathString absolute_path;
     if (OB_FAIL(backup_path.init(dir_path.ptr()))) {
@@ -781,10 +781,10 @@ int ObBackupValidatePrepareTask::prepare_basic_validate_()
           LOG_WARN("failed to check file list file exist", KR(ret), K(checkpoint_path));
         } else if (is_exist && OB_FAIL(path_list.push_back(checkpoint_path))) {
           LOG_WARN("failed to push back piece checkpoint dir path to queue", KR(ret), K(checkpoint_path));
-        } else {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid task type", KR(ret), K_(param));
         }
+      } else {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("invalid task type", KR(ret), K_(param));
       }
     }
     if (FAILEDx(get_and_add_dir_list_(path_list))) {

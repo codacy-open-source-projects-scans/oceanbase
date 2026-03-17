@@ -105,6 +105,7 @@ enum ObDDLType
   DDL_REPLACE_MLOG = 25, // placeholder of alter mlog
   DDL_CREATE_VEC_SPIV_INDEX = 26, // placeholder of spiv post build
   DDL_CREATE_SEARCH_INDEX = 27,
+  DDL_DROP_SEARCH_INDEX = 28,
 
   ///< @note tablet split.
   DDL_AUTO_SPLIT_BY_RANGE = 100,
@@ -1182,6 +1183,10 @@ public:
                                             const share::schema::ObTableSchema &source_table_schema,
                                             ObArray<ObColumnNameInfo> &column_names,
                                             ObArray<int64_t> &select_column_ids);
+  static int generate_search_index_column_names(const ObTableSchema &def_table_schema,
+                                                const ObColumnNameMap *col_name_map,
+                                                ObArray<ObColumnNameInfo> &column_names,
+                                                ObArray<int64_t> &select_column_ids);
   static int generate_build_replica_sql(
       const uint64_t tenant_id,
       const int64_t data_table_id,
@@ -1763,10 +1768,19 @@ private:
   static int generate_order_by_str(
       const ObIArray<int64_t> &select_column_ids,
       const ObIArray<int64_t> &order_column_ids,
+      const bool is_search_index,
       ObSqlString &sql_string);
   static int find_table_scan_table_id(
       const sql::ObOpSpec *spec,
       uint64_t &table_id);
+  static int generate_select_item_str(
+      const ObSqlString &part_key_column_sql_string,
+      ObSqlString &select_item_sql_string);
+  static int generate_index_data_gen_str(
+      const ObSqlString &query_column_sql_string,
+      const ObSqlString &part_key_column_sql_string,
+      const int64_t dest_table_id,
+      ObSqlString &index_data_gen_sql_string);
 
 public:
   const static int64_t MAX_BATCH_COUNT = 128;

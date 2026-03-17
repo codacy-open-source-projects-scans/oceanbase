@@ -26,6 +26,7 @@
 #include "sql/parser/ob_parser_utils.h"
 #include "sql/resolver/mv/ob_major_refresh_mjv_printer.h"
 #include "sql/privilege_check/ob_privilege_check.h"
+#include "sql/hybrid_search/ob_hybrid_search_dsl_resolver.h"
 #include "share/external_table/ob_external_table_utils.h"
 
 #include "sql/executor/ob_memory_tracker.h"
@@ -1492,6 +1493,8 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
   if (OB_SUCC(ret)) {
     if (OB_FAIL(check_audit_log_stmt(select_stmt))) {
       LOG_WARN("failed to check audit log stmt");
+    } else if (OB_FAIL(check_hybrid_search_stmt(select_stmt))) {
+      LOG_WARN("failed to check hybrid search stmt", K(ret));
     }
   }
   return ret;
@@ -3276,6 +3279,18 @@ int ObSelectResolver::expand_target_list(
       if (OB_FAIL(target_list.push_back(tmp_select_item))) {
         LOG_WARN("push back target list failed", K(ret));
       }
+    }
+  }
+
+  // hybrid_search(table ...): expose `_score` in `SELECT *` result set
+  if (OB_SUCC(ret) && table_item.is_hybrid_search_table()) {
+    ObDMLStmt *stmt = get_stmt();
+    if (OB_ISNULL(stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("stmt is null", K(ret));
+    } else if (OB_FAIL(ObDSLResolver::add_hybrid_search_score_to_select_list(
+                 table_item, *stmt, target_list))) {
+      LOG_WARN("failed to add hybrid search score to select list", K(ret), K(table_item));
     }
   }
   return ret;
@@ -6182,9 +6197,15 @@ int ObSelectResolver::resolve_column_ref_in_all_namespace(
       LOG_WARN_IGNORE_COL_NOTFOUND(ret, "resolve column ref table first failed", K(ret), K(q_name));
     }
   }
+  bool skip_parent_namespace = false;
+  if (lib::is_oracle_mode() && OB_ERR_BAD_FIELD_ERROR == ret && q_name.tbl_name_.empty()
+      && 0 == q_name.col_name_.case_compare(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME)) {
+    // skip parent namespace lookup for oracle rowid pseudo column
+    skip_parent_namespace = true;
+  }
   ObQueryRefRawExpr *query_ref = NULL;
   for (ObDMLResolver *cur_resolver = get_parent_namespace_resolver();
-      OB_ERR_BAD_FIELD_ERROR == ret && cur_resolver != NULL;
+      OB_ERR_BAD_FIELD_ERROR == ret && cur_resolver != NULL && !skip_parent_namespace;
       cur_resolver = cur_resolver->get_parent_namespace_resolver()) {
     ObRawExpr *exec_param = NULL;
     ObIArray<ObExecParamRawExpr*> *query_ref_exec_params = NULL;
@@ -8596,6 +8617,28 @@ int ObSelectResolver::check_audit_log_stmt(ObSelectStmt *select_stmt)
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "use audit log function in complex query");
       }
     }
+  }
+  return ret;
+}
+
+int ObSelectResolver::check_hybrid_search_stmt(ObSelectStmt *select_stmt)
+{
+  int ret = OB_SUCCESS;
+  bool is_contain = false;
+  if (OB_ISNULL(select_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null", K(ret));
+  } else if (!select_stmt->is_hybrid_search()) {
+    // do nothing
+  } else if (select_stmt->get_condition_size() > 0) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "use hybrid search with where condition");
+  } else if (select_stmt->has_limit()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "use hybrid search with limit");
+  } else if (select_stmt->has_order_by()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "use hybrid search with order by");
   }
   return ret;
 }

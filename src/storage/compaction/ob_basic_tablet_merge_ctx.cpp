@@ -1254,7 +1254,9 @@ int ObBasicTabletMergeCtx::init_static_desc()
                                 get_concurrent_cnt(),
                                 get_tablet()->get_reorganization_scn(),
                                 true,
-                                static_param_.encoding_granularity_))) {
+                                static_param_.encoding_granularity_,
+                                false/*is inc major*/,
+                                get_io_write_strategy()))) {
     LOG_WARN("failed to init static desc", KR(ret), KPC(this));
   } else {
     LOG_TRACE("[SharedStorage] success to set exec mode", KR(ret), "exec_mode", exec_mode_to_str(static_desc_.exec_mode_));
@@ -1598,11 +1600,8 @@ int ObBasicTabletMergeCtx::try_update_storage_schema(ObStorageSchema &new_schema
   } else if (OB_ISNULL(table_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null schema!", KP(table_schema));
-  } else {
-    if (new_schema.is_column_info_simplified() &&
-        OB_FAIL(new_schema.update_column_info(*table_schema, static_param_.data_version_))) {
-      LOG_WARN("failed to update column info", "schema_version", new_schema.get_schema_version(), KPC(table_schema), K(new_schema));
-    }
+  } else if (OB_FAIL(new_schema.update_column_info(*table_schema, static_param_.data_version_))) {
+    LOG_WARN("failed to update column info", "schema_version", new_schema.get_schema_version(), KPC(table_schema), K(new_schema));
   }
   return ret;
 }
@@ -1757,7 +1756,10 @@ int ObBasicTabletMergeCtx::alloc_mds_info_compaction_filter()
   } else if (filter_ctx_.mds_filter_info_.has_mlog_purge_scn()) {
     const int64_t recycle_version = filter_ctx_.mds_filter_info_.get_mlog_purge_scn();
     const ObICompactionFilter::CompactionFilterType filter_type = ObICompactionFilter::MLOG_PURGE_FILTER;
-    if (OB_FAIL(ObCompactionFilterFactory::alloc_compaction_filter<ObRowscnFilter>(
+    if (ObCompactionTTLUtil::DISABLE_MLOG_PURGE_IN_COMPACTION) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("mlog purge scn is not supported in compaction", KR(ret), K(recycle_version));
+    } else if (OB_FAIL(ObCompactionFilterFactory::alloc_compaction_filter<ObRowscnFilter>(
       mem_ctx_.get_allocator(),
       filter_ctx_.compaction_filter_,
       recycle_version,
@@ -2005,7 +2007,8 @@ int ObBasicTabletMergeCtx::get_meta_compaction_info()
   }
   if (OB_SUCC(ret) && storage_schema->is_mlog_table()) {
     int64_t mlog_purge_scn = 0;
-    if (OB_FAIL(ObMLogPurgeInfoHelper::get_mlog_purge_scn(table_id, get_merge_version(), mlog_purge_scn))) {
+    if (ObCompactionTTLUtil::DISABLE_MLOG_PURGE_IN_COMPACTION) {
+    } else if (OB_FAIL(ObMLogPurgeInfoHelper::get_mlog_purge_scn(table_id, get_merge_version(), mlog_purge_scn))) {
       LOG_WARN("failed to get mlog purge scn", KR(ret), K(table_id));
     } else if (mlog_purge_scn > 0 && OB_FAIL(filter_ctx_.mds_filter_info_.init(min_data_version, mlog_purge_scn))) {
       LOG_WARN("failed to init mds filter info", KR(ret), K(mlog_purge_scn));

@@ -326,6 +326,7 @@ int ObIncMinDDLMergeHelper::assemble_sstable(ObDDLTabletMergeDagParamV2 &dag_mer
             ASYNC_UPLOAD_INC_SSTABLE(SSIncSSTableType::MINI_SSTABLE,
                                      upload_register_handle,
                                      sstable->get_key(),
+                                     sstable->get_rec_scn(),
                                      snapshot_version);
           }
         }
@@ -1376,8 +1377,16 @@ int ObSSIncMajorDDLMergeHelper::assemble_sstable(ObDDLTabletMergeDagParamV2 &dag
       LOG_WARN("fail to release ddl kv", KR(ret), K(ls_id), K(tablet_id), K(dag_merge_param.rec_scn_));
     }
   } else {
+    ObDDLTabletContext::MergeCtx *merge_ctx = nullptr;
     if (OB_FAIL(release_ddl_kv_for_major(dag_merge_param, ddl_kv_mgr_handle))) {
       LOG_WARN("fail to try release ddl kv", KR(ret));
+    } else if (OB_FAIL(dag_merge_param.get_merge_ctx(merge_ctx))) {
+      LOG_WARN("fail to get merge ctx", KR(ret), K(dag_merge_param));
+    } else if (OB_ISNULL(merge_ctx)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("merge ctx is nullptr", KR(ret), K(dag_merge_param));
+    } else {
+      merge_ctx->inc_major_ = inc_major_sstable;
     }
   }
   return ret;
@@ -2182,7 +2191,8 @@ int ObSSIncMajorDDLMergeHelper::update_tablet_table_store_for_dump_sstable(
         ASYNC_UPLOAD_INC_SSTABLE(SSIncSSTableType::INC_MAJOR_DDL_SSTABLE,
                                 upload_register_handle,
                                 dag_merge_param.table_key_,
-                                SCN::min_scn(),
+                                SCN::min_scn(), /*rec_scn, faked not used actually*/
+                                SCN::min_scn(), /*snapshot_version, faked not used actually*/
                                 dag_merge_param.trans_id_,
                                 dag_merge_param.seq_no_);
         LOG_INFO("[SS INC MAJOR]async upload inc major ddl dump sstable",

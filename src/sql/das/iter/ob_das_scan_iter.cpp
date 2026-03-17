@@ -12,6 +12,7 @@
 
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_scan_iter.h"
+#include "sql/das/search/ob_das_search_utils.h"
 #include "storage/tx_storage/ob_access_service.h"
 #include "src/sql/engine/ob_exec_context.h"
 
@@ -28,10 +29,10 @@ int ObDASScanIter::inner_init(ObDASIterParam &param)
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("inner init das iter with bad param type", K(param), K(ret));
   } else {
-    const ObDASScanCtDef *scan_ctdef = (static_cast<ObDASScanIterParam&>(param)).scan_ctdef_;
-    output_ = &scan_ctdef->result_output_;
-    tsc_service_ = is_virtual_table(scan_ctdef->ref_table_id_) ? GCTX.vt_par_ser_
-                              : scan_ctdef->is_external_table_ ? GCTX.et_access_service_
+    ObDASScanIterParam &scan_iter_param = static_cast<ObDASScanIterParam&>(param);
+    output_ = &scan_iter_param.get_result_output();
+    tsc_service_ = is_virtual_table(scan_iter_param.get_ref_table_id()) ? GCTX.vt_par_ser_
+                              : scan_iter_param.is_external_table() ? GCTX.et_access_service_
                                                                : MTL(ObAccessService *);
   }
 
@@ -77,6 +78,7 @@ int ObDASScanIter::do_table_scan()
   } else if (OB_UNLIKELY(nullptr != result_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected not null result iter ptr before do table scan", K(ret), KP_(result));
+  } else if (is_vec_pre_filtering_timeout_set() && OB_FALSE_IT(vec_start_scan_ts_us_ = common::ObClockGenerator::getClock())) {
   } else if (OB_FAIL(tsc_service_->table_scan(*scan_param_, result_))) {
     if (OB_SNAPSHOT_DISCARDED == ret && scan_param_->fb_snapshot_.is_valid()) {
       ret = OB_INVALID_QUERY_TIMESTAMP;
@@ -95,6 +97,7 @@ int ObDASScanIter::rescan()
   if (OB_ISNULL(scan_param_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr scan param", K(ret));
+  } else if (is_vec_pre_filtering_timeout_set() && OB_FALSE_IT(vec_start_scan_ts_us_ = common::ObClockGenerator::getClock())) {
   } else if (OB_FAIL(tsc_service_->table_rescan(*scan_param_, result_))) {
       if (OB_SNAPSHOT_DISCARDED == ret && scan_param_->fb_snapshot_.is_valid()) {
         ret = OB_INVALID_QUERY_TIMESTAMP;
@@ -133,6 +136,10 @@ int ObDASScanIter::inner_get_next_row()
     if (ret != OB_ITER_END) {
       LOG_WARN("failed to get next row", K(ret));
     }
+  } else if (is_vec_pre_filtering_timeout_set() && OB_FAIL(try_check_vec_pre_filter_status())) {
+    if (ret != OB_VECTOR_INDEX_ADAPTIVE_NEED_RETRY) {
+      LOG_WARN("failed to try check vector pre-filter timeout", K(ret));
+    }
   }
   return ret;
 }
@@ -148,6 +155,10 @@ int ObDASScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   } else if (OB_FAIL(result_->get_next_rows(count, capacity))) {
     if (ret != OB_ITER_END) {
       LOG_WARN("failed to get next row", K(ret));
+    }
+  } else if (is_vec_pre_filtering_timeout_set() && OB_FAIL(try_check_vec_pre_filter_status(count))) {
+    if (ret != OB_VECTOR_INDEX_ADAPTIVE_NEED_RETRY) {
+      LOG_WARN("failed to try check vector pre-filter timeout", K(ret), K(count));
     }
   }
   LOG_TRACE("[DAS ITER] scan iter get next rows", K(count), K(capacity), KPC_(scan_param), K(ret));
@@ -192,8 +203,18 @@ int ObDASScanIter::set_scan_rowkey(ObEvalCtx *eval_ctx,
     for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_cnt; i++) {
       ObObj tmp_obj;
       const ObExpr *expr = rowkey_exprs.at(i);
-      ObDatum &col_datum = expr->locate_expr_datum(*eval_ctx);
-      if (OB_UNLIKELY(T_PSEUDO_GROUP_ID == expr->type_ || T_PSEUDO_ROW_TRANS_INFO_COLUMN == expr->type_)) {
+      ObDatum col_datum;
+      if (expr->enable_rich_format() && is_valid_format(expr->get_format(*eval_ctx))) {
+        const int64_t batch_idx = eval_ctx->get_batch_idx();
+        if (OB_FAIL(ObDASSearchUtils::get_datum(*expr, *eval_ctx, batch_idx, col_datum))) {
+          LOG_WARN("failed to get datum", K(ret));
+        }
+      } else {
+        col_datum = expr->locate_expr_datum(*eval_ctx);
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (OB_UNLIKELY(T_PSEUDO_GROUP_ID == expr->type_ || T_PSEUDO_ROW_TRANS_INFO_COLUMN == expr->type_)) {
         // skip.
       } else if (OB_FAIL(col_datum.to_obj(tmp_obj, expr->obj_meta_, expr->obj_datum_map_))) {
         LOG_WARN("failed to convert datum to obj", K(ret));
@@ -215,7 +236,46 @@ int ObDASScanIter::set_scan_rowkey(ObEvalCtx *eval_ctx,
     }
   }
   LOG_DEBUG("set scan iter scan rowkey", K(range), K(ret));
+  return ret;
+}
 
+int ObDASScanIter::try_check_vec_pre_filter_status(const int64_t row_count /* default 1 */)
+{
+  int ret = OB_SUCCESS;
+  uint64_t tmp_try_check_tick_rows = 0;
+  try_check_tick_rows_ += row_count;
+  ++try_check_tick_;
+  bool need_check = false;
+  if (try_check_tick_rows_ >= CHECK_STATUS_ROWS) {
+    tmp_try_check_tick_rows = try_check_tick_rows_;
+    try_check_tick_rows_ = 0;
+    need_check = true;
+  }
+  if (!need_check && (try_check_tick_ % CHECK_STATUS_TRY_TIMES) == 0) {
+    need_check = true;
+  }
+  if (need_check && OB_FAIL(check_vec_pre_filter_status())) {
+    LOG_INFO("vector pre-filter search timeout", K(ret), K(tmp_try_check_tick_rows), K(try_check_tick_), K(row_count));
+  }
+
+  return ret;
+}
+
+int ObDASScanIter::check_vec_pre_filter_status()
+{
+  int ret = OB_SUCCESS;
+  if (is_vec_pre_filtering_timeout_set() && OB_UNLIKELY(vec_start_scan_ts_us_ <= 0)) {
+    // do nothing, no timeout
+    LOG_WARN("vector start scan timestamp is unexpected unset", K(vec_pre_filtering_timeout_us_), K(vec_start_scan_ts_us_));
+  } else {
+    int64_t cur_ts = common::ObClockGenerator::getClock();
+    int64_t timeout_ts = vec_start_scan_ts_us_ + vec_pre_filtering_timeout_us_;
+    int64_t timeout_remain = timeout_ts - cur_ts;
+    if (timeout_remain <= 0) {
+      ret = OB_VECTOR_INDEX_ADAPTIVE_NEED_RETRY; // to trigger pre-filter -> post_iteration transition
+      LOG_INFO("vector pre-filter scan timeout", K(ret), K(timeout_remain), K(cur_ts), K(vec_start_scan_ts_us_), K(vec_pre_filtering_timeout_us_), K(try_check_tick_));
+    }
+  }
   return ret;
 }
 

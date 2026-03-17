@@ -282,7 +282,9 @@ public:
            const transaction::ObTxSEQ &seq_no,
            const int64_t snapshot_version,
            const uint64_t data_format_version,
-           const bool is_rollback);
+           const bool is_rollback,
+           const bool is_co_sstable,
+           const ObString &inc_major_buffer);
 
 protected:
   // replay to the tablet
@@ -293,12 +295,18 @@ protected:
   int do_replay_(ObTabletHandle &handle) override;
 
 private:
+#ifdef OB_BUILD_SHARED_STORAGE
+  int deserialize_and_update_ss_inc_major(ObTabletHandle &tablet_handle);
+#endif
+private:
   common::ObTabletID tablet_id_;
   transaction::ObTransID trans_id_;
   transaction::ObTxSEQ seq_no_;
   int64_t snapshot_version_;
   uint64_t data_format_version_;
   bool is_rollback_;
+  bool is_co_sstable_;
+  ObString inc_major_buffer_;
 };
 
 class ObSplitStartReplayExecutor final : public ObDDLReplayExecutor
@@ -323,6 +331,11 @@ public:
       const ObTabletSplitInfo &info,
       const share::SCN &scn,
       ObLobSplitParam &param);
+  static int check_can_skip_replay(
+      ObLS &ls,
+      const ObTabletHandle &handle,
+      const share::SCN &scn,
+      bool &can_skip);
   static bool is_split_log_retry_ret(const int ret_code) {
     return OB_EAGAIN == ret_code || OB_SIZE_OVERFLOW == ret_code || OB_NEED_RETRY == ret_code;
   }
@@ -369,7 +382,6 @@ private:
       const ObIArray<ObTabletID> &dest_tablet_ids,
       const ObTabletHandle &src_tablet_handle,
       ObLS* ls);
-  int check_can_skip_replay(ObTabletHandle &handle, bool &can_skip);
 private:
   const ObTabletSplitFinishLog *log_;
 };

@@ -124,7 +124,7 @@ int ObSSTransferSrcTabletBlockInfo::add_block_info_if_need_(const ObTabletBlockI
   if (OB_UNLIKELY(!block_id.is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected invalid block_id", K(ret), K(block_id));
-  } else if (!block_id.is_shared_sub_meta()) {
+  } else if (!block_id.is_shared_tablet_sub_meta() && !block_id.is_shared_tablet_sub_meta_in_table()) {
     // do nothing
   } else if (OB_FAIL(src_tablet_meta_block_set_.set_refactored(block_id, /* overwrite */ 0))) {
     if (OB_HASH_EXIST != ret) {
@@ -167,7 +167,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
 {
   if (!share::ObUpgradeChecker::check_data_version_exist(data_version)) {
     int ret = OB_INVALID_ARGUMENT;
-    LOG_ERROR("invalid data version", K(ret), K(data_version));
+    LOG_ERROR("Invalid compat data version, please register it to ob_upgrade_utils.cpp if need support.", K(ret), KDV(data_version));
     ob_abort();
   }
 }
@@ -202,7 +202,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
 {
   if (!share::ObUpgradeChecker::check_data_version_exist(data_version)) {
     int ret = OB_INVALID_ARGUMENT;
-    LOG_ERROR("invalid data version", K(ret), K(data_version));
+    LOG_ERROR("Invalid compat data version, please register it to ob_upgrade_utils.cpp if need support.", K(ret), KDV(data_version));
     ob_abort();
   }
 }
@@ -240,7 +240,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
 {
   if (!share::ObUpgradeChecker::check_data_version_exist(data_version)) {
     int ret = OB_INVALID_ARGUMENT;
-    LOG_ERROR("invalid data version", K(ret), K(data_version));
+    LOG_ERROR("Invalid compat data version, please register it to ob_upgrade_utils.cpp if need support.", K(ret), KDV(data_version));
     ob_abort();
   }
 }

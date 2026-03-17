@@ -1888,6 +1888,7 @@ DEFINE_ERROR(OB_USER_OUTOF_DATA_DISK_SPACE, -6330, -1, "HY000", "user data disk 
 DEFINE_ERROR(OB_ARB_DEGRADE, -6331, -1, "HY000", "logstream has been degraded due to error")
 DEFINE_ERROR(OB_OBJ_LOCK_WRONG_WORKER, -6332, -1, "HY000", "object lock worker thread wrong")
 DEFINE_ORACLE_ERROR(OB_ERR_TEMP_TABLE_BUSY, -6333, -1, "HY000", "attempt to access a transactional temp table already in use", 14450, "attempt to access a transactional temp table already in use");
+DEFINE_ERROR(OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING, -6334, -1, "HY000", "mvcc write callback freeze clock order descending")
 
 // 余留位置
 ////////////////////////////////////////////////////////////////
@@ -2394,7 +2395,10 @@ DEFINE_ERROR_EXT_DEP(OB_BACKUP_DEVICE_NOT_MOUNTED, -9152, -1, "HY000", "backup d
 DEFINE_ERROR_EXT_DEP(OB_BACKUP_DEVICE_NOT_STRONG_RW_CONSISTENT, -9153, -1, "HY000", "backup device is not read & write strongly consistent", "backup device is not read and write strongly consistent. %s did not read the latest data written by %s.");
 DEFINE_ERROR(OB_LS_ARCHIVE_MAX_SCN_LESS_THAN_CHECKPOINT, -9154, -1, "HY000", "ls archive max scn less than checkpoint scn");
 DEFINE_ERROR_DEP(OB_SS_CACHE_MICRO_BLOCK_TOO_LARGE, -9155, -1, "HY000", "micro block is too large and rejected from micro cache");
-DEFINE_ERROR(OB_SS_LS_IN_GC_STATUS, -9156, -1, "HY000", "ss ls is in gc status");
+DEFINE_ERROR_DEP(OB_SS_LS_IN_GC_STATUS, -9156, -1, "HY000", "ss ls is in gc status");
+DEFINE_ERROR(OB_BACKUP_WAIT_SS_LS_CONSISTENCY_TIMEOUT, -9157, -1, "HY000", "backup wait shared storage ls consistency timeout");
+DEFINE_ERROR(OB_OBJECT_STORAGE_INVALID_OBJECT_TYPE, -9158, -1, "HY000", "the object type is invalid");
+DEFINE_ERROR(OB_BACKUP_SET_NOT_FOUND, -9159, -1, "HY000", "available data backup set is not found");
 // 余留位置，在该行之前继续添加storage错误码
 
 ////////////////////////////////////////////////////////////////

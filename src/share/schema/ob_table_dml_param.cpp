@@ -17,6 +17,7 @@
 #include "object/ob_object.h"
 #include "share/ob_fts_index_builder_util.h"
 #include "share/vector_index/ob_vector_index_util.h"
+#include "share/search_index/ob_search_index_builder_util.h"
 #include "lib/udt/ob_collection_type.h"
 
 namespace oceanbase
@@ -67,7 +68,8 @@ ObTableSchemaParam::ObTableSchemaParam(ObIAllocator &allocator)
     vec_embedded_col_id_(OB_INVALID_ID),
     search_idx_included_cids_(allocator),
     search_idx_included_cid_idxes_(allocator),
-    search_idx_arr_types_(allocator)
+    search_idx_arr_types_(allocator),
+    search_idx_column_comments_(allocator)
 {
 }
 
@@ -117,6 +119,7 @@ void ObTableSchemaParam::reset()
   search_idx_included_cids_.reset();
   search_idx_included_cid_idxes_.reset();
   search_idx_arr_types_.reset();
+  search_idx_column_comments_.reset();
 }
 
 int ObTableSchemaParam::convert(const ObTableSchema *schema)
@@ -727,6 +730,7 @@ OB_DEF_SERIALIZE(ObTableSchemaParam)
   }
   OB_UNIS_ENCODE(fts_index_type_);
   OB_UNIS_ENCODE(is_rowscn_ttl_table_);
+  OB_UNIS_ENCODE(search_idx_column_comments_);
   return ret;
 }
 
@@ -928,6 +932,7 @@ OB_DEF_DESERIALIZE(ObTableSchemaParam)
   }
   OB_UNIS_DECODE(fts_index_type_);
   OB_UNIS_DECODE(is_rowscn_ttl_table_);
+  OB_UNIS_DECODE(search_idx_column_comments_);
   return ret;
 }
 
@@ -1001,6 +1006,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchemaParam)
   }
   OB_UNIS_ADD_LEN(fts_index_type_);
   OB_UNIS_ADD_LEN(is_rowscn_ttl_table_);
+  OB_UNIS_ADD_LEN(search_idx_column_comments_);
   return len;
 }
 
@@ -1015,6 +1021,54 @@ int ObTableSchemaParam::has_udf_column(bool &has_udf) const
       LOG_WARN("get column failed", K(ret), KP(param));
     } else {
       has_udf = param->is_gen_col_udf_expr();
+    }
+  }
+  return ret;
+}
+
+int ObTableSchemaParam::set_search_index_column_comments(const common::ObIArray<ObString> &column_comments)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(search_idx_column_comments_.assign(column_comments))) {
+    LOG_WARN("failed to assign search index column configs", K(ret));
+  }
+  return ret;
+}
+
+int ObTableSchemaParam::set_search_index_included_cids(const common::ObIArray<uint64_t> &cids)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(search_idx_included_cids_.assign(cids))) {
+    LOG_WARN("failed to assign search index included cids", K(ret));
+  }
+  return ret;
+}
+
+int ObTableSchemaParam::set_search_index_included_cid_idxes(const common::ObIArray<int32_t> &cid_idxes)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(search_idx_included_cid_idxes_.assign(cid_idxes))) {
+    LOG_WARN("failed to assign search index included cid idxes", K(ret));
+  }
+  return ret;
+}
+
+int ObTableSchemaParam::set_search_index_arr_types(const common::ObIArray<ObCollectionArrayType*> &arr_types)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(search_idx_arr_types_.prepare_allocate(arr_types.count()))) {
+    LOG_WARN("failed to allocate arr types", K(ret), K(arr_types.count()));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < arr_types.count(); ++i) {
+    if (OB_NOT_NULL(arr_types.at(i))) {
+      ObCollectionTypeBase *dst = nullptr;
+      if (OB_FAIL(arr_types.at(i)->deep_copy(allocator_, dst))) {
+        LOG_WARN("failed to deep copy arr type", K(ret), K(i));
+      } else {
+        search_idx_arr_types_.at(i) = static_cast<ObCollectionArrayType*>(dst);
+      }
+    } else {
+      search_idx_arr_types_.at(i) = nullptr;
     }
   }
   return ret;
