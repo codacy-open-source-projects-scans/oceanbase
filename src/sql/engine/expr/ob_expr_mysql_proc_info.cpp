@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -16,6 +9,7 @@
 #include "sql/engine/expr/ob_expr_util.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/engine/ob_exec_context.h"
+#include "sql/session/ob_sql_session_info.h"
 #include "sql/ob_spi.h"
 #include "pl/ob_pl_stmt.h"
 #include "share/schema/ob_schema_printer.h"
@@ -365,11 +359,14 @@ int ObExprMysqlProcInfo::get_returns_info(const ObExpr &expr,
   int64_t pos = 0;
   const ObRoutineInfo *routine_info = NULL;
   ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
 
   ObEvalCtx::TempAllocGuard alloc_guard(ctx);
   ObIAllocator &calc_alloc = alloc_guard.get_allocator();
 
   OZ (get_routine_info(session, routine_id, routine_info));
+  CK (OB_NOT_NULL(session));
+  OZ (session->get_charset_compat_type(charset_compat_type));
 
   if (OB_FAIL(ret)) {
   } else if (OB_UNLIKELY(NULL == (returns_buf = static_cast<char *>(calc_alloc.alloc(OB_MAX_VARCHAR_LENGTH))))) {
@@ -386,7 +383,10 @@ int ObExprMysqlProcInfo::get_returns_info(const ObExpr &expr,
                                             routine_info->get_ret_type()->get_precision(),
                                             routine_info->get_ret_type()->get_scale(),
                                             routine_info->get_ret_type()->get_collation_type(),
-                                            *routine_info->get_ret_type_info()))) {
+                                            *routine_info->get_ret_type_info(),
+                                            static_cast<uint64_t>(common::ObGeoType::GEOTYPEMAX),
+                                            false,
+                                            charset_compat_type))) {
         SHARE_SCHEMA_LOG(WARN, "fail to get data type str with coll", KPC(routine_info->get_ret_type()));
       }
     } else {
@@ -417,11 +417,14 @@ int ObExprMysqlProcInfo::get_returns_info(const ObExpr &expr,
   char *returns_buf = NULL;
   int64_t pos = 0;
   ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
 
   ObEvalCtx::TempAllocGuard alloc_guard(ctx);
   ObIAllocator &calc_alloc = alloc_guard.get_allocator();
   ObSEArray<common::ObString, 4> extended_type_info;
   uint64_t sub_type = static_cast<uint64_t>(common::ObGeoType::GEOTYPEMAX);
+  CK (OB_NOT_NULL(session));
+  OZ (session->get_charset_compat_type(charset_compat_type));
   if (ob_is_geometry_tc(static_cast<ObObjType>(param_type)) ||
       ob_is_enumset_tc(static_cast<ObObjType>(param_type))) {
     sql::ObExecEnv exec_env;
@@ -464,7 +467,9 @@ int ObExprMysqlProcInfo::get_returns_info(const ObExpr &expr,
                                           param_scale,
                                           static_cast<ObCollationType>(param_coll_type),
                                           extended_type_info,
-                                          sub_type))) {
+                                          sub_type,
+                                          false,
+                                          charset_compat_type))) {
       SHARE_SCHEMA_LOG(WARN, "fail to get data type str with coll", K(ret), K(param_type), K(param_length), K(param_precision), K(param_scale), K(param_coll_type));
     }
 

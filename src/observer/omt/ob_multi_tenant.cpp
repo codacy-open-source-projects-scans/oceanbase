@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER_OMT
@@ -18,6 +11,7 @@
 #include "ob_tenant.h"
 #include "rpc/obmysql/ob_sql_nio_server.h"
 #include "share/schema/ob_tenant_schema_service.h"
+#include "share/schema/ob_schema_history_recycle_service.h"
 #include "observer/mysql/obsm_conn_callback.h"
 #include "sql/dtl/ob_dtl_fc_server.h"
 #include "sql/das/ob_das_id_service.h"
@@ -97,6 +91,7 @@
 #include "storage/access/ob_empty_read_bucket.h"
 #include "observer/table/ttl/ob_ttl_service.h"
 #include "storage/high_availability/ob_storage_ha_diagnose_mgr.h"
+#include "storage/fts/dict/ob_ft_dict_mgr.h"
 #ifdef ERRSIM
 #include "share/errsim_module/ob_tenant_errsim_module_mgr.h"
 #include "share/errsim_module/ob_tenant_errsim_event_mgr.h"
@@ -133,6 +128,7 @@
 #include "storage/tmp_file/ob_compress_tmp_file_manager.h"
 #include "storage/restore/ob_tenant_restore_info_mgr.h"
 #include "share/scheduler/ob_partition_auto_split_helper.h"
+#include "storage/ddl/ob_partition_random_distribution_helper.h"
 #ifdef OB_BUILD_AUDIT_SECURITY
 #include "sql/audit/ob_audit_logger.h"
 #include "sql/audit/ob_audit_log_mgr.h"
@@ -164,6 +160,7 @@
 #include "observer/virtual_table/ob_all_virtual_tablet_replica_info.h"
 #include "sql/monitor/ob_sql_stat_manager.h"
 #include "lib/thread/thread_mgr_interface.h"
+#include "share/ob_inspection_service.h" // ObInspectionService
 
 using namespace oceanbase;
 using namespace oceanbase::lib;
@@ -635,6 +632,7 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, table::ObTableObjectPoolMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTenantSnapshotService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     //MTL_BIND2(ObTenantFTPluginMgr::mtl_new, mtl_init_default, nullptr, nullptr, nullptr, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, storage::ObFTDictMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObIndexUsageInfoMgr::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, storage::ObTabletMemtableMgrPool::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObMViewMaintenanceService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
@@ -679,6 +677,7 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, ObAutoSplitTaskCache::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObDDLServiceLauncher::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, rootserver::ObDDLScheduler::mtl_init, nullptr, rootserver::ObDDLScheduler::mtl_stop, rootserver::ObDDLScheduler::mtl_wait, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, storage::ObRsRandomPartitionScheduler::mtl_init, nullptr, storage::ObRsRandomPartitionScheduler::mtl_stop, storage::ObRsRandomPartitionScheduler::mtl_wait, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, storage::ObInnerTabletAccessService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, ObTabletReorgInfoTableService::mtl_init, mtl_start_default, mtl_stop_default, mtl_wait_default, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, observer::ObTableSessIDService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
@@ -692,6 +691,8 @@ int ObMultiTenant::init(ObAddr myaddr,
     MTL_BIND2(mtl_new_default, storage::ObTenantStartupStatus::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(mtl_new_default, observer::ObTabletReplicaInfoCacheMgr::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
     MTL_BIND2(client_pool_mgr_mtl_new<ObCurlRestClient>, nullptr, nullptr, client_pool_mgr_mtl_stop<ObCurlRestClient>, client_pool_mgr_mtl_wait<ObCurlRestClient>, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, share::schema::ObSchemaHistoryRecycleService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
+    MTL_BIND2(mtl_new_default, share::ObInspectionService::mtl_init, nullptr, nullptr, nullptr, mtl_destroy_default);
   }
 
   if (OB_SUCC(ret)) {
@@ -2198,6 +2199,8 @@ int ObMultiTenant::remove_tenant(const uint64_t tenant_id, bool &remove_tenant_s
           SpinWLockGuard guard(lock_);
           removed_tenant->start();
         }
+      } else {
+        removed_tenant->set_kill_session_success(true);
       }
     }
   }

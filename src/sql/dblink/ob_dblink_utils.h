@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_DBLINK_UTILS_H
@@ -58,7 +51,10 @@ public:
   static int get_ob_query_timeout_value(sql::ObSQLSessionInfo *session_info, int64_t &timeout);
   static int get_set_transaction_isolation_cstr(sql::ObSQLSessionInfo *session_info,
                                                 const char *&set_isolation_level);
-  static int get_spell_collation_type(ObSQLSessionInfo *session, ObCollationType &spell_coll);
+  static uint16_t get_oci_env_charset_id(uint16_t charset_id);
+  static int get_spell_collation_type(ObSQLSessionInfo *session,
+                                      common::sqlclient::DblinkDriverProto link_type,
+                                      ObCollationType &spell_coll);
 public:
   static const char *SET_ISOLATION_LEVEL_READ_COMMITTED;
   static const char *SET_ISOLATION_LEVEL_REPEATABLE_READ;

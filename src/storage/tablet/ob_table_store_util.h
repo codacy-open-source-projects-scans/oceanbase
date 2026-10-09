@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_STORAGE_OB_TABLE_STORE_UTIL_H_
 #define OCEANBASE_STORAGE_OB_TABLE_STORE_UTIL_H_
@@ -59,7 +52,11 @@ public:
   // TODO use Arena allocator after creating SSTable by Arena Allocator
   // Attention ! should only be called by COSSTable
   int init_empty_array_for_cg(common::ObArenaAllocator &allocator, const int64_t count);
-  int add_tables_for_cg(common::ObArenaAllocator &allocator, const ObIArray<ObITable *> &tables);
+  static int fill_cg_sstables(
+      common::ObArenaAllocator &allocator,
+      const ObIArray<ObITable *> &tables,
+      ObSSTableArray &normal_cgs,
+      ObSSTableArray &hidden_cg);
   int add_tables_for_cg_without_deep_copy(const ObIArray<ObITable *> &tables);
 
   int64_t get_deep_copy_size() const;

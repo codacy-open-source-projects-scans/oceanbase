@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -237,6 +230,230 @@ TEST_F(TestVsagAdaptor, test_hnsw)
   obvsag::delete_index(index_handler);
   default_allocator.Deallocate(test_ptr);
   ASSERT_EQ(0, default_allocator.total_);
+}
+
+// Build with raw vsag::Factory (hard-coded hgraph JSON), serialize, then obvsag::fdeserialize and knn search.
+TEST_F(TestVsagAdaptor, test_vsag_direct_build_serialize_ob_deserialize_query)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  DefaultVsagAllocator default_allocator;
+  const char *const DATATYPE_FLOAT32 = "float32";
+  const char *const METRIC_L2 = "l2";
+  const int dim = 64;
+  const int max_degree = 16;
+  const int ef_search = 200;
+  const int ef_construction = 100;
+  void *test_ptr = default_allocator.Allocate(10);
+
+  // Matches obvsag::create_index for HGRAPH_TYPE: max_degree doubled in param (16 -> 32); store_raw_vector
+  // as in construct_vsag_create_param for HGRAPH_TYPE.
+  const char *const k_hgraph_create_json =
+      "{\"dim\":64,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+      "\"index_param\":{\"ef_construction\":100,\"max_degree\":32,"
+      "\"base_quantization_type\":\"fp32\",\"build_thread_count\":0}}";
+
+  // Use vsag default allocator for the temporary built index so DefaultVsagAllocator accounting only
+  // tracks the ob_handler path (reset + delete_index balance Release in this unittest).
+  auto vs_idx_result = vsag::Factory::CreateIndex(
+      "hgraph", std::string(k_hgraph_create_json), nullptr);
+  ASSERT_TRUE(vs_idx_result.has_value());
+  std::shared_ptr<vsag::Index> vs_index = vs_idx_result.value();
+
+  const int num_vectors = 500;
+  auto ids = new int64_t[num_vectors];
+  auto vecs = new float[dim * num_vectors];
+  std::mt19937 rng(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int i = 0; i < dim * num_vectors; ++i) {
+    vecs[i] = distrib_real(rng);
+  }
+
+  vsag::DatasetPtr dataset = vsag::Dataset::Make();
+  dataset->Dim(dim)
+      ->NumElements(num_vectors)
+      ->Ids(ids)
+      ->Float32Vectors(vecs)
+      ->Owner(false);
+  auto build_result = vs_index->Build(dataset);
+  ASSERT_TRUE(build_result.has_value());
+  ASSERT_TRUE(build_result.value().empty());
+
+  std::stringstream serialized;
+  auto ser_result = vs_index->Serialize(serialized);
+  ASSERT_TRUE(ser_result.has_value());
+  vs_index.reset();
+
+  obvsag::VectorIndexPtr ob_handler = nullptr;
+  ASSERT_EQ(0, obvsag::create_index(ob_handler,
+      obvsag::HGRAPH_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+  serialized.seekg(0, std::ios::beg);
+  ASSERT_EQ(0, obvsag::fdeserialize(ob_handler, serialized));
+
+  int64_t num_size = 0;
+  ASSERT_EQ(0, obvsag::get_index_number(ob_handler, num_size));
+  ASSERT_EQ(num_vectors, num_size);
+
+  const float *result_dist = nullptr;
+  const int64_t *result_ids = nullptr;
+  int64_t result_size = 0;
+  const char *extra_info = nullptr;
+  ASSERT_EQ(0, obvsag::knn_search(
+      ob_handler, vecs, dim, 10, result_dist, result_ids, result_size, ef_search,
+      false, extra_info, nullptr, false, false, static_cast<void *>(&default_allocator)));
+  ASSERT_GT(result_size, 0);
+  EXPECT_EQ(0, result_ids[0]);
+
+  default_allocator.Deallocate((void *)result_ids);
+  default_allocator.Deallocate((void *)result_dist);
+  obvsag::delete_index(ob_handler);
+  delete[] ids;
+  delete[] vecs;
+  default_allocator.Deallocate(test_ptr);
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+// Expected JSON follows ob_vsag_adaptor.cpp construct_vsag_create_param / create_index call convention:
+// store_raw_vector defaults false from create_index; use_reorder is true (last argument).
+TEST_F(TestVsagAdaptor, test_construct_vsag_create_param_hnsw_family)
+{
+  const char *dtype = "float32";
+  const char *metric = "l2";
+  const int dim = 128;
+  const int max_degree = 32;
+  const int ef_construction = 100;
+  const int ef_search = 200;
+  char buf[1024];
+
+  memset(buf, 0, sizeof(buf));
+  ASSERT_EQ(
+      0,
+      obvsag::construct_vsag_create_param(static_cast<uint8_t>(obvsag::HNSW_TYPE),
+          dtype,
+          metric,
+          dim,
+          max_degree,
+          ef_construction,
+          ef_search,
+          nullptr,
+          0,
+          static_cast<int16_t>(0),
+          static_cast<int16_t>(32),
+          false,
+          false,
+          true,
+          buf));
+  EXPECT_STREQ(
+      "{\"dim\":128,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+      "\"hnsw\":{\"ef_construction\":100,\"ef_search\":200,\"max_degree\":32}}",
+      buf);
+
+  memset(buf, 0, sizeof(buf));
+  ASSERT_EQ(
+      0,
+      obvsag::construct_vsag_create_param(static_cast<uint8_t>(obvsag::HGRAPH_TYPE),
+          dtype,
+          metric,
+          dim,
+          max_degree,
+          ef_construction,
+          ef_search,
+          nullptr,
+          0,
+          static_cast<int16_t>(0),
+          static_cast<int16_t>(32),
+          false,
+          false,
+          true,
+          buf));
+  EXPECT_STREQ(
+      "{\"dim\":128,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+      "\"index_param\":{\"ef_construction\":100,\"max_degree\":32,\"store_raw_vector\":true,"
+      "\"base_quantization_type\":\"fp32\",\"build_thread_count\":0,\"label_remap_type\":\"robin\"}}",
+      buf);
+
+  memset(buf, 0, sizeof(buf));
+  ASSERT_EQ(
+      0,
+      obvsag::construct_vsag_create_param(static_cast<uint8_t>(obvsag::HNSW_SQ_TYPE),
+          dtype,
+          metric,
+          dim,
+          max_degree,
+          ef_construction,
+          ef_search,
+          nullptr,
+          0,
+          static_cast<int16_t>(0),
+          static_cast<int16_t>(32),
+          false,
+          false,
+          true,
+          buf));
+  EXPECT_STREQ(
+      "{\"dim\":128,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+      "\"index_param\":{\"ef_construction\":100,\"max_degree\":32,\"base_quantization_type\":\"sq8\","
+      "\"build_thread_count\":0,\"label_remap_type\":\"robin\"}}",
+      buf);
+
+  memset(buf, 0, sizeof(buf));
+  ASSERT_EQ(
+      0,
+      obvsag::construct_vsag_create_param(static_cast<uint8_t>(obvsag::HNSW_BQ_TYPE),
+          dtype,
+          metric,
+          dim,
+          max_degree,
+          ef_construction,
+          ef_search,
+          nullptr,
+          0,
+          static_cast<int16_t>(0),
+          static_cast<int16_t>(32),
+          true,
+          false,
+          true,
+          buf));
+  EXPECT_STREQ(
+      "{\"dim\":128,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+      "\"index_param\":{\"ef_construction\":100,\"max_degree\":32,\"base_quantization_type\":\"rabitq\","
+      "\"build_thread_count\":0,\"label_remap_type\":\"robin\",\"use_reorder\":true,\"ignore_reorder\":true,"
+      "\"precise_quantization_type\":\"fp32\",\"precise_io_type\":\"block_memory_io\","
+      "\"rabitq_bits_per_dim_query\":32,\"rabitq_use_fht\":true}}",
+      buf);
+      ASSERT_EQ(
+        0,
+        obvsag::construct_vsag_create_param(static_cast<uint8_t>(obvsag::HNSW_BQ_TYPE),
+            dtype,
+            metric,
+            dim,
+            max_degree,
+            ef_construction,
+            ef_search,
+            nullptr,
+            0,
+            static_cast<int16_t>(0),
+            static_cast<int16_t>(32),
+            false,
+            false,
+            false ,
+            buf));
+    EXPECT_STREQ(
+        "{\"dim\":128,\"dtype\":\"float32\",\"metric_type\":\"l2\",\"use_old_serial_format\":true,"
+        "\"index_param\":{\"ef_construction\":100,\"max_degree\":32,\"base_quantization_type\":\"rabitq\","
+        "\"build_thread_count\":0,\"label_remap_type\":\"robin\","
+        "\"precise_quantization_type\":\"fp32\",\"precise_io_type\":\"block_memory_io\","
+        "\"rabitq_bits_per_dim_query\":32,\"rabitq_use_fht\":false}}",
+        buf);
 }
 
 TEST_F(TestVsagAdaptor, test_hnswsq)
@@ -669,6 +886,344 @@ TEST_F(TestVsagAdaptor, test_hnsw_iter_filter)
   default_allocator.Deallocate((void*)distances3);
   obvsag::delete_iter_ctx(iter_ctx);
   obvsag::delete_index(index_handler);
+  default_allocator.Deallocate(test_ptr);
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+// Tune interface: null handler should return error
+TEST_F(TestVsagAdaptor, test_tune_null_handler)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  int ret = obvsag::tune_index(index_handler, obvsag::HGRAPH_TYPE);
+  ASSERT_NE(0, ret);
+}
+
+TEST_F(TestVsagAdaptor, test_check_id_exist)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  obvsag::VectorIndexPtr null_handler = nullptr;
+  bool exist = true;
+  ASSERT_NE(0, obvsag::check_id_exist(null_handler, 0, exist));
+
+  DefaultVsagAllocator default_allocator;
+  void *test_ptr = default_allocator.Allocate(10);
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  const char *const DATATYPE_FLOAT32 = "float32";
+  const char *const METRIC_L2 = "l2";
+  const int dim = 64;
+  const int max_degree = 16;
+  const int ef_search = 200;
+  const int ef_construction = 100;
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HGRAPH_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+
+  const int num_vectors = 100;
+  auto ids = new int64_t[num_vectors];
+  auto vectors = new float[dim * num_vectors];
+  std::mt19937 rng(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int i = 0; i < dim * num_vectors; ++i) {
+    vectors[i] = distrib_real(rng);
+  }
+  ASSERT_EQ(0, obvsag::build_index(index_handler, vectors, ids, dim, num_vectors));
+
+  int ret = obvsag::check_id_exist(index_handler, 0, exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_TRUE(exist);
+  ret = obvsag::check_id_exist(index_handler, static_cast<int64_t>(num_vectors), exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_FALSE(exist);
+
+  ret = obvectorutil::check_id_exist(index_handler, 0, exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_TRUE(exist);
+  ret = obvectorutil::check_id_exist(index_handler, static_cast<int64_t>(num_vectors), exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_FALSE(exist);
+
+  obvsag::delete_index(index_handler);
+  delete[] ids;
+  delete[] vectors;
+  default_allocator.Deallocate(test_ptr);
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+TEST_F(TestVsagAdaptor, test_check_id_exist_hnsw)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  DefaultVsagAllocator default_allocator;
+  void *test_ptr = default_allocator.Allocate(10);
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  const char *const DATATYPE_FLOAT32 = "float32";
+  const char *const METRIC_L2 = "l2";
+  const int dim = 64;
+  const int max_degree = 16;
+  const int ef_search = 200;
+  const int ef_construction = 100;
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HNSW_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+
+  const int num_vectors = 100;
+  auto ids = new int64_t[num_vectors];
+  auto vectors = new float[dim * num_vectors];
+  std::mt19937 rng(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int i = 0; i < dim * num_vectors; ++i) {
+    vectors[i] = distrib_real(rng);
+  }
+  ASSERT_EQ(0, obvsag::build_index(index_handler, vectors, ids, dim, num_vectors));
+
+  bool exist = false;
+  int ret = obvsag::check_id_exist(index_handler, 0, exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_TRUE(exist);
+  ret = obvsag::check_id_exist(index_handler, static_cast<int64_t>(num_vectors), exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_FALSE(exist);
+
+  ret = obvectorutil::check_id_exist(index_handler, 0, exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_TRUE(exist);
+  ret = obvectorutil::check_id_exist(index_handler, static_cast<int64_t>(num_vectors), exist);
+  ASSERT_EQ(0, ret);
+  EXPECT_FALSE(exist);
+
+  obvsag::delete_index(index_handler);
+  delete[] ids;
+  delete[] vectors;
+  default_allocator.Deallocate(test_ptr);
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+// Tune interface: HNSW_SQ index after build, tune should succeed
+TEST_F(TestVsagAdaptor, test_tune_hnsw_sq)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 100;
+  DefaultVsagAllocator default_allocator;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+  void* test_ptr = default_allocator.Allocate(10);
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HGRAPH_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+  int num_vectors = 1000;
+  auto ids = new int64_t[num_vectors];
+  auto vectors = new float[dim * num_vectors];
+  std::mt19937 rng;
+  rng.seed(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int64_t i = 0; i < dim * num_vectors; ++i) {
+    vectors[i] = distrib_real(rng);
+  }
+  ASSERT_EQ(0, obvsag::build_index(index_handler, vectors, ids, dim, num_vectors));
+  int64_t num_size = 0;
+  ASSERT_EQ(0, obvsag::get_index_number(index_handler, num_size));
+  ASSERT_EQ(num_vectors, num_size);
+
+  // tune_index(new_index_type): params built via construct_vsag_create_param inside obvsag
+  ASSERT_EQ(0, obvsag::tune_index(index_handler, obvsag::HNSW_SQ_TYPE));
+
+  const float* result_dist = nullptr;
+  const int64_t* result_ids = nullptr;
+  int64_t result_size = 0;
+  const char* extra_info = nullptr;
+  ASSERT_EQ(0, obvsag::knn_search(index_handler, vectors, dim, 5,
+      result_dist, result_ids, result_size, ef_search,
+      false /* need_extra_info */, extra_info));
+  ASSERT_GT(result_size, 0);
+  default_allocator.Deallocate((void*)result_ids);
+  default_allocator.Deallocate((void*)result_dist);
+
+  obvsag::delete_index(index_handler);
+  default_allocator.Deallocate(test_ptr);
+  delete[] ids;
+  delete[] vectors;
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+// Tune interface: HNSW_BQ index after build, tune should succeed
+TEST_F(TestVsagAdaptor, test_tune_hnsw_bq)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  int dim = 128;
+  int max_degree = 16;
+  int ef_search = 200;
+  int ef_construction = 100;
+  DefaultVsagAllocator default_allocator;
+  const char* const METRIC_L2 = "l2";
+  const char* const DATATYPE_FLOAT32 = "float32";
+  void* test_ptr = default_allocator.Allocate(10);
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HGRAPH_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+  int num_vectors = 1000;
+  auto ids = new int64_t[num_vectors];
+  auto vectors = new float[dim * num_vectors];
+  std::mt19937 rng;
+  rng.seed(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int64_t i = 0; i < dim * num_vectors; ++i) {
+    vectors[i] = distrib_real(rng);
+  }
+  ASSERT_EQ(0, obvsag::build_index(index_handler, vectors, ids, dim, num_vectors));
+  int64_t num_size = 0;
+  ASSERT_EQ(0, obvsag::get_index_number(index_handler, num_size));
+  ASSERT_EQ(num_vectors, num_size);
+
+  // tune_index(new_index_type): params built via construct_vsag_create_param inside obvsag
+  ASSERT_EQ(0, obvsag::tune_index(index_handler, obvsag::HNSW_BQ_TYPE));
+
+  const float* result_dist = nullptr;
+  const int64_t* result_ids = nullptr;
+  int64_t result_size = 0;
+  const char* extra_info = nullptr;
+  ASSERT_EQ(0, obvsag::knn_search(index_handler, vectors, dim, 5,
+      result_dist, result_ids, result_size, ef_search,
+      false /* need_extra_info */, extra_info));
+  ASSERT_GT(result_size, 0);
+  default_allocator.Deallocate((void*)result_ids);
+  default_allocator.Deallocate((void*)result_dist);
+
+  obvsag::delete_index(index_handler);
+  default_allocator.Deallocate(test_ptr);
+  delete[] ids;
+  delete[] vectors;
+  ASSERT_EQ(0, default_allocator.total_);
+}
+
+// HGRAPH build -> tune to HNSW_BQ -> serialize -> new empty HNSW_BQ -> deserialize -> knn search
+TEST_F(TestVsagAdaptor, test_tune_hnsw_bq_serialize_deserialize_query)
+{
+  ASSERT_TRUE(obvsag::is_init());
+  obvsag::VectorIndexPtr index_handler = nullptr;
+  const int dim = 128;
+  const int max_degree = 16;
+  const int ef_search = 200;
+  const int ef_construction = 100;
+  DefaultVsagAllocator default_allocator;
+  const char *const METRIC_L2 = "l2";
+  const char *const DATATYPE_FLOAT32 = "float32";
+  void *test_ptr = default_allocator.Allocate(10);
+
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HGRAPH_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+
+  const int num_vectors = 1000;
+  auto ids = new int64_t[num_vectors];
+  auto vectors = new float[dim * num_vectors];
+  std::mt19937 rng(47);
+  std::uniform_real_distribution<> distrib_real;
+  for (int64_t i = 0; i < num_vectors; ++i) {
+    ids[i] = i;
+  }
+  for (int64_t i = 0; i < dim * num_vectors; ++i) {
+    vectors[i] = distrib_real(rng);
+  }
+  ASSERT_EQ(0, obvsag::build_index(index_handler, vectors, ids, dim, num_vectors));
+  int64_t num_size = 0;
+  ASSERT_EQ(0, obvsag::get_index_number(index_handler, num_size));
+  ASSERT_EQ(num_vectors, num_size);
+
+  ASSERT_EQ(0, obvsag::tune_index(index_handler, obvsag::HNSW_BQ_TYPE));
+  ASSERT_EQ(obvsag::HNSW_BQ_TYPE, obvsag::get_index_type(index_handler));
+
+  std::stringstream serialized;
+  ASSERT_EQ(0, obvsag::fserialize(index_handler, serialized));
+  obvsag::delete_index(index_handler);
+  index_handler = nullptr;
+
+  ASSERT_EQ(0, obvsag::create_index(index_handler,
+      obvsag::HNSW_BQ_TYPE,
+      DATATYPE_FLOAT32,
+      METRIC_L2,
+      dim,
+      max_degree,
+      ef_construction,
+      ef_search,
+      &default_allocator));
+  serialized.seekg(0, std::ios::beg);
+  ASSERT_EQ(0, obvsag::fdeserialize(index_handler, serialized));
+
+  ASSERT_EQ(0, obvsag::get_index_number(index_handler, num_size));
+  ASSERT_EQ(num_vectors, num_size);
+
+  const float *result_dist = nullptr;
+  const int64_t *result_ids = nullptr;
+  int64_t result_size = 0;
+  const char *extra_info = nullptr;
+  ASSERT_EQ(0, obvsag::knn_search(index_handler,
+      vectors,
+      dim,
+      5,
+      result_dist,
+      result_ids,
+      result_size,
+      ef_search,
+      false /* need_extra_info */,
+      extra_info,
+      nullptr,
+      false,
+      false,
+      static_cast<void *>(&default_allocator)));
+  ASSERT_GT(result_size, 0);
+  default_allocator.Deallocate((void *)result_ids);
+  default_allocator.Deallocate((void *)result_dist);
+
+  obvsag::delete_index(index_handler);
+  delete[] ids;
+  delete[] vectors;
   default_allocator.Deallocate(test_ptr);
   ASSERT_EQ(0, default_allocator.total_);
 }

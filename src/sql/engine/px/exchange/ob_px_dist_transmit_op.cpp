@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -20,7 +13,18 @@ namespace oceanbase
 using namespace common;
 namespace sql
 {
-
+namespace
+{
+struct ObBc2HostChannelRandomIdxCmp
+{
+  const ObTMArray<int64_t> &random_idx_;
+  explicit ObBc2HostChannelRandomIdxCmp(const ObTMArray<int64_t> &idx) : random_idx_(idx) {}
+  bool operator()(const int64_t l, const int64_t r) const
+  {
+    return random_idx_.at(l) < random_idx_.at(r);
+  }
+};
+} // namespace
 
 OB_SERIALIZE_MEMBER((ObPxDistTransmitOpInput, ObPxTransmitOpInput));
 
@@ -329,10 +333,24 @@ int ObPxDistTransmitOp::do_bc2host_dist()
 {
   int ret = OB_SUCCESS;
   ObBc2HostSliceIdCalc::ChannelIdxArray channel_idx;
+  // When DOP is large, there are not enough data to cover every channel, so earlier channels
+  // get rows while later ones may get none. All transmit threads follow the same pattern, so
+  // receive threads for early channels see heavy load and later ones are idle, causing skew.
+  ObTMArray<int64_t> channel_random_idx;
+  bool enable_random_channel = task_channels_.count() > 100;
   ObBc2HostSliceIdCalc::HostIdxArray host_idx;
   auto &channels = task_channels_;
+  if (OB_FAIL(channel_idx.reserve(task_channels_.count()))) {
+    LOG_WARN("array reserve failed", K(task_channels_.count()));
+  } else if (enable_random_channel &&
+             OB_FAIL(channel_random_idx.reserve(task_channels_.count()))) {
+    LOG_WARN("array reserve failed", K(task_channels_.count()));
+  }
   for (int64_t i = 0; i < task_channels_.count() && OB_SUCC(ret); i++) {
     if (OB_FAIL(channel_idx.push_back(i))) {
+      LOG_WARN("array push back failed", K(ret));
+    } else if (enable_random_channel && OB_FAIL(channel_random_idx.push_back(
+                                          ObRandom::rand(0, 8192)))) {
       LOG_WARN("array push back failed", K(ret));
     }
   }
@@ -352,6 +370,15 @@ int ObPxDistTransmitOp::do_bc2host_dist()
     hi.end_ = idx;
     if (OB_FAIL(host_idx.push_back(hi))) {
       LOG_WARN("array push back failed", K(ret));
+    }
+  }
+  if (OB_SUCC(ret) && enable_random_channel) {
+    for (int64_t i = 0; i < host_idx.count(); i++) {
+      const ObBc2HostSliceIdCalc::HostIndex &hi = host_idx.at(i);
+      int64_t begin = hi.begin_;
+      int64_t end = hi.end_;
+      lib::ob_sort(channel_idx.begin() + begin, channel_idx.begin() + end,
+                   ObBc2HostChannelRandomIdxCmp(channel_random_idx));
     }
   }
   if (OB_SUCC(ret)) {

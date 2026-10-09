@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -111,6 +104,8 @@ int ObAsyncCmdDriver::response_result(ObMySQLResultSet &result)
         }
         ok_param.message_ = const_cast<char*>(result.get_message());
         ok_param.lii_ = result.get_last_insert_id_to_client();
+      } else if (is_oracle_mode() && stmt::T_ANONYMOUS_BLOCK == result.get_stmt_type()) {
+        ok_param.affected_rows_ = 1;
       }
       // The commit asynchronous callback logic needs
       // to trigger the update logic of affected row first.

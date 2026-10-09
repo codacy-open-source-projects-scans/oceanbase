@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SCHEMA_OB_TABLE_SQL_SERVICE_H_
@@ -386,12 +379,6 @@ private:
   int delete_table_part_info(const ObTableSchema &table_schema,
                              const int64_t new_schema_version,
                              common::ObISQLClient &sql_client);
-  int exec_dml(common::ObISQLClient &sql_client,
-      const uint64_t tenant_id,
-      const char *table_name,
-      const ObDMLSqlSplicer &dml,
-      const int64_t target_affected_row_count = -1, // -1 means not check
-      const bool insert_ignore = false);
   int add_columns(common::ObISQLClient &sql_client, const ObTableSchema &table);
   int add_columns_dml(const ObTableSchema &table,
       share::ObDMLSqlSplicer &all_column_dml,
@@ -526,6 +513,12 @@ private:
                            const common::ObString *ddl_stmt_str);
 
 public:
+  static int exec_dml(common::ObISQLClient &sql_client,
+                      const uint64_t tenant_id,
+                      const char *table_name,
+                      const ObDMLSqlSplicer &dml,
+                      const int64_t target_affected_row_count = -1, // -1 means not check
+                      const bool insert_ignore = false);
   int insert_column_ids_into_column_group(ObISQLClient &sql_client,
                                           const ObTableSchema &table,
                                           const int64_t schema_version,
@@ -583,8 +576,6 @@ private:
   bool is_user_subpartition_table(const ObTableSchema &table);
   static int check_ddl_allowed(const ObSimpleTableSchemaV2 &table_schema);
 
-  static int check_column_store_valid(const ObTableSchema &table,
-                               const uint64_t data_version);
   int exec_insert_column_group(common::ObISQLClient &sql_client,
                                const ObTableSchema &table,
                                const int64_t schema_version,
@@ -599,6 +590,11 @@ private:
                                        const ObColumnGroupSchema &column_group,
                                        const ObIArray<uint64_t> &column_ids,
                                        const bool is_history);
+  int exec_insert_single_column_group_mapping(ObISQLClient &sql_client,
+                                               const ObTableSchema &table,
+                                               const int64_t schema_version,
+                                               const ObColumnGroupSchema &column_group,
+                                               const bool is_history);
   int append_column_group_dml_for_create_table(const ObTableSchema &table,
                                                const uint64_t data_version,
                                                ObDMLSqlSplicer &cg_dml,
@@ -607,7 +603,15 @@ private:
                                                ObDMLSqlSplicer &mapping_history_dml,
                                                int64_t &column_group_cnt,
                                                int64_t &mapping_cnt);
-
+  int generate_dml_for_create_table(const ObTableSchema &table,
+                                    const uint64_t data_version,
+                                    const ObColumnGroupSchema &column_group,
+                                    ObDMLSqlSplicer &cg_dml,
+                                    ObDMLSqlSplicer &cg_history_dml,
+                                    ObDMLSqlSplicer &mapping_dml,
+                                    ObDMLSqlSplicer &mapping_history_dml,
+                                    int64_t &column_group_cnt,
+                                    int64_t &mapping_cnt);
   int delete_column_group(ObISQLClient &sql_clinet,
                           const ObTableSchema &table,
                           const int64_t schema_version);

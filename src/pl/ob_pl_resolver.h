@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_PL_OB_PL_RESOLVER_H_
@@ -110,7 +103,8 @@ public:
         pl_resolve_cache_(resolve_cache),
         pl_sql_transpiled_exprs_(),
         forbid_pl_sql_transpiler_(false),
-        is_prepare_with_params_(false)
+        is_prepare_with_params_(false),
+        is_ps_prepare_stage_(false)
   {}
   virtual ~ObPLResolveCtx() {
     if (need_destruct_resolve_cache_ && OB_NOT_NULL(pl_resolve_cache_)) {
@@ -147,6 +141,7 @@ public:
   ObSEArray<ObUDFRawExpr *, 4, common::ModulePageAllocator, true> pl_sql_transpiled_exprs_;
   bool forbid_pl_sql_transpiler_;
   bool is_prepare_with_params_;
+  bool is_ps_prepare_stage_;
 };
 
 class ObPLMockSelfArg
@@ -437,10 +432,10 @@ public:
                                 ObRawExprFactory &expr_factory,
                                 common::ObIArray<ObObjAccessIdent> &obj_access_idents,
                                 ObSQLSessionInfo &session_info);
-  static
   int record_error_line(const ObStmtNodeTree *parse_tree, ObSQLSessionInfo &session_info, const ObString &db_name, const ObString &package_name, const ObString &name);
   static
-  int record_error_line(ObSQLSessionInfo &session_info, const int32_t line, const int32_t col, const ObString &db_name, const ObString &package_name, const ObString &name);
+  int record_error_line(ObSQLSessionInfo &session_info, const int32_t line, const int32_t col, const ObString &db_name, const ObString &package_name, const ObString &name,
+                        const bool is_for_trigger);
   static
   int resolve_access_ident(const ObObjAccessIdent &access_ident,
                            ObPLExternalNS &external_ns,
@@ -738,7 +733,18 @@ public:
                                   int32_t upper,
                                   ObRawExpr *&expr);
   static int check_update_column(const ObPLBlockNS &ns, uint64_t var_idx, const ObIArray<ObObjAccessIdx>& access_idxs,
-                                 sql::ObSQLSessionInfo &session_info, share::schema::ObSchemaGetterGuard &schema_guard);
+                                 sql::ObSQLSessionInfo &session_info, share::schema::ObSchemaGetterGuard &schema_guard,
+                                 bool is_for_trigger = false);
+  static bool is_parameterized_null_param(const ObRawExpr *expr);
+
+  static int modify_null_param_using_deduced_type(const ObRawExpr *expr,
+                                                const ObPLDataType &expected_type,
+                                                ObPLSymbolTable *symbol_table = nullptr);
+
+  static bool check_need_cast(const ObDataType &data_type,
+                                  const ObObjMeta &src_meta,
+                                  const ObAccuracy &src_accuracy,
+                                  bool check_cs_level = false);
 
 private:
   int resolve_declare_var(const ObStmtNodeTree *parse_tree, ObPLDeclareVarStmt *stmt, ObPLFunctionAST &func_ast);
@@ -896,8 +902,6 @@ private:
                    sql::ObRawExpr *&expr, uint64_t line_number = 0, /* where this expr called */
                    bool need_add = true, const ObPLDataType *expected_type = NULL,
                    bool is_behind_limit = false, bool is_add_bool = false);
-  bool check_need_cast(const ObDataType &data_type,
-                                    const ObRawExpr &expr);
   int resolve_columns(ObRawExpr *&expr, ObArray<sql::ObQualifiedName> &columns, ObPLCompileUnitAST &unit_ast);
   int formalize_expr(ObRawExpr &expr);
   static int formalize_expr(ObRawExpr &expr, const ObSQLSessionInfo *session_info, const ObPLINS &ns);
@@ -1189,7 +1193,8 @@ private:
   int check_params_legal_in_body_routine(ObPLFunctionAST &routine_ast,
                                          const ObPLRoutineInfo *parent_routine_info,
                                          const ObPLRoutineInfo *body_routine_info);
-  int check_expr_can_pre_calc(ObRawExpr *expr, bool &pre_calc);
+  int check_expr_can_pre_calc(ObRawExpr *expr, bool &pre_calc, bool check_argument_pre_calc = false);
+  bool check_can_pre_calc_argument(ObRawExpr *expr);
   int transform_subquery_expr(const ParseNode *node,
                               ObRawExpr *&expr,
                               const ObPLDataType *expected_type,
@@ -1198,7 +1203,8 @@ private:
   int transform_var_val_to_dynamic_SQL(int64_t sql_expr_index, int64_t into_expr_index, ObPLFunctionAST &func);
   int transform_to_new_assign_stmt(ObIArray<int64_t> &transform_array, ObPLAssignStmt *&old_stmt);
 
-  int replace_to_const_expr_if_need(ObRawExpr *&expr);
+  int analyze_calc_once_exprs(ObPLFunctionAST &func);
+  int replace_to_const_expr_if_need(ObRawExpr *&expr, bool check_argument_pre_calc = false);
   int build_seq_value_expr(ObRawExpr *&expr,
                            const sql::ObQualifiedName &q_name,
                            uint64_t seq_id);

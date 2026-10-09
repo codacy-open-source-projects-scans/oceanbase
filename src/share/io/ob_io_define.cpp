@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
 #include "ob_io_define.h"
 #include "storage/backup/ob_backup_factory.h"
+#include "share/backup/ob_backup_io_adapter.h"
 #include "src/storage/ob_file_system_router.h"
 #include "src/observer/ob_server.h"
 using namespace oceanbase::lib;
@@ -858,7 +852,8 @@ int ObIOResult::set_flag_sync_or_async_(const ObIOInfo &info)
     LOG_WARN("invalid argument", KR(ret), K(info));
   } else {
     if (info.fd_.device_handle_->is_local_device() || info.fd_.device_handle_->is_local_cache_device()) {
-      flag_.set_async_();
+      // io_manager.pwrite/pread will set flag_.set_sync_()
+      // otherwise, keep default behavior
     } else if (info.fd_.device_handle_->is_object_device()) {
       // is_object_storage_async_io_ indicates that the handle(such as ObStorageAsyncReader)
       // supports asynchronous I/O, but not all the interfaces of the handle support async io.
@@ -1383,6 +1378,16 @@ void ObIORequest::destroy()
 {
   int ret = OB_SUCCESS;
   retry_count_ = 0;
+  if (nullptr != io_result_ && io_result_->flag_.is_need_close_dev_and_fd()) {
+    ObIODevice *device_handle = fd_.device_handle_;
+    if (OB_NOT_NULL(device_handle) && device_handle->is_object_device()) {
+      ObBackupIoAdapter io_adapter;
+      if (OB_FAIL(io_adapter.close_device_and_fd(device_handle, fd_))) {
+        OB_LOG(WARN, "fail to close device and fd in sn mode", KR(ret), K(fd_));
+      }
+    }
+    io_result_->flag_.set_no_need_close_dev_and_fd();
+  }
   if (nullptr != control_block_) {
     if (OB_ISNULL(fd_.device_handle_)) {
       ret = OB_ERR_SYS;
@@ -2224,6 +2229,14 @@ int ObIOHandle::wait(const int64_t wait_timeout_ms)
   } else if (OB_TIMEOUT == ret || OB_IO_TIMEOUT == ret) {
     LOG_WARN("IO wait timeout", K(ret), K(*result_));
     ret = OB_TIMEOUT;
+  }
+  if (OB_NOT_NULL(result_) && result_->is_finished_) {
+    const int64_t io_resp_time_us = get_io_interval(result_->time_log_.end_ts_, result_->time_log_.begin_ts_);
+    const int64_t slow_io_threshold_us = GCONF.trace_log_slow_query_watermark;
+    if (io_resp_time_us > slow_io_threshold_us) {
+      LOG_WARN("slow io, io response time exceeds trace_log_slow_query_watermark",
+          K(io_resp_time_us), K(slow_io_threshold_us), K(ret), K(*result_));
+    }
   }
   estimate();
 

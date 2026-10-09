@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_SEARCH_OB_DAS_SCALAR_DEFINE_H_
@@ -27,8 +20,10 @@ struct ObDASScalarCtDef : ObIDASSearchCtDef
 public:
   ObDASScalarCtDef(common::ObIAllocator &alloc)
     : ObIDASSearchCtDef(alloc, DAS_OP_SCALAR_QUERY),
+      boost_(nullptr),
       has_index_scan_(false),
-      has_main_scan_(false)
+      has_main_scan_(false),
+      primary_get_ratio_(0)
   { }
   virtual ~ObDASScalarCtDef() {}
 
@@ -40,9 +35,12 @@ public:
   const ObDASScalarScanCtDef* get_index_scan_ctdef() const;
   const ObDASScalarScanCtDef* get_main_scan_ctdef() const;
 
+  ObExpr *boost_;
+
 private:
   bool has_index_scan_;
   bool has_main_scan_;
+  int64_t primary_get_ratio_;
 };
 
 struct ObDASScalarRtDef : ObIDASSearchRtDef
@@ -141,7 +139,8 @@ public:
       stmt_allocator_("StmtScanAlloc"),
       scan_allocator_("TableScanAlloc"),
       key_ranges_(),
-      really_need_rowkey_order_(true)
+      really_need_rowkey_order_(true),
+      boost_weight_(0.0)
   { }
   virtual ~ObDASScalarScanRtDef() {}
 
@@ -157,7 +156,8 @@ public:
                         K_(sql_mode),
                         K_(scan_flag),
                         K_(key_ranges),
-                        K_(really_need_rowkey_order));
+                        K_(really_need_rowkey_order),
+                        K_(boost_weight));
 
   storage::ObRow2ExprsProjector *p_row2exprs_projector_;
   ObPushdownOperator *p_pd_expr_op_;
@@ -176,6 +176,7 @@ public:
   bool really_need_rowkey_order_;
 
 private:
+  double boost_weight_;
   union {
     storage::ObRow2ExprsProjector row2exprs_projector_;
   };

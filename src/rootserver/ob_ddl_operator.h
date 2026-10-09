@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_DDL_OPERATOR_H_
@@ -74,6 +67,7 @@ class ObTriggerInfo;
 class ObConstraint;
 class ObUDF;
 class ObDependencyInfo;
+class ObSchemaGuardWrapper;
 }
 }
 
@@ -164,6 +158,12 @@ public:
        const common::ObRowkey &fir_values,
        const common::ObIArray<common::ObNewRow> &sed_values);
 
+  // Check whether external table's default partition part_idx needs updating.
+  // Returns need_update=true when default partition's part_idx <= max_inc_part_idx.
+  static int check_need_update_external_default_part_idx(
+      const share::schema::ObTableSchema &orig_table_schema,
+      int64_t max_inc_part_idx,
+      bool &need_update);
   int update_default_partition_part_idx_for_external_table(const share::schema::ObTableSchema &orig_table_schema,
                                         const share::schema::ObTableSchema &new_table_schema,
                                         ObMySQLTransaction &trans);
@@ -215,6 +215,15 @@ public:
                      const share::schema::ObTableSchema &orig_table_schema,
                      const share::schema::ObTableSchema &new_table_schema,
                      common::ObMySQLTransaction &trans);
+  // Copy balance weights from orig_table_schema to new_table_schema during truncate.
+  // Handles both table-level and partition-level weights.
+  // Supports both table_id change and same table_id scenarios.
+  // Failure is expected to be non-fatal (caller uses OB_TMP_FAIL).
+  static int copy_balance_weights_for_truncate(
+      ObISQLClient &client,
+      const uint64_t tenant_id,
+      const share::schema::ObTableSchema &orig_table_schema,
+      const share::schema::ObTableSchema &new_table_schema);
   int update_boundary_schema_version(const uint64_t &tenant_id,
                                      const uint64_t &boundary_schema_version,
                                      common::ObMySQLTransaction &trans);
@@ -306,16 +315,18 @@ public:
   int create_sequence_in_add_column(const share::schema::ObTableSchema &table_schema,
                                     share::schema::ObColumnSchemaV2 &column_schema,
                                     common::ObMySQLTransaction &trans,
-                                    share::schema::ObSchemaGetterGuard &schema_guard,
+                                    share::schema::ObSchemaGuardWrapper &schema_guard,
                                     obrpc::ObSequenceDDLArg &sequence_ddl_arg);
 
   int drop_sequence_in_drop_column(const share::schema::ObColumnSchemaV2 &column_schema,
                                    common::ObMySQLTransaction &trans,
-                                   share::schema::ObSchemaGetterGuard &schema_guard);
+                                   share::schema::ObSchemaGuardWrapper &schema_guard);
   virtual int alter_table_create_index(const share::schema::ObTableSchema &new_table_schema,
                                        common::ObIArray<share::schema::ObColumnSchemaV2*> &gen_columns,
                                        share::schema::ObTableSchema &index_schema,
-                                       common::ObMySQLTransaction &trans);
+                                       common::ObMySQLTransaction &trans,
+                                       share::schema::ObSchemaGetterGuard &schema_guard,
+                                       const obrpc::ObIndexOption *index_option = nullptr);
 
   virtual int alter_table_drop_index(const share::schema::ObTableSchema *index_table_schema,
                                      share::schema::ObTableSchema &new_data_table_schema,
@@ -363,7 +374,7 @@ public:
                                            common::ObMySQLTransaction &trans);
 
   virtual int alter_table_options(
-      share::schema::ObSchemaGetterGuard &schema_guard,
+      share::schema::ObSchemaGuardWrapper &schema_guard_wrapper,
       share::schema::ObTableSchema &new_table_schema,
       const share::schema::ObTableSchema &table_schema,
       const bool need_update_aux_table,
@@ -461,6 +472,9 @@ public:
                                        common::ObMySQLTransaction &trans,
                                        const common::ObString *ddl_stmt_str,/*= NULL*/
                                        const bool is_truncate_table = false);
+  int drop_mview_dep_info(const share::schema::ObTableSchema &table_schema,
+                          common::ObMySQLTransaction &trans,
+                          share::schema::ObSchemaGetterGuard &schema_guard);
   virtual int flashback_table_from_recyclebin(const share::schema::ObTableSchema &table_schema,
                                               share::schema::ObTableSchema &new_table_schema,
                                               common::ObMySQLTransaction &trans,
@@ -588,7 +602,9 @@ public:
                          const common::ObString &passwd,
                          const common::ObString *ddl_stmt_str,
                          common::ObMySQLTransaction &trans,
-                         const common::ObString &plugin);
+                         const common::ObString &plugin,
+                         const bool retain_current_password,
+                         const bool discard_old_password);
   virtual int set_max_connections(const uint64_t tenant_id,
                                   const uint64_t user_id,
                                   const uint64_t max_connections_per_hour,
@@ -698,6 +714,10 @@ public:
                             common::ObMySQLTransaction &trans,
                             share::schema::ObMultiVersionSchemaService &schema_service,
                             share::schema::ObSchemaGetterGuard &schema_guard);
+  static int drop_obj_privs(const uint64_t tenant_id,
+                            const common::ObIArray<const share::schema::ObObjPriv *> &obj_privs,
+                            common::ObMySQLTransaction &trans,
+                            share::schema::ObMultiVersionSchemaService &schema_service);
   //----End of functions for managing privileges----
   //----Functions for managing outlines----
   int create_outline(share::schema::ObOutlineInfo &outline_info,
@@ -900,7 +920,8 @@ public:
                       common::ObMySQLTransaction &trans);
   int drop_directory(const ObString &ddl_str,
                      share::schema::ObDirectorySchema &schema,
-                     common::ObMySQLTransaction &trans);
+                     common::ObMySQLTransaction &trans,
+                     share::schema::ObSchemaGetterGuard &schema_guard);
   //----End of functions for directory object----
 
   //----Functions for row level security----
@@ -989,7 +1010,8 @@ public:
                           const int64_t schema_version,
                           const share::schema::ObObjectStatus new_status,
                           const bool update_object_status_ignore_version,
-                          common::ObMySQLTransaction &trans);
+                          common::ObMySQLTransaction &trans,
+                          const common::ObString *ddl_stmt_str = nullptr);
   int update_view_columns(const share::schema::ObTableSchema &view_schema,
                           common::ObMySQLTransaction &trans);
   int reset_view_status(common::ObMySQLTransaction &trans,
@@ -1024,6 +1046,10 @@ public:
                                      common::number::ObNumber &next_value);
   int alter_target_sequence_start_with(const share::schema::ObSequenceSchema &sequence_schema,
                                        common::ObMySQLTransaction &trans);
+  int sync_sequence_value(const uint64_t tenant_id,
+                          const uint64_t src_sequence_id,
+                          const uint64_t dest_sequence_id,
+                          const share::ObSequenceOption &option);
   int alter_user_proxy(const share::schema::ObUserInfo* client_user_info,
                         const share::schema::ObUserInfo* proxy_user_info,
                         const uint64_t flags,
@@ -1104,7 +1130,8 @@ protected:
       const uint64_t tenant_id,
       const uint64_t obj_id,
       const uint64_t obj_ypte,
-      common::ObMySQLTransaction &trans);
+      common::ObMySQLTransaction &trans,
+      share::schema::ObSchemaGetterGuard &schema_guard);
 
 private:
   int alter_table_rename_built_in_index_(
@@ -1217,9 +1244,20 @@ private:
       const share::schema::ObSysVariableSchema &sys_variable,
       const uint64_t tenant_id,
       common::ObMySQLTransaction &trans);
+  int init_tenant_inspection_job(
+      const share::schema::ObSysVariableSchema &sys_variable,
+      const uint64_t tenant_id,
+      ObMySQLTransaction &trans);
   int try_create_tablegroup_for_database_(
       common::ObMySQLTransaction &trans,
       share::schema::ObDatabaseSchema &database_schema);
+  int calc_old_password_info(const bool discard_old_password,
+                             const bool retain_current_password,
+                             const ObString &plugin,
+                             const share::schema::ObUserInfo *user_info,
+                             common::ObString &old_password,
+                             int64_t &old_password_start_time);
+
 private:
   static const int64_t ENCRYPT_KEY_LENGTH = 15;
 protected:

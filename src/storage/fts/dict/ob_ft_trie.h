@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_TRIE_H_
@@ -93,8 +86,7 @@ class ObFTTrie final
 {
 public:
   ObFTTrie(ObIAllocator &allocator, ObCollationType collation_type)
-      : allocator_(allocator), collation_type_(collation_type), root_(allocator), node_num_(0),
-        level_statistics_()
+      : allocator_(allocator), collation_type_(collation_type), root_(allocator), node_num_(0)
   {
   }
 
@@ -132,7 +124,6 @@ private:
   ObFTTrieNode<DATA_TYPE> root_;
 
   size_t node_num_;
-  uint32_t level_statistics_[64];
 };
 
 extern template class ObFTTrie<void>;

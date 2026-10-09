@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
@@ -255,8 +248,8 @@ int ObExprTimeDiff::calc_timediff_for_string_vector(const ObExpr &expr, ObEvalCt
     bool is_time_type2 = N_FALSE;
     bool use_quick_parser = true;
     int quick_parser_failed_count = 0;
-    ObTime ob_time1;
-    ObTime ob_time2;
+    ObTime ob_time1(DT_TYPE_TIME);
+    ObTime ob_time2(DT_TYPE_TIME);
     ObScale res_scale1 = -1;
     ObScale res_scale2 = -1;
     ObTimeZoneInfoPos literal_tz_info;
@@ -364,6 +357,7 @@ int ObExprTimeDiff::calc_timediff_for_string_vector(const ObExpr &expr, ObEvalCt
       if (OB_FAIL(ret)) {
         if (CM_IS_WARN_ON_FAIL(cast_mode)) {
           ret = OB_SUCCESS; // Reset ret for this row, continue processing
+          res_vec->set_null(idx);
         }
         // If not warning mode, let ret propagate to stop batch processing
       }

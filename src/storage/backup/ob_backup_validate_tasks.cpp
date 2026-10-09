@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -20,6 +13,7 @@
 #include "storage/backup/ob_backup_sstable_sec_meta_iterator.h"
 #include "storage/backup/ob_backup_data_store.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
+#include "storage/high_availability/ob_storage_ha_dag.h"
 #include "share/backup/ob_backup_path.h"
 #include "share/backup/ob_backup_validate_struct.h"
 #include "share/backup/ob_backup_struct.h"
@@ -605,20 +599,22 @@ int ObBackupValidatePrepareTask::prepare_archive_piece_physical_validate_()
       } else if (min_lsn < max_lsn) {
         ObBackupArchivePieceLSNRange range;
         int64_t group_id = 0;
-        palf::LSN end_lsn = min_lsn;
-        while (OB_SUCC(ret) && end_lsn < max_lsn) {
+        palf::LSN start_lsn = min_lsn;
+        const int64_t file_size = archive::MAX_ARCHIVE_FILE_SIZE;
+        while (OB_SUCC(ret) && start_lsn < max_lsn) {
           range.reset();
-          range.start_lsn_ = end_lsn;
-          end_lsn = end_lsn + palf::PALF_BLOCK_SIZE;
+          palf::LSN end_lsn((start_lsn.val_ / file_size + 1) * file_size);
           if (end_lsn > max_lsn) {
             end_lsn = max_lsn;
           }
-          range.group_id_ = group_id;
+          range.start_lsn_ = start_lsn;
           range.end_lsn_ = end_lsn;
+          range.group_id_ = group_id;
           if (OB_FAIL(ctx_->add_archive_piece_lsn_range(range))) {
             LOG_WARN("failed to push back lsn range", KR(ret), K(range));
           } else {
             group_id++;
+            start_lsn = end_lsn;
           }
         }
         if (FAILEDx(set_task_id_())) {
@@ -1130,17 +1126,9 @@ int ObBackupValidateBackupSetPhysicalTask::generate_tablet_finish_task_(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("dag type is not backup validate dag", KR(ret), K(dag->get_type()));
     } else if (FALSE_IT(base_dag = static_cast<ObBackupValidateBaseDag *>(dag))) {
-    } else if (OB_FAIL(base_dag->alloc_task(tablet_finish_task))) {
-      LOG_WARN("failed to alloc tablet finish task", KR(ret));
-    } else if (OB_ISNULL(tablet_finish_task)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("tablet finish task is null", KR(ret), KP(tablet_finish_task));
-    } else if (OB_FAIL(tablet_finish_task->init(*base_dag, task_id_))) {
-      LOG_WARN("failed to init tablet finish task", KR(ret));
-    } else if (OB_FAIL(this->add_child(*tablet_finish_task))) {
-      LOG_WARN("failed to add tablet finish task as child of this task", KR(ret));
-    } else if (OB_FAIL(base_dag->add_task(*tablet_finish_task))) {
-      LOG_WARN("failed to add tablet finish task to dag", KR(ret));
+    } else if (OB_FAIL(ObStorageHADagUtils::alloc_and_add_task(
+                   base_dag, this/*parent*/, nullptr, tablet_finish_task, *base_dag, task_id_))) {
+      LOG_WARN("failed to alloc and add tablet finish task", KR(ret));
     }
   }
   return ret;
@@ -1404,19 +1392,14 @@ int ObBackupValidateBackupSetPhysicalTask::generate_sstable_validate_task_(
     } else {
       ObBackupValidateSSTableTask *sstable_task = nullptr;
       const int64_t first_sstable_index = 0;
-      if (OB_FAIL(base_dag->alloc_task(sstable_task))) {
-        LOG_WARN("failed to alloc sstable task", KR(ret));
-      } else if (OB_ISNULL(sstable_task)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("sstable task is null", KR(ret), KP(sstable_task));
-      } else if (OB_FAIL(sstable_task->init(*base_dag, first_sstable_index, backup_set_info_,
-                                      tablet_param, meta_index_store_, tablet_finish_task))) {
-        LOG_WARN("failed to init sstable task", KR(ret), K(first_sstable_index), K(tablet_param),
+      if (OB_FAIL(ObStorageHADagUtils::alloc_and_add_single_task(
+              base_dag, sstable_task,
+              *base_dag, first_sstable_index, backup_set_info_,
+              tablet_param, meta_index_store_, tablet_finish_task))) {
+        LOG_WARN("failed to alloc and add sstable task", KR(ret), K(first_sstable_index), K(tablet_param),
                     KP(meta_index_store_), KP(tablet_finish_task));
       } else if (OB_FAIL(sstable_task->add_child(*tablet_finish_task, check_child_task_status))) {
         LOG_WARN("failed to add tablet finish task as child of sstable task", KR(ret));
-      } else if (OB_FAIL(base_dag->add_task(*sstable_task))) {
-        LOG_WARN("failed to add sstable task to dag", KR(ret));
       }
     }
   }
@@ -1761,37 +1744,31 @@ int ObBackupValidateSSTableTask::generate_validate_macro_block_task_()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("dag type is not backup validate dag", KR(ret), K(dag->get_type()));
     } else if (FALSE_IT(base_dag = static_cast<ObBackupValidateBaseDag*>(dag))) {
-    } else if (OB_FAIL(base_dag->alloc_task(macro_task_finish_task))) {
-      LOG_WARN("failed to alloc macro task finish task", KR(ret));
-    } else if (OB_ISNULL(macro_task_finish_task)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("macro task finish task is null", KR(ret), KP(macro_task_finish_task));
-    } else if (OB_FAIL(macro_task_finish_task->init(*base_dag, sstable_meta_, tablet_param_, backup_set_info_,
-                                                        *meta_index_store_, tablet_finish_task_))) {
-      LOG_WARN("failed to init macro task finish task", KR(ret), K(sstable_meta_), K(tablet_param_), K(backup_set_info_),
-                  K_(meta_index_store), K_(backup_dest), K_(param), KP(tablet_finish_task_));
+    } else if (OB_FAIL(ObStorageHADagUtils::alloc_and_add_task(
+                   base_dag, this/*parent*/, nullptr/*child*/, macro_task_finish_task,
+                   *base_dag, sstable_meta_, tablet_param_, backup_set_info_,
+                   *meta_index_store_, tablet_finish_task_))) {
+      LOG_WARN("failed to alloc and add macro task finish task", KR(ret), K(sstable_meta_), K(tablet_param_),
+                  K(backup_set_info_), K_(meta_index_store), K_(backup_dest), K_(param), KP(tablet_finish_task_));
     } else {
       ObArray<backup::ObBackupMacroBlockIndex> macro_index_array;
       bool check_child_task_status = false;
-      if (OB_FAIL(base_dag->alloc_task(macro_task))) {
-        LOG_WARN("failed to alloc macro task", KR(ret));
-      } else if (OB_ISNULL(macro_task)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("macro task is null", KR(ret), KP(macro_task));
-      } else if (OB_FAIL(macro_task_finish_task->get_next_bacth_macro_index_array(macro_index_array))) {
+      if (OB_FAIL(macro_task_finish_task->get_next_bacth_macro_index_array(macro_index_array))) {
         LOG_WARN("failed to get next batch macro index array", KR(ret));
-      } else if (OB_FAIL(macro_task->init(*base_dag, sstable_meta_, backup_set_info_,
-                                              macro_index_array, macro_task_finish_task, tablet_finish_task_))) {
-        LOG_WARN("failed to init macro task", KR(ret), K(sstable_meta_),
+      } else if (OB_FAIL(ObStorageHADagUtils::alloc_and_add_task(
+                     base_dag, nullptr/*parent*/, nullptr/*child*/, macro_task,
+                     *base_dag, sstable_meta_, backup_set_info_,
+                     macro_index_array, macro_task_finish_task, tablet_finish_task_))) {
+        LOG_WARN("failed to alloc and add macro task", KR(ret), K(sstable_meta_),
                     K(backup_set_info_), K(macro_index_array), KP(macro_task_finish_task));
+      // macro_task_finish_task was added to the dag (status WAITING) by
+      // alloc_and_add_single_task above, so add_child's default INITING-status
+      // check would fail. Skip it; we rely on the caller ordering to ensure the
+      // child hasn't been scheduled yet.
+      } else if (OB_FAIL(macro_task->add_child(*macro_task_finish_task, check_child_task_status))) {
+        LOG_WARN("failed to link macro_task -> macro_task_finish_task", KR(ret), KP(macro_task_finish_task));
       } else if (OB_FAIL(macro_task_finish_task->add_child(*tablet_finish_task_, check_child_task_status))) {
         LOG_WARN("failed to add tablet finish task", KR(ret), KP(tablet_finish_task_));
-      } else if (OB_FAIL(macro_task->add_child(*macro_task_finish_task))) {
-        LOG_WARN("failed to add macro task finish task", KR(ret), KP(macro_task_finish_task));
-      } else if (OB_FAIL(base_dag->add_task(*macro_task))) {
-        LOG_WARN("failed to add macro task to dag", KR(ret));
-      } else if (OB_FAIL(base_dag->add_task(*macro_task_finish_task))) {
-        LOG_WARN("failed to add macro task finish task to dag", KR(ret));
       }
     }
   }
@@ -1986,7 +1963,12 @@ int ObBackupValidateMacroBlockTask::read_macro_block_(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tenant restore info mgr or storage info is null", KR(ret), KP(mgr), KP(storage_info));
     } else if (OB_FAIL(mgr->get_backup_dest(macro_index.backup_set_id_, backup_set_dest))) {
-      LOG_WARN("failed to get backup dest", KR(ret), K(macro_index));
+      if (OB_ENTRY_NOT_EXIST == ret) {
+        ret = OB_BACKUP_SET_NOT_FOUND;
+        LOG_WARN("backup set not found", KR(ret), K(macro_index));
+      } else {
+        LOG_WARN("failed to get backup dest", KR(ret), K(macro_index));
+      }
     } else if (OB_FAIL(share::ObBackupPathUtilV_4_3_2::get_macro_block_backup_path(backup_set_dest, index.ls_id_,
                                             data_type, index.turn_id_, index.retry_id_, index.file_id_, backup_path))) {
       LOG_WARN("failed to get macro block backup path", KR(ret), K(index), K(backup_set_dest), K(data_type));
@@ -2256,7 +2238,6 @@ int ObBackupValidateArchivePiecePhysicalTask::GetSourceFunctor::operator()(
 ObBackupValidateArchivePiecePhysicalTask::ObBackupValidateArchivePiecePhysicalTask()
   : ObITask(ObITaskType::TASK_TYPE_BACKUP_VALIDATE_ARCHIVE_PIECE_PHYSICAL),
     is_inited_(false),
-    is_last_task_(false),
     param_(),
     report_ctx_(),
     storage_info_(),
@@ -2300,7 +2281,7 @@ int ObBackupValidateArchivePiecePhysicalTask::init(
     } else if (OB_ISNULL(ctx_ = static_cast<ObBackupValidateArchivePiecePhysicalDag*>(dag)->get_task_context())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("ctx is null", KR(ret));
-    } else if (OB_FAIL(ctx_->get_archive_piece_lsn_range(lsn_group_id, lsn_range_, is_last_task_))) {
+    } else if (OB_FAIL(ctx_->get_archive_piece_lsn_range(lsn_group_id, lsn_range_))) {
       LOG_WARN("failed to get archive piece lsn range", KR(ret), K(lsn_group_id), KPC(ctx_));
     } else if (OB_ISNULL(lsn_range_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -2432,12 +2413,6 @@ int ObBackupValidateArchivePiecePhysicalTask::do_validate_ls_range_()
           } else {
             validated_log_bytes_ += buf_len;
           }
-        }
-        if (OB_FAIL(ret) || !is_last_task_) {
-        } else if (FALSE_IT(archive_scn = entry.get_scn())) {
-        } else if (archive_scn < checkpoint_scn) {
-          ret = OB_LS_ARCHIVE_MAX_SCN_LESS_THAN_CHECKPOINT;
-          LOG_WARN("max archive log scn is less than checkpoint scn", KR(ret), K(archive_scn), K(checkpoint_scn));
         }
       }
       iter.reset();

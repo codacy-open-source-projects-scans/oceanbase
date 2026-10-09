@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_CKPT_LINKED_MARCO_BLOCK_STRUCT_H_
@@ -35,7 +28,9 @@ enum ObLinkedMacroBlockWriteType : int8_t
   PRIV_MACRO_INFO         = 1,
   SHARED_MAJOR_MACRO_INFO = 2,
   SHARED_INC_MACRO_INFO   = 3,
-  LMI_MAX_TYPE            = 4,
+  SHARED_INC_MAJOR_MACRO_INFO = 4,
+  SHARED_TABLET_MACRO_DIFF    = 5,
+  LMI_MAX_TYPE            = 6,
 };
 
 struct ObLinkedMacroBlockHeader final
@@ -74,6 +69,14 @@ struct ObLinkedMacroBlockHeader final
     item_count_ = 0;
     fragment_offset_ = 0;
     previous_macro_block_id_.reset();
+  }
+  OB_INLINE bool is_linked_macro_item_incomplete() const
+  {
+    return 0 == item_count_;
+  }
+  OB_INLINE bool is_linked_macro_item_fragment_head() const
+  {
+    return 0 == item_count_ && 0 == fragment_offset_;
   }
 
   TO_STRING_KV(

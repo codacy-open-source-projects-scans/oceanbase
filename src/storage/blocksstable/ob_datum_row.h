@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_BLOCKSSTABLE_DATUM_ROW_H
 #define OB_STORAGE_BLOCKSSTABLE_DATUM_ROW_H
 
 #include "common/ob_common_types.h"
+#include "common/ob_store_format.h"
 #include "common/ob_tablet_id.h"
 #include "share/datum/ob_datum.h"
 #include "share/datum/ob_datum_funcs.h"
@@ -234,6 +228,26 @@ private:
   };
 };
 
+struct ObMajorMergeFlag
+{
+  ObMajorMergeFlag() : flag_(0) {}
+  void fuse(const ObMajorMergeFlag &other)
+  {
+    is_virtual_row_for_ttl_major_ |= other.is_virtual_row_for_ttl_major_;
+    exist_new_committed_row_ |= other.exist_new_committed_row_;
+  }
+  void reset() { flag_ = 0; }
+  TO_STRING_KV(K_(is_virtual_row_for_ttl_major), K_(exist_new_committed_row));
+  union {
+    uint8_t flag_;
+    struct {
+      uint8_t is_virtual_row_for_ttl_major_ : 1; // 1: the row is a virtual row for ttl major merge query
+      uint8_t exist_new_committed_row_ : 1; // 1: the row exists a new committed row
+      uint8_t reserved_ : 6;
+    };
+  };
+};
+
 static const int8_t MvccFlagCount = 8;
 static const char *ObMvccFlagStr[MvccFlagCount] = {
   "",
@@ -328,8 +342,9 @@ struct MultiVersionInfo
   transaction::ObTransID trans_id_;
   ObMultiVersionRowFlag mvcc_row_flag_;
   ObDmlRowFlag dml_row_flag_;
+  ObMergeEngineType merge_engine_type_;
 
-  TO_STRING_KV(K_(dml_row_flag), K_(mvcc_row_flag), K_(trans_id));
+  TO_STRING_KV(K_(dml_row_flag), K_(mvcc_row_flag), K_(trans_id), K_(merge_engine_type));
 };
 
 struct ObDatumRow
@@ -353,6 +368,13 @@ public:
 
   int is_datums_changed(const ObDatumRow &other, bool &is_changed) const;
   int copy_attributes_except_datums(const ObDatumRow &other);
+  OB_INLINE void copy_row_meta(const ObDatumRow &other)
+  {
+    row_flag_ = other.row_flag_;
+    count_ = other.count_;
+    have_uncommited_row_ = other.have_uncommited_row_;
+    major_merge_flag_ = other.major_merge_flag_;
+  }
   OB_INLINE int64_t get_capacity() const { return datum_buffer_.get_capacity(); }
   OB_INLINE int64_t get_column_count() const { return count_; }
   OB_INLINE int64_t get_scan_idx() const { return scan_index_; }
@@ -379,12 +401,20 @@ public:
   OB_INLINE bool is_first_multi_version_row() const { return mvcc_row_flag_.is_first_multi_version_row(); }
   OB_INLINE bool is_last_multi_version_row() const { return mvcc_row_flag_.is_last_multi_version_row(); }
   OB_INLINE bool is_shadow_row() const { return mvcc_row_flag_.is_shadow_row(); }
+  OB_INLINE bool is_di_merge_engine_row() const { return ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT == merge_engine_type_; }
+  OB_INLINE bool is_merge_engine_unknown_row() const { return ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN == merge_engine_type_; }
   OB_INLINE void set_compacted_multi_version_row() { mvcc_row_flag_.set_compacted_multi_version_row(true); }
   OB_INLINE void set_first_multi_version_row() { mvcc_row_flag_.set_first_multi_version_row(true); }
   OB_INLINE void set_last_multi_version_row() { mvcc_row_flag_.set_last_multi_version_row(true); }
   OB_INLINE void set_shadow_row() { mvcc_row_flag_.set_shadow_row(true); }
   OB_INLINE void set_uncommitted_row() { mvcc_row_flag_.set_uncommitted_row(true); }
   OB_INLINE void set_multi_version_flag(const ObMultiVersionRowFlag &multi_version_flag) { mvcc_row_flag_ = multi_version_flag; }
+  OB_INLINE void fuse_merge_engine_type(const ObMergeEngineType merge_engine_type)
+  {
+    if (ObMergeEngineType::OB_MERGE_ENGINE_MAX == merge_engine_type_) {
+      merge_engine_type_ = merge_engine_type;
+    }
+  }
   /*
    *row estimate section
    */
@@ -432,7 +462,9 @@ public:
   ObStorageDatumBuffer datum_buffer_;
   // add by @zimiao ObDatumRow does not care about the free of trans_info_ptr's memory
   // The caller must guarantee the life cycle and release of this memory
+  ObMergeEngineType merge_engine_type_;
   char *trans_info_;
+  ObMajorMergeFlag major_merge_flag_;
 };
 
 class ObNewRowBuilder

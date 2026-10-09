@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -2352,7 +2345,6 @@ bool ObBackupUtils::is_need_retry_error(const int err)
     case OB_LOG_ARCHIVE_STAT_NOT_MATCH :
     case OB_NOT_SUPPORTED :
     case OB_TENANT_HAS_BEEN_DROPPED :
-    case OB_SERVER_OUTOF_DISK_SPACE :
     case OB_HASH_NOT_EXIST:
     case OB_ARCHIVE_LOG_NOT_CONTINUES_WITH_DATA :
     case OB_BACKUP_DELETE_BACKUP_SET_NOT_ALLOWED :
@@ -2376,12 +2368,18 @@ bool ObBackupUtils::is_need_retry_error(const int err)
     case OB_OBJECT_STORAGE_OVERWRITE_CONTENT_MISMATCH:
     case OB_BACKUP_FILE_NOT_EXIST:
     case OB_LS_ARCHIVE_MAX_SCN_LESS_THAN_CHECKPOINT:
+    case OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED:
       bret = false;
       break;
     default:
       break;
   }
   return bret;
+}
+
+bool ObBackupUtils::is_disk_full_error(const int err)
+{
+  return OB_SERVER_OUTOF_DISK_SPACE == err;
 }
 
 int ObBackupUtils::convert_timestamp_to_date(
@@ -3452,10 +3450,6 @@ static const char *OB_BACKUP_STATUS_STRS[] = {
   "BACKUP_LOG",
   "BACKUP_FUSE_TABLET_META",
   "PREPARE_BACKUP_LOG",
-  "DISABLE_SS_GC",
-  "WAIT_SS_CLOG_CHECKPOINT",
-  "SS_WAIT_LS_CONSISTENCY",
-  "ENABLE_SS_GC",
 };
 
 const char* ObBackupStatus::get_str() const
@@ -4060,6 +4054,7 @@ int ObBackupExtraInfo::assign(const ObBackupExtraInfo &other)
   int ret = OB_SUCCESS;
   sslog_gts_ = other.sslog_gts_;
   read_scn_ = other.read_scn_;
+  first_disk_full_ts_ = other.first_disk_full_ts_;
   return ret;
 }
 
@@ -4070,9 +4065,11 @@ int ObBackupExtraInfo::encode_to_str(char *buf, const int64_t buf_len, int64_t &
   if (OB_ISNULL(buf) || buf_len <= 0) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), KP(buf), K(buf_len));
-  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "sslog_gts:%lu,read_scn:%lu",
-                     sslog_gts_.get_val_for_gts(), read_scn_.get_val_for_gts()))) {
-    LOG_WARN("failed to encode extra_info", K(ret), K(buf_len), K_(sslog_gts), K_(read_scn));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "sslog_gts:%lu,read_scn:%lu,first_disk_full_ts:%ld",
+                     sslog_gts_.is_valid_and_not_min() ? sslog_gts_.get_val_for_gts() : (uint64_t)0,
+                     read_scn_.is_valid_and_not_min() ? read_scn_.get_val_for_gts() : (uint64_t)0,
+                     first_disk_full_ts_))) {
+    LOG_WARN("failed to encode extra_info", K(ret), K(buf_len), K_(sslog_gts), K_(read_scn), K_(first_disk_full_ts));
   }
   return ret;
 }
@@ -4080,8 +4077,7 @@ int ObBackupExtraInfo::encode_to_str(char *buf, const int64_t buf_len, int64_t &
 int ObBackupExtraInfo::decode_from_str(const char *str)
 {
   int ret = OB_SUCCESS;
-  sslog_gts_.reset();
-  read_scn_.reset();
+  reset();
   if (OB_ISNULL(str)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret));
@@ -4090,14 +4086,20 @@ int ObBackupExtraInfo::decode_from_str(const char *str)
   } else {
     uint64_t gts_value = 0;
     uint64_t scn_value = 0;
-    int scan_count = sscanf(str, "sslog_gts:%lu,read_scn:%lu", &gts_value, &scn_value);
-    if (scan_count != 2) {
+    int64_t disk_full_ts = 0;
+    int scan_count = sscanf(str, "sslog_gts:%lu,read_scn:%lu,first_disk_full_ts:%ld",
+                            &gts_value, &scn_value, &disk_full_ts);
+    if (scan_count != 3) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("failed to parse extra_info", K(ret), K(str), K(scan_count));
-    } else if (OB_FAIL(sslog_gts_.convert_for_gts(gts_value))) {
+    } else if (gts_value != 0 && gts_value != OB_INVALID_SCN_VAL
+               && OB_FAIL(sslog_gts_.convert_for_gts(gts_value))) {
       LOG_WARN("failed to convert gts to scn", K(ret), K(gts_value));
-    } else if (OB_FAIL(read_scn_.convert_for_gts(scn_value))) {
+    } else if (scn_value != 0 && scn_value != OB_INVALID_SCN_VAL
+               && OB_FAIL(read_scn_.convert_for_gts(scn_value))) {
       LOG_WARN("failed to convert read_scn to scn", K(ret), K(scn_value));
+    } else {
+      first_disk_full_ts_ = disk_full_ts;
     }
   }
   return ret;
@@ -4543,14 +4545,12 @@ int64_t ObBackupSetFileDesc::to_string(char *min_restore_scn_str_buf,  char *buf
 
 bool ObBackupSetFileDesc::is_allow_quick_restore(const Compatible &compatible)
 {
-  const bool is_shared_storage_mode = GCTX.is_shared_storage_mode();
-  return !is_shared_storage_mode && is_backup_set_support_quick_restore(compatible);
+  return is_backup_set_support_quick_restore(compatible);
 }
 
 bool ObBackupSetFileDesc::is_not_allow_quick_restore(const Compatible &compatible)
 {
-  const bool is_shared_storage_mode = GCTX.is_shared_storage_mode();
-  return is_shared_storage_mode || is_backup_set_not_support_quick_restore(compatible);
+  return is_backup_set_not_support_quick_restore(compatible);
 }
 
 

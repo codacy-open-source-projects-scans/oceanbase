@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -267,6 +260,21 @@ int ObDASHNSWScanIter::inner_init(ObDASIterParam &param)
       LOG_WARN("failed to get extra idx in outexprs", K(ret), K(extra_column_count_));
     } else if (OB_NOT_NULL(rowkey_vid_iter_)) {
       rowkey_vid_iter_->set_scan_param(rowkey_vid_scan_param_);
+    }
+
+    if (OB_SUCC(ret) && OB_NOT_NULL(data_filter_ctdef_)) {
+      int64_t main_rowkey_cnt =
+          data_filter_ctdef_->table_param_.get_read_info().get_schema_rowkey_count();
+      if (main_rowkey_cnt > 0) {
+        void *ptr = nullptr;
+        if (OB_ISNULL(ptr = hnsw_iter_alloc_.alloc(sizeof(ObObj) * main_rowkey_cnt))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("allocate for tmp_filter_main_rowkey_ failed", K(ret), K(main_rowkey_cnt));
+        } else {
+          ObObj *obj_ptr = new (ptr) ObObj[main_rowkey_cnt];
+          tmp_filter_main_rowkey_.assign(obj_ptr, main_rowkey_cnt);
+        }
+      }
     }
 
     if (OB_SUCC(ret)) {
@@ -669,7 +677,7 @@ int ObDASHNSWScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   } else if (OB_FALSE_IT(adaptor_vid_iter_->set_batch_size(capacity))) {
   } else if (OB_FAIL(adaptor_vid_iter_->get_next_rows(row, count, vec_aux_ctdef_->result_output_))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
-      LOG_WARN("failed to get next next row from adaptor vid iter", K(ret));
+      LOG_WARN("failed to get next next row from adaptor vid iter", K(ret), K(count), K(capacity));
     }
   } else if (count > 0) {
     ObEvalCtx::BatchInfoScopeGuard guard(*vec_aux_rtdef_->eval_ctx_);
@@ -903,6 +911,11 @@ int ObDASHNSWScanIter::updata_vec_exec_ctx(ObPlanStat* plan_stat)
 int ObDASHNSWScanIter::process_adaptor_state(bool is_vectorized)
 {
   int ret = OB_SUCCESS;
+  // entry of hnsw scan iter, most hnsw scan should be finish within 1s
+  ObCostGuard hnsw_total_cost_guard(nullptr,
+                                    is_vectorized ? "hnsw_process_adaptor_state_total_vectorized"
+                                                  : "hnsw_process_adaptor_state_total",
+                                    0, 0, ObCostGuard::KNN_THRESHOLD_1S);
   can_retry_ = check_if_can_retry();
   bool need_force_switch_path = check_need_force_switch_run_path();
   if (need_force_switch_path) {
@@ -967,6 +980,7 @@ int ObDASHNSWScanIter::process_adaptor_state_hnsw(ObIAllocator &allocator, bool 
   index_ctx.data_tablet_id_ = com_aux_vec_tablet_id_;
   bool ls_leader = true;
 
+  DEBUG_SYNC(VECTOR_INDEX_QUERY_BEFORE_GET_ADAPTOR);
   if (OB_FAIL(vec_index_service->acquire_adapter_guard(ls_id_, index_ctx, adaptor_guard, &vec_index_param_, dim_))) {
     LOG_WARN("failed to get ObPluginVectorIndexAdapter", K(ret), K(ls_id_), K(index_ctx));
   } else {
@@ -998,17 +1012,63 @@ int ObDASHNSWScanIter::process_adaptor_state_hnsw(ObIAllocator &allocator, bool 
       }
     }
 
+    if (OB_SUCC(ret)) {
+      SCN replace_scn = adaptor->get_replace_scn();
+      if (replace_scn.is_valid() && replace_scn > ada_ctx.get_scn()) {
+        // Adaptor is newer, return OB_SCHEMA_EAGAIN to retry
+        ret = OB_SCHEMA_EAGAIN;
+        LOG_INFO("adaptor replace scn is greater than query scn, retry", K(ret), K(replace_scn), K(ada_ctx.get_scn()));
+      }
+    }
+
     if (OB_FAIL(ret)) {
     } else {
+      DEBUG_SYNC(VECTOR_INDEX_QUERY_BEFORE_LOCK);
       RWLock::RLockGuard lock_guard(adaptor->get_query_lock());
-      if (is_pre_filter() || is_in_filter()) {
-        if (OB_FAIL(process_adaptor_state_pre_filter(&ada_ctx, adaptor, is_vectorized))) {
-          LOG_WARN("hnsw pre filter failed to query result.", K(ret));
+
+      // After acquiring query_lock, re-check if the adapter is still the latest one in map.
+      // If it has been replaced, check the latest adapter's replace_scn to decide which adapter to use.
+      ObPluginVectorIndexAdapterGuard latest_adaptor_guard;
+      bool query_executed = false;
+      if (OB_FAIL(vec_index_service->acquire_adapter_guard(ls_id_, index_ctx, latest_adaptor_guard, &vec_index_param_, dim_))) {
+        LOG_WARN("failed to re-acquire latest adapter guard",
+                 K(ret), K(ls_id_), K(index_ctx), K(vec_index_param_), K(dim_));
+      } else {
+        ObPluginVectorIndexAdaptor *latest_adaptor = latest_adaptor_guard.get_adatper();
+        if (OB_ISNULL(latest_adaptor)) {
+          ret = OB_BAD_NULL_ERROR;
+          LOG_WARN("latest adaptor is null", K(ret));
+        } else if (latest_adaptor != adaptor) {
+          SCN latest_replace_scn = latest_adaptor->get_replace_scn();
+          if (latest_replace_scn.is_valid() && latest_replace_scn <= ada_ctx.get_scn()) {
+            RWLock::RLockGuard latest_lock_guard(latest_adaptor->get_query_lock());
+            adaptor = latest_adaptor;
+            LOG_INFO("adapter has been replaced, use latest adapter", K(latest_replace_scn), K(ada_ctx.get_scn()), KP(latest_adaptor));
+
+            if (is_pre_filter() || is_in_filter()) {
+              if (OB_FAIL(process_adaptor_state_pre_filter(&ada_ctx, adaptor, is_vectorized))) {
+                LOG_WARN("hnsw pre filter failed to query result.", K(ret));
+              }
+            } else if (OB_FAIL(process_adaptor_state_post_filter(&ada_ctx, adaptor, is_vectorized))) {
+              LOG_WARN("hnsw post filter failed to query result.", K(ret));
+            }
+            query_executed = true;
+          } else {
+            LOG_INFO("latest adapter is too new, use first adapter", K(latest_replace_scn), K(ada_ctx.get_scn()), KP(latest_adaptor));
+          }
         }
-      // for compatibility, do not check by vec_aux_ctdef.is_post_filter, use is_pre_filter_ instead
-      // because the vec_type_ is not serialize in the vec_ctdef in version 435, making it impossible to use this flag to check whether it is pre/post
-      } else if (OB_FAIL(process_adaptor_state_post_filter(&ada_ctx, adaptor, is_vectorized))) {
-        LOG_WARN("hnsw post filter failed to query result.", K(ret));
+      }
+
+      if (OB_SUCC(ret) && !query_executed) {
+        if (is_pre_filter() || is_in_filter()) {
+          if (OB_FAIL(process_adaptor_state_pre_filter(&ada_ctx, adaptor, is_vectorized))) {
+            LOG_WARN("hnsw pre filter failed to query result.", K(ret));
+          }
+        // for compatibility, do not check by vec_aux_ctdef.is_post_filter, use is_pre_filter_ instead
+        // because the vec_type_ is not serialize in the vec_ctdef in version 435, making it impossible to use this flag to check whether it is pre/post
+        } else if (OB_FAIL(process_adaptor_state_post_filter(&ada_ctx, adaptor, is_vectorized))) {
+          LOG_WARN("hnsw post filter failed to query result.", K(ret));
+        }
       }
     }
   }
@@ -1124,6 +1184,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_bq(
                         bool check_need_complete_data)
 {
   INIT_SUCC(ret);
+  ObCostGuard pre_filter_brute_force_cost_guard(adaptor, "hnsw_pre_filter_brute_force", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_200MS);
   ObString search_vec = query_cond_.query_vector_;
   need_complete_data = false;
   ObVecIdxQueryResult dist_result;
@@ -1459,7 +1520,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_brute_force_bq(
                         bool check_need_complete_data)
 {
   INIT_SUCC(ret);
-
+  ObCostGuard pre_filter_brute_force_cost_guard(adaptor, "hnsw_pre_filter_brute_force_bq", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_200MS);
   BruteForceContext ctx;
   if (OB_FAIL(init_brute_force_params(ada_ctx, adaptor, ctx))) {
     LOG_WARN("failed to init brute force params", K(ret));
@@ -1501,6 +1562,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter(
     bool is_vectorized)
 {
   int ret = OB_SUCCESS;
+  ObCostGuard pre_filter_total_cost_guard(adaptor, "hnsw_pre_filter_total", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_1S);
   int64_t *brute_vids = nullptr;
   int brute_cnt = 0;
   if (is_primary_pre_with_rowkey_with_filter_) {
@@ -1541,7 +1603,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter(
         LOG_WARN("failed to do snapshot table scan.", K(ret));
       }
     }
-
+    ObCostGuard query_result_cost_guard(adaptor, "pre_filter_query_result", query_cond_.ef_search_, query_cond_.query_limit_);
     if (OB_FAIL(ret)) {
     } else if (OB_NOT_NULL(snapshot_iter_) && OB_FALSE_IT(query_cond_.row_iter_ = snapshot_iter_->get_output_result_iter())) {
     } else if (OB_FAIL(adaptor->query_result(ls_id_, ada_ctx, &query_cond_, adaptor_vid_iter_))) {
@@ -1647,6 +1709,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_with_rowkey(
                         bool is_vectorized)
 {
   int ret = OB_SUCCESS;
+  ObCostGuard pre_filter_rowkey_cost_guard(adaptor, "hnsw_pre_filter_rowkey", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_500MS);
   ObVidBound bound;
   if (OB_ISNULL(ada_ctx) || OB_ISNULL(adaptor) || OB_ISNULL(rowkey_vid_iter_)) {
     ret = OB_ERR_UNEXPECTED;
@@ -1678,7 +1741,8 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_with_rowkey(
             int64_t vid = 0;
             if (OB_FAIL(get_vid_from_rowkey_vid_table(vid))) {
               if (OB_UNLIKELY(OB_ITER_END != ret)) {
-                LOG_WARN("failed to get vector from rowkey vid table.", K(ret), K(i));
+                LOG_WARN("failed to get vector from rowkey vid table.", K(ret),
+                    K(brute_cnt), K(adaptive_ctx_.pre_scan_row_cnt_), K(i), K(batch_row_count), K(add_brute));
               }
               index_end = true;
             } else if (go_brute_force_ && add_brute && brute_cnt < MAX_HNSW_BRUTE_FORCE_SIZE) {
@@ -1711,7 +1775,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_with_rowkey(
           int64_t scan_row_cnt = 0;
           if (OB_FAIL(rowkey_vid_iter_->get_next_rows(scan_row_cnt, batch_row_count))) {
             if (OB_ITER_END != ret) {
-              LOG_WARN("failed to get next row.", K(ret));
+              LOG_WARN("failed to get next row.", K(ret), K(adaptive_ctx_.pre_scan_row_cnt_), K(scan_row_cnt), K(batch_row_count));
             }
             index_end = true;
           }
@@ -2033,7 +2097,11 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
         ObRowkey *rowkey;
         inv_idx_scan_iter_->clear_evaluated_flag();
         if (OB_FAIL(inv_idx_scan_iter_->get_next_row())) {
-          ret = OB_ITER_END == ret ? OB_SUCCESS : ret;
+          if (OB_ITER_END != ret) {
+            LOG_WARN("failed to get next row.", K(ret), K(adaptive_ctx_.pre_scan_row_cnt_), K(i), K(batch_row_count));
+          } else {
+            ret = OB_SUCCESS;
+          }
           index_end = true;
         } else if (OB_FAIL(get_rowkey(*ada_ctx->get_tmp_allocator(), rowkey))) {
           LOG_WARN("failed to get rowkey", K(ret));
@@ -2048,7 +2116,7 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
       int64_t scan_row_cnt = 0;
       if (OB_FAIL(inv_idx_scan_iter_->get_next_rows(scan_row_cnt, batch_row_count))) {
         if (OB_ITER_END != ret) {
-          LOG_WARN("failed to get next row.", K(ret));
+          LOG_WARN("failed to get next row.", K(ret), K(adaptive_ctx_.pre_scan_row_cnt_), K(scan_row_cnt), K(batch_row_count));
         }
         index_end = true;
       }
@@ -2091,7 +2159,7 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
           LOG_WARN("ret of check iter filter need retry.", K(ret), K(can_retry_), K(adaptive_ctx_), K(vec_index_type_), K(vec_idx_try_path_), K(strategy_));
         } else if (OB_FAIL(get_vid_from_rowkey_vid_table(vid))) {
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
-            LOG_WARN("failed to get vector from rowkey vid table.", K(ret), K(i));
+            LOG_WARN("failed to get vector from rowkey vid table.", K(ret), K(brute_cnt), K(i), K(batch_row_count));
           }
         } else if (go_brute_force_ && brute_cnt + batch_row_count < MAX_HNSW_BRUTE_FORCE_SIZE) {
           vids[brute_cnt] = vid;
@@ -2120,7 +2188,7 @@ int ObDASHNSWScanIter::get_vid_from_idx_filter(
       int64_t scan_row_cnt = 0;
       if (OB_FAIL(rowkey_vid_iter_->get_next_rows(scan_row_cnt, batch_row_count))) {
         if (OB_ITER_END != ret) {
-          LOG_WARN("failed to get next row.", K(ret));
+          LOG_WARN("failed to get next row.", K(ret), K(brute_cnt), K(scan_row_cnt), K(batch_row_count));
         }
       }
 
@@ -2236,7 +2304,11 @@ int ObDASHNSWScanIter::get_pk_increment_from_idx_filter(
         int64_t vid = 0;
         inv_idx_scan_iter_->clear_evaluated_flag();
         if (OB_FAIL(inv_idx_scan_iter_->get_next_row())) {
-          ret = OB_ITER_END == ret ? OB_SUCCESS : ret;
+          if (OB_ITER_END != ret) {
+            LOG_WARN("failed to get next row.", K(ret), K(brute_cnt), K(i), K(batch_row_count));
+          } else {
+            ret = OB_SUCCESS;
+          }
           index_end = true;
         } else if (if_add_relevance && OB_FAIL(get_relevance(vec_op_alloc_, relevance_record))) {
           LOG_WARN("failed to get relevance", K(ret), K(i));
@@ -2279,7 +2351,7 @@ int ObDASHNSWScanIter::get_pk_increment_from_idx_filter(
       int64_t scan_row_cnt = 0;
       if (OB_FAIL(inv_idx_scan_iter_->get_next_rows(scan_row_cnt, batch_row_count))) {
         if (OB_ITER_END != ret) {
-          LOG_WARN("failed to get next row.", K(ret));
+          LOG_WARN("failed to get next row.", K(ret), K(brute_cnt), K(scan_row_cnt), K(batch_row_count));
         }
         index_end = true;
       }
@@ -2379,6 +2451,7 @@ int ObDASHNSWScanIter::process_adaptor_state_pre_filter_with_idx_filter(
     bool is_vectorized)
 {
   int ret = OB_SUCCESS;
+  ObCostGuard pre_filter_idx_cost_guard(adaptor, "hnsw_pre_filter_idx_filter", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_500MS);
 
   if (OB_ISNULL(ada_ctx) || OB_ISNULL(adaptor)) {
     ret = OB_ERR_UNEXPECTED;
@@ -2507,6 +2580,7 @@ int ObDASHNSWScanIter::process_adaptor_state_post_filter(
       query_cond_.query_limit_ = reorder_count;
     }
   }
+  ObCostGuard post_filter_total_cost_guard(adaptor, "hnsw_post_filter_total", query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_500MS);
   LOG_TRACE("vector index show post-filter query info", K(vec_index_type_), K(vec_idx_try_path_), K(simple_cmp_info_.inited_), KPC(simple_cmp_info_.filter_expr_),
   K(extra_column_count_), K(query_cond_.query_limit_), K(query_cond_.ef_search_));
   omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
@@ -2911,33 +2985,48 @@ int ObDASHNSWScanIter::post_query_vid_with_filter(
       int64_t total_before_add = adaptor_vid_iter_->get_total();
       int64_t extra_column_cnt = tmp_adaptor_vid_iter_->get_extra_column_count();
       iter_scan_total_num += unfiltered_vid_cnt;
-      for (int i = 0; OB_SUCC(ret) && i < unfiltered_vid_cnt && !adaptor_vid_iter_->get_enough(); ++i) {
-        ObNewRow *row = nullptr;
-        bool filter_res = false;
-        if (OB_FAIL(tmp_adaptor_vid_iter_->get_next_row(row, vec_aux_ctdef_->result_output_, true))) {
-          if (OB_UNLIKELY(OB_ITER_END != ret)) {
-            LOG_WARN("failed to get next next row from adaptor vid iter", K(ret), K(i));
-          } else {
-            ret = OB_SUCCESS;
-          }
-        } else if (simple_cmp_info_.inited_) { // use simpel cmp
-          if (OB_FAIL(get_simple_cmp_filter_res(row, filter_res))) {
+      if (simple_cmp_info_.inited_) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < unfiltered_vid_cnt && !adaptor_vid_iter_->get_enough(); ++i) {
+          ObNewRow *row = nullptr;
+          bool filter_res = false;
+          if (OB_FAIL(tmp_adaptor_vid_iter_->get_next_row(row, vec_aux_ctdef_->result_output_, true))) {
+            if (OB_UNLIKELY(OB_ITER_END != ret)) {
+              LOG_WARN("failed to get next row from adaptor vid iter", K(ret), K(unfiltered_vid_cnt), K(i));
+            } else {
+              ret = OB_SUCCESS;
+            }
+          } else if (OB_FAIL(get_simple_cmp_filter_res(row, filter_res))) {
             LOG_WARN("failed to get simple cmp filter res.", K(ret), K(i));
-          } else if (filter_res && (OB_FAIL(adaptor_vid_iter_->add_result(
-                        unfiltered_vids[i], unfiltered_distance[i],
-                        unfiltered_extra_info.is_null() ? nullptr : unfiltered_extra_info[i])))) {
+          } else if (filter_res && OB_FAIL(adaptor_vid_iter_->add_result(
+                                               unfiltered_vids[i], unfiltered_distance[i],
+                                               unfiltered_extra_info.is_null() ? nullptr
+                                                                               : unfiltered_extra_info[i]))) {
             LOG_WARN("failed to add result", K(ret), K(i));
           }
-        } else if (OB_FAIL(filter_by_index_back(unfiltered_vids[i], row, is_vectorized, filter_res))) {
-          LOG_WARN("fail to filter by index back", K(extra_column_cnt), K(i), K(unfiltered_vids[i]), K(ret));
-        } else if (!filter_res) {
-          // do nothing
-        } else if (OB_FAIL(adaptor_vid_iter_->add_result(
-                        unfiltered_vids[i], unfiltered_distance[i],
-                        unfiltered_extra_info.is_null() ? nullptr : unfiltered_extra_info[i]))) {
-          LOG_WARN("failed to add result", K(ret), K(i), K(extra_column_cnt));
         }
-      } // end for
+      } else if (vec_aux_ctdef_->relevance_col_cnt_ > 0 || extra_column_count_ > 0) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < unfiltered_vid_cnt && !adaptor_vid_iter_->get_enough(); ++i) {
+          ObNewRow *row = nullptr;
+          bool filter_res = false;
+          if (OB_FAIL(tmp_adaptor_vid_iter_->get_next_row(row, vec_aux_ctdef_->result_output_, true))) {
+            if (OB_UNLIKELY(OB_ITER_END != ret)) {
+              LOG_WARN("failed to get next row from adaptor vid iter", K(ret), K(unfiltered_vid_cnt), K(i));
+            } else {
+              ret = OB_SUCCESS;
+            }
+          } else if (OB_FAIL(filter_by_index_back(unfiltered_vids[i], row, is_vectorized, filter_res))) {
+            LOG_WARN("fail to filter by index back", K(extra_column_cnt), K(i), K(unfiltered_vids[i]), K(ret));
+          } else if (!filter_res) {
+            // do nothing
+          } else if (OB_FAIL(adaptor_vid_iter_->add_result(
+                                  unfiltered_vids[i], unfiltered_distance[i],
+                                  unfiltered_extra_info.is_null() ? nullptr : unfiltered_extra_info[i]))) {
+            LOG_WARN("failed to add result", K(ret), K(i), K(extra_column_cnt));
+          }
+        }
+      } else if (OB_FAIL(do_table_post_filter(is_vectorized))) {
+        LOG_WARN("do table post filter failed", K(ret));
+      }
       if (OB_FAIL(ret)) {
       } else if (tmp_adaptor_vid_iter_->get_total() < query_cond_.query_limit_
       || (iter_scan_total_num > hnsw_max_iter_scan_nums && hnsw_max_iter_scan_nums > 0)) {
@@ -3016,6 +3105,8 @@ int ObDASHNSWScanIter::process_adaptor_state_post_filter_once(
     ObPluginVectorIndexAdaptor* adaptor)
 {
   int ret = OB_SUCCESS;
+  ObCostGuard post_filter_once_cost_guard(adaptor, "hnsw_post_filter_once",
+                                          query_cond_.ef_search_, query_cond_.query_limit_, ObCostGuard::KNN_THRESHOLD_500MS);
 
   if (OB_ISNULL(ada_ctx) || OB_ISNULL(adaptor)) {
     ret = OB_ERR_UNEXPECTED;
@@ -3118,11 +3209,46 @@ int ObDASHNSWScanIter::prepare_state(const ObVidAdaLookupStatus& cur_state, ObVe
   return ret;
 }
 
+const char* ob_vid_ada_lookup_status_to_str(enum ObVidAdaLookupStatus status)
+{
+  const char *status_name = "ObVidAdaLookupStatus::OB_VID_ADA_LOOKUP_STATUS_UNKNOWN";
+  switch (status) {
+    case STATES_INIT:
+      status_name =  "ObVidAdaLookupStatus::STATES_INIT";
+      break;
+    case QUERY_INDEX_ID_TBL:
+      status_name =  "ObVidAdaLookupStatus::QUERY_INDEX_ID_TBL";
+      break;
+    case QUERY_SNAPSHOT_TBL:
+      status_name =  "ObVidAdaLookupStatus::QUERY_SNAPSHOT_TBL";
+      break;
+    case QUERY_ROWKEY_VEC:
+      status_name =  "ObVidAdaLookupStatus::QUERY_ROWKEY_VEC";
+      break;
+    case STATES_SET_RESULT:
+      status_name =  "ObVidAdaLookupStatus::STATES_SET_RESULT";
+      break;
+    case STATES_ERROR:
+      status_name =  "ObVidAdaLookupStatus::STATES_ERROR";
+      break;
+    case STATES_FINISH:
+      status_name =  "ObVidAdaLookupStatus::STATES_FINISH";
+      break;
+    case STATES_REFRESH:
+      status_name =  "ObVidAdaLookupStatus::STATES_REFRESH";
+      break;
+    default:
+      status_name =  "ObVidAdaLookupStatus::OB_VID_ADA_LOOKUP_STATUS_UNKNOWN";
+      break;
+  }
+  return status_name;
+}
 int ObDASHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cur_state,
                                           ObVectorQueryAdaptorResultContext& ada_ctx,
                                           ObPluginVectorIndexAdaptor &adaptor)
 {
   int ret = OB_SUCCESS;
+  ObCostGuard cost_guard(&adaptor, ob_vid_ada_lookup_status_to_str(cur_state), 0, 0, ObCostGuard::KNN_THRESHOLD_200MS);
   switch(cur_state) {
     case ObVidAdaLookupStatus::STATES_INIT: {
       ObNewRowIterator *real_delta_buf_iter = delta_buf_iter_->get_output_result_iter();
@@ -3492,7 +3618,7 @@ int ObDASHNSWScanIter::prepare_complete_vector_data(ObVectorQueryAdaptorResultCo
     if (use_vid_) {
       if (OB_FAIL(get_rowkey_from_vid_rowkey_table(mem_context_->get_arena_allocator(), vid, rowkey))) {
         if (OB_ITER_END != ret) {
-          LOG_WARN("failed to get rowkey.", K(ret));
+          LOG_WARN("failed to get rowkey.", K(ret), K(i), K(vec_cnt));
         }
       }
     } else {
@@ -3505,13 +3631,13 @@ int ObDASHNSWScanIter::prepare_complete_vector_data(ObVectorQueryAdaptorResultCo
       // For hybrid index, use embedded table to get vector data
         if (OB_FAIL(get_vector_from_embedded_table(mem_context_->get_arena_allocator(), rowkey, &vid, vector))) {
           if (OB_ITER_END != ret) {
-            LOG_WARN("failed to get vector from embedded table.", K(ret));
+            LOG_WARN("failed to get vector from embedded table.", K(ret), K(i), K(vec_cnt));
           }
         }
       } else {
         if (OB_FAIL(get_vector_from_com_aux_vec_table(mem_context_->get_arena_allocator(), rowkey, vector))) {
           if (OB_ITER_END != ret) {
-            LOG_WARN("failed to get vector from com aux vec table.", K(ret));
+            LOG_WARN("failed to get vector from com aux vec table.", K(ret), K(i), K(vec_cnt));
           }
         }
       }
@@ -3561,6 +3687,173 @@ int ObDASHNSWScanIter::get_vid_from_rowkey_vid_table(int64_t &vid)
     }
   }
 
+  return ret;
+}
+
+int ObDASHNSWScanIter::do_table_post_filter(bool is_vectorized)
+{
+  int ret = OB_SUCCESS;
+  const int64_t batch_row_count = ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE;
+  const int64_t unfiltered_cnt = tmp_adaptor_vid_iter_->get_total();
+  const int64_t *vids = tmp_adaptor_vid_iter_->get_vids();
+  const float *distances = tmp_adaptor_vid_iter_->get_distance();
+  ObIAllocator &arena = mem_context_->get_arena_allocator();
+  int64_t processed = 0;
+  bool *matched_flags = nullptr;
+
+  hash::ObHashMap<ObRowkey, int64_t> rowkey_idx_map;
+  if (OB_FAIL(rowkey_idx_map.create(batch_row_count, lib::ObMemAttr(MTL_ID(), "HNSWBatchMap")))) {
+    LOG_WARN("create rowkey_idx_map failed", K(ret));
+  } else if (OB_ISNULL(matched_flags = static_cast<bool *>(arena.alloc(sizeof(bool) * batch_row_count)))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("alloc matched_flags failed", K(ret), K(batch_row_count));
+  }
+
+  while (OB_SUCC(ret) && processed < unfiltered_cnt && !adaptor_vid_iter_->get_enough()) {
+    rowkey_idx_map.reuse();
+    MEMSET(matched_flags, 0, sizeof(bool) * batch_row_count);
+    int64_t batch_cnt = 0;
+    const int64_t batch_start = processed;
+
+    const int64_t needed = adaptor_vid_iter_->get_alloc_size() - adaptor_vid_iter_->get_total();
+    int64_t effective_batch = batch_row_count;
+    if (needed > 0) {
+      effective_batch = ObDasVecScanUtils::calc_effective_batch(needed, vec_aux_ctdef_->selectivity_, batch_row_count);
+    }
+
+    for (int64_t i = processed;
+         OB_SUCC(ret) && i < unfiltered_cnt && batch_cnt < effective_batch
+         && !adaptor_vid_iter_->get_enough();
+         ++i) {
+      ObNewRow *row = nullptr;
+      if (OB_FAIL(tmp_adaptor_vid_iter_->get_next_row(row, vec_aux_ctdef_->result_output_, true))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("get next row from tmp_adaptor_vid_iter_ failed", K(ret), K(i));
+        }
+      } else {
+        ObRowkey resolved_rk;
+
+        if (use_vid_) {
+          ObRowkey vid_row(&row->get_cell(ObAdaptorIterRowIdx::VID_OBJ_IDX), 1);
+          ObRowkey *pk = nullptr;
+          if (OB_FAIL(get_rowkey_from_vid_rowkey_table(arena, vid_row, pk))) {
+            LOG_WARN("get_rowkey_from_vid_rowkey_table failed", K(ret), K(i), K(vids[i]));
+          } else {
+            resolved_rk = *pk;
+          }
+        } else {
+          void *obj_buf = arena.alloc(sizeof(ObObj));
+          if (OB_ISNULL(obj_buf)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("alloc for vid_obj failed", K(ret));
+          } else {
+            ObObj *vid_obj = new (obj_buf) ObObj;
+            *vid_obj = row->get_cell(ObAdaptorIterRowIdx::VID_OBJ_IDX);
+            vid_obj->meta_.set_uint64();
+            resolved_rk.assign(vid_obj, 1);
+          }
+        }
+
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(ObDasVecScanUtils::set_lookup_key(resolved_rk, data_filter_scan_param_, data_filter_ctdef_->ref_table_id_))) {
+          LOG_WARN("set_lookup_key failed", K(ret), K(i));
+        } else if (OB_FAIL(rowkey_idx_map.set_refactored(resolved_rk, i))) {
+          LOG_WARN("set_refactored to rowkey_idx_map failed", K(ret), K(i));
+        } else {
+          ++batch_cnt;
+        }
+      }
+    }
+    if (OB_ITER_END == ret) {
+      ret = OB_SUCCESS;
+    }
+
+    processed += batch_cnt;
+
+    if (OB_FAIL(ret) || batch_cnt == 0) {
+    } else if (OB_FAIL(do_aux_table_scan(data_filter_iter_first_scan_,
+                                         data_filter_scan_param_,
+                                         data_filter_ctdef_, data_filter_rtdef_,
+                                         data_filter_iter_, com_aux_vec_tablet_id_))) {
+      LOG_WARN("do data filter table scan failed", K(ret), K(batch_cnt));
+    } else if (is_vectorized) {
+      int64_t scan_row_cnt = 0;
+      bool index_end = false;
+      data_filter_iter_->clear_evaluated_flag();
+      while (!index_end && OB_SUCC(ret)) {
+        if (OB_FAIL(data_filter_iter_->get_next_rows(scan_row_cnt, batch_row_count))) {
+          if (OB_ITER_END != ret) {
+            LOG_WARN("get_next_rows from data_filter_iter_ failed", K(ret));
+          } else {
+            index_end = true;
+          }
+        }
+        if (OB_FAIL(ret) && OB_ITER_END != ret) {
+        } else if (scan_row_cnt > 0) {
+          ret = OB_SUCCESS;
+          ObEvalCtx::BatchInfoScopeGuard guard(*vec_aux_rtdef_->eval_ctx_);
+          guard.set_batch_size(scan_row_cnt);
+          for (int64_t j = 0; OB_SUCC(ret) && j < scan_row_cnt; ++j) {
+            guard.set_batch_idx(j);
+            int64_t *idx = nullptr;
+            if (OB_FAIL(ObDasVecScanUtils::get_main_rowkey(data_filter_ctdef_, vec_aux_rtdef_->eval_ctx_, tmp_filter_main_rowkey_))) {
+              LOG_WARN("get_main_rowkey failed", K(ret), K(j));
+            } else if (OB_ISNULL(idx = rowkey_idx_map.get(tmp_filter_main_rowkey_))) {
+              ret = OB_ENTRY_NOT_EXIST;
+              LOG_WARN("rowkey not found in map", K(ret), K(tmp_filter_main_rowkey_));
+            } else if (*idx < batch_start || *idx >= batch_start + batch_cnt) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("matched rowkey idx is out of current batch", K(ret), K(*idx), K(batch_start), K(batch_cnt));
+            } else {
+              matched_flags[*idx - batch_start] = true;
+            }
+          }
+        }
+      }
+    } else {
+      data_filter_iter_->clear_evaluated_flag();
+      while (OB_SUCC(ret)) {
+        int64_t *idx = nullptr;
+        if (OB_FAIL(data_filter_iter_->get_next_row())) {
+          if (OB_ITER_END != ret) {
+            LOG_WARN("get_next_row from data_filter_iter_ failed", K(ret));
+          }
+        } else if (OB_FAIL(ObDasVecScanUtils::get_main_rowkey(data_filter_ctdef_, vec_aux_rtdef_->eval_ctx_, tmp_filter_main_rowkey_))) {
+          LOG_WARN("get_main_rowkey failed", K(ret));
+        } else if (OB_ISNULL(idx = rowkey_idx_map.get(tmp_filter_main_rowkey_))) {
+          ret = OB_ENTRY_NOT_EXIST;
+          LOG_WARN("rowkey not found in map", K(ret), K(tmp_filter_main_rowkey_));
+        } else if (*idx < batch_start || *idx >= batch_start + batch_cnt) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("matched rowkey idx is out of current batch", K(ret), K(*idx), K(batch_start), K(batch_cnt));
+        } else {
+          matched_flags[*idx - batch_start] = true;
+        }
+      }
+    }
+    if (OB_ITER_END == ret) {
+      ret = OB_SUCCESS;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < batch_cnt && !adaptor_vid_iter_->get_enough(); ++i) {
+      if (matched_flags[i]) {
+        const int64_t idx = batch_start + i;
+        if (OB_FAIL(adaptor_vid_iter_->add_result(vids[idx], distances[idx], nullptr))) {
+          LOG_WARN("add_result failed", K(ret), K(idx));
+        }
+      }
+    }
+    int tmp_ret = OB_SUCCESS;
+    if (OB_TMP_FAIL(reuse_filter_data_table_iter())) {
+      LOG_WARN("reuse data_filter iter failed", K(tmp_ret), K(ret));
+      if (OB_SUCC(ret)) {
+        ret = tmp_ret;
+      }
+    }
+  } // end outer while
+
+  if (rowkey_idx_map.created()) {
+    rowkey_idx_map.destroy();
+  }
   return ret;
 }
 

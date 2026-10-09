@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -173,6 +166,7 @@ int ObExprJoinFilter::check_rf_ready(
   if (join_filter_ctx->is_ready_) {
   } else if (OB_ISNULL(rf_msg)) {
     if (join_filter_ctx->need_wait_ready()) {
+      ScopedTimer timer(ObMetricId::WAIT_JOIN_FILTER_MSG_TIME);
       while (!join_filter_ctx->is_ready_ && OB_SUCC(exec_ctx.fast_check_status())) {
         if (OB_NOT_NULL(rf_msg)) {
 #ifdef ERRSIM

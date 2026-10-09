@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1512,7 +1505,8 @@ int ObAggregateProcessor::init()
                T_FUN_ARG_MAX == aggr_info.get_expr_type() ||
                T_FUN_ANY     == aggr_info.get_expr_type() ||
                T_FUN_ARBITRARY == aggr_info.get_expr_type() ||
-               T_FUN_CK_GROUPCONCAT == aggr_info.get_expr_type()) {
+               T_FUN_CK_GROUPCONCAT == aggr_info.get_expr_type() ||
+               T_FUN_WINDOW_FUNNEL == aggr_info.get_expr_type()) {
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("this agg func not supported vec1.0", K(aggr_info.get_expr_type()));
     } else {

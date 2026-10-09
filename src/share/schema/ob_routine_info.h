@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SHARE_SCHEMA_OB_ROUTINE_INFO_H_
@@ -88,6 +81,7 @@ enum ObRoutineFlag
   SP_FLAG_EXTERNAL_STATE = SP_FLAG_HAS_OUT_PARAM * 2,
   SP_FLAG_MYSQL_UDTF = SP_FLAG_EXTERNAL_STATE * 2,
   SP_FLAG_SQL_TRANSPILER_ELIGIBLE = SP_FLAG_MYSQL_UDTF * 2,
+  SP_FLAG_ASYNC_COMMIT = SP_FLAG_SQL_TRANSPILER_ELIGIBLE * 2,
 };
 
 namespace oceanbase
@@ -112,12 +106,14 @@ enum class ObExternalRoutineType
   EXTERNAL_JAVA_UDF_FROM_RES = 2,
   EXTERNAL_PY_UDF_FROM_URL = 3,
   EXTERNAL_PY_UDF_FROM_RES = 4,
+  EXTERNAL_ORACLE_JAVA_ROUTINE = 5,
 };
 
 OB_INLINE bool is_java_external_routine(ObExternalRoutineType type)
 {
   return type == ObExternalRoutineType::EXTERNAL_JAVA_UDF_FROM_URL
-           || type == ObExternalRoutineType::EXTERNAL_JAVA_UDF_FROM_RES;
+           || type == ObExternalRoutineType::EXTERNAL_JAVA_UDF_FROM_RES
+           || type == ObExternalRoutineType::EXTERNAL_ORACLE_JAVA_ROUTINE;
 }
 
 class ObIRoutineParam

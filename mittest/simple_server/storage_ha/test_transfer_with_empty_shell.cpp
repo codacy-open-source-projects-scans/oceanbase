@@ -1,16 +1,9 @@
-// owner: muwei.ym
+// owner: lixia.yq
 // owner group: storage_ha
 
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include <gmock/gmock.h>
 
@@ -42,7 +35,7 @@ static ObTransferPartList g_batch_part_list;
 class TestTransferHandler : public unittest::ObSimpleClusterTestBase
 {
 public:
-  TestTransferHandler() : unittest::ObSimpleClusterTestBase("test_transfer_handler") {}
+  TestTransferHandler() : unittest::ObSimpleClusterTestBase("test_transfer_with_empty_shell") {}
   int read_sql(ObMySQLProxy &sql_proxy, const ObSqlString &sql, ObTransferPartList &part_list);
   int gen_mock_data(const ObTransferTaskID task_id, const ObTransferStatus &status, ObTransferTask &task);
   int wait_transfer_task(

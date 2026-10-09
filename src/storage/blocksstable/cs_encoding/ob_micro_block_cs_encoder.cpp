@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -47,7 +40,7 @@ int ObVecBatchInfo::init(const int32_t row_count,
   return ret;
 }
 
-ObObjMeta ObCSRowHeader::TYPE = ObCSRowHeader::make_type();
+ObObjMeta ObCSRowMultiVersionHeader::TYPE = ObCSRowMultiVersionHeader::make_type();
 
 template<bool IS_MULTI_VERSION>
 ObObj ObMicroBlockCSEncoder<IS_MULTI_VERSION>::NOP = ObObj::make_nop_obj();
@@ -132,7 +125,7 @@ ObMicroBlockCSEncoder<IS_MULTI_VERSION>::ObMicroBlockCSEncoder()
     semistruct_encode_ctx_(nullptr)
 {
   current_row_header_.reuse();
-  current_row_header_.len_ = sizeof(ObCSRowHeader);
+  current_row_header_.len_ = sizeof(ObCSRowMultiVersionHeader);
 }
 
 template<bool IS_MULTI_VERSION>
@@ -188,7 +181,7 @@ int ObMicroBlockCSEncoder<IS_MULTI_VERSION>::init(const ObMicroBlockEncodingCtx 
       }
     }
     if constexpr (IS_MULTI_VERSION) {
-      if (FAILEDx(column_types_.push_back(ObCSRowHeader::TYPE))) {
+      if (FAILEDx(column_types_.push_back(ObCSRowMultiVersionHeader::TYPE))) {
         LOG_WARN("fail to push back row header column type");
       }
     }
@@ -1706,9 +1699,9 @@ const ObStorageDatum& ObMicroBlockCSEncoder<true>::get_column_datum(const ObDatu
   if (column_idx < row.get_column_count()) {
     datum = &row.storage_datums_[column_idx];
   } else {
-    ObCSRowHeader row_header(row);
+    ObCSRowMultiVersionHeader row_header(row);
     datum = const_cast<ObStorageDatum*>(&current_row_header_);
-    memcpy(datum->buf_, &row_header, sizeof(ObCSRowHeader));
+    memcpy(datum->buf_, &row_header, sizeof(ObCSRowMultiVersionHeader));
   }
   return *datum;
 }
@@ -1826,7 +1819,7 @@ int64_t ObMicroBlockCSEncoder<IS_MULTI_VERSION>::calc_datum_row_size_(const ObDa
     }
   }
   if constexpr (IS_MULTI_VERSION) {
-    need_size += sizeof(ObCSRowHeader);
+    need_size += sizeof(ObCSRowMultiVersionHeader);
   }
   return need_size;
 }

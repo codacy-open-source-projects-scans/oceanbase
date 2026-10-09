@@ -65,6 +65,7 @@ ob_set_subtarget(ob_storage blocksstable
   blocksstable/ob_table_flag.cpp
   blocksstable/ob_datum_rowkey_vector.cpp
   blocksstable/ob_batch_datum_rows.cpp
+  blocksstable/ob_sstable_skip_index.cpp
 )
 
 ob_set_subtarget(ob_storage blocksstable_encoding1
@@ -281,10 +282,13 @@ ob_set_subtarget(ob_storage ik
   fts/dict/ob_ft_dict_def.cpp
   fts/dict/ob_ft_trie.cpp
   fts/dict/ob_ft_cache_dict.cpp
-  fts/dict/ob_ft_dict_hub.cpp
   fts/dict/ob_ft_range_dict.cpp
   fts/dict/ob_ft_dict_table_iter.cpp
   fts/dict/ob_ft_cache.cpp
+  fts/dict/ob_ft_slot_mgr.cpp
+  fts/dict/ob_ft_dict_bg_task_mgr.cpp
+  fts/dict/ob_ft_dict_mgr.cpp
+  fts/dict/ob_ft_dict_cache_loader.cpp
   fts/ik/ob_ik_char_util.cpp
 )
 
@@ -302,6 +306,7 @@ ob_set_subtarget(ob_storage high_availability
   high_availability/ob_storage_ha_struct.cpp
   high_availability/ob_storage_ha_src_provider.cpp
   high_availability/ob_transfer_backfill_tx.cpp
+  high_availability/ob_transfer_diag_ctx.cpp
   high_availability/ob_transfer_handler.cpp
   high_availability/ob_storage_restore_struct.cpp
   high_availability/ob_tablet_group_restore.cpp
@@ -356,6 +361,7 @@ ob_set_subtarget(ob_storage backup
   backup/ob_backup_index_cache.cpp
   backup/ob_backup_iterator.cpp
   backup/ob_backup_index_merger.cpp
+  backup/ob_backup_index_rebuild_task.cpp
   backup/ob_backup_reader.cpp
   backup/ob_backup_handler.cpp
   backup/ob_backup_index_store.cpp
@@ -398,6 +404,7 @@ ob_set_subtarget(ob_storage tablet
   tablet/ob_mds_schema_helper.cpp
   tablet/ob_session_tablet_helper.cpp
   tablet/ob_session_tablet_info_map.cpp
+  tablet/ob_drop_gtt_v2_session_tablet_rpc.cpp
   tablet/ob_tablet_to_global_temporary_table_operator.cpp
   tablet/ob_tablet_binding_helper.cpp
   tablet/ob_tablet_binding_replay_executor.cpp
@@ -454,6 +461,9 @@ ob_set_subtarget(ob_storage tablet
   tablet/ob_tablet_split_info_mds_helper.cpp
   tablet/ob_tablet_split_info_replay_executor.cpp
   tablet/ob_tablet_inc_major_info_replay_executor.cpp
+  tablet/ob_tablet_random_mds_helper.cpp
+  tablet/ob_tablet_random_mds_user_data.cpp
+  tablet/ob_tablet_random_replay_executor.cpp
 )
 
 ob_set_subtarget(ob_storage tx_wrs
@@ -698,6 +708,7 @@ ob_set_subtarget(ob_storage access
   access/ob_table_scan_range.cpp
   access/ob_table_access_param.cpp
   access/ob_table_access_context.cpp
+  access/ob_tablet_read_tables.cpp
   access/ob_fuse_row_cache_fetcher.cpp
   access/ob_dml_param.cpp
   access/ob_micro_block_handle_mgr.cpp
@@ -782,6 +793,7 @@ ob_set_subtarget(ob_storage ddl
   ddl/ob_ddl_merge_schedule.cpp
   ddl/ob_ddl_inc_merge_schedule.cpp
   ddl/ob_hnsw_embedmgr.cpp
+  ddl/ob_partition_random_distribution_helper.cpp
   ddl/ob_fts_macro_block_write_op.cpp
   ddl/ob_final_merge_sort_write_task.cpp
   ddl/ob_ddl_encode_sortkey_utils.cpp
@@ -924,6 +936,14 @@ ob_set_subtarget(ob_storage compaction_filter
   compaction/filter/ob_mds_info_compaction_filter.cpp
   compaction/filter/ob_reorg_info_minor_filter.cpp
   compaction/filter/ob_rowscn_filter.cpp
+)
+
+ob_set_subtarget(ob_storage compaction_vectorization
+  compaction/vectorization/ob_compaction_vector.cpp
+  compaction/vectorization/ob_compaction_vector_utils.cpp
+  compaction/vectorization/ob_merge_vector_store.cpp
+  compaction/vectorization/ob_co_batch_merge_writer.cpp
+  compaction/vectorization/ob_compaction_batch_merger.cpp
 )
 
 ob_set_subtarget(ob_storage lock_wait_mgr
@@ -1143,13 +1163,18 @@ ob_set_subtarget(ob_storage mview
   mview/cmd/ob_mview_executor_util.cpp
   mview/cmd/ob_mview_purge_log_executor.cpp
   mview/cmd/ob_mview_refresh_executor.cpp
+  mview/cmd/ob_mview_refresh_report.cpp
+  mview/cmd/ob_mview_refresh_report_executor.cpp
+  mview/cmd/ob_mview_refresh_report_fetcher.cpp
+  mview/cmd/ob_mview_refresh_report_formatter.cpp
+  mview/cmd/ob_mview_explain_refresh_executor.cpp
   mview/cmd/ob_mview_stats_purge_refresh_stats_executor.cpp
   mview/cmd/ob_mview_stats_set_mvref_stats_params_executor.cpp
   mview/cmd/ob_mview_stats_set_system_default_executor.cpp
   mview/ob_mlog_purge.cpp
   mview/ob_mview_refresh_helper.cpp
-  mview/ob_mview_refresh_stats_collect.cpp
-  mview/ob_mview_refresh_stats_purge.cpp
+  mview/ob_mview_refresh_plan_format.cpp
+  mview/ob_mview_refresh_stats_utils.cpp
   mview/ob_mview_refresh.cpp
   mview/ob_mview_transaction.cpp
   mview/ob_mview_sched_job_utils.cpp

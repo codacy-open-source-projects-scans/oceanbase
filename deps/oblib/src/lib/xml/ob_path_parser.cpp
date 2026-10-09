@@ -1,17 +1,10 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the XML path abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "common/ob_smart_call.h"
 #include "lib/xml/ob_path_parser.h"
 #include "lib/xml/ob_xml_util.h"
 #include <rapidjson/memorystream.h>
@@ -2286,7 +2279,7 @@ int ObPathParser::parse_filter_node(ObPathNode*& filter, ObPathArgType patharg_t
               }
               minus = (count_minus % 2 == 0) ? false : true;
             }
-            if (OB_FAIL(parse_arg(arg, patharg_type, true, minus))) {
+            if (OB_FAIL(SMART_CALL(parse_arg(arg, patharg_type, true, minus)))) {
               LOG_WARN("fail to parse filter arg", K(ret), K(index_), K(expression_));
             } else if (OB_FAIL(node_stack.push_back(arg))) {
               LOG_WARN("fail to push arg", K(ret), K(index_), K(expression_));

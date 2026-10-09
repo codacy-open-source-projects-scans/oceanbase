@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
 #include "plugin/interface/ob_plugin_intf.h"
+#include "storage/tx/ob_trans_define_v4.h"
 #include "storage/fts/ob_fts_struct.h"
 
 struct ObCharsetInfo;
@@ -69,17 +63,22 @@ public:
   };
 
   ObFTIKParam(Mode mode = Mode::SMART)
-      : mode_(mode), main_dict_(""), quan_dict_(""), stopword_dict_("")
+      : mode_(mode), main_dict_id_(OB_INVALID_ID), quan_dict_id_(OB_INVALID_ID), stopword_dict_id_(OB_INVALID_ID),
+        main_dict_name_(), quan_dict_name_(), stopword_dict_name_()
   {
   }
 
-  TO_STRING_KV(K_(mode), K_(main_dict), K_(quan_dict), K_(stopword_dict));
+  TO_STRING_KV(K_(mode), K_(main_dict_id), K_(quan_dict_id), K_(stopword_dict_id),
+               K_(main_dict_name), K_(quan_dict_name), K_(stopword_dict_name));
 
 public:
   Mode mode_;
-  common::ObString main_dict_;
-  common::ObString quan_dict_;
-  common::ObString stopword_dict_;
+  uint64_t main_dict_id_;
+  uint64_t quan_dict_id_;
+  uint64_t stopword_dict_id_;
+  common::ObString main_dict_name_;
+  common::ObString quan_dict_name_;
+  common::ObString stopword_dict_name_;
 };
 
 /**
@@ -100,7 +99,9 @@ public:
         ik_param_(),
         ngram_token_size_(NGRAM_TOKEN_SIZE),
         min_ngram_size_(NGRAM_TOKEN_SIZE),
-        max_ngram_size_(NGRAM_TOKEN_SIZE)
+        max_ngram_size_(NGRAM_TOKEN_SIZE),
+        is_ddl_mode_(false),
+        need_casedown_(false)
   {
   }
   virtual ~ObFTParserParam() { reset(); }
@@ -111,11 +112,13 @@ public:
     metadata_alloc_ = nullptr;
     scratch_alloc_ = nullptr;
     ngram_token_size_ = NGRAM_TOKEN_SIZE;
+    is_ddl_mode_ = false;
+    need_casedown_ = false;
   }
 
   INHERIT_TO_STRING_KV("ObFTParserParamExport", ObFTParserParamExport,
       KP_(metadata_alloc), KP_(scratch_alloc), K_(ngram_token_size),
-      K_(min_ngram_size), K_(max_ngram_size), K_(ik_param));
+      K_(min_ngram_size), K_(max_ngram_size), K_(ik_param), K_(is_ddl_mode), K_(need_casedown));
 
 public:
   common::ObIAllocator *metadata_alloc_;
@@ -124,6 +127,9 @@ public:
   int64_t ngram_token_size_;
   int64_t min_ngram_size_;
   int64_t max_ngram_size_;
+
+  bool is_ddl_mode_;
+  bool need_casedown_;
 };
 
 class ObITokenIterator

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DAT_DICT_H_
@@ -100,6 +93,7 @@ public:
 
 public:
   ObArrayHashMap *get_map();
+  const ObArrayHashMap *get_map() const;
 } __attribute__((packed));
 
 template <typename DataType>
@@ -113,8 +107,16 @@ template <typename DATA_TYPE = void>
 class ObFTDATBuilder
 {
 public:
+  // Cap try_base probe step growth to avoid geometric explosion on frequent conflicts.
+  static constexpr size_t MAX_TRY_STEP = 4096;
+  // Max base/check slot increment per expand (~2MB for both arrays).
+  static constexpr size_t MAX_EXPAND_SLOT_INCREMENT = 256 * 1024;
+  // Shrink only when trailing waste exceeds this ratio (array_size / compact_size).
+  static constexpr size_t SHRINK_WASTE_RATIO = 2;
+
   ObFTDATBuilder(ObIAllocator &alloc)
-      : alloc_(alloc), dat_(nullptr), map_(nullptr), is_inited_(false), next_code_(1)
+      : alloc_(alloc), dat_(nullptr), map_(nullptr), is_inited_(false), next_code_(1),
+        max_used_index_(0)
   {
   }
 
@@ -124,22 +126,21 @@ public:
 
   int build_from_trie(ObFTTrie<DATA_TYPE> &trie);
 
-  // get and put to kv_cache
-  int get_mem_block(ObFTDAT *&mem, size_t &mem_len)
+  void get_mem_block(ObFTDAT *&mem)
   {
     mem = dat_;
-    if (nullptr == dat_) {
-      mem_len = 0;
-    } else {
-      mem_len = dat_->mem_block_size_;
-    }
-    return OB_SUCCESS;
   }
 
 private:
-  int expand();
+  // Grow base/check arrays. If min_array_size > array_size_, grow to at least min_array_size.
+  int expand(const size_t min_array_size = 0);
+
+  // Compact base/check to [0, max_used_index_] before putting into cache.
+  int shrink();
 
   int encode(const ObString &single_token, ObFTTokenCode &code);
+
+  void update_max_used_index(const size_t idx);
 
 private:
   common::ObIAllocator &alloc_;
@@ -148,6 +149,7 @@ private:
 
   bool is_inited_;
   int32_t next_code_;
+  size_t max_used_index_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTDATBuilder);
@@ -161,7 +163,7 @@ template <typename DataType = void>
 class ObFTDATReader
 {
 public:
-  ObFTDATReader(ObFTDAT *dat) : dat_(dat), map_(dat->get_map()) { }
+  ObFTDATReader(const ObFTDAT *dat) : dat_(dat), map_(dat->get_map()) { }
 
   // Match single token with hit.
   int match_with_hit(const ObString &single_token,
@@ -169,8 +171,8 @@ public:
                      ObDATrieHit &hit) const;
 
 private:
-  ObFTDAT *dat_;
-  ObArrayHashMap *map_;
+  const ObFTDAT *dat_;
+  const ObArrayHashMap *map_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFTDATReader);

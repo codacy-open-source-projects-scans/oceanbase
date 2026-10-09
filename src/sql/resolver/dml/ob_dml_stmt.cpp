@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -2681,7 +2674,7 @@ int ObDMLStmt::get_all_table_item_by_tname(const ObSQLSessionInfo *session_info,
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("table item is null");
     } else {
-      const ObString &tname = item->alias_name_.length() > 0 ? item->alias_name_ : item->table_name_;
+      const ObString &tname = item->get_object_name();
       bool is_equal = true;
       if (!db_name.empty()) {
         if (OB_FAIL(ObResolverUtils::name_case_cmp(session_info, db_name, item->database_name_, OB_TABLE_NAME_CLASS, is_equal))) {
@@ -5938,7 +5931,7 @@ int TableItem::deep_copy_dsl_query_info(const ObDSLQueryInfo& dsl_query_info, Ob
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("allocate memory dsl query info struct failed.", K(ret));
   } else {
-    tmp_dsl_query_info = new (tmp_dsl_query_info) ObDSLQueryInfo();
+    tmp_dsl_query_info = new (tmp_dsl_query_info) ObDSLQueryInfo(*allocator);
     if (OB_FAIL(tmp_dsl_query_info->deep_copy(dsl_query_info, expr_copier, allocator))) {
       LOG_WARN("deep copy dsl query info failed.", K(ret));
     } else {
@@ -6014,7 +6007,34 @@ int ObDMLStmt::get_partition_columns(const int64_t table_id,
     LOG_WARN("part level should be one or two", K(ret));
   }
   if (OB_SUCC(ret)) {
-    if (OB_ISNULL(partition_expr)) {
+    bool fallback_scan_all_parts = false;
+    const TableItem *table_item = get_table_item_by_id(table_id);
+    if (OB_NOT_NULL(table_item) && table_item->is_index_table_ && is_select_stmt()) {
+      ObQueryCtx *query_ctx = get_query_ctx();
+      const share::schema::ObTableSchema *index_schema = NULL;
+      if (OB_ISNULL(query_ctx)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("query ctx is null", K(ret));
+      } else if (OB_FAIL(query_ctx->sql_schema_guard_.get_table_schema(table_id,
+                                                                      index_id,
+                                                                      this,
+                                                                      index_schema))) {
+        LOG_WARN("get index schema failed", K(ret), K(table_id), K(index_id));
+      } else if (OB_ISNULL(index_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("index schema is null", K(ret), K(table_id), K(index_id));
+      } else if (share::schema::is_local_fts_index(index_schema->get_index_type())) {
+        fallback_scan_all_parts = true;
+        partition_columns.reset();
+        generate_columns.reset();
+        LOG_INFO("index direct select: fallback to scanning all partitions",
+                 K(part_level), K(table_id), K(index_id));
+      }
+    }
+
+    if (OB_FAIL(ret) || fallback_scan_all_parts) {
+      // do nothing
+    } else if (OB_ISNULL(partition_expr)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get null partition expr", K(ret), K(part_level), K(table_id), K(index_id));
     } else if (OB_FAIL(extract_partition_columns(table_id, partition_expr,

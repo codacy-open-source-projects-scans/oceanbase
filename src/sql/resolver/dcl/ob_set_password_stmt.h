@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_DCL_OB_SET_PASSWORD_STMT_
@@ -48,6 +41,10 @@ public:
   uint64_t get_max_connections_per_hour() { return max_connections_per_hour_; }
   void set_max_user_connections(uint64_t value) { max_user_connections_ = value; }
   uint64_t get_max_user_connections() { return max_user_connections_; }
+  bool get_retain_current_password() const { return retain_current_password_; }
+  void set_retain_current_password(bool retain_current_password) { retain_current_password_ = retain_current_password; }
+  bool get_discard_old_password() const { return discard_old_password_; }
+  void set_discard_old_password(bool discard_old_password) { discard_old_password_ = discard_old_password; }
   DECLARE_VIRTUAL_TO_STRING;
 private:
   // data members
@@ -63,6 +60,8 @@ private:
   uint64_t max_connections_per_hour_;
   uint64_t max_user_connections_;
   common::ObStrings plugins_;
+  bool retain_current_password_;
+  bool discard_old_password_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSetPasswordStmt);
 };

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -632,6 +625,9 @@ int ObHTableDeleteExecutor::generate_filter(const ObITableEntity &entity,
   } else if (OB_FAIL(filter.add_column(qualifier))) {
     LOG_WARN("failed to add column", K(ret));
   }
+  // The scan for Delete needs to delete according to the max_versions identified by the upper layer,
+  // and should not be overridden by the max_versions from kv_attributes.
+  filter.set_keep_max_versions(true);
   int64_t timestamp = -htable_cell.get_timestamp();        // negative to get the original value
   if (-ObHTableConstants::LATEST_TIMESTAMP == timestamp) {  // INT64_MAX
     // delete the most recently added cell

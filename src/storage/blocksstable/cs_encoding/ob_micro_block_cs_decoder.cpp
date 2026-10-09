@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -113,9 +106,6 @@ int ObColumnCSDecoder::decode_vector(ObVectorDecodeCtx &vector_ctx)
   if (OB_UNLIKELY(!vector_ctx.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid parameters", K(ret), K(vector_ctx));
-  } else if (OB_UNLIKELY(!decoder_->can_vectorized())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpect column batch_decode not supported.", K(ret), K(decoder_->get_type()));
   } else if (OB_FAIL(decoder_->decode_vector(*ctx_, vector_ctx))) {
     LOG_WARN("failed to decocde vector in column decoder", K(ret), K(*ctx_), K(vector_ctx));
   }
@@ -361,55 +351,57 @@ int ObCSEncodeBlockGetReader<IS_MULTI_VERSION>::add_decoder(const int64_t store_
   return ret;
 }
 
-#define DEFINE_MULTI_VERSION_COMMON_FUNCS(ClassName)                           \
-  template <bool IS_MULTI_VERSION>                                             \
-  int ClassName<IS_MULTI_VERSION>::add_decoder_for_row_header(                 \
-      int64_t &decoders_buf_pos) {                                             \
-    int ret = OB_SUCCESS;                                                      \
-    const ObIColumnCSDecoder *decoder = nullptr;                               \
-    /* row header is the last column and is a hidden column */                 \
-    int64_t store_idx =                                                        \
-        transform_helper_.get_micro_block_header()->column_count_;             \
-    int64_t decoder_idx = get_decoder_count() - 1;                             \
-    int64_t ctx_idx = get_ctx_count() - 1;                                     \
-    if (OB_FAIL(acquire(store_idx, decoders_buf_pos, decoder))) {              \
-      LOG_ERROR("acquire decoder failed", K(ret), K(store_idx));               \
-    } else if (OB_FAIL(transform_helper_.build_column_decoder_ctx(             \
-                   ObCSRowHeader::TYPE, store_idx, ctxs_[ctx_idx]))) {         \
-      LOG_ERROR("fail to build column decoder ctx", K(ret), K(store_idx),      \
-                K(decoder_idx), K(ctx_idx));                                   \
-    } else {                                                                   \
-      decoders_[decoder_idx].decoder_ = decoder;                               \
-      decoders_[decoder_idx].ctx_ = &ctxs_[ctx_idx];                           \
-    }                                                                          \
-    return ret;                                                                \
-  }                                                                            \
-  template <>                                                                  \
-  int ClassName<true>::get_multi_version_info(                                 \
-      const int64_t row_id, MultiVersionInfo &multi_version_info) {            \
-    int ret = OB_SUCCESS;                                                      \
-    ObStorageDatum datum;                                                      \
-    if (OB_FAIL(decoders_[get_decoder_count() - 1].decode(row_id, datum))) {   \
-      LOG_ERROR("decode row header failed", K(ret), K(row_id));                \
-    } else if (datum.len_ != sizeof(ObCSRowHeader)) {                          \
-      ret = OB_ERR_UNEXPECTED;                                                 \
-      LOG_ERROR("row header length is unexpected", K(ret), K(datum.len_));     \
-    } else {                                                                   \
-      const ObCSRowHeader &row_header =                                        \
-          *reinterpret_cast<const ObCSRowHeader *>(datum.ptr_);                \
-      multi_version_info.dml_row_flag_ = row_header.row_flag_;                 \
-      multi_version_info.mvcc_row_flag_ = row_header.mvcc_flag_;               \
-      multi_version_info.trans_id_ = row_header.trans_id_;                     \
-    }                                                                          \
-    return ret;                                                                \
-  }                                                                            \
-  template <>                                                                  \
-  int ClassName<false>::get_multi_version_info(                                \
-      const int64_t, MultiVersionInfo &multi_verion_info) {                    \
-    multi_verion_info.dml_row_flag_.set_flag(ObDmlFlag::DF_INSERT);            \
-    multi_verion_info.mvcc_row_flag_.reset();                                  \
-    multi_verion_info.trans_id_.reset();                                       \
-    return OB_SUCCESS;                                                         \
+#define DEFINE_MULTI_VERSION_COMMON_FUNCS(ClassName)                                \
+  template <bool IS_MULTI_VERSION>                                                  \
+  int ClassName<IS_MULTI_VERSION>::add_decoder_for_row_header(                      \
+      int64_t &decoders_buf_pos) {                                                  \
+    int ret = OB_SUCCESS;                                                           \
+    const ObIColumnCSDecoder *decoder = nullptr;                                    \
+    /* row header is the last column and is a hidden column */                      \
+    int64_t store_idx =                                                             \
+        transform_helper_.get_micro_block_header()->column_count_;                  \
+    int64_t decoder_idx = get_decoder_count() - 1;                                  \
+    int64_t ctx_idx = get_ctx_count() - 1;                                          \
+    if (OB_FAIL(acquire(store_idx, decoders_buf_pos, decoder))) {                   \
+      LOG_ERROR("acquire decoder failed", K(ret), K(store_idx));                    \
+    } else if (OB_FAIL(transform_helper_.build_column_decoder_ctx(                  \
+                   ObCSRowMultiVersionHeader::TYPE, store_idx, ctxs_[ctx_idx]))) {  \
+      LOG_ERROR("fail to build column decoder ctx", K(ret), K(store_idx),           \
+                K(decoder_idx), K(ctx_idx));                                        \
+    } else {                                                                        \
+      decoders_[decoder_idx].decoder_ = decoder;                                    \
+      decoders_[decoder_idx].ctx_ = &ctxs_[ctx_idx];                                \
+    }                                                                               \
+    return ret;                                                                     \
+  }                                                                                 \
+  template <>                                                                       \
+  int ClassName<true>::get_multi_version_info(                                      \
+      const int64_t row_id, MultiVersionInfo &multi_version_info) {                 \
+    int ret = OB_SUCCESS;                                                           \
+    ObStorageDatum datum;                                                           \
+    if (OB_FAIL(decoders_[get_decoder_count() - 1].decode(row_id, datum))) {        \
+      LOG_ERROR("decode row header failed", K(ret), K(row_id));                     \
+    } else if (datum.len_ != sizeof(ObCSRowMultiVersionHeader)) {                   \
+      ret = OB_ERR_UNEXPECTED;                                                      \
+      LOG_ERROR("row header length is unexpected", K(ret), K(datum.len_));          \
+    } else {                                                                        \
+      const ObCSRowMultiVersionHeader &row_header =                                 \
+          *reinterpret_cast<const ObCSRowMultiVersionHeader *>(datum.ptr_);         \
+      multi_version_info.dml_row_flag_ = row_header.row_flag_;                      \
+      multi_version_info.mvcc_row_flag_ = row_header.mvcc_flag_;                    \
+      multi_version_info.trans_id_ = row_header.trans_id_;                          \
+      multi_version_info.merge_engine_type_ = row_header.get_merge_engine_type();   \
+    }                                                                               \
+    return ret;                                                                     \
+  }                                                                                 \
+  template <>                                                                       \
+  int ClassName<false>::get_multi_version_info(                                     \
+      const int64_t, MultiVersionInfo &multi_version_info) {                        \
+    multi_version_info.dml_row_flag_.set_flag(ObDmlFlag::DF_INSERT);                \
+    multi_version_info.mvcc_row_flag_.reset();                                      \
+    multi_version_info.trans_id_.reset();                                           \
+    multi_version_info.merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX; \
+    return OB_SUCCESS;                                                              \
   }
 
 DEFINE_MULTI_VERSION_COMMON_FUNCS(ObCSEncodeBlockGetReader);
@@ -612,6 +604,7 @@ int ObCSEncodeBlockGetReader<IS_MULTI_VERSION>::get_row(const ObMicroBlockAddr &
         row.row_flag_ = multi_version_info.dml_row_flag_;
         row.mvcc_row_flag_ = multi_version_info.mvcc_row_flag_;
         row.trans_id_ = multi_version_info.trans_id_;
+        row.merge_engine_type_ = multi_version_info.merge_engine_type_;
         row.count_ = request_cnt_;
       }
     } else {
@@ -672,6 +665,7 @@ int ObCSEncodeBlockGetReader<IS_MULTI_VERSION>::get_row_and_trans_version(
         row.row_flag_ = multi_version_info.dml_row_flag_;
         row.mvcc_row_flag_ = multi_version_info.mvcc_row_flag_;
         row.trans_id_ = multi_version_info.trans_id_;
+        row.merge_engine_type_ = multi_version_info.merge_engine_type_;
         row.count_ = request_cnt_;
       }
     } else {
@@ -932,6 +926,7 @@ int ObCSEncodeBlockGetReader<IS_MULTI_VERSION>::get_row(
       row.row_flag_ = multi_verion_info.dml_row_flag_;
       row.mvcc_row_flag_ = multi_verion_info.mvcc_row_flag_;
       row.trans_id_ = multi_verion_info.trans_id_;
+      row.merge_engine_type_ = multi_verion_info.merge_engine_type_;
       row.count_ = request_cnt_;
     }
   }
@@ -963,10 +958,9 @@ int ObCSEncodeBlockGetReader<IS_MULTI_VERSION>::get_row_id(
 //=============================ObMicroBlockCSDecoder===================================//
 template <bool IS_MULTI_VERSION>
 ObMicroBlockCSDecoder<IS_MULTI_VERSION>::ObMicroBlockCSDecoder()
-    : read_info_not_contain_multi_version_cols_(false), request_cnt_(0),
+    : read_info_not_contain_multi_version_cols_(false),
       cached_decoder_(nullptr), decoders_(nullptr), transform_helper_(),
       column_count_(0), ctxs_(nullptr),
-      decoder_allocator_(ObModIds::OB_DECODER_CTX),
       transform_allocator_(SET_IGNORE_MEM_VERSION(ObMemAttr(MTL_ID(), "MICB_TRANSFORM")), OB_MALLOC_NORMAL_BLOCK_SIZE),
       buf_allocator_(SET_IGNORE_MEM_VERSION(ObMemAttr(MTL_ID(), "MICB_CSDECODER")), OB_MALLOC_NORMAL_BLOCK_SIZE),
       allocated_decoders_buf_(nullptr), allocated_decoders_buf_size_(0),
@@ -1102,8 +1096,10 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::alloc_decoders_buf(const bool by_re
     }
     if constexpr (IS_MULTI_VERSION) {
       if (read_info_not_contain_multi_version_cols()) {
+        const int64_t schema_rowkey_cnt = transform_helper_.get_micro_block_header()->rowkey_column_count_
+          - ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt();
         for (int i = 0; i < ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt(); ++i) {
-          const int64_t store_idx = transform_helper_.get_micro_block_header()->rowkey_column_count_ + i;
+          const int64_t store_idx = schema_rowkey_cnt + i;
           const ObCSColumnHeader &col_header =
               transform_helper_.get_column_header(store_idx);
           if (OB_NOT_NULL(cached_decoder_) &&
@@ -1179,7 +1175,9 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::init_decoders()
   int ret = OB_SUCCESS;
   int64_t decoders_buf_pos = 0;
 
-  if (OB_ISNULL(read_info_) || typeid(ObRowkeyReadInfo) == typeid(*read_info_)) {
+  if (OB_ISNULL(read_info_) ||
+               (typeid(ObRowkeyReadInfo) == typeid(*read_info_) &&
+                read_info_->get_request_count() != read_info_->get_columns_desc().count())) {
     ObObjMeta col_type;
     if (OB_UNLIKELY(column_count_ < request_cnt_ && nullptr == read_info_)) {
       ret = OB_ERR_UNEXPECTED;
@@ -1202,14 +1200,7 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::init_decoders()
   } else if (OB_FAIL(alloc_decoders_buf(true/*by_read_info*/, decoders_buf_pos))) {
     LOG_WARN("fail to alloc decoders buf", K(ret));
   } else {
-    const ObColumnIndexArray &cols_index = read_info_->get_columns_index();
-    const ObColDescIArray &cols_desc = read_info_->get_columns_desc();
-    if (typeid(ObCGRowkeyReadInfo) == typeid(*read_info_) || typeid(ObCGReadInfo) == typeid(*read_info_) || read_info_->get_columns()->count() < 1) {
-      FOREACH_ADD_DECODER(nullptr)
-    } else {
-      const ObColumnParamIArray *cols_param = read_info_->get_columns();
-      FOREACH_ADD_DECODER(cols_param->at(i))
-    }
+    ADD_DECODERS_BY_READ_INFO(column_count_);
   }
 
   if (OB_SUCC(ret) && IS_MULTI_VERSION) {
@@ -1503,6 +1494,7 @@ OB_INLINE int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::get_row_impl(int64_t inde
     row.row_flag_ = multi_verion_info.dml_row_flag_;
     row.mvcc_row_flag_ = multi_verion_info.mvcc_row_flag_;
     row.trans_id_ = multi_verion_info.trans_id_;
+    row.merge_engine_type_ = multi_verion_info.merge_engine_type_;
     row.fast_filter_skipped_ = false;
     row.count_ = request_cnt_;
   }
@@ -2076,13 +2068,13 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::filter_pushdown_single_column_mds_f
                   !filter.is_mds_node())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Invalid argument", K(ret), K(row_count_), K(pd_filter_info.start_), K(pd_filter_info.count_));
-  } else if (OB_ISNULL(mds_executor = ObIMDSFilterExecutor::cast(&filter)) || OB_UNLIKELY(mds_executor->get_col_idx() < 0)) {
+  } else if (OB_ISNULL(mds_executor = ObIMDSFilterExecutor::cast(&filter)) || OB_UNLIKELY(mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_) < 0)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected mds executor", K(ret), K(filter));
   } else {
     sql::ObWhitePushdownFilterDecoderGuard white_filter_guard(static_cast<sql::ObWhiteFilterExecutor *>(&filter), ret);
     ObColumnCSDecoder *col_cs_decoder = nullptr;
-    int64_t col_offset = mds_executor->get_col_idx();
+    int64_t col_offset = mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_);
 
     if (OB_FAIL(white_filter_guard.get_ret())) {
       LOG_WARN("Failed to reverse filter if rowscn", K(ret), K(filter));
@@ -2122,14 +2114,14 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::filter_pushdown_single_column_mds_f
   // TODO(menglan): very slow path for white filter pushdown, should repair
   if (OB_SUCC(ret) && !filter_applied) {
     ObStorageDatum datum[1];
-    const bool is_trans_version_column = transform_helper_.get_micro_block_header()->is_trans_version_column_idx(mds_executor->get_col_idx());
+    const bool is_trans_version_column = mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_) == read_info_->get_trans_col_index();
     for (int64_t offset = 0; OB_SUCC(ret) && offset < pd_filter_info.count_; ++offset) {
       int64_t row_idx = offset + pd_filter_info.start_;
       bool filtered = false;
       if (nullptr != parent && parent->can_skip_filter(offset)) {
       } else {
         datum[0].reuse();
-        if (OB_FAIL(decoders_[mds_executor->get_col_idx()].decode(row_idx, datum[0]))) {
+        if (OB_FAIL(decoders_[mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_)].decode(row_idx, datum[0]))) {
           LOG_WARN("decode cell failed", K(ret), K(row_idx), K(datum[0]));
         } else if (OB_UNLIKELY(is_trans_version_column) && OB_FAIL(storage::reverse_trans_version_val(datum[0]))) {
           LOG_WARN("Failed to reverse trans version val", K(ret));
@@ -2798,6 +2790,8 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::get_rows(
         }
         if (OB_FAIL(get_col_data(col_id, vector_decode_ctx))) {
           LOG_WARN("Failed to get col datums", K(ret), K(i), K(col_id), K(vector_decode_ctx));
+        } else if (OB_NOT_NULL(default_datums) && OB_FAIL(fill_default_for_nop(col_id, vector_decode_ctx))) {
+          LOG_WARN("Failed to fill default for nop", K(ret), K(i), K(col_id), K(vector_decode_ctx));
         } else if (is_need_padding && OB_FAIL(storage::pad_on_rich_format_columns(
             col_params.at(i)->get_accuracy(),
             col_params.at(i)->get_meta_type().get_collation_type(),
@@ -2815,15 +2809,51 @@ int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::get_rows(
 }
 
 template<bool IS_MULTI_VERSION>
-int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::get_col_data(const int32_t col_id, ObVectorDecodeCtx &vector_ctx)
+int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::get_col_data(const int32_t col_id, ObVectorDecodeCtx &vector_ctx, const bool need_reverse_trans_version)
 {
   int ret = OB_SUCCESS;
-  const ObColumnIndexArray &cols_index = read_info_->get_columns_index();
   if (OB_FAIL(decoders_[col_id].decode_vector(vector_ctx))) {
     LOG_WARN("fail to get datums from decoder", K(ret),  K(column_count_), K(col_id), K(vector_ctx));
-  } else if (OB_UNLIKELY(transform_helper_.get_micro_block_header()->is_trans_version_column_idx(cols_index.at(col_id))) &&
-             OB_FAIL(storage::reverse_trans_version_val(vector_ctx.get_vector(), vector_ctx.row_cap_, vector_ctx.vec_offset_))) {
-     LOG_WARN("Failed to reverse trans version val", K(ret));
+  } else if (need_reverse_trans_version) {
+    const int64_t store_idx = nullptr == read_info_ ? col_id : read_info_->get_columns_index().at(col_id);
+    if (OB_UNLIKELY(transform_helper_.get_micro_block_header()->is_trans_version_column_idx(store_idx)) &&
+        OB_FAIL(storage::reverse_trans_version_val(vector_ctx.get_vector(), vector_ctx.row_cap_, vector_ctx.vec_offset_))) {
+      LOG_WARN("Failed to reverse trans version val", K(ret));
+    }
+  }
+  return ret;
+}
+
+template<bool IS_MULTI_VERSION>
+int ObMicroBlockCSDecoder<IS_MULTI_VERSION>::fill_default_for_nop(const int32_t col_id, ObVectorDecodeCtx &vector_ctx)
+{
+  int ret = OB_SUCCESS;
+  ObColumnCSDecoderCtx *ctx = nullptr;
+  if (OB_UNLIKELY(col_id < 0 || col_id >= request_cnt_ || OB_ISNULL(vector_ctx.default_datum_))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("Invalid argument to fill default for nop", K(ret), K(col_id), K_(request_cnt), K(vector_ctx));
+  } else if (OB_ISNULL(ctx = decoders_[col_id].ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected null decoder ctx", K(ret), K(col_id));
+  } else if (ctx->base_ctx_.has_no_nop()) {
+    // do nothing
+  } else if (ctx->base_ctx_.is_nop_replaced()) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < vector_ctx.row_cap_; ++i) {
+      if (vector_ctx.is_null_at(i) && OB_FAIL(vector_ctx.fill_default_datum_at(i))) {
+        LOG_WARN("Failed to fill default datum", K(ret), K(col_id), K(i), K(vector_ctx));
+      }
+    }
+  } else if (ctx->base_ctx_.has_nop_bitmap()) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < vector_ctx.row_cap_; ++i) {
+      if (ObCSDecodingUtil::test_bit(ctx->base_ctx_.nop_bitmap_, vector_ctx.row_ids_[i])) {
+        if (OB_FAIL(vector_ctx.fill_default_datum_at(i))) {
+          LOG_WARN("Failed to fill default datum", K(ret), K(col_id), K(i), K(vector_ctx));
+        }
+      }
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected nop flag", K(ret), K(col_id), KPC(ctx));
   }
   return ret;
 }

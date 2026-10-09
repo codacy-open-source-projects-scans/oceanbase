@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_storage_obdal_base.h"
@@ -152,6 +145,7 @@ void *obdal_malloc(std::size_t size, std::size_t align)
   void *ptr = nullptr;
   ObMemAttr attr;
   attr.label_ = OB_DAL_SDK;
+  attr.ctx_id_ = ObCtxIds::GLIBC;
   const int64_t origin_tenant_id = ob_get_tenant_id();
   const int64_t tenant_id = ObDalAccessor::obdal_get_tenant_id();
   ob_get_tenant_id() = tenant_id;
@@ -1802,7 +1796,6 @@ int ObStorageObDalMultiPartWriter::abort()
   } else {
     is_opened_ = false;
   }
-  reset();
   return ret;
 }
 

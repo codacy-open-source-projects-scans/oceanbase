@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -962,7 +955,7 @@ int ObMergeLogPlan::prepare_table_dml_info_update(const ObMergeTableInfo& merge_
                                             merge_info.table_id_ != merge_info.loc_table_id_,
                                             index_update))) {
           LOG_WARN("failed to check index update", K(ret), K(merge_info));
-      } else if (!index_update) {
+      } else if (!index_update && !index_dml_info->is_compaction_ttl_table_) {
           // do nothing
       } else if (OB_FAIL(generate_index_column_exprs(merge_info.table_id_,
                                                      *index_schema,

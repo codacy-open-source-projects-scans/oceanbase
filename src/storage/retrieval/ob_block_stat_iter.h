@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_BLOCK_STAT_ITER_H_
@@ -15,6 +8,7 @@
 
 #include "storage/blocksstable/index_block/ob_sstable_index_scanner.h"
 #include "storage/access/ob_table_access_context.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "storage/tx_storage/ob_access_service.h"
 #include "ob_block_stat_collector.h"
 
@@ -190,7 +184,7 @@ private:
   ObArenaAllocator merged_endkey_allocator_;
   ObBlockStatCollector stat_collector_;
   ObTableScanRange scan_range_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   ObStoreCtxGuard ctx_guard_;
   // ObTableAccessParam and ObTableAccessContext for memtable scan
   ObTableAccessParam main_table_param_;

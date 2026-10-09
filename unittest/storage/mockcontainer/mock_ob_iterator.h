@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_UNITTEST_MOCK_ITERATOR_H_
@@ -83,7 +76,8 @@ public:
 
   static bool inner_equals(const blocksstable::ObDatumRow &r1, const blocksstable::ObDatumRow &r2);
   static bool equals(const blocksstable::ObDatumRow &r1, const blocksstable::ObDatumRow &r2,
-      const bool cmp_multi_version_row_flag = false, const bool cmp_is_get_and_scan_index = false);
+      const bool cmp_multi_version_row_flag = false, const bool cmp_row_flag = false,
+      const bool cmp_is_get_and_scan_index = false, const bool cmp_merge_engine_type = false);
   bool equals(int64_t idx, blocksstable::ObDatumRow &row) const;
   bool equals(int64_t idx, const blocksstable::ObDatumRow &row) const;
   bool equals(blocksstable::ObDatumRow &other_row) const { return equals(0, other_row); }
@@ -91,7 +85,8 @@ public:
 
   static bool equals(const common::ObNewRow &r1, const common::ObNewRow &r2);
   static bool equals(const storage::ObStoreRow &r1, const storage::ObStoreRow &r2,
-      const bool cmp_multi_version_row_flag = false, const bool cmp_row_flag = false, const bool cmp_is_get_and_scan_index = false);
+      const bool cmp_multi_version_row_flag = false, const bool cmp_row_flag = false,
+      const bool cmp_is_get_and_scan_index = false, const bool cmp_merge_engine_type = false);
   static bool equals(uint16_t *col_id1, uint16_t *col_id2, const int64_t col_cnt);
   bool equals(int64_t idx, common::ObNewRow &row) const;
   bool equals(int64_t idx, storage::ObStoreRow &row) const;
@@ -126,7 +121,8 @@ public:
   bool equals(T &other_iter, const bool cmp_multi_version_row_flag = false,
       const bool cmp_row_flag = false,
       const bool cmp_is_get_and_scan_index = false,
-      const bool skip_iter_end = false)
+      const bool skip_iter_end = false,
+      const bool cmp_merge_engine_type = false)
   {
     bool bool_ret = true;
     int ret1 = common::OB_SUCCESS;
@@ -145,7 +141,7 @@ public:
       if (ret1 == ret2) {
         if (common::OB_SUCCESS == ret1 && this_row && other_row) {
           bool_ret = ObMockIterator::equals(*this_row, *other_row,
-              cmp_multi_version_row_flag, cmp_row_flag, cmp_is_get_and_scan_index);
+              cmp_multi_version_row_flag, cmp_row_flag, cmp_is_get_and_scan_index, cmp_merge_engine_type);
           STORAGE_LOG(DEBUG, "compare row", K(bool_ret), K(ret1), KPC(this_row), K(ret2), KPC(other_row));
           if (this_row->trans_id_ != other_row->trans_id_) {
             STORAGE_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "not equal trans_id", KPC(this_row), K(this_row->trans_id_),
@@ -268,11 +264,12 @@ public:
   static const int64_t MAX_DATA_LENGTH = 4096;
   static const int64_t DEF_COL_NUM     = 16;
   static const int TYPE_NUM = 6;
-  static const int INFO_NUM = 2;
+  static const int INFO_NUM = 8;
   static const int FLAG_NUM = 5;
   static const int DML_NUM = 6;
   static const int BASE_NUM = 2;
   static const int MULTI_VERSION_ROW_FLAG_NUM = 5;
+  static const int MAJOR_MERGE_FLAG_NUM = 5;
   static const int TRANS_ID_NUM = 10;
 
   static const int64_t STATE_BEGIN = 0;
@@ -426,6 +423,14 @@ private:
                               const common::ObString &word,
                               storage::ObStoreRow &row,
                               int64_t &idx);
+  static int parse_datum_merge_engine_type(common::ObIAllocator *allocator,
+                                           const common::ObString &word,
+                                           blocksstable::ObDatumRow &row,
+                                           int64_t &idx);
+  static int parse_obj_merge_engine_type(common::ObIAllocator *allocator,
+                                         const common::ObString &word,
+                                         storage::ObStoreRow &row,
+                                         int64_t &idx);
   static int parse_dml(common::ObIAllocator *allocator,
                        const common::ObString &word,
                        storage::ObStoreRow &row,
@@ -462,6 +467,10 @@ private:
                                               const common::ObString &word,
                                               storage::ObStoreRow &row,
                                               int64_t &idx);
+  static int parse_datum_major_merge_flag(common::ObIAllocator *allocator,
+                                          const common::ObString &word,
+                                          blocksstable::ObDatumRow &row,
+                                          int64_t &idx);
   static int parse_is_get(common::ObIAllocator *allocator,
                           const common::ObString &word,
                           storage::ObStoreRow &row,
@@ -543,6 +552,7 @@ private:
   static common::hash::ObHashMap<common::ObString, bool> str_to_base_;
   static common::hash::ObHashMap<common::ObString, bool> str_to_is_get_;
   static common::hash::ObHashMap<common::ObString, uint8_t> str_to_multi_version_row_flag_;
+  static common::hash::ObHashMap<common::ObString, uint8_t> str_to_major_merge_flag_;
   static common::hash::ObHashMap<ObString, transaction::ObTransID> str_to_trans_id_;
 
 private:

@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/ob_dml_running_ctx.h"
 #include "share/schema/ob_table_dml_param.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 #include "storage/tablet/ob_tablet.h"
 #include "storage/memtable/ob_memtable_context.h"
 
@@ -45,6 +39,7 @@ ObDMLRunningCtx::ObDMLRunningCtx(
     has_lob_rowkey_(false),
     lob_dml_ctx_(),
     main_table_rowkey_col_flag_(allocator),
+    lob_ttl_column_info_(),
     schema_guard_(share::schema::ObSchemaMgrItem::MOD_RELATIVE_TABLE),
     is_inited_(false)
 {
@@ -98,6 +93,8 @@ int ObDMLRunningCtx::init(
     LOG_WARN("fail to get flag of checking old row legitimacy", K(ret));
   } else if (is_need_check_old_row_ && OB_FAIL(init_cmp_funcs())) {
     LOG_WARN("fail to init compare functions", K(ret));
+  } else if (OB_FAIL(init_lob_ttl_column_info())) {
+    LOG_WARN("failed to init lob ttl column info", K(ret));
   } else {
     store_ctx_.mvcc_acc_ctx_.mem_ctx_->set_table_version(dml_param_.schema_version_);
     store_ctx_.table_version_ = dml_param_.schema_version_;
@@ -147,8 +144,7 @@ int ObDMLRunningCtx::prepare_relative_table(
     LOG_WARN("fail to init relative_table_", K(ret), K(tablet_handle), K(schema.get_index_status()));
   } else if (OB_FAIL(relative_table_.tablet_iter_.set_tablet_handle(tablet_handle))) {
     LOG_WARN("fail to set tablet handle to iter", K(ret), K(relative_table_.tablet_iter_));
-  } else if (OB_FAIL(tablet_handle.get_obj()->check_is_delete_insert_table(is_delete_insert_table_))) {
-    LOG_WARN("fail to check is delete insert table", K(ret));
+  } else if (FALSE_IT(is_delete_insert_table_ = ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT == schema.get_merge_engine_type())) {
   } else if (OB_FAIL(relative_table_.tablet_iter_.refresh_read_tables_from_tablet(
       read_snapshot.get_val_for_tx(),
       relative_table_.allow_not_ready(),
@@ -308,7 +304,7 @@ int ObDMLRunningCtx::check_schema_version(
   } else if (OB_ISNULL(table_schema)) {
     ret = OB_SCHEMA_ERROR;
     LOG_WARN("failed to get schema", K(ret));
-  } else if (table_schema->is_auto_partitioned_table()) {
+  } else if (table_schema->is_auto_partitioned_table() || table_schema->is_random_part()) {
     // Online partition split allows dml with old schema to continue executing,
     // so checkings must be done case by case.
     if (table_version > table_schema->get_schema_version()) {
@@ -368,5 +364,48 @@ int ObDMLRunningCtx::check_tenant_schema_version(
   }
   return ret;
 }
+
+int ObDMLRunningCtx::init_lob_ttl_column_info()
+{
+  int ret = OB_SUCCESS;
+
+  const share::schema::ObTableSchemaParam &data_table = dml_param_.table_param_->get_data_table();
+  const uint64_t user_ttl_column_id = data_table.get_user_ttl_column_id();
+
+  if (data_table.is_rowscn_ttl_table()) {
+    lob_ttl_column_info_.init_by_column_idx(-1, ObTTLFilterColType::ROWSCN);
+  } else if (user_ttl_column_id != OB_INVALID_ID && user_ttl_column_id > 0 && col_descs_ != nullptr) {
+    ObTTLFilterColType ttl_col_type = ObTTLFilterColType::INVALID;
+    int64_t user_ttl_column_idx = -1;
+    for (int64_t i = 0; OB_SUCC(ret) && i < col_descs_->count(); i++) {
+      if (col_descs_->at(i).col_id_ == user_ttl_column_id) {
+        user_ttl_column_idx = i;
+        if (OB_FAIL(ObTTLFilterColTypeUtil::to_filter_col_type(col_descs_->at(i).col_type_.get_type(), ttl_col_type))) {
+          LOG_WARN("failed to convert ttl column type", KR(ret), K(user_ttl_column_id));
+        }
+        break;
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_UNLIKELY(user_ttl_column_idx == -1)) {
+      // TODO: data_table doesn't means "primary table", it maybe a index table. We should refactor the variable name.
+      // If we can't find the user ttl column, it must not be a user data table. (After change ttl column, a index table doesn't have to storing ttl column)
+      if (data_table.is_user_data_table()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("user ttl column id is valid in data table, but not found in column descs", KR(ret), K(user_ttl_column_id), K(data_table));
+      } else {
+        lob_ttl_column_info_.reset();
+      }
+    } else {
+      lob_ttl_column_info_.init_by_column_idx(user_ttl_column_idx, ttl_col_type);
+    }
+  } else {
+    lob_ttl_column_info_.reset();
+  }
+
+  return ret;
+}
+
 } // namespace storage
 } // namespace oceanbase

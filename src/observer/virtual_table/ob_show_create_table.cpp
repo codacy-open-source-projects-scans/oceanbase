@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -162,6 +155,7 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
   bool is_oracle_mode = false;
   bool sql_quote_show_create = true;
   bool ansi_quotes = false;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   if (OB_UNLIKELY(NULL == schema_guard_
                   || NULL == session_
                   || NULL == allocator_
@@ -190,6 +184,8 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
     SERVER_LOG(WARN, "failed to get _show_ddl_in_compat_mode", K(ret));
   } else if (OB_FAIL(session_->get_sql_quote_show_create(sql_quote_show_create))) {
     SERVER_LOG(WARN, "failed to get sql quote show create", K(ret));
+  } else if (OB_FAIL(session_->get_charset_compat_type(charset_compat_type))) {
+    SERVER_LOG(WARN, "fail to get charset compat type", K(ret));
   } else {
     //_show_ddl_in_compat_mode do not support oracle mode now
     strict_mode &= !is_oracle_mode;
@@ -211,7 +207,8 @@ int ObShowCreateTable::fill_row_cells_inner(const uint64_t show_table_id,
         }
         case OB_APP_MIN_COLUMN_ID + 2: {
           // create_table
-          ObSchemaPrinter schema_printer(*schema_guard_, strict_mode, sql_quote_show_create, ansi_quotes);
+          ObSchemaPrinter schema_printer(
+              *schema_guard_, strict_mode, sql_quote_show_create, ansi_quotes, charset_compat_type);
           schema_printer.set_sql_schema_guard(&sql_schema_guard_);
           int64_t pos = 0;
           if (table_schema.is_materialized_view()) {

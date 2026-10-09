@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_DEADLOCK_OB_DEADLOCK_DETECTOR_MGR_
@@ -313,7 +306,9 @@ int ObDeadLockDetectorMgr::register_key(const KeyType &key,
         ret = common::OB_EAGAIN;// telling user there is a concurrent problem, need retry
       }
       DETECT_LOG(WARN, "start timer task failed", PRINT_WRAPPER, KP(p_detector));
-      (void)detector_map_.del(binary_key);
+      if (common::OB_ENTRY_EXIST != ret) {
+        (void)detector_map_.del(binary_key);
+      }
       detector_map_.revert(p_detector);
     } else {
       MTL(ObDeadLockDetectorMgr*)->set_timeout(key, 10_min);

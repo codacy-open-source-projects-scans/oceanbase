@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "storage/high_availability/ob_cs_replica_migration.h"
@@ -433,6 +426,7 @@ int ObDataTabletsCheckCOConvertDag::inner_check_can_schedule(
 {
   int ret  = OB_SUCCESS;
   bool all_state_deterministic = true; // all finish check or retry exhausted
+  bool dep_mgr_done = false;
   ObCheckScheduleReason reason = ObCheckScheduleReason::MAX_NOT_SCHEDULE;
   // time for diagnose. if dag has not be scheduled, start_time_ is 0
   first_start_time_ = (0 == first_start_time_) ? start_time_ : first_start_time_;
@@ -453,6 +447,11 @@ int ObDataTabletsCheckCOConvertDag::inner_check_can_schedule(
     FLOG_INFO("[CS-Replica] schedule check convert dag right now since waiting convert is disabled", K(ret), K(reason), K(migration_ctx.tablet_group_mgr_));
   } else {
     const int64_t tablet_group_cnt = migration_ctx.tablet_group_mgr_.get_tablet_group_ctx_count();
+    if (OB_FAIL(migration_ctx.tablet_dep_mgr_.check_is_done(dep_mgr_done))) {
+      LOG_WARN("failed to check tablet dep mgr is done", K(ret));
+    } else if (!dep_mgr_done) {
+      all_state_deterministic = false;
+    }
     ObHATabletGroupCtx *ctx = nullptr;
     ObHATabletGroupCOConvertCtx *group_convert_ctx = nullptr;
     for (int64_t idx = 0; OB_SUCC(ret) && idx < tablet_group_cnt; ++idx) {
@@ -657,6 +656,7 @@ int ObDataTabletsCheckConvertTask::process()
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   bool all_state_deterministic = true;
+  bool dep_mgr_done = false;
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -668,6 +668,11 @@ int ObDataTabletsCheckConvertTask::process()
     LOG_WARN("ls is unexpected null", K(ret), KPC_(ls));
   } else {
     const int64_t count = ctx_->tablet_group_mgr_.get_tablet_group_ctx_count();
+    if (OB_FAIL(ctx_->tablet_dep_mgr_.check_is_done(dep_mgr_done))) {
+      LOG_WARN("failed to check tablet dep mgr is done", K(ret));
+    } else if (!dep_mgr_done) {
+      all_state_deterministic = false;
+    }
     ObHATabletGroupCtx *group_ctx = nullptr;
     ObHATabletGroupCOConvertCtx *group_convert_ctx = nullptr;
     for (int64_t idx = 0; OB_SUCC(ret) && idx < count; ++idx) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -345,6 +338,10 @@ int ObLinkedMacroBlockItemReader::read_item_block()
     buf_pos_ += sizeof(ObMacroBlockCommonHeader);
     if (OB_FAIL(linked_header_.deserialize(buf_, buf_len_, buf_pos_))) {
       LOG_WARN("fail to deserialize ObLinkedMacroBlockHeader", K(ret));
+    } else if (OB_UNLIKELY(linked_header_.is_linked_macro_item_incomplete() &&
+                          !linked_header_.is_linked_macro_item_fragment_head())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("linked macro item is incomplete and not fragment head", K(ret));
     } else {
       first_item_offset_in_block_ = buf_pos_;
       buf_len_ = sizeof(ObMacroBlockCommonHeader) + common_header_->get_payload_size();

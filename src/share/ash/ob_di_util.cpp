@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -111,7 +104,7 @@ int ObDiagnosticInfoUtil::get_all_diag_info(
   }
   if (OB_SUCC(ret)) {
     ObDiagnosticInfoContainer *c = ObDiagnosticInfoContainer::get_global_di_container();
-    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array))) {
+    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array, tenant_id))) {
       LOG_WARN("failed to get all diag info from global di", K(ret), K(tenant_id));
     }
   }
@@ -158,7 +151,7 @@ int ObDiagnosticInfoUtil::get_the_diag_info(uint64_t tenant_id, ObDiagnoseTenant
   }
   if (OB_SUCC(ret)) {
     ObDiagnosticInfoContainer *c = ObDiagnosticInfoContainer::get_global_di_container();
-    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array))) {
+    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array, tenant_id))) {
       LOG_WARN("failed to get tenant diagnostic info", K(ret), KPC(c));
     }
 
@@ -260,7 +253,7 @@ int ObDiagnosticInfoUtil::get_group_diag_info(uint64_t tenant_id,
   }
   if (OB_SUCC(ret)) {
     ObDiagnosticInfoContainer *c = ObDiagnosticInfoContainer::get_global_di_container();
-    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array))) {
+    if (OB_FAIL(c->for_each_and_delay_release_ref(fn, global_di_array, tenant_id))) {
       LOG_WARN("failed to get tenant diagnostic info", K(ret), KPC(c));
     }
     if (OB_SUCC(ret)) {

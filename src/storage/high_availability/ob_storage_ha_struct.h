@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_HA_STRUCT_
@@ -31,12 +24,54 @@
 #include "common/ob_learner_list.h"
 #include "storage/high_availability/ob_tablet_ha_status.h"
 #include "share/rebuild_tablet/ob_rebuild_tablet_location.h"
-#include "share/backup/ob_ss_ha_macro_block_struct.h"
 namespace oceanbase
 {
 using namespace share;
+
+namespace common
+{
+class ObInOutBandwidthThrottle;
+class ObMySQLProxy;
+} // namespace common
+namespace obrpc
+{
+class ObStorageRpcProxy;
+} // namespace obrpc
+
 namespace storage
 {
+class ObStorageRpc;
+
+struct ObStorageHAServiceCtx
+{
+  ObStorageHAServiceCtx()
+    : bandwidth_throttle_(nullptr),
+      svr_rpc_proxy_(nullptr),
+      storage_rpc_(nullptr),
+      sql_proxy_(nullptr)
+  {}
+  ~ObStorageHAServiceCtx() = default;
+  bool is_valid() const
+  {
+    return OB_NOT_NULL(bandwidth_throttle_)
+        && OB_NOT_NULL(svr_rpc_proxy_)
+        && OB_NOT_NULL(storage_rpc_)
+        && OB_NOT_NULL(sql_proxy_);
+  }
+  void reset()
+  {
+    bandwidth_throttle_ = nullptr;
+    svr_rpc_proxy_ = nullptr;
+    storage_rpc_ = nullptr;
+    sql_proxy_ = nullptr;
+  }
+  TO_STRING_KV(KP_(bandwidth_throttle), KP_(svr_rpc_proxy), KP_(storage_rpc), KP_(sql_proxy));
+
+  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
+  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
+  ObStorageRpc *storage_rpc_;
+  common::ObMySQLProxy *sql_proxy_;
+};
 
 enum ObMigrationStatus
 {
@@ -223,26 +258,6 @@ struct ObMigrationOpArg
   palf::LogConfigVersion member_list_config_version_;
 };
 
-struct ObTabletsTransferArg
-{
-  ObTabletsTransferArg();
-  virtual ~ObTabletsTransferArg() = default;
-  bool is_valid() const;
-  void reset();
-  VIRTUAL_TO_STRING_KV(
-      K_(tenant_id),
-      K_(ls_id),
-      K_(src),
-      K_(tablet_id_array),
-      K_(snapshot_log_ts));
-
-  uint64_t tenant_id_;
-  share::ObLSID ls_id_;
-  common::ObReplicaMember src_;
-  common::ObArray<common::ObTabletID> tablet_id_array_;
-  int64_t snapshot_log_ts_;
-};
-
 struct ObStorageHASrcInfo
 {
   ObStorageHASrcInfo();
@@ -255,29 +270,6 @@ struct ObStorageHASrcInfo
 
   common::ObAddr src_addr_;
   int64_t cluster_id_;
-};
-
-struct ObMacroBlockCopyInfo
-{
-  ObMacroBlockCopyInfo();
-  virtual ~ObMacroBlockCopyInfo();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(logic_macro_block_id), K_(need_copy));
-
-  blocksstable::ObLogicMacroBlockId logic_macro_block_id_;
-  bool need_copy_;
-};
-
-struct ObMacroBlockCopyArgInfo
-{
-  ObMacroBlockCopyArgInfo();
-  virtual ~ObMacroBlockCopyArgInfo();
-  bool is_valid() const;
-  void reset();
-  TO_STRING_KV(K_(logic_macro_block_id));
-
-  blocksstable::ObLogicMacroBlockId logic_macro_block_id_;
 };
 
 struct ObCopyTabletStatus
@@ -301,20 +293,6 @@ struct ObCopyTabletSimpleInfo
   common::ObTabletID tablet_id_;
   ObCopyTabletStatus::STATUS status_;
   int64_t data_size_;
-};
-
-struct ObMigrationFakeBlockID
-{
-  ObMigrationFakeBlockID();
-  virtual ~ObMigrationFakeBlockID() = default;
-  TO_STRING_KV(K_(migration_fake_block_id));
-  static const int64_t FAKE_BLOCK_INDEX = INT64_MAX -1;
-  blocksstable::MacroBlockId migration_fake_block_id_;
-};
-
-struct ObCopySSTableHelper
-{
-  static bool check_can_reuse(const ObSSTableStatus &status);
 };
 
 class ObIHAHandler
@@ -584,7 +562,6 @@ public:
   TO_STRING_KV(
       K_(tablet_id),
       K_(is_committed),
-      K_(is_shared_storage),
       K_(relative_ls_id),
       K_(reorganization_scn),
       K_(backfill_scn),
@@ -595,7 +572,6 @@ public:
 
   common::ObTabletID tablet_id_;
   bool is_committed_;
-  bool is_shared_storage_;
   share::ObLSID relative_ls_id_;
   share::SCN reorganization_scn_;
   share::SCN backfill_scn_;
@@ -745,14 +721,6 @@ public:
   common::ObArray<common::ObMember> member_list_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObLSMemberListInfo);
-};
-
-class ObSSHAMacroCopyUtils final
-{
-public:
-  static int get_dag_priority(const ObSSHAMacroTaskType &task_type, ObDagPrio::ObDagPrioEnum &prio);
-private:
-  DISALLOW_COPY_AND_ASSIGN(ObSSHAMacroCopyUtils);
 };
 
 struct ObLSMigrationCostStatic final

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -311,6 +304,7 @@ int ObBasicSysVar::session_update(ObExecContext &ctx,
   ObString extra_var_name;
   ObString extra_val;
   ObCollationType extra_coll_type = CS_TYPE_INVALID;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   bool should_update_extra_var = false;
   ObObj extra_val_obj;
   ObSQLSessionInfo *session = GET_MY_SESSION(ctx);
@@ -386,8 +380,10 @@ int ObBasicSysVar::session_update(ObExecContext &ctx,
       LOG_ERROR("invalid charset", K(ret), K(val));
     }
     if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(session->get_charset_compat_type(charset_compat_type))) {
+      LOG_WARN("fail to get charset compat type", K(ret));
     } else if (OB_FAIL(get_collation_var_and_val_by_charset(
-                set_var.var_name_, cs_str, extra_var_name, extra_val, extra_coll_type))) {
+                set_var.var_name_, cs_str, extra_var_name, extra_val, extra_coll_type, charset_compat_type))) {
       LOG_ERROR("fail to get collation variable and value by charset",
                 K(ret), K(set_var.var_name_), K(val), K(cs_str));
     } else {
@@ -628,7 +624,8 @@ int ObBasicSysVar::get_collation_var_and_val_by_charset(const ObString &cs_var_n
                                                         const ObString &cs_val,
                                                         ObString &coll_var_name,
                                                         ObString &coll_val,
-                                                        ObCollationType &coll_type)
+                                                        ObCollationType &coll_type,
+                                                        ObCharsetCompatType charset_compat_type)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObCharsetSysVarPair::get_collation_var_by_charset_var(
@@ -640,7 +637,7 @@ int ObBasicSysVar::get_collation_var_and_val_by_charset(const ObString &cs_var_n
     if (OB_UNLIKELY(CHARSET_INVALID == cs_type)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("invalid charset type", K(ret), K(cs_val));
-    } else if (OB_FAIL(ObCharset::get_default_collation(cs_type, coll_type))) {
+    } else if (OB_FAIL(ObCharset::get_default_collation(cs_type, coll_type, charset_compat_type))) {
       LOG_ERROR("fail to get default collation", K(ret), K(cs_type));
     } else if (OB_FAIL(ObCharset::collation_name(coll_type, coll_val))) {
       LOG_ERROR("fail to get collation name", K(ret), K(coll_type));
@@ -2079,9 +2076,11 @@ int ObSysVarOnCheckFuncs::check_default_value_for_utf8mb4(ObExecContext &ctx,
       if (CS_TYPE_INVALID == (coll_type = ObCharset::collation_type(coll_name))) {
         ret = OB_ERR_UNKNOWN_COLLATION;
         LOG_USER_ERROR(OB_ERR_UNKNOWN_COLLATION, coll_name.length(), coll_name.ptr());
-      } else if (coll_type != CS_TYPE_UTF8MB4_GENERAL_CI) {
+      } else if (coll_type != CS_TYPE_UTF8MB4_GENERAL_CI
+                 && coll_type != CS_TYPE_UTF8MB4_0900_AI_CI) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED,"only utf8mb4_general_ci is supported, other collation");
+        LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                       "only utf8mb4_general_ci and utf8mb4_0900_ai_ci are supported, other collation");
       } else {
         out_val.set_int(static_cast<int64_t>(coll_type));
       }
@@ -2100,9 +2099,11 @@ int ObSysVarOnCheckFuncs::check_default_value_for_utf8mb4(ObExecContext &ctx,
           ObString coll_name_str(val_buf);
           LOG_USER_ERROR(OB_ERR_UNKNOWN_COLLATION, coll_name_str.length(), coll_name_str.ptr());
         }
-      } else if (int64_val != 45) {
+      } else if (int64_val != static_cast<int64_t>(CS_TYPE_UTF8MB4_GENERAL_CI)
+                 && int64_val != static_cast<int64_t>(CS_TYPE_UTF8MB4_0900_AI_CI)) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED,"only utf8mb4_general_ci is supported, other collation");
+        LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                       "only utf8mb4_general_ci and utf8mb4_0900_ai_ci are supported, other collation");
       } else {
         out_val = in_val;
       }
@@ -2132,6 +2133,36 @@ int ObSysVarOnCheckFuncs::check_and_convert_timeout_too_large(ObExecContext &ctx
   } else if (timeout_val > OB_MAX_USER_SPECIFIED_TIMEOUT) {
     out_val.set_int(OB_MAX_USER_SPECIFIED_TIMEOUT);
     LOG_USER_WARN(OB_ERR_TIMEOUT_TRUNCATED);
+  } else {
+    out_val = in_val;
+  }
+  return ret;
+}
+
+int ObSysVarOnCheckFuncs::check_and_convert_max_execution_time(ObExecContext &ctx,
+                                                               const ObSetVar &set_var,
+                                                               const ObBasicSysVar &sys_var,
+                                                               const common::ObObj &in_val,
+                                                               common::ObObj &out_val)
+{
+  UNUSED(ctx);
+  UNUSED(set_var);
+  UNUSED(sys_var);
+
+  int ret = OB_SUCCESS;
+  int64_t max_exec_time = 0;
+
+  if (true == set_var.is_set_default_) {
+    // do nothing
+  } else if (OB_FAIL(in_val.get_int(max_exec_time))) {
+  } else if (max_exec_time < MAX_EXECUTION_TIME_MIN) {
+    max_exec_time = MAX_EXECUTION_TIME_MIN;
+    out_val.set_int(max_exec_time);
+    LOG_USER_WARN(OB_ERR_MAX_EXECUTION_TIME_TRUNCATED);
+  } else if (max_exec_time > MAX_EXECUTION_TIME_MAX) {
+    max_exec_time = MAX_EXECUTION_TIME_MAX;
+    out_val.set_int(max_exec_time);
+    LOG_USER_WARN(OB_ERR_MAX_EXECUTION_TIME_TRUNCATED);
   } else {
     out_val = in_val;
   }

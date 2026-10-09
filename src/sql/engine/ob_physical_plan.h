@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_PHYSICAL_PLAN_H
@@ -139,7 +132,6 @@ public:
     ATOMIC_STORE(&(stat_.is_evolution_), false);
     ATOMIC_STORE(&(stat_.evolution_stat_.records_), NULL);
   }
-  int64_t get_evo_perf() const;
   int64_t get_cpu_time() const { return stat_.evolution_stat_.cpu_time_; }
   int64_t get_elapsed_time() const { return stat_.evolution_stat_.elapsed_time_; }
   int64_t get_executions() const { return stat_.evolution_stat_.executions_; }
@@ -148,6 +140,9 @@ public:
   inline bool inner_check_if_is_expired(const int64_t first_exec_row_count,
                                         const int64_t current_row_count) const;
   void update_evolution_stat(const ObAuditRecordData &record);
+  void update_evolution_stat_time(const int64_t cpu_time,
+                                  const int64_t elapsed_time,
+                                  const int64_t last_exec_ts);
   bool check_if_is_expired_by_error(const int error_code) const;
   void update_plan_expired_info(const ObAuditRecordData &record,
                                 const bool is_first,
@@ -164,8 +159,20 @@ public:
   bool is_plan_unstable(const int64_t sample_count,
                         const int64_t sample_exec_row_count,
                         const int64_t sample_exec_usec) const;
-  bool is_expired() const { return NOT_EXPIRED != stat_.is_expired_; }
+  bool is_expired() const {
+    bool expired = false;
+    if (NOT_EXPIRED == stat_.is_expired_) {
+      expired = false;
+    } else if (EXPIRED_BY_OPT_STAT == stat_.is_expired_) {
+      expired = stat_.opt_stat_plan_expired_at_ < ObTimeUtil::current_time();
+    } else {
+      expired = true;
+    }
+    return expired;
+  }
   void set_is_expired(ObPlanExpiredStat expired_stat) { stat_.is_expired_ = expired_stat; }
+  void set_opt_stat_plan_expired_at(int64_t expired_at) { stat_.opt_stat_plan_expired_at_ = expired_at; }
+  bool is_plan_expired_time_exists() const { return stat_.opt_stat_plan_expired_at_ > 0; }
   void inc_large_querys();
   void inc_delayed_large_querys();
   void inc_delayed_px_querys();
@@ -298,6 +305,8 @@ public:
   inline bool is_gtt_temp_table_v2() const { return is_gtt_temp_table_v2_; }
   common::ObIArray<uint64_t> &get_gtt_trans_scope_ids() { return gtt_trans_scope_ids_; }
   common::ObIArray<uint64_t> &get_gtt_session_scope_ids() { return gtt_session_scope_ids_; }
+  bool need_strong_routing() const { return need_strong_routing_; }
+  void set_need_strong_routing(bool need_strong_routing) { need_strong_routing_ = need_strong_routing; }
   common::ObIArray<uint64_t> &get_immediate_refresh_external_table_ids() { return immediate_refresh_external_table_ids_; }
   bool is_contain_oracle_trx_level_temporary_table() const { return gtt_trans_scope_ids_.count() > 0; }
   bool is_contain_oracle_session_level_temporary_table() const { return gtt_session_scope_ids_.count() > 0; }
@@ -501,8 +510,6 @@ public:
     return (ObStmt::is_dml_stmt(stmt_type_)
             && (stmt::T_INSERT != stmt_type_ || is_insert_select_)
             && (stmt::T_REPLACE != stmt_type_ || is_insert_select_)
-            // TODO:@yibo inner sql 先不用SPM? pl里面的执行的SQL也是inner sql,
-            && !is_inner_sql_
             && !is_batch_params_execute_
             // TODO:@yibo batch multi stmt relay get_plan to init some structure. But spm may not enter
             // get_plan. Now we disable spm when batch multi stmt exists.
@@ -587,8 +594,8 @@ public:
   bool get_direct_load_need_sort() const { return direct_load_need_sort_; }
   inline bool get_insertup_can_do_gts_opt() const {return insertup_can_do_gts_opt_; }
   inline void set_insertup_can_do_gts_opt(bool v) { insertup_can_do_gts_opt_ = v; }
-  void set_is_use_auto_dop(bool use_auto_dop)  { stat_.is_use_auto_dop_ = use_auto_dop; }
-  bool get_is_use_auto_dop() const { return stat_.is_use_auto_dop_; }
+  void set_is_enable_adaptive_auto_dop(bool enable) { stat_.is_enable_adaptive_auto_dop_ = enable; }
+  bool get_is_enable_adaptive_auto_dop() const { return stat_.is_enable_adaptive_auto_dop_; }
   void set_px_node_policy(ObPxNodePolicy px_node_policy)
   {
     px_node_policy_ = px_node_policy;
@@ -794,6 +801,7 @@ public:
   // for detector manager
   bool is_enable_px_fast_reclaim_;
   bool use_rich_format_;
+  bool enable_vec_batch_accum_;
   ObSubSchemaCtx subschema_ctx_;
   int64_t das_dop_;
   bool disable_auto_memory_mgr_;
@@ -834,6 +842,7 @@ public:
   uint64_t cache_node_id_; // indicate this plan belong to which Cache Node
   uint64_t pcv_id_; // indicate this plan belong to which Plan Cache Value
   uint64_t plan_set_id_; // indicate this plan belong to which Plan Set
+  bool try_ls_snapshot_first_;
 };
 
 inline void ObPhysicalPlan::set_affected_last_insert_id(bool affected_last_insert_id)

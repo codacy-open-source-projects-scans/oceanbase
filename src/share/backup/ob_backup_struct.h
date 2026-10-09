@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_BACKUP_OB_BACKUP_STRUCT_H_
@@ -1186,6 +1179,7 @@ public:
   virtual ~ObBackupUtils() {}
   static int get_backup_info_default_timeout_ctx(common::ObTimeoutCtx &ctx);
   static bool is_need_retry_error(const int err);
+  static bool is_disk_full_error(const int err);
   //format input string split with ',' or ';'
   template<class T>
   static int parse_backup_format_input(
@@ -1430,7 +1424,7 @@ struct ObBackupStatus final
   OB_UNIS_VERSION(1);
 public:
   enum Status
-  {
+  {  //FARM COMPAT WHITELIST
     INIT = 0,
     DOING = 1,
     COMPLETED = 2,
@@ -1446,10 +1440,6 @@ public:
     BACKUP_LOG = 12,
     BACKUP_FUSE_TABLET_META = 13,
     PREPARE_BACKUP_LOG = 14,
-    DISABLE_SS_GC = 15,
-    WAIT_SS_CLOG_CHECKPOINT = 16,
-    SS_WAIT_LS_CONSISTENCY = 17,
-    ENABLE_SS_GC = 18,
     MAX_STATUS
   };
   ObBackupStatus(): status_(MAX_STATUS) {}
@@ -1461,7 +1451,7 @@ public:
   bool is_task_doing_status() const;
   bool is_backup_meta() const { return BACKUP_SYS_META == status_ || BACKUP_USER_META == status_; }
   bool is_backup_user() const { return BACKUP_USER_DATA == status_; }
-  bool is_backup_log() const { return BEFORE_BACKUP_LOG == status_ || BACKUP_LOG == status_; }
+  bool is_backup_log_phase() const { return PREPARE_BACKUP_LOG == status_ || BEFORE_BACKUP_LOG == status_ || BACKUP_LOG == status_; }
   bool is_backup_sys() const { return BACKUP_SYS_DATA == status_; }
   bool is_backup_finish() const { return COMPLETED == status_ || FAILED == status_ || CANCELED == status_; }
   const char* get_str() const;
@@ -1627,17 +1617,22 @@ public:
 
 struct ObBackupExtraInfo final
 {
-  ObBackupExtraInfo() : sslog_gts_(), read_scn_() {}
+  ObBackupExtraInfo() : sslog_gts_(), read_scn_(), first_disk_full_ts_(0) {}
   ~ObBackupExtraInfo() = default;
-  void reset() { sslog_gts_.reset(); read_scn_.reset(); }
-  bool has_value() const { return sslog_gts_.is_valid_and_not_min() || read_scn_.is_valid_and_not_min(); }
+  void reset() { sslog_gts_.reset(); read_scn_.reset(); first_disk_full_ts_ = 0; }
+  bool has_value() const
+  {
+    return sslog_gts_.is_valid_and_not_min() || read_scn_.is_valid_and_not_min()
+           || first_disk_full_ts_ > 0;
+  }
   int assign(const ObBackupExtraInfo &other);
   int encode_to_str(char *buf, const int64_t buf_len, int64_t &pos) const;
   int decode_from_str(const char *str);
-  TO_STRING_KV(K_(sslog_gts), K_(read_scn));
+  TO_STRING_KV(K_(sslog_gts), K_(read_scn), K_(first_disk_full_ts));
 
   SCN sslog_gts_;
   SCN read_scn_;
+  int64_t first_disk_full_ts_;  // us; 0 means never encountered disk-full
 };
 
 struct ObBackupSetTaskAttr final
@@ -1851,7 +1846,7 @@ public:
   int64_t minor_turn_id_;
   int64_t major_turn_id_;
   SCN consistent_scn_;
-  bool is_shared_storage_mode_;
+  bool is_shared_storage_mode_; // useless after 4.6.1
 };
 
 struct ObBackupSkippedType;

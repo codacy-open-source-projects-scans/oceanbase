@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -424,6 +417,10 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &const_arg, obrpc::ObDropInd
           }
         }
 
+        share::schema::ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, &ddl_service_.get_schema_service());
+        if (FAILEDx(schema_guard_wrapper.init(schema_guard))) {
+          LOG_WARN("fail to init schema guard wrapper", KR(ret));
+        }
         uint64_t fts_aux_index_schema_count = 4; // default value
         uint64_t multivalue_aux_index_schema_count = 3;  // default value
         uint64_t spiv_aux_index_schema_count = 3;  // default value
@@ -465,7 +462,7 @@ int ObIndexBuilder::drop_index(const ObDropIndexArg &const_arg, obrpc::ObDropInd
                                                       *index_table_schema,
                                                       is_inner_and_search_or_fts_or_mulvalue_or_vector_index,
                                                       arg,
-                                                      schema_guard,
+                                                      schema_guard_wrapper,
                                                       ddl_operator,
                                                       trans,
                                                       new_index_schemas))) {
@@ -745,6 +742,7 @@ int ObIndexBuilder::submit_build_index_task(
 {
   int ret = OB_SUCCESS;
   ObTableLockOwnerID owner_id;
+  ObArray<ObTabletID> data_tablet_ids;
   ObCreateDDLTaskParam param(index_schema->get_tenant_id(),
                              get_create_index_type(tenant_data_version, *index_schema),
                              data_schema,
@@ -754,7 +752,12 @@ int ObIndexBuilder::submit_build_index_task(
                              parallelism,
                              group_id,
                              &allocator,
-                             &create_index_arg);
+                             &create_index_arg,
+                             0/*parent_task_id*/,
+                             0/*task_id*/,
+                             false/*ddl_need_retry_at_executor*/,
+                             false/*direct_load_need_sync_stats_info*/,
+                             &data_tablet_ids);
   param.tenant_data_version_ = tenant_data_version;
   param.new_snapshot_version_ = new_fetched_snapshot;
   const bool is_search_index = share::schema::is_search_index(create_index_arg.index_type_);
@@ -773,9 +776,12 @@ int ObIndexBuilder::submit_build_index_task(
   } else if ((index_schema->is_rowkey_doc_id() || index_schema->is_vec_rowkey_vid_type()) && new_fetched_snapshot <= 0) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("the fts/vec snapshot version should be more than zero", K(ret), K(new_fetched_snapshot));
-  } else if (data_schema->is_auto_partitioned_table()
+  } else if (!create_index_arg.is_rebuild_index_ && //  The rebuild target is to rebuild the old vector indexes. The old version supports creating vector indexes on auto partition tables, so we need to keep the behavior consistent with the old index behavior here.
+             data_schema->is_auto_partitioned_table()
       && OB_FAIL(ObSplitPartitionHelper::check_split_supported_index(*data_schema, *index_schema))) {
     LOG_WARN("failed to check split supported index", K(ret), KPC(index_schema));
+  } else if (OB_FAIL(ObDDLUtil::get_and_calc_tablet_ids(*data_schema, inc_data_tablet_ids, del_data_tablet_ids, data_tablet_ids))) {
+    LOG_WARN("failed to get data tablet ids", K(ret), KPC(data_schema));
   } else {
     bool is_create_fts_index = share::schema::is_fts_index(create_index_arg.index_type_);
     if (is_create_fts_index) {
@@ -1869,6 +1875,10 @@ int ObIndexBuilder::do_create_index(
     // FIXME: create index for inner table is not supported yet.
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("create index on inner table not supported", K(ret), K(table_id));
+  } else if (table_schema->is_fulltext_dict()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("create index on fulltext dictionary table not supported", K(ret), K(table_id));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "create index on fulltext dictionary table is");
   } else if (!arg.is_inner_ && table_schema->is_in_recyclebin()) {
     ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
     LOG_WARN("can not add index on table in recyclebin", K(ret), K(arg));
@@ -1962,23 +1972,27 @@ int ObIndexBuilder::generate_schema(
   if (OB_SUCC(ret)) {
     //do some check
     if (OB_SUCC(ret)) {
-      if (!GCONF.enable_sys_table_ddl) {
-        if (!data_schema.is_user_table() && !data_schema.is_tmp_table()) {
-          ret = OB_ERR_WRONG_OBJECT;
-          ObCStringHelper helper;
-          LOG_USER_ERROR(OB_ERR_WRONG_OBJECT, helper.convert(arg.database_name_),
-                         helper.convert(arg.table_name_), "BASE_TABLE");
-          ObTableType table_type = data_schema.get_table_type();
-          LOG_WARN("Not support to create index on non-normal table", K(table_type), K(arg), K(ret));
-        } else if (OB_INVALID_ID != arg.index_table_id_ || OB_INVALID_ID != arg.data_table_id_) {
-          char err_msg[number::ObNumber::MAX_PRINTABLE_SIZE];
-          MEMSET(err_msg, 0, sizeof(err_msg));
-          // create index specifying index_id can only be used when the configuration is on
-          ret = OB_OP_NOT_ALLOW;
-          (void)snprintf(err_msg, sizeof(err_msg),
-                   "%s", "create index with index_table_id/data_table_id");
-          LOG_USER_ERROR(OB_OP_NOT_ALLOW, err_msg);
-        }
+      // enable_sys_table_ddl only opens DDL on system tables; views/virtual tables are
+      // never legal index targets, so the base-table check must run regardless of the config.
+      const bool is_allowed_base_table = data_schema.is_user_table()
+          || data_schema.is_tmp_table()
+          || (GCONF.enable_sys_table_ddl && data_schema.is_sys_table());
+      if (!is_allowed_base_table) {
+        ret = OB_ERR_WRONG_OBJECT;
+        ObCStringHelper helper;
+        LOG_USER_ERROR(OB_ERR_WRONG_OBJECT, helper.convert(arg.database_name_),
+                       helper.convert(arg.table_name_), "BASE_TABLE");
+        ObTableType table_type = data_schema.get_table_type();
+        LOG_WARN("Not support to create index on non-normal table", K(table_type), K(arg), K(ret));
+      } else if (!GCONF.enable_sys_table_ddl
+                 && (OB_INVALID_ID != arg.index_table_id_ || OB_INVALID_ID != arg.data_table_id_)) {
+        char err_msg[number::ObNumber::MAX_PRINTABLE_SIZE];
+        MEMSET(err_msg, 0, sizeof(err_msg));
+        // create index specifying index_id can only be used when the configuration is on
+        ret = OB_OP_NOT_ALLOW;
+        (void)snprintf(err_msg, sizeof(err_msg),
+                 "%s", "create index with index_table_id/data_table_id");
+        LOG_USER_ERROR(OB_OP_NOT_ALLOW, err_msg);
       }
 
       if (OB_FAIL(ret)) {
@@ -2086,7 +2100,8 @@ int ObIndexBuilder::generate_schema(
         } else if (!is_oracle_mode && data_column->is_func_idx_column() && ob_is_text_tc(data_column->get_data_type())) {
           ret = OB_ERR_FUNCTIONAL_INDEX_ON_LOB;
           LOG_WARN("Cannot create a functional index on an expression that returns a BLOB or TEXT.", K(ret));
-        } else if (data_column->is_key_forbid_lob() && !data_column->is_fulltext_column()) {
+        } else if (data_column->is_key_forbid_lob() && !data_column->is_fulltext_column() &&
+            !share::schema::is_search_index(arg.index_type_)) {
           ret = OB_ERR_WRONG_KEY_COLUMN;
           LOG_USER_ERROR(OB_ERR_WRONG_KEY_COLUMN, sort_item.column_name_.length(), sort_item.column_name_.ptr());
           LOG_WARN("index created direct on large text column should only be fulltext or string", K(arg.index_type_), K(ret));
@@ -2136,7 +2151,8 @@ int ObIndexBuilder::generate_schema(
             } else {
               length = 0;
             }
-          } else if (share::schema::is_hybrid_vec_index(arg.index_type_)) {
+          } else if (share::schema::is_hybrid_vec_index(arg.index_type_) ||
+                     share::schema::is_search_index(arg.index_type_)) {
             length = 0;
           } else if (OB_FAIL(data_column->get_byte_length(length, is_oracle_mode, false))) {
             LOG_WARN("fail to get byte length of column", K(ret));
@@ -2181,29 +2197,15 @@ int ObIndexBuilder::generate_schema(
       }
     }
     if (OB_SUCC(ret)) {
-      if (share::schema::is_vec_index(arg.index_type_) || share::schema::is_fts_index(arg.index_type_)) {
+      if (share::schema::is_vec_index(arg.index_type_) || share::schema::is_fts_index(arg.index_type_) || ObSimpleTableSchemaV2::is_spatial_index(arg.index_type_)) {
         schema.set_merge_engine_type(ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
-      } else if (data_schema.is_append_only_merge_engine()) {
-        // index should inherit the append_only merge engine type of the data table
-        schema.set_merge_engine_type(ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY);
-      } else if (data_schema.is_delete_insert_merge_engine()) {
-        if (arg.store_columns_.count() > 0) {
-          FLOG_INFO("index with storing column will not inherit the delete insert merge engine type of the data table",
-              K(arg.index_type_), K(arg.index_table_id_), K(arg.data_table_id_), K(arg.store_columns_), K(arg.hidden_store_columns_));
-        } else {
-          schema.set_merge_engine_type(ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT);
-        }
+      } else {
+        schema.set_merge_engine_type(data_schema.get_merge_engine_type());
       }
     }
     if (OB_FAIL(ret)) {
-    } else if (data_schema.has_ttl_definition()
-      && OB_FAIL(ObCompactionTTLUtil::check_create_index_for_ttl_valid(data_schema, arg.index_type_, schema))) {
-      LOG_WARN("fail to check create index for ttl valid", KR(ret), K(data_schema), K(arg.index_type_));
-    } else if (data_schema.has_ttl_definition()
-      && OB_FAIL(schema.set_ttl_definition(
-          data_schema.get_ttl_definition(),
-          data_schema.get_ttl_flag()))) {
-      LOG_WARN("set ttl definition failed", K(ret), K(data_schema));
+    } else if (data_schema.has_ttl_definition() && OB_FAIL(schema.inherit_ttl_definition(data_schema))) {
+      LOG_WARN("inherit ttl definition failed", K(ret), K(data_schema));
     } else {
       // column information of the global index is filled during the resolve stage
       const bool is_index_local_storage = share::schema::is_index_local_storage(arg.index_type_);
@@ -2282,6 +2284,12 @@ int ObIndexBuilder::generate_schema(
       schema.set_oracle_tmp_table_v2_index_table();
     }
   }
+
+  if (OB_SUCC(ret) && data_schema.has_ttl_definition()
+      && OB_FAIL(ObCompactionTTLUtil::check_create_index_for_ttl_valid(data_schema, arg.index_type_, schema))) {
+    LOG_WARN("fail to check create index for ttl valid", KR(ret), K(data_schema), K(arg.index_type_));
+  }
+
   if (OB_SUCC(ret) && OB_FAIL(ObDDLService::set_dbms_job_exec_env(arg, schema))) {
     LOG_WARN("fail to set dbms_job exec_env", K(ret), K(arg));
   }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_PL_CACHE_H_
@@ -363,7 +356,8 @@ public:
   ObPLObjectValue(common::ObIAllocator &alloc) :
     ObPLDependencyCheck(alloc),
     params_info_(ObWrapperAllocator(alloc)),
-    pl_routine_obj_(NULL) {}
+    pl_routine_obj_(NULL),
+    enable_share_cache_for_null_param_(false) {}
 
   virtual ~ObPLObjectValue() { reset(); }
   int init(const ObILibCacheObject &cache_obj, ObPLCacheCtx &pc_ctx);
@@ -397,7 +391,11 @@ public:
   common::Ob2DArray<ObPlParamInfo, common::OB_MALLOC_BIG_BLOCK_SIZE,
                     common::ObWrapperAllocator, false> params_info_;
   pl::ObPLCacheObject *pl_routine_obj_;
+  bool enable_share_cache_for_null_param_;
 private:
+  static bool check_param_type_compatible_for_cache(
+      const ObPlParamInfo &param_info,
+      const ObObjParam &param);
   DISALLOW_COPY_AND_ASSIGN(ObPLObjectValue);
 };
 

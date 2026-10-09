@@ -1,15 +1,9 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "ob_store_format.h"
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_tenant_tablet_stat_mgr.h"
@@ -777,7 +771,8 @@ int ObTenantTabletStatMgr::report_stat(
   } else if (OB_UNLIKELY(!stat.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid arguments", K(ret), K(stat));
-  } else if (!stat.check_need_report()) {
+  } else if (!stat.is_clear_mark_ && !stat.check_need_report()) {
+    // clear-mark signal bypasses check_need_report; normal stats keep the original filter.
   } else {
     uint64_t pending_cur = pending_cursor_;
     if (pending_cur - report_cursor_ >= DEFAULT_MAX_PENDING_CNT) { // first check full queue with dirty read
@@ -793,6 +788,22 @@ int ObTenantTabletStatMgr::report_stat(
       report_queue_[pending_cur % DEFAULT_MAX_PENDING_CNT] = stat;
       succ_report = true;
     }
+  }
+  return ret;
+}
+
+int ObTenantTabletStatMgr::report_clear_tablet_stat(
+    const int64_t ls_id,
+    const uint64_t tablet_id,
+    bool &succ_report)
+{
+  int ret = OB_SUCCESS;
+  ObTabletStat clear_stat;
+  clear_stat.ls_id_ = ls_id;
+  clear_stat.tablet_id_ = tablet_id;
+  clear_stat.is_clear_mark_ = true;
+  if (OB_FAIL(report_stat(clear_stat, succ_report))) {
+    LOG_WARN("failed to report clear tablet stat", K(ret), K(ls_id), K(tablet_id));
   }
   return ret;
 }
@@ -849,10 +860,9 @@ int ObTenantTabletStatMgr::clear_tablet_stat(
     ObBucketHashWLockGuard lock_guard(bucket_lock_, key.hash());
     if (OB_FAIL(inner_clear_tablet_stat(key))) {
       LOG_WARN("failed to clear tablet stat", K(ret), K(key));
+    } else {
+      FLOG_INFO("clear tablet stat", K(ls_id), K(tablet_id));
     }
-  }
-  if (OB_SUCC(ret)) {
-    FLOG_INFO("clear tablet stat", K(ret), K(ls_id), K(tablet_id));
   }
   return ret;
 }
@@ -908,34 +918,6 @@ int ObTenantTabletStatMgr::get_all_tablet_analyzers(
           }
         }
       }
-    }
-  }
-  return ret;
-}
-
-int ObTenantTabletStatMgr::get_history_tablet_stats(
-    const share::ObLSID &ls_id,
-    const common::ObTabletID &tablet_id,
-    common::ObIArray<ObTabletStat> &tablet_stats)
-{
-  int ret = OB_SUCCESS;
-  const ObTabletStatKey key(ls_id, tablet_id);
-
-  if (IS_NOT_INIT) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("ObTenantTabletStatMgr not inited", K(ret));
-  } else if (OB_UNLIKELY(!key.is_valid())) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("get invalid arguments", K(ret), K(ls_id), K(tablet_id));
-  } else {
-    ObTabletStreamNode *stream_node = nullptr;
-    ObBucketHashRLockGuard lock_guard(bucket_lock_, key.hash());
-    if (OB_FAIL(stream_map_.get_refactored(key, stream_node))) {
-      if (OB_HASH_NOT_EXIST != ret) {
-        LOG_WARN("failed to get history stat", K(ret), K(key));
-      }
-    } else if (OB_FAIL(stream_node->stream_.get_all_tablet_stat(tablet_stats))) {
-      LOG_WARN("failed to get all tablet stat", K(ret), K(key));
     }
   }
   return ret;
@@ -1099,6 +1081,10 @@ void ObTenantTabletStatMgr::process_stats()
       const ObTabletStat &cur_stat = report_queue_[i % DEFAULT_MAX_PENDING_CNT];
       if (OB_UNLIKELY(!cur_stat.is_valid())) {
         // allow dirty read
+      } else if (cur_stat.is_clear_mark_) {
+        if (OB_FAIL(clear_tablet_stat(ObLSID(cur_stat.ls_id_), ObTabletID(cur_stat.tablet_id_)))) {
+          LOG_WARN_RET(ret, "failed to clear tablet stat for clear mark", K(ret), K(cur_stat));
+        }
       } else if (OB_FAIL(update_tablet_stream(cur_stat))) {
         LOG_WARN_RET(ret, "failed to update tablet stat", K(ret), K(cur_stat));
       }
@@ -1294,6 +1280,10 @@ int ObTenantTabletStatMgr::get_minor_row_store_type(
   } else if (OB_ISNULL(dynamic_table_options)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dynamic table options is null", K(ret), K(ls_id), K(tablet_id));
+  } else if (dynamic_table_options->minor_row_store_type_ == ObRowStoreType::MAX_ROW_STORE) {
+    // the node is allocated, but has not been initialized
+    // treat it as node does not exist.
+    ret = OB_HASH_NOT_EXIST;
   } else {
     minor_row_store_type = dynamic_table_options->minor_row_store_type_;
   }

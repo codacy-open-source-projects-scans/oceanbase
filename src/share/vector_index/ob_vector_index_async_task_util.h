@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_VECTOR_INDEX_ASYNC_TASK_UTIL_H_
@@ -15,6 +8,7 @@
 
 #include "lib/string/ob_string.h"
 #include "lib/container/ob_array.h"
+#include "lib/net/ob_addr.h"
 #include "common/ob_tablet_id.h"
 #include "share/scn.h"
 #include "share/ob_ls_id.h"
@@ -281,6 +275,9 @@ public:
         task_status_(),
         sys_task_id_(),
         in_thread_pool_(false),
+        run_inner_sql_(false),
+        inner_sql_snapshot_version_(0),
+        inner_sql_exec_addr_(),
         lock_(common::ObLatchIds::OB_VEC_INDEX_ASYNC_TASK_CTX_LOCK),
         allocator_(ObMemAttr(MTL_ID(), "VecIdxTaskCtx")), // set after init
         extra_data_(),
@@ -288,7 +285,20 @@ public:
   {}
   virtual ~ObVecIndexAsyncTaskCtx();
 
-  TO_STRING_KV(K_(tenant_id), K_(retry_time), KP_(ls), K_(task_status), K_(sys_task_id), K_(in_thread_pool), KP_(extra_data), K_(is_new_task));
+  int cancel_task();
+  int kill_inner_sql_if_needed();
+  int set_inner_sql_running(const int64_t snapshot_version, const common::ObAddr &exec_addr);
+  void clear_inner_sql_info()
+  {
+    common::ObSpinLockGuard guard(lock_);
+    run_inner_sql_ = false;
+    inner_sql_snapshot_version_ = 0;
+    inner_sql_exec_addr_.reset();
+  }
+
+  TO_STRING_KV(K_(tenant_id), K_(retry_time), KP_(ls), K_(task_status), K_(sys_task_id),
+               K_(in_thread_pool), K_(run_inner_sql), K_(inner_sql_snapshot_version),
+               K_(inner_sql_exec_addr), KP_(extra_data), K_(is_new_task));
 
   uint64_t tenant_id_;
   uint64_t retry_time_;
@@ -296,6 +306,9 @@ public:
   ObVecIndexTaskStatus task_status_;
   TraceId sys_task_id_;
   bool in_thread_pool_;
+  bool run_inner_sql_;
+  int64_t inner_sql_snapshot_version_;
+  common::ObAddr inner_sql_exec_addr_;
   common::ObSpinLock lock_; // lock for update task_status_
   ObArenaAllocator allocator_; // for extra_data_
   void *extra_data_;
@@ -531,6 +544,10 @@ protected:
   static const int BATCH_CNT = 2000; // 8M / 4(sizeof(float)) / 1000(dim)
   int get_current_scn(share::SCN &current_scn);
   int execute_inner_sql(const ObTableSchema &data_schema, const int64_t data_table_id, const int64_t dest_table_id, const int64_t task_id, const int64_t parallelism, ObString &partition_names, share::SCN &current_scn);
+  int execute_inner_sql(
+    const int64_t schema_version, const bool is_user_hidden_table, const bool need_padding,
+    const int64_t data_table_id, const int64_t dest_table_id,
+    const int64_t task_id, const int64_t parallelism, const ObString &partition_names, share::SCN &current_scn);
   int build_inc_index(ObPluginVectorIndexAdaptor &adaptor);
   int process_data_for_index(ObPluginVectorIndexAdaptor &adaptor, ObPluginVectorIndexAdaptor &old_adaptor);
   int optimize_vector_index(ObPluginVectorIndexAdaptor &adaptor, ObPluginVectorIndexAdaptor &old_adaptor);
@@ -595,7 +612,8 @@ protected:
       ObTableScanIterator *table_scan_iter,
       ObIArray<uint64_t> &extra_column_idxs,
       storage::ObValueRowIterator &row_iter,
-      transaction::ObTxReadSnapshot &snapshot);
+      transaction::ObTxReadSnapshot &snapshot,
+      const bool is_force_delete = false);
   int prepare_schema_and_snapshot(
       const ObTableSchema *&data_schema,
       const ObTableSchema *&snapshot_schema,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -423,7 +416,7 @@ int ObDASReqOptOp::inner_get_next_row_with_block_max_pruning(
       curr_score = curr_req_score;
     } else if (OB_FAIL(optional_->advance_to(curr_req_id, curr_opt_id_, curr_opt_score_))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
-      LOG_WARN("failed to advance to optional op", K(ret));
+        LOG_WARN("failed to advance to optional op", K(ret));
       } else if (is_conjunctive_) {
         // early termination
       } else {
@@ -435,6 +428,9 @@ int ObDASReqOptOp::inner_get_next_row_with_block_max_pruning(
     } else if (cmp_ret == 0) {
       curr_score = curr_req_score + curr_opt_score_;
       same_id = true;
+    } else if (cmp_ret < 0) {
+      // optional has advanced past curr_req_id; keep req-only score.
+      curr_score = curr_req_score;
     }
 
     if (OB_FAIL(ret)) {

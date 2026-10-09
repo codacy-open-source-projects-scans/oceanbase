@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -28,6 +21,8 @@
 #include "share/vector_index/ob_ivf_async_task.h"
 #include "share/vector_index/ob_vector_index_aux_table_handler.h"
 #include "observer/ob_server.h"
+#include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "rootserver/ddl_task/ob_ddl_task.h"
 
 namespace oceanbase
 {
@@ -381,12 +376,98 @@ int ObVecIndexAsyncTaskUtil::init_tablet_rebuild_new_adapter(ObPluginVectorIndex
   return ret;
 }
 
+int ObVecIndexAsyncTaskCtx::cancel_task()
+{
+  int ret = OB_SUCCESS;
+  bool need_kill_inner_sql = false;
+  DEBUG_SYNC(CANCEL_VECTOR_INDEX_ASYNC_TASK);
+  {
+    common::ObSpinLockGuard guard(lock_);
+    if (task_status_.status_ != ObVecIndexAsyncTaskStatus::OB_VECTOR_ASYNC_TASK_FINISH) {
+      task_status_.ret_code_ = OB_CANCELED;
+      need_kill_inner_sql = run_inner_sql_;
+    }
+  }
+  if (need_kill_inner_sql) {
+    LOG_INFO("kill inner sql for canceled vector task", KPC(this));
+    int tmp_ret = kill_inner_sql_if_needed();
+    if (OB_SUCCESS != tmp_ret) {
+      LOG_WARN("fail to kill inner sql for canceled vector task", K(tmp_ret), KPC(this));
+    }
+  }
+  LOG_INFO("vector async task canceled", K(ret), KPC(this));
+  return ret;
+}
+
+int ObVecIndexAsyncTaskCtx::kill_inner_sql_if_needed()
+{
+  int ret = OB_SUCCESS;
+  TraceId trace_id;
+  uint64_t tenant_id = OB_INVALID_TENANT_ID;
+  int64_t task_id = OB_INVALID_ID;
+  int64_t snapshot_version = 0;
+  common::ObAddr exec_addr;
+  {
+    common::ObSpinLockGuard guard(lock_);
+    if (!run_inner_sql_) {
+    } else if (OB_ISNULL(GCTX.sql_proxy_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("sql proxy is null", K(ret), KPC(this));
+    } else {
+      trace_id = sys_task_id_.is_valid() ? sys_task_id_ : task_status_.trace_id_;
+      tenant_id = tenant_id_;
+      task_id = task_status_.task_id_;
+      snapshot_version = inner_sql_snapshot_version_;
+      exec_addr = inner_sql_exec_addr_;
+    }
+  }
+  if (OB_FAIL(ret) || snapshot_version <= 0 || task_id <= 0
+      || OB_INVALID_TENANT_ID == tenant_id || trace_id.is_invalid()) {
+    if (OB_SUCC(ret) && snapshot_version <= 0) {
+      LOG_INFO("skip kill inner sql, no valid snapshot version", K(snapshot_version),
+               K(task_id), K(tenant_id), K(trace_id));
+    }
+  } else {
+    common::ObArray<common::ObAddr> exec_addrs;
+    if (exec_addr.is_valid() && OB_FAIL(exec_addrs.push_back(exec_addr))) {
+      LOG_WARN("fail to push exec addr", K(ret), K(exec_addr), KPC(this));
+    } else if (OB_FAIL(rootserver::ObDDLTaskRecordOperator::kill_task_inner_sql(
+                   *GCTX.sql_proxy_,
+                   trace_id,
+                   tenant_id,
+                   task_id,
+                   snapshot_version,
+                   exec_addrs))) {
+      LOG_WARN("fail to kill task inner sql", K(ret), K(trace_id), K(tenant_id),
+               K(task_id), K(snapshot_version), K(exec_addr));
+    }
+  }
+  return ret;
+}
+
+int ObVecIndexAsyncTaskCtx::set_inner_sql_running(const int64_t snapshot_version, const common::ObAddr &exec_addr)
+{
+  int ret = OB_SUCCESS;
+  common::ObSpinLockGuard guard(lock_);
+  if (snapshot_version <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid snapshot version", K(ret), K(snapshot_version), K(exec_addr));
+  } else {
+    run_inner_sql_ = true;
+    inner_sql_snapshot_version_ = snapshot_version;
+    inner_sql_exec_addr_ = exec_addr;
+  }
+  return ret;
+}
+
 int ObVecIndexAsyncTaskUtil::check_task_is_cancel(ObVecIndexAsyncTaskCtx *task_ctx, bool &is_cancel)
 {
   int ret = OB_SUCCESS;
   is_cancel = false;
   if (OB_NOT_NULL(task_ctx)) {
-    if (task_ctx->sys_task_id_.is_valid()) {
+    if (task_ctx->task_status_.ret_code_ == OB_CANCELED) {
+      is_cancel = true;
+    } else if (task_ctx->sys_task_id_.is_valid()) {
       if (OB_FAIL(SYS_TASK_STATUS_MGR.is_task_cancel(task_ctx->sys_task_id_, is_cancel))) {
         LOG_WARN("failed to check task is cancel", K(ret), K(task_ctx->sys_task_id_));
       }
@@ -569,12 +650,18 @@ int ObVecIndexAsyncTaskUtil::move_task_to_history_table(
   } else {
     /*
      [451, ): task_info已经占位;
+     [460, ): exec_addr, priority, start_time, end_time, err_msg 已经占位;
     */
     const bool has_task_info = (data_version >= DATA_VERSION_4_5_1_0);
-    const char *extra_cols = has_task_info ? ", task_info " : "";
-    if (OB_FAIL(sql.assign_fmt("REPLACE INTO %s SELECT gmt_create, gmt_modified, tenant_id, table_id, tablet_id, task_id, trigger_type, task_type, status, target_scn, ret_code, trace_id%s FROM %s WHERE tenant_id = %ld AND status = 3 ORDER BY gmt_create LIMIT %ld",
+    const bool has_obs_cols = (data_version >= DATA_VERSION_4_6_0_0);
+    ObSqlString extra_cols;
+    if (has_task_info && OB_FAIL(extra_cols.append(", task_info"))) {
+      LOG_WARN("fail to append extra_cols", K(ret));
+    } else if (has_obs_cols && OB_FAIL(extra_cols.append(", exec_addr, priority, start_time, end_time, err_msg"))) {
+      LOG_WARN("fail to append extra_cols", K(ret));
+    } else if (OB_FAIL(sql.assign_fmt("REPLACE INTO %s SELECT gmt_create, gmt_modified, tenant_id, table_id, tablet_id, task_id, trigger_type, task_type, status, target_scn, ret_code, trace_id%s FROM %s WHERE tenant_id = %ld AND status = 3 ORDER BY gmt_create LIMIT %ld",
               share::OB_ALL_VECTOR_INDEX_TASK_HISTORY_TNAME,
-              extra_cols,
+              extra_cols.empty() ? "" : extra_cols.ptr(),
               share::OB_ALL_VECTOR_INDEX_TASK_TNAME,
               ObSchemaUtils::get_extract_tenant_id(tenant_id, tenant_id),
               batch_size))){
@@ -2296,7 +2383,18 @@ int ObVecIndexAsyncTask::check_finished_exchange_before(share::SCN &current_scn,
   } else {
     ObString key_str = row->storage_datums_[0].get_string();
     int64_t key_scn = 0;
-    if (OB_FAIL(ObPluginVectorIndexUtils::get_table_key_scn(key_str, key_scn))) {
+    if (key_str.suffix_match("_meta_data")) {
+      // For meta_data rows, key format is "!{tablet_id}_meta_data". SCN is in the value, not in the key.
+      // get_table_key_scn() would wrongly parse "meta" as SCN and fail with -4016.
+      ObString meta_data = row->storage_datums_[1].get_string();
+      if (OB_FAIL(sql::ObTextStringHelper::read_real_string_data(&allocator_, ObLongTextType, true, meta_data, nullptr))) {
+        LOG_WARN("read meta data fail for meta_data row", K(ret), K(key_str));
+      } else if (OB_FAIL(ObVectorIndexMeta::get_meta_scn(meta_data, key_scn))) {
+        LOG_WARN("get meta scn fail for meta_data row", K(ret), K(key_str));
+      } else if (key_scn == ctx_->task_status_.target_scn_.get_val_for_sql()) {
+        is_finished = true;
+      }
+    } else if (OB_FAIL(ObPluginVectorIndexUtils::get_table_key_scn(key_str, key_scn))) {
       LOG_WARN("fail to get table key scn", K(ret), K(key_str));
     } else if (key_scn == ctx_->task_status_.target_scn_.get_val_for_sql()) {
       is_finished = true;
@@ -2538,36 +2636,50 @@ int ObVecIndexAsyncTask::get_ls_leader_addr(
 }
 
 int ObVecIndexAsyncTask::execute_inner_sql(
-    const ObTableSchema &data_schema, const int64_t data_table_id, const int64_t dest_table_id,
-    const int64_t task_id, const int64_t parallelism, ObString &partition_names, share::SCN &current_scn)
+  const ObTableSchema &data_schema, const int64_t data_table_id, const int64_t dest_table_id,
+  const int64_t task_id, const int64_t parallelism, ObString &partition_names, share::SCN &current_scn)
+{
+  int ret = OB_SUCCESS;
+  bool need_padding = false;
+  if (OB_FAIL(data_schema.is_need_padding_for_generated_column(need_padding))) {
+    LOG_WARN("fail to check need padding", K(ret));
+  } else if (OB_FAIL(execute_inner_sql(data_schema.get_schema_version(), data_schema.is_user_hidden_table(), need_padding,
+        data_table_id, dest_table_id, task_id, parallelism, partition_names, current_scn))) {
+    LOG_WARN("fail to execute inner sql", K(ret));
+  }
+  return ret;
+}
+
+int ObVecIndexAsyncTask::execute_inner_sql(
+    const int64_t schema_version, const bool is_user_hidden_table, const bool need_padding,
+    const int64_t data_table_id, const int64_t dest_table_id,
+    const int64_t task_id, const int64_t parallelism, const ObString &partition_names, share::SCN &current_scn)
 {
   int ret = OB_SUCCESS;
 
   ObSqlString sql_string;
-  bool need_padding = false;
   common::ObAddr ls_leader_addr;
   int ret_code = -1;
+  bool inner_sql_running_marked = false;
 
   if (data_table_id == OB_INVALID_ID || dest_table_id == OB_INVALID_ID || parallelism < 1 || !current_scn.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(data_table_id), K(dest_table_id), K(parallelism), K(current_scn));
   } else if (OB_FAIL(ObDDLUtil::generate_build_replica_sql(tenant_id_, data_table_id,
                                                     dest_table_id,
-                                                    data_schema.get_schema_version(),
+                                                    schema_version,
                                                     current_scn.get_val_for_sql(),
                                                     1, /* execution_id */
                                                     task_id,
                                                     parallelism,
                                                     false/*use_heap_table_ddl*/,
-                                                    !data_schema.is_user_hidden_table()/*use_schema_version_hint_for_src_table*/,
+                                                    !is_user_hidden_table/*use_schema_version_hint_for_src_table*/,
                                                     nullptr,
                                                     partition_names,
                                                     false/*is_alter_clustering_key_tbl_partition_by*/,
                                                     filter_sql_str_.string(),
                                                     sql_string))) {
     LOG_WARN("fail to generate build replica sql", K(ret));
-  } else if (OB_FAIL(data_schema.is_need_padding_for_generated_column(need_padding))) {
-    LOG_WARN("fail to check need padding", K(ret));
   } else if (OB_FAIL(get_ls_leader_addr(tenant_id_, ls_id_, ls_leader_addr))) {
     LOG_WARN("fail to get ls leader addr", K(ret), K(tenant_id_), K(ls_id_));
   } else if (MYADDR != ls_leader_addr) {
@@ -2595,10 +2707,15 @@ int ObVecIndexAsyncTask::execute_inner_sql(
     const int64_t DDL_INNER_SQL_EXECUTE_TIMEOUT = ObDDLUtil::calc_inner_sql_execute_timeout();
     ObASHSetInnerSqlWaitGuard ash_inner_sql_guard(ObInnerSqlWaitTypeId::RS_CREATE_INDEX_BUILD_REPLICA);
     LOG_INFO("execute sql" , K(sql_string), K(current_scn), K(data_table_id), K(tenant_id_));
+    DEBUG_SYNC(BEFORE_VEC_ASYNC_INNER_SQL_WRITE);
     if (OB_FAIL(timeout_ctx.set_trx_timeout_us(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
       LOG_WARN("set trx timeout failed", K(ret));
     } else if (OB_FAIL(timeout_ctx.set_timeout(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
       LOG_WARN("set timeout failed", K(ret));
+    } else if (OB_NOT_NULL(ctx_)
+               && OB_FAIL(ctx_->set_inner_sql_running(current_scn.get_val_for_sql(), ls_leader_addr))) {
+      LOG_WARN("fail to mark inner sql running", K(ret), K(task_id), K(current_scn), K(ls_leader_addr));
+    } else if (OB_FALSE_IT(inner_sql_running_marked = OB_NOT_NULL(ctx_))) {
     } else if (OB_FAIL(user_sql_proxy->write(tenant_id_, sql_string.ptr(), affected_rows, ObCompatibilityMode::MYSQL_MODE, &session_param, &ls_leader_addr))) {
       LOG_WARN("fail to execute build replica sql", K(ret), K(tenant_id_));
     } else if (OB_FAIL(ObVecIndexAsyncTaskUtil::get_inner_sql_ret_code(task_id, ret_code))) {
@@ -2606,6 +2723,25 @@ int ObVecIndexAsyncTask::execute_inner_sql(
     } else {
       ret = ret_code;
       LOG_INFO("execute inner sql ret code", K(ret), K(task_id), KPC(ctx_));
+    }
+  }
+  if (inner_sql_running_marked) {
+    LOG_INFO("clear inner sql info", K(ret), K(task_id), KPC(ctx_));
+    ctx_->clear_inner_sql_info();
+  }
+  if (OB_FAIL(ret) && OB_NOT_NULL(ctx_)) {
+    bool is_cancel = false;
+    int tmp_ret = ObVecIndexAsyncTaskUtil::check_task_is_cancel(ctx_, is_cancel);
+    if (OB_SUCCESS != tmp_ret) {
+      LOG_WARN("fail to recheck task cancel state after inner sql returns", K(tmp_ret), KPC(ctx_));
+    } else if (is_cancel) {
+      if (OB_ERR_SESSION_INTERRUPTED == ret
+          || OB_CANCELED == ret) {
+        ret = OB_CANCELED;
+      } else {
+        LOG_WARN("skip overriding non-cancel-like inner sql error",
+                 K(ret), K(task_id), KPC(ctx_));
+      }
     }
   }
   return ret;
@@ -2677,15 +2813,21 @@ int ObVecIndexAsyncTask::execute_exchange()
     RWLock::WLockGuard query_lock_guard(old_adapter_->get_query_lock()); // lock for query before end trans
 
     share::SCN commit_scn;
-    transaction::ObTransID tx_id = tx_desc->get_tx_id(); // save tx_id before end_trans
+    transaction::ObTransID tx_id;
+    if (OB_NOT_NULL(tx_desc)) {
+      tx_id = tx_desc->get_tx_id(); // save tx_id before end_trans
+    }
     int tmp_ret = OB_SUCCESS;
     if (OB_SUCCESS != (tmp_ret = ObInsertLobColumnHelper::end_trans(tx_desc, OB_SUCCESS != ret, timeout_us))) {
       ret = tmp_ret;
-      LOG_WARN("fail to end trans", K(ret), KPC(tx_desc), KPC(ctx_));
-    } else if (OB_SUCC(ret) &&OB_FAIL(fetch_commit_scn_from_tx_table(tx_id, commit_scn))) {
+      LOG_WARN("fail to end trans", K(ret), K(tx_id), KPC(ctx_));
+    } else if (OB_SUCC(ret) && OB_FAIL(fetch_commit_scn_from_tx_table(tx_id, commit_scn))) {
       LOG_WARN("fail to fetch commit scn from tx_table", K(ret), K(tx_id));
     }
+    tx_desc = nullptr;
 
+
+    DEBUG_SYNC(ASYNC_TASK_BEFORE_REPLACE_OLD_ADAPTOR);
     RWLock::WLockGuard lock_guard(vec_idx_mgr_->get_adapter_map_lock());
     if (OB_FAIL(ret)) {
     } else if (OB_FALSE_IT(new_adapter_->update_can_skip(NOT_SKIP))) { // can skip only use when create vector index and no dml
@@ -2737,6 +2879,7 @@ int ObVecIndexAsyncTask::execute_clean()
       ret = tmp_ret;
       LOG_WARN("fail to end trans", K(ret));
     }
+    tx_desc = nullptr;
   }
   LOG_INFO("end execute_clean", K(ret));
   return ret;
@@ -3221,7 +3364,8 @@ int ObVecIndexAsyncTask::prepare_dml_del_row_iter(
     ObTableScanIterator *table_scan_iter,
     ObIArray<uint64_t> &extra_column_idxs,
     storage::ObValueRowIterator &row_iter,
-    transaction::ObTxReadSnapshot &snapshot)
+    transaction::ObTxReadSnapshot &snapshot,
+    const bool is_force_delete)
 {
   int ret = OB_SUCCESS;
   ObLobManager *lob_mngr = MTL(ObLobManager*);
@@ -3261,7 +3405,7 @@ int ObVecIndexAsyncTask::prepare_dml_del_row_iter(
       } else if (datum_row->get_column_count() < 3) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get row column cnt invalid.", K(ret), K(datum_row->get_column_count()));
-      } else if (!datum_row->storage_datums_[tmp_visible_col_idx].get_bool()) { // remove visible = false old row
+      } else if (!datum_row->storage_datums_[tmp_visible_col_idx].get_bool() || is_force_delete) { // remove visible = false old row
         LOG_DEBUG("remove old row lob meta record", K(*datum_row));
         ObString data = datum_row->storage_datums_[tmp_data_col_idx].get_string();
         ObLobLocatorV2 lob(data, data.length() > 0);
@@ -3355,9 +3499,9 @@ bool ObVecIndexAsyncTask::check_task_satisfied_memory_limited(ObPluginVectorInde
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(adaptor.get_inc_index_row_cnt(current_incr_count))) {
+    } else if (OB_FAIL(adaptor.get_inc_index_row_cnt_safe(current_incr_count))) {
       LOG_WARN("fail to get incr index number", K(ret));
-    } else if (OB_FAIL(adaptor.get_snap_index_row_cnt(current_snapshot_count))) {
+    } else if (OB_FAIL(adaptor.get_snap_index_row_cnt_safe(current_snapshot_count))) {
       LOG_WARN("fail to get snap index number", K(ret));
     } else if (OB_FALSE_IT(estimate_row_count = current_incr_count + current_snapshot_count)) {
     } else if (OB_FAIL(ObMultiVersionSchemaService::get_instance().get_tenant_schema_guard(tenant_id_, schema_guard))) {
@@ -3696,14 +3840,18 @@ int ObVecIndexAsyncTask::optimize_vector_index(ObPluginVectorIndexAdaptor &adapt
   * otherwise, a deadlock could occur between the query and asynchronous tasks. */
   RWLock::WLockGuard query_lock_guard(old_adapter_->get_query_lock()); // lock for query before end trans
   share::SCN commit_scn;
-  transaction::ObTransID tx_id = tx_desc->get_tx_id(); // save tx_id before end_trans
+  transaction::ObTransID tx_id;
+  if (trans_start && OB_NOT_NULL(tx_desc)) {
+    tx_id = tx_desc->get_tx_id(); // save tx_id before end_trans
+  }
   int tmp_ret = OB_SUCCESS;
   if (trans_start && OB_SUCCESS != (tmp_ret = ObInsertLobColumnHelper::end_trans(tx_desc, OB_SUCCESS != ret, timeout_us))) {
     ret = tmp_ret;
-    LOG_WARN("fail to end trans", K(ret), KPC(tx_desc));
+    LOG_WARN("fail to end trans", K(ret), K(tx_id));
   } else if (OB_SUCC(ret) && OB_FAIL(fetch_commit_scn_from_tx_table(tx_id, commit_scn))) {
     LOG_WARN("fail to fetch commit scn from tx_table", K(ret), K(tx_id));
   }
+  tx_desc = nullptr;
 
   RWLock::WLockGuard lock_guard(vec_idx_mgr_->get_adapter_map_lock());
   if (OB_SUCC(ret)) {
@@ -4018,6 +4166,9 @@ int ObVecIndexAsyncTask::execute_write_snap_index(
   } else if (OB_ISNULL(new_adapter_) || !ls_id_.is_valid() || tenant_id_ == OB_INVALID_TENANT_ID) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr", K(ret), KP(new_adapter_), K(ls_id_), K(tenant_id_));
+  } else if (new_adapter_->is_created_by_segment_merge()) {
+    LOG_INFO("[VECTOR INDEX MERGE] skip execute_write_snap_index, defer serialize and insert to execute_exchange",
+        K(tablet_id), K(snapshot_version), KPC(new_adapter_));
   } else {
     const ObTableSchema *data_table_schema = nullptr;
     const ObTableSchema *snapshot_table_schema = nullptr;

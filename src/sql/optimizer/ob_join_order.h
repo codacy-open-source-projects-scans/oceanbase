@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_JOIN_ORDER_H
@@ -358,6 +351,28 @@ struct DomainIndexAccessInfo
     match_index_ids_.reset();
   }
 
+  int assign(const DomainIndexAccessInfo &other)
+  {
+    int ret = OB_SUCCESS;
+    domain_idx_type_ = other.domain_idx_type_;
+    if (OB_FAIL(index_scan_exprs_.assign(other.index_scan_exprs_))) {
+      SQL_LOG(WARN, "failed to assign index scan exprs", K(ret));
+    } else if (OB_FAIL(index_scan_filters_.assign(other.index_scan_filters_))) {
+      SQL_LOG(WARN, "failed to assign index scan filters", K(ret));
+    } else if (OB_FAIL(index_scan_index_ids_.assign(other.index_scan_index_ids_))) {
+      SQL_LOG(WARN, "failed to assign index scan index ids", K(ret));
+    } else if (OB_FAIL(func_lookup_exprs_.assign(other.func_lookup_exprs_))) {
+      SQL_LOG(WARN, "failed to assign func lookup exprs", K(ret));
+    } else if (OB_FAIL(func_lookup_index_ids_.assign(other.func_lookup_index_ids_))) {
+      SQL_LOG(WARN, "failed to assign func lookup index ids", K(ret));
+    } else if (OB_FAIL(match_exprs_.assign(other.match_exprs_))) {
+      SQL_LOG(WARN, "failed to assign match exprs", K(ret));
+    } else if (OB_FAIL(match_index_ids_.assign(other.match_index_ids_))) {
+      SQL_LOG(WARN, "failed to assign match index ids", K(ret));
+    }
+    return ret;
+  }
+
   bool has_ir_scan() const { return index_scan_exprs_.count() != 0 && domain_idx_type_ == DomainIndexType::FTS_INDEX; }
   bool has_func_lookup() const { return func_lookup_exprs_.count() != 0 && domain_idx_type_ == DomainIndexType::FTS_INDEX; }
   bool has_es_match() const { return match_exprs_.count() != 0 && domain_idx_type_ == DomainIndexType::FTS_INDEX; }
@@ -382,6 +397,7 @@ class Path
     Path(ObJoinOrder* parent, common::ObIAllocator &allocator)
       : parent_(parent),
         is_local_order_(false),
+        is_local_order_by_das_(false),
         is_range_order_(false),
         ordering_(allocator),
         interesting_order_info_(OrderingFlag::NOT_MATCH),
@@ -559,6 +575,7 @@ class Path
      */
     ObJoinOrder* parent_;
     bool is_local_order_;
+    bool is_local_order_by_das_;  // local order originates from DAS scan, cannot be used for GI pullup
     bool is_range_order_;
     ObSqlArray<OrderItem> ordering_;//Path的输出序，不一定来自于Stmt上的expr
     int64_t interesting_order_info_;  // 记录path的序在stmt中的哪些地方用到 e.g. join, group by, order by
@@ -642,10 +659,10 @@ class Path
         range_prefix_count_(0),
         table_opt_info_(),
         domain_idx_info_(allocator),
+        vec_idx_info_(nullptr),
         for_update_(false),
         use_skip_scan_(OptSkipScanState::SS_UNSET),
         use_column_store_(false),
-        is_valid_inner_path_(false),
         index_prefix_(-1),
         can_batch_rescan_(false),
         can_das_dynamic_part_pruning_(-1),
@@ -742,6 +759,7 @@ class Path
     }
 
     int compute_access_path_batch_rescan();
+    int alloc_vector_index_info_if_need(common::ObIAllocator &allocator);
     bool is_rescan_path() const { return est_cost_info_.is_rescan_; }
     int compute_is_das_dynamic_part_pruning(const EqualSets &equal_sets,
                                             const ObIArray<ObRawExpr*> &src_keys,
@@ -766,6 +784,13 @@ class Path
       return NULL != range_provider &&
         range_provider->is_new_query_range() &&
         range_provider->get_unprecise_range_exprs().empty();
+    }
+
+    bool new_range_with_exec_param() const {
+      return (get_query_range_provider() != NULL &&
+              get_query_range_provider()->is_new_query_range() &&
+              (get_query_range_provider()->has_exec_param() ||
+               get_query_range_provider()->has_fake_const_udf()));
     }
 
     TO_STRING_KV(K_(table_id),
@@ -812,12 +837,10 @@ class Path
     int64_t range_prefix_count_; // prefix count
     BaseTableOptInfo *table_opt_info_;
     DomainIndexAccessInfo domain_idx_info_;
-    VecIndexAccessInfo vec_idx_info_;
+    VecIndexAccessInfo *vec_idx_info_;
     bool for_update_;
     OptSkipScanState use_skip_scan_;
     bool use_column_store_;
-    // mark this access path is inner path and contribute query range
-    bool is_valid_inner_path_;
     int64_t index_prefix_;
     bool can_batch_rescan_;
     int64_t can_das_dynamic_part_pruning_;
@@ -1336,6 +1359,7 @@ class Path
       : Path(NULL, allocator),
         table_id_(OB_INVALID_ID),
         value_exprs_(allocator),
+        ori_value_exprs_(allocator),
         column_param_default_exprs_(allocator) {}
     virtual ~JsonTablePath() {}
     int assign(const JsonTablePath &other, common::ObIAllocator *allocator);
@@ -1352,7 +1376,7 @@ class Path
   public:
     uint64_t table_id_;
     ObSqlArray<ObRawExpr*> value_exprs_;
-    common::ObSEArray<ObRawExpr*, 1, common::ModulePageAllocator, true> ori_value_exprs_;
+    ObSqlArray<ObRawExpr*> ori_value_exprs_;
     ObSqlArray<ObColumnDefault> column_param_default_exprs_;
   private:
       DISALLOW_COPY_AND_ASSIGN(JsonTablePath);
@@ -1583,6 +1607,8 @@ struct MergeKeyInfoHelper
         is_semi_anti_join_(false),
         is_index_merge_(false),
         need_domain_id_scan_(false),
+        is_set_vec_strategy_(false),
+        has_primary_hint_(false),
         child_stmt_(NULL),
         pushdown_filters_(),
         filters_(),
@@ -1592,7 +1618,9 @@ struct MergeKeyInfoHelper
         est_method_(EST_INVALID),
         vec_index_id_(OB_INVALID_ID),
         vec_index_type_(ObVecIndexType::VEC_INDEX_INVALID),
-        vec_idx_try_path_(ObVecIdxAdaTryPath::VEC_PATH_UNCHOSEN)
+        vec_idx_try_path_(ObVecIdxAdaTryPath::VEC_PATH_UNCHOSEN),
+        vec_query_strategy_(ObVecIdxQueryStrategy::RECALL_FIRST),
+        vec_pre_filtering_timeout_(-1)
       {}
 
       bool is_inner_path_;
@@ -1600,6 +1628,8 @@ struct MergeKeyInfoHelper
       bool is_semi_anti_join_;
       bool is_index_merge_;
       bool need_domain_id_scan_;
+      bool is_set_vec_strategy_;
+      bool has_primary_hint_;
       ObSelectStmt *child_stmt_;
       // when generate inner access path, save all pushdown filters
       // when generate subquery path, save all pushdown filters after rename
@@ -1622,6 +1652,8 @@ struct MergeKeyInfoHelper
       uint64_t vec_index_id_;
       ObVecIndexType vec_index_type_;
       ObVecIdxAdaTryPath vec_idx_try_path_;
+      ObVecIdxQueryStrategy vec_query_strategy_;
+      int64_t vec_pre_filtering_timeout_;
     };
 
     ObJoinOrder(ObJoinOrderEnum &join_order_enum,
@@ -1824,6 +1856,8 @@ struct MergeKeyInfoHelper
                                                   bool &is_inherited_sharding);
 
     int compute_table_meta_info(const uint64_t table_id, const uint64_t ref_table_id);
+    int compute_external_table_meta_info(const uint64_t ref_table_id,
+                                         const share::schema::ObTableSchema *table_schema);
 
     int fill_path_index_meta_info(ObIArray<AccessPath *> &access_paths);
     int fill_path_index_meta_info_for_one_ap(AccessPath *access_path);
@@ -2153,6 +2187,7 @@ struct MergeKeyInfoHelper
                                     const uint64_t ref_table_id,
                                     const PathHelper &helper,
                                     const bool need_table_filter,
+                                    const bool need_vec_idx_info,
                                     const ObIArray<ObRawExpr*> &unprecise_filters,
                                     ObIArray<ObPCParamEqualInfo> &equal_param_constraints,
                                     ObIArray<ObPCConstParamInfo> &const_param_constraints,
@@ -2482,6 +2517,7 @@ struct MergeKeyInfoHelper
     int compute_base_table_path_plan_type(AccessPath *access_path);
     int compute_base_table_path_ordering(AccessPath *access_path);
     int compute_parallel_and_server_info_for_base_paths(ObIArray<AccessPath *> &access_paths);
+    int add_serial_path_for_base_paths(ObIArray<AccessPath *> &access_paths);
     int get_base_path_table_dop(uint64_t index_id, int64_t &parallel);
     int compute_access_path_parallel(ObIArray<AccessPath *> &access_paths,
                                      int64_t &parallel);
@@ -2896,6 +2932,12 @@ struct MergeKeyInfoHelper
                                const bool is_global_index,
                                ObTablePartitionInfo *&table_partition_info);
 
+    int compute_table_location_with_filters(const uint64_t table_id,
+                                            const uint64_t ref_table_id,
+                                            const bool is_global_index,
+                                            const common::ObIArray<ObRawExpr*> &extra_filters,
+                                            ObTablePartitionInfo *&table_partition_info);
+
     int get_query_range_info(const uint64_t table_id,
                              const uint64_t base_table_id,
                              const uint64_t index_id,
@@ -3063,6 +3105,7 @@ struct MergeKeyInfoHelper
                                    uint64_t ref_table_id,
                                    ObIArray<ObColumnRefRawExpr*> &column_exprs,
                                    ObIArray<ObString> &partition_names,
+                                   const bool is_all_partitions_selected,
                                    common::ObLakeTableStat &table_stat,
                                    ObIArray<common::ObLakeColumnStat*> &column_stats);
     int get_lake_table_partition_values(ObIArray<ObString> &partition_names);
@@ -3370,7 +3413,10 @@ struct MergeKeyInfoHelper
                                       ObIArray<ObPCConstParamInfo> &param_infos,
                                       ObRawExpr *&matched_expr,
                                       bool &is_match,
-                                      bool &is_precise_deduced);
+                                      bool &is_precise_deduced,
+                                      const bool need_diag);
+    int is_index_hint_covering_gen_col(const ObColumnRefRawExpr &gen_col_expr,
+                                       bool &need_diag) const;
 
     int check_simple_prefix_cmp_expr(ObRawExpr *expr,
                                       ObColumnRefRawExpr *&column_expr,
@@ -3459,6 +3505,9 @@ struct MergeKeyInfoHelper
                                             const ObIArray<ColumnItem> &range_columns,
                                             const ColumnItem *&column_item);
     bool is_expanded_realtime_major_refresh_mview() const;
+    bool has_whole_range(const ObQueryRangeArray &ranges);
+    int resolve_vec_query_strategy(const ObDMLStmt &stmt,
+                                   PathHelper &helper);
     friend class ::test::TestJoinOrder_ob_join_order_param_check_Test;
     friend class ::test::TestJoinOrder_ob_join_order_src_Test;
 

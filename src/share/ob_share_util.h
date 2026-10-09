@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_SHARE_UTIL_H_
@@ -127,6 +120,9 @@ public:
   static int check_compat_version_for_columnstore_replica(
       const uint64_t tenant_id,
       bool &is_compatible);
+
+  static int check_compat_version_for_subpartition_sharding(
+      const uint64_t tenant_id);
 
   static bool check_compat_version_for_hetero_zone(
       const uint64_t data_version);

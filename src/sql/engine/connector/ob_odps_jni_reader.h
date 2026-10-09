@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_ENGINE_CONNECTOR_OB_JNI_SCANNER_H_
@@ -29,6 +22,7 @@
 #include "ob_odps_jni_connector.h"
 
 namespace arrow {
+  class Schema;
   class RecordBatch;
   class Array;
 }
@@ -55,9 +49,9 @@ public:
     RETURN_ODPS_BATCH,
     RETURN_OB_BATCH
   };
-  enum TransferMode {
-    ARROW_TABLE,
-    OFF_HEAP_TABLE
+  enum TransferMode : int8_t {
+    ARROW_TABLE = 0,
+    OFF_HEAP_TABLE = 1
   };
 
 public:
@@ -98,6 +92,21 @@ public:
   }
   SplitMode get_split_mode() {
     return split_mode_;
+  }
+  void set_data_transfer_mode(const int8_t mode)
+  {
+    if (mode == 0) { // arrowTable
+      transfer_mode_ = ObOdpsJniReader::TransferMode::ARROW_TABLE;
+      split_mode_ = ObOdpsJniReader::SplitMode::RETURN_ODPS_BATCH;
+    } else {
+      transfer_mode_ = ObOdpsJniReader::TransferMode::OFF_HEAP_TABLE;
+      split_mode_ = ObOdpsJniReader::SplitMode::RETURN_OB_BATCH;
+    }
+  }
+  void set_data_transfer_mode(TransferMode mode)
+  {
+    transfer_mode_ = mode;
+    split_mode_ = (mode == ARROW_TABLE) ? RETURN_ODPS_BATCH : RETURN_OB_BATCH;
   }
   JniTableMeta& get_jni_table_meta() {
     return table_meta_;
@@ -161,6 +170,7 @@ private:
   common::hash::ObHashSet<ObString> skipped_required_params_;
   // batch_size is for jni scanner to fetch data at once.
   JniTableMeta table_meta_;
+  std::shared_ptr<arrow::Schema> cur_arrow_schema_;
   std::shared_ptr<arrow::RecordBatch> cur_arrow_batch_;
   std::shared_ptr<arrow::RecordBatch> cur_reader_;
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_TABLE_CONTEXT_H_
@@ -791,6 +784,12 @@ private:
   int init_schema_info_from_cache();
   int adjust_rowkey();
   int adjust_properties();
+  // TableAPI temporal FSP: truncate matches ob_datum_cast; round uses obj_accuracy_check (ObDateTimeTC / ObMySQLDateTimeTC).
+  static const int64_t TEMPORAL_POWER_OF_10[MAX_SCALE_FOR_TEMPORAL + 1];
+  static int adjust_obj_temporal_to_column_scale(const common::ObAccuracy &accuracy,
+                                                 const common::ObCollationType cs_type,
+                                                 const bool need_truncate,
+                                                 ObObj &obj);
   // 获取索引表的tablet_id
   int get_related_tablet_id(const share::schema::ObTableSchema &index_schema,
                             common::ObTabletID &related_tablet_id);

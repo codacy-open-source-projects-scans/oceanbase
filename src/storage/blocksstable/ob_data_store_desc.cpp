@@ -1,12 +1,5 @@
-//Copyright (c) 2023 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2023 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 
 #define USING_LOG_PREFIX STORAGE
 
@@ -77,7 +70,6 @@ int ObStaticDataStoreDesc::assign(const ObStaticDataStoreDesc &desc)
   enable_macro_block_bloom_filter_ = desc.enable_macro_block_bloom_filter_;
   micro_block_format_version_ = desc.micro_block_format_version_;
   need_submit_io_ = desc.need_submit_io_;
-  merge_engine_type_ = desc.merge_engine_type_;
   encoding_granularity_ = desc.encoding_granularity_;
   concurrent_cnt_ = desc.concurrent_cnt_;
   reorganization_scn_ = desc.reorganization_scn_;
@@ -214,7 +206,6 @@ int ObStaticDataStoreDesc::init(
         // for mini/minor, use default compressor
         compressor_type_ = DEFAULT_MINOR_COMPRESSOR_TYPE;
       }
-      merge_engine_type_ = merge_schema.get_merge_engine_type();
       (void) init_block_size(merge_schema);
       uint64_t compat_version = 0;
       if (cluster_version > 0) {
@@ -1013,7 +1004,8 @@ int ObWholeDataStoreDesc::init(
   } else if (OB_FAIL(inner_init(merge_schema, cg_schema, table_cg_idx))) {
     STORAGE_LOG(WARN, "failed to init", KR(ret), K(merge_schema), K(cg_schema), K(table_cg_idx));
   } else {
-    STORAGE_LOG(INFO, "success to init data store desc", KR(ret), K(cg_schema), K(table_cg_idx), KPC(this));
+    STORAGE_LOG(INFO, "success to init data store desc", KR(ret), K(cg_schema), K(table_cg_idx),
+        KPC(this));
   }
   return ret;
 }
@@ -1135,8 +1127,19 @@ int64_t ObSimplePrintDataStoreDesc::to_string(char *buf, const int64_t buf_len) 
   if (OB_ISNULL(buf) || buf_len <= 0) {
   } else {
     J_OBJ_START();
-    if (nullptr != desc_.get_col_desc()) {
-      J_KV("col_desc", *desc_.get_col_desc());
+    const ObColDataStoreDesc *col_desc = desc_.get_col_desc();
+    if (nullptr != col_desc) {
+      // only print the column summary, omit the heavy col_desc_array /
+      // col_default_checksum_array / agg_meta_array (the full column schema is
+      // already logged once when the merged tablet is inited).
+      J_KV("col_desc", "summarized",
+           "is_row_store", col_desc->is_row_store_,
+           "table_cg_idx", col_desc->table_cg_idx_,
+           "row_column_count", col_desc->row_column_count_,
+           "rowkey_column_count", col_desc->rowkey_column_count_,
+           "schema_rowkey_col_cnt", col_desc->schema_rowkey_col_cnt_,
+           "full_stored_col_cnt", col_desc->full_stored_col_cnt_,
+           "col_desc_cnt", col_desc->col_desc_array_.count());
     } else {
       J_KV("col_desc", "nullptr");
     }

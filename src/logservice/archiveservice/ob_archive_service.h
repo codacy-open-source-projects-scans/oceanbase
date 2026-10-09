@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ARCHIVE_OB_ARCHIVE_SERVICE_H_
@@ -127,13 +120,13 @@ private:
   };
 private:
   void run1();
-  void do_thread_task_();
+  bool do_thread_task_();
   bool need_check_switch_archive_() const;
   bool need_check_switch_stop_status_() const;
   bool need_print_archive_status_() const;
 
   // ============= 开启/关闭归档 ========== //
-  void do_check_switch_archive_();
+  bool do_check_switch_archive_();
   // 1. 获取租户级归档配置项信息
   int load_archive_round_attr_(ObTenantArchiveRoundAttr &attr);
 
@@ -171,6 +164,7 @@ private:
 
 private:
   const int64_t THREAD_RUN_INTERVAL = 5 * 1000 * 1000L;
+  const int64_t FAST_THREAD_RUN_INTERVAL = 1 * 1000 * 1000L; // 1s, used during transient states (BEGINNING/STOPPING)
 private:
   bool inited_;
   uint64_t tenant_id_;

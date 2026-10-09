@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -776,6 +769,7 @@ int ObEmbeddingTaskMgr::get_ai_config(const common::ObString &model_id)
     const share::ObAiModelEndpointInfo *endpoint_info = nullptr;
     omt::ObAiServiceGuard ai_service_guard;
     omt::ObTenantAiService *ai_service = MTL(omt::ObTenantAiService*);
+    bool use_request_model_name = false;
     if (OB_FAIL(ObAIFuncUtils::get_ai_func_info(allocator_, const_cast<common::ObString&>(model_id), info))) {
       LOG_WARN("failed to get ai func info", K(ret), K(model_id));
     } else if (OB_ISNULL(info)) {
@@ -788,9 +782,12 @@ int ObEmbeddingTaskMgr::get_ai_config(const common::ObString &model_id)
       LOG_WARN("failed to get ai service guard", K(ret));
     } else if (OB_FAIL(ai_service_guard.get_ai_endpoint_by_ai_model_name(model_id, endpoint_info))) {
       LOG_WARN("failed to get endpoint info", K(ret), K(model_id));
+    } else if (OB_FALSE_IT(use_request_model_name = !endpoint_info->get_request_model_name().empty())) {
     } else if (OB_FAIL(ob_write_string(allocator_, endpoint_info->get_url(), cfg_.model_url_))) {
       LOG_WARN("failed to copy model_url", K(ret));
-    } else if (OB_FAIL(ob_write_string(allocator_, info->model_, cfg_.model_name_))) {
+    } else if (use_request_model_name && OB_FAIL(ob_write_string(allocator_, endpoint_info->get_request_model_name(), cfg_.model_name_))) {
+      LOG_WARN("failed to copy model_name", K(ret));
+    } else if (!use_request_model_name && OB_FAIL(ob_write_string(allocator_, info->model_, cfg_.model_name_))) {
       LOG_WARN("failed to copy model_name", K(ret));
     } else if (OB_FAIL(endpoint_info->get_unencrypted_access_key(allocator_, cfg_.user_key_))) {
       LOG_WARN("failed to copy user_key", K(ret));

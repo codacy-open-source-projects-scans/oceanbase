@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_DML_RUNNING_CTX
@@ -18,6 +11,7 @@
 #include "storage/ob_relative_table.h"
 #include "share/scn.h"
 #include "storage/lob/ob_lob_tablet_dml.h"
+#include "storage/lob/ob_lob_access_param.h"
 
 namespace oceanbase
 {
@@ -85,6 +79,8 @@ private:
       const uint64_t table_id,
       const int64_t tenant_schema_version);
 
+  int init_lob_ttl_column_info();
+
 public:
   ObStoreCtx &store_ctx_;
   const ObDMLBaseParam &dml_param_;
@@ -102,6 +98,7 @@ public:
   bool is_delete_insert_table_;
   ObLobTabletDmlCtx lob_dml_ctx_;
   common::ObFixedArray<bool, common::ObIAllocator> main_table_rowkey_col_flag_;
+  ObLobTTLColumnInfo lob_ttl_column_info_;
 
 private:
   share::schema::ObSchemaGetterGuard schema_guard_;

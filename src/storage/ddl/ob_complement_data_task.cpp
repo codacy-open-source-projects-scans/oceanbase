@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -214,6 +207,8 @@ int ObComplementDataParam::init(const ObDDLBuildSingleReplicaRequestArg &arg)
       LOG_WARN("get tenant schema failed", K(ret), K(dest_tenant_id_));
     } else if (OB_FAIL(ObDDLTableSchema::fill_ddl_table_schema(schema_guard, dest_tenant_id_, dest_table_id_, data_format_version_, allocator_, ddl_table_schema_))) {
       LOG_WARN("fill ddl table schema failed", K(ret));
+    } else if (FALSE_IT(ddl_table_schema_.table_item_.is_vec_tablet_rebuild_ = false)) {
+      // Complement data is never vec tablet rebuild; avoid false positive when dest is available HNSW.
     } else if (FALSE_IT(ddl_table_schema_.src_tenant_id_ = orig_tenant_id)) {
     } else if (OB_FAIL(fill_tablet_param())) {
       LOG_WARN("fill tablet param failed", K(ret));
@@ -507,6 +502,7 @@ int ObComplementDataContext::init(
   ObTabletMemberWrapper<ObTabletTableStore> table_store_wrapper;
   bool is_column_store = false;
   bool is_cs_replica_exist = false;
+  bool skip_complement_by_major = false;
   if (OB_UNLIKELY(is_inited_)) {
     ret = OB_INIT_TWICE;
     LOG_WARN("ObComplementDataContext has already been inited", K(ret));
@@ -525,15 +521,33 @@ int ObComplementDataContext::init(
     LOG_WARN("tablet handle is null", K(ret), K(param));
   } else if (OB_FAIL(ObTabletDDLUtil::check_and_get_major_sstable(param.dest_ls_id_, param.dest_tablet_id_, first_major_sstable, table_store_wrapper))) {
     LOG_WARN("check if major sstable exist failed", K(ret), K(param));
-  } else if (nullptr != first_major_sstable) {
-    LOG_INFO("major exists, skip create tablet direct load mgr", K(ret), K(param));
-  } else if (OB_FAIL(hidden_table_schema.get_is_column_store(is_column_store))) {
-    LOG_WARN("failed to check is column store", K(ret));
-  } else if (OB_FAIL(ObDirectLoadMgrUtil::check_cs_replica_exist(param.dest_ls_id_, param.dest_tablet_id_, is_cs_replica_exist))) {
-    LOG_WARN("failed to check tablet_id exist", K(ret));
-  } else if (FALSE_IT(is_column_store = is_cs_replica_exist ? true : is_column_store)) {
   } else {
-    total_slice_cnt_ = param.ranges_.count();
+    /* Skip complement write only when both data tablet and lob meta tablet (if any) already have major.
+     * Otherwise retry may see main major from a prior attempt while lob still has DDL_DUMP only — lob_write_stat_
+     * stays 0 and merge_cg_slice idempotency fails (-4016). */
+    skip_complement_by_major = (nullptr != first_major_sstable);
+    if (OB_SUCC(ret) && skip_complement_by_major && param.dest_lob_meta_tablet_id_.is_valid()) {
+      const ObSSTable *lob_first_major_sstable = nullptr;
+      ObTabletMemberWrapper<ObTabletTableStore> lob_table_store_wrapper;
+      if (OB_FAIL(ObTabletDDLUtil::check_and_get_major_sstable(
+              param.dest_ls_id_, param.dest_lob_meta_tablet_id_, lob_first_major_sstable, lob_table_store_wrapper))) {
+        LOG_WARN("check if lob meta major sstable exist failed", K(ret), K(param));
+      } else if (nullptr == lob_first_major_sstable) {
+        skip_complement_by_major = false;
+        FLOG_INFO("main major exists but lob meta has no major, still run complement write for lob", K(ret), K(param));
+      }
+    }
+    if (OB_FAIL(ret)) {
+    } else if (skip_complement_by_major) {
+      LOG_INFO("major exists, skip create tablet direct load mgr", K(ret), K(param));
+    } else if (OB_FAIL(hidden_table_schema.get_is_column_store(is_column_store))) {
+      LOG_WARN("failed to check is column store", K(ret));
+    } else if (OB_FAIL(ObDirectLoadMgrUtil::check_cs_replica_exist(param.dest_ls_id_, param.dest_tablet_id_, is_cs_replica_exist))) {
+      LOG_WARN("failed to check tablet_id exist", K(ret));
+    } else if (FALSE_IT(is_column_store = is_cs_replica_exist ? true : is_column_store)) {
+    } else {
+      total_slice_cnt_ = param.ranges_.count();
+    }
   }
 
   /* tablet context only used for following merge task, only part of param are necessary*/
@@ -554,7 +568,7 @@ int ObComplementDataContext::init(
   }
 
   if (OB_SUCC(ret)) {
-    is_major_sstable_exist_ = nullptr != first_major_sstable ? true : false;
+    is_major_sstable_exist_ = skip_complement_by_major;
     concurrent_cnt_ = param.concurrent_cnt_;
     is_inited_ = true;
   }
@@ -1097,7 +1111,8 @@ int ObComplementPrepareTask::process()
                                                     0/*use 0 just to avoid clearing target table chksum*/,
                                                     param_->task_id_,
                                                     *GCTX.sql_proxy_,
-                                                    param_->tablet_task_id_))) {
+                                                    param_->tablet_task_id_,
+                                                    false/*is_unique_index_checksum*/))) {
     LOG_WARN("failed to delete checksum", K(ret), KPC(param_));
   } else {
     LOG_INFO("finish the complement prepare task", K(ret), KPC(param_), "ddl_event_info", ObDDLEventInfo());
@@ -1314,6 +1329,7 @@ int ObComplementWriteTask::fill_writer_param(ObWriteMacroParam &param)
   param.lob_meta_tablet_param_ = param_->lob_meta_tablet_param_;
   param.lob_meta_tablet_id_ = param_->dest_lob_meta_tablet_id_;
   param.tablet_context_ = context_->tablet_ctx_;
+  param.start_scn_ = context_->tablet_ctx_->get_start_scn();
   // do not need to set param.tx_info_;
   if (OB_FAIL(param.ddl_table_schema_.assign(param_->ddl_table_schema_))) {
     LOG_WARN("get ddl table schema failed", K(ret));
@@ -1882,7 +1898,7 @@ int ObComplementReportReplicaTask::process()
 ObLocalScan::ObLocalScan() : is_inited_(false), tenant_id_(OB_INVALID_TENANT_ID), table_id_(OB_INVALID_ID),
     dest_table_id_(OB_INVALID_ID), schema_version_(0), extended_gc_(),
     default_row_(), write_row_(), row_iter_(nullptr), scan_merge_(nullptr), ctx_(), access_param_(),
-    access_ctx_(), get_table_param_(), allocator_("ObLocalScan", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+    access_ctx_(), tablet_read_tables_(), allocator_("ObLocalScan", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
     calc_buf_(ObModIds::OB_SQL_EXPR_CALC, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()), col_params_(), read_info_(),
     exist_column_mapping_(allocator_)
 {}
@@ -2158,7 +2174,7 @@ int ObLocalScan::construct_access_param(
 
   /*construct cg_idx*/
   if (OB_FAIL(ret)) {
-  } else if(OB_FAIL(data_table_schema.has_all_column_group(has_all_cg))) {
+  } else if(OB_FAIL(data_table_schema.has_column_group(ObColumnGroupType::ALL_COLUMN_GROUP, has_all_cg))) {
     LOG_WARN("fail to check whether table has all cg", K(ret), K(data_table_schema));
   } else if (!has_all_cg) {
     for (int64_t i = 0; i < col_params_.count(); i++) {
@@ -2242,7 +2258,7 @@ int ObLocalScan::construct_multiple_scan_merge(
   int ret = OB_SUCCESS;
   void *buf = nullptr;
   LOG_INFO("start to do output_store.scan");
-  if (OB_FAIL(get_table_param_.tablet_iter_.assign(table_iter))) {
+  if (OB_FAIL(tablet_read_tables_.tablet_iter_.assign(table_iter))) {
     LOG_WARN("fail to assign tablet iterator", K(ret));
   } else if (OB_ISNULL(buf = allocator_.alloc(sizeof(ObMultipleScanMerge)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -2250,7 +2266,7 @@ int ObLocalScan::construct_multiple_scan_merge(
   } else if (FALSE_IT(scan_merge_ = new(buf)ObMultipleScanMerge())) {
     ret = OB_ERR_SYS;
     LOG_WARN("fail to do placement new", K(ret));
-  } else if (OB_FAIL(scan_merge_->init(access_param_, access_ctx_, get_table_param_))) {
+  } else if (OB_FAIL(scan_merge_->init(access_param_, access_ctx_, tablet_read_tables_))) {
     LOG_WARN("fail to init scan merge", K(ret), K(access_param_), K(access_ctx_));
   } else if (OB_FAIL(scan_merge_->open(range))) {
     LOG_WARN("fail to open scan merge", K(ret), K(access_param_), K(access_ctx_), K(range));
@@ -2519,6 +2535,7 @@ int ObRemoteScan::init(const uint64_t tenant_id,
       ddl_info.set_is_ddl(true);
       ddl_info.set_source_table_hidden(false);
       ddl_info.set_dest_table_hidden(false);
+      ddl_info.set_retryable_ddl(true);
       if (OB_FAIL(session_param.ddl_info_.init(ddl_info, hidden_table_schema->get_session_id()))) {
         LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info), K(hidden_table_schema->get_session_id()));
       } else if (OB_FAIL(ObBackupUtils::get_tenant_sys_time_zone_wrap(dest_tenant_id_, time_zone, tz_info_wrap_))) {

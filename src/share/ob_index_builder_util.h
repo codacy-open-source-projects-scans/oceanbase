@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_INDEX_BUILDER_UTIL_H_
@@ -84,6 +77,10 @@ public:
 
 private:
   static const int SPATIAL_MBR_COLUMN_MAX_LENGTH = 32;
+  static bool need_strip_generated_column_flags_and_default(
+      const share::schema::ObColumnSchemaV2 &column);
+  static int clear_stored_generated_column_dependency(
+      share::schema::ObColumnSchemaV2 &column);
   static int generate_prefix_column(
       const obrpc::ObColumnSortItem &sort_item,
       const ObSQLMode sql_mode,
@@ -103,7 +100,7 @@ private:
   static int add_shadow_partition_keys(
       const share::schema::ObTableSchema &data_schema,
       common::ObRowDesc &row_desc,
-      share::schema::ObTableSchema &schema);
+      share::schema::ObTableSchema &index_schema);
   static int adjust_spatial_args(
       obrpc::ObCreateIndexArg &arg,
       share::schema::ObTableSchema &data_schema,

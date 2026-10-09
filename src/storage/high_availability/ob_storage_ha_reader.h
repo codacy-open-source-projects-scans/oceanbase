@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_HA_MACRO_BLOCK_READER_
@@ -83,7 +76,7 @@ struct ObCopyMacroBlockReaderInitParam final
   int assign(const ObCopyMacroBlockReaderInitParam &param);
 
   TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(table_key), KPC_(copy_macro_range_info), K_(src_info),
-      K_(is_leader_restore), K_(restore_action), KP_(bandwidth_throttle), KP_(svr_rpc_proxy),
+      K_(is_leader_restore), K_(restore_action), K_(ha_svc_ctx),
       KP_(restore_base_info), KP_(meta_index_store), KP_(second_meta_index_store),
       KP_(restore_macro_block_id_mgr), KP_(macro_block_reuse_mgr), K_(copy_macro_block_infos));
 
@@ -94,8 +87,7 @@ struct ObCopyMacroBlockReaderInitParam final
   ObStorageHASrcInfo src_info_;
   bool is_leader_restore_;
   ObTabletRestoreAction::ACTION restore_action_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   const ObRestoreBaseInfo *restore_base_info_;
   backup::ObBackupMetaIndexStoreWrapper *meta_index_store_;
   backup::ObBackupMetaIndexStoreWrapper *second_meta_index_store_;
@@ -129,7 +121,7 @@ private:
 private:
   bool is_inited_;
   obrpc::ObStorageRpcProxy::SSHandle<obrpc::OB_HA_FETCH_MACRO_BLOCK> handle_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   blocksstable::ObBufferReader data_buffer_; // Data used to assemble macroblocks
   common::ObDataBuffer rpc_buffer_;
   int64_t rpc_buffer_parse_pos_;
@@ -740,14 +732,6 @@ private:
   int fetch_sstable_macro_range_(
       const obrpc::ObCopySSTableMacroRangeInfoHeader &header,
       common::ObIArray<ObCopyMacroRangeIdInfo> &macro_range_info_array);
-  int get_next_shared_ddl_sstable_range_info_(
-      const ObITable::TableKey &table_key,
-      ObCopySSTableMacroRangeInfo &sstable_macro_range_info);
-  int build_shared_ddl_sstable_range_info_(
-      const ObITable::TableKey &table_key,
-      const common::ObIArray<backup::ObBackupLinkedItem> &link_item,
-      ObCopySSTableMacroRangeInfo &sstable_macro_range_info);
-
 private:
   static const int64_t FETCH_SSTABLE_MACRO_INFO_TIMEOUT = 60 * 1000 * 1000; //60s
   bool is_inited_;
@@ -974,7 +958,7 @@ struct ObCopySSTableMacroIdInfoReaderInitParam final
   bool is_valid() const;
   int assign(const ObCopySSTableMacroIdInfoReaderInitParam &param);
   TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(table_key),
-      K_(src_info), K_(is_leader_restore), K_(restore_action), KP_(bandwidth_throttle), KP_(svr_rpc_proxy),
+      K_(src_info), K_(is_leader_restore), K_(restore_action), K_(ha_svc_ctx),
       KP_(restore_base_info), KP_(meta_index_store), KP_(second_meta_index_store),
       KP_(restore_macro_block_id_mgr), K_(need_check_seq), K_(ls_rebuild_seq), K_(filled_tx_scn));
   uint64_t tenant_id_;
@@ -983,8 +967,7 @@ struct ObCopySSTableMacroIdInfoReaderInitParam final
   ObStorageHASrcInfo src_info_;
   bool is_leader_restore_;
   ObTabletRestoreAction::ACTION restore_action_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   const ObRestoreBaseInfo *restore_base_info_;
   backup::ObBackupMetaIndexStoreWrapper *meta_index_store_;
   backup::ObBackupMetaIndexStoreWrapper *second_meta_index_store_;

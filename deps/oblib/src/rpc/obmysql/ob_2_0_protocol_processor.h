@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_2_0_PROTOCOL_PROCESSOR_H_
@@ -69,12 +62,15 @@ private:
                               &trace_info_dcd_,
                               &sess_info_dcd_,
                               &full_trc_dcd_,
-                              &sess_info_veri_dcd_
+                              &sess_info_veri_dcd_,
+                              &proxy_one_way_sync_dcd_
                             };
   Obp20TaceInfoDecoder trace_info_dcd_;
   Obp20SessInfoDecoder sess_info_dcd_;
   Obp20FullTrcDecoder full_trc_dcd_;
   Obp20SessInfoVeriDecoder sess_info_veri_dcd_;
+  // proxy one way sync decoder for database isolation
+  Obp20ProxyOneWaySyncDecoder proxy_one_way_sync_dcd_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(Ob20ProtocolProcessor);

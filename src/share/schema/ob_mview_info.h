@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -65,6 +58,7 @@ public:
   DEFINE_GETTER_AND_SETTER(uint64_t, data_sync_scn);
   DEFINE_GETTER_AND_SETTER(bool, is_synced);
   DEFINE_GETTER_AND_SETTER(ObMVNestedRefreshMode, nested_refresh_mode);
+  DEFINE_GETTER_AND_SETTER(uint64_t, compat_version);
 
 #undef DEFINE_GETTER_AND_SETTER
 #undef DEFINE_STRING_GETTER_AND_SETTER
@@ -79,11 +73,18 @@ public:
   int gen_update_mview_attribute_dml(const uint64_t exec_tenant_id, ObDMLSqlSplicer &dml) const;
   int gen_update_mview_last_refresh_info_dml(const uint64_t exec_tenant_id,
                                              ObDMLSqlSplicer &dml) const;
+  int set_last_refresh_info(ObISQLClient &sql_client,
+                            const uint64_t tenant_id,
+                            const uint64_t last_refresh_scn,
+                            const uint64_t target_data_sync_scn,
+                            const ObMVRefreshType refresh_type,
+                            const int64_t start_time,
+                            const int64_t end_time);
 
   static int insert_mview_info(ObISQLClient &sql_client, const ObMViewInfo &mview_info);
   static int update_mview_attribute(ObISQLClient &sql_client, const ObMViewInfo &mview_info);
-  static int update_mview_last_refresh_info(ObISQLClient &sql_client,
-                                            const ObMViewInfo &mview_info);
+  static int record_mview_info(ObISQLClient &sql_client,
+                               const ObMViewInfo &mview_info);
   static int drop_mview_info(ObISQLClient &sql_client, const ObMViewInfo &mview_info);
   static int drop_mview_info(ObISQLClient &sql_client, const uint64_t tenant_id,
                              const uint64_t mview_id);
@@ -101,13 +102,9 @@ public:
                                                       const uint64_t tenant_id, bool &contains);
   static int contains_major_refresh_mview(ObISQLClient &sql_client,
                                           const uint64_t tenant_id, bool &contains);
+
   static int update_mview_data_sync_scn(ObISQLClient &sql_client, uint64_t tenant_id,
                                         ObMViewInfo &mview_info, const uint64_t refresh_scn);
-  static int update_mview_data_attr(ObISQLClient &sql_client,
-                                    const uint64_t tenant_id,
-                                    const uint64_t refresh_scn,
-                                    const uint64_t target_data_sync_scn,
-                                    ObMViewInfo &mview_info);
   static int bacth_fetch_mview_infos(ObISQLClient &sql_client,
                                      const uint64_t tenant_id,
                                      const uint64_t refresh_scn,
@@ -141,10 +138,19 @@ public:
                K_(refresh_dop),
                K_(data_sync_scn),
                K_(is_synced),
-               K_(nested_refresh_mode));
+               K_(nested_refresh_mode),
+               K_(compat_version));
 
 public:
   static constexpr char *MVIEW_REFRESH_JOB_PREFIX = const_cast<char *>("MVIEW_REFRESH$J_");
+
+private:
+  static int check_consistent_refresh_satisfied(ObISQLClient &sql_client,
+                                                const uint64_t tenant_id,
+                                                const uint64_t mview_id,
+                                                const uint64_t target_data_sync_ts,
+                                                const uint64_t snapshot_version,
+                                                bool &satisfied);
 
 private:
   uint64_t tenant_id_;
@@ -165,6 +171,7 @@ private:
   uint64_t data_sync_scn_;
   bool is_synced_;
   ObMVNestedRefreshMode nested_refresh_mode_;
+  uint64_t compat_version_;
 };
 
 } // namespace schema

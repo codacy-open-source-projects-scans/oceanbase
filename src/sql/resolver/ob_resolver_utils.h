@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_RESOLVER_UTILS_H
@@ -296,6 +289,10 @@ public:
                          const ObString &dblink_name = ObString(""),
                          ObIAllocator *allocator = NULL,
                          ObSynonymChecker *synonym_checker = NULL);
+  static int record_deduced_type(const pl::ObPLResolveCtx &resolve_ctx,
+                                 const ObIRoutineInfo *&routine_info,
+                                 const common::ObIArray<ObRawExpr *> &expr_params,
+                                 bool is_from_overloaded_routine);
   static int get_routine(const pl::ObPLResolveCtx &resolve_ctx,
                          uint64_t tenant_id,
                          const ObString &current_database,
@@ -335,7 +332,8 @@ public:
   static int resolve_obj_access_ref_node(ObRawExprFactory &expr_factory,
                                          const ParseNode *node,
                                          ObQualifiedName &q_name,
-                                         const ObSQLSessionInfo &session_info);
+                                         const ObSQLSessionInfo &session_info,
+                                         TgTimingEvent tg_timing_event = TgTimingEvent::TG_TIMING_EVENT_INVALID);
 
   static int set_parallel_info(sql::ObSQLSessionInfo &session_info,
                                share::schema::ObSchemaGetterGuard &schema_guard,
@@ -410,14 +408,16 @@ public:
                            int8_t min_const_integer_precision,
                            uint64_t exec_min_cluster_version,
                            bool is_from_pl = false,
-                           bool fmt_int_or_ch_decint = false);
+                           bool fmt_int_or_ch_decint = false,
+                           ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57);
 
   static int set_string_val_charset(ObIAllocator &allocator,
                                     ObObjParam &val,
                                     ObString &charset,
                                     ObObj &result_val,
                                     bool is_strict_mode,
-                                    bool return_ret);
+                                    bool return_ret,
+                                    ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57);
 
   static int resolve_data_type(const ParseNode &type_node,
                                const common::ObString &ident_name,
@@ -761,6 +761,11 @@ public:
   static int uv_check_dup_base_col(const TableItem &table_item,
                                    bool &has_dup,
                                    bool &has_nol_col_ref);
+  static int uv_check_dup_base_col(const TableItem &table_item,
+                                   const ObIArray<ColumnItem> &column_items,
+                                   const ObIArray<ObColumnRefRawExpr *> &values_desc,
+                                   bool &has_dup,
+                                   bool &has_nol_col_ref);
 
   static int uv_mysql_insertable_join(const TableItem &table_item, const uint64_t base_tid, bool &insertable);
 
@@ -895,17 +900,26 @@ public:
     const common::ObString &table_name,
     const common::ObString &column_name,
     ObRawExpr *&expr);
+  static int build_refined_external_column_expr_name(
+    ObIAllocator &allocator,
+    const ObSQLSessionInfo *session_info,
+    ObRawExpr *get_path_expr,
+    sql::ColumnIndexType column_index_type,
+    uint64_t column_idx,
+    common::ObString &refined_column_name,
+    common::ObString &data_access_path);
   static int build_file_column_expr_for_parquet(
     ObRawExprFactory &expr_factory,
     const ObSQLSessionInfo &session_info,
     const uint64_t table_id,
     const common::ObString &table_name,
     const common::ObString &column_name,
-    ObRawExpr *get_path_expr,
     ObRawExpr *cast_expr,
     const ObColumnSchemaV2 *generated_column,
     sql::ColumnIndexType column_index_type,
     uint64_t column_idx,
+    const common::ObString &data_access_path,
+    const common::ObString &refined_column_name,
     ObRawExpr *&expr);
   //only used for DDL resolver, resolve a PSEUDO column expr for validation and printer not for execution
   static int resolve_external_table_column_def(ObRawExprFactory &expr_factory,
@@ -1047,6 +1061,7 @@ public:
   static int set_flashback_info_for_view(ObDMLStmt *stmt,
                                          ObRawExpr* const flashback_query_expr,
                                          const TableItem::FlashBackQueryType flashback_query_type);
+  static int check_default_tablespace_enable(ObSQLSessionInfo *session_info);
 private:
   static int try_convert_to_unsiged(const ObRawExprResType &restype,
                                     ObRawExpr& src_expr,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -229,13 +222,13 @@ ObPushdownFilterExecutor* TestCOSSTableRowsFilter::create_physical_filter(
     ObPushdownWhiteFilterNode* white_node =
       OB_NEWx(ObPushdownWhiteFilterNode, allocator_ptr, allocator_);
     filter = OB_NEWx(ObWhiteFilterExecutor, allocator_ptr, allocator_,
-                       *white_node, *pushdown_operator_);
+                       *white_node, pushdown_operator_);
     column_exprs = &(white_node->column_exprs_);
   } else {
     ObPushdownBlackFilterNode* black_node =
       OB_NEWx(ObPushdownBlackFilterNode, allocator_ptr, allocator_);
     filter = OB_NEWx(ObBlackFilterExecutor, allocator_ptr, allocator_,
-                      *black_node, *pushdown_operator_);
+                      *black_node, pushdown_operator_);
     column_exprs = &(black_node->column_exprs_);
   }
   common::ObFixedArray<uint32_t, common::ObIAllocator> &cg_idxes = filter->cg_idxs_;
@@ -259,11 +252,11 @@ ObPushdownFilterExecutor* TestCOSSTableRowsFilter::create_logical_filter(
   if (is_and) {
     ObPushdownAndFilterNode* and_node = OB_NEWx(ObPushdownAndFilterNode, allocator_ptr, allocator_);
     filter = OB_NEWx(ObAndFilterExecutor, allocator_ptr, allocator_,
-                     *and_node, *pushdown_operator_);
+                     *and_node, pushdown_operator_);
   } else {
     ObPushdownOrFilterNode* or_node = OB_NEWx(ObPushdownOrFilterNode, allocator_ptr, allocator_);
     filter = OB_NEWx(ObOrFilterExecutor, allocator_ptr, allocator_,
-                     *or_node, *pushdown_operator_);
+                     *or_node, pushdown_operator_);
   }
   return filter;
 }

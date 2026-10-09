@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -24,6 +17,7 @@
 #include "sql/resolver/ddl/ob_create_mlog_stmt.h"
 #include "sql/resolver/ddl/ob_drop_mlog_stmt.h"
 #include "sql/resolver/ddl/ob_alter_database_stmt.h"
+#include "sql/resolver/ddl/ob_alter_view_stmt.h"
 #include "sql/resolver/ddl/ob_drop_database_stmt.h"
 #include "sql/resolver/ddl/ob_create_database_stmt.h"
 #include "sql/resolver/ddl/ob_use_database_stmt.h"
@@ -101,6 +95,7 @@
 #include "sql/engine/cmd/ob_tenant_executor.h"
 #include "sql/engine/cmd/ob_set_names_executor.h"
 #include "sql/engine/cmd/ob_alter_system_executor.h"
+#include "sql/engine/cmd/ob_alter_view_executor.h"
 #include "sql/engine/cmd/ob_set_password_executor.h"
 #include "sql/engine/cmd/ob_tablegroup_executor.h"
 #include "sql/engine/cmd/ob_database_executor.h"
@@ -233,6 +228,10 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
                  && static_cast<ObAlterTableStmt*>(&cmd)->is_add_interval_partition()) {
         //alter interval partition need to use query_timeout_hint,
         //do not need adjust _ob_ddl_timeout
+      } else if (cmd.get_cmd_type() == stmt::T_PURGE_RECYCLEBIN
+                 && my_session->is_inner()) {
+        // For scheduled purge recyclebin job, worker timeout is already set based on
+        // max_run_duration in run_dbms_sched_job. Do not override it with _ob_ddl_timeout.
       } else if (OB_FAIL(my_session->update_sys_variable(
                          share::SYS_VAR_OB_QUERY_TIMEOUT, val))) {
         LOG_WARN("set sys variable failed", K(ret), K(val.get_int()));
@@ -460,6 +459,7 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
         break;
       }
       case stmt::T_ALTER_VIEW: {
+        DEFINE_EXECUTE_CMD(ObAlterViewStmt, ObAlterViewExecutor);
         break;
       }
       case stmt::T_CREATE_TABLE_LIKE: {
@@ -704,6 +704,10 @@ int ObCmdExecutor::execute(ObExecContext &ctx, ObICmd &cmd)
       }
       case stmt::T_REFRESH_MEMORY_STAT: {
         DEFINE_EXECUTE_CMD(ObRefreshMemStatStmt, ObRefreshMemStatExecutor);
+        break;
+      }
+      case stmt::T_REFRESH_FULLTEXT_DICT: {
+        DEFINE_EXECUTE_CMD(ObRefreshFulltextDictStmt, ObRefreshFulltextDictExecutor);
         break;
       }
       case stmt::T_WASH_MEMORY_FRAGMENTATION: {

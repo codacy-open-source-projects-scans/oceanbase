@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_BUILD_INDEX_TASK_EXECUTOR_H_
@@ -64,7 +57,7 @@ public:
   static bool in_ddl_retry_black_list(const int ret_code)
   {
     return common::OB_SERVER_OUTOF_DISK_SPACE == ret_code || common::OB_DISK_ERROR == ret_code || OB_NOT_SUPPORTED == ret_code
-          || common::OB_ERR_DATA_TOO_LONG == ret_code || common::OB_ERR_TOO_LONG_KEY_LENGTH == ret_code;
+          || common::OB_ERR_DATA_TOO_LONG == ret_code || common::OB_ERR_TOO_LONG_KEY_LENGTH == ret_code || OB_ERR_TRUNCATED_WRONG_VALUE_FOR_FIELD == ret_code;
   }
   static bool is_ddl_force_no_more_process(const int ret_code)
   {

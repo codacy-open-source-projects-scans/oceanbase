@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -160,6 +153,25 @@ int ObCompatControl::get_version_str(uint64_t version, ObString &str, ObIAllocat
     LOG_WARN("failed to print version", KR(ret), K(version));
   } else if (OB_FAIL(ob_write_string(allocator, ObString(len, buf), str))) {
     LOG_WARN("failed to write version str", K(ret), K(version));
+  }
+  return ret;
+}
+
+int ObCompatControl::get_charset_compat_type(const ObCompatType compat_type,
+                                             ObCharsetCompatType &charset_compat_type)
+{
+  int ret = OB_SUCCESS;
+  switch (compat_type) {
+    case COMPAT_MYSQL57:
+      charset_compat_type = CHARSET_COMPAT_MYSQL57;
+      break;
+    case COMPAT_MYSQL8:
+      charset_compat_type = CHARSET_COMPAT_MYSQL8;
+      break;
+    default:
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("unsupported compat type", K(ret), K(compat_type));
+      break;
   }
   return ret;
 }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_QUEUE_OB_PRIORITY_QUEUE_
@@ -239,7 +232,7 @@ public:
     return pos;
   }
 
-  int push(ObLink* data, int priority)
+  int push(ObLink* data, int priority, bool group_index_prefer = false)
   {
     int ret = OB_SUCCESS;
     int to_push_idx = queue_num_ <= 1 ? 0 : AFFINITY_CTRL.get_tls_node() % queue_num_;
@@ -262,11 +255,11 @@ public:
       // do nothing
     } else {
       if (priority < HIGH_PRIOS) {
-        mq_[to_push_idx]->cond.signal(1, 0);
+        mq_[to_push_idx]->cond.signal(1, 0, group_index_prefer);
       } else if (priority < NORMAL_PRIOS + HIGH_PRIOS) {
-        mq_[to_push_idx]->cond.signal(1, 1);
+        mq_[to_push_idx]->cond.signal(1, 1, group_index_prefer);
       } else {
-        mq_[to_push_idx]->cond.signal(1, 2);
+        mq_[to_push_idx]->cond.signal(1, 2, group_index_prefer);
       }
     }
 
@@ -276,9 +269,9 @@ public:
     return ret;
   }
 
-  int pop(ObLink*& data, int64_t timeout_us)
+  int pop(ObLink*& data, int64_t timeout_us, int32_t group_index = -1)
   {
-    return do_pop(data, PRIO_CNT, timeout_us);
+    return do_pop(data, PRIO_CNT, timeout_us, group_index);
   }
 
   int pop_normal(ObLink*& data, int64_t timeout_us)
@@ -323,7 +316,7 @@ private:
 
     return ret;
   }
-  inline int do_pop(ObLink*& data, int64_t plimit, int64_t timeout_us)
+  inline int do_pop(ObLink*& data, int64_t plimit, int64_t timeout_us, int32_t group_index = -1)
   {
     int ret = OB_ENTRY_NOT_EXIST;
     int to_pop_idx = queue_num_ <= 1 ? 0 : AFFINITY_CTRL.get_tls_node() % queue_num_;
@@ -334,11 +327,11 @@ private:
       COMMON_LOG(ERROR, "timeout is invalid", K(ret), K(timeout_us));
     } else {
       if (plimit <= HIGH_PRIOS) {
-        mq_[to_pop_idx]->cond.prepare(0);
+        mq_[to_pop_idx]->cond.prepare(0, group_index);
       } else if (plimit <= NORMAL_PRIOS + HIGH_PRIOS) {
-        mq_[to_pop_idx]->cond.prepare(1);
+        mq_[to_pop_idx]->cond.prepare(1, group_index);
       } else {
-        mq_[to_pop_idx]->cond.prepare(2);
+        mq_[to_pop_idx]->cond.prepare(2, group_index);
       }
       if (OB_SUCC(try_pop(data, plimit, to_pop_idx))) {
         mq_[to_pop_idx]->is_queue_idle = false;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef SQL_MONITOR_STATNAME_DEF
@@ -48,7 +41,7 @@ SQL_MONITOR_STATNAME_DEF(EXCHANGE_DROP_ROW_COUNT, metric::Unit::INT, "drop row c
 // MONITORING DUMP
 SQL_MONITOR_STATNAME_DEF(MONITORING_DUMP_SUM_OUTPUT_HASH, metric::Unit::INT, "sum output hash", "sum of output hash values of monitoring dump", M_FIRST_VAL, metric::Level::AD_HOC)
 // DTL
-SQL_MONITOR_STATNAME_DEF(DTL_SEND_RECV_COUNT, metric::Unit::INT, "processed buffer count", "the count of dtl buffer that received or sended", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(DTL_SEND_RECV_COUNT, metric::Unit::INT, "processed buffer count", "the count of dtl buffer that received or sended", M_SUM | E_MIN | E_MAX, metric::Level::STANDARD)
 SQL_MONITOR_STATNAME_DEF(EXCHANGE_EOF_TIMESTAMP, metric::Unit::TIMESTAMP, "eof timestamp", "the timestamp of send eof or receive eof", E_MIN | E_MAX, metric::Level::AD_HOC)
 // Auto Memory Management (dump, metric::Level::STANDARD)
 SQL_MONITOR_STATNAME_DEF(MEMORY_DUMP, metric::Unit::BYTES, "memory dump size", "dump memory to disk when exceeds memory limit", M_SUM | E_MIN | E_MAX, metric::Level::STANDARD)
@@ -134,7 +127,7 @@ SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_HIT_COUNT, metric::Unit::INT, "lake table hi
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_ASYNC_IO_COUNT, metric::Unit::INT, "lake table async io count", "lake table async io count", M_SUM, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_ASYNC_IO_SIZE, metric::Unit::BYTES, "lake table async io size", "lake table async io size", M_SUM, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_TOTAL_IO_WAIT_TIME, metric::Unit::TIME_NS, "lake table total io wait time", "lake table total io wait time", M_SUM, metric::Level::CRITICAL)
-SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_MAX_IO_WAIT_TIME, metric::Unit::TIME_NS, "lake table max io wait time", "lake table max io wait time", E_MAX, metric::Level::CRITICAL)
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_MAX_IO_WAIT_TIME, metric::Unit::TIME_NS, "lake table max io wait time", "lake table max io wait time", M_AVG | E_MAX, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_TOTAL_READ_SIZE, metric::Unit::BYTES, "lake table total read size", "lake table total read size", M_SUM, metric::Level::CRITICAL)
 
 // Lake Table IO
@@ -150,7 +143,7 @@ SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_DISK_CACHE_HIT_COUNT, metric::Unit::INT, "la
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_DISK_CACHE_MISS_COUNT, metric::Unit::INT, "lake table disk cache miss count", "lake table disk cache miss count", M_SUM, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_DISK_CACHE_HIT_IO_SIZE, metric::Unit::BYTES, "lake table disk cache hit io size", "lake table disk cache hit io size", M_SUM, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_DISK_CACHE_MISS_IO_SIZE, metric::Unit::BYTES, "lake table disk cache miss io size", "lake table disk cache miss io size", M_SUM, metric::Level::CRITICAL)
-SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_MAX_IO_TIME, metric::Unit::TIME_NS, "lake table max io time", "lake table total io wait time", E_MAX, metric::Level::CRITICAL)
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_MAX_IO_TIME, metric::Unit::TIME_NS, "lake table max io time", "lake table total io wait time", M_AVG | E_MAX, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_AVG_IO_TIME, metric::Unit::TIME_NS, "lake table avg io time", "lake table avg io time", M_AVG, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_TOTAL_IO_TIME, metric::Unit::TIME_NS, "lake table total io time", "lake table total io time", M_SUM, metric::Level::CRITICAL)
 SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_STORAGE_IO_COUNT, metric::Unit::INT, "lake table storage io count", "lake table storage io count", M_SUM, metric::Level::CRITICAL)
@@ -183,6 +176,8 @@ SQL_MONITOR_STATNAME_DEF(DTL_BLOCKING_TIME, metric::Unit::TIME_NS, "dtl blocking
 SQL_MONITOR_STATNAME_DEF(DUMP_RW_TIME, metric::Unit::CPU_CYCLE, "read/write time for dumped data", "read/write time for dumped data", M_AVG | E_MIN | E_MAX, metric::Level::AD_HOC)
 SQL_MONITOR_STATNAME_DEF(PX_MS_RECV_STORED_ROWS, metric::Unit::INT, "temp stored row cnt", "stored row cnt in px ms recv", M_SUM | E_MAX | E_MIN | E_STDDEV, metric::Level::STANDARD)
 
+SQL_MONITOR_STATNAME_DEF(WORKER_SYNC_WAIT, metric::Unit::TIME_NS, "worker synchronization time", "wait time during thread synchronization", M_AVG | E_MIN | E_MAX, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(WAIT_JOIN_FILTER_MSG_TIME, metric::Unit::TIME_NS, "wait join filter msg time", "wait join filter ready time", M_AVG | E_MIN | E_MAX, metric::Level::STANDARD)
 // Hybrid Search Metrics
 SQL_MONITOR_STATNAME_DEF(HS_OUTPUT_ROW_COUNT, metric::Unit::INT, "output row count", "output row count", M_SUM, metric::Level::STANDARD)
 SQL_MONITOR_STATNAME_DEF(HS_TOTAL_TIME, metric::Unit::TIME_NS, "total execution time", "total execution time", M_SUM, metric::Level::STANDARD)
@@ -202,6 +197,57 @@ SQL_MONITOR_STATNAME_DEF(HS_TABLET_ID, metric::Unit::INT, "tablet id", "tablet i
 SQL_MONITOR_STATNAME_DEF(HS_VEC_INDEX_TYPE, metric::Unit::INT, "vec index type", "vec index type", M_FIRST_VAL, metric::Level::STANDARD)
 SQL_MONITOR_STATNAME_DEF(HS_VEC_FILTER_MODE , metric::Unit::INT, "vec filter mode", "vec filter mode", M_FIRST_VAL, metric::Level::STANDARD)
 SQL_MONITOR_STATNAME_DEF(HS_OP_ID , metric::Unit::INT, "op id", "op id", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_FUSION_METHOD, metric::Unit::INT, "fusion method", "fusion method", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_FUSION_OFFSET, metric::Unit::INT, "fusion offset", "fusion offset", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_FUSION_SIZE, metric::Unit::INT, "fusion size", "fusion size", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_RANK_WINDOW_SIZE, metric::Unit::INT, "rank window size", "rank window size", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_INDEX_PATH, metric::Unit::INT, "vec index path", "path ids: 0 invalid, 1 pre-knn, 2 pre-brute, 3 post-iter-sd, 4 post-iter-expr, 5 post-filter-sd, 6 post-filter-expr, 7 post-no-filter", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_SAME_OP_SCAN_TIMES, metric::Unit::INT, "op scan times", "op scan times", M_SUM, metric::Level::STANDARD)
+// Hybrid Search Vector Index Driver Metrics
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_TOTAL_SEARCH_TIME, metric::Unit::TIME_NS, "vec driver total search time", "filter mode total search time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_FILTER_TIME, metric::Unit::TIME_NS, "vec driver filter time", "filter iterator execution time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_VEC_INDEX_TIME, metric::Unit::TIME_NS, "vec driver vec index time", "vector index query time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_PRE_FILTER_ITER_SCANNED, metric::Unit::INT, "vec driver pre filter rows scanned", "the count of rows filtered by filter iterator in pre-filter", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_VID_SCANNED, metric::Unit::INT, "vec driver vids scanned", "the count of vids fetched by vector iterator before filtered", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_ITER_TOTAL_ROW_COUNT, metric::Unit::INT, "vec driver iterative total row count", "total iterative filtered row count", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_DRIVER_ITER_FILTER_ROUND, metric::Unit::INT, "vec driver iter filter round", "iterative filter while loop count", M_SUM, metric::Level::STANDARD)
+// Hybrid Search Vector Index HNSW Scan Metrics
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_VSAG_QUERY_TIME, metric::Unit::TIME_NS, "vec hnsw vsag query time", "VSAG query time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_DELTA_BUF_TABLE_SCAN_TIME, metric::Unit::TIME_NS, "vec hnsw delta buf scan time", "delta_buf aux table scan time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_DELTA_BUF_TABLE_SCAN_ROWS, metric::Unit::INT, "vec hnsw delta buf scan rows", "delta_buf aux table scan rows", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_INDEX_ID_TABLE_SCAN_TIME, metric::Unit::TIME_NS, "vec hnsw index id scan time", "index_id aux table scan time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_INDEX_ID_TABLE_SCAN_ROWS, metric::Unit::INT, "vec hnsw index id scan rows", "index_id aux table scan rows", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_SNAPSHOT_TABLE_SCAN_TIME, metric::Unit::TIME_NS, "vec hnsw snapshot scan time", "snapshot aux table scan time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_SNAPSHOT_TABLE_SCAN_ROWS, metric::Unit::INT, "vec hnsw snapshot scan rows", "snapshot aux table scan rows", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_COMP_DELTA_TIME, metric::Unit::TIME_NS, "vec hnsw comp delta time", "complete delta table time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_COMP_DELTA_COUNT, metric::Unit::INT, "vec hnsw comp delta count", "complete delta table count", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_BQ_REORDER_LIMIT, metric::Unit::INT, "vec hnsw bq reorder limit", "BQ reorder new limit", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_BQ_REORDER_HEAP_SIZE, metric::Unit::INT, "vec hnsw bq reorder heap size", "BQ reorder delta+snapshot vid count", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_DESERIALIZE_SNAP_TIME, metric::Unit::TIME_NS, "vec hnsw deserialize snap time", "adaptor deserialize snapshot time", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_HNSW_SYNC_SNAP_MEM_TIME, metric::Unit::TIME_NS, "vec hnsw sync snap mem time", "adaptor sync snapshot to mem time", M_SUM, metric::Level::STANDARD)
+
+// Lake Table Parquet Page Mgr
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_PARQUET_PAGE_MGR_CACHED_PAGE_HIT_COUNT, metric::Unit::INT, "parquetPageMgr cached page hit count", "parquetPageMgr cached page hit count", M_SUM, metric::Level::CRITICAL)
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_PARQUET_PAGE_MGR_CACHED_PAGE_HIT_SIZE, metric::Unit::BYTES, "parquetPageMgr cached page hit size", "parquetPageMgr cached page hit size", M_SUM, metric::Level::CRITICAL)
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_PARQUET_PAGE_MGR_CACHED_PAGE_MISS_COUNT, metric::Unit::INT, "parquetPageMgr cached page miss count", "parquetPageMgr cached page miss count", M_SUM, metric::Level::CRITICAL)
+SQL_MONITOR_STATNAME_DEF(LAKE_TABLE_PARQUET_PAGE_MGR_CACHED_PAGE_MISS_SIZE, metric::Unit::BYTES, "parquetPageMgr cached page miss size", "parquetPageMgr cached page miss size", M_SUM, metric::Level::CRITICAL)
+
+// Hybrid Search Vector Index Driver Metrics for path selection
+SQL_MONITOR_STATNAME_DEF(HS_VEC_PARTITION_ROW_COUNT, metric::Unit::INT, "vec partition row count", "estimated total row count of the partition used for path selection", M_FIRST_VAL, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(HS_VEC_FILTER_EST_ROW_COUNT, metric::Unit::INT, "vec filter est row count", "estimated filter output row count used for path selection", M_FIRST_VAL, metric::Level::STANDARD)
+
+// Hybrid Search Parallel Execution
+SQL_MONITOR_STATNAME_DEF(HS_PARALLEL_TASK_COUNT, metric::Unit::INT, "parallel task count", "parallel task count", M_SUM, metric::Level::STANDARD)
+
+// AI Rerank Metrics
+SQL_MONITOR_STATNAME_DEF(AI_RERANK_ELAPSE_TIME, metric::Unit::TIME_NS, "ai rerank elapse time", "ai rerank total elapse time", M_SUM | E_MIN | E_MAX, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(AI_RERANK_HTTP_ELAPSE_TIME, metric::Unit::TIME_NS, "ai rerank http elapse time", "ai rerank http request elapse time", M_SUM | E_MIN | E_MAX, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(AI_RERANK_BATCH_COUNT, metric::Unit::INT, "ai rerank batch count", "ai rerank batch count", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(AI_RERANK_DOCUMENT_COUNT, metric::Unit::INT, "ai rerank document count", "ai rerank total document count", M_SUM, metric::Level::STANDARD)
+SQL_MONITOR_STATNAME_DEF(AI_RERANK_API_CALL_COUNT, metric::Unit::INT, "ai rerank api call count", "ai rerank api call count", M_SUM, metric::Level::STANDARD)
+
+// Hybrid Search Fusion Iter Exec Mode
+SQL_MONITOR_STATNAME_DEF(HS_FUSION_EXEC_MODE, metric::Unit::INT, "fusion exec mode", "fusion iter exec mode: 0 skip, 1 distinct_only, 2 full_recall, 3 top_k", M_FIRST_VAL, metric::Level::STANDARD)
 
 //end
 SQL_MONITOR_STATNAME_DEF(MONITOR_STATNAME_END, metric::Unit::INVALID, "monitor end", "monitor stat name end", E_MIN | E_MAX, metric::Level::AD_HOC)

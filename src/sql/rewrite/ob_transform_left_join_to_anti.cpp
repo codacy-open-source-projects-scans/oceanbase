@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -320,6 +313,17 @@ int ObTransformLeftJoinToAnti::trans_stmt_to_anti(ObDMLStmt *stmt, JoinedTable *
       } else if (OB_FAIL(copier.copy_on_replace(semi_info->semi_conditions_,
                                                 semi_info->semi_conditions_))) {
         LOG_WARN("failed to revert modified shared exprs", K(ret));
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_part_exprs().count(); ++i) {
+          PartExprItem &part_item = stmt->get_part_exprs().at(i);
+          if (OB_NOT_NULL(part_item.part_expr_) &&
+              OB_FAIL(copier.copy_on_replace(part_item.part_expr_, part_item.part_expr_))) {
+            LOG_WARN("failed to revert part expr", K(ret));
+          } else if (OB_NOT_NULL(part_item.subpart_expr_) &&
+                     OB_FAIL(copier.copy_on_replace(part_item.subpart_expr_, part_item.subpart_expr_))) {
+            LOG_WARN("failed to revert subpart expr", K(ret));
+          }
+        }
       }
     }
   }
@@ -597,6 +601,21 @@ int ObTransformLeftJoinToAnti::check_can_be_trans(ObDMLStmt *stmt,
       LOG_WARN("get unexpected null", K(ret));
     } else if (joined_table->get_join_conditions().at(i)->has_flag(CNT_SUB_QUERY)) {
       is_table_valid = false;
+    }
+  }
+  // rowid from right table cannot be detached due to calc_tablet_id ref_table_id
+  if (OB_SUCC(ret) && is_table_valid) {
+    const ObIArray<ObRawExpr *> &pseudo_cols = stmt->get_pseudo_column_like_exprs();
+    int32_t bit_idx = stmt->get_table_bit_index(right_table->table_id_);
+    for (int64_t i = 0; OB_SUCC(ret) && is_table_valid && i < pseudo_cols.count(); i++) {
+      ObRawExpr *expr = pseudo_cols.at(i);
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (OB_INVALID_INDEX != bit_idx && expr->get_relation_ids().has_member(bit_idx)) {
+        is_table_valid = false;
+        OPT_TRACE("right table has rowid column, disable left to anti");
+      }
     }
   }
   for (int64_t i = 0; OB_SUCC(ret) && is_table_valid &&

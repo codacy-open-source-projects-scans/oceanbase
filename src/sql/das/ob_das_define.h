@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_OB_DAS_DEFINE_H_
@@ -164,7 +157,8 @@ public:
       uint64_t is_external_files_on_disk_       : 1; //mark if files in external table are located at local disk
       uint64_t das_empty_part_                  : 1; //mark there is false startup filter on DAS access table
       uint64_t is_lake_table_                   : 1; //mark if this table is an lake table
-      uint64_t reserved_                        : 55;
+      uint64_t is_shared_external_files_on_disk_: 1; //mark if external files using sfile:// (need de-dup across observers)
+      uint64_t reserved_                        : 54;
     };
   };
   int64_t route_policy_;

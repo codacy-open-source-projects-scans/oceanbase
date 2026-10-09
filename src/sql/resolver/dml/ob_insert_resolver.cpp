@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -113,8 +106,8 @@ int ObInsertResolver::resolve(const ParseNode &parse_tree)
     } else { /*do nothing*/ }
   }
 
-  // Check if replace into is used on append_only table
-  if (OB_SUCC(ret) && insert_stmt->is_replace()) {
+  // Check if replace into/insert overwrite is used on append_only table
+  if (OB_SUCC(ret) && (insert_stmt->is_replace() || insert_stmt->is_overwrite())) {
     TableItem *table_item = insert_stmt->get_table_item_by_id(
         insert_stmt->get_insert_table_info().table_id_);
     if (OB_NOT_NULL(table_item)) {
@@ -126,7 +119,11 @@ int ObInsertResolver::resolve(const ParseNode &parse_tree)
         LOG_WARN("fail to get table schema", K(ret));
       } else if (OB_NOT_NULL(table_schema) && table_schema->is_append_only_merge_engine()) {
         ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace into append_only table is");
+        if (insert_stmt->is_replace()) {
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "replace into append_only table is");
+        } else {
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "insert overwrite append_only table is");
+        }
       }
     }
   }
@@ -1514,7 +1511,10 @@ int ObInsertResolver::check_view_insertable()
     if (OB_SUCC(ret)) {
       bool has_dup_col = false;
       bool has_non_col_ref = false;
-      if (OB_FAIL(ObResolverUtils::uv_check_dup_base_col(*table, has_dup_col, has_non_col_ref))) {
+      if (OB_FAIL(ObResolverUtils::uv_check_dup_base_col(*table,
+                                                         stmt->get_column_items(),
+                                                         stmt->get_insert_table_info().values_desc_,
+                                                         has_dup_col, has_non_col_ref))) {
         LOG_WARN("check update view hash duplicate column failed", K(ret));
       } else {
         LOG_DEBUG("update view check duplicate column", K(has_dup_col), K(has_non_col_ref));

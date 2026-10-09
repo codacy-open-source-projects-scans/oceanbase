@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_DDL_MERGE_HELPER_
@@ -136,12 +129,20 @@ public:
   static int build_sstable(
              ObDDLTabletMergeDagParamV2 &dag_merge_param,
              ObTablesHandleArray &co_sstable_array,
+             const int64_t start_macro_seq,
+             int64_t &out_macro_seq,
              ObSSTable *&major_sstable);
   static int get_meta_store_store(
              ObDDLTabletMergeDagParamV2 &merge_param,
              const ObTabletID tablet_id,
              const int64_t cg_idx,
              ObArray<ObMacroMetaStoreManager::StoreItem> &sorted_meta_stores);
+  static int write_partial_sstable(
+             ObDDLTabletMergeDagParamV2 &dag_merge_param,
+             const int64_t start_macro_seq,
+             int64_t &out_macro_seq,
+             ObSSTable *&major_sstable,
+             ObSSTable *&out_sstable);
 
 protected:
   int update_tablet_table_store(ObDDLTabletMergeDagParamV2 &dag_merge_param,
@@ -158,9 +159,6 @@ protected:
                            const int64_t cg_idx,
                            const ObStorageSchema *storage_schema,
                            ObITable::TableKey &cur_cg_table_key);
-  int write_partial_sstable(ObDDLTabletMergeDagParamV2 &dag_merge_param,
-                            ObSSTable *&major_sstable,
-                            ObSSTable *&out_sstable);
   int write_ddl_finish_log(ObDDLTabletMergeDagParamV2 &dag_merge_param,
                            ObSSTable *&major_sstable);
 private:

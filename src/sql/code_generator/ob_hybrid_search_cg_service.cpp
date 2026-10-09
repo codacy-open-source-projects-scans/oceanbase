@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_CG
@@ -1235,6 +1228,7 @@ int ObHybridSearchCgService::try_alloc_topk_collect_ctdef(ObDASFusionCtDef *fusi
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("allocate fusion ctdef children failed", K(ret));
     } else {
+      topk_collect_ctdef->set_is_scoring(fusion_ctdef->get_search_ctdef()->is_scoring());
       topk_collect_ctdef->limit_ = fusion_ctdef->rank_window_size_expr_;
       const int64_t search_idx = fusion_ctdef->get_search_idx();
       topk_collect_ctdef->children_[0] = fusion_ctdef->children_[search_idx];

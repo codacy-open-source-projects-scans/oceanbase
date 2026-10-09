@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_SSTABLE_COPY_FINISH_TASK_
@@ -160,41 +153,21 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObCopiedSSTableCreator);
 };
 
-
-#ifdef OB_BUILD_SHARED_STORAGE
-// Create non empty shared SSTable in shared storage mode, only during leader restore.
-class ObRestoredSharedSSTableCreator final : public ObCopiedSSTableCreatorImpl
+// Create SSTable whose macro blocks are entirely stored in backup. During quick restore,
+// only small SSTables may remain fully remote. This creator is used when migration
+// encounters such SSTables.
+class ObCopiedSharedSSTableCreator final : public ObCopiedSSTableCreatorImpl
 {
 public:
-  ObRestoredSharedSSTableCreator() : ObCopiedSSTableCreatorImpl() {}
+  ObCopiedSharedSSTableCreator() : ObCopiedSSTableCreatorImpl() {}
 
   virtual int create_sstable() override;
 
 private:
   virtual int check_sstable_param_for_init_(const ObMigrationSSTableParam *src_sstable_param) const override;
 
-  DISALLOW_COPY_AND_ASSIGN(ObRestoredSharedSSTableCreator);
+  DISALLOW_COPY_AND_ASSIGN(ObCopiedSharedSSTableCreator);
 };
-
-
-// Create shared-only-macro-blocks SSTable, currently only ddl sstable in shared storage mode. This kind of SSTable
-// does not own an index, but should record the macro ids on meta. Macro blocks are required to copy only during
-// leader restore, otherwise, are not.
-class ObCopiedSharedMacroBlocksSSTableCreator final : public ObCopiedSSTableCreatorImpl
-{
-public:
-  ObCopiedSharedMacroBlocksSSTableCreator() : ObCopiedSSTableCreatorImpl() {}
-
-  virtual int create_sstable() override;
-
-private:
-  virtual int check_sstable_param_for_init_(const ObMigrationSSTableParam *src_sstable_param) const override;
-
-  int get_shared_macro_id_list_(common::ObIArray<MacroBlockId> &macro_block_id_array);
-
-  DISALLOW_COPY_AND_ASSIGN(ObCopiedSharedMacroBlocksSSTableCreator);
-};
-#endif
 
 class ObSSTableCopyFinishTask : public share::ObITask
 {
@@ -220,6 +193,9 @@ public:
   int build_sstable_reuse_info();
   const ObMacroBlockReuseMgr &get_macro_block_reuse_mgr() const { return macro_block_reuse_mgr_; }
   virtual int process() override;
+  OB_INLINE int64_t get_copy_task_concurrent_cnt() const {
+    return sstable_macro_range_info_.copy_macro_range_array_.count();
+  }
   VIRTUAL_TO_STRING_KV(K("ObSSTableCopyFinishTask"), KP(this), K(copy_ctx_));
 
 private:

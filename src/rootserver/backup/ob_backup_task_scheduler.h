@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_BACKUP_TASK_SCHEDULER_H_
@@ -15,7 +8,9 @@
 
 #include "ob_backup_base_service.h"
 #include "ob_backup_schedule_task.h"
+#include "ob_backup_server_disk_space_filter.h"
 #include "ob_backup_service.h"
+#include "lib/literals/ob_literals.h"
 
 namespace oceanbase 
 {
@@ -63,11 +58,8 @@ public:
   // remove task 
   // When finished, task memory will be released and %task can not be used again.
   int cancel_tasks(const BackupJobType &type, const uint64_t job_id, const uint64_t tenant_id);
-  int cancel_tasks(const BackupJobType &type, const uint64_t tenant_id);
   int check_task_exist(const ObBackupScheduleTaskKey key, bool &is_exist);
   int get_all_tasks(common::ObIAllocator &allocator, common::ObIArray<ObBackupScheduleTask *> &tasks);
-  int get_task_count(const uint64_t tenant_id, const int64_t job_id,
-                     const bool only_macro_block_task, int64_t &count);
   int get_schedule_tasks(ObIArray<ObBackupScheduleTask *> &schedule_tasks, ObArenaAllocator &allocator);
   void reset();
   int dump_statistics();
@@ -97,6 +89,11 @@ private:
                   const ObIArray<share::ObBackupServer> &servers,
                   ObAddr &dst,
                   bool &can_schedule);
+  int choose_dst_with_extension_(ObBackupScheduleTask *task,
+                                 const ObIArray<share::ObBackupServer> &servers,
+                                 const char *extension,
+                                 ObAddr &dst,
+                                 bool &can_schedule);
   int get_alternative_servers_(const ObBackupScheduleTask &task, 
                                const ObIArray<share::ObBackupServer> &servers,
                                ObArray<ObAddr> &alternative_servers);
@@ -118,6 +115,68 @@ private:
   int64_t get_task_cnt_() const { return task_map_.size(); }
   int64_t get_wait_task_cnt_() const { return wait_list_.get_size(); }
   int64_t get_in_schedule_task_cnt_() const { return schedule_list_.get_size(); }
+  bool is_wait_list_empty_();
+  // Compute disk-filtered server list for scheduling. Uses a TTL cache of raw disk
+  // stats (DISK_STATS_CACHE_TTL) to avoid hitting __all_virtual_server every call.
+  // On any failure, falls back to copying all_servers so scheduling never blocks.
+  int prepare_disk_filtered_servers_(
+      const common::ObIArray<share::ObBackupServer> &all_servers,
+      common::ObIArray<share::ObBackupServer> &disk_filtered_servers);
+  // Dedup key for the disk-full timer helpers below: distinct BACKUP_DATA
+  // set_tasks identified by (tenant_id, job_id, task_id).
+  struct BlockedSetTaskKey
+  {
+    uint64_t tenant_id_;
+    int64_t job_id_;
+    int64_t task_id_;
+    bool operator==(const BlockedSetTaskKey &o) const
+    {
+      return tenant_id_ == o.tenant_id_ && job_id_ == o.job_id_ && task_id_ == o.task_id_;
+    }
+    TO_STRING_KV(K_(tenant_id), K_(job_id), K_(task_id));
+  };
+  // Walk wait_list_ and emit one BlockedSetTaskKey per distinct BACKUP_DATA
+  // set_task. Caller must hold mutex_ for the wait_list_ traversal; mark/clear
+  // drop the lock before issuing inner-table writes against the returned keys.
+  int collect_backup_data_set_task_keys_(common::ObIArray<BlockedSetTaskKey> &keys);
+  // Mark every BACKUP_DATA set_task with at least one task in wait_list as
+  // blocked by cluster-wide disk-full. Persists first_disk_full_ts_ to
+  // __all_backup_task.extra_info via record_first_disk_full_ts_if_unset.
+  // Best-effort: errors are logged but never propagated.
+  int mark_wait_list_set_tasks_disk_full_(const int64_t now_ts);
+  // Symmetric reset path. Called from pop_task when disk_filtered_servers is
+  // non-empty (cluster-wide disk full has cleared), so a subsequent disk-full
+  // streak restarts the wait timer from zero instead of accumulating against
+  // a long-stale first_disk_full_ts_. Best-effort: errors are logged only.
+  int clear_wait_list_set_tasks_disk_full_();
+  // Dedup entry for pop_task's lock-splitting optimization: a distinct
+  // (tenant_id, dest_id) pair found in wait_list_ together with its backup dest
+  // extension pre-fetched from __all_backup_storage_info.
+  struct DestExtEntry
+  {
+    uint64_t tenant_id_;
+    int64_t dest_id_;
+    char extension_[common::OB_MAX_BACKUP_EXTENSION_LENGTH];
+    DestExtEntry() : tenant_id_(OB_INVALID_ID), dest_id_(OB_INVALID_ID) { extension_[0] = '\0'; }
+    TO_STRING_KV(K_(tenant_id), K_(dest_id));
+  };
+  // pop_task phase 1: walk wait_list_ and emit one entry per distinct
+  // (tenant_id, dest_id). Caller must hold mutex_ for the traversal.
+  int collect_distinct_dest_ext_entries_(common::ObIArray<DestExtEntry> &ext_entries);
+  // pop_task phase 2: fill each entry's extension via an inner-table query. Runs
+  // outside mutex_ so observer-side execute_over is not blocked by the SQL IO.
+  int prefetch_dest_extensions_(common::ObIArray<DestExtEntry> &ext_entries);
+  // pop_task phase 3: pick the first schedulable task using the pre-fetched
+  // extensions, move it from wait_list_ to schedule_list_ and clone it into
+  // output_task. Caller must hold mutex_.
+  int select_and_schedule_task_(const common::ObIArray<share::ObBackupServer> &servers,
+                                const common::ObIArray<DestExtEntry> &ext_entries,
+                                common::ObArenaAllocator &allocator,
+                                ObBackupScheduleTask *&output_task);
+  // Linear lookup of the extension pre-fetched for (tenant_id, dest_id); returns
+  // nullptr when no matching entry exists (e.g. task added after phase 1).
+  const char *find_prefetched_extension_(const common::ObIArray<DestExtEntry> &ext_entries,
+                                         const uint64_t tenant_id, const int64_t dest_id) const;
 
 private:
   bool is_inited_;
@@ -137,7 +196,12 @@ private:
   TaskMap task_map_;
   obrpc::ObSrvRpcProxy *rpc_proxy_;
   ObBackupTaskScheduler *task_scheduler_;
-  common::ObMySQLProxy *sql_proxy_; 
+  common::ObMySQLProxy *sql_proxy_;
+  // Cache of cluster-wide disk stats. Refreshed from __all_virtual_server when stale,
+  // serving subsequent pop_task calls within the TTL window. Protected by mutex_.
+  common::ObArray<ObBackupServerDiskSpaceFilter::RawDiskStat> cached_disk_stats_;
+  int64_t cached_disk_stats_ts_;
+  static const int64_t DISK_STATS_CACHE_TTL = 5_min;
   DISALLOW_COPY_AND_ASSIGN(ObBackupTaskSchedulerQueue);
 };
 
@@ -174,10 +238,7 @@ public:
   // remove task from scheduler
   virtual int execute_over(const ObBackupScheduleTask &input_task, const share::ObHAResultInfo &result_info);
   virtual int get_all_tasks(common::ObIAllocator &allocator, common::ObIArray<ObBackupScheduleTask *> &tasks);
-  int get_task_count(const uint64_t tenant_id, const int64_t job_id,
-                     const bool only_macro_block_task, int64_t &count);
   virtual int cancel_tasks(const BackupJobType &type, const uint64_t job_id, const uint64_t tenant_id);
-  int cancel_tasks(const BackupJobType &type, const uint64_t tenant_id);
   int get_backup_job(const BackupJobType &type, ObIBackupJobScheduler *&job);
   int register_backup_srv(ObBackupService &srv);
   int register_restore_srv(ObRestoreService *srv);

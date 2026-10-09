@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_ORC_TABLE_ROW_ITER_H
@@ -306,10 +299,11 @@ namespace sql {
     };
 
   public:
-    ObOrcTableRowIterator() :
-      query_flag_(0), inner_sector_reader_(nullptr), sector_reader_(nullptr), bit_vector_cache_(NULL),
-      options_(), file_prebuffer_(data_access_driver_), reader_metrics_(),
-      column_index_type_(sql::ColumnIndexType::NAME), is_col_name_case_sensitive_(false), reader_adapter_(this)
+    ObOrcTableRowIterator()
+        : query_flag_(0), inner_sector_reader_(nullptr), sector_reader_(nullptr),
+          bit_vector_cache_(NULL), options_(), file_prebuffer_(data_access_driver_),
+          reader_metrics_(), column_index_type_(sql::ColumnIndexType::NAME),
+          is_col_name_case_sensitive_(false), reader_adapter_(this)
     {}
     virtual ~ObOrcTableRowIterator()
     {
@@ -337,9 +331,15 @@ private:
   struct DataLoader {
     DataLoader() { reset(); }
     ~DataLoader() { reset(); }
-    int init(ObExpr *file_col_expr, const orc::ColumnVectorBatch *batch, const orc::Type *col_type,
-             ObEvalCtx &eval_ctx);
-    int init(ObExpr *file_col_expr, const ObColumnDefaultValue *col_def, ObEvalCtx &eval_ctx);
+    int init(ObExpr *file_col_expr,
+             const orc::ColumnVectorBatch *batch,
+             const orc::Type *col_type,
+             ObEvalCtx &eval_ctx,
+             const bool is_hive_lake_table);
+    int init(ObExpr *file_col_expr,
+             const ObColumnDefaultValue *col_def,
+             ObEvalCtx &eval_ctx,
+             const bool is_hive_lake_table);
     void reset()
     {
       file_col_expr_ = nullptr;
@@ -348,6 +348,7 @@ private:
       col_type_ = nullptr;
       load_func_ = nullptr;
       col_def_ = nullptr;
+      is_hive_lake_table_ = false;
     }
 
     bool has_load_func() const { return load_func_ != nullptr; }
@@ -405,6 +406,7 @@ private:
     const orc::Type *col_type_;
     const ObColumnDefaultValue *col_def_;
     LOAD_FUNC load_func_;
+    bool is_hive_lake_table_;
   };
 
   // wrapper struct of orc row reader and batch
@@ -508,6 +510,38 @@ private:
     int64_t sector_end_;
     int64_t sector_size_;
   };
+
+  public:
+    static int convert_integer_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const orc::Type *orc_type,
+        const ObDatumMeta &col_meta, blocksstable::ObMinMaxFilterParam &param);
+    static int convert_real_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const orc::Type *orc_type,
+        const ObDatumMeta &col_meta, blocksstable::ObMinMaxFilterParam &param);
+    static int128_t orc_int64_to_ob_int128(const int64_t orc_int);
+    static int128_t orc_int128_to_ob_int128(const orc::Int128 &orc_int);
+    static int decimal128_to_number(const int128_t &decimal_int, const ObScale scale, ObDatum &out);
+    static int convert_decimal_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const orc::Type *orc_type,
+        const ObDatumMeta &col_meta, blocksstable::ObMinMaxFilterParam &param);
+    static int convert_orc_date_to_ob_temporal_statistics(
+        const orc::ColumnStatistics *orc_stat, const ObDatumMeta &col_meta,
+        const int64_t adjust_us, blocksstable::ObMinMaxFilterParam &param);
+    static int64_t orc_timestamp_to_ob_timestamp(const int64_t second, const int32_t nanos,
+                                                 const int64_t adjust_us);
+    static int64_t orc_stat_ts_to_ob_timestamp(const int64_t utc, const int32_t nanos,
+                                               const int64_t adjust_us);
+    static int convert_orc_ts_temporal_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const ObDatumMeta &col_meta,
+        const int64_t adjust_us, blocksstable::ObMinMaxFilterParam &param);
+    static int convert_temporal_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const orc::Type *orc_type,
+        const ObDatumMeta &col_meta, const int64_t adjust_us,
+        blocksstable::ObMinMaxFilterParam &param);
+    static int convert_string_type_statistics(
+        const orc::ColumnStatistics *orc_stat, const ObColumnMeta &col_meta,
+        ObIAllocator &allocator, blocksstable::ObMinMaxFilterParam &param, bool &has_null);
+    static const orc::Type *find_orc_type_by_column_id(const orc::Type *root, uint64_t col_id);
 
   private:
     int init_query_flag();

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DTL
@@ -45,7 +38,7 @@ ObDtlChannel::ObDtlChannel(uint64_t id, const common::ObAddr &peer, DtlChannelTy
       thread_id_(0),
       enable_channel_sync_(false),
       channel_type_(type),
-      send_by_tenant_(false),
+      dfc_idx_(OB_INVALID_INDEX_INT64),
       prev_link_(nullptr),
       next_link_(nullptr)
 {

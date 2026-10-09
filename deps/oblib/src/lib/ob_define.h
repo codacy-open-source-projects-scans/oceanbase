@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_OB_DEFINE_H_
@@ -488,6 +481,8 @@ const int64_t OB_MAX_SERVER_SESSION_CNT = 32767;
 const int64_t OB_MAX_SERVER_TENANT_CNT = 1000;
 const int64_t OB_RECYCLE_MACRO_BLOCK_DURATION = 10 * 60 * 1000 * 1000LL; // 10 minutes
 const int64_t OB_MINOR_FREEZE_TEAM_UP_INTERVAL = 2 * 60 * 60 * 1000 * 1000L; // 2 hours
+const int64_t MAX_EXECUTION_TIME_MAX = 4294967295L; // as same as mysql
+const int64_t MAX_EXECUTION_TIME_MIN = 0L;  // as same as mysql
 // for define
 const int64_t OB_MAX_SPECIAL_LS_NUM = 1 + 1; // 1 for broadcast ls and 1 for sys ls
 const int64_t OB_MAX_LS_NUM_PER_TENANT_PER_SERVER_CAN_BE_SET = 1024; // the maximum of _max_ls_cnt_per_server
@@ -666,6 +661,10 @@ const uint64_t OB_MLOG_ROWID_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
 const uint64_t OB_MIN_MLOG_SPECIAL_COLUMN_ID = OB_MLOG_SEQ_NO_COLUMN_ID;
 const uint64_t OB_MAX_MLOG_SPECIAL_COLUMN_ID = OB_MLOG_ROWID_COLUMN_ID;
 
+// TTL column id for Lob Meta Table
+const uint64_t OB_LOB_META_TTL_COLUMN_ID = OB_ALL_MAX_COLUMN_ID
+                                           - OB_END_RESERVED_COLUMN_ID_NUM + 6; /* 65525 */
+
 const char *const OB_MLOG_SEQ_NO_COLUMN_NAME = "SEQUENCE$$";
 const char *const OB_MLOG_DML_TYPE_COLUMN_NAME = "DMLTYPE$$";
 const char *const OB_MLOG_OLD_NEW_COLUMN_NAME = "OLD_NEW$$";
@@ -701,8 +700,14 @@ const char *const OB_ORA_ROWSCN_STR = "ORA_ROWSCN";
 const char *const OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME = "ROWID";
 const int32_t OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME_LENGTH = 5;
 
+const char *const OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME = "__update_table_rowid";
+const int32_t OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME_LENGTH = 18;
+
 const char *const OB_HIDDEN_LOGICAL_ROWID_INDEX_NAME = "ROWID_INDEX";
 const int32_t OB_HIDDEN_LOGICAL_ROWID_INDEX_NAME_LENGTH = 11;
+
+// hidden ttl column name in Lob Meta Table
+const char *const OB_LOB_META_TTL_COLUMN_NAME = "__ttl_column";
 
 // internal index prefix
 const char *const OB_INDEX_PREFIX = "__idx_";
@@ -723,7 +728,12 @@ const char *const OB_TRACE_ID_VAR_NAME = "__ob_trace_id";
 const char *const OB_PARTITION_SHARDING_NONE = "NONE";
 const char *const OB_PARTITION_SHARDING_PARTITION = "PARTITION";
 const char *const OB_PARTITION_SHARDING_ADAPTIVE = "ADAPTIVE";
+const char *const OB_PARTITION_SHARDING_SUBPARTITION = "SUBPARTITION";
 
+// tablegroup scope
+const char *const OB_TABLEGROUP_SCOPE_SERVER = "SERVER";
+const char *const OB_TABLEGROUP_SCOPE_ZONE = "ZONE";
+const char *const OB_TABLEGROUP_SCOPE_CLUSTER = "CLUSTER";
 // partid pseudo column
 const char *const OB_PART_ID_PSEUDO_COLUMN_NAME = "__ob_partition_id";
 const char *const OB_PART_NAME_PSEUDO_COLUMN_NAME = "__ob_partition_name";
@@ -806,6 +816,7 @@ const char *const OB_LOCAL_PREFIX = "local://";
 const char *const OB_LOCAL_CACHE_PREFIX = "localcache://";
 const char *const OB_OSS_PREFIX = "oss://";
 const char *const OB_FILE_PREFIX = "file://";
+const char *const OB_SHARED_FILE_PREFIX = "sfile://";
 const char *const OB_COS_PREFIX = "cos://";
 const char *const OB_S3_PREFIX = "s3://";
 const char *const OB_S3A_PREFIX = "s3a://";
@@ -936,6 +947,7 @@ const uint64_t DEFAULT_TYPE_COLUMN_GROUP_ID = 1; // reserve 2~999
 const uint64_t COLUMN_GROUP_START_ID = 1000;
 const uint64_t ALL_COLUMN_GROUP_ID = 1001;
 const uint64_t ROWKEY_COLUMN_GROUP_ID = 1002;
+const uint16_t HIDDEN_ROWKEY_COLUMN_GROUP_IDX = UINT16_MAX;
 const uint64_t DEFAULT_CUSTOMIZED_CG_NUM = 2;
 const int64_t OB_CG_NAME_PREFIX_LENGTH = 5; // length of cg prefix like "__cg_"
 const int64_t OB_MAX_COLUMN_GROUP_NAME_LENGTH = OB_MAX_COLUMN_NAME_LENGTH * OB_MAX_CHAR_LEN + OB_CG_NAME_PREFIX_LENGTH; //(max_column_name_length(128) * ob_max_char_len(3)) + prefix
@@ -988,14 +1000,14 @@ const char *const OB_DIAG_TENANT_NAME = "diag";
 const char *const OB_DDL_ID_VAR_NAME = "__oceanbase_ddl_id";
 const int64_t OB_MAX_DDL_ID_STR_LENGTH = 64;
 #ifdef ERRSIM
-const int64_t OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT = 30L * 60L * 1000L * 1000L; // 30 minutes
+const int64_t OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT = 12L * 60L * 60L * 1000L * 1000L; // 12 hours
 #else
 const int64_t OB_MAX_DDL_SINGLE_REPLICA_BUILD_TIMEOUT = 7L * 24L * 60L * 60L * 1000L * 1000L; // 7days
 #endif
 
 const int64_t OB_MAX_PARTITION_SHARDING_LENGTH = 20;
-
 const int64_t OB_MAX_TABLEGROUP_SCOPE_LENGTH = 20;
+
 // The default user name of the standby database to log in to the main database
 const char *const OB_STANDBY_USER_NAME = "__oceanbase_inner_standby_user";
 

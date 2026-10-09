@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -338,6 +331,8 @@ int ObSqlPlan::inner_store_sql_plan_for_explain(ObExecContext *ctx,
   int64_t save_nested_count = 0;
   int64_t affected_rows = 0;
   bool need_restore_session = false;
+  ObAuditRecordData audit_record;
+  ObSQLSessionInfo::ObAuditRecordDataWrapperGuard guard(ctx->get_my_session(), audit_record);
   ObSqlString sql;
   if (OB_ISNULL(ctx) ||
       OB_ISNULL(ctx->get_sql_proxy()) ||
@@ -503,9 +498,9 @@ int ObSqlPlan::inner_store_sql_plan_for_explain(ObExecContext *ctx,
         ret = end_ret;
       }
     }
-    if (OB_NOT_NULL(saved_session)) {
-      saved_session->reset();
-    }
+  }
+  if (OB_NOT_NULL(saved_session)) {
+    saved_session->reset();
   }
   return ret;
 }
@@ -1133,10 +1128,12 @@ int ObSqlPlan::print_constraint_info(char *buf,
 void ObSqlPlan::filter_rescan_op(ObIArray<ObSqlPlanItem*> &sql_plan_infos)
 {
   int64_t rescan_idx = -1;
+  // length of "RESCAN"
+  const int64_t rescan_name_len = 6;
   ObSqlPlanItem *rescan_item = NULL;
   for (int i = 0; i < sql_plan_infos.count(); i++) {
     ObSqlPlanItem *plan_item = sql_plan_infos.at(i);
-    if (0 == MEMCMP(log_op_def::get_op_name(log_op_def::LOG_RESCAN), plan_item->operation_, plan_item->operation_len_)) {
+    if (OB_NOT_NULL(plan_item->operation_) && plan_item->operation_len_ == rescan_name_len && 0 == MEMCMP(log_op_def::get_op_name(log_op_def::LOG_RESCAN), plan_item->operation_, rescan_name_len)) {
       rescan_item = plan_item;
       rescan_idx = i;
 

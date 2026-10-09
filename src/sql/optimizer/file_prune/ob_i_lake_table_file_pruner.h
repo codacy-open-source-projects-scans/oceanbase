@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_OPTIMIZER_FILE_PRUNE_OB_I_LAKE_TABLE_FILE_PRUNER_H
@@ -71,7 +64,8 @@ public:
 
 typedef enum {
   ICEBERG,
-  HIVE
+  HIVE,
+  PAIMON
 } PrunnerType;
 
 class ObILakeTableFilePruner
@@ -85,6 +79,7 @@ public:
   inline const ObDASTableLocMeta &get_loc_meta() const { return loc_meta_; }
   inline ObDASTableLocMeta &get_loc_meta() { return loc_meta_; }
   inline bool is_partitioned() const { return is_partitioned_; }
+  inline bool all_partitions_selected() const { return all_partitions_selected_; }
   inline share::schema::ObPartitionLevel get_part_level() const
   {
     return is_partitioned_ ? share::schema::ObPartitionLevel::PARTITION_LEVEL_ONE
@@ -98,6 +93,7 @@ public:
   bool is_partitioned_;
   bool inited_;
   bool need_all_;
+  bool all_partitions_selected_;
   common::ObIAllocator &allocator_; //used for deep copy other table location
   ObDASTableLocMeta loc_meta_;
   common::ObFixedArray<uint64_t, common::ObIAllocator> column_ids_;

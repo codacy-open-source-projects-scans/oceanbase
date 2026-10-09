@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -301,6 +294,13 @@ int ObSimpleServer::simple_start()
   }
   // bootstrap
   if (!ObSimpleServerRestartHelper::is_restart_) {
+    // Reset server_id before bootstrap to handle upper-layer retry scenarios where the config
+    // file from a previous run may have persisted a non-zero observer_id. Without this reset,
+    // check_server_empty() would find server_id=1 and fail the first bootstrap attempt
+    // (logging "[CHECK_SERVER_EMPTY] server_id exists"), causing avoidable noise and potential
+    // instability when the data dir cleanup was incomplete between retries.
+    (void) GCTX.set_server_id(0);
+    GCONF.observer_id = 0;
     std::thread th([this]() {
       int64_t start_time = ObTimeUtility::current_time();
       int ret = OB_SUCCESS;
@@ -310,6 +310,11 @@ int ObSimpleServer::simple_start()
         if (OB_SUCC(ret)) {
           break;
         }
+        // A failed bootstrap may have already set server_id via check_server_empty_with_result
+        // (ob_service.cpp set_server_id_), after which every retry fails at check_server_empty
+        // with OB_ERR_SYS. Reset so the next retry can make progress on busy CI machines.
+        (void) GCTX.set_server_id(0);
+        GCONF.observer_id = 0;
         ::usleep(200 * 1000);
         curr_time = ObTimeUtility::current_time();
       }

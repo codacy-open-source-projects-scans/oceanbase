@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL_STORAGEROUTINE
@@ -263,8 +256,16 @@ int ObRoutinePersistentInfo::decode_dll(ObSQLSessionInfo &session_info,
                 int8_t cur_level = 0;
                 int16_t sub_id = 0;
                 OZ (cg.init());
-                if (cg.get_debug_mode()
+                if (routine_ast->is_external_routine()) {
+                  OX (routine->set_external_routine());
+                  OZ (SMART_CALL(decode_dll(session_info, schema_guard, routine->get_exec_env(), *routine_ast, *routine, buf, len, pos, cur_level, sub_id)));
+                  CK (sub_id == routine_idx + 1);
+                  CK (0 == routine->get_action());
+                  OZ (cg.generate_external(*routine));
+                  OX (routine->set_ret_type(routine_ast->get_ret_type()));
+                } else if (cg.get_debug_mode()
                     || cg.get_profile_mode()
+                    || cg.get_code_coverage_mode()
                     || !routine_ast->get_is_all_sql_stmt()
                     || !routine_ast->get_obj_access_exprs().empty()) {
                   OZ (SMART_CALL(decode_dll(session_info, schema_guard, routine->get_exec_env(), *routine_ast, *routine, buf, len, pos, cur_level, sub_id)));
@@ -556,7 +557,10 @@ int ObRoutinePersistentInfo::check_dep_schema(ObSchemaGetterGuard &schema_guard,
         // do nothing
       } else if (table_schema->get_schema_version() <= merge_version) {
         match = true;
-      } else if (is_check_package_state) {
+      } else if (is_check_package_state || table_schema->is_view_table()) {
+        // If it's a view, the schema version upgrade is temporarily considered outdated,
+        // But it should be configured the same as the table. Check if the column information has changed.
+        // refer to RESOLVE_SELECT_VIEW_STMT
         match = false;
       } else {
         // here do not set false , will check column info later
@@ -624,15 +628,19 @@ int ObRoutinePersistentInfo::read_dll_from_disk(ObSQLSessionInfo *session_info,
       LOG_WARN("assign format failed", K(ret));
     } else {
       SMART_VAR(ObMySQLProxy::MySQLResult, result) {
-        if (OB_FAIL(sql_proxy->read(result, tenant_id_, query_inner_sql.ptr()))) {
-          LOG_WARN("execute query failed", K(ret), K(query_inner_sql), K(tenant_id_));
+        const uint64_t exec_tenant_id = get_exec_tenant_id();
+        if (OB_INVALID_ID == exec_tenant_id) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected tenant id", K(ret));
+        } else if (OB_FAIL(sql_proxy->read(result, exec_tenant_id, query_inner_sql.ptr()))) {
+          LOG_WARN("execute query failed", K(ret), K(query_inner_sql), K(exec_tenant_id));
         } else if (OB_NOT_NULL(result.get_result())) {
           if (OB_FAIL(result.get_result()->next())) {
             if (OB_ITER_END == ret) {
               op = ObRoutinePersistentInfo::ObPLOperation::INSERT;
               ret = OB_SUCCESS;
             } else {
-              LOG_WARN("failed to get next", K(ret), K(tenant_id_));
+              LOG_WARN("failed to get next", K(ret), K(exec_tenant_id));
             }
           } else {
             EXTRACT_INT_FIELD_MYSQL(*(result.get_result()), "merge_version", merge_version, int64_t);
@@ -640,11 +648,8 @@ int ObRoutinePersistentInfo::read_dll_from_disk(ObSQLSessionInfo *session_info,
             if (OB_SUCC(ret)) {
               bool match = true;
               int64_t tenant_schema_version = OB_INVALID_VERSION;
-              if (OB_INVALID_ID == tenant_id_belongs_) {
-                ret = OB_ERR_UNEXPECTED;
-                LOG_WARN("unexpected tenant id", K(ret));
-              } else if (OB_FAIL(schema_guard.get_schema_version(tenant_id_belongs_, tenant_schema_version))) {
-                LOG_WARN("fail to get schema version", K(ret), K(tenant_id_belongs_));
+              if (OB_FAIL(schema_guard.get_schema_version(exec_tenant_id, tenant_schema_version))) {
+                LOG_WARN("fail to get schema version", K(ret), K(exec_tenant_id));
               } else if (merge_version == tenant_schema_version) {
                 op = ObRoutinePersistentInfo::ObPLOperation::NONE;
               } else if (merge_version < tenant_schema_version) {
@@ -878,7 +883,7 @@ int ObRoutinePersistentInfo::get_pl_extra_info(const DependencyTable &dep_table,
       } else if (table_schema->is_index_table()) {
         // do nothing
       } else {
-        OZ (concat_ids_sql.append_fmt("%s", table_schema->get_table_name()));
+        OZ (concat_ids_sql.append_fmt("|%s", table_schema->get_table_name()));
         ObTableSchema::const_column_iterator cs_iter = table_schema->column_begin();
         ObTableSchema::const_column_iterator cs_iter_end = table_schema->column_end();
         for (; OB_SUCC(ret) && cs_iter != cs_iter_end; ++cs_iter) {
@@ -887,15 +892,15 @@ int ObRoutinePersistentInfo::get_pl_extra_info(const DependencyTable &dep_table,
             // do nothing
           } else {
             // column_id_,meta_type_,charset_type_,accuracy_,is_invisible_col_,column_name_
-            OZ (concat_ids_sql.append_fmt("%d|%d|%d|%d|%d|%ld|%ld|%ld|%s",
+            OZ (concat_ids_sql.append_fmt("|%lu|%d|%d|%d|%d|%d|%ld|%d|%s",
                                           column_schema->get_column_id(),
-                                          static_cast<uint8_t>(column_schema->get_meta_type().get_type()),
-                                          static_cast<uint8_t>(column_schema->get_meta_type().get_cs_level()),
-                                          static_cast<uint8_t>(column_schema->get_meta_type().get_cs_type()),
-                                          static_cast<uint8_t>(column_schema->get_meta_type().get_extend_type()),
-                                          static_cast<uint64_t>(column_schema->get_charset_type()),
-                                          static_cast<uint64_t>(column_schema->get_accuracy().get_accuracy()),
-                                          static_cast<uint8_t>(column_schema->is_invisible_column()),
+                                          static_cast<int>(column_schema->get_meta_type().get_type()),
+                                          static_cast<int>(column_schema->get_meta_type().get_cs_level()),
+                                          static_cast<int>(column_schema->get_meta_type().get_cs_type()),
+                                          static_cast<int>(column_schema->get_meta_type().get_extend_type()),
+                                          static_cast<int>(column_schema->get_charset_type()),
+                                          static_cast<int64_t>(column_schema->get_accuracy().get_accuracy()),
+                                          static_cast<int>(column_schema->is_invisible_column()),
                                           column_schema->get_column_name()));
             // extended_type_info
             const common::ObIArray<common::ObString>& type_info = column_schema->get_extended_type_info();
@@ -909,6 +914,7 @@ int ObRoutinePersistentInfo::get_pl_extra_info(const DependencyTable &dep_table,
     OZ (concat_ids_sql.append_fmt("| "));
   }
   OZ (ObSQLUtils::md5(concat_ids_sql.string(), extra_info.dep_obj_ids_md5_, dep_obj_ids_md5_len));
+  LOG_INFO("JBKTEST: extra info ",K(ret),K(concat_ids_sql), K(extra_info.dep_obj_ids_md5_));
   return ret;
 }
 
@@ -936,13 +942,13 @@ int ObRoutinePersistentInfo::insert_or_update_dll_to_disk(schema::ObSchemaGetter
   if (OB_ISNULL(sql_proxy = GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    const uint64_t exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id_);
+    const uint64_t exec_tenant_id = get_exec_tenant_id();
     ObDMLSqlSplicer dml;
     int64_t tenant_schema_version = OB_INVALID_VERSION;
-    if (OB_INVALID_ID == tenant_id_belongs_) {
+    if (OB_INVALID_ID == exec_tenant_id) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected tenant id", K(ret));
-    } else if (OB_FAIL(schema_guard.get_schema_version(tenant_id_belongs_, tenant_schema_version))) {
+    } else if (OB_FAIL(schema_guard.get_schema_version(exec_tenant_id, tenant_schema_version))) {
       LOG_WARN("fail to get schema version");
     } else if (OB_FAIL(gen_routine_storage_dml(exec_tenant_id, dml, tenant_schema_version, binary, stack_sizes, extra_info_str))) {
       LOG_WARN("gen table dml failed", K(ret));
@@ -1175,6 +1181,17 @@ int ObRoutinePersistentInfo::decode_stack_sizes(ObPLCompileUnit &unit, char *buf
   }
 
   return ret;
+}
+
+uint64_t ObRoutinePersistentInfo::get_exec_tenant_id()
+{
+  uint64_t exec_tenant_id = OB_INVALID_ID;
+  if (OB_SYS_TENANT_ID == tenant_id_belongs_) {
+    exec_tenant_id = OB_SYS_TENANT_ID;
+  } else {
+    exec_tenant_id = ObSchemaUtils::get_exec_tenant_id(tenant_id_);
+  }
+  return exec_tenant_id;
 }
 
 } // namespace pl

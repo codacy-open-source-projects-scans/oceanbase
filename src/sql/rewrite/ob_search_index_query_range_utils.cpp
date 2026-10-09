@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -55,18 +48,31 @@ int ObSearchIndexQueryRangeUtils::build_column_idx_expr(ObQueryRangeCtx &ctx,
   return ret;
 }
 
-int ObSearchIndexQueryRangeUtils::build_null_path_expr(ObQueryRangeCtx &ctx, ObRawExpr *&path_expr)
+int ObSearchIndexQueryRangeUtils::build_array_or_scalar_path_expr(ObQueryRangeCtx &ctx, ObRawExpr *&path_expr)
 {
   int ret = OB_SUCCESS;
   if (!ctx.is_search_index()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("not a search index", K(ret));
   } else {
-    ObRawExpr *null_expr = NULL;
-    if (OB_FAIL(ObRawExprUtils::build_null_expr(*ctx.expr_factory_, null_expr))) {
-      LOG_WARN("failed to build null expr for path", K(ret));
+    const ObString &array_type_path = ctx.search_index_range_ctx_->array_type_path_;
+    if (!array_type_path.empty()) {
+      // Array column: path in index is type string e.g. "ARRAY(INT)"
+      ObConstRawExpr *path_const_expr = NULL;
+      if (OB_FAIL(ObRawExprUtils::build_const_string_expr(*ctx.expr_factory_, ObVarcharType,
+                                                           array_type_path, CS_TYPE_BINARY,
+                                                           path_const_expr))) {
+        LOG_WARN("failed to build const string expr for array type path", K(ret));
+      } else {
+        path_expr = path_const_expr;
+      }
     } else {
-      path_expr = null_expr;
+      ObRawExpr *null_expr = NULL;
+      if (OB_FAIL(ObRawExprUtils::build_null_expr(*ctx.expr_factory_, null_expr))) {
+        LOG_WARN("failed to build null expr for path", K(ret));
+      } else {
+        path_expr = null_expr;
+      }
     }
   }
   return ret;
@@ -311,15 +317,16 @@ int ObSearchIndexQueryRangeUtils::json_prefix_path_encode(ObIAllocator &allocato
                                                           ObQueryRangeCtx &ctx,
                                                           const ObRawExpr &path_expr,
                                                           ObString &path_prefix,
-                                                          const bool is_range_cmp,
-                                                          bool &can_extract_range,
-                                                          const ObRawExpr *const_expr)
+                                                          const bool index_sub_path,
+                                                          bool &can_extract_range)
 {
   int ret = OB_SUCCESS;
   can_extract_range = false;
   const share::ObSearchIndexConfigFilter *json_filter = nullptr;
+  ObItemType pick_type = T_NULL;
   if (ctx.is_search_index() && OB_NOT_NULL(ctx.search_index_range_ctx_)) {
     json_filter = ctx.search_index_range_ctx_->get_json_filter();
+    pick_type = ctx.search_index_range_ctx_->get_pick_type();
   }
   if (!path_expr.is_static_const_expr()) {
     can_extract_range = false;
@@ -385,9 +392,7 @@ int ObSearchIndexQueryRangeUtils::json_prefix_path_encode(ObIAllocator &allocato
         // Check path filter if json_filter is configured
         bool filter_passed = true;
         if (OB_SUCC(ret) && only_member_nodes && OB_NOT_NULL(json_filter)) {
-          if (json_filter->has_types()) {
-            filter_passed = false;
-          } else if (OB_FAIL(json_filter->is_path_indexed(path_items, filter_passed, is_range_cmp))) {
+          if (OB_FAIL(json_filter->is_indexed(path_items, pick_type, filter_passed, index_sub_path))) {
             LOG_WARN("failed to check path filter", K(ret));
           }
         }
@@ -409,6 +414,7 @@ int ObSearchIndexQueryRangeUtils::json_prefix_path_encode(ObIAllocator &allocato
 
 int ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(ObExecContext &exec_ctx,
                                                              const ObObj &json_value,
+                                                             const uint8_t cons_encode_type,
                                                              bool &is_match)
 {
   int ret = OB_SUCCESS;
@@ -421,7 +427,7 @@ int ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(ObExecContext &exec
                                                               &allocator,
                                                               j_base))) {
     LOG_WARN("failed to refine range json value const", K(ret));
-  } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_match(j_base, 0, is_match))) {
+  } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_match(j_base, cons_encode_type, is_match))) {
     LOG_WARN("failed to check json scalar match", K(ret));
   }
   return ret;
@@ -429,6 +435,7 @@ int ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(ObExecContext &exec
 
 int ObSearchIndexQueryRangeUtils::is_json_scalar_or_array_match_index(ObExecContext &exec_ctx,
                                                                       const ObObj &json_value,
+                                                                      const uint8_t cons_encode_type,
                                                                       bool &is_match)
 {
   int ret = OB_SUCCESS;
@@ -441,7 +448,7 @@ int ObSearchIndexQueryRangeUtils::is_json_scalar_or_array_match_index(ObExecCont
                                                               &allocator,
                                                               j_base))) {
     LOG_WARN("failed to refine range json value const", K(ret));
-  } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_or_array_match(j_base, 0, is_match))) {
+  } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_or_array_match(j_base, cons_encode_type, is_match))) {
     LOG_WARN("failed to check json array match", K(ret));
   }
   return ret;
@@ -452,7 +459,10 @@ int ObSearchIndexQueryRangeUtils::add_json_scalar_constraint(ObQueryRangeCtx &ct
 {
   int ret = OB_SUCCESS;
   PreCalcExprExpectResult expect_result = PRE_CALC_SEARCH_INDEX_CONSTRAINT;
-  int64_t extra = ObSearchIndexConstraint::make_extra(ObSearchIndexConstraint::JSON_TYPE_SCALAR, 0, 0);
+  const uint8_t cons_encode_type =
+    ctx.search_index_range_ctx_ ? ctx.search_index_range_ctx_->get_cons_encode_type() : 0;
+  int64_t extra = ObSearchIndexConstraint::make_extra(ObSearchIndexConstraint::JSON_TYPE_SCALAR,
+                                                      cons_encode_type, 0);
   ObConstraintExtra cons_extra;
   cons_extra.extra_ = extra;
   ObExprConstraint cons(const_cast<ObRawExpr*>(expr), expect_result, cons_extra);
@@ -469,7 +479,10 @@ int ObSearchIndexQueryRangeUtils::add_json_scalar_or_array_constraint(ObQueryRan
 {
   int ret = OB_SUCCESS;
   PreCalcExprExpectResult expect_result = PRE_CALC_SEARCH_INDEX_CONSTRAINT;
-  int64_t extra = ObSearchIndexConstraint::make_extra(ObSearchIndexConstraint::JSON_TYPE_SCALAR_OR_ARRAY, 0, 0);
+  const uint8_t cons_encode_type =
+    ctx.search_index_range_ctx_ ? ctx.search_index_range_ctx_->get_cons_encode_type() : 0;
+  int64_t extra = ObSearchIndexConstraint::make_extra(
+    ObSearchIndexConstraint::JSON_TYPE_SCALAR_OR_ARRAY, cons_encode_type, 0);
   ObConstraintExtra cons_extra;
   cons_extra.extra_ = extra;
   ObExprConstraint cons(const_cast<ObRawExpr*>(expr), expect_result, cons_extra);
@@ -512,11 +525,25 @@ int ObSearchIndexQueryRangeUtils::add_string_type_length_constraint(ObQueryRange
   ObExprConstraint cons(const_cast<ObRawExpr*>(expr), expect_result, cons_extra);
   if (NULL == ctx.expr_constraints_) {
     // do nothing
-  } else if (OB_ISNULL(expr) || !ob_is_string_tc(expr->get_result_type().get_type())) {
+  } else if (OB_ISNULL(expr) || !ob_is_string_type(expr->get_result_type().get_type())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null or not string type", K(ret), KP(expr));
   } else if (OB_FAIL(add_var_to_array_no_dup(*ctx.expr_constraints_, cons))) {
     LOG_WARN("failed to add string type length constraint", K(ret));
+  }
+  return ret;
+}
+
+int ObSearchIndexQueryRangeUtils::is_string_length_match_index(const ObObj &str_value,
+                                                              bool &is_match)
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator(ObModIds::OB_SQL_EXPR_CALC, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+  if (!str_value.is_string_type()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected not string type", K(ret));
+  } else if (OB_FAIL(ObSearchIndexConstraint::is_string_length_match(allocator, str_value, is_match))) {
+    LOG_WARN("fail to check string length match", K(ret));
   }
   return ret;
 }

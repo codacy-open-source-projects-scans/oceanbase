@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -868,28 +861,31 @@ int ObTableApiRowIterator::open()
 int ObTableApiRowIterator::get_next_row(ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
+  row = nullptr;
   if (OB_FAIL(ObTableApiScanRowIterator::get_next_row(row))){
     if (ret != OB_ITER_END) {
       ret_code_ = ret;
       LOG_WARN("fail to get next row", K(ret));
     }
-  } else {
+  } else if (OB_NOT_NULL(row)) {
     row_count_++;
+    LOG_DEBUG("ObTableApiRowIterator::get_next_row", K(ret), KPC(row));
   }
-  LOG_DEBUG("ObTableApiRowIterator::get_next_row", K(ret), KPC(row));
   return ret;
 }
 
 int ObTableApiRowIterator::get_next_row(ObNewRow *&row, common::ObIAllocator &allocator)
 {
-    int ret = OB_SUCCESS;
+  int ret = OB_SUCCESS;
+  row = nullptr;
   if (OB_FAIL(ObTableApiScanRowIterator::get_next_row(row, allocator))){
     if (ret != OB_ITER_END) {
       ret_code_ = ret;
       LOG_WARN("fail to get next row", K(ret));
     }
-  } else {
+  } else if (OB_NOT_NULL(row)) {
     row_count_++;
+    LOG_DEBUG("ObTableApiRowIterator::get_next_row", K(ret), KPC(row));
   }
   return ret;
 }

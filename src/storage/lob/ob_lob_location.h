@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_LOB_LOCATION_UTIL_H_
@@ -15,9 +8,16 @@
 
 #include "storage/lob/ob_lob_access_param.h"
 #include "observer/ob_server_struct.h"
+#include "share/location_cache/ob_location_struct.h"
 
 namespace oceanbase
 {
+namespace sql
+{
+struct ObDASTableLocMeta;
+struct ObDASTabletLoc;
+class ObDASLocationRouter;
+}
 namespace storage
 {
 
@@ -34,6 +34,14 @@ public:
 
   static int lob_refresh_location(ObLobAccessParam &param, int last_err, int retry_cnt);
   static int get_ls_leader(ObLobAccessParam& param);
+
+private:
+  static int fix_stale_local_leader(
+      const sql::ObDASTableLocMeta &loc_meta,
+      const sql::ObDASTabletLoc &tablet_loc,
+      sql::ObDASLocationRouter &router,
+      ObLobAccessParam &param,
+      common::ObMemLobLocationInfo *location_info);
 
 };
 

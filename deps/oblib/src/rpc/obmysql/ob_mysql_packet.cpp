@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RPC_OBMYSQL
@@ -258,6 +251,11 @@ int Ob20ExtraInfo::assign(const Ob20ExtraInfo &other, char* buf, int64_t buf_len
       MEMCPY(buf+len, other.sess_info_veri_.ptr(), other.sess_info_veri_.length());
       sess_info_veri_.assign_ptr(buf+len, other.sess_info_veri_.length());
       len += other.sess_info_veri_.length();
+    }
+    if (other.sql_database_.length() > 0) {
+      MEMCPY(buf+len, other.sql_database_.ptr(), other.sql_database_.length());
+      sql_database_.assign_ptr(buf+len, other.sql_database_.length());
+      len += other.sql_database_.length();
     }
   }
   return ret;

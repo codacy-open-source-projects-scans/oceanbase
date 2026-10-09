@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -131,7 +124,7 @@ int ObExprLocalDynamicFilter::prepare_storage_white_filter_data(const ObExpr &ex
   int ret = OB_SUCCESS;
   params.reuse();
   is_data_prepared = false;
-  const LocalDynamicFilterParams *filter_params = dynamic_filter.get_op().get_local_dynamic_filter_params();
+  const LocalDynamicFilterParams *filter_params = dynamic_filter.get_op()->get_local_dynamic_filter_params();
   ObExprLocalDynamicFilterContext *local_dynamic_filter_ctx = nullptr;
 
   if (OB_ISNULL(local_dynamic_filter_ctx = static_cast<ObExprLocalDynamicFilterContext *>(
@@ -164,7 +157,7 @@ int ObExprLocalDynamicFilter::update_storage_white_filter_data(const ObExpr &exp
   int ret = OB_SUCCESS;
   params.reuse();
   is_update = false;
-  const common::ObIArray<common::ObDatum> *filter_params = dynamic_filter.get_op().get_local_dynamic_filter_params();
+  const common::ObIArray<common::ObDatum> *filter_params = dynamic_filter.get_op()->get_local_dynamic_filter_params();
   if (OB_NOT_NULL(filter_params) && !filter_params->empty()) {
     if (OB_FAIL(params.assign(*filter_params))) {
       LOG_WARN("failed to assign local dynamic filter params", K(ret));

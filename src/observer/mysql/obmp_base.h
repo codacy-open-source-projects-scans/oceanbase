@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_MYSQL_OBMP_BASE_H_
@@ -165,6 +158,7 @@ protected:
                    ObSchemaGetterGuard *schema_guard = NULL);
   int process_extra_info(sql::ObSQLSessionInfo &session, const obmysql::ObMySQLRawPacket &pkt,
                                 bool &need_response_error);
+  int check_proxy_db_resource_group(sql::ObSQLSessionInfo &session);
   int process_kill_client_session(sql::ObSQLSessionInfo &session, bool is_connect = false);
   int load_privilege_info_for_change_user(sql::ObSQLSessionInfo *session);
 

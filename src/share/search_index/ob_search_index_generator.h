@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_SEARCH_INDEX_GENERATOR_H_
@@ -50,6 +43,16 @@ public:
     : column_idx_(column_idx), path_(), value_(value.ptr(), value.length(), false), doc_id_(doc_id)
   {
     path_.set_null();
+  }
+
+  // array column null / placeholder: path = type meta (e.g. ARRAY(INT)), value null
+  explicit ObSearchIndexRow(uint64_t column_idx, uint64_t doc_id, const ObString &path)
+    : column_idx_(column_idx),
+      path_(path.ptr(), path.length(), false),
+      value_(),
+      doc_id_(doc_id)
+  {
+    value_.set_null();
   }
 
   explicit ObSearchIndexRow(uint64_t column_idx, ObString &path, ObString &value, uint64_t doc_id)
@@ -126,9 +129,12 @@ private:
         column_idx_(OB_INVALID_ID),
         enc_param_(),
         obj_meta_(),
+        need_normalize_encoding_(false),
+        orig_cs_type_(CS_TYPE_INVALID),
         arr_type_(nullptr),
         elem_generator_(nullptr),
-        config_filter_(nullptr) {}
+        config_filter_(nullptr),
+        array_index_path_() {}
     virtual ~Generator() {}
 
     int init(const uint64_t column_idx, const ObObjMeta &obj_meta,
@@ -158,11 +164,17 @@ private:
     uint64_t column_idx_;
     ObEncParam enc_param_;
     ObObjMeta obj_meta_;
+    // When the column's collation is not supported by encode_from_string_varlen
+    // (e.g. UTF-16, UTF-16LE, latin1, or utf8mb4_unicode_ci), we normalize the
+    // string to a supported charset/collation before encoding.
+    bool need_normalize_encoding_;
+    ObCollationType orig_cs_type_;
 
     // for array type
     common::ObCollectionArrayType *arr_type_;
     Generator *elem_generator_;
     const ObSearchIndexConfigFilter *config_filter_;
+    common::ObString array_index_path_;
   };
 
 public:

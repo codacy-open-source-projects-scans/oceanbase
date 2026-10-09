@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -553,6 +546,12 @@ int ObDynamicSampling::estimate_rowcount(int64_t max_ds_timeout,
   int64_t start_time = ObTimeUtility::current_time();
   ObSQLSessionInfo *session_info = ctx_->get_session_info();
   bool need_restore_session = false;
+  transaction::ObTxDesc *tx_desc = NULL;
+  bool is_sess_in_retry = false;
+  int last_query_retry_err = OB_SUCCESS;
+  int64_t session_query_timeout = 0;
+  ObAuditRecordData audit_record;
+  ObSQLSessionInfo::ObAuditRecordDataWrapperGuard guard(session_info, audit_record);
   if (!is_big_table_ && OB_FAIL(add_block_sample_info(sample_block_ratio_, seed_, sample_str))) {
     LOG_WARN("failed to add block sample info", K(ret));
   } else if (OB_FAIL(add_basic_hint_info(basic_hint_str, max_ds_timeout, is_big_table_ ? 1 : degree))) {
@@ -583,9 +582,9 @@ int ObDynamicSampling::estimate_rowcount(int64_t max_ds_timeout,
       ret = COVER_SUCC(tmp_ret);
       LOG_WARN("failed to restore session", K(tmp_ret));
     }
-    if (OB_NOT_NULL(saved_data.session_value_)) {
-      saved_data.session_value_->reset();
-    }
+  }
+  if (OB_NOT_NULL(saved_data.session_value_)) {
+    saved_data.session_value_->reset();
   }
   LOG_TRACE("go to dynamic sample one time", K(sample_block_ratio_), K(ret),
             K(raw_sql_str), K(max_ds_timeout), K(start_time), K(ObTimeUtility::current_time() - start_time));

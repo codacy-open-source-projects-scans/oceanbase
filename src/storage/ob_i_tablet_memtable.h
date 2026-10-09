@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_I_TABLET_MEMTABLE_H_
@@ -250,7 +243,7 @@ public:
     return TabletMemtableFreezeState::READY_FOR_FLUSH == freeze_state_ && share::SCN::max_scn() != get_end_scn();
   }
   virtual bool can_be_minor_merged() override;
-  virtual void set_delete_insert_flag(const bool is_delete_insert) {}
+  virtual void set_original_merge_engine_type(const ObMergeEngineType merge_engine_type) {}
   virtual void set_micro_block_format_version(const int64_t micro_block_format_version) {}
   int inc_unsubmitted_cnt();
   int dec_unsubmitted_cnt();

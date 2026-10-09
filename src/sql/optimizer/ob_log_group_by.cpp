@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -80,6 +73,7 @@ int ObGroupingSetInfo::assign(const ObGroupingSetInfo &other)
     LOG_WARN("assign array failed", K(ret));
   } else {
     grouping_set_id_ = other.grouping_set_id_;
+    hash_val_expr_ = other.hash_val_expr_;
   }
   return ret;
 }
@@ -528,7 +522,44 @@ int ObLogGroupBy::get_gby_output_exprs(ObIArray<ObRawExpr *> &output_exprs)
   } else {/*do nothing*/}
   return ret;
 }
-
+int ObLogGroupBy::replace_op_replaced_exprs(ObRawExprReplacer &replacer)
+{
+  int ret = OB_SUCCESS;
+  if (is_three_stage_expand_aggr()) {
+    for (int i = 0; OB_SUCC(ret) && i < third_stage_expand_replace_pairs_.count(); i++) {
+      ObRawExpr *&org_agg = third_stage_expand_replace_pairs_.at(i).element<0>();
+      ObRawExpr *&new_agg = third_stage_expand_replace_pairs_.at(i).element<1>();
+      if (OB_FAIL(replace_expr_action(replacer, org_agg))) {
+        LOG_WARN("replace org agg failed", K(ret));
+      } else if (OB_FAIL(replace_expr_action(replacer, new_agg))) {
+        LOG_WARN("replace new agg failed", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret) && is_three_stage_expand_aggr() && grouping_set_info_ != NULL) {
+    for (int i = 0; OB_SUCC(ret) && i < grouping_set_info_->replaced_agg_pairs_.count(); i++) {
+      ObRawExpr *&org_agg = grouping_set_info_->replaced_agg_pairs_.at(i).element<0>();
+      ObRawExpr *&new_agg = grouping_set_info_->replaced_agg_pairs_.at(i).element<1>();
+      if (OB_FAIL(replace_expr_action(replacer, org_agg))) {
+        LOG_WARN("replace org agg failed", K(ret));
+      } else if (OB_FAIL(replace_expr_action(replacer, new_agg))) {
+        LOG_WARN("replace new agg failed", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    for (int i = 0; OB_SUCC(ret) && i < distinct_pairs_.count(); i++) {
+      ObRawExpr *&org_agg = distinct_pairs_.at(i).element<0>();
+      ObRawExpr *&new_agg = distinct_pairs_.at(i).element<1>();
+      if (OB_FAIL(replace_expr_action(replacer, org_agg))) {
+        LOG_WARN("replace org agg failed", K(ret));
+      } else if (OB_FAIL(replace_expr_action(replacer, new_agg))) {
+        LOG_WARN("replace new agg failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
 int ObLogGroupBy::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;

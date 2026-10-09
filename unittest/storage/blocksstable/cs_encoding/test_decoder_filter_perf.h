@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_CS_ENCODING_TEST_DECODER_FILTER_PERF_H_
 #define OCEANBASE_CS_ENCODING_TEST_DECODER_FILTER_PERF_H_
@@ -1999,7 +1992,7 @@ int TestDecoderFilterPerf::test_filter_pushdown(
   sql::ObEvalCtx eval_ctx(exec_ctx);
   sql::ObPushdownExprSpec expr_spec(cur_allocator);
   sql::ObPushdownOperator op(eval_ctx, expr_spec);
-  sql::ObWhiteFilterExecutor filter(cur_allocator, filter_node, op);
+  sql::ObWhiteFilterExecutor filter(cur_allocator, filter_node, &op);
   filter.col_offsets_.init(COLUMN_CNT);
   filter.col_params_.init(COLUMN_CNT);
   const ObColumnParam *col_param = nullptr;

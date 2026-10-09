@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TABLELOCK
@@ -97,7 +90,7 @@ int check_exist(const ObLockTaskBatchRequest<T> &arg,
   return ret;
 }
 
-#define BATCH_PROCESS(arg, func_name, result)                           \
+#define BATCH_PROCESS(arg, func_name, result, ...)                      \
   ({                                                                    \
     int ret = OB_SUCCESS;                                               \
     ObAccessService *access_srv = MTL(ObAccessService *);               \
@@ -127,7 +120,8 @@ int check_exist(const ObLockTaskBatchRequest<T> &arg,
         if (OB_FAIL(ret)) {                                             \
         } else if (OB_FAIL(access_srv->func_name(arg.lsid_,             \
                                                  *(arg.tx_desc_),       \
-                                                 arg.params_[i]))) {    \
+                                                 arg.params_[i]         \
+                                                 , ##__VA_ARGS__))) {   \
           LOG_WARN("failed to exec", K(ret), K(arg.params_[i]));        \
         } else if (arg.params_[i].lock_id_.is_tablet_lock() &&          \
                    OB_FAIL(check_exist(arg,                             \
@@ -176,12 +170,14 @@ int ObTableLockTaskP::process()
       case ObTableLockTaskType::LOCK_TABLET:
       case ObTableLockTaskType::LOCK_OBJECT: {
         ObAccessService *access_srv = MTL(ObAccessService *);
+        ObIArray<ObTableLockHolderInfo> *holder_info = arg_.param_.need_holder_info_ ? &result_.holder_info_ : nullptr;
         if (arg_.is_timeout()) {
           ret = OB_TIMEOUT;
           LOG_WARN("table lock task timeout", K(ret), K(arg_));
         } else if (OB_FAIL(access_srv->lock_obj(arg_.lsid_,
                                                 *(arg_.tx_desc_),
-                                                arg_.param_))) {
+                                                arg_.param_,
+                                                holder_info))) {
           LOG_WARN("failed to exec lock obj operation",
                       K(ret), K(arg_));
         }
@@ -296,7 +292,12 @@ int ObBatchLockTaskP::process()
       case ObTableLockTaskType::LOCK_TABLET:
       case ObTableLockTaskType::LOCK_OBJECT:
       case ObTableLockTaskType::LOCK_ALONE_TABLET: {
-        if (OB_FAIL(BATCH_PROCESS(arg_, lock_obj, result_))) {
+        bool need_holder = false;
+        for (int64_t i = 0; !need_holder && i < arg_.params_.count(); ++i) {
+          need_holder = arg_.params_[i].need_holder_info_;
+        }
+        ObIArray<ObTableLockHolderInfo> *holder_info = need_holder ? &result_.holder_info_ : nullptr;
+        if (OB_FAIL(BATCH_PROCESS(arg_, lock_obj, result_, holder_info))) {
           LOG_WARN("failed to exec lock obj operation", K(ret), K(arg_));
         }
         break;

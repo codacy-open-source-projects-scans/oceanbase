@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_PL_PARSER_PARSE_STMT_NODE_H_
@@ -89,7 +82,8 @@ typedef struct _ObParseCtx
     uint32_t is_forbid_anony_parameter_ : 1; // 1 表示禁止匿名块参数化
     uint32_t need_switch_to_wrap_ : 1; // 1 indicates that the parser needs to switch to <wrap_begin>
     uint32_t contain_sensitive_data_ : 1; // 1 indicates whether contains sensitive data like create_ai_endpoint
-    uint32_t reserved_:22;
+    uint32_t has_null_param_ : 1; // indicates whether contains null parameter for pl anonymous / call stmt
+    uint32_t reserved_:21;
   };
   int json_object_depth_;
 } ObParseCtx;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -24,6 +17,7 @@
 #include <memory>
 
 #include "ob_select_into_op.h"
+#include "sql/ob_sql_utils.h"
 #include "sql/engine/cmd/ob_variable_set_executor.h"
 #include "lib/charset/ob_charset_string_helper.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
@@ -38,13 +32,14 @@
 
 #include <arrow/c/bridge.h>
 #include <arrow/array.h>
-
+#include "lib/wide_integer/ob_wide_integer_str_funcs.h"
 
 namespace oceanbase
 {
 using namespace common;
 namespace sql
 {
+
 #define ARROW_FAIL(statement) (OB_UNLIKELY(!(statement).ok()))
 
 OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
@@ -91,9 +86,15 @@ int ObSelectIntoOp::inner_open()
       }
       case ObExternalFileFormat::FormatType::ODPS_FORMAT:
       {
-        if (!GCONF._use_odps_jni_connector) {
+        use_odps_jni_connector_ = GCONF._use_odps_jni_connector;
+        int8_t unused_mode = 0;
+        if (OB_FAIL(ObSQLUtils::parse_odps_jni_params_from_format_str(
+                MY_SPEC.external_properties_.str_,
+                use_odps_jni_connector_,
+                unused_mode))) {
+          LOG_WARN("failed to parse odps jni params from format str", K(ret));
+        } else if (!use_odps_jni_connector_) {
 #if defined(OB_BUILD_CPP_ODPS)
-          is_odps_cpp_table_ = true;
           if (OB_FAIL(init_odps_tunnel())) {
             LOG_WARN("failed to init odps tunnel", K(ret));
           }
@@ -103,7 +104,6 @@ int ObSelectIntoOp::inner_open()
 #endif
         } else {
 #if defined(OB_BUILD_JNI_ODPS)
-          is_odps_java_table_ = true;
           if (OB_FAIL(init_odps_jni_tunnel())) {
             LOG_WARN("failed to init odps jni", K(ret));
           }
@@ -212,7 +212,56 @@ void ObSelectIntoOp::set_csv_format_options()
       has_escape_ = true;
       char_escape_ = external_properties_.csv_format_.field_escaped_char_;
     }
+    export_csv_header_ = external_properties_.csv_format_.export_header_;
   }
+}
+
+int ObSelectIntoOp::init_csv_writer(ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  if (MY_SPEC.buffer_size_ > 0
+      && OB_ISNULL(data_writer.get_buf())
+      && OB_FAIL(data_writer.alloc_buf(ctx_.get_allocator(), MY_SPEC.buffer_size_))) {
+    LOG_WARN("failed to alloc buffer", K(ret));
+  } else if (has_compress_
+             && OB_ISNULL(data_writer.get_compress_stream_writer())
+             && OB_FAIL(data_writer.init_compress_writer(ctx_.get_allocator(),
+                                                         external_properties_.csv_format_.compression_algorithm_,
+                                                         MY_SPEC.buffer_size_))) {
+    LOG_WARN("failed to init compress stream writer", K(ret));
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::export_csv_header(ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  ObObj header_field;
+  if (!export_csv_header_) {
+    // do nothing
+  } else if (OB_UNLIKELY(MY_SPEC.alias_names_.strs_.count() != MY_SPEC.select_exprs_.count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected header column count",
+             K(ret),
+             K(MY_SPEC.alias_names_.strs_.count()),
+             K(MY_SPEC.select_exprs_.count()));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.alias_names_.strs_.count(); ++i) {
+      header_field.set_varchar(MY_SPEC.alias_names_.strs_.at(i));
+      header_field.set_collation_type(cs_type_);
+      OZ(print_field(header_field, data_writer));
+      if (OB_SUCC(ret) && i != MY_SPEC.alias_names_.strs_.count() - 1) {
+        OZ(write_obj_to_file(field_str_, data_writer));
+      }
+    }
+    OZ(write_obj_to_file(line_str_, data_writer));
+    if (OB_SUCC(ret)) {
+      data_writer.update_last_line_pos();
+    }
+    OZ(data_writer.flush_shared_buf(shared_buf_));
+    OZ(data_writer.flush_buf());
+  }
+  return ret;
 }
 
 #ifdef OB_BUILD_CPP_ODPS
@@ -565,11 +614,7 @@ int ObSelectIntoOp::inner_get_next_row()
     } else {
       ++row_count;
       if (ObExternalFileFormat::FormatType::ODPS_FORMAT == format_type_) {
-        if (is_odps_cpp_table_ == is_odps_java_table_) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid table mode for odps table", K(ret),
-                   K(is_odps_cpp_table_), K(is_odps_java_table_));
-        } else if (is_odps_cpp_table_) {
+        if (!use_odps_jni_connector_) {
 #if defined (OB_BUILD_CPP_ODPS)
           if (OB_FAIL(into_odps())) {
             LOG_WARN("into odps failed", K(ret));
@@ -662,7 +707,7 @@ int ObSelectIntoOp::inner_get_next_batch(const int64_t max_row_cnt)
         brs_.skip_->deep_copy(*(child_brs->skip_), brs_.size_);
         row_count += brs_.size_ - brs_.skip_->accumulate_bit_cnt(brs_.size_);
         if (ObExternalFileFormat::FormatType::ODPS_FORMAT == format_type_) {
-          if (!GCONF._use_odps_jni_connector) {
+          if (!use_odps_jni_connector_) {
 #if defined (OB_BUILD_CPP_ODPS)
             if (OB_FAIL(into_odps_batch(brs_))) {
               LOG_WARN("into odps batch failed", K(ret));
@@ -756,7 +801,7 @@ int ObSelectIntoOp::inner_close()
   ObExternalFileWriter *data_writer = NULL;
   int64_t estimated_bytes = 0;
   if (ObExternalFileFormat::FormatType::ODPS_FORMAT == format_type_) {
-    if (!GCONF._use_odps_jni_connector) {
+    if (!use_odps_jni_connector_) {
 #if defined (OB_BUILD_CPP_ODPS)
       if (OB_FAIL(odps_commit_upload())) {
         LOG_WARN("failed to commit upload", K(ret));
@@ -1054,25 +1099,67 @@ int ObSelectIntoOp::calc_file_path_with_partition(ObString partition, ObExternal
 int ObSelectIntoOp::split_file(ObExternalFileWriter &data_writer)
 {
   int ret = OB_SUCCESS;
+  ObCsvFileWriter *csv_data_writer = NULL;
+  char *carry_over_line = NULL;
+  int64_t carry_over_line_len = 0;
   if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
-    ObCsvFileWriter *csv_data_writer = static_cast<ObCsvFileWriter*>(&data_writer);
+    csv_data_writer = static_cast<ObCsvFileWriter*>(&data_writer);
     if (OB_ISNULL(csv_data_writer)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected null data writer", K(ret));
     } else if (!use_shared_buf_ && OB_FAIL(csv_data_writer->flush_buf())) {
       LOG_WARN("failed to flush buffer", K(ret));
+    } else if (export_csv_header_ && !use_shared_buf_ && csv_data_writer->get_curr_pos() > 0) {
+      carry_over_line_len = csv_data_writer->get_curr_pos();
+      if (OB_ISNULL(csv_data_writer->get_buf())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("csv writer buffer is null", K(ret));
+      } else if (OB_ISNULL(carry_over_line = static_cast<char *>(ctx_.get_allocator().alloc(carry_over_line_len)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate carry over line", K(ret), K(carry_over_line_len));
+      } else {
+        MEMCPY(carry_over_line, csv_data_writer->get_buf(), carry_over_line_len);
+        csv_data_writer->set_curr_pos(0);
+        csv_data_writer->update_last_line_pos();
+      }
     } else if (has_lob_ && use_shared_buf_ && OB_FAIL(csv_data_writer->flush_shared_buf(shared_buf_))) {
       // 要保证文件中每一行的完整性, 有lob的时候shared buffer里不一定是完整的一行
       // 因此剩下的shared buffer里的内容也要刷到当前文件里, 这种情况下无法严格满足max_file_size的限制
       LOG_WARN("failed to flush shared buffer", K(ret));
     }
   }
+
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(data_writer.close_file())) {
     LOG_WARN("failed to close file", K(ret));
   } else if (OB_FAIL(calc_next_file_path(data_writer))) {
     LOG_WARN("failed to calculate new file path", K(ret));
+  } else {
+    if (has_compress_ && OB_NOT_NULL(csv_data_writer)
+        && OB_NOT_NULL(csv_data_writer->get_compress_stream_writer())) {
+      csv_data_writer->get_compress_stream_writer()->reuse();
+    }
+
+    if (export_csv_header_
+        && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_
+        && OB_FAIL(export_csv_header(*csv_data_writer))) {
+      LOG_WARN("failed to export csv header", K(ret));
+    } else if (OB_NOT_NULL(carry_over_line)) {
+      if (OB_ISNULL(csv_data_writer->get_buf())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("csv writer buffer is null", K(ret));
+      } else {
+        MEMCPY(csv_data_writer->get_buf(), carry_over_line, carry_over_line_len);
+        csv_data_writer->set_curr_pos(carry_over_line_len);
+      }
+    }
   }
+
+  if (OB_NOT_NULL(carry_over_line)) {
+    ctx_.get_allocator().free(carry_over_line);
+    carry_over_line = NULL;
+  }
+
   return ret;
 }
 
@@ -1105,9 +1192,6 @@ int ObSelectIntoOp::check_csv_file_size(ObCsvFileWriter &data_writer)
       if (!has_compress_) {
         data_writer.set_write_bytes(has_split ? curr_line_len : curr_bytes);
       }
-    }
-    if (has_compress_ && has_split) {
-      data_writer.get_compress_stream_writer()->reuse();
     }
     data_writer.update_last_line_pos();
   }
@@ -1981,6 +2065,11 @@ int ObSelectIntoOp::set_odps_column_value_mysql(apsara::odps::sdk::ODPSTableReco
           ObJsonBuffer jbuf(&allocator);
           ObJsonInType in_type = ObJsonInType::JSON_BIN;
           uint32_t parse_flag = lib::is_mysql_mode() ? 0 : ObJsonParser::JSN_RELAXED_FLAG;
+          sql::ObSQLSessionInfo *session = ctx_.get_my_session();
+          bool json_float_full_precision =
+            OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+          ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                           ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
           if (OB_FAIL(ObTextStringHelper::read_real_string_data(allocator,
                                                                 datum,
                                                                 datum_meta,
@@ -2484,6 +2573,11 @@ int ObSelectIntoOp::set_odps_column_value_oracle(apsara::odps::sdk::ODPSTableRec
           ObJsonBuffer jbuf(&allocator);
           ObJsonInType in_type = ObJsonInType::JSON_BIN;
           uint32_t parse_flag = lib::is_mysql_mode() ? 0 : ObJsonParser::JSN_RELAXED_FLAG;
+          sql::ObSQLSessionInfo *session = ctx_.get_my_session();
+          bool json_float_full_precision =
+            OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+          ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                           ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
           if (OB_FAIL(ObTextStringHelper::read_real_string_data(allocator,
                                                                 datum,
                                                                 datum_meta,
@@ -3295,6 +3389,11 @@ int ObSelectIntoOp::into_odps_jni_batch_one_col(int64_t col_idx, ObOdpsJniConnec
             ObJsonBuffer jbuf(&alloc);
             ObJsonInType in_type = ObJsonInType::JSON_BIN;
             uint32_t parse_flag = lib::is_mysql_mode() ? 0 : ObJsonParser::JSN_RELAXED_FLAG;
+            sql::ObSQLSessionInfo *session = ctx_.get_my_session();
+            bool json_float_full_precision =
+              OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+            ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                             ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
             if (OB_FAIL(ObTextStringHelper::read_real_string_data(alloc,
                                                                   &expr_vector,
                                                                   meta,
@@ -4013,8 +4112,11 @@ int ObSelectIntoOp::calc_parquet_decimal_length(int precision)
   return std::ceil((1 + precision / std::log10(2)) / 8);
 }
 
-
-int ObSelectIntoOp::orc_type_mapping_of_ob_type(ObDatumMeta& meta, int max_length, std::unique_ptr<orc::Type>& orc_type)
+int ObSelectIntoOp::orc_type_mapping_of_ob_type(ObDatumMeta &meta,
+                                                int max_length,
+                                                std::unique_ptr<orc::Type> &orc_type,
+                                                const ObExpr *expr,
+                                                ObEvalCtx *eval_ctx)
 {
   int ret = OB_SUCCESS;
   ObObjType obj_type = meta.get_type();
@@ -4034,7 +4136,7 @@ int ObSelectIntoOp::orc_type_mapping_of_ob_type(ObDatumMeta& meta, int max_lengt
   } else if (ObDoubleType == obj_type) {
     orc_type = orc::createPrimitiveType(orc::TypeKind::DOUBLE);
   } else if (ob_is_number_or_decimal_int_tc(obj_type)) {
-    if (OB_FAIL(check_oracle_number(obj_type, meta.precision_, meta.scale_))) {
+    if (OB_FAIL(check_oracle_number(obj_type, meta.precision_, meta.scale_, expr, eval_ctx))) {
       LOG_WARN("not support number type", K(ret));
     } else {
       int_bytes = wide::ObDecimalIntConstValue::get_int_bytes_by_precision(meta.precision_);
@@ -4092,7 +4194,9 @@ int ObSelectIntoOp::create_orc_schema(std::unique_ptr<orc::Type> &schema)
     std::unique_ptr<orc::Type> column_type;
     if (OB_FAIL(orc_type_mapping_of_ob_type(select_exprs.at(i)->datum_meta_,
                                             select_exprs.at(i)->max_length_,
-                                            column_type))) {
+                                            column_type,
+                                            select_exprs.at(i),
+                                            &eval_ctx_))) {
       LOG_WARN("unsupported type ob the column", K(ret));
     } else {
       try {
@@ -4153,7 +4257,9 @@ int ObSelectIntoOp::setup_parquet_schema()
       primitive_length = -1;
       if (OB_FAIL(check_oracle_number(obj_type,
                                       select_exprs.at(i)->datum_meta_.precision_,
-                                      select_exprs.at(i)->datum_meta_.scale_))) {
+                                      select_exprs.at(i)->datum_meta_.scale_,
+                                      select_exprs.at(i),
+                                      &eval_ctx_))) {
         LOG_WARN("not support number type", K(ret));
       } else if (OB_FAIL(get_parquet_logical_type(logical_type,
                                                   obj_type,
@@ -4592,20 +4698,89 @@ int ObSelectIntoOp::check_orc_file_size(ObOrcFileWriter &data_writer)
 
 bool ObSelectIntoOp::file_need_split(int64_t file_size)
 {
-  return (file_location_ == IntoFileLocation::SERVER_DISK
+  return ((file_location_ == IntoFileLocation::SERVER_DISK
+            || file_location_ == IntoFileLocation::REMOTE_HDFS)
           && !MY_SPEC.is_single_ && file_size > MY_SPEC.max_file_size_)
         || (file_location_ != IntoFileLocation::SERVER_DISK
+            && file_location_ != IntoFileLocation::REMOTE_HDFS
             && ((!MY_SPEC.is_single_ && file_size > min(MY_SPEC.max_file_size_, MAX_OSS_FILE_SIZE))
                 || (MY_SPEC.is_single_ && file_size > MAX_OSS_FILE_SIZE)));
 }
 
-int ObSelectIntoOp::check_oracle_number(ObObjType obj_type, int16_t &precision, int8_t scale)
+int ObSelectIntoOp::deduce_oracle_number_export_ps_from_nmb(const common::number::ObNumber &nmb,
+                                                            int16_t &precision,
+                                                            int8_t &scale)
+{
+  int ret = OB_SUCCESS;
+  ObArenaAllocator allocator("SelectIntoPS", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
+  char buf[number::ObNumber::MAX_PRINTABLE_SIZE];
+  int64_t pos = 0;
+  const int16_t fmt_scale = static_cast<int16_t>(nmb.get_scale());
+  if (OB_FAIL(nmb.format(buf, sizeof(buf), pos, fmt_scale))) {
+    LOG_WARN("failed to format oracle number for export ps deduce", K(ret));
+  } else if (OB_UNLIKELY(pos <= 0 || pos >= static_cast<int64_t>(sizeof(buf)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected formatted number length", K(ret), K(pos));
+  } else {
+    const int64_t str_len = pos;
+    int16_t prec_out = PRECISION_UNKNOWN_YET;
+    int16_t scale_out = SCALE_UNKNOWN_YET;
+    int32_t val_len = 0;
+    ObDecimalInt *decint = nullptr;
+    const int wide_ret
+        = wide::from_string(buf, str_len, allocator, scale_out, prec_out, val_len, decint);
+    const bool wide_ps_valid
+        = (OB_SUCCESS == wide_ret && prec_out <= OB_MAX_DECIMAL_POSSIBLE_PRECISION
+           && scale_out <= OB_MAX_DECIMAL_POSSIBLE_PRECISION && scale_out >= 0
+           && prec_out >= scale_out);
+    if (wide_ps_valid) {
+      precision = prec_out;
+      scale = static_cast<int8_t>(scale_out);
+    } else {
+      number::ObNumber parsed;
+      int16_t fp = 0;
+      int16_t fs = 0;
+      const int parse_ret = parsed.from(buf, str_len, allocator, &fp, &fs);
+      const bool parse_ps_valid
+          = (OB_SUCCESS == parse_ret && fp <= OB_MAX_DECIMAL_POSSIBLE_PRECISION
+             && fs <= OB_MAX_DECIMAL_POSSIBLE_PRECISION && fs >= 0 && fp >= fs);
+      if (parse_ps_valid) {
+        precision = fp;
+        scale = static_cast<int8_t>(fs);
+      } else {
+        ret = (OB_SUCCESS != wide_ret)    ? wide_ret
+              : (OB_SUCCESS != parse_ret) ? parse_ret
+                                          : OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to deduce export precision/scale for oracle number",
+                 K(ret), K(wide_ret), K(parse_ret), K(prec_out), K(scale_out), K(fp), K(fs));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::check_oracle_number(ObObjType obj_type,
+                                        int16_t &precision,
+                                        int8_t &scale,
+                                        const ObExpr *expr,
+                                        ObEvalCtx *eval_ctx)
 {
   int ret = OB_SUCCESS;
   if (is_oracle_mode() && ob_is_number_tc(obj_type)) {
-    if (scale == 0 && precision == -1) {
-      precision = 38; // oracle int
-    } else if (precision < 1 || scale < -84) {
+    if (PRECISION_UNKNOWN_YET == precision
+        && (static_cast<int8_t>(ORA_NUMBER_SCALE_UNKNOWN_YET) == scale || 0 == scale)) {
+      precision = DEFAULT_NUMBER_PRECISION_FOR_INTEGER;
+      scale = static_cast<int8_t>(DEFAULT_SCALE_FOR_INTEGER);
+      if (OB_NOT_NULL(expr) && OB_NOT_NULL(eval_ctx) && expr->is_static_const_) {
+        const ObDatum &d = expr->locate_expr_datum(*eval_ctx);
+        if (!d.is_null()) {
+          const number::ObNumber nmb(d.get_number());
+          if (OB_FAIL(deduce_oracle_number_export_ps_from_nmb(nmb, precision, scale))) {
+            LOG_WARN("deduce oracle number export precision/scale failed", K(ret));
+          }
+        }
+      }
+    } else if (precision < 1 || scale < static_cast<int8_t>(OB_MIN_NUMBER_SCALE)) {
       ret = OB_NOT_SUPPORTED;
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "number without specified precision and scale");
       LOG_WARN("not support number without specified precision and scale", K(ret));
@@ -5177,10 +5352,10 @@ int ObSelectIntoOp::get_data_writer_for_partition(const ObString &partition_str,
     } else if (OB_ISNULL(data_writer)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected null", K(ret));
-    } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_ && MY_SPEC.buffer_size_ > 0) {
+    } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
       csv_data_writer = static_cast<ObCsvFileWriter*>(data_writer);
-      if (OB_FAIL(csv_data_writer->alloc_buf(ctx_.get_allocator(), MY_SPEC.buffer_size_))) {
-        LOG_WARN("failed to alloc buffer", K(ret));
+      if (OB_FAIL(init_csv_writer(*csv_data_writer))) {
+        LOG_WARN("failed to init csv writer", K(ret));
       }
     }
     //add to hashmap
@@ -5201,6 +5376,10 @@ int ObSelectIntoOp::get_data_writer_for_partition(const ObString &partition_str,
     //calc file path
     if (OB_SUCC(ret) && OB_FAIL(calc_file_path_with_partition(partition, *data_writer))) {
       LOG_WARN("failed to calc file path with partition", K(ret));
+    } else if (OB_SUCC(ret) && export_csv_header_
+               && ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_
+               && OB_FAIL(export_csv_header(*csv_data_writer))) {
+      LOG_WARN("failed to export csv header", K(ret));
     }
   }
   return ret;
@@ -5223,10 +5402,12 @@ int ObSelectIntoOp::create_the_only_data_writer(ObExternalFileWriter *&data_writ
   } else if (T_INTO_OUTFILE == MY_SPEC.into_type_ && MY_SPEC.is_single_
              && OB_FAIL(data_writer->open_file())) {
     LOG_WARN("failed to open file", K(ret));
-  } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_ && MY_SPEC.buffer_size_ > 0) {
+  } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_) {
     csv_data_writer = static_cast<ObCsvFileWriter*>(data_writer);
-    if (OB_FAIL(csv_data_writer->alloc_buf(ctx_.get_allocator(), MY_SPEC.buffer_size_))) {
-      LOG_WARN("failed to alloc buffer", K(ret));
+    if (OB_FAIL(init_csv_writer(*csv_data_writer))) {
+      LOG_WARN("failed to init csv writer", K(ret));
+    } else if (OB_FAIL(export_csv_header(*csv_data_writer))) {
+      LOG_WARN("failed to export csv header", K(ret));
     }
   }
   return ret;
@@ -5388,7 +5569,7 @@ void ObSelectIntoOp::destroy()
 {
   ObExternalFileWriter *data_writer = NULL;
   if (ObExternalFileFormat::FormatType::ODPS_FORMAT == format_type_) {
-    if (!GCONF._use_odps_jni_connector) {
+    if (!use_odps_jni_connector_) {
 #if defined(OB_BUILD_CPP_ODPS)
       ObMallocHookAttrGuard guard(ObMemAttr(MTL_ID(), "IntoOdps"));
       upload_.reset();

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_DATA_ACCESS_SERVICE_
@@ -88,7 +81,8 @@ public:
   int lock_obj(
       const share::ObLSID &ls_id,
       transaction::ObTxDesc &tx_desc,
-      const transaction::tablelock::ObLockParam &param);
+      const transaction::tablelock::ObLockParam &param,
+      ObIArray<transaction::tablelock::ObTableLockHolderInfo> *holder_info = nullptr);
   // unlock obj
   // @param [in] ls_id, this unlock op will be processed at which logstream.
   // @param [in] tx_desc, the trans context.

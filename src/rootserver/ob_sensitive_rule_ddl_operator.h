@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_ROOTSERVER_OB_SENSITIVE_RULE_DDL_OPERATOR_H_
@@ -20,6 +13,13 @@
 
 namespace oceanbase
 {
+namespace share
+{
+namespace schema
+{
+class ObSchemaGuardWrapper;
+} // end namespace schema
+} // end namespace share
 namespace rootserver
 {
 class ObSensitiveRuleDDLOperator
@@ -36,12 +36,12 @@ public:
                                      const share::schema::ObSchemaOperationType ddl_type,
                                      const ObString &ddl_stmt_str,
                                      const uint64_t tenant_id,
-                                     ObSchemaGetterGuard &schema_guard,
+                                     share::schema::ObSchemaGuardWrapper &schema_guard,
                                      uint64_t user_id);
   int grant_or_revoke_after_ddl(ObSensitiveRuleSchema &schema,
                                 ObMySQLTransaction &trans,
                                 const share::schema::ObSchemaOperationType ddl_type,
-                                ObSchemaGetterGuard &schema_guard,
+                                share::schema::ObSchemaGuardWrapper &schema_guard,
                                 uint64_t user_id);
   int grant_revoke_sensitive_rule(const ObSensitiveRulePrivSortKey &sensitive_rule_priv_key,
                                   const ObPrivSet priv_set,
@@ -57,7 +57,7 @@ public:
   int drop_sensitive_column_cascades(const ObTableSchema &table_schema,
                                      const ObIArray<uint64_t> &drop_column_ids,
                                      common::ObMySQLTransaction &trans,
-                                     ObSchemaGetterGuard &schema_guard);
+                                     share::schema::ObSchemaGuardWrapper &schema_guard);
 private:
   int build_drop_sensitive_column_schema(const ObSensitiveRuleSchema *sensitive_rule,
                                          const ObTableSchema &table_schema,
@@ -72,7 +72,7 @@ private:
                                            ObSensitiveRuleSchema &new_schema);
   int update_table_schema(ObSensitiveRuleSchema &schema,
                           ObMySQLTransaction &trans,
-                          ObSchemaGetterGuard &schema_guard,
+                          share::schema::ObSchemaGuardWrapper &schema_guard,
                           const uint64_t tenant_id);
   share::schema::ObMultiVersionSchemaService &schema_service_;
   common::ObMySQLProxy &sql_proxy_;

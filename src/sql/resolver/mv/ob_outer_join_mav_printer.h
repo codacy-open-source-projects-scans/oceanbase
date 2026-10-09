@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_MV_OB_OUTER_JOIN_MAV_PRINTER_H_
@@ -27,9 +20,8 @@ public:
                                  const share::schema::ObTableSchema &mv_schema,
                                  const share::schema::ObTableSchema &mv_container_schema,
                                  const ObSelectStmt &mv_def_stmt,
-                                 const MlogSchemaPairIArray &mlog_tables,
-                                 const ObIArray<std::pair<ObAggFunRawExpr*, ObRawExpr*>> &expand_aggrs)
-    : ObSimpleJoinMAVPrinter(ctx, mv_schema, mv_container_schema, mv_def_stmt, mlog_tables, expand_aggrs),
+                                 const MlogSchemaPairIArray &mlog_tables)
+    : ObSimpleJoinMAVPrinter(ctx, mv_schema, mv_container_schema, mv_def_stmt, mlog_tables),
       ObOuterJoinMVPrinterHelper(static_cast<const ObMVPrinter&>(*this))
     {}
 

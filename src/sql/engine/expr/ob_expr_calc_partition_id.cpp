@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -183,6 +176,11 @@ int ObExprCalcPartitionBase::cg_expr(ObExprCGCtx &expr_cg_ctx,
         }
         if (OB_FAIL(ret)) {
         } else if (fallback) {
+        } else if (table_schema->is_interval_part() &&
+                   MayAddIntervalPart::NO != calc_part_info->may_add_interval_part_) {
+          // Interval DML may need to add a partition or report partition movement.
+          // Keep it on the general path so missing partitions are not hidden as tablet id 0.
+          fallback = true;
         } else if (table_schema->is_hash_part()) {
           // The execution period involves inner_functions;
           // disable this path during the upgrade.
@@ -237,7 +235,7 @@ int ObExprCalcPartitionBase::cg_expr(ObExprCGCtx &expr_cg_ctx,
             rt_expr.eval_vector_func_ =
                 ObExprCalcPartitionBase::fast_calc_partition_level_one_vector;
           }
-        } else if (table_schema->is_range_part()) {
+        } else if (table_schema->is_range_or_random_part()) {
           if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_3_5_0) {
             fallback = true;
           } else {
@@ -348,8 +346,8 @@ int ObExprCalcPartitionBase::calc_no_partition_location(const ObExpr &expr,
   CalcPartitionBaseInfo *calc_part_info = reinterpret_cast<CalcPartitionBaseInfo *>(expr.extra_info_);
   const storage::ObGTTTabletInfo gtt_tablet_info(
     calc_part_info->ref_table_id_,
-    ctx.exec_ctx_.get_my_session()->get_gtt_session_scope_unique_id(),
-    ctx.exec_ctx_.get_my_session()->get_gtt_trans_scope_unique_id(),
+    ctx.exec_ctx_.get_my_session()->get_session_gtt_v2_sequence(),
+    ctx.exec_ctx_.get_my_session()->get_trans_gtt_v2_sequence(),
     ctx.exec_ctx_.get_my_session()->get_sessid_for_table());
   tablet_mapper.set_session_tablet_info(gtt_tablet_info, &(ctx.exec_ctx_.get_my_session()->get_gtt_tablet_info_map()));
   if (OB_FAIL(ctx.exec_ctx_.get_das_ctx().get_das_tablet_mapper(calc_part_info->ref_table_id_,
@@ -716,7 +714,7 @@ if (table_schema->is_hash_part()) {                                             
   PART_DISPATCH_VECTOR_IN_CALC_ID_TYPE(func_name, is_oracle_mode, ObExprCalcPartitionBase::PartType::HASH);    \
 } else if (table_schema->is_key_part()) {                                                                      \
   PART_DISPATCH_VECTOR_IN_CALC_ID_TYPE(func_name, is_oracle_mode, ObExprCalcPartitionBase::PartType::KEY);     \
-} else if (table_schema->is_range_part()) {                                                                    \
+} else if (table_schema->is_range_or_random_part()) {                                                                    \
   PART_DISPATCH_VECTOR_IN_CALC_ID_TYPE(func_name, is_oracle_mode, ObExprCalcPartitionBase::PartType::RANGE);   \
 } else if (table_schema->is_list_part()) {                                                                     \
   PART_DISPATCH_VECTOR_IN_CALC_ID_TYPE(func_name, is_oracle_mode, ObExprCalcPartitionBase::PartType::LIST);    \

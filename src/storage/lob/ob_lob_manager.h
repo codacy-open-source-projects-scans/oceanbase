@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_OB_LOB_MANAGER_
@@ -159,8 +152,8 @@ public:
                       uint64_t len,
                       int64_t timeout,
                       ObLobLocatorV2 &lob);
-  int get_table_param(const ObTableParam *&table_param);
-  int get_table_dml_param(const ObTableDMLParam *&table_dml_param);
+  int get_table_param(ObTTLFilterColType ttl_type, const ObTableParam *&table_param);
+  int get_table_dml_param(ObTTLFilterColType ttl_type, const ObTableDMLParam *&table_dml_param);
   common::ObIAllocator& get_ext_info_log_allocator() { return ext_info_log_allocator_; }
   share::LobExtInfoLogThrottleTool& get_ext_info_log_throttle_tool() { return throttle_tool_; }
   inline bool can_write_inrow(uint64_t len, int64_t inrow_threshold) { return len <= inrow_threshold; }

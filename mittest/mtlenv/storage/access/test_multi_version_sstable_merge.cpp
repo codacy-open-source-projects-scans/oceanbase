@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -39,7 +32,7 @@ using namespace palf;
 namespace storage
 {
 
-class TestMultiVersionMerge : public TestMergeBasic, public ::testing::WithParamInterface<bool>
+class TestMultiVersionMerge : public TestMergeBasic, public ::testing::WithParamInterface<std::tuple<ObRowStoreType, ObMergeLevel>>
 {
 public:
   TestMultiVersionMerge();
@@ -55,7 +48,7 @@ public:
                              ObTabletMergeCtx &merge_context)
   {
     TestMergeBasic::prepare_merge_context(
-      merge_type,is_full_merge, trans_version_range, &merge_dag_, merge_context, false/*is_delete_insert_merge*/);
+      merge_type,is_full_merge, trans_version_range, &merge_dag_, merge_context);
   }
   void prepare_output_expr(const ObIArray<int32_t> &projector,
                            const ObIArray<ObColDesc> &cols_desc);
@@ -72,7 +65,7 @@ public:
   ObStoreCtx store_ctx_;
   ObTabletMergeExecuteDag merge_dag_;
   ObTableAccessParam access_param_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   ObTableReadInfo read_info_;
   ObFixedArray<int32_t, ObIAllocator> output_cols_project_;
   ObFixedArray<share::schema::ObColumnParam*, ObIAllocator> cols_param_;
@@ -110,15 +103,13 @@ TestMultiVersionMerge::TestMultiVersionMerge()
 
 void TestMultiVersionMerge::SetUp()
 {
-  // toggle row store type by parameter: false -> FLAT_ROW_STORE, true -> CS_ENCODING_ROW_STORE
-  const bool use_cs_encoding = GetParam();
-  row_store_type_ = use_cs_encoding ? CS_ENCODING_ROW_STORE : FLAT_ROW_STORE;
+  // row store type is directly specified by parameter
+  row_store_type_ = std::get<0>(GetParam());
   ObMultiVersionSSTableTest::SetUp();
 }
 
 void TestMultiVersionMerge::TearDown()
 {
-
   ObMultiVersionSSTableTest::TearDown();
   TRANS_LOG(INFO, "teardown success");
 }
@@ -162,7 +153,7 @@ void TestMultiVersionMerge::prepare_scan_param(
 {
   context_.reset();
   access_param_.reset();
-  get_table_param_.reset();
+  tablet_read_tables_.reset();
   read_info_.reset();
   output_cols_project_.reset();
   cols_param_.reset();
@@ -179,13 +170,13 @@ void TestMultiVersionMerge::prepare_scan_param(
   ASSERT_EQ(OB_SUCCESS, ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD));
   ASSERT_EQ(OB_SUCCESS, ls_handle.get_ls()->get_tablet(tablet_id, tablet_handle));
 
-  get_table_param_.frozen_version_ = INT64_MAX;
-  get_table_param_.refreshed_merge_ = nullptr;
-  get_table_param_.need_split_dst_table_ = false;
-  get_table_param_.tablet_iter_.tablet_handle_.assign(tablet_handle);
-  get_table_param_.tablet_iter_.table_store_iter_.assign(table_store_iter);
-  get_table_param_.tablet_iter_.transfer_src_handle_ = nullptr;
-  get_table_param_.tablet_iter_.split_extra_tablet_handles_.reset();
+  tablet_read_tables_.frozen_version_ = INT64_MAX;
+  tablet_read_tables_.refreshed_merge_ = nullptr;
+  tablet_read_tables_.need_split_dst_table_ = false;
+  tablet_read_tables_.tablet_iter_.tablet_handle_.assign(tablet_handle);
+  tablet_read_tables_.tablet_iter_.table_store_iter_.assign(table_store_iter);
+  tablet_read_tables_.tablet_iter_.transfer_src_handle_ = nullptr;
+  tablet_read_tables_.tablet_iter_.split_extra_tablet_handles_.reset();
 
   int64_t schema_column_count = full_read_info_.get_schema_column_count();
   int64_t schema_rowkey_count = full_read_info_.get_schema_rowkey_count();
@@ -365,17 +356,17 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_and_second_macro_is_filtere
   const char *micro_data[3];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag\n"
-      "0        var1  -8       0        NOP      1    T_DML_UPDATE  EXIST   LF\n"
+      "0        var0  -8       0        NOP      1    T_DML_UPDATE  EXIST   LF\n"
       "1        var1  -8       0        2        2    T_DML_INSERT  EXIST   CLF\n";
 
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag\n"
-      "2        var1  -8       MIN      3       2     T_DML_UPDATE EXIST   SCF\n"
-      "2        var1  -8       0        3       NOP   T_DML_UPDATE EXIST   N\n";
+      "2        var2  -8       MIN      3       2     T_DML_UPDATE EXIST   SCF\n"
+      "2        var2  -8       0        3       NOP   T_DML_UPDATE EXIST   N\n";
 
   micro_data[2] =
       "bigint   var   bigint   bigint   bigint  bigint dml        flag    multi_version_row_flag\n"
-      "2        var1  -6       0        2       2     T_DML_INSERT EXIST   CL\n";
+      "2        var2  -6       0        2       2     T_DML_INSERT EXIST   CL\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -395,9 +386,9 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_and_second_macro_is_filtere
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10    T_DML_UPDATE EXIST   LF\n"
-      "2        var1  -10       0        NOP     12    T_DML_UPDATE EXIST   LF\n"
-      "3        var1  -10       0        NOP     13    T_DML_UPDATE EXIST   LF\n";
+      "0        var0  -10       0        NOP     10    T_DML_UPDATE EXIST   LF\n"
+      "2        var2  -10       0        NOP     12    T_DML_UPDATE EXIST   LF\n"
+      "3        var3  -10       0        NOP     13    T_DML_UPDATE EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -422,15 +413,15 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_and_second_macro_is_filtere
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN      NOP      10     EXIST   SF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        NOP      1      EXIST   L\n"
+      "0        var0  -10      MIN      NOP      10     EXIST   SF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        NOP      1      EXIST   L\n"
       "1        var1  -8       0        2        2      EXIST   CLF\n"
-      "2        var1  -10      MIN      3        12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -8       0        3        NOP    EXIST   N\n"
-      "2        var1  -6       0        2        2      EXIST   CL\n"
-      "3        var1  -10      0        NOP      13     EXIST   LF\n";
+      "2        var2  -10      MIN      3        12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -8       0        3        NOP    EXIST   N\n"
+      "2        var2  -6       0        2        2      EXIST   CL\n"
+      "3        var3  -10      0        NOP      13     EXIST   LF\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -447,6 +438,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_and_second_macro_is_filtere
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -464,7 +456,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_inc_merge)
   const char *micro_data[4];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "0        var1  -8       0        NOP      1     T_DML_UPDATE EXIST   LF\n"
+      "0        var0  -8       0        NOP      1     T_DML_UPDATE EXIST   LF\n"
       "1        var1  -8       MIN      3        3     T_DML_UPDATE EXIST   SCF\n"
       "1        var1  -8       0        3       NOP    T_DML_UPDATE EXIST   N\n";
 
@@ -479,7 +471,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_inc_merge)
   micro_data[3] =
       "bigint   var   bigint   bigint   bigint  bigint dml flag    multi_version_row_flag\n"
       "1        var1  -5       0        2       NOP   T_DML_UPDATE EXIST   L\n"
-      "2        var1  -5       0        2       2     T_DML_INSERT  EXIST   CLF\n";
+      "2        var2  -5       0        2       2     T_DML_INSERT  EXIST   CLF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -501,8 +493,8 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_inc_merge)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10   T_DML_UPDATE  EXIST   LF\n"
-      "2        var1  -10       0        NOP     12   T_DML_UPDATE  EXIST   LF\n";
+      "0        var0  -10       0        NOP     10   T_DML_UPDATE  EXIST   LF\n"
+      "2        var2  -10       0        NOP     12   T_DML_UPDATE  EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -527,17 +519,17 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_inc_merge)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN      NOP      10     EXIST   SF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        NOP      1      EXIST   L\n"
+      "0        var0  -10      MIN      NOP      10     EXIST   SF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        NOP      1      EXIST   L\n"
       "1        var1  -8      MIN       3        3      EXIST   SCF\n"
       "1        var1  -8       0        3        NOP    EXIST   N\n"
       "1        var1  -7       0        NOP      3      EXIST   N\n"
       "1        var1  -6       0        NOP      2      EXIST   N\n"
       "1        var1  -5       0        2        NOP    EXIST   L\n"
-      "2        var1  -10      MIN      2         12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        2      EXIST   CL\n";
+      "2        var2  -10      MIN      2         12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -555,6 +547,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_inc_merge)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -572,7 +565,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_committed_in_minor)
   const char *micro_data[2];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml  flag    multi_version_row_flag trans_id\n"
-      "0        var1  -8       0        NOP      1     T_DML_UPDATE EXIST   LF  trans_id_0\n"
+      "0        var0  -8       0        NOP      1     T_DML_UPDATE EXIST   LF  trans_id_0\n"
       "1        var1  MIN       0        10       NOP   T_DML_UPDATE  EXIST   FU  trans_id_1\n"
       "1        var1  -8       MIN      3         3    T_DML_UPDATE  EXIST   SC  trans_id_0\n"
       "1        var1  -8       0        3        NOP   T_DML_UPDATE  EXIST   N  trans_id_0\n";
@@ -580,7 +573,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_committed_in_minor)
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint  bigint dml flag    multi_version_row_flag\n"
       "1        var1  -5       0        NOP     3     T_DML_UPDATE EXIST   L\n"
-      "2        var1  -5       0        2       2     T_DML_INSERT EXIST   CLF\n";
+      "2        var2  -5       0        2       2     T_DML_INSERT EXIST   CLF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -600,8 +593,8 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_committed_in_minor)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint dml flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10   T_DML_UPDATE  EXIST   LF\n"
-      "2        var1  -10       0        NOP     12   T_DML_UPDATE  EXIST   LF\n";
+      "0        var0  -10       0        NOP     10   T_DML_UPDATE  EXIST   LF\n"
+      "2        var2  -10       0        NOP     12   T_DML_UPDATE  EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -613,6 +606,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_committed_in_minor)
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 1; i++) {
     insert_tx_data(i/*tx_id*/, i * 10/*commit_version*/);
   }
@@ -630,16 +624,16 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_committed_in_minor)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN      NOP      10     EXIST   SF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        NOP      1      EXIST   L\n"
+      "0        var0  -10      MIN      NOP      10     EXIST   SF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        NOP      1      EXIST   L\n"
       "1        var1  -10       MIN      10       3      EXIST   SCF\n"
       "1        var1  -10       0        10       NOP    EXIST   N\n"
       "1        var1  -8       0        3        NOP    EXIST   N\n"
       "1        var1  -5       0        NOP      3      EXIST   L\n"
-      "2        var1  -10      MIN      2        12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        2      EXIST   CL\n";
+      "2        var2  -10      MIN      2        12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -675,12 +669,12 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_is_last)
   const char *micro_data[2];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint   flag    multi_version_row_flag\n"
-      "0        var1  -8       0        NOP      1      EXIST   LF\n"
+      "0        var0  -8       0        NOP      1      EXIST   LF\n"
       "1        var1  -9       0        10       NOP     EXIST  LF\n";
 
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint  bigint flag    multi_version_row_flag\n"
-      "2        var1  -5       0        2       2      EXIST   CLF\n";
+      "2        var2  -5       0        2       2      EXIST   CLF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -700,8 +694,8 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_is_last)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10     EXIST   LF\n"
-      "2        var1  -10       0        NOP     12     EXIST   LF\n";
+      "0        var0  -10       0        NOP     10     EXIST   LF\n"
+      "2        var2  -10       0        NOP     12     EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -726,13 +720,13 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_is_last)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN      NOP      10     EXIST   SF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        NOP      1      EXIST   L\n"
+      "0        var0  -10      MIN      NOP      10     EXIST   SF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        NOP      1      EXIST   L\n"
       "1        var1  -9       0        10       NOP    EXIST   LF\n"
-      "2        var1  -10      MIN      2        12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        2      EXIST   CL\n";
+      "2        var2  -10      MIN      2        12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -750,6 +744,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_is_last)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -773,7 +768,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_l
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint  bigint flag    multi_version_row_flag\n"
       "1        var1  -5       0        NOP     3      EXIST   L\n"
-      "2        var1  -5       0        2       2      EXIST   CLF\n";
+      "2        var2  -5       0        2       2      EXIST   CLF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -794,7 +789,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_l
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  flag    multi_version_row_flag\n"
       "0        var0  -10       0        NOP     10     EXIST   LF\n"
-      "2        var1  -10       0        NOP     12     EXIST   LF\n";
+      "2        var2  -10       0        NOP     12     EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -806,6 +801,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_l
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 1; i++) {
     insert_tx_data(i/*tx_id*/, i * 10/*commit_version*/);
   }
@@ -829,9 +825,9 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_l
       "1        var1  -10      -9223372036854775807  10 3 EXIST  SCF\n"
       "1        var1  -10       0        10       NOP    EXIST   N\n"
       "1        var1  -5       0        NOP      3      EXIST   L\n"
-      "2        var1  -10      -9223372036854775807  2 12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        2      EXIST   CL\n";
+      "2        var2  -10      -9223372036854775807  2 12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -867,7 +863,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_s
   const char *micro_data[2];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint   flag    multi_version_row_flag trans_id\n"
-      "0        var1  -8       0        NOP      1      EXIST   LF  trans_id_0\n"
+      "0        var0  -8       0        NOP      1      EXIST   LF  trans_id_0\n"
       "1        var1  MIN       0        10       NOP     EXIST  FU  trans_id_1\n";
 
   micro_data[1] =
@@ -875,7 +871,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_s
       "1        var1  -8       -9223372036854775807  3  3      EXIST   SC\n"
       "1        var1  -8       0        3       NOP     EXIST   N\n"
       "1        var1  -5       0        NOP     3      EXIST    L\n"
-      "2        var1  -5       0        2       2      EXIST   CLF\n";
+      "2        var2  -5       0        2       2      EXIST   CLF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -895,8 +891,8 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_s
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10     EXIST   LF\n"
-      "2        var1  -10       0        NOP     12     EXIST   LF\n";
+      "0        var0  -10       0        NOP     10     EXIST   LF\n"
+      "2        var2  -10       0        NOP     12     EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -908,6 +904,7 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_s
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 1; i++) {
     insert_tx_data(i/*tx_id*/, i * 10/*commit_version*/);
   }
@@ -925,16 +922,16 @@ TEST_P(TestMultiVersionMerge, uncommit_rowkey_in_one_macro_committed_following_s
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      -9223372036854775807  NOP      10     EXIST   SF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        NOP      1      EXIST   L\n"
+      "0        var0  -10      -9223372036854775807  NOP      10     EXIST   SF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        NOP      1      EXIST   L\n"
       "1        var1  -10      -9223372036854775807  10 3 EXIST   SCF\n"
       "1        var1  -10       0        10       NOP    EXIST   N\n"
       "1        var1  -8       0        3        NOP    EXIST   N\n"
       "1        var1  -5       0        NOP      3      EXIST   L\n"
-      "2        var1  -10      -9223372036854775807  2 12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        2      EXIST   CL\n";
+      "2        var2  -10      -9223372036854775807  2 12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -970,7 +967,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_full_merge)
   const char *micro_data[4];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint   flag    multi_version_row_flag\n"
-      "0        var1  -8       0        2       NOP      EXIST   LF\n"
+      "0        var0  -8       0        2       NOP      EXIST   LF\n"
       "1        var1  -8      MIN       2  5    EXIST   SCF\n"
       "1        var1  -8       0        NOP     5        EXIST   N\n";
 
@@ -985,7 +982,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_full_merge)
   micro_data[3] =
       "bigint   var   bigint   bigint   bigint  bigint flag    multi_version_row_flag\n"
       "1        var1  -5       0        2       NOP    EXIST    L\n"
-      "2        var1  -5       0        2       NOP    EXIST    LF\n";
+      "2        var2  -5       0        2       NOP    EXIST    LF\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -1007,8 +1004,8 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_full_merge)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10     EXIST   LF\n"
-      "2        var1  -10       0        NOP     12     EXIST   LF\n";
+      "0        var0  -10       0        NOP     10     EXIST   LF\n"
+      "2        var2  -10       0        NOP     12     EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -1033,17 +1030,17 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_full_merge)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN       2       10     EXIST   SCF\n"
-      "0        var1  -10      0        NOP      10     EXIST   N\n"
-      "0        var1  -8       0        2        NOP    EXIST   L\n"
+      "0        var0  -10      MIN       2       10     EXIST   SCF\n"
+      "0        var0  -10      0        NOP      10     EXIST   N\n"
+      "0        var0  -8       0        2        NOP    EXIST   L\n"
       "1        var1  -8       MIN      2        5      EXIST   SCF\n"
       "1        var1  -8       0        NOP      5      EXIST   N\n"
       "1        var1  -7       0        NOP      4      EXIST   N\n"
       "1        var1  -6       0        NOP      3      EXIST   N\n"
       "1        var1  -5       0        2        NOP    EXIST   L\n"
-      "2        var1  -10      MIN      2        12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -5       0        2        NOP    EXIST   L\n";
+      "2        var2  -10      MIN      2        12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -5       0        2        NOP    EXIST   L\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -1061,6 +1058,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_three_macro_full_merge)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -1696,6 +1694,7 @@ TEST_P(TestMultiVersionMerge, test_merge_with_macro_reused_without_shadow)
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 4; i++) {
     insert_tx_data(i/*tx_id*/, i * 10 + i/*commit_version*/);
   }
@@ -1826,6 +1825,7 @@ TEST_P(TestMultiVersionMerge, test_merge_with_greater_multi_version)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -1884,6 +1884,7 @@ TEST_P(TestMultiVersionMerge, test_merge_with_greater_multi_version_and_uncommit
   trans_version_range.multi_version_start_ = 50;
   trans_version_range.base_version_ = 1;
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 4; i++) {
     insert_tx_data(i/*tx_id*/, i * 10 + i/*commit_version*/);
   }
@@ -1986,6 +1987,7 @@ TEST_P(TestMultiVersionMerge, test_merge_with_ghost_row)
   merge_context.static_param_.tables_handle_.add_table(handle3);
   STORAGE_LOG(INFO, "finish prepare sstable3");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 4; i++) {
     if (i % 2 == 1) {
       insert_tx_data(i/*tx_id*/, INT64_MAX/*commit_version*/);
@@ -2045,7 +2047,7 @@ TEST_P(TestMultiVersionMerge, compare_dml_flag)
   const char *micro_data[1];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint flag    multi_version_row_flag\n"
-      "0        var1  -8       0        1        1    INSERT  CLF\n"
+      "0        var0  -8       0        1        1    INSERT  CLF\n"
       "2        var2  -6       0        2        2    INSERT  CLF\n";
 
   int schema_rowkey_cnt = 2;
@@ -2065,7 +2067,7 @@ TEST_P(TestMultiVersionMerge, compare_dml_flag)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10    UPDATE  LF\n"
+      "0        var0  -10       0        NOP     10    UPDATE  LF\n"
       "2        var2  -12       0        NOP     NOP   DELETE  CLF\n";
 
   snapshot_version = 20;
@@ -2091,9 +2093,9 @@ TEST_P(TestMultiVersionMerge, compare_dml_flag)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint flag    multi_version_row_flag\n"
-      "0        var1  -10      MIN      1      10      INSERT  SCF\n"
-      "0        var1  -10      0        NOP    10      UPDATE  N\n"
-      "0        var1  -8       0        1      1       INSERT  CL\n"
+      "0        var0  -10      MIN      1      10      INSERT  SCF\n"
+      "0        var0  -10      0        NOP    10      UPDATE  N\n"
+      "0        var0  -8       0        1      1       INSERT  CL\n"
       "2        var2  -12      MIN       NOP     NOP   DELETE  SCF\n"
       "2        var2  -12       0        NOP     NOP   DELETE  C\n"
       "2        var2  -6       0        2        2    INSERT   CL\n";
@@ -2113,6 +2115,7 @@ TEST_P(TestMultiVersionMerge, compare_dml_flag)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -2213,6 +2216,7 @@ TEST_P(TestMultiVersionMerge, get_last_after_reuse)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -2233,12 +2237,12 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_with_commit_scn_less_multi_
 
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag\n"
-      "2        var1  -8       MIN      3       2     T_DML_UPDATE EXIST   SCF\n"
-      "2        var1  -8       0        3       NOP   T_DML_UPDATE EXIST   N\n";
+      "2        var2  -8       MIN      3       2     T_DML_UPDATE EXIST   SCF\n"
+      "2        var2  -8       0        3       NOP   T_DML_UPDATE EXIST   N\n";
 
   micro_data[2] =
       "bigint   var   bigint   bigint   bigint  bigint dml        flag    multi_version_row_flag\n"
-      "2        var1  -6       0        2       2     T_DML_INSERT EXIST   CL\n";
+      "2        var2  -6       0        2       2     T_DML_INSERT EXIST   CL\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -2258,8 +2262,8 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_with_commit_scn_less_multi_
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "0        var1  -10       0        NOP     10    T_DML_UPDATE EXIST   LF\n"
-      "3        var1  -10       0        NOP     13    T_DML_UPDATE EXIST   LF\n";
+      "0        var0  -10       0        NOP     10    T_DML_UPDATE EXIST   LF\n"
+      "3        var3  -10       0        NOP     13    T_DML_UPDATE EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -2282,12 +2286,21 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_with_commit_scn_less_multi_
   ASSERT_EQ(OB_SUCCESS, merger.merge_partition(merge_context, 0));
   build_sstable(merge_context, merged_sstable);
 
-  const char *result1 =
+  const char *result_for_macro =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -10      0        NOP      10     EXIST   LF\n"
+      "0        var0  -10      0        NOP      10     EXIST   LF\n"
       "1        var1  -8       0        2        2      EXIST   CLF\n"
-      "2        var1  -8       0        3        2      EXIST   CLF\n"
-      "3        var1  -10      0        NOP      13     EXIST   LF\n";
+      "2        var2  -8       0        3       2       EXIST   CLF\n"
+      "3        var3  -10      0        NOP      13     EXIST   LF\n";
+
+    const char *result_for_micro =
+      "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
+      "0        var0  -10      0        NOP      10     EXIST   LF\n"
+      "1        var1  -8       0        2        2      EXIST   CLF\n"
+      "2        var2  -8       MIN      3       2       EXIST   SCF\n"
+      "2        var2  -8       0        3       NOP     EXIST   N\n"
+      "2        var2  -6       0        2       2       EXIST   CL\n"
+      "3        var3  -10      0        NOP      13     EXIST   LF\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -2299,11 +2312,16 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_two_macro_with_commit_scn_less_multi_
   trans_version_range.snapshot_version_ = INT64_MAX;
   prepare_query_param(trans_version_range);
   ASSERT_EQ(OB_SUCCESS, merged_sstable->scan(iter_param_, context_, range, scanner));
-  ASSERT_EQ(OB_SUCCESS, res_iter.from(result1));
+  if (merge_context.static_param_.merge_level_ == MACRO_BLOCK_MERGE_LEVEL) {
+    ASSERT_EQ(OB_SUCCESS, res_iter.from(result_for_macro));
+  } else {
+    ASSERT_EQ(OB_SUCCESS, res_iter.from(result_for_micro));
+  }
   ObMockDirectReadIterator sstable_iter;
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -2364,6 +2382,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_with_last_shadow_version_less_t
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i < 3; i++) {
     insert_tx_data(i/*tx_id*/, i * 10 + i/*commit_version*/);
   }
@@ -2379,7 +2398,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_with_last_shadow_version_less_t
   ASSERT_EQ(OB_SUCCESS, merger.merge_partition(merge_context, 0));
   build_sstable(merge_context, merged_sstable);
 
-  const char *result1 =
+  const char *result_for_macro =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
       "1        var1  -32       MIN        2        10      EXIST   SCF\n"
       "1        var1  -32       0        NOP     10    EXIST      \n"
@@ -2387,6 +2406,16 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_with_last_shadow_version_less_t
       "2        var2  -22      MIN      3       9       EXIST   SCF\n"
       "2        var2  -22      0      NOP       9       EXIST   \n"
       "2        var2  -8       0        3        2      EXIST   CL\n"
+      "3        var3  -40      0        NOP      13     EXIST   LF\n";
+    const char *result_for_micro =
+      "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
+      "1        var1  -32       MIN        2        10      EXIST   SCF\n"
+      "1        var1  -32       0        NOP     10    EXIST      \n"
+      "1        var1  -8       0        2        2      EXIST   CL\n"
+      "2        var2  -22      MIN      3       9       EXIST   SCF\n"
+      "2        var2  -22      0      NOP       9       EXIST   N\n"
+      "2        var2  -8       0        3       NOP     EXIST   N\n"
+      "2        var2  -6       0        2       2       EXIST   CL\n"
       "3        var3  -40      0        NOP      13     EXIST   LF\n";
 
   ObMockIterator res_iter;
@@ -2399,7 +2428,11 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_with_last_shadow_version_less_t
   trans_version_range.snapshot_version_ = INT64_MAX;
   prepare_query_param(trans_version_range);
   ASSERT_EQ(OB_SUCCESS, merged_sstable->scan(iter_param_, context_, range, scanner));
-  ASSERT_EQ(OB_SUCCESS, res_iter.from(result1));
+  if (merge_context.static_param_.merge_level_ == MACRO_BLOCK_MERGE_LEVEL) {
+    ASSERT_EQ(OB_SUCCESS, res_iter.from(result_for_macro));
+  } else {
+    ASSERT_EQ(OB_SUCCESS, res_iter.from(result_for_micro));
+  }
   ObMockDirectReadIterator sstable_iter;
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
@@ -2506,6 +2539,7 @@ TEST_P(TestMultiVersionMerge, shadow_row_is_last_in_macro)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -2523,7 +2557,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_without_open_next_macro)
   const char *micro_data[3];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint flag    multi_version_row_flag trans_id\n"
-      "0        var2  -10       0        2       2     EXIST   CLF    trans_id_0\n"
+      "0        var0  -10       0        2       2     EXIST   CLF    trans_id_0\n"
       "2        var2  MIN       -11      NOP      9   EXIST   FU    trans_id_2\n";
 
   micro_data[1] =
@@ -2573,6 +2607,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_without_open_next_macro)
   get_tx_table_guard(tx_table_guard);
   ASSERT_NE(nullptr, tx_table = tx_table_guard.get_tx_table());
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i < 3; i++) {
     insert_tx_data(i/*tx_id*/, INT64_MAX/*commit_version*/);
   }
@@ -2590,7 +2625,7 @@ TEST_P(TestMultiVersionMerge, rowkey_cross_macro_without_open_next_macro)
 
   const char *result1 =
     "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag trans_id\n"
-    "0        var2  -10       0        2       2     EXIST   CLF    trans_id_0\n"
+    "0        var0  -10       0        2       2     EXIST   CLF    trans_id_0\n"
     "1        var1  -32      0        NOP     10    EXIST   LF trans_id_0\n"
     "2        var2  -40      MIN      3       3       EXIST   SCF  trans_id_0\n"
     "2        var2  -40      0        NOP     3     EXIST   N   trans_id_0\n"
@@ -2722,6 +2757,7 @@ TEST_P(TestMultiVersionMerge, range_cross_macro)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -2796,6 +2832,7 @@ TEST_P(TestMultiVersionMerge, test_merge_base_iter_have_ghost_row)
   merge_context.static_param_.tables_handle_.add_table(handle3);
   STORAGE_LOG(INFO, "finish prepare sstable3");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i <= 4; i++) {
     if (i % 2 == 1) {
       insert_tx_data(i/*tx_id*/, INT64_MAX/*commit_version*/);
@@ -2910,7 +2947,7 @@ TEST_P(TestMultiVersionMerge, test_major_range_cross_macro)
   range_data[0] =
       "bigint   var\n"
       "2        var3\n"
-      "5        var1\n";
+      "5        var5\n";
   ObMockIterator parallel_range_iter;
   ASSERT_EQ(OB_SUCCESS, parallel_range_iter.from_for_datum(range_data[0]));
 
@@ -2948,6 +2985,7 @@ TEST_P(TestMultiVersionMerge, test_major_range_cross_macro)
   ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
   bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true/*cmp multi version row flag*/);
   ASSERT_TRUE(is_equal);
+  clear_tx_data();
   scanner->~ObStoreRowIterator();
   handle1.reset();
   handle2.reset();
@@ -3007,6 +3045,7 @@ TEST_P(TestMultiVersionMerge, test_trans_cross_macro_with_ghost_row)
   merge_context.static_param_.tables_handle_.add_table(handle2);
   STORAGE_LOG(INFO, "finish prepare sstable2");
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i < 3; i++) {
     insert_tx_data(i/*tx_id*/, i * 20 + 9/*commit_version*/);
   }
@@ -3113,6 +3152,7 @@ TEST_P(TestMultiVersionMerge, test_trans_cross_macro_with_ghost_row2)
   get_tx_table_guard(tx_table_guard);
   ASSERT_NE(nullptr, tx_table = tx_table_guard.get_tx_table());
 
+  ASSERT_TRUE(TX_DATA_ARR.empty());
   for (int64_t i = 1; i < 3; i++) {
     insert_tx_data(i/*tx_id*/, i * 20 + 9/*commit_version*/);
   }
@@ -3281,13 +3321,13 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_fuse)
   const char *micro_data[2];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag trans_id\n"
-      "0        var1  -8       0        NOP      1    T_DML_UPDATE  EXIST   LF        trans_id_0\n";
+      "0        var0  -8       0        NOP      1    T_DML_UPDATE  EXIST   LF        trans_id_0\n";
 
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint  bigint dml        flag    multi_version_row_flag trans_id\n"
-      "2        var1  MIN      -9       2       2     T_DML_INSERT EXIST   U         trans_id_1\n"
-      "2        var1  -6       0        3       2     T_DML_UPDATE EXIST   N         trans_id_0\n"
-      "2        var1  MAGIC    MAGIC    NOP     NOP   T_DML_INSERT EXIST   LG        trans_id_0\n";
+      "2        var2  MIN      -9       2       2     T_DML_INSERT EXIST   U         trans_id_1\n"
+      "2        var2  -6       0        3       2     T_DML_UPDATE EXIST   N         trans_id_0\n"
+      "2        var2  MAGIC    MAGIC    NOP     NOP   T_DML_INSERT EXIST   LG        trans_id_0\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -3307,7 +3347,7 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_fuse)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "2        var1  -10       0        NOP     12    T_DML_UPDATE EXIST   LF\n";
+      "2        var2  -10       0        NOP     12    T_DML_UPDATE EXIST   LF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -3334,10 +3374,10 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_fuse)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -8       0        NOP      1      EXIST   LF\n"
-      "2        var1  -10      MIN      3        12     EXIST   SCF\n"
-      "2        var1  -10      0        NOP      12     EXIST   N\n"
-      "2        var1  -6       0        3        2      EXIST   CL\n";
+      "0        var0  -8       0        NOP      1      EXIST   LF\n"
+      "2        var2  -10      MIN      3        12     EXIST   SCF\n"
+      "2        var2  -10      0        NOP      12     EXIST   N\n"
+      "2        var2  -6       0        3        2      EXIST   CL\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -3372,15 +3412,15 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_with_first)
   const char *micro_data[2];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag trans_id\n"
-      "2        var1  MIN       0        10      1    T_DML_UPDATE  EXIST   FU        trans_id_1\n";
+      "2        var2  MIN       0        10      1    T_DML_UPDATE  EXIST   FU        trans_id_1\n";
 
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint  bigint dml        flag    multi_version_row_flag trans_id\n"
-      "2        var1  -20      MIN        2       2      T_DML_INSERT EXIST   SC         trans_id_0\n"
-      "2        var1  -20      0        NOP     2      T_DML_UPDATE EXIST   N         trans_id_0\n"
-      "2        var1  -10      0        2       NOP    T_DML_UPDATE EXIST   N         trans_id_0\n"
-      "2        var1  -5       0        1       1      T_DML_UPDATE EXIST   CL         trans_id_0\n"
-      "10       var1  -20      0        NOP    2   T_DML_UPDATE EXIST  LF         trans_id_0\n";
+      "2        var2  -20      MIN        2       2      T_DML_INSERT EXIST   SC         trans_id_0\n"
+      "2        var2  -20      0        NOP     2      T_DML_UPDATE EXIST   N         trans_id_0\n"
+      "2        var2  -10      0        2       NOP    T_DML_UPDATE EXIST   N         trans_id_0\n"
+      "2        var2  -5       0        1       1      T_DML_UPDATE EXIST   CL         trans_id_0\n"
+      "10       var10  -20      0        NOP    2   T_DML_UPDATE EXIST  LF         trans_id_0\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -3400,7 +3440,7 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_with_first)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "10       var1  -30       0        2     12    T_DML_UPDATE EXIST   CLF\n";
+      "10       var10  -30       0        2     12    T_DML_UPDATE EXIST   CLF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -3432,13 +3472,13 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_with_first)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "2        var1  -20      MIN        2       2      EXIST   SCF\n"
-      "2        var1  -20      0        NOP     2      EXIST   N\n"
-      "2        var1  -10      0        2       NOP     EXIST   N\n"
-      "2        var1  -5       0        1       1       EXIST   CL\n"
-      "10       var1  -30       MIN        2     12     EXIST   SCF\n"
-      "10       var1  -30       0        2     12    EXIST   C\n"
-      "10       var1  -20      0        NOP    2   EXIST  L\n";
+      "2        var2  -20      MIN        2       2      EXIST   SCF\n"
+      "2        var2  -20      0        NOP     2      EXIST   N\n"
+      "2        var2  -10      0        2       NOP     EXIST   N\n"
+      "2        var2  -5       0        1       1       EXIST   CL\n"
+      "10       var10  -30       MIN        2     12     EXIST   SCF\n"
+      "10       var10  -30       0        2     12    EXIST   C\n"
+      "10       var10  -20      0        NOP    2   EXIST  L\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -3473,18 +3513,18 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_lost)
   const char *micro_data[3];
   micro_data[0] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag trans_id\n"
-      "0        var1  -20       0        10      1    T_DML_UPDATE  EXIST   CLF        trans_id_0\n";
+      "0        var0  -20       0        10      1    T_DML_UPDATE  EXIST   CLF        trans_id_0\n";
   micro_data[1] =
       "bigint   var   bigint   bigint   bigint bigint dml           flag    multi_version_row_flag trans_id\n"
       "1        var1  -20       0        10      1    T_DML_UPDATE  EXIST   CLF        trans_id_0\n";
 
   micro_data[2] =
       "bigint   var   bigint   bigint   bigint  bigint dml        flag    multi_version_row_flag trans_id\n"
-      "2        var1  -20      MIN        2       2      T_DML_INSERT EXIST   SCF         trans_id_0\n"
-      "2        var1  -20      0        NOP     2      T_DML_UPDATE EXIST   N         trans_id_0\n"
-      "2        var1  -10      0        2       NOP    T_DML_UPDATE EXIST   N         trans_id_0\n"
-      "2        var1  -5       0        1       1      T_DML_UPDATE EXIST   CL         trans_id_0\n"
-      "10       var1  -20      0        NOP    2   T_DML_UPDATE EXIST  LF         trans_id_0\n";
+      "2        var2  -20      MIN        2       2      T_DML_INSERT EXIST   SCF         trans_id_0\n"
+      "2        var2  -20      0        NOP     2      T_DML_UPDATE EXIST   N         trans_id_0\n"
+      "2        var2  -10      0        2       NOP    T_DML_UPDATE EXIST   N         trans_id_0\n"
+      "2        var2  -5       0        1       1      T_DML_UPDATE EXIST   CL         trans_id_0\n"
+      "10       var10  -20      0        NOP    2   T_DML_UPDATE EXIST  LF         trans_id_0\n";
 
   int schema_rowkey_cnt = 2;
 
@@ -3505,7 +3545,7 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_lost)
   const char *micro_data2[1];
   micro_data2[0] =
       "bigint   var   bigint   bigint   bigint bigint  dml          flag    multi_version_row_flag\n"
-      "10       var1  -30       0        2     12    T_DML_UPDATE EXIST   CLF\n";
+      "10       var10  -30       0        2     12    T_DML_UPDATE EXIST   CLF\n";
 
   snapshot_version = 20;
   scn_range.start_scn_.convert_for_tx(10);
@@ -3531,15 +3571,15 @@ TEST_P(TestMultiVersionMerge, check_shadow_row_lost)
 
   const char *result1 =
       "bigint   var   bigint   bigint   bigint  bigint  flag    multi_version_row_flag\n"
-      "0        var1  -20       0        10      1    EXIST   CLF\n"
+      "0        var0  -20       0        10      1    EXIST   CLF\n"
       "1        var1  -20       0        10      1    EXIST   CLF\n"
-      "2        var1  -20      MIN        2       2      EXIST   SCF\n"
-      "2        var1  -20      0        NOP     2      EXIST   N\n"
-      "2        var1  -10      0        2       NOP     EXIST   N\n"
-      "2        var1  -5       0        1       1       EXIST   CL\n"
-      "10       var1  -30       MIN        2     12     EXIST   SCF\n"
-      "10       var1  -30       0        2     12    EXIST   C\n"
-      "10       var1  -20      0        NOP    2   EXIST  L\n";
+      "2        var2  -20      MIN        2       2      EXIST   SCF\n"
+      "2        var2  -20      0        NOP     2      EXIST   N\n"
+      "2        var2  -10      0        2       NOP     EXIST   N\n"
+      "2        var2  -5       0        1       1       EXIST   CL\n"
+      "10       var10  -30       MIN        2     12     EXIST   SCF\n"
+      "10       var10  -30       0        2     12    EXIST   C\n"
+      "10       var10  -20      0        NOP    2   EXIST  L\n";
 
   ObMockIterator res_iter;
   ObStoreRowIterator *scanner = NULL;
@@ -4331,7 +4371,7 @@ TEST_P(TestMultiVersionMerge, across_multi_blocks)
   trans_version_range.snapshot_version_ = INT64_MAX;
   prepare_scan_param(trans_version_range, table_store_iter);
   ObMultipleMultiScanMerge scan_merge;
-  ASSERT_EQ(OB_SUCCESS, scan_merge.init(access_param_, context_, get_table_param_));
+  ASSERT_EQ(OB_SUCCESS, scan_merge.init(access_param_, context_, tablet_read_tables_));
   ASSERT_EQ(OB_SUCCESS, scan_merge.open(ranges));
   scan_merge.disable_padding();
   scan_merge.disable_fill_virtual_column();
@@ -4361,6 +4401,7 @@ TEST_P(TestMultiVersionMerge, across_multi_blocks)
   }
   ASSERT_EQ(15, total_count);
 
+  clear_tx_data();
   handle1.reset();
   scan_merge.reset();
 }
@@ -4725,10 +4766,111 @@ TEST_P(TestMultiVersionMerge, multi_uncommitted_trans_in_sstable3)
   merger.reset();
 }
 
+
+TEST_P(TestMultiVersionMerge, uncom_and_com_has_same_version)
+{
+  int ret = OB_SUCCESS;
+  ObTabletMergeDagParam param;
+  ObTabletMergeCtx merge_context(param, allocator_);
+  ObPartitionMinorMerger merger(local_arena_, merge_context.static_param_);
+
+  ObTableHandleV2 handle1;
+  const char *micro_data[1];
+  micro_data[0] =
+      "bigint   var   bigint  bigint     bigint bigint  flag     flag_type  multi_version_row_flag trans_id\n"
+      "0        var0  -10      -1         0       0     INSERT    NORMAL        CLF               trans_id_0\n"
+      "1        var1  MIN      -1         NOP     1     INSERT    NORMAL        FU               trans_id_1\n"
+      "1        var1  -12       0         99      2     INSERT    NORMAL        CL               trans_id_0\n";
+
+  int schema_rowkey_cnt = 2;
+  int64_t snapshot_version = 30;
+  ObScnRange scn_range;
+  scn_range.start_scn_.set_min();
+  scn_range.end_scn_.convert_for_tx(30);
+  prepare_table_schema(micro_data, schema_rowkey_cnt, scn_range, snapshot_version, ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
+  reset_writer(snapshot_version);
+  prepare_one_macro(micro_data, 1, true);
+  prepare_data_end(handle1);
+  merge_context.static_param_.tables_handle_.add_table(handle1);
+  STORAGE_LOG(INFO, "finish prepare sstable1");
+
+  ObTableHandleV2 handle2;
+  const char *micro_data2[1];
+  micro_data2[0] =
+      "bigint   var   bigint  bigint      bigint bigint  flag     flag_type  multi_version_row_flag trans_id\n"
+      "2        var2  -50      0           1       1     INSERT    NORMAL        CLF              trans_id_0\n";
+
+  snapshot_version = 50;
+  scn_range.start_scn_.convert_for_tx(30);
+  scn_range.end_scn_.convert_for_tx(50);
+  table_key_.scn_range_ = scn_range;
+  reset_writer(snapshot_version);
+  prepare_one_macro(micro_data2, 1, true);
+  prepare_data_end(handle2);
+  merge_context.static_param_.tables_handle_.add_table(handle2);
+  STORAGE_LOG(INFO, "finish prepare sstable2");
+
+  ObTxTable *tx_table = nullptr;
+  ObTxTableGuard tx_table_guard;
+  get_tx_table_guard(tx_table_guard);
+  ASSERT_NE(nullptr, tx_table = tx_table_guard.get_tx_table());
+
+  ObTxData *tx_data = new ObTxData();
+  ASSERT_EQ(OB_SUCCESS, tx_data->init_tx_op());
+  transaction::ObTransID tx_id = 1;
+  tx_data->tx_id_ = tx_id;
+  tx_data->commit_version_.convert_for_tx(12);
+  tx_data->start_scn_.convert_for_tx(1);
+  tx_data->end_scn_ = tx_data->commit_version_;
+  tx_data->state_ = ObTxData::COMMIT;
+  ASSERT_EQ(OB_SUCCESS, tx_table->insert(tx_data));
+  delete tx_data;
+
+  ObVersionRange trans_version_range;
+  trans_version_range.snapshot_version_ = 100;
+  trans_version_range.multi_version_start_ = 3;
+  trans_version_range.base_version_ = 1;
+
+  prepare_merge_context(MINOR_MERGE, false, trans_version_range, merge_context);
+  // minor mrege
+  ObSSTable *merged_sstable = nullptr;
+  ASSERT_EQ(OB_SUCCESS, merger.merge_partition(merge_context, 0));
+  build_sstable(merge_context, merged_sstable);
+
+  const char *result1 =
+      "bigint   var   bigint  bigint      bigint bigint  flag     flag_type  multi_version_row_flag trans_id\n"
+      "0        var0  -10      0            0       0     INSERT    NORMAL        CLF                trans_id_0\n"
+      "1        var1  -12      0            99      1     INSERT    NORMAL        CLF                trans_id_0\n"
+      "2        var2  -50      0            1       1     INSERT    NORMAL        CLF                trans_id_0\n";
+
+  ObMockIterator res_iter;
+  ObStoreRowIterator *scanner = NULL;
+  ObDatumRange range;
+  res_iter.reset();
+  range.set_whole_range();
+  trans_version_range.base_version_ = 1;
+  trans_version_range.multi_version_start_ = 1;
+  trans_version_range.snapshot_version_ = INT64_MAX;
+  prepare_query_param(trans_version_range);
+  ASSERT_EQ(OB_SUCCESS, merged_sstable->scan(iter_param_, context_, range, scanner));
+  ASSERT_EQ(OB_SUCCESS, res_iter.from(result1));
+  ObMockDirectReadIterator sstable_iter;
+  ASSERT_EQ(OB_SUCCESS, sstable_iter.init(scanner, allocator_, full_read_info_));
+  bool is_equal = res_iter.equals<ObMockDirectReadIterator, ObStoreRow>(sstable_iter, true, false);
+  ASSERT_TRUE(is_equal);
+  clear_tx_data();
+  scanner->~ObStoreRowIterator();
+  handle1.reset();
+  handle2.reset();
+  merger.reset();
+}
+
 INSTANTIATE_TEST_CASE_P(
   FlatAndCSEncoding,
   TestMultiVersionMerge,
-  ::testing::Values(false, true));
+  ::testing::Combine(
+    ::testing::Values(FLAT_ROW_STORE, CS_ENCODING_ROW_STORE),
+    ::testing::Values(MACRO_BLOCK_MERGE_LEVEL, MICRO_BLOCK_MERGE_LEVEL)));
 
 }
 }

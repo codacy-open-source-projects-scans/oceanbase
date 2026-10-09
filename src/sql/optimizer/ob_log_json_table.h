@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the log json table abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_LOG_JSON_TABLE_H
@@ -38,7 +30,7 @@ public:
         data_index_id_(OB_INVALID_ID),
         index_column_cnt_(0),
         inc_pk_proj_(0),
-        data_table_col_ids_() {}
+        data_table_col_ids_(plan.get_allocator()) {}
 
   virtual ~ObLogJsonTable() {}
   int add_values_expr(ObIArray<ObRawExpr*> &exprs) { return append(value_exprs_, exprs); }
@@ -93,7 +85,7 @@ private:
   uint64_t data_index_id_;
   int64_t index_column_cnt_;
   int64_t inc_pk_proj_;
-  common::ObSEArray<uint64_t, 16, common::ModulePageAllocator, true> data_table_col_ids_;
+  ObSqlArray<uint64_t> data_table_col_ids_;
 
   DISALLOW_COPY_AND_ASSIGN(ObLogJsonTable);
 };

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -383,6 +376,7 @@ public:
   void set_is_refresh_adaptor(const bool is_refresh_adaptor) { is_refresh_adaptor_ = is_refresh_adaptor; }
   bool get_is_refresh_adaptor() { return is_refresh_adaptor_; }
   void set_scn(const SCN scn) { scn_ = scn; }
+  SCN get_scn() const { return scn_; }
 
   inline void set_sparse_vector(const bool is_sparse) { is_sparse_vector_ = is_sparse; }
 
@@ -806,16 +800,15 @@ public:
   int64_t get_snap_vsag_mem_hold();
   ObIAllocator *get_allocator() { return allocator_; }
 
-  void *get_algo_data() { return algo_data_; }
+  void *get_algo_data() { return ATOMIC_LOAD(&algo_data_); }
 
   bool check_if_complete_data(ObVectorQueryAdaptorResultContext *ctx);
   int complete_index_mem_data(ObVectorQueryAdaptorResultContext *ctx,
                               SCN read_scn,
                               common::ObNewRowIterator *row_iter,
                               blocksstable::ObDatumRow *last_row,
-                              ObArray<uint64_t> &i_vids);
+                              int64_t &i_vid_count);
   int prepare_delta_mem_data(roaring::api::roaring64_bitmap_t *gene_bitmap,
-                             ObArray<uint64_t> &i_vids,
                              ObVectorQueryAdaptorResultContext *ctx);
   int serialize(ObIAllocator *allocator, ObOStreamBuf::CbParam &cb_param, ObOStreamBuf::Callback &cb);
   int complete_delta_mem_data(roaring::api::roaring64_bitmap_t *gene_bitmap,
@@ -823,6 +816,7 @@ public:
                               ObIAllocator *allocator);
 
   int check_need_sync_to_follower_or_do_opt_task(ObPluginVectorIndexMgr *mgr, bool is_leader, bool &need_sync);
+  int check_snapshot_table_can_read_index(bool &can_read_index);
   int check_can_sync_to_follower(ObPluginVectorIndexMgr *mgr, int64_t current_snapshot_count, bool &need_sync);
 
   int check_need_freeze(const int64_t freeze_threshold, bool &need_freeze);
@@ -889,7 +883,9 @@ public:
   }
   bool is_in_opt_task() const { return is_in_opt_task_; }
 
-  int check_if_need_optimize(ObVectorQueryAdaptorResultContext *ctx = nullptr);
+  int check_if_need_optimize();
+
+  int check_need_freeze_by_optimize_ratio(const int64_t freeze_threshold, bool &need_freeze);
 
   void vector_index_task_finish()
   {
@@ -922,6 +918,7 @@ public:
   int get_inc_index_row_cnt(int64_t &count);
   int get_snap_index_row_cnt(int64_t &count);
   int get_vbitmap_row_cnt_safe(int64_t &count);
+  int get_vbitmap_delete_cnt_safe(int64_t &count);
   int get_inc_index_row_cnt_safe(int64_t &count);
   int get_snap_index_row_cnt_safe(int64_t &count);
   int get_snap_vbitmap_cnt_safe(int64_t &insert_count, int64_t &delete_count);
@@ -1004,10 +1001,10 @@ public:
       const SCN& frozen_scn, common::ObNewRowIterator *row_iter);
   int write_into_bitmap_without_lock(
       ObVecIdxVBitmapDataHandle &vbitmap, int64_t dim, SCN read_scn,
-      ObArray<uint64_t> &i_vids, ObArray<uint64_t> &d_vids);
+      common::ObIArray<uint64_t> &i_vids, common::ObIArray<uint64_t> &d_vids);
 
   // for index serialize and deserialize
-  int serialize_snapshot(ObHNSWSerializeCallback::CbParam &param);
+  int serialize_snapshot(ObHNSWSerializeCallback::CbParam &param, const bool skip_for_merge = true);
   int build_snap_meta(
       const ObTabletID &tablet_id, const int64_t snapshot_version, const int64_t &data_block_cnt);
   int build_and_serialize_meta_data(const ObTabletID &tablet_id,
@@ -1033,6 +1030,12 @@ public:
   int create_snap_segment(const ObVectorIndexAlgorithmType enforce_type, ObVectorIndexSegmentHandle &segment_handle);
   int create_snap_segment(const ObVectorIndexAlgorithmType enforce_type, ObVectorIndexSegmentMeta &seg_meta);
 
+  void set_created_by_segment_merge(const bool value) { created_by_segment_merge_ = value; }
+  bool is_created_by_segment_merge() const { return created_by_segment_merge_; }
+
+  void set_skip_merge_sched() { skip_merge_sched_ = true; }
+  bool is_skip_merge_sched() const { return skip_merge_sched_; }
+
 public:
 
   void log_deseri_snap_without_lock(ObVectorIndexAlgorithmType index_type, const ObString &target_prefix,
@@ -1048,24 +1051,28 @@ public:
               K_(inc_table_id), K_(vbitmap_table_id), K_(snapshot_table_id), K_(embedded_table_id),
               K_(ref_cnt), K_(idle_cnt), KP_(allocator),
               K_(index_identity), K_(follower_sync_statistics),
-              K_(mem_check_cnt), K_(is_mem_limited), K_(is_need_vid), K_(snapshot_key_prefix), K_(replace_scn), K_(dump_info));
+              K_(mem_check_cnt), K_(is_mem_limited), K_(is_need_vid), K_(snapshot_key_prefix), K_(replace_scn),
+              K_(created_by_segment_merge), K_(dump_info), K_(skip_merge_sched));
 
 private:
+  int do_fill_vector_index_all_segments(common::ObIArray<ObVectorSegmentInfo> &segment_infos);
   int add_datum_row_into_array(blocksstable::ObDatumRow *datum_row,
-                               ObArray<uint64_t> &i_vids,
-                               ObArray<uint64_t> &d_vids);
+                               common::ObIArray<uint64_t> &i_vids,
+                               common::ObIArray<uint64_t> &d_vids);
   bool check_if_complete_index(SCN read_scn);
   int check_if_complete_delta(ObVectorQueryAdaptorResultContext *ctx, roaring::api::roaring64_bitmap_t *gene_bitmap, int64_t count, bool &res);
   int write_into_delta_mem(ObVectorQueryAdaptorResultContext *ctx,
-                           int count,
+                           int64_t count,
                            float *vectors,
                            uint64_t *vids,
                            ObVecExtraInfoObj *extra_objs,
                            int64_t extra_column_count,
                            ObVidBound vid_bound,
+                           uint64_t *null_vids,
+                           int64_t null_count,
                            bool& has_written,
                            uint32_t *sparse_byte_lens = nullptr);
-  int write_into_index_mem(ObVecIdxVBitmapDataHandle &vbitmap, int64_t dim, SCN read_scn, ObArray<uint64_t> &i_vids, ObArray<uint64_t> &d_vids);
+  int write_into_index_mem(ObVecIdxVBitmapDataHandle &vbitmap, int64_t dim, SCN read_scn, common::ObIArray<uint64_t> &i_vids, common::ObIArray<uint64_t> &d_vids);
   int generate_snapshot_valid_bitmap(ObVectorQueryAdaptorResultContext *ctx,
                                      common::ObNewRowIterator *row_iter,
                                      SCN query_scn);
@@ -1153,6 +1160,9 @@ private:
    * we can't get scn from snapshot_key_prefix_ because it is invaild in some cases like BQ
    */
   SCN replace_scn_;
+  bool created_by_segment_merge_; // whether the adaptor is created by segment merge
+  bool skip_merge_sched_; // skip merge scheduling until adaptor replaced
+
   constexpr static uint32_t VEC_INDEX_INCR_DATA_SYNC_THRESHOLD = 100;
   constexpr static uint32_t VEC_INDEX_VBITMAP_SYNC_THRESHOLD = 100;
   constexpr static uint32_t VEC_INDEX_SNAP_DATA_SYNC_THRESHOLD = 1;

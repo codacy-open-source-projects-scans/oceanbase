@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -286,8 +279,7 @@ int ObExprSearchIndexInnerValue::calc_search_index_inner_value(const ObExpr &exp
   } else if (OB_FAIL(expr.args_[1]->eval(ctx, cmp_type_datum))) {
     LOG_WARN("eval param value failed", K(ret));
   } else if (OB_UNLIKELY(param_datum->is_null())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("param value is null", K(ret));
+    expr_datum.set_null();
   } else {
     ObEvalCtx::TempAllocGuard alloc_guard(ctx);
     ObString value;

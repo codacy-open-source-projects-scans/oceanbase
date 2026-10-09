@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -69,6 +62,12 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
   } else if (OB_ISNULL(eval_ctx_.exec_ctx_.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected NULL session", K(ret));
+  } else if (OB_ISNULL(eval_ctx_.exec_ctx_.get_sql_ctx())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected NULL sql ctx", K(ret), K(lbt()));
+  } else if (OB_ISNULL(eval_ctx_.exec_ctx_.get_sql_ctx()->schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected NULL schema guard", K(ret), K(lbt()));
   } else if (OB_ISNULL(aggr_info_.expr_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected NULL expr", K(ret));
@@ -139,7 +138,7 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
     } else if (OB_ISNULL(object_clazz)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected NULL object_clazz", K(ret));
-    } else if (OB_FAIL(ObJavaUDFExecutor::get_executor_class(*env, executor_clazz, execute_method))) {
+    } else if (OB_FAIL(ObJavaUtils::get_executor_class(*env, executor_clazz, execute_method))) {
       LOG_WARN("failed to get_executor_class", K(ret));
     } else if (OB_ISNULL(executor_clazz) || OB_ISNULL(execute_method)) {
       ret = OB_ERR_UNEXPECTED;
@@ -240,7 +239,9 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
 
         jobject result = nullptr;
 
-        if (OB_FAIL(ObJavaUDFExecutor::build_udf_args(row_count,
+        if (OB_FAIL(ObJavaUDFExecutor::build_udf_args(*eval_ctx_.exec_ctx_.get_my_session(),
+                                                      *eval_ctx_.exec_ctx_.get_sql_ctx()->schema_guard_,
+                                                      row_count,
                                                       arg_types,
                                                       args,
                                                       *env,
@@ -253,6 +254,7 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
                                                                  execute_method,
                                                                  udf_obj,
                                                                  iterate_name,
+                                                                 eval_ctx_.exec_ctx_.get_my_session()->get_server_sid(),
                                                                  timeout_ts,
                                                                  java_types,
                                                                  java_args,
@@ -287,7 +289,9 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
       arg_types.reuse();
       args.reuse();
 
-      if (OB_FAIL(ObJavaUDFExecutor::build_udf_args(1,
+      if (OB_FAIL(ObJavaUDFExecutor::build_udf_args(*eval_ctx_.exec_ctx_.get_my_session(),
+                                                    *eval_ctx_.exec_ctx_.get_sql_ctx()->schema_guard_,
+                                                    1,
                                                     arg_types,
                                                     args,
                                                     *env,
@@ -313,6 +317,7 @@ int ObJavaUDAFExecutor::execute(ObDatum &result)
                                                                          execute_method,
                                                                          udf_obj,
                                                                          terminate_name,
+                                                                         eval_ctx_.exec_ctx_.get_my_session()->get_server_sid(),
                                                                          timeout_ts,
                                                                          java_types,
                                                                          java_args,

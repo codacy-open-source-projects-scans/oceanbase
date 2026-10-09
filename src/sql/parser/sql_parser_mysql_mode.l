@@ -1,13 +1,6 @@
-/** 
- * Copyright (c) 2021 OceanBase 
- * OceanBase CE is licensed under Mulan PubL v2. 
- * You can use this software according to the terms and conditions of the Mulan PubL v2. 
- * You may obtain a copy of Mulan PubL v2 at: 
- *          http://license.coscl.org.cn/MulanPubL-2.0 
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, 
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, 
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE. 
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */ 
 /* unput() change the yyin but it doesn't change ParserResult->input_sql_.
 // use unput() function may have unexpected result while copy string.
@@ -1031,6 +1024,7 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>FROZEN_VERSION { return FROZEN_VERSION; }
 <hint>TOPK { return TOPK; }
 <hint>QUERY_TIMEOUT { return QUERY_TIMEOUT; }
+<hint>MAX_EXECUTION_TIME { return MAX_EXECUTION_TIME; }
 <hint>READ_CONSISTENCY  { return READ_CONSISTENCY; }
 <hint>WEAK  { return WEAK; }
 <hint>STRONG  { return STRONG; }
@@ -1050,6 +1044,8 @@ Timestamp{whitespace}?\"[^\"]*\" {
 <hint>FORCE { return FORCE; }
 <hint>USE_COLUMN_TABLE { return USE_COLUMN_STORE_HINT; }
 <hint>NO_USE_COLUMN_TABLE { return NO_USE_COLUMN_STORE_HINT; }
+<hint>CACHE { return CACHE; }
+<hint>NOCACHE { return NOCACHE; }
 <hint>[(),.@]  {
   ParseResult *p = (ParseResult *)yyextra;
   if (!p->is_ignore_token_) {
@@ -1293,21 +1289,23 @@ Timestamp{whitespace}?\"[^\"]*\" {
 }
 
 <hint>{btbegin} {
-  BEGIN(hint_bt); /*fast parameterize don't handle connent in ``*/
-  if (IS_FAST_PARAMETERIZE) {
-    COPY_WRITE();
-  } else {
-    check_value(yylval);
-    ParseResult *p = (ParseResult *)yyextra;
-    p->start_col_ = yylloc->first_column;
-    char **tmp_literal = &p->tmp_literal_;
-    if (NULL == *tmp_literal)
-    {
-      *tmp_literal = (char *)parse_malloc(p->input_sql_len_ + 1, p->malloc_pool_);
-      check_malloc(*tmp_literal);
+  ParseResult *p = (ParseResult *)yyextra;
+  if(!p->is_ignore_token_){
+    BEGIN(hint_bt); /*fast parameterize don't handle connent in ``*/
+    if (IS_FAST_PARAMETERIZE) {
+      COPY_WRITE();
+    } else {
+      check_value(yylval);
+      p->start_col_ = yylloc->first_column;
+      char **tmp_literal = &p->tmp_literal_;
+      if (NULL == *tmp_literal)
+      {
+        *tmp_literal = (char *)parse_malloc(p->input_sql_len_ + 1, p->malloc_pool_);
+        check_malloc(*tmp_literal);
+      }
+      malloc_new_node(yylval->node, p->malloc_pool_, T_IDENT, 0);
+      yylval->node->str_len_ = 0;
     }
-    malloc_new_node(yylval->node, p->malloc_pool_, T_IDENT, 0);
-    yylval->node->str_len_ = 0;
   }
 }
 
@@ -1833,7 +1831,7 @@ BEGIN(in_c_comment);
     return NAME_OB;
   } else {
     int ret = NAME_OB;
-    if (NULL == (word = mysql_non_reserved_keyword_lookup(yytext)))
+    if (NULL == (word = mysql_sql_keyword_lookup(yytext)))
     {
       check_value(yylval);
       ParseNode *node = NULL;

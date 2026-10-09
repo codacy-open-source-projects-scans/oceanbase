@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_RAW_EXPR_ANALYZER_H
@@ -44,6 +37,8 @@ ObRawExprInfoExtractor()
   virtual int visit(ObPlQueryRefRawExpr &expr);
   virtual int visit(ObMatchFunRawExpr &expr);
   virtual int visit(ObUnpivotRawExpr &expr);
+
+  static ObItemType get_subquery_comparison_type(ObItemType cmp_type);
 private:
   // types and constants
 private:
@@ -59,8 +54,6 @@ private:
   int pull_info(ObRawExpr &expr);
   int add_const(ObRawExpr &expr);
   int add_deterministic(ObRawExpr &expr);
-
-  ObItemType get_subquery_comparison_type(ObItemType cmp_type) const;
   // data members
 };
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_HA_TABLET_BUILDER
@@ -41,7 +34,7 @@ struct ObStorageHATabletsBuilderParam final
 
   TO_STRING_KV(K_(tenant_id), KPC_(ls), K_(tablet_id_array), K_(src_info), K_(local_rebuild_seq),
       K_(need_check_seq), K_(is_leader_restore), KP_(ha_table_info_mgr),
-      K_(restore_action), KP_(bandwidth_throttle), KP_(svr_rpc_proxy), KP_(storage_rpc));
+      K_(restore_action), K_(ha_svc_ctx));
 
   uint64_t tenant_id_;
   ObLS *ls_;
@@ -52,9 +45,7 @@ struct ObStorageHATabletsBuilderParam final
   bool is_leader_restore_;
 
   ObStorageHATableInfoMgr *ha_table_info_mgr_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   const ObRestoreBaseInfo *restore_base_info_;
   ObTabletRestoreAction::ACTION restore_action_;
   backup::ObBackupMetaIndexStoreWrapper *meta_index_store_;
@@ -83,6 +74,8 @@ class ObTabletCopyDependencyMgr;
 class ObStorageHATabletsBuilder
 {
 public:
+  static const int64_t MAX_TABLET_BATCH_CNT = 256;
+public:
   typedef hash::ObHashMap<common::ObTabletID, ObCopyTabletSimpleInfo> CopyTabletSimpleInfoMap;
   ObStorageHATabletsBuilder();
   virtual ~ObStorageHATabletsBuilder();
@@ -96,6 +89,18 @@ public:
       common::ObIArray<ObLogicTabletID> &sys_tablet_id_list,
       ObTabletCopyDependencyMgr &tablet_dep_mgr
     );
+  // For parallel create tablets. The reader is not thread safe,
+  // caller must serialize calls on the same reader by lock.
+  // Return OB_ITER_END when reader is drained.
+  int fetch_and_modify_next_tablet_infos(
+      ObICopyLSViewInfoReader *reader,
+      common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos,
+      const int64_t max_count);
+  // For parallel create tablets. Tablets with different tablet id
+  // can be created concurrently.
+  int batch_create_or_update_tablets(
+      const common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos,
+      const bool need_check_tablet_limit);
   // Restore PENDING tablets meta. PENDING tablets will be exist at restore phase RESTORE_SYS_TABLETS,
   // RESTORE_TO_CONSISTENT_SCN, or QUICK_RESTORE. Leader gets the meta from backup, follower gets it from leader.
   // If that tablet meta identified uniquely by transfer sequence exists, replace and update the restore status to EMPTY.
@@ -113,6 +118,10 @@ private:
   void free_tablet_info_reader_(ObICopyTabletInfoReader *&reader);
   int create_or_update_tablet_(
       const obrpc::ObCopyTabletInfo &tablet_info,
+      const bool need_check_tablet_limit,
+      ObLS *ls);
+  int batch_create_or_update_tablets_(
+      const common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos,
       const bool need_check_tablet_limit,
       ObLS *ls);
   int get_tablets_sstable_reader_(
@@ -177,6 +186,29 @@ private:
   {
     bool operator()(const ObSSTableWrapper &lhs, const ObSSTableWrapper &rhs) const;
   };
+
+  struct CreateTabletParam final
+  {
+  public:
+    CreateTabletParam(const bool has_merged_with_mds_info)
+      : local_tablet_hdl_(),
+        storage_schema_(),
+        major_tables_(),
+        major_sstables_param_(/*ref*/storage_schema_, has_merged_with_mds_info)
+    {
+    }
+    ~CreateTabletParam();
+    TO_STRING_KV(K_(major_tables), K_(major_sstables_param));
+  private:
+    DISALLOW_COPY_AND_ASSIGN(CreateTabletParam);
+  public:
+    ObTabletHandle local_tablet_hdl_;
+    ObStorageSchema storage_schema_;
+    ObTablesHandleArray major_tables_;
+    ObBuildMajorSSTablesParam major_sstables_param_;
+  };
+
+private:
 
   bool is_inited_;
   ObStorageHATabletsBuilderParam param_;
@@ -253,9 +285,10 @@ struct ObStorageHACopySSTableParam final
   void reset();
   int assign(const ObStorageHACopySSTableParam &param);
 
-  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(tablet_id), K_(copy_table_key_array),
+  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(tablet_id),
+      "copy_table_key_array", ObTableKeyArrayLogWrap(copy_table_key_array_),
       K_(src_info), K_(src_ls_rebuild_seq), K_(need_check_seq), K_(is_leader_restore),
-      K_(restore_action), KP_(bandwidth_throttle), KP_(svr_rpc_proxy), KP_(storage_rpc));
+      K_(restore_action), K_(ha_svc_ctx));
 
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
@@ -268,9 +301,7 @@ struct ObStorageHACopySSTableParam final
   bool is_leader_restore_;
   ObTabletRestoreAction::ACTION restore_action_;
 
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   const ObRestoreBaseInfo *restore_base_info_;
   backup::ObBackupMetaIndexStoreWrapper *meta_index_store_;
   backup::ObBackupMetaIndexStoreWrapper *second_meta_index_store_;
@@ -372,6 +403,15 @@ public:
     DISALLOW_COPY_AND_ASSIGN(BatchBuildMinorSSTablesParam);
   };
 
+  enum MajorTablesStoreType
+  {
+    INVALID_STORE_TYPE = 0,
+    ONLY_ROW_STORE,
+    ONLY_COLUMN_STORE,
+    HYBRID_STORE,
+    MAX_STORE_TYPE,
+  };
+
 public:
   static int build_tablet_with_major_tables(
       ObLS *ls,
@@ -449,11 +489,10 @@ private:
       const ObTablesHandleArray &co_tables,
       const BatchBuildTabletTablesExtraParam &extra_batch_param);
   static int append_sstable_array_(ObTablesHandleArray &dest_array, const ObTablesHandleArray &src_array);
-  // only allow column store storage schema with row store major tables
-  static int check_hybrid_store(
-      const ObStorageSchema &storage_schema,
+
+  static int get_major_tables_store_type_(
       const ObTablesHandleArray &major_tables,
-      bool &is_hybrid_store);
+      MajorTablesStoreType &store_type);
   static int assemble_and_append_hybrid_store_tables_(
     const ObTablesHandleArray &hybrid_tables,
     ObTablesHandleArray &sstables);

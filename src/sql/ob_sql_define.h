@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_SQL_DEFINE_H_
@@ -166,6 +159,8 @@ enum ObMatchFieldsType {
   MAX_MATCH_FIELDS_TYPE = 3,
 };
 
+#define IS_SLAVE_MAPPING(type)                                                                     \
+   ((type) != SlaveMappingType::SM_NONE)
 #define IS_HASH_SLAVE_MAPPING(type)                                                                \
   (((type) == SlaveMappingType::SM_PWJ_HASH_HASH)                                                  \
    || ((type) == SlaveMappingType::SM_PPWJ_HASH_HASH))
@@ -595,6 +590,7 @@ enum OpParallelRule
   OP_TABLE_DOP, /*+ use table parallel property: create table t1 (...) parallel 3; */
   OP_AUTO_DOP, /*+ DOP is calculated by AUTO_DOP */
   OP_INHERIT_DOP, /*+ inherited from other op or determined by other op in the same DFO */
+  OP_SERIAL_DOP, /*+ serial DOP = 1 */
   OP_DOP_RULE_MAX
 };
 

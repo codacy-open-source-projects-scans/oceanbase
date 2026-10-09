@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -1142,7 +1135,7 @@ TEST_F(TestMultiVersionCSEncoder, micro_header)
   ASSERT_EQ(1, header->is_last_row_last_flag_);
   ASSERT_EQ(1, header->has_row_header_);
   column_headers = reinterpret_cast<ObCSColumnHeader *>(block_buf + header->header_size_ + sizeof(ObAllColumnHeader));
-  ASSERT_EQ(ObCSRowHeader::TYPE.get_type(), column_headers[header->column_count_].obj_type_);
+  ASSERT_EQ(ObCSRowMultiVersionHeader::TYPE.get_type(), column_headers[header->column_count_].obj_type_);
   encoder_.reuse();
 
   data =

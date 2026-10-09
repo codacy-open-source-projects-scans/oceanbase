@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_cg_iter_param_pool.h"
@@ -196,7 +189,7 @@ int ObCGIterParamPool::build_read_info_for_rowkey_cg(const ObTableIterParam &row
         false /*has_all_column_group*/,
         false /*is_cg_sstable*/,
         false /*need_truncate_filter*/,
-        false /*is_delete_insert_table*/,
+        ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN,
         ObMicroBlockFormatVersionHelper::DEFAULT_VERSION,
         read_info->has_ttl_definition()))) {
       LOG_WARN("Fail to init table read info", K(ret), K(schema_rowkey_cnt), K(schema_column_count));

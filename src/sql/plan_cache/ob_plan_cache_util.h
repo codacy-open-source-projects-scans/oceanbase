@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_PLAN_CACHE_OB_PLAN_CACHE_UTIL_
@@ -88,15 +81,17 @@ do {                                      \
 
 struct ObLCKeyValue
 {
-  ObLCKeyValue() : node_(NULL) {}
-  ObLCKeyValue(ObILibCacheKey *key, ObILibCacheNode *node)
+  ObLCKeyValue() : node_(NULL), weight_(0.0) {}
+  ObLCKeyValue(ObILibCacheKey *key, ObILibCacheNode *node, double weight)
     : key_(key),
-      node_(node) {}
+      node_(node),
+      weight_(weight) {}
 
-  TO_STRING_KV(KP(key_), KP(node_));
+  TO_STRING_KV(KP(key_), KP(node_), K(weight_));
 
   ObILibCacheKey *key_;
   ObILibCacheNode *node_;
+  double weight_;
 };
 
 typedef ObLCKeyValue LCKeyValue;
@@ -199,13 +194,13 @@ struct ObSysVarInPC
     for (int32_t i = 0; OB_SUCC(ret) && i < sys_var_cnt; ++i) {
       size = 0;
       if (OB_FAIL(system_variables_.at(i).print_plain_str_literal(buf + pos, buf_len - pos, size))) {
-        SQL_PC_LOG(WARN, "fail to encode obj", K(i), K(buf + pos), K(buf_len), K(pos), K(system_variables_.at(i)), K(ret));
+        SQL_PC_LOG(WARN, "fail to encode obj", K(i), K(buf_len), K(pos), K(system_variables_.at(i)), K(ret));
       } else {
         pos += size;
         if (i != sys_var_cnt - 1) { //输出间隔符
           if (buf_len - pos <= 0) {
             ret = common::OB_ERR_UNEXPECTED;
-            SQL_PC_LOG(WARN, "fail to databuf print", K(buf), K(pos));
+            SQL_PC_LOG(WARN, "fail to databuf print", K(buf_len), K(pos));
           } else {
             char delimiter = ',';
             memcpy(buf+pos, &delimiter, sizeof(delimiter));
@@ -546,6 +541,28 @@ struct ObPlanExecutingStat
     {
       MEMCPY(exec_start_timestamps_, other.exec_start_timestamps_, MAX_EXECUTING_SIZE * sizeof(int64_t));
     }
+  DECLARE_TO_STRING {
+    int64_t pos = 0;
+    int ret = OB_SUCCESS;
+    bool is_first_timestamp = true;
+    J_OBJ_START();
+    J_KV(K_(exec_cnt));
+    J_COMMA();
+    J_ARRAY_START();
+    for (int64_t i = 0; i < MAX_EXECUTING_SIZE; ++i) {
+      int64_t exec_start_timestamp = ATOMIC_LOAD(&(exec_start_timestamps_[i]));
+      if (0 < exec_start_timestamp) {
+        if (!is_first_timestamp) {
+          J_COMMA();
+        }
+        J_KV(K(exec_start_timestamp));
+        is_first_timestamp = false;
+      }
+    }
+    J_ARRAY_END();
+    J_OBJ_END();
+    return pos;
+  }
   private:
   int64_t exec_cnt_;
   int64_t exec_start_timestamps_[MAX_EXECUTING_SIZE];
@@ -722,12 +739,13 @@ struct ObPlanStat
   common::ObString hints_info_;
   bool hints_all_worked_;
   bool is_inner_;
-  bool is_use_auto_dop_;
+  bool is_enable_adaptive_auto_dop_;
   AdaptivePCInfo adaptive_pc_info_;
   ObVecIndexExecCtx vec_index_exec_ctx_;
   ObPlanExecutingStat executing_stat_;
   uint64_t gen_plan_usec_;  // plan generation time cost
   ObCollationType collation_connection_;
+  int64_t opt_stat_plan_expired_at_; // statistics expired time
 
   ObPlanStat()
     : plan_id_(0),
@@ -808,12 +826,13 @@ struct ObPlanStat
       plan_hash_value_(0),
       hints_all_worked_(true),
       is_inner_(false),
-      is_use_auto_dop_(false),
+      is_enable_adaptive_auto_dop_(false),
       adaptive_pc_info_(),
       vec_index_exec_ctx_(),
       executing_stat_(),
       gen_plan_usec_(0),
-      collation_connection_(CS_TYPE_INVALID)
+      collation_connection_(CS_TYPE_INVALID),
+      opt_stat_plan_expired_at_(0)
 {
   exact_mode_sql_id_[0] = '\0';
 }
@@ -896,12 +915,13 @@ struct ObPlanStat
       plan_hash_value_(rhs.plan_hash_value_),
       hints_all_worked_(rhs.hints_all_worked_),
       is_inner_(rhs.is_inner_),
-      is_use_auto_dop_(rhs.is_use_auto_dop_),
+      is_enable_adaptive_auto_dop_(rhs.is_enable_adaptive_auto_dop_),
       adaptive_pc_info_(rhs.adaptive_pc_info_),
       vec_index_exec_ctx_(rhs.vec_index_exec_ctx_),
       executing_stat_(rhs.executing_stat_),
       gen_plan_usec_(rhs.gen_plan_usec_),
-      collation_connection_(rhs.collation_connection_)
+      collation_connection_(rhs.collation_connection_),
+      opt_stat_plan_expired_at_(rhs.opt_stat_plan_expired_at_)
   {
     exact_mode_sql_id_[0] = '\0';
     MEMCPY(plan_sel_info_str_, rhs.plan_sel_info_str_, rhs.plan_sel_info_str_len_);
@@ -1084,7 +1104,8 @@ struct ObPlanStat
                K_(evolution_stat),
                K_(plan_hash_value),
                K_(hints_all_worked),
-               K_(vec_index_exec_ctx));
+               K_(vec_index_exec_ctx),
+               K_(opt_stat_plan_expired_at));
 };
 
 struct SysVarNameVal
@@ -1216,6 +1237,7 @@ public:
     enable_index_merge_(false),
     bloom_filter_ratio_(0),
     enable_hyperscan_regexp_engine_(false),
+    enable_re2_regexp_engine_(false),
     realistic_runtime_bloom_filter_size_(false),
     enable_parallel_das_dml_(false),
     direct_load_allow_fallback_(false),
@@ -1229,6 +1251,7 @@ public:
     enable_mysql_compatible_dates_(false),
     enable_insertup_column_store_opt_(false),
     enable_px_task_rebalance_(false),
+    enable_nested_sql_local_optimize_(false),
     cluster_config_version_(-1),
     tenant_config_version_(-1),
     tenant_id_(0)
@@ -1279,6 +1302,7 @@ public:
   bool enable_index_merge_;
   int bloom_filter_ratio_;
   bool enable_hyperscan_regexp_engine_;
+  bool enable_re2_regexp_engine_;
   bool realistic_runtime_bloom_filter_size_;
   bool enable_parallel_das_dml_;
   bool direct_load_allow_fallback_;
@@ -1292,7 +1316,7 @@ public:
   bool enable_mysql_compatible_dates_;
   bool enable_insertup_column_store_opt_;
   bool enable_px_task_rebalance_;
-
+  bool enable_nested_sql_local_optimize_;
 private:
   // current cluster config version_
   int64_t cluster_config_version_;

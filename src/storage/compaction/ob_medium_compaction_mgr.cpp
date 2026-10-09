@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -15,6 +8,7 @@
 #include "ob_medium_compaction_mgr.h"
 #include "src/logservice/replayservice/ob_tablet_replay_executor.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
+#include "storage/ob_tenant_tablet_stat_mgr.h"
 
 namespace oceanbase
 {
@@ -284,7 +278,14 @@ int ObTabletMediumCompactionInfoRecorder::inner_replay_clog(
         LOG_WARN("failed to replay medium info", K(ret), K(replay_medium_info));
       }
     } else {
-      FLOG_INFO("success to save medium info", K(ret), K_(tablet_id), K_(ls_id), K(scn), K(replay_medium_info), K(max_saved_version_));
+      // report a lock-free clear signal to reset the tablet stat after replaying medium info.
+      // best-effort; the merge-finish path clears it again as a backstop.
+      int tmp_ret = OB_SUCCESS;
+      bool succ_report = false;
+      if (OB_TMP_FAIL(MTL(ObTenantTabletStatMgr *)->report_clear_tablet_stat(ls_id_.id(), tablet_id_.id(), succ_report))) {
+        LOG_WARN("failed to report clear tablet stat signal after replay medium info", K(tmp_ret), K_(ls_id), K_(tablet_id));
+      }
+      FLOG_INFO("success to save medium info", K(ret), K_(tablet_id), K_(ls_id), K(scn), K(replay_medium_info), K(max_saved_version_), K(succ_report));
     }
   }
 
@@ -383,11 +384,14 @@ int ObTabletMediumCompactionInfoRecorder::prepare_struct_in_lock(
   } else if (buf_len >= common::OB_MAX_LOG_ALLOWED_SIZE) { // need be separated into several clogs
     ret = OB_ERR_DATA_TOO_LONG;
     LOG_WARN("medium info log too long", K(buf_len), LITERAL_K(common::OB_MAX_LOG_ALLOWED_SIZE));
-  } else if (FALSE_IT(allocator_ = allocator)) {
-  } else if (OB_ISNULL(buf = static_cast<char *>(allocator_->alloc(alloc_buf_size)))) {
+  } else if (OB_ISNULL(buf = static_cast<char *>(allocator->alloc(alloc_buf_size)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("allocate memory failed", K(ret), KPC(medium_info_));
   } else {
+    // Record allocator_ only after alloc succeeds, so that a later failure
+    // does not leave allocator_ pointing to a new allocator while member
+    // pointers still reference buffers from the previous allocator.
+    allocator_ = allocator;
     logcb_ptr_ = new(buf) ObStorageCLogCb(*this);
     alloc_buf_offset += sizeof(ObStorageCLogCb);
     tablet_handle_ptr_ = new (buf + alloc_buf_offset) ObTabletHandle();
@@ -767,7 +771,8 @@ int ObMediumCompactionInfoList::get_next_schedule_info(
     ObMediumCompactionInfo::ObCompactionType &compaction_type,
     int64_t &schedule_scn,
     ObCOMajorMergeStrategy &co_major_merge_strategy,
-    ObAdaptiveMergePolicy::AdaptiveMergeReason &merge_reason) const
+    ObAdaptiveMergePolicy::AdaptiveMergeReason &merge_reason,
+    int64_t &need_freeze_snapshot) const
 {
   int ret = OB_SUCCESS;
   DLIST_FOREACH_X(info, get_list(), OB_SUCC(ret)) {
@@ -779,13 +784,16 @@ int ObMediumCompactionInfoList::get_next_schedule_info(
           || is_mv_refresh_or_restore_remote_tablet) {
         schedule_scn = info->medium_snapshot_;
         compaction_type = (ObMediumCompactionInfo::ObCompactionType)info->compaction_type_;
-        if (info->storage_schema_.is_row_store()) {
+        info->get_co_major_merge_strategy(co_major_merge_strategy);
+        if (info->storage_schema_.is_row_store() && !co_major_merge_strategy.is_valid()) {
           co_major_merge_strategy.reset();
-        } else {
-          // co_major_merge_strategy will be decided later based on current sstable format
-          info->get_co_major_merge_strategy(co_major_merge_strategy);
         }
         merge_reason = (ObAdaptiveMergePolicy::AdaptiveMergeReason)info->medium_merge_reason_;
+        if (info->contain_mds_filter_info_) {
+          need_freeze_snapshot = info->mds_filter_info_.get_need_freeze_snapshot();
+        } else {
+          need_freeze_snapshot = 0;
+        }
       }
       break; // found one unfinish medium info, loop end
     }

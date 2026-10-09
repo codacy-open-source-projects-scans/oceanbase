@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -3512,6 +3505,24 @@ int ObTenantMetaMemMgr::hook_tablet(
     LOG_WARN("invalid argument", K(ret), K(key), KP(buf), K(buf_len));
   } else if (OB_FAIL(tablet_map_.hook_tablet(key, buf, buf_len))) {
     LOG_WARN("failed to hook tablet", K(ret), K(key));
+  }
+  return ret;
+}
+
+int ObTenantMetaMemMgr::check_can_skip_shared_tablet(
+    const ObTabletMapKey &key,
+    bool &can_skip)
+{
+  int ret = OB_SUCCESS;
+  can_skip = false;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObTenantMetaMemMgr hasn't been initialized", K(ret));
+  } else if (OB_UNLIKELY(!key.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(ret), K(key));
+  } else if (OB_FAIL(tablet_map_.check_can_skip_shared_tablet(key, can_skip))) {
+    LOG_WARN("failed to check can skip shared tablet", K(ret), K(key));
   }
   return ret;
 }

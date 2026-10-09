@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -276,20 +269,20 @@ int ObLobMetaManager::getlength_remote(ObLobAccessParam &param, uint64_t &char_l
   return ret;
 }
 
-int ObLobMetaManager::get_table_param(const ObTableParam *&table_param)
+int ObLobMetaManager::get_table_param(ObTTLFilterColType ttl_type, const ObTableParam *&table_param)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(persistent_lob_adapter_.get_meta_table_param(table_param))) {
-    LOG_WARN("get table param fail", K(ret));
+  if (OB_FAIL(persistent_lob_adapter_.get_meta_table_param(ttl_type, table_param))) {
+    LOG_WARN("get table param fail", K(ret), K(ttl_type));
   }
   return ret;
 }
 
-int ObLobMetaManager::get_table_dml_param(const ObTableDMLParam *&table_dml_param)
+int ObLobMetaManager::get_table_dml_param(ObTTLFilterColType ttl_type, const ObTableDMLParam *&table_dml_param)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(persistent_lob_adapter_.get_meta_table_dml_param(table_dml_param))) {
-    LOG_WARN("get table dml param fail", K(ret));
+  if (OB_FAIL(persistent_lob_adapter_.get_meta_table_dml_param(ttl_type, table_dml_param))) {
+    LOG_WARN("get table dml param fail", K(ret), K(ttl_type));
   }
   return ret;
 }

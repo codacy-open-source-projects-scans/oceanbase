@@ -1,15 +1,9 @@
-//Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2021 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_STORAGE_COMPACTION_MEDIUM_COMPACTION_FUNC_H_
 #define OB_STORAGE_COMPACTION_MEDIUM_COMPACTION_FUNC_H_
 
+#include "share/schema/ob_multi_version_schema_service.h"
 #include "storage/ls/ob_ls.h"
 #include "storage/compaction/ob_partition_merge_policy.h"
 #include "share/tablet/ob_tablet_filter.h"
@@ -38,7 +32,9 @@ public:
     ObScheduleTabletCnt *schedule_tablet_cnt,
     const ObAdaptiveMergePolicy::AdaptiveMergeReason merge_reason = ObAdaptiveMergePolicy::NONE,
     const int64_t least_medium_snapshot = 0,
-    const ObWindowCompactionDecisionLogInfo *window_decision_log_info = nullptr)
+    const ObWindowCompactionDecisionLogInfo *window_decision_log_info = nullptr,
+    const int64_t mlog_latest_purge_scn = OB_INVALID_SCN_VAL,
+    const int64_t mlog_purge_scn_read_snapshot = -1)
     : allocator_("MediumSchedule"),
       ls_(ls),
       weak_read_ts_(weak_read_ts.get_val_for_tx()),
@@ -47,7 +43,9 @@ public:
       least_medium_snapshot_(least_medium_snapshot),
       table_id_(OB_INVALID_ID),
       merge_reason_(merge_reason),
-      window_decision_log_info_(window_decision_log_info)
+      window_decision_log_info_(window_decision_log_info),
+      mlog_latest_purge_scn_(mlog_latest_purge_scn),
+      mlog_purge_scn_read_snapshot_(mlog_purge_scn_read_snapshot)
   {}
   ~ObMediumCompactionScheduleFunc() {}
   int init_tablet_handle(ObTabletHandle &tablet_handle)
@@ -79,6 +77,15 @@ public:
     ObIAllocator &allocator,
     storage::ObStorageSchema &storage_schema,
     uint64_t &table_id);
+  static int get_table_schema(
+    ObMultiVersionSchemaService &schema_service,
+    const ObTabletID tablet_id,
+    const int64_t schema_version,
+    const int64_t data_version,
+    uint64_t &table_id,
+    ObSchemaGetterGuard &schema_guard,
+    const ObTableSchema*& table_schema,
+    bool retry_get_schema_guard = true);
   static int batch_check_medium_finish(
     const hash::ObHashMap<ObLSID, share::ObLSInfo> &ls_info_map,
     ObIArray<ObTabletCheckInfo> &finish_tablet_ls_infos,
@@ -108,23 +115,6 @@ public:
     const ObStorageSchema &storage_schema,
     const uint64_t data_version,
     bool &is_schema_changed);
-#ifdef OB_BUILD_SHARED_STORAGE
-  // medium compaction is not considered
-  int try_skip_merge_for_ss(
-    const int64_t merge_version,
-    share::ObFreezeInfo &freeze_info,
-    ObMediumCompactionInfo &medium_info,
-    bool &skip);
-  int check_tablet_inc_data(
-    const int64_t merge_version,
-    ObTablet &tablet,
-    ObMediumCompactionInfo &medium_info,
-    bool &no_inc_data);
-  int check_progressive_merge(
-    const storage::ObTabletTableStore &table_store,
-    const storage::ObStorageSchema &storage_schema,
-    bool &is_progressive_merge);
-#endif
   int64_t to_string(char* buf, const int64_t buf_len) const;
 protected:
   int decide_medium_snapshot(bool &medium_clog_submitted);
@@ -137,6 +127,7 @@ protected:
     const int64_t schema_version,
     ObMediumCompactionInfo &medium_info);
   int choose_encoding_limit(ObMediumCompactionInfo &medium_info);
+  int choose_batch_size(ObMediumCompactionInfo &medium_info);
   int init_parallel_range_and_schema_changed_and_co_merge_type(
       const ObGetMergeTablesResult &result,
       ObMediumCompactionInfo &medium_info);
@@ -204,9 +195,12 @@ protected:
     const ObTablet &tablet,
     int64_t &schema_version);
   int get_adaptive_reason(const int64_t schedule_major_snapshot);
-  int fill_mds_filter_info(ObMediumCompactionInfo &medium_info);
+  int fill_mds_filter_info(const ObGetMergeTablesResult &result, ObMediumCompactionInfo &medium_info);
   int fill_mlog_purge_scn(ObMediumCompactionInfo &medium_info);
+  int fill_for_ttl_in_partial_update(const int64_t ttl_newest_commit_version, ObMediumCompactionInfo &medium_info);
   int fill_window_decision_log_info(ObMediumCompactionInfo &medium_info);
+  int try_refresh_mlog_purge_scn(const int64_t &read_snapshot);
+  bool need_read_mds(const ObMediumCompactionInfo &medium_info);
   static const int64_t DEFAULT_SCHEDULE_MEDIUM_INTERVAL = 60_s;
   static constexpr double SCHEDULE_RANGE_INC_ROW_COUNT_PERCENRAGE_THRESHOLD = 0.2;
   static const int64_t SCHEDULE_RANGE_ROW_COUNT_THRESHOLD = 1000 * 1000L; // 100w
@@ -229,6 +223,8 @@ private:
   uint64_t table_id_; // for mlog
   ObAdaptiveMergePolicy::AdaptiveMergeReason merge_reason_;
   const ObWindowCompactionDecisionLogInfo *window_decision_log_info_; // optional debug payload from window compaction
+  int64_t mlog_latest_purge_scn_; // for mlog compaction latest purge scn
+  int64_t mlog_purge_scn_read_snapshot_; // for mlog compaction latest purge scn read snapshot
 };
 
 } //namespace compaction

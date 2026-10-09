@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OPT_STAT_MONITOR_MANAGER_H_
@@ -103,7 +96,8 @@ public:
       tg_id_(-1),
       destroyed_(false),
       mysql_proxy_(NULL),
-      lock_(common::ObLatchIds::OB_OPT_STAT_MONITOR_MANAGER_LOCK)
+      lock_(common::ObLatchIds::OB_OPT_STAT_MONITOR_MANAGER_LOCK),
+      last_standby_updated_time_(0)
       {}
   virtual ~ObOptStatMonitorManager() { if (inited_) { destroy(); }  }
   void destroy();
@@ -209,6 +203,10 @@ public:
                                      const uint64_t table_id,
                                      int64_t &async_stale_max_table_size);
 
+  int check_standby_kvcache_expired(int64_t &recent_update_time);
+  int check_is_standby_leader(bool &is_leader);
+  void set_last_standby_updated_time(int64_t last_standby_updated_time) { last_standby_updated_time_ = last_standby_updated_time; }
+
 private:
   DISALLOW_COPY_AND_ASSIGN(ObOptStatMonitorManager);
   const static int64_t UPDATE_OPT_STAT_BATCH_CNT = 200;
@@ -224,6 +222,7 @@ private:
   common::SpinRWLock lock_;
   ObOptStatMonitorFlushAllTask flush_all_task_;
   ObOptStatMonitorCheckTask check_task_;
+  int64_t last_standby_updated_time_;
 }; // end of class ObOptStatMonitorManager
 
 } // end of namespace common

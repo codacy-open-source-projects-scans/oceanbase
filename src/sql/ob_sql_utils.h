@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_OB_SQL_UTILS_H
@@ -35,11 +28,15 @@
 #include "sql/monitor/flt/ob_flt_span_mgr.h"
 #include "share/ob_compatibility_control.h"
 #include "sql/engine/cmd/ob_load_data_parser.h"
+#include "sql/resolver/dml/ob_hint.h"
 
 namespace oceanbase
 {
 namespace share {
 class ObHDFSStorageInfo;
+}
+namespace obrpc {
+struct ObDependencyObjDDLArg;
 }
 namespace sql
 {
@@ -72,6 +69,7 @@ class ObResolverParams;
 class ObGlobalHint;
 class ObSqlSchemaGuard;
 struct ObPlanCacheCtx;
+class ObMaintainObjDepInfoTask;
 
 struct EstimatedPartition {
   common::ObAddr addr_;
@@ -130,6 +128,7 @@ class ObISqlPrinter
 {
 protected:
   virtual int inner_print(char *buf, int64_t buf_len, int64_t &pos) = 0;
+  virtual bool get_c_style() const { return false; }
 public:
   virtual int do_print(ObIAllocator &allocator, ObString &result);
   virtual ~ObISqlPrinter() = default;
@@ -142,21 +141,26 @@ public:
                ObSchemaGetterGuard *schema_guard,
                ObObjPrintParams print_params,
                const ParamStore *param_store,
-               const ObSQLSessionInfo *session) :
+               const ObSQLSessionInfo *session,
+               bool c_style = false) :
     stmt_(stmt),
     schema_guard_(schema_guard),
     print_params_(print_params),
     param_store_(param_store),
-    session_(session)
+    session_(session),
+    c_style_(c_style)
     {}
   virtual int inner_print(char *buf, int64_t buf_len, int64_t &res_len) override;
 
+protected:
+  virtual bool get_c_style() const override { return c_style_; }
 protected:
   const ObStmt *stmt_;
   ObSchemaGetterGuard *schema_guard_;
   ObObjPrintParams print_params_;
   const ParamStore *param_store_;
   const ObSQLSessionInfo *session_;
+  bool c_style_;
 };
 
 class ObSQLUtils
@@ -359,6 +363,11 @@ public:
   static int check_and_convert_context_namespace(const common::ObCollationType cs_type,
                                                  common::ObString &name);
   static bool cause_implicit_commit(ParseResult &result);
+  static void add_non_ro_select_disable_timer_warning_if_needed(sql::ObSQLSessionInfo &session,
+                                                                 ObPhysicalPlanCtx *plan_ctx);
+  static void log_user_error_for_timeout(int &ret,
+                                         sql::ObSQLSessionInfo &session,
+                                         ObPhysicalPlanCtx *plan_ctx);
   static bool is_end_trans_stmt(const ParseResult &result);
   static bool is_commit_stmt(const ParseResult &result);
   static bool is_modify_tenant_stmt(ParseResult &result);
@@ -420,6 +429,10 @@ public:
                               bool &has_questionmark_in_sql,
                               bool need_format);
   static int md5(const common::ObString &stmt, char *sql_id, int32_t len);
+  static int gen_sql_id_from_sql_string(ObSQLSessionInfo &session,
+                                        const common::ObString &raw_sql,
+                                        char *sql_id_buf,
+                                        int64_t buf_len);
   static int filter_hint_in_query_sql(common::ObIAllocator &allocator,
                                       const ObSQLSessionInfo &session,
                                       const common::ObString &sql,
@@ -437,7 +450,8 @@ public:
                              ObSchemaGetterGuard *schema_guard,
                              ObObjPrintParams print_params = ObObjPrintParams(),
                              const ParamStore *param_store = NULL,
-                             const ObSQLSessionInfo *session = NULL);
+                             const ObSQLSessionInfo *session = NULL,
+                             bool c_style = false);
   static int reconstruct_ps_sql(ObSqlString &reconstruct_sql, const ObString &ps_sql,
                                 const ObIArray<const common::ObObjParam *> &const_tokens);
   static int append_obj_param(ObSqlString &reconstruct_sql, const common::ObObjParam & obj_param);
@@ -605,7 +619,10 @@ public:
   static int handle_audit_record(bool need_retry,
                                  const ObExecuteMode exec_mode,
                                  ObSQLSessionInfo &session,
-                                 bool is_sensitive = false);
+                                 bool is_sensitive = false,
+                                 const ObStmt *stmt = NULL,
+                                 ObResultSet *result = NULL,
+                                 share::schema::ObSchemaGetterGuard *schema_guard = NULL);
   static void fixup_commit_time(ObSQLSessionInfo &session);
   static int64_t get_query_record_size_limit(uint64_t tenant_id)
   {
@@ -706,6 +723,7 @@ public:
 
   static int split_remote_object_storage_url(common::ObString &url, common::ObObjectStorageInfo *storage_info);
   static bool is_external_files_on_local_disk(const common::ObString &url);
+  static bool is_external_shared_files_on_local_disk(const common::ObString &url);
   static int check_location_access_priv(const common::ObString &location, ObSQLSessionInfo *session);
   static int check_sql_map_expected_resource_group(const ObSqlCtx &context,
                                             const ObResultSet &result,
@@ -736,11 +754,12 @@ public:
                                                 ObPCResourceMapRule &resource_map_rule,
                                                 uint64_t &group_id);
 
-  static int async_recompile_view(const share::schema::ObTableSchema &old_view_schema,
+  static int submit_compile_view_task(const share::schema::ObTableSchema &old_view_schema,
                                   ObSelectStmt *select_stmt,
                                   bool reset_column_infos,
                                   common::ObIAllocator &alloc,
-                                  sql::ObSQLSessionInfo &session_info);
+                                  sql::ObSQLSessionInfo &session_info,
+                                  common::ObIArray<obrpc::ObDependencyObjDDLArg> *alter_view_compile_args = NULL);
   static int check_sys_view_changed(const share::schema::ObTableSchema &old_view_schema,
                                     const share::schema::ObTableSchema &new_view_schema,
                                     bool &changed);
@@ -783,7 +802,8 @@ public:
   static int64_t combine_server_id(int64_t ts, uint64_t server_id) {
     return (ts & ((1LL << 43) - 1LL)) | ((server_id & 0xFFFF) << 48);
   }
-  static int get_external_table_type(const uint64_t tenant_id,
+  static int get_external_table_type(share::schema::ObSchemaGetterGuard &schema_guard,
+                                     const uint64_t tenant_id,
                                      const uint64_t table_id,
                                      ObExternalFileFormat::FormatType &type);
   static int get_external_table_type(const ObTableSchema *table_schema,
@@ -793,7 +813,17 @@ public:
   static int get_odps_api_mode(const ObString &table_format_or_properties,
                                     bool &is_odps_external_table,
                                     ObODPSGeneralFormat::ApiMode& mode);
-  static int is_odps_external_table(const uint64_t tenant_id,
+  /// Parse ODPS JNI params from external_file_format_str_. Default: use_odps_jni_connector=true, odps_data_transfer_mode=0(arrowTable).
+  static int parse_odps_jni_params_from_format_str(const ObString &external_file_format_str,
+                                                    bool &use_odps_jni_connector,
+                                                    int8_t &odps_data_transfer_mode);
+  /// Apply ODPS hint params to format str at resolve stage. Returns format_str with hints injected.
+  static int apply_odps_hints_to_format_str(const ObString &original_format_str,
+                                            const ObOptParamHint &opt_params,
+                                            ObIAllocator &allocator,
+                                            ObString &result_format_str);
+  static int is_odps_external_table(share::schema::ObSchemaGetterGuard &schema_guard,
+                                    const uint64_t tenant_id,
                                     const uint64_t table_id,
                                     bool &is_odps_external_table);
   static int is_odps_external_table(const ObTableSchema *table_schema,
@@ -1517,6 +1547,10 @@ public:
                                   bool &is_match);
 
   static int is_array_string_length_match(common::ObIArrayType *arr_obj, bool &is_match);
+
+  static int is_string_length_match(common::ObIAllocator &allocator,
+                                    const common::ObObj &str_value,
+                                    bool &is_match);
 
   static bool need_array_string_constraint(const ObSqlCollectionInfo &coll_info);
 };

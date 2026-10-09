@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -295,9 +288,7 @@ int ObTabletTableStore::init(
     LOG_WARN("failed to pull memtable from memtable_mgr", K(ret));
   } else if (OB_FAIL(pull_ddl_memtables(allocator, tablet))) {
     LOG_WARN("pull_ddl_memtables failed", K(ret));
-  } else if (OB_FAIL(build_major_checksum_info(old_store, &param, allocator))) {
-    LOG_WARN("failed to build major checksum info", KR(ret), K(param));
-  } else if (OB_FAIL(build_mds_minor_tables(allocator, new_sstable, old_store.mds_sstables_, param.allow_adjust_next_start_scn_))) {
+  } else if (OB_FAIL(build_mds_minor_tables(allocator, new_sstable, old_store.mds_sstables_))) {
     LOG_WARN("failed to build mds sstables", K(ret));
   } else {
     is_inited_ = true;
@@ -311,130 +302,6 @@ int ObTabletTableStore::init(
   }
   return ret;
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObTabletTableStore::process_minor_sstables_for_ss_(
-    ObArenaAllocator &allocator,
-    const UpdateUpperTransParam &upper_trans_param,
-    ObArray<ObITable *> &sstables,
-    const int64_t inc_base_snapshot_version,
-    int64_t &inc_pos)
-{
-  int ret = OB_SUCCESS;
-  const ObIArray<UpdateUpperTransParam::SCNAndVersion> *new_upper_trans = upper_trans_param.ss_new_upper_trans_;
-  if (inc_pos < 0 || OB_ISNULL(new_upper_trans) || new_upper_trans->empty() || sstables.empty()) {
-    // skip, inc_pos < 0 means has been processed by others
-  } else if (new_upper_trans->count() == 1 && new_upper_trans->at(0).upper_trans_version_ == 0) {
-    if (OB_FAIL(cut_minor_sstables_for_ss_(allocator, new_upper_trans->at(0).scn_, sstables, inc_pos))) {
-      LOG_WARN("failed to cut minor sstables", K(ret));
-    }
-  } else if (OB_FAIL(process_minor_sstables_upper_trans_for_ss_(allocator, *new_upper_trans, sstables, inc_base_snapshot_version, inc_pos))) {
-    LOG_WARN("failed to set minor sstables upper trans", K(ret));
-  }
-  return ret;
-}
-
-int ObTabletTableStore::cut_minor_sstables_for_ss_(
-    ObArenaAllocator &allocator,
-    const share::SCN &cut_scn,
-    ObArray<ObITable *> &sstables,
-    int64_t &inc_pos)
-{
-  int ret = OB_SUCCESS;
-  for (int i = inc_pos; OB_SUCC(ret) && i < sstables.count(); i++) {
-    if (sstables.at(i)->is_sstable()) {
-      if (sstables.at(i)->get_start_scn() >= cut_scn) {
-        break;
-      } else if (sstables.at(i)->get_end_scn() <= cut_scn) {
-        inc_pos = i + 1;
-        FLOG_INFO("recycle minor by shared-min-scn", KPC(sstables.at(i)), K(i), K(cut_scn));
-      } else if (sstables.at(i)->get_end_scn() > cut_scn) {
-        // cross with cut_scn, modify start_scn to cut_scn
-        ObSSTable *sstable = static_cast<ObSSTable*>(sstables.at(i));
-        ObSSTable *copied_sstable = NULL;
-        if (OB_FAIL(adjust_sstable_start_scn_(*sstable, allocator, cut_scn, copied_sstable))) {
-          LOG_WARN("adjust start scn of local sstable fail", K(ret));
-        } else {
-          sstables.at(i) = copied_sstable;
-          FLOG_INFO("adjust start scn of local sstable to cut_scn success", KPC(sstables.at(i)), K(i), K(cut_scn));
-        }
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTabletTableStore::process_minor_sstables_upper_trans_for_ss_(
-    ObArenaAllocator &allocator,
-    const ObIArray<UpdateUpperTransParam::SCNAndVersion> &new_upper_trans,
-    ObArray<ObITable *> &sstables,
-    const int64_t inc_base_snapshot_version,
-    int64_t &inc_pos)
-{
-  int ret = OB_SUCCESS;
-  int j = 0;
-  bool found_first = false;
-  bool need_chg_upper_trans_version = false;
-  ObSSTableArray &new_sstables = minor_tables_;
-  for(int i = inc_pos; i < sstables.count(); i++) {
-    if (sstables.at(i)->is_sstable()) {
-      ObSSTable *sstable = static_cast<ObSSTable*>(sstables.at(i));
-      if (sstable->get_upper_trans_version() == INT64_MAX) {
-        bool hit = false;
-        for (; j < new_upper_trans.count(); j++) {
-          if (new_upper_trans.at(j).scn_ == sstable->get_end_scn()) {
-            hit = true;
-            if (new_upper_trans.at(j).upper_trans_version_ <= inc_base_snapshot_version) {
-              if (!found_first) { inc_pos = i + 1; } // remove this minor
-            } else {
-              found_first = true;
-              need_chg_upper_trans_version |= new_upper_trans.at(j).upper_trans_version_ != INT64_MAX;
-            }
-          } else if (new_upper_trans.at(j).scn_ > sstable->get_end_scn()) {
-            break;
-          }
-        }
-        if (!hit) {
-          found_first = true;
-        }
-      } else if (sstable->get_upper_trans_version() <= inc_base_snapshot_version) {
-        if (!found_first) { inc_pos = i + 1; } // remove this minor
-      } else {
-        found_first = true;
-      }
-    }
-  }
-  if (need_chg_upper_trans_version) {
-    if (FAILEDx(new_sstables.init(allocator, sstables, inc_pos))) {
-      LOG_WARN("failed to init minor_tables", K(ret));
-    } else if (new_sstables.count() >= MAX_SSTABLE_CNT_IN_STORAGE) {
-      ret = OB_MINOR_MERGE_NOT_ALLOW;
-      LOG_WARN("too many sstables, cannot add new minor sstable", K(ret));
-    } else {
-      int j = 0;
-      for (int64_t i = 0; i < new_sstables.count(); i++) {
-        ObSSTable *sstable = new_sstables.at(i);
-        if (sstable->get_upper_trans_version() == INT64_MAX) {
-          for (;  j < new_upper_trans.count(); j++) {
-            if (new_upper_trans.at(j).scn_ == sstable->get_end_scn()) {
-              if (new_upper_trans.at(j).upper_trans_version_ != INT64_MAX) {
-                sstable->set_upper_trans_version(allocator, new_upper_trans.at(j).upper_trans_version_);
-              }
-            } else if (new_upper_trans.at(j).scn_ > sstable->get_end_scn()) {
-              break;
-            }
-          }
-        }
-      }
-    }
-    inc_pos = -1; // has created minor_sstables, skip process in caller
-  } else if (inc_pos == sstables.count()) {
-    inc_pos = -1; // all minor removed
-  }
-  return ret;
-}
-
-#endif
 
 
 #define INIT_SSTABLE_ARRAY_WITH_ADDR(table_array, is_right_table_type)                                \
@@ -573,8 +440,6 @@ int ObTabletTableStore::init(
     LOG_WARN("failed to pull memtable from memtable_mgr", K(ret));
   } else if (OB_FAIL(pull_ddl_memtables(allocator, tablet))) {
     LOG_WARN("pull_ddl_memtables failed", K(ret));
-  } else if (OB_FAIL(build_major_checksum_info(old_store, NULL/*param*/, allocator))) {
-    LOG_WARN("failed to build major checksum info", KR(ret), K(old_store));
   } else {
     is_inited_ = true;
     if (OB_FAIL(check_ready_for_read(tablet))) {
@@ -851,10 +716,7 @@ int ObTabletTableStore::calculate_ddl_read_tables(
 {
   int ret = OB_SUCCESS;
   base_table = nullptr;
-  if (GCTX.is_shared_storage_mode()) {
-    ret = OB_REPLICA_NOT_READABLE;
-    LOG_WARN("shared storage mode don't need to calculate ddl read tables", K(ret), K(tablet));
-  } else if (ddl_sstables_.count() > 0
+  if (ddl_sstables_.count() > 0
       && OB_NOT_NULL(ddl_sstables_.at(0))
       && ddl_sstables_.at(0)->is_ddl_merge_sstable()
       && !ObDDLUtil::need_rescan_column_store(tablet.get_tablet_meta().ddl_data_format_version_)) {
@@ -945,28 +807,6 @@ int ObTabletTableStore::calculate_ddl_read_tables(
 
 int ObTabletTableStore::calculate_inc_major_read_tables(
     const int64_t snapshot_version,
-    const ObTablet &tablet,
-    ObTableStoreIterator &iterator,
-    const ObSSTable *base_table) const
-{
-  int ret = OB_SUCCESS;
-  if (!GCTX.is_shared_storage_mode()) {
-    if (OB_FAIL(calculate_inc_major_read_tables_for_sn(snapshot_version, iterator, base_table))) {
-      LOG_WARN("fail to calculate inc major read tables for sn", KR(ret));
-    }
-  }
-#ifdef OB_BUILD_SHARED_STORAGE
-  else {
-    if (OB_FAIL(calculate_inc_major_read_tables_for_ss(snapshot_version, tablet, iterator, base_table))) {
-      LOG_WARN("fail to calculate inc major read tables for ss", KR(ret));
-    }
-  }
-#endif
-  return ret;
-}
-
-int ObTabletTableStore::calculate_inc_major_read_tables_for_sn(
-    const int64_t snapshot_version,
     ObTableStoreIterator &iterator,
     const ObSSTable *base_table) const
 {
@@ -982,60 +822,122 @@ int ObTabletTableStore::calculate_inc_major_read_tables_for_sn(
   return ret;
 }
 
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObTabletTableStore::calculate_inc_major_read_tables_for_ss(
-    const int64_t snapshot_version,
-    const ObTablet &tablet,
-    ObTableStoreIterator &iterator,
-    const ObSSTable *base_table) const
+int ObTabletTableStore::inner_get_next_tx_read_tables(
+    const SCN &inc_major_end_scn,
+    int64_t &cur_sstable_idx,
+    int64_t &cur_ddl_kv_idx,
+    int64_t &tx_id,
+    ObIArray<ObITable *> &read_tables,
+    int64_t &ddl_dump_cnt) const
 {
   int ret = OB_SUCCESS;
-  const int64_t base_version = OB_NOT_NULL(base_table) ? base_table->get_snapshot_version() : -1;
-  const bool need_check_tx = inc_major_tables_.count() > 0
-                             && OB_NOT_NULL(inc_major_tables_[inc_major_tables_.count() - 1])
-                             && inc_major_tables_[inc_major_tables_.count() - 1]->get_upper_trans_version() == INT64_MAX;
-  ObLSHandle ls_handle;
-  int64_t trans_state = ObTxData::UNKOWN;
-  int64_t commit_version = -1;
-  ObSSTable *inc_major = nullptr;
-  bool need_table = false;
-  if (need_check_tx) {
-    if (OB_FAIL(ObIncMajorTxHelper::get_ls(tablet.get_ls_id(), ls_handle))) {
-      LOG_WARN("fail to get ls", KR(ret), K(tablet.get_ls_id()));
-    } else if (OB_UNLIKELY(!ls_handle.is_valid())) {
+  tx_id = OB_INVALID_ID;
+  ddl_dump_cnt = 0;
+  read_tables.reset();
+
+  // find min tx id from inc major ddl sstables && inc major ddl kvs
+  int64_t sstable_next_tx_id = OB_INVALID_ID;
+  while (OB_SUCC(ret) && cur_sstable_idx < inc_major_ddl_sstables_.count()) {
+    ObSSTable *sstable = inc_major_ddl_sstables_.at(cur_sstable_idx);
+    ObSSTableMetaHandle meta_hdl;
+    if (OB_ISNULL(sstable)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ls handle is invalid", KR(ret), K(ls_handle));
+      LOG_WARN("sstable is nullptr", KR(ret), K(cur_sstable_idx));
+    } else if (sstable->get_end_scn() <= inc_major_end_scn) {
+      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(sstable->get_key()));
+      ++cur_sstable_idx;
+    } else if (OB_FAIL(sstable->get_meta(meta_hdl))) {
+      LOG_WARN("fail to get sstable meta", KR(ret), KPC(sstable));
+    } else if (OB_UNLIKELY(!meta_hdl.is_valid()
+            || !meta_hdl.get_sstable_meta().get_uncommit_tx_info().is_valid()
+            || nullptr == meta_hdl.get_sstable_meta().get_uncommit_tx_info().tx_infos_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected uncommit info", KR(ret), K(meta_hdl));
+    } else {
+      sstable_next_tx_id = meta_hdl.get_sstable_meta().get_uncommit_tx_info().tx_infos_[0].tx_id_;
+      break;
     }
   }
-  for (int64_t idx = 0; OB_SUCC(ret) && idx < inc_major_tables_.count(); ++idx) {
-    need_table = false;
-    inc_major = inc_major_tables_.at(idx);
-    if (OB_ISNULL(inc_major)) {
+
+  int64_t ddl_kv_next_tx_id = OB_INVALID_ID;
+  while (OB_SUCC(ret) && cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count()) {
+    ObDDLKV *ddl_kv = inc_major_ddl_mem_sstables_[cur_ddl_kv_idx];
+    if (OB_ISNULL(ddl_kv)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("inc major is nullptr", KR(ret));
-    } else if (need_check_tx) {
-      if (OB_FAIL(ObIncMajorTxHelper::get_inc_major_commit_version(
-                                            *ls_handle.get_ls(),
-                                            *inc_major,
-                                            SCN::max_scn(),
-                                            trans_state,
-                                            commit_version))) {
-        LOG_WARN("fail to get inc major commit version", KR(ret), KPC(inc_major));
-      } else if (ObTxData::COMMIT == trans_state) {
-        need_table = commit_version > base_version;
-      } else if (ObTxData::RUNNING == trans_state) {
-        need_table = true;
-      }
+      LOG_WARN("ddl kv is nullptr", KR(ret), K(cur_ddl_kv_idx));
+    } else if (ddl_kv->get_end_scn() <= inc_major_end_scn) {
+      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(ddl_kv->get_key()));
+      ++cur_ddl_kv_idx;
+    } else if (OB_UNLIKELY(!ddl_kv->is_freezed())) {
+      cur_ddl_kv_idx = inc_major_ddl_mem_sstables_.count(); // reach unfreezed ddl kv, stop iter ddl kvs
     } else {
-      need_table = inc_major->get_upper_trans_version() > base_version;
+      ddl_kv_next_tx_id = ddl_kv->get_trans_id().get_id();
+      break;
     }
-    if (OB_SUCC(ret) && need_table && OB_FAIL(iterator.add_table(inc_major))) {
-      LOG_WARN("fail to add inc major sstable", KR(ret), K(idx));
+  }
+
+  // Determine the global min tx_id across both sources
+  if (OB_FAIL(ret)) {
+  } else if (OB_INVALID_ID != sstable_next_tx_id && OB_INVALID_ID != ddl_kv_next_tx_id) {
+    tx_id = std::min(sstable_next_tx_id, ddl_kv_next_tx_id);
+  } else if (OB_INVALID_ID != sstable_next_tx_id) {
+    tx_id = sstable_next_tx_id;
+  } else if (OB_INVALID_ID != ddl_kv_next_tx_id) {
+    tx_id = ddl_kv_next_tx_id;
+  }
+
+  // Collect matching sstables
+  while (OB_SUCC(ret) && OB_INVALID_ID != tx_id && cur_sstable_idx < inc_major_ddl_sstables_.count()) {
+    ObSSTable *sstable = inc_major_ddl_sstables_.at(cur_sstable_idx);
+    ObSSTableMetaHandle meta_hdl;
+    if (OB_ISNULL(sstable)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("sstable is nullptr", KR(ret), K(cur_sstable_idx));
+    } else if (OB_FAIL(sstable->get_meta(meta_hdl))) {
+      LOG_WARN("fail to get sstable meta", KR(ret), KPC(sstable));
+    } else if (OB_UNLIKELY(!meta_hdl.is_valid()
+            || !meta_hdl.get_sstable_meta().get_uncommit_tx_info().is_valid()
+            || nullptr == meta_hdl.get_sstable_meta().get_uncommit_tx_info().tx_infos_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected uncommit info", KR(ret), K(meta_hdl));
+    } else if (tx_id != meta_hdl.get_sstable_meta().get_uncommit_tx_info().tx_infos_[0].tx_id_) {
+      break;
+    } else if (!sstable->is_empty() && OB_FAIL(read_tables.push_back(sstable))) {
+      LOG_WARN("fail to push back sstable", KR(ret));
+    } else {
+      ++cur_sstable_idx;
+    }
+  }
+  ddl_dump_cnt = read_tables.count();
+
+  // Collect matching ddl kvs
+  while (OB_SUCC(ret) && OB_INVALID_ID != tx_id && cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count()) {
+    ObDDLKV *ddl_kv = inc_major_ddl_mem_sstables_[cur_ddl_kv_idx];
+    if (OB_ISNULL(ddl_kv)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ddl kv is nullptr", KR(ret), K(cur_ddl_kv_idx));
+    } else if (OB_UNLIKELY(!ddl_kv->is_freezed())) {
+      cur_ddl_kv_idx = inc_major_ddl_mem_sstables_.count();
+      break;
+    } else if (ddl_kv->get_trans_id().get_id() != tx_id) {
+      break;
+    } else {
+      ObIArray<ObDDLMemtable *> &ddl_memtables = ddl_kv->get_ddl_memtables();
+      for (int64_t j = 0; OB_SUCC(ret) && j < ddl_memtables.count(); ++j) {
+        if (OB_ISNULL(ddl_memtables.at(j))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("ddl memtable is nullptr", KR(ret), K(j));
+        } else if (OB_FAIL(read_tables.push_back(ddl_memtables.at(j)))) {
+          LOG_WARN("fail to push back memtable", KR(ret));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ++cur_ddl_kv_idx;
+      }
     }
   }
   return ret;
 }
-#endif
 
 int ObTabletTableStore::calculate_inc_ddl_read_tables(
     const int64_t base_version,
@@ -1043,351 +945,107 @@ int ObTabletTableStore::calculate_inc_ddl_read_tables(
     ObTableStoreIterator &iterator) const
 {
   int ret = OB_SUCCESS;
-  const bool is_empty_inc_ddl_read_tables = inc_major_ddl_sstables_.empty()
-                                            && inc_major_ddl_mem_sstables_.empty();
-  if (!is_empty_inc_ddl_read_tables) {
-    const SCN end_scn = inc_major_tables_.empty()
-                          ? SCN::min_scn()
-                          : inc_major_tables_.get_boundary_table(true /*is_last*/)->get_end_scn();
-    const bool is_row_store = tablet.is_row_store();
-    ObLSHandle ls_handle;
-    if (OB_FAIL(ObIncMajorTxHelper::get_ls(tablet.get_ls_id(), ls_handle))) {
-      LOG_WARN("fail to get ls", KR(ret), "ls_id", tablet.get_ls_id());
-    } else if (OB_UNLIKELY(!ls_handle.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ls handle is invalid", KR(ret), K(ls_handle));
-    } else if (!is_row_store) {
-      if (OB_FAIL(inner_calculate_inc_ddl_column_read_tables(*ls_handle.get_ls(), tablet, base_version, end_scn, iterator))) {
-        LOG_WARN("fail to inner calculate inc ddl column read tables", KR(ret), K(base_version), K(end_scn));
-      }
-    } else {
-      if (OB_FAIL(inner_calculate_inc_ddl_row_read_tables(*ls_handle.get_ls(), base_version, end_scn, iterator))) {
-        LOG_WARN("fail to inner calculate inc ddl row read tables", KR(ret), K(base_version), K(end_scn));
-      }
-    }
-  }
-  return ret;
-}
+  const SCN inc_major_end_scn = inc_major_tables_.empty()
+                              ? SCN::min_scn()
+                              : inc_major_tables_.get_boundary_table(true /*is_last*/)->get_end_scn();
+  ObLSHandle ls_handle;
 
-int ObTabletTableStore::get_inc_major_cg_info(
-    ObSSTable *first_sstable,
-    ObDDLKV *first_ddl_kv,
-    int64_t &column_group_cnt,
-    int64_t &column_cnt,
-    ObCOSSTableBaseType &co_base_type) const
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(first_sstable)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("first sstable is nullptr", KR(ret));
-  } else if (OB_NOT_NULL(first_ddl_kv)) {
-    // Maybe the first SSTable is the DDL memtable when the first DDLKV is not nullptr,
-    // and the column cnt in DDL memtable meta is not full column cnt,
-    // so get column cnt from DDLKV firstly.
-    column_group_cnt = first_ddl_kv->get_column_group_cnt();
-    column_cnt = first_ddl_kv->get_column_cnt();
-    co_base_type = first_ddl_kv->get_co_base_type();
+  if (inc_major_ddl_sstables_.empty() && inc_major_ddl_mem_sstables_.empty()) {
+    // do nothing
+  } else if (OB_FAIL(ObIncMajorTxHelper::get_ls(tablet.get_ls_id(), ls_handle))) {
+    LOG_WARN("fail to get ls", KR(ret), "ls_id", tablet.get_ls_id());
   } else {
-    ObSSTableMetaHandle meta_handle;
-    if (OB_FAIL(first_sstable->get_meta(meta_handle))) {
-      LOG_WARN("fail to get meta", KR(ret));
-    } else if (OB_UNLIKELY(!meta_handle.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("meta handle is invalid", KR(ret), K(meta_handle));
-    } else {
-      ObCOSSTableV2 *co_sstable = static_cast<ObCOSSTableV2 *>(first_sstable);
-      if (OB_ISNULL(co_sstable)) {
+    ObMemAttr attr(MTL_ID(), "INC_MAJOR_AGG");
+    ObArenaAllocator arena(attr);
+    int64_t cur_sstable_idx = 0;
+    int64_t cur_ddl_kv_idx = 0;
+
+    while (OB_SUCC(ret) && (cur_sstable_idx < inc_major_ddl_sstables_.count()
+                         || cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count())) {
+      int64_t tx_id = OB_INVALID_ID;
+      ObArray<ObITable *> read_tables;
+      ObSSTable *first_read_table = nullptr;
+      bool is_included = false;
+      ObTabletDDLCompleteMdsUserData user_data;
+      int64_t ddl_dump_cnt = 0;
+
+      if (OB_FAIL(inner_get_next_tx_read_tables(inc_major_end_scn,
+                                                cur_sstable_idx,
+                                                cur_ddl_kv_idx,
+                                                tx_id,
+                                                read_tables,
+                                                ddl_dump_cnt))) {
+        LOG_WARN("fail to collect next tx read tables", KR(ret), K(inc_major_end_scn));
+      } else if (read_tables.empty()) {
+        // do nothing
+      } else if (OB_ISNULL(first_read_table = static_cast<ObSSTable *>(read_tables.at(0)))) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("co sstable is nullptr", KR(ret));
+        LOG_WARN("first read table is nullptr", KR(ret));
+      } else if (OB_FAIL(ObIncMajorTxHelper::check_inc_major_included_by_major(*ls_handle.get_ls(), base_version, *first_read_table, is_included))) {
+        LOG_WARN("fail to check inc major included by major", KR(ret), K(base_version), KPC(first_read_table));
+      } else if (is_included) {
+        LOG_INFO("inc major ddl dump sstable is included by major, skip", K(base_version), KPC(first_read_table));
+      } else if (!first_read_table->is_column_store_sstable()) { // add table directly for row store
+        for (int64_t i = 0; OB_SUCC(ret) && i < read_tables.count(); ++i) {
+          if (OB_UNLIKELY(read_tables.at(i)->is_column_store_sstable())) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("get unexpected column store table", K(ret), KPC(read_tables.at(i)), K(read_tables));
+          } else if (OB_FAIL(iterator.add_table(read_tables.at(i)))) {
+            LOG_WARN("fail to add table", KR(ret), K(i));
+          }
+        }
+      } else if (1 == ddl_dump_cnt && 1 == read_tables.count() && !read_tables.at(0)->is_ddl_merge_sstable()) {
+        if (OB_FAIL(iterator.add_table(read_tables.at(0)))) {
+          LOG_WARN("fail to add table", KR(ret), KPC(read_tables.at(0)));
+        }
+      } else if (OB_FAIL(tablet.get_inc_major_direct_load_info(SCN::max_scn(), arena, ObTabletDDLCompleteMdsUserDataKey(tx_id), user_data))) {
+        LOG_WARN("failed to get inc major direct load info", KR(ret), K(tx_id));
+      } else if (OB_UNLIKELY(!user_data.inc_major_commit_scn_.is_valid_and_not_min())) {
+        LOG_INFO("skip incomplete inc major direct load", K(user_data));
       } else {
-        column_group_cnt = co_sstable->get_cs_meta().column_group_cnt_;
-        column_cnt = co_sstable->get_cs_meta().full_column_cnt_;
-        co_base_type = co_sstable->is_all_cg_base() ? ObCOSSTableBaseType::ALL_CG_TYPE
-                                                    : ObCOSSTableBaseType::ROWKEY_CG_TYPE;
-      }
-    }
-  }
-  return ret;
-}
+        ObTableHandleV2 table_handle;
+        ObIncMajorDDLAggregateCOSSTable *agg_sstable = nullptr;
+        ObITable::TableKey table_key;
+        table_key.table_type_ = ObITable::INC_MAJOR_DDL_AGGREGATE_CO_SSTABLE;
+        table_key.tablet_id_ = tablet.get_tablet_id();
+        table_key.scn_range_ = first_read_table->get_key().scn_range_;
+        const ObStorageSchema &storage_schema = user_data.get_storage_schema();
+        const int64_t column_group_cnt = storage_schema.get_column_group_count();
+        const bool has_hidden_rowkey_cg = storage_schema.has_hidden_rowkey_column_group();
+        const ObCOSSTableBaseType co_base_type = storage_schema.has_all_column_group()
+                                               ? ObCOSSTableBaseType::ALL_CG_TYPE
+                                               : ObCOSSTableBaseType::ROWKEY_CG_TYPE;
+        int64_t column_cnt = 0;
 
-int ObTabletTableStore::inner_calculate_inc_ddl_row_read_tables(
-    ObLS &ls,
-    const int64_t base_version,
-    const SCN &inc_major_end_scn,
-    ObTableStoreIterator &iterator) const
-{
-  int ret = OB_SUCCESS;
-  ObSSTable *sstable = nullptr;
-  ObDDLKV *ddlkv = nullptr;
-  bool is_included = false;
-  for (int64_t i = 0; OB_SUCC(ret) && i < inc_major_ddl_sstables_.count(); ++i) {
-    sstable = inc_major_ddl_sstables_.at(i);
-    if (OB_ISNULL(sstable)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("sstable is nullptr", KR(ret), K(i));
-    } else if (sstable->is_empty()) {
-      // skip empty inc major ddl dump sstables
-    } else if (sstable->get_end_scn() <= inc_major_end_scn) {
-      // inc major already merged, skip
-      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(sstable->get_key()));
-    } else if (OB_FAIL(ObIncMajorTxHelper::check_inc_major_included_by_major(ls, base_version, *sstable, is_included))) {
-      LOG_WARN("fail to check inc major included by major", KR(ret), K(base_version), KPC(sstable));
-    } else if (is_included) {
-      LOG_INFO("inc major ddl dump sstable is included by major, skip", K(base_version), KPC(sstable));
-    } else if (OB_FAIL(iterator.add_table(sstable))) {
-      LOG_WARN("fail to add table", KR(ret));
-    }
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < inc_major_ddl_mem_sstables_.count(); ++i) {
-    ddlkv = inc_major_ddl_mem_sstables_[i];
-    if (OB_ISNULL(ddlkv)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ddlkv is nullptr", KR(ret), K(i));
-    } else if (!ddlkv->is_freezed()) {
-      // Unfrozen ddlkv is not read to prevent concurrent reading and writing of ddl_memtable (inc_commit_log ensures that ddlkv is frozen)
-      break;
-    } else if (ddlkv->get_end_scn() <= inc_major_end_scn) {
-      // inc major already merged, skip
-      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(ddlkv->get_key()));
-    } else {
-      ObIArray<ObDDLMemtable *> &ddl_memtables = ddlkv->get_ddl_memtables();
-      for (int64_t j = 0; OB_SUCC(ret) && j < ddl_memtables.count(); ++j) {
-        sstable = ddl_memtables.at(j);
-        if (OB_ISNULL(sstable)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("sstable is nullptr", KR(ret), K(j));
-        } else if (OB_FAIL(ObIncMajorTxHelper::check_inc_major_included_by_major(ls, base_version, *sstable, is_included))) {
-          LOG_WARN("fail to check inc major included by major", KR(ret), K(base_version), KPC(sstable));
-        } else if (is_included) {
-          LOG_INFO("inc major ddl memtable is included by major, skip", K(base_version), KPC(sstable));
-        } else if (OB_FAIL(iterator.add_table(sstable))) {
-          LOG_WARN("fail to add table", KR(ret));
+        if (OB_FAIL(storage_schema.get_stored_column_count_in_sstable(column_cnt))) {
+          LOG_WARN("fail to get stored column count in sstable", KR(ret));
+        } else if (OB_ISNULL(agg_sstable = OB_NEW(ObIncMajorDDLAggregateCOSSTable, attr))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("fail to new ddl aggregate co sstable", KR(ret));
+        } else if (OB_FAIL(agg_sstable->init(*first_read_table, table_key,
+                                             column_group_cnt, column_cnt,
+                                             co_base_type, has_hidden_rowkey_cg, read_tables))) {
+          LOG_WARN("fail to init ddl agg co sstable", KR(ret), KPC(first_read_table), K(table_key),
+                    K(column_group_cnt), K(column_cnt), K(co_base_type), K(has_hidden_rowkey_cg));
+        } else if (OB_FAIL(table_handle.set_sstable(agg_sstable, ObMallocAllocator::get_instance()))) {
+          LOG_WARN("fail to set sstable", KR(ret));
+        }
+        if (OB_FAIL(ret)) {
+          if (OB_NOT_NULL(agg_sstable)) {
+            agg_sstable->~ObIncMajorDDLAggregateCOSSTable();
+            ob_free(agg_sstable);
+            agg_sstable = nullptr;
+          }
+        } else if (OB_FAIL(iterator.add_ddl_agg_table(table_handle))) {
+          LOG_WARN("fail to add ddl agg table", KR(ret), K(table_handle));
         }
       }
+      arena.reuse();
     }
   }
   return ret;
 }
 
-int ObTabletTableStore::inner_calculate_inc_ddl_column_read_tables(
-    ObLS &ls,
-    const ObTablet &tablet,
-    const int64_t base_version,
-    const SCN &inc_major_end_scn,
-    ObTableStoreIterator &iterator) const
-{
-  int ret = OB_SUCCESS;
-  ObMemAttr attr(MTL_ID(), "INC_MAJOR_AGG");
-  int64_t cur_sstable_idx = 0;
-  int64_t cur_ddl_kv_idx = 0;
-  ObITable::TableKey table_key;
-  table_key.table_type_ = ObITable::INC_MAJOR_DDL_AGGREGATE_CO_SSTABLE;
-  table_key.tablet_id_ = tablet.get_tablet_id();
-  ObArray<ObITable *> read_tables;
-  int64_t tx_id = OB_INVALID_ID;
-  ObTableHandleV2 table_handle;
-  ObIncMajorDDLAggregateCOSSTable *agg_sstable = nullptr;
-  ObArenaAllocator arena(attr);
-  ObTabletDDLCompleteMdsUserData user_data;
-
-  // locate sstable start idx and ddlkv start idx
-  while (cur_sstable_idx < inc_major_ddl_sstables_.count()) {
-    ObSSTable *sstable = inc_major_ddl_sstables_.at(cur_sstable_idx);
-    if (sstable->get_end_scn() <= inc_major_end_scn) {
-      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(sstable->get_key()));
-      ++cur_sstable_idx;
-    } else {
-      break;
-    }
-    ++cur_sstable_idx;
-  }
-  while (cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count()) {
-    ObDDLKV *ddlkv = inc_major_ddl_mem_sstables_[cur_ddl_kv_idx];
-    if (ddlkv->get_end_scn() <= inc_major_end_scn) {
-      LOG_INFO("scn range is less than inc major right border, skip", K(inc_major_end_scn), K(ddlkv->get_key()));
-      ++cur_ddl_kv_idx;
-    } else {
-      break;
-    }
-  }
-
-  while (OB_SUCC(ret) && (cur_sstable_idx < inc_major_ddl_sstables_.count()
-                          || cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count())) {
-    read_tables.reset();
-    tx_id = OB_INVALID_ID;
-    table_handle.reset();
-    agg_sstable = nullptr;
-    ObSSTable *first_sstable = nullptr;
-    ObDDLKV *first_ddl_kv = nullptr;
-    int64_t ddl_dump_cnt = 0;
-    int64_t column_group_cnt = 0;
-    int64_t column_cnt = 0;
-    ObCOSSTableBaseType co_base_type;
-    bool is_included = false;
-    if (OB_FAIL(inner_calculate_inc_ddl_column_read_sstables(cur_sstable_idx,
-                                                             tx_id,
-                                                             read_tables))) {
-      LOG_WARN("fail to calculate inc ddl read sstables",
-                KR(ret), K(cur_sstable_idx), K(tx_id));
-    } else if (FALSE_IT(ddl_dump_cnt = read_tables.count())) {
-    } else if (OB_FAIL(inner_calculate_inc_ddl_column_read_memtables(cur_ddl_kv_idx,
-                                                                     tx_id,
-                                                                     read_tables,
-                                                                     first_ddl_kv))) {
-      LOG_WARN("fail to calculate inc ddl read memtables",
-                KR(ret), K(cur_ddl_kv_idx), K(tx_id));
-    } else if (OB_UNLIKELY(read_tables.empty())) {
-      LOG_INFO("read tables is empty, skip", K(tx_id));
-      continue;
-    } else if (1 == ddl_dump_cnt && 1 == read_tables.count()
-                                 && !read_tables.at(0)->is_ddl_merge_sstable()) {
-      // only one ddl dump sstable, query this ddl dump directly
-      ObITable *table = read_tables.at(0);
-      if (OB_FAIL(iterator.add_table(table))) {
-        LOG_WARN("fail to add table", KR(ret), KPC(table));
-      } else {
-        continue;
-      }
-    } else if (OB_FAIL(tablet.get_inc_major_direct_load_info(
-        SCN::max_scn(), arena, ObTabletDDLCompleteMdsUserDataKey(tx_id), user_data))) {
-      LOG_WARN("failed to get inc major direct load info", KR(ret), K(tx_id));
-    } else if (OB_UNLIKELY(!user_data.inc_major_commit_scn_.is_valid_and_not_min())) {
-      LOG_INFO("skip incomplete inc major direct load", K(user_data));
-      continue;
-    } else if (OB_ISNULL(first_sstable = static_cast<ObSSTable *>(read_tables.at(0)))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("first sstable is nullptr", KR(ret));
-    } else if (OB_FAIL(ObIncMajorTxHelper::check_inc_major_included_by_major(ls, base_version, *first_sstable, is_included))) {
-      LOG_WARN("fail to check inc major included by major", KR(ret), K(base_version), KPC(first_sstable));
-    } else if (is_included) {
-      LOG_INFO("inc major ddl dump sstable is included by major, skip", K(base_version), KPC(first_sstable));
-      continue;
-    } else if (OB_FAIL(get_inc_major_cg_info(first_sstable, first_ddl_kv, column_group_cnt, column_cnt, co_base_type))) {
-      LOG_WARN("failed to get inc major cg info", KR(ret));
-    } else if (FALSE_IT(table_key.scn_range_ = first_sstable->get_key().scn_range_)) {
-    } else if (OB_ISNULL(agg_sstable = OB_NEW(ObIncMajorDDLAggregateCOSSTable,
-                                              attr))) {
-      ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("fail to new ddl aggregate co sstable", KR(ret));
-    } else if (OB_FAIL(agg_sstable->init(*first_sstable,
-                                         table_key,
-                                         column_group_cnt,
-                                         column_cnt,
-                                         co_base_type,
-                                         read_tables))) {
-      LOG_WARN("fail to init ddl agg co sstable",
-                KR(ret), K(first_sstable), K(table_key),
-                K(column_group_cnt), K(column_cnt),
-                K(co_base_type));
-    } else if (OB_FAIL(table_handle.set_sstable(agg_sstable, ObMallocAllocator::get_instance()))) {
-      LOG_WARN("fail to set sstable", KR(ret));
-    }
-    if (OB_FAIL(ret)) {
-      if (OB_NOT_NULL(agg_sstable)) {
-        agg_sstable->~ObIncMajorDDLAggregateCOSSTable();
-        ob_free(agg_sstable);
-        agg_sstable = nullptr;
-      }
-    } else if (OB_FAIL(iterator.add_ddl_agg_table(table_handle))) {
-      LOG_WARN("fail to add ddl agg table", KR(ret), K(table_handle));
-    }
-  }
-  return ret;
-}
-
-int ObTabletTableStore::inner_calculate_inc_ddl_column_read_sstables(
-    int64_t &cur_sstable_idx,
-    int64_t &tx_id,
-    ObIArray<ObITable *> &read_tables) const
-{
-  int ret = OB_SUCCESS;
-  ObSSTable *sstable = nullptr;
-  ObCOSSTableV2 *co_sstable = nullptr;
-  ObSSTableMetaHandle meta_handle;
-  while (OB_SUCC(ret) && cur_sstable_idx < inc_major_ddl_sstables_.count()) {
-    sstable = inc_major_ddl_sstables_.at(cur_sstable_idx);
-    if (OB_ISNULL(sstable)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("sstable is nullptr", KR(ret));
-    } else if (OB_FAIL(sstable->get_meta(meta_handle))) {
-      LOG_WARN("fail to get sstable meta", KR(ret), K(cur_sstable_idx),
-                                           KPC(sstable), K(meta_handle));
-    } else if (OB_UNLIKELY(!meta_handle.is_valid())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("meta handle is invalid", KR(ret), K(meta_handle));
-    } else {
-      const ObMetaUncommitTxInfo &uncommit_info = meta_handle.get_sstable_meta().get_uncommit_tx_info();
-      if (OB_UNLIKELY(!uncommit_info.is_valid() || OB_ISNULL(uncommit_info.tx_infos_))) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_WARN("invalid uncommit info", KR(ret), K(uncommit_info));
-      } else {
-        if (OB_INVALID_ID == tx_id) {
-          // Get first ddl dump sstable for a specific inc major direct load.
-          tx_id = uncommit_info.tx_infos_[0].tx_id_;
-        } else if (tx_id != uncommit_info.tx_infos_[0].tx_id_) {
-          // Get the first ddl dump sstable for next inc major direct load.
-          break;
-        }
-      }
-      if (OB_FAIL(ret)) {
-      } else if (OB_ISNULL(co_sstable = static_cast<ObCOSSTableV2 *>(sstable))) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null co sstable", KR(ret), KPC(sstable), KP(co_sstable));
-      } else if (co_sstable->get_cs_meta().data_macro_block_cnt_ <= 0) {
-        // skip empty inc major ddl dump sstables
-      } else if (OB_FAIL(read_tables.push_back(sstable))) {
-        LOG_WARN("fail to push back table", KR(ret));
-      }
-
-      if (OB_SUCC(ret)) {
-        cur_sstable_idx ++;
-      }
-    }
-  }
-  return ret;
-}
-
-int ObTabletTableStore::inner_calculate_inc_ddl_column_read_memtables(
-    int64_t &cur_ddl_kv_idx,
-    int64_t &tx_id,
-    ObIArray<ObITable *> &read_tables,
-    ObDDLKV *&first_ddl_kv) const
-{
-  int ret = OB_SUCCESS;
-  ObSSTable *sstable = nullptr;
-  while (OB_SUCC(ret) && cur_ddl_kv_idx < inc_major_ddl_mem_sstables_.count()) {
-    ObDDLKV *ddl_kv = inc_major_ddl_mem_sstables_[cur_ddl_kv_idx];
-    if (OB_ISNULL(ddl_kv)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ddl kv is nullptr", KR(ret));
-    } else {
-      if (OB_INVALID_ID == tx_id) {
-        // There is no ddl dump sstable in cur inc major direct load
-        tx_id = ddl_kv->get_trans_id().get_id();
-      } else if (tx_id != ddl_kv->get_trans_id().get_id()) {
-        // All ddl kvs of cur inc major direct load have been searched
-        break;
-      }
-
-      if (OB_ISNULL(first_ddl_kv)) {
-        first_ddl_kv = ddl_kv;
-      }
-      for (int64_t i = 0; OB_SUCC(ret) && i < ddl_kv->get_ddl_memtables().count(); ++i) {
-        sstable = ddl_kv->get_ddl_memtables().at(i);
-        if (OB_ISNULL(sstable)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("sstable is nullptr", KR(ret));
-        } else if (OB_FAIL(read_tables.push_back(sstable))) {
-          LOG_WARN("fail to push back sstable", KR(ret));
-        }
-      }
-      if (OB_SUCC(ret)) {
-        cur_ddl_kv_idx ++;
-      }
-    }
-  }
-  return ret;
-}
 
 int ObTabletTableStore::calculate_read_tables(
     const int64_t snapshot_version,
@@ -1427,13 +1085,11 @@ int ObTabletTableStore::calculate_read_tables(
 
   // inc major sstables are asynchronously generated according to import order
   // add inc major sstables first and then add inc major ddl sstables
-  if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(calculate_inc_major_read_tables(snapshot_version, tablet, iterator, base_table))) {
-    LOG_WARN("fail to calculate inc major read tables", K(ret));
-  } else if (!GCTX.is_shared_storage_mode() && OB_FAIL(calculate_inc_ddl_read_tables(
-                                                         OB_NOT_NULL(base_table) ? base_table->get_snapshot_version() : -1,
-                                                         tablet,
-                                                         iterator))) {
+  if (FAILEDx(calculate_inc_major_read_tables(snapshot_version, iterator, base_table))) {
+    LOG_WARN("fail to calculate inc major read tables", KR(ret));
+  } else if (OB_FAIL(calculate_inc_ddl_read_tables(OB_NOT_NULL(base_table) ? base_table->get_snapshot_version() : -1,
+                                                   tablet,
+                                                   iterator))) {
     LOG_WARN("fail to calculate inc major ddl read tables", KR(ret));
   }
 
@@ -2053,30 +1709,6 @@ int ObTabletTableStore::build_inc_major_tables(
     const int64_t inc_base_snapshot_version)
 {
   int ret = OB_SUCCESS;
-  if (!GCTX.is_shared_storage_mode()) {
-    if (OB_FAIL(inner_build_inc_major_tables_for_sn(allocator, param,
-                                              old_store, inc_base_snapshot_version))) {
-      LOG_WARN("fail to build inc major tables for sn", KR(ret));
-    }
-  }
-#ifdef OB_BUILD_SHARED_STORAGE
-  else {
-    if (OB_FAIL(inner_build_inc_major_tables_for_ss(allocator, param,
-                                              old_store, inc_base_snapshot_version))) {
-      LOG_WARN("fail to build inc major tables for ss", KR(ret));
-    }
-  }
-#endif
-  return ret;
-}
-
-int ObTabletTableStore::inner_build_inc_major_tables_for_sn(
-    common::ObArenaAllocator &allocator,
-    const ObUpdateTableStoreParam &param,
-    const ObTabletTableStore &old_store,
-    const int64_t inc_base_snapshot_version)
-{
-  int ret = OB_SUCCESS;
   ObITable *new_table = static_cast<ObITable *>(const_cast<ObSSTable *>(param.sstable_)); //table can be null
   ObSEArray<ObITable *, OB_DEFAULT_SE_ARRAY_COUNT> inc_major_tables;
   const ObSSTableArray &old_inc_tables = old_store.inc_major_tables_;
@@ -2117,54 +1749,6 @@ int ObTabletTableStore::inner_build_inc_major_tables_for_sn(
   }
   return ret;
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObTabletTableStore::inner_build_inc_major_tables_for_ss(
-    common::ObArenaAllocator &allocator,
-    const ObUpdateTableStoreParam &param,
-    const ObTabletTableStore &old_store,
-    const int64_t inc_base_snapshot_version)
-{
-  int ret = OB_SUCCESS;
-  ObSEArray<ObITable *, OB_DEFAULT_SE_ARRAY_COUNT> inc_major_tables;
-  const ObSSTableArray &old_inc_tables = old_store.inc_major_tables_;
-  const ObSSTable *new_table = param.sstable_;
-  const bool update_inc_major = OB_NOT_NULL(new_table) && new_table->is_inc_major_type_sstable();
-  bool add_new_inc_major = update_inc_major;
-  for (int64_t i = 0; OB_SUCC(ret) && i < old_inc_tables.count(); ++i) {
-    ObSSTable *inc_major = old_inc_tables.at(i);
-    if (update_inc_major && new_table->get_key() == inc_major->get_key()) {
-      add_new_inc_major = (new_table->get_upper_trans_version() != INT64_MAX);
-    } else if (inc_major->get_upper_trans_version() <= inc_base_snapshot_version) {
-    } else {
-      if (OB_FAIL(inc_major_tables.push_back(inc_major))) {
-        LOG_WARN("fail to push back", KR(ret));
-      }
-    }
-  }
-
-  if (OB_FAIL(ret)) {
-  } else if (update_inc_major && add_new_inc_major) {
-    ObSSTable *new_inc_major = const_cast<ObSSTable *>(new_table);
-    if (OB_ISNULL(new_inc_major)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("new inc major is nullptr", KR(ret));
-    } else if (new_inc_major->get_upper_trans_version() <= inc_base_snapshot_version) {
-      LOG_INFO("new inc major is included by major sstable", KR(ret), KPC(new_inc_major), K(inc_base_snapshot_version));
-    } else if (OB_FAIL(inc_major_tables.push_back(new_inc_major))) {
-      LOG_WARN("fail to push back", KR(ret));
-    }
-  }
-
-  if (OB_FAIL(ret) || inc_major_tables.empty()) {
-  } else if (OB_FAIL(ObTableStoreUtil::sort_major_tables(inc_major_tables))) {
-    LOG_WARN("failed to sort inc major tables", K(ret));
-  } else if (OB_FAIL(inc_major_tables_.init(allocator, inc_major_tables))) {
-    LOG_WARN("failed to init inc major tables", K(ret));
-  }
-  return ret;
-}
-#endif
 
 int ObTabletTableStore::check_and_build_new_major_tables(
     const ObIArray<ObITable *> &tables_array,
@@ -2427,7 +2011,7 @@ int ObTabletTableStore::build_minor_tables(
   }
 
   ObArray<ObITable *> sstables;
-  if (FAILEDx(inner_process_minor_tables(allocator, new_table, old_minor_tables, false/*is_mds*/, param.allow_adjust_next_start_scn_, sstables))) {
+  if (FAILEDx(inner_process_minor_tables(allocator, new_table, old_minor_tables, false/*is_mds*/, sstables))) {
     LOG_WARN("failed to inner process tables", K(ret), K(old_minor_tables), KPC(new_table));
   } else if (sstables.empty()) {
     // empty minor tables, do nothing
@@ -2465,14 +2049,6 @@ int ObTabletTableStore::build_minor_tables(
       }
     }
 
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (OB_SUCC(ret) &&GCTX.is_shared_storage_mode()) {
-      if (OB_FAIL(process_minor_sstables_for_ss_(allocator, param.upper_trans_param_, sstables, inc_base_snapshot_version, inc_pos))) {
-        LOG_WARN("fail process for ss", K(ret));
-      }
-    }
-#endif
-
     if (OB_FAIL(ret) || inc_pos < 0) {
     } else if (OB_FAIL(minor_tables_.init(allocator, sstables, inc_pos))) {
       LOG_WARN("failed to init minor_tables", K(ret));
@@ -2502,8 +2078,7 @@ int ObTabletTableStore::build_minor_tables(
 int ObTabletTableStore::build_mds_minor_tables(
     common::ObArenaAllocator &allocator,
     const blocksstable::ObSSTable *new_sstable,
-    const ObSSTableArray &old_mds_tables,
-    const bool allow_adjust_next_start_scn)
+    const ObSSTableArray &old_mds_tables)
 {
   int ret = OB_SUCCESS;
   ObITable *new_table = const_cast<ObITable *>(static_cast<const ObITable *>(new_sstable)); //table can be null
@@ -2513,7 +2088,7 @@ int ObTabletTableStore::build_mds_minor_tables(
                && (!new_table->get_key().scn_range_.is_valid() || new_table->get_key().scn_range_.is_empty()))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("get unexpected invalid scn range", K(ret), KPC(new_table));
-  } else if (OB_FAIL(inner_process_minor_tables(allocator, new_table, old_mds_tables, true/*is_mds*/, allow_adjust_next_start_scn, sstables))) {
+  } else if (OB_FAIL(inner_process_minor_tables(allocator, new_table, old_mds_tables, true/*is_mds*/, sstables))) {
     LOG_WARN("failed to inner process mds tables", K(ret), K(old_mds_tables), KPC(new_table));
   } else if (sstables.empty()) {
     // do nothing
@@ -2528,7 +2103,6 @@ int ObTabletTableStore::inner_process_minor_tables(
     const ObITable *new_table,
     const ObSSTableArray &old_tables,
     const bool is_mds,
-    const bool allow_adjust_next_start_scn,
     ObArray<ObITable *> &sstables)
 {
   int ret = OB_SUCCESS;
@@ -2560,17 +2134,8 @@ int ObTabletTableStore::inner_process_minor_tables(
       ret = OB_MINOR_SSTABLE_RANGE_CROSS;
       LOG_WARN("new_table is contained by existing table", K(ret), KPC(new_table), KPC(table));
     } else if (ObTableStoreUtil::check_intersect_by_scn_range(*table, *new_table)) {
-      if (GCTX.is_shared_storage_mode() && new_table->get_start_scn() < table->get_start_scn() && allow_adjust_next_start_scn) {
-        ObSSTable *copied_sstable = NULL;
-        if (OB_FAIL(adjust_sstable_start_scn_(static_cast<ObSSTable&>(*table), allocator, new_table->get_end_scn(), copied_sstable))) {
-          LOG_WARN("adjust start scn of local sstable fail", K(ret));
-        } else {
-          table = copied_sstable;
-        }
-      } else {
-        ret = OB_MINOR_SSTABLE_RANGE_CROSS;
-        LOG_WARN("new table's range is crossed with existing table", K(ret), K(*new_table), K(*table));
-      }
+      ret = OB_MINOR_SSTABLE_RANGE_CROSS;
+      LOG_WARN("new table's range is crossed with existing table", K(ret), K(*new_table), K(*table));
     }
     if (OB_FAIL(ret) || !need_add) {
     } else if (OB_FAIL(sstables.push_back(table))) {
@@ -2626,8 +2191,7 @@ int ObTabletTableStore::build_meta_major_table(
 
 /*
 *  is_major_empty is used to check is ddl major ready;
-*  note: only in share  nothing, it's ddl major exist when node is merging a dll major in backend;
-*             in shared sotrage, leader node directly send full major to follower and not need to check it
+*  note: ddl major exist when node is merging a ddl major in backend;
 */
 OB_INLINE int ObTabletTableStore::check_major_sstable_empty(const share::SCN &ddl_commit_scn, const ObTablet &tablet, bool &is_empty) const
 {
@@ -2636,7 +2200,6 @@ OB_INLINE int ObTabletTableStore::check_major_sstable_empty(const share::SCN &dd
   if (!is_empty) { // major not empty
   } else if (!(tablet.get_tablet_id().is_user_tablet())) { // inner tablet not need to check ddl complete
   } else if (tablet.get_tablet_meta().ddl_data_format_version_ < DDL_IDEM_DATA_FORMAT_VERSION) { // tablet not set ddl complete
-  } else if (GCTX.is_shared_storage_mode()) { /* skip, only sn use ddl complete*/
   } else {
     ret = check_ddl_complete(tablet, is_empty);
   }
@@ -3507,8 +3070,6 @@ int ObTabletTableStore::build_ha_new_table_store_(
     LOG_WARN("failed to build ha inc major ddl tables", K(ret), K(param), K(old_store));
   } else if (!meta_major_table.empty() && OB_FAIL(build_meta_major_table(allocator, nullptr/*new sstable*/, old_store.meta_major_tables_))) {
     LOG_WARN("failed to build meta major table", K(ret), K(old_store));
-  } else if (OB_FAIL(build_major_checksum_info(old_store, NULL/*param*/, allocator))) {
-    LOG_WARN("failed to build major checksum info", KR(ret), K(param));
   } else if (OB_FAIL(build_memtable_array(tablet))) {
     LOG_WARN("failed to pull memtable from memtable_mgr", K(ret));
   } else if (OB_FAIL(pull_ddl_memtables(allocator, tablet))) {
@@ -4575,8 +4136,7 @@ int ObTabletTableStore::build_split_new_table_store_(
     LOG_WARN("check split mds can be accepted failed", K(ret));
   } else if (OB_FAIL(build_mds_minor_tables(allocator,
                                             is_update_firstly ? static_cast<ObSSTable *>(batch_tables.at(0)) : nullptr,
-                                            old_store.mds_sstables_,
-                                            GCTX.is_shared_storage_mode()/*allow_adjust_next_start_scn*/))) {
+                                            old_store.mds_sstables_))) {
     LOG_WARN("failed to build mds sstables", K(ret));
   }
 
@@ -4827,51 +4387,6 @@ int64_t ObTabletTableStore::to_string(char *buf, const int64_t buf_len) const
   return pos;
 }
 
-int ObTabletTableStore::build_major_checksum_info(
-    const ObTabletTableStore &old_store,
-    const ObUpdateTableStoreParam *param,
-    ObArenaAllocator &allocator)
-{
-  int ret = OB_SUCCESS;
-  const ObMajorChecksumInfo *ptr = NULL;
-
-  if (!GCTX.is_shared_storage_mode()) {
-    // do nothing
-  } else if (NULL != param
-          && is_major_merge_type(param->get_merge_type())
-          && nullptr == param->sstable_
-          && !param->get_major_ckm_info().is_empty()) {
-    // use major ckm info in input param
-    if (!old_store.major_ckm_info_.is_empty()) {
-      if (OB_UNLIKELY(param->get_major_ckm_info().get_compaction_scn() != old_store.major_ckm_info_.get_compaction_scn())) {
-        // only output_mode item could replace validate_mode item
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("major ckm info in old table store is not empty", KR(ret), K(old_store), "new_ckm_info", param->get_major_ckm_info());
-      } else {
-        // use major ckm with large exec mode
-        // EXEC_MODE_OUTPUT > EXEC_MODE_CALC_CKM
-        const ObExecMode old_mode = old_store.major_ckm_info_.get_exec_mode();
-        const ObExecMode param_mode = param->get_major_ckm_info().get_exec_mode();
-        ptr = (old_mode <= param_mode) ? &param->get_major_ckm_info() : &old_store.get_major_ckm_info();
-      }
-    } else {
-      ptr = &param->get_major_ckm_info();
-    }
-  } else if (!old_store.major_ckm_info_.is_empty()) {
-    // assign major ckm info from old table store
-    ptr = &old_store.major_ckm_info_;
-  }
-  if (OB_FAIL(ret) || OB_ISNULL(ptr) || ptr->is_empty()) {
-  } else if (major_tables_.empty() || major_tables_.get_boundary_table(true/*last*/)->get_snapshot_version() < ptr->get_compaction_scn()) {
-    if (OB_FAIL(major_ckm_info_.assign(*ptr, &allocator))) {
-      LOG_WARN("failed to assgin major ckm info", KR(ret), KPC(ptr));
-    } else {
-      LOG_INFO("success to build major checksum info", KR(ret), K_(major_ckm_info), KPC(param));
-    }
-  }
-  return ret;
-}
-
 ObPrintTableStore::ObPrintTableStore(const ObTabletTableStore &table_store)
   : major_tables_(table_store.major_tables_),
     inc_major_tables_(table_store.inc_major_tables_),
@@ -5062,36 +4577,5 @@ void ObPrintTableStore::ddl_kv_to_string(
   }
 }
 
-int ObTabletTableStore::adjust_sstable_start_scn_(
-    ObSSTable &sstable,
-    ObArenaAllocator &allocator,
-    const share::SCN start_scn,
-    ObSSTable *&copied_sstable)
-{
-  int ret = OB_SUCCESS;
-  ObStorageMetaHandle sstable_handle;
-  ObSSTable *src = NULL;
-  if (sstable.is_loaded()) {
-    src = &sstable;
-  } else if (OB_FAIL(ObCacheSSTableHelper::load_sstable(sstable.get_addr(), sstable.is_co_sstable(), sstable_handle))) {
-    LOG_WARN("load sstable fail", K(ret));
-  } else if (OB_FAIL(sstable_handle.get_sstable(src))) {
-    LOG_WARN("get sstable fail", K(ret));
-  }
-  ObMetaDiskAddr addr;
-  addr.set_mem_addr(0, sizeof(ObSSTable));
-  if (FAILEDx(ObSSTable::copy_from_old_sstable(*src, allocator, copied_sstable))) {
-    LOG_WARN("deep copy sstable fail", K(ret));
-  } else if (OB_FAIL(copied_sstable->set_addr(addr))) {
-    LOG_WARN("set addr for attached sstable fail", K(ret));
-  } else {
-    copied_sstable->get_scn_range().start_scn_ = start_scn;
-    FLOG_INFO("adjust sstable's start_scn equals to new table's end_scn to avoid range crossing",
-              "table_key", sstable.get_key(),
-              "orig_scn_range", sstable.get_scn_range(),
-              "new_scn_range", copied_sstable->get_scn_range());
-  }
-  return ret;
-}
 } // namespace storage
 } // namespace oceanbase

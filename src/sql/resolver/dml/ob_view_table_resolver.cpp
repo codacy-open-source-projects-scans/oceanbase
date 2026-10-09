@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -29,6 +22,7 @@ int ObViewTableResolver::do_resolve_set_query(const ParseNode &parse_tree,
 
   child_resolver.set_current_level(current_level_);
   child_resolver.set_current_view_level(current_view_level_);
+  child_resolver.set_view_ref_id(current_view_item_.ref_id_);
   child_resolver.set_parent_namespace_resolver(parent_namespace_resolver_);
   child_resolver.set_current_view_item(current_view_item_);
   child_resolver.set_parent_view_resolver(parent_view_resolver_);

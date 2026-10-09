@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -104,8 +97,8 @@ int ObDASCtx::get_das_tablet_mapper(const uint64_t ref_table_id,
       } else {
         tablet_mapper.related_info_.guard_ = schema_guard;
         const storage::ObGTTTabletInfo gtt_tablet_info(real_table_id,
-                                                      session_info->get_gtt_session_scope_unique_id(),
-                                                      session_info->get_gtt_trans_scope_unique_id(),
+                                                      session_info->get_session_gtt_v2_sequence(),
+                                                      session_info->get_trans_gtt_v2_sequence(),
                                                       session_info->get_sessid_for_table());
         tablet_mapper.set_session_tablet_info(gtt_tablet_info, &(session_info->get_gtt_tablet_info_map()));
       }

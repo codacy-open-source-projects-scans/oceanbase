@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_COMPACTION_MEDIUM_COMPACTION_INFO_H_
@@ -194,7 +187,18 @@ public:
   bool is_inited() const { return is_inited_; }
   int assign(const ObWindowCompactionDecisionLogInfo &other);
   void gen_info(char* buf, const int64_t buf_len, int64_t &pos) const;
-  TO_STRING_KV(K_(score), K_(base_inc_row_cnt), K_(dynamic_info), K_(is_inited), K_(compat_version));
+  int64_t to_string(char *buf, const int64_t buf_len) const
+  {
+    int64_t pos = 0;
+    J_OBJ_START();
+    if (!is_inited()) {
+      J_KV(K_(is_inited));
+    } else {
+      J_KV(K_(score), K_(base_inc_row_cnt), K_(dynamic_info), K_(is_inited), K_(compat_version));
+    }
+    J_OBJ_END();
+    return pos;
+  }
   OB_UNIS_VERSION(1);
 public:
   static constexpr uint32_t MAX_TABLET_SCORE = UINT32_MAX;
@@ -354,7 +358,8 @@ public:
   static const int64_t MEDIUM_COMPAT_VERSION_V5 = 5; // after this version, use encoding row limit
   // < V6: co_major_merge_type_, >= V6: co_major_merge_strategy_ to record merge strategy / support window decision info in medium info
   static const int64_t MEDIUM_COMPAT_VERSION_V6 = 6;
-  static const int64_t MEDIUM_COMPAT_VERSION_LATEST = MEDIUM_COMPAT_VERSION_V6;
+  static const int64_t MEDIUM_COMPAT_VERSION_V7 = 7; // after this version, add compaction_batch_size_
+  static const int64_t MEDIUM_COMPAT_VERSION_LATEST = MEDIUM_COMPAT_VERSION_V7;
 private:
   static const int32_t SCS_ONE_BIT = 1;
   static const int32_t SCS_RESERVED_BITS = 23;
@@ -390,6 +395,7 @@ public:
   ObIncMajorSSTableInfo inc_major_info_; // store inc major sstable checksum and end scn
   ObCOMajorMergeStrategy co_major_merge_strategy_;
   ObWindowCompactionDecisionLogInfo window_decision_log_info_; // store score and other dynamic info for window compaction decision
+  uint64_t compaction_batch_size_; // batch compaction row size limit
   ObIAllocator *allocator_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObMediumCompactionInfo);

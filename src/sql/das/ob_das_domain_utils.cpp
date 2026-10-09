@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "lib/container/ob_se_array.h"
@@ -61,7 +54,8 @@ int ObFTIndexRowCache::init(
   } else if (OB_FAIL(helper_.init(&metadata_allocator_/*not used*/,
                                   parser_name,
                                   parser_properties,
-                                  fts_index_type))) {
+                                  fts_index_type,
+                                  true /* is_ddl_mode */))) {
     LOG_WARN("fail to initialize ft parser helper", K(ret));
   } else if (OB_FAIL(ft_token_processor_.init(helper_.get_parser_property(),
                                               get_ft_expr()->obj_meta_,
@@ -101,8 +95,16 @@ int ObFTIndexRowCache::init(
       parser_context_.ngram_token_size_ = property.ngram_token_size_;
       parser_context_.ik_param_.mode_
           = (property.ik_mode_smart_ ? plugin::ObFTIKParam::Mode::SMART : plugin::ObFTIKParam::Mode::MAX_WORD);
-          parser_context_.min_ngram_size_ = property.min_ngram_token_size_;
-          parser_context_.max_ngram_size_ = property.max_ngram_token_size_;
+      parser_context_.min_ngram_size_ = property.min_ngram_token_size_;
+      parser_context_.max_ngram_size_ = property.max_ngram_token_size_;
+      parser_context_.ik_param_.main_dict_id_ = property.dict_table_id_;
+      parser_context_.ik_param_.quan_dict_id_ = property.quantifier_table_id_;
+      parser_context_.ik_param_.stopword_dict_id_ = property.stopword_table_id_;
+      parser_context_.ik_param_.main_dict_name_ = property.dict_table_name_;
+      parser_context_.ik_param_.quan_dict_name_ = property.quantifier_table_name_;
+      parser_context_.ik_param_.stopword_dict_name_ = property.stopword_table_name_;
+      parser_context_.is_ddl_mode_ = true;
+      parser_context_.need_casedown_ = helper_.get_process_token_flags().casedown_token();
     }
 
   }

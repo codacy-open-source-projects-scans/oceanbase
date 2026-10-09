@@ -1,19 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation for lob_access_utils.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
 
 #include "ob_lob_access_utils.h"
+#include "storage/lob/ob_lob_persistent_reader.h"
 #include "storage/tx/ob_trans_service.h"
 
 namespace oceanbase
@@ -365,6 +358,8 @@ int ObTextStringIter::get_full_data(ObString &data_str)
     if (OB_FAIL(get_delta_lob_full_data(loc, tmp_alloc_, data_str))) {
       COMMON_LOG(WARN, "get_delta_lob_full_data fail", K(ret), K(loc));
     }
+  } else if (OB_NOT_NULL(ctx_) && OB_NOT_NULL(ctx_->lob_access_ctx_) &&
+                 FALSE_IT(ctx_->lob_access_ctx_->reader_cache_.check_and_release_if_timeout())) {
   } else if (!is_outrow_) { // inrow lob
     if (OB_FAIL(loc.get_inrow_data(data_str))) {
       COMMON_LOG(WARN, "Lob: get lob inrow data failed", K(ret));
@@ -394,6 +389,8 @@ int ObTextStringIter::get_inrow_or_outrow_prefix_data(ObString &data_str, uint32
   } else if (datum_str_.length() == 0) {
     data_str.assign(NULL, 0);
     COMMON_LOG(DEBUG, "Lob: iter with null input", K(ret), K(*this));
+  } else if (OB_NOT_NULL(ctx_) && OB_NOT_NULL(ctx_->lob_access_ctx_) &&
+             FALSE_IT(ctx_->lob_access_ctx_->reader_cache_.check_and_release_if_timeout())) {
   } else if (!is_lob_ || !has_lob_header_) { // string types
     if (prefix_char_len == DEAFULT_LOB_PREFIX_CHAR_LEN) {
       data_str.assign_ptr(datum_str_.ptr(), datum_str_.length());

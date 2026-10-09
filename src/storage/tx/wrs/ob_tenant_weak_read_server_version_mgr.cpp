@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TRANS
@@ -114,8 +107,11 @@ int ObTenantWeakReadServerVersionMgr::generate_new_version(const uint64_t tenant
           K(server_version_), K(tenant_id), K(epoch_tstamp), K(base_version_when_no_valid_partition));
     } else {
       if (need_print_status) {
-        LOG_INFO("[WRS] update tenant weak read server version", K(tenant_id), K_(server_version),
-            "version_delta", ObTimeUtility::current_time() - server_version_.version_.convert_to_ts());
+        WRS_LOG(INFO, "[WRS] update tenant weak read server version", K(tenant_id), K_(server_version),
+            "version_delta_with_current_ts", ObTimeUtility::current_time() - server_version_.version_.convert_to_ts());
+      } else {
+        WRS_LOG(TRACE, "[WRS] update tenant weak read server version", K(tenant_id), K_(server_version),
+            "version_delta_with_current_ts", ObTimeUtility::current_time() - server_version_.version_.convert_to_ts());
       }
     }
   }

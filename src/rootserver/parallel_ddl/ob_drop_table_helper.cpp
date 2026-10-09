@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -21,6 +14,8 @@
 #include "share/schema/ob_table_sql_service.h"
 #include "share/schema/ob_schema_service_sql_impl.h"
 #include "share/schema/ob_sensitive_rule_schema_struct.h"
+#include "share/schema/ob_dependency_info.h"
+#include "share/ob_fts_index_builder_util.h"
 #include "storage/tablelock/ob_lock_inner_connection_util.h"
 #include "storage/tablet/ob_session_tablet_helper.h"
 
@@ -168,14 +163,16 @@ int ObDropTableHelper::check_legitimacy_()
       } else if (has_conflict_ddl) {
         ret = OB_EAGAIN;
         LOG_WARN("failed to drop table that has conflict ddl", KR(ret), K(table_schema->get_table_id()));
-      } else if (table_schema->has_mlog_table()) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("drop table with materialized view log is not supported", KR(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "drop table with materialized view log is");
-      } else if (table_schema->table_referenced_by_fast_lsm_mv()) {
+      } else if (table_schema->table_referenced_by_mv()) {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("drop table required by materialized view is not supported", KR(ret));
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "drop table required by materialized view is");
+      } else if (table_schema->is_fulltext_dict() &&
+                 OB_FAIL(share::ObFtsIndexBuilderUtil::check_can_drop_dict_table(
+                     tenant_id_, table_schema->get_table_id(), get_trans_()))) {
+        if (OB_OP_NOT_ALLOW != ret) {
+          LOG_WARN("failed to check and remove dict table on drop", KR(ret), K(tenant_id_), K(table_schema->get_table_id()));
+        }
       }
     }
   }
@@ -212,7 +209,8 @@ int ObDropTableHelper::calc_schema_version_cnt_()
             LOG_WARN("aux table schema is null", KR(ret));
           } else if (to_recyclebin && aux_table_schema->is_in_recyclebin()) {
             LOG_INFO("aux table is already in recyclebin");
-          } else if (OB_FAIL(calc_schema_version_cnt_for_table_(*aux_table_schema, to_recyclebin))) {
+          } else if (OB_FAIL(calc_schema_version_cnt_for_table_(*aux_table_schema,
+                                          to_recyclebin && !aux_table_schema->is_mlog_table()))) {
             LOG_WARN("calc schema version cnt drop table failed", KR(ret));
           }
         }
@@ -448,7 +446,7 @@ int ObDropTableHelper::operate_schemas_()
             LOG_WARN("fail to assign table schema", KR(ret));
           } else {
             new_aux_table_schema.set_in_offline_ddl_white_list(table_schema->get_in_offline_ddl_white_list());
-            if (is_to_recyclebin_(*table_schema)) {
+            if (is_to_recyclebin_(*table_schema) && !aux_table_schema->is_mlog_table()) {
               if (new_aux_table_schema.is_in_recyclebin()) {
                 LOG_INFO("aux table is already in recyclebin");
               } else if (OB_FAIL(drop_table_to_recyclebin_(new_aux_table_schema, NULL/*ddl_stmt_str*/))) {
@@ -570,8 +568,7 @@ int ObDropTableHelper::lock_databases_by_name_()
       }
       if (OB_SUCC(ret)
           || OB_ERR_BAD_DATABASE == ret
-          || (OB_RECYCLEBIN_SCHEMA_ID != database_id
-              && OB_ERR_OPERATION_ON_RECYCLE_OBJECT == ret)) {
+          || OB_ERR_OPERATION_ON_RECYCLE_OBJECT == ret) {
         // OB_INVALID_ID == database_id indicates bad database
         if (OB_FAIL(database_ids_.push_back(database_id))) { // overwrite ret
           LOG_WARN("fail to push back database id", KR(ret));
@@ -696,6 +693,23 @@ int ObDropTableHelper::prefetch_table_schemas_()
       } else if (OB_ISNULL(table_schema)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("table schema is null", KR(ret), K(table_id));
+      } else if (table_schema->is_in_recyclebin()) {
+        // table in recyclebin has __all_recyclebin entry which parallel drop can not clean,
+        // skip and let drop_database/purge_database handle it
+        ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
+        LOG_WARN("can not parallel drop table which is in recyclebin",
+                 KR(ret), K_(tenant_id), K(table_id), K(table_name));
+      } else {
+        const ObDatabaseSchema *db_schema = nullptr;
+        if (OB_FAIL(schema_guard_wrapper_.get_database_schema(database_id, db_schema))) {
+          LOG_WARN("fail to get database schema", KR(ret), K_(tenant_id), K(database_id));
+        } else if (!arg_.force_drop_ && OB_NOT_NULL(db_schema) && db_schema->is_in_recyclebin()) {
+          ret = OB_ERR_OPERATION_ON_RECYCLE_OBJECT;
+          LOG_WARN("can not drop table in database which is in recyclebin",
+                   KR(ret), K_(tenant_id), K(database_id), K(table_name));
+        }
+      }
+      if (OB_FAIL(ret) || OB_ISNULL(table_schema)) {
       } else if (table_schema->mv_container_table()) {
         // skip
         ret = OB_NOT_SUPPORTED;
@@ -1104,6 +1118,18 @@ int ObDropTableHelper::collect_aux_table_schemas_(
         LOG_WARN("fail to push back aux table schema", KR(ret));
       }
     }
+    if (OB_SUCC(ret) && table_schema.has_mlog_table()) {
+      const ObTableSchema *aux_table_schema = NULL;
+      const uint64_t table_id = table_schema.get_mlog_tid();
+      if (OB_FAIL(schema_guard_wrapper_.get_table_schema(table_id, aux_table_schema))) {
+        LOG_WARN("get table schema failed", KR(ret), K(table_id));
+      } else if (OB_ISNULL(aux_table_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("table schema is null", KR(ret));
+      } else if (OB_FAIL(aux_table_schemas.push_back(aux_table_schema))) {
+        LOG_WARN("fail to push back aux table schema", KR(ret));
+      }
+    }
 
     // aux vp & lob meta & lob piece
     ObArray<uint64_t> aux_table_ids;
@@ -1178,6 +1204,11 @@ int ObDropTableHelper::calc_schema_version_cnt_for_table_(
 
     // for aux table, promote data table schema version
     if (table_schema.is_aux_table()) {
+      schema_version_cnt_++;
+    }
+
+    // for mlog table, promote mlog table schema version
+    if (table_schema.is_mlog_table()) {
       schema_version_cnt_++;
     }
 
@@ -1614,8 +1645,12 @@ int ObDropTableHelper::drop_table_(const ObTableSchema &table_schema, const ObSt
       LOG_WARN("fail to sync version for cascade tables", KR(ret), K_(tenant_id));
     } else if (OB_FAIL(sync_version_for_cascade_mock_fk_parent_table_(table_schema.get_depend_mock_fk_parent_table_ids()))) {
       LOG_WARN("fail to sync version for cascade mock fk parent table", KR(ret), K_(tenant_id));
+    } else if (table_schema.is_fts_index_aux()
+               && OB_FAIL(ObDependencyInfo::delete_schema_object_dependency(
+                                            get_trans_(), tenant_id_, table_schema.get_table_id(),
+                                            table_schema.get_schema_version(), ObObjectType::INDEX))) {
+      LOG_WARN("fail to delete schema object dependency for fts index", KR(ret), K_(tenant_id), K(table_schema.get_table_id()));
     }
-
     // delete audit
     if (OB_SUCC(ret) && (table_schema.is_user_table() || table_schema.is_external_table())) {
       ObArray<ObSAuditSchema> audit_schemas;

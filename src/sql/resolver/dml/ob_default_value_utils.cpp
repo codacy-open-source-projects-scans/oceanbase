@@ -1,19 +1,14 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_default_value_utils.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
 #include "sql/resolver/dml/ob_del_upd_resolver.h"
+#include "rootserver/ob_random_partition_helper.h"
+
 namespace oceanbase
 {
 using namespace common;
@@ -357,7 +352,25 @@ int ObDefaultValueUtils::build_default_expr_strict(const ColumnItem *column, ObR
       }
     }
   } else if (column->base_cid_ == OB_HIDDEN_PK_INCREMENT_COLUMN_ID) {
-    if (OB_FAIL(resolver_->build_heap_table_hidden_pk_expr(expr, column->get_expr()))) {
+    const ObTableSchema *table_schema = nullptr;
+    bool is_random_partkey = false;
+    if (OB_FAIL(resolver_->get_table_schema(column->table_id_, column->base_tid_, stmt_, table_schema))) {
+      LOG_WARN("failed to get table schema", K(ret), KPC(column));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table not exists", K(ret), KPC(column));
+    } else if (OB_FAIL(rootserver::ObRandomPartitionHelper::check_is_random_partkey(*table_schema, column->base_cid_, is_random_partkey))) {
+      LOG_WARN("failed to check is random partkey", K(ret), K(column->base_cid_), KPC(table_schema));
+    } else if (is_random_partkey) {
+      if (OB_FAIL(resolver_->build_random_part_nextval_expr(expr,
+                                                            column->base_tid_,
+                                                            column->base_cid_,
+                                                            column->get_expr()->get_table_name(),
+                                                            column->get_expr()->get_column_name(),
+                                                            *table_schema))) {
+        LOG_WARN("failed to build next_val expr", K(ret));
+      }
+    } else if (OB_FAIL(resolver_->build_heap_table_hidden_pk_expr(expr, column->get_expr()))) {
       LOG_WARN("failed to build next_val expr", K(ret), KPC(column->get_expr()));
     }
   } else if (column->is_hidden_clustering_key_column()) {
@@ -368,7 +381,25 @@ int ObDefaultValueUtils::build_default_expr_strict(const ColumnItem *column, ObR
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected error, column expr is nullptr", K(ret), KPC(column));
   } else if (column->is_auto_increment()) {
-    if (OB_FAIL(resolver_->build_autoinc_nextval_expr(expr,
+    const ObTableSchema *table_schema = nullptr;
+    bool is_random_partkey = false;
+    if (OB_FAIL(resolver_->get_table_schema(column->table_id_, column->base_tid_, stmt_, table_schema))) {
+      LOG_WARN("failed to get table schema", K(ret), KPC(column));
+    } else if (OB_ISNULL(table_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table not exists", K(ret), KPC(column));
+    } else if (OB_FAIL(rootserver::ObRandomPartitionHelper::check_is_random_partkey(*table_schema, column->base_cid_, is_random_partkey))) {
+      LOG_WARN("failed to check is random partkey", K(ret), K(column->base_cid_), KPC(table_schema));
+    } else if (is_random_partkey) {
+      if (OB_FAIL(resolver_->build_random_part_nextval_expr(expr,
+                                                            column->base_tid_,
+                                                            column->base_cid_,
+                                                            column->get_expr()->get_table_name(),
+                                                            column->get_expr()->get_column_name(),
+                                                            *table_schema))) {
+        LOG_WARN("failed to build next_val expr", K(ret));
+      }
+    } else if (OB_FAIL(resolver_->build_autoinc_nextval_expr(expr,
                                                       column->base_tid_,
                                                       column->base_cid_,
                                                       column->get_expr()->get_table_name(),
@@ -759,7 +790,12 @@ int ObDefaultValueUtils::build_default_expr_not_strict_static(
     default_value.set_null();
   } else {
     default_value.set_type(column_schema->get_data_type());
-    if (OB_FAIL(default_value.build_not_strict_default_value(column_schema->get_accuracy().get_precision(), column_schema->get_collation_type()))) {
+    bool is_collection_vector_type = false;
+    if (ob_is_collection_sql_type(column_schema->get_data_type())
+        && column_schema->get_extended_type_info().count() == 1) {
+      is_collection_vector_type = column_schema->get_extended_type_info().at(0).prefix_match_ci("VECTOR");
+    }
+    if (OB_FAIL(default_value.build_not_strict_default_value(column_schema->get_accuracy().get_precision(), column_schema->get_collation_type(), is_collection_vector_type))) {
       LOG_WARN("failed to build not strict default value info", K(column_schema), K(ret));
     } else if (ob_is_enumset_tc(default_value.get_type()) || default_value.is_collection_sql_type()) {
       uint16_t subschema_id = 0;
@@ -819,7 +855,25 @@ int ObDefaultValueUtils::build_default_expr_not_strict(const ColumnItem *column,
     default_value.set_null();
   } else {
     default_value.set_type(column->get_column_type()->get_type());
-    if (OB_FAIL(default_value.build_not_strict_default_value(column->get_column_type()->get_accuracy().get_precision(), column->get_column_type()->get_collation_type()))) {
+    bool is_collection_vector_type = false;
+    if (ob_is_collection_sql_type(column->get_column_type()->get_type())
+        && OB_NOT_NULL(column->get_expr())
+        && OB_NOT_NULL(params_->session_info_)
+        && OB_NOT_NULL(params_->session_info_->get_cur_exec_ctx())) {
+      uint16_t subschema_id = column->get_expr()->get_subschema_id();
+      ObSubSchemaValue value;
+      if (OB_SUCCESS == params_->session_info_->get_cur_exec_ctx()
+                          ->get_sqludt_meta_by_subschema_id(subschema_id, value)
+          && OB_NOT_NULL(value.value_)) {
+        const ObSqlCollectionInfo *coll_info =
+            reinterpret_cast<const ObSqlCollectionInfo *>(value.value_);
+        if (OB_NOT_NULL(coll_info->collection_meta_)
+            && coll_info->collection_meta_->type_id_ == ObNestedType::OB_VECTOR_TYPE) {
+          is_collection_vector_type = true;
+        }
+      }
+    }
+    if (OB_FAIL(default_value.build_not_strict_default_value(column->get_column_type()->get_accuracy().get_precision(), column->get_column_type()->get_collation_type(), is_collection_vector_type))) {
       LOG_WARN("failed to build not strict default value info", K(column), K(ret));
     } else if (ob_is_enumset_tc(default_value.get_type()) || default_value.is_collection_sql_type()) {
       const ObColumnRefRawExpr *column_expr = column->get_expr();

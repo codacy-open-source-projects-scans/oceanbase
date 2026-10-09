@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -19,7 +12,6 @@
 #include "storage/access/ob_multiple_scan_merge.h"
 
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_compact_helper.h"
 #include "storage/shared_storage/prewarm/ob_macro_prewarm_struct.h"
 #include "storage/shared_storage/macro_cache/ob_ss_macro_cache_mgr.h"
 #include "storage/shared_storage/ob_ss_local_cache_service.h"
@@ -249,11 +241,7 @@ int ObTabletSplitCtx::init(const ObTabletSplitParam &param)
       ObMDSGetTabletMode::READ_ALL_COMMITED))) {
     LOG_WARN("get local tablet failed", K(ret), K(param));
   } else if (OB_FAIL(ObTabletSplitUtil::check_satisfy_split_condition(ls_handle_, local_tablet_hdl,
-      param.dest_tablets_id_, param.compaction_scn_, param.min_split_start_scn_
-#ifdef OB_BUILD_SHARED_STORAGE
-      , is_data_split_executor_
-#endif
-      ))) {
+      param.dest_tablets_id_, param.compaction_scn_, param.min_split_start_scn_))) {
     if (OB_NEED_RETRY != ret) {
       LOG_WARN("check satisfy split condition failed", K(ret), K(param));
     }
@@ -518,26 +506,24 @@ int ObTabletSplitCtx::inner_organize_result_tables(
         || static_cast<ObCOSSTableV2 *>(co_table_handle.get_table())->is_cgs_empty_co_table()) {
         // do nothing for row-store/cgs empty co sstable.
       } else {
-        ObITable::TableKey table_key = co_table_handle.get_table()->get_key();
-        const uint16_t base_cg_idx = table_key.get_column_group_id();
-        ObArray<ObITable *> cg_sstables;
-        for (int64_t cg_idx = 0; OB_SUCC(ret) && cg_idx < mds_storage_schema_->get_column_group_count(); cg_idx++) { // sorted by cg_idx.
-          cg_table_handle.reset();
-          table_key.column_group_idx_ = cg_idx;
-          table_key.table_type_ = ObITable::TableType::NORMAL_COLUMN_GROUP_SSTABLE;
-          if (cg_idx == base_cg_idx) {
+        ObITable::TableKey co_key = co_table_handle.get_table()->get_key();
+        ObSEArray<ObITable *, MAX_SSTABLE_CNT_IN_STORAGE> cg_sstables;
+
+        for (int64_t idx = 0; OB_SUCC(ret) && idx < cg_tables_handle_array.get_count(); ++idx) {
+          const ObITable::TableKey &cur_key = cg_tables_handle_array.get_table(idx)->get_key();
+          if (cur_key.tablet_id_ != co_key.tablet_id_ ||
+              cur_key.scn_range_ != co_key.scn_range_ ||
+              cur_key.slice_range_ != co_key.slice_range_ ||
+              cur_key.column_group_idx_ == co_key.column_group_idx_) {
             // do nothing
-          } else if (OB_FAIL(cg_tables_handle_array.get_table(table_key, cg_table_handle))) {
-            if (OB_ENTRY_NOT_EXIST != ret) {
-              LOG_WARN("get table failed", K(ret), K(table_key));
-            } else {
-              ret = OB_SUCCESS;
-            }
-          } else if (OB_FAIL(cg_sstables.push_back(cg_table_handle.get_table()))) {
+          } else if (OB_FAIL(cg_sstables.push_back(cg_tables_handle_array.get_table(idx)))) {
             LOG_WARN("push back cg sstable failed", K(ret));
           }
         }
-        if (FAILEDx(static_cast<ObCOSSTableV2 *>(co_table_handle.get_table())->fill_cg_sstables(cg_sstables))) {
+        // sort cg sstables by cg idx asc
+        if (FAILEDx(ObTableStoreUtil::sort_major_tables(cg_sstables))) {
+          LOG_WARN("sort cg sstables failed", K(ret), K(co_key), K(cg_sstables));
+        } else if (OB_FAIL(static_cast<ObCOSSTableV2 *>(co_table_handle.get_table())->fill_cg_sstables(cg_sstables))) {
           LOG_WARN("fill cg sstables failed", K(ret));
         } else {
           cmp_cg_sstables_cnt += cg_sstables.count();
@@ -1652,17 +1638,19 @@ int ObTabletSplitMergeTask::check_cg_sstables_checksum(
         for (int64_t j = 0; OB_SUCC(ret) && j < cg_tables_wrappers.count(); j++) { // iterate each cg.
           uint16_t cg_idx = 0;
           const ObSSTable *cg_sstable = cg_tables_wrappers.at(j).get_sstable();
+          const ObStorageColumnGroupSchema *column_group = nullptr;
           cg_table_meta_hdl.reset();
           if (OB_UNLIKELY(nullptr == cg_sstable || !cg_sstable->is_column_store_sstable())) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("unexpected cg table", K(ret), KPC(cg_sstable));
           } else if (FALSE_IT(cg_idx = cg_sstable->get_column_group_id())) {
-          } else if (OB_UNLIKELY(cg_idx < 0 || cg_idx >= clipped_storage_schema->get_column_groups().count())) {
+          } else if (OB_FAIL(clipped_storage_schema->get_cg_schema_with_column_group_idx(cg_idx, column_group))) {
+            LOG_WARN("fail to get column group schema", K(ret), K(cg_idx), K(clipped_storage_schema));
+          } else if (OB_UNLIKELY(nullptr == column_group)) {
             ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("unexpected cg idx", K(ret), K(cg_idx), KPC(clipped_storage_schema));
+            LOG_WARN("unexpected cg schema", K(ret), K(cg_idx), KPC(clipped_storage_schema));
           } else {
             ObStorageColumnGroupSchema mock_row_store_cg;
-            const ObStorageColumnGroupSchema *column_group = &clipped_storage_schema->get_column_groups().at(cg_idx);
             const bool is_all_co_sstable = cg_sstable->is_co_sstable() && static_cast<const ObCOSSTableV2 *>(cg_sstable)->is_all_cg_base();
             if (is_all_co_sstable && column_group->is_rowkey_column_group()) {
               column_group = nullptr;

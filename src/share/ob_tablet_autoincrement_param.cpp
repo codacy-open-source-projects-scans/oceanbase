@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -82,7 +75,7 @@ OB_SERIALIZE_MEMBER(ObTabletAutoincParam,
                     tenant_id_,
                     auto_increment_cache_size_);
 
-OB_SERIALIZE_MEMBER(ObMigrateTabletAutoincSeqParam, src_tablet_id_, dest_tablet_id_, ret_code_, autoinc_seq_);
+OB_SERIALIZE_MEMBER(ObMigrateTabletAutoincSeqParam, src_tablet_id_, dest_tablet_id_, ret_code_, autoinc_seq_, autoinc_seq_end_);
 
 
 ObTabletAutoincSeq::ObTabletAutoincSeq()
@@ -208,20 +201,15 @@ bool ObTabletAutoincSeq::is_valid() const
   return 0 != intervals_count_ && nullptr != intervals_;
 }
 
-int ObTabletAutoincSeq::get_autoinc_seq_value(uint64_t &autoinc_seq) const
+int ObTabletAutoincSeq::get_autoinc_seq_value(uint64_t &autoinc_seq, uint64_t &autoinc_seq_end) const
 {
   int ret = OB_SUCCESS;
   if (0 == intervals_count_) {
     autoinc_seq = 1;
+    autoinc_seq_end = INT64_MAX;
   } else if (1 == intervals_count_) {
-    // currently, there will only be one interval
-    for (int64_t i = 0; OB_SUCC(ret) && i < intervals_count_; i++) {
-      const ObTabletAutoincInterval &interval = intervals_[i];
-      if (interval.end_ > interval.start_) {
-        autoinc_seq = interval.start_;
-        break;
-      }
-    }
+    autoinc_seq = intervals_[0].start_;
+    autoinc_seq_end = intervals_[0].end_;
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected autoinc seq interval count", K(ret));
@@ -231,13 +219,14 @@ int ObTabletAutoincSeq::get_autoinc_seq_value(uint64_t &autoinc_seq) const
 
 int ObTabletAutoincSeq::set_autoinc_seq_value(
     common::ObArenaAllocator &allocator,
-    const uint64_t autoinc_seq)
+    const uint64_t autoinc_seq,
+    const uint64_t autoinc_seq_end)
 {
   int ret = OB_SUCCESS;
   if (0 == intervals_count_) {
     ObTabletAutoincInterval interval;
     interval.start_ = autoinc_seq;
-    interval.end_ = INT64_MAX;
+    interval.end_ = autoinc_seq_end;
     intervals_count_ = 1;
     void *buf = nullptr;
     if (OB_ISNULL(buf = allocator.alloc(sizeof(share::ObTabletAutoincInterval) * intervals_count_))) {
@@ -249,6 +238,7 @@ int ObTabletAutoincSeq::set_autoinc_seq_value(
     }
   } else if (1 == intervals_count_) {
     intervals_[0].start_ = autoinc_seq;
+    intervals_[0].end_ = autoinc_seq_end;
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected autoinc seq interval count", K(ret));

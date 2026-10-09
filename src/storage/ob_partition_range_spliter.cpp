@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_partition_range_spliter.h"
@@ -1450,15 +1443,10 @@ int ObPartitionMultiRangeSpliter::estimate_ranges_info(const ObIArray<ObStoreRan
 
     // TODO(menglan): adapt now sql implement
     constexpr int64_t ONE_TASK_ROW_COUNT = 32768;
-    if (GCTX.is_shared_storage_mode()) {
-      total_size = max(total_size,
-                       total_macro_block_count * OB_DEFAULT_MACRO_BLOCK_SIZE + memtable_total_size);
-    } else {
-      total_size
-          = max(total_size,
-                max(total_macro_block_count * OB_DEFAULT_MACRO_BLOCK_SIZE + memtable_total_size,
-                    (total_row_count / ONE_TASK_ROW_COUNT + 1) * OB_DEFAULT_MACRO_BLOCK_SIZE));
-    }
+    total_size
+        = max(total_size,
+              max(total_macro_block_count * OB_DEFAULT_MACRO_BLOCK_SIZE + memtable_total_size,
+                  (total_row_count / ONE_TASK_ROW_COUNT + 1) * OB_DEFAULT_MACRO_BLOCK_SIZE));
 
     LOG_TRACE("Finish estimate ranges info",
               K(ranges),
@@ -1767,7 +1755,7 @@ void ObPartitionIncrementalRangeSpliter::ObIncrementalIterator::reset()
   store_ctx_.reset();
   tbl_xs_ctx_.reset();
   tbls_iter_.reset();
-  get_tbl_param_.reset();
+  tablet_read_tables.reset();
   range_to_scan_.reset();
   if (iter_ != nullptr) {
     iter_->~ObIStoreRowIterator();
@@ -1796,7 +1784,7 @@ int ObPartitionIncrementalRangeSpliter::ObIncrementalIterator::init()
       STORAGE_LOG(WARN, "Failed to prepare table access context", KR(ret));
     } else if (OB_FAIL(prepare_get_table_param())) {
       STORAGE_LOG(WARN, "Failed to prepare get table param", KR(ret));
-    } else if (OB_FAIL(mpl_scan_mrg->init(tbl_xs_param_, tbl_xs_ctx_, get_tbl_param_))) {
+    } else if (OB_FAIL(mpl_scan_mrg->init(tbl_xs_param_, tbl_xs_ctx_, tablet_read_tables))) {
       STORAGE_LOG(WARN, "Failed to init multiple scan merge", KR(ret));
     } else if (OB_FAIL(mpl_scan_mrg->open(range_to_scan_))) {
       STORAGE_LOG(WARN, "Failed to open multiple scan merge", KR(ret));
@@ -1905,7 +1893,7 @@ int ObPartitionIncrementalRangeSpliter::ObIncrementalIterator::prepare_get_table
     }
   }
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(get_tbl_param_.tablet_iter_.table_iter()->assign(tbls_iter_))) {
+    if (OB_FAIL(tablet_read_tables.tablet_iter_.table_iter()->assign(tbls_iter_))) {
       STORAGE_LOG(WARN, "Failed to assign tablet iterator", KR(ret));
     }
   }

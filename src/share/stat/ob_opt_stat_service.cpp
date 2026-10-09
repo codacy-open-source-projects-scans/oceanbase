@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -15,11 +8,13 @@
 #include "ob_opt_stat_service.h"
 #include "sql/ob_sql_context.h"
 #include "share/catalog/ob_cached_catalog_meta_getter.h"
-#include "share/stat/ob_opt_external_table_stat_builder.h"
-#include "share/stat/ob_opt_external_column_stat_builder.h"
 #include "lib/time/ob_time_utility.h"
 #include "lib/hash/ob_hashset.h"
 #include "lib/hash/ob_hashmap.h"
+#include "storage/ob_locality_manager.h"
+#include "share/ob_srv_rpc_proxy.h"
+#include "src/pl/sys_package/ob_dbms_stats.h"
+#include "share/stat/ob_dbms_stats_utils.h"
 
 namespace oceanbase {
 namespace common {
@@ -344,12 +339,6 @@ int ObOptStatService::init(common::ObMySQLProxy *proxy, ObServerConfig *config)
   } else if (OB_FAIL(system_stat_cache_.init("opt_system_stat_cache",
                                              DEFAULT_SYSTEM_STAT_CACHE_PRIORITY))) {
     LOG_WARN("fail to init system stat cache.", K(ret));
-  } else if (OB_FAIL(external_table_stat_cache_.init("opt_external_table_stat_cache",
-                                                     DEFAULT_TAB_STAT_CACHE_PRIORITY))) {
-    LOG_WARN("fail to init external table stat cache.", K(ret));
-  } else if (OB_FAIL(external_column_stat_cache_.init("opt_external_column_stat_cache",
-                                                      DEFAULT_COL_STAT_CACHE_PRIORITY))) {
-    LOG_WARN("fail to init external column stat cache.", K(ret));
   } else {
     inited_ = true;
   }
@@ -630,439 +619,156 @@ int ObOptStatService::erase_system_stat(const ObOptSystemStat::Key &key)
   return system_stat_cache_.erase(key);
 }
 
-int ObOptStatService::load_external_table_stat_and_put_cache(const uint64_t tenant_id,
-  const uint64_t catalog_id,
-  const uint64_t table_id,
-  sql::ObSqlSchemaGuard &schema_guard,
-  ObIArray<ObString> &key_partition_names,
-  const ObIArray<ObString> &all_partition_names,
-  ObOptExternalTableStatHandle &handle,
-  ObIArray<ObOptExternalColumnStatHandle> &column_handles)
+static int broadcast_evict_opt_stat_kvcache(const uint64_t tenant_id,
+                                            ObIArray<share::ObServerLocality> & all_server_arr,
+                                            int64_t timeout,
+                                            obrpc::ObUpdateStatCacheArg &arg)
 {
   int ret = OB_SUCCESS;
-  const share::ObILakeTableMetadata *lake_table_metadata = nullptr;
-  const share::schema::ObTableSchema *table_schema = nullptr;
-  ObSEArray<ObString, 16> column_names;
-  ObOptExternalTableStat *external_table_stat = nullptr;
-  ObSEArray<ObOptExternalColumnStat *, 16> external_column_stats;
-  ObArenaAllocator stat_allocator("ExtStatFetch", OB_MALLOC_NORMAL_BLOCK_SIZE, tenant_id);
-  if (OB_FAIL(schema_guard.get_lake_table_metadata(tenant_id, table_id, lake_table_metadata))) {
-    LOG_WARN("failed to get lake table metadata", K(ret), K(tenant_id), K(table_id));
-  } else if (OB_ISNULL(lake_table_metadata)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("lake table metadata is null", K(ret), K(tenant_id), K(table_id));
-  } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, table_id, table_schema))) {
-    LOG_WARN("failed to get table schema", K(ret), K(tenant_id), K(table_id));
+  for (int64_t i = 0; i < all_server_arr.count(); i++) {
+    if (!all_server_arr.at(i).is_active()
+        || share::ObServerStatus::OB_SERVER_ACTIVE != all_server_arr.at(i).get_server_status()
+        || 0 != all_server_arr.at(i).get_server_stop_time()) {
+    //server may not serving
+    } else {
+      int tmp_ret = OB_SUCCESS;
+      if (OB_SUCCESS != (tmp_ret = GCTX.srv_rpc_proxy_->to(all_server_arr.at(i).get_addr())
+                                                        .timeout(timeout)
+                                                        .by(tenant_id)
+                                                        .update_local_stat_cache(arg))) {
+        LOG_WARN("failed to evict table stat cache caused by unknow error",
+                 K(tmp_ret), K(all_server_arr.at(i).get_addr()), K(arg));
+      }
+    }
+  }
+  return ret;
+}
+
+static int get_dbms_stats_column_ids(const share::schema::ObTableSchema &table_schema,
+                                     ObIArray<uint64_t> &column_ids)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < table_schema.get_column_count(); ++i) {
+    const share::schema::ObColumnSchemaV2 *col = table_schema.get_column_schema_by_idx(i);
+    if (OB_ISNULL(col)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("column is null", K(ret), K(col));
+    //here add extra column id condition, because func index in oracle mode, the column will mark is
+    //hidden, that's will cause the fewer columns.
+    } else if (!pl::ObDbmsStats::check_column_validity(table_schema, *col)){
+      continue;
+    } else if (OB_FAIL(column_ids.push_back(col->get_column_id()))) {
+      LOG_WARN("failed to push column id", K(ret));
+    }
+  }
+  return ret;
+}
+
+static int evict_one_table_opt_stat_kvcache(const uint64_t tenant_id,
+                                            const ObEvictTableKey &key,
+                                            ObSchemaGetterGuard &schema_guard,
+                                            ObIArray<share::ObServerLocality> &all_server_arr,
+                                            int64_t timeout,
+                                            int64_t &last_gmt_modified)
+{
+  int ret = OB_SUCCESS;
+  const share::schema::ObTableSchema *table_schema = NULL;
+  const int64_t NO_EXPIRED_AT = -1;
+  obrpc::ObUpdateStatCacheArg update_stat_cache_arg;
+  if (OB_FAIL(schema_guard.get_table_schema(tenant_id, key.table_id_, table_schema))) {
+    LOG_WARN("failed to get table schema", K(ret), K(key.table_id_));
   } else if (OB_ISNULL(table_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("table schema is null", K(ret), K(tenant_id), K(table_id));
-  } else if (OB_FAIL(extract_column_names_from_table_schema(*table_schema, column_names))) {
-    LOG_WARN("failed to extract column names from table schema", K(ret));
+    LOG_INFO("get null table schema, skip evict", K(key.table_id_));
+    last_gmt_modified = key.gmt_modified_;
+  } else if (OB_FAIL(get_dbms_stats_column_ids(*table_schema, update_stat_cache_arg.column_ids_))) {
+    LOG_WARN("failed to get dbms stats column ids", K(ret));
+  } else if (OB_FAIL(ObDbmsStatsUtils::get_all_part_ids(*table_schema,
+                                                        update_stat_cache_arg.partition_ids_))) {
+    LOG_WARN("failed to push back partition ids", K(ret));
   } else {
-    if (lake_table_metadata->get_format_type() != ObLakeTableFormat::ODPS) {
-      if (OB_FAIL(fetch_external_table_statistics_from_catalog(stat_allocator,
-                                                                      schema_guard,
-                                                                      lake_table_metadata,
-                                                                      key_partition_names,
-                                                                      column_names,
-                                                                      external_table_stat,
-                                                                      external_column_stats))) {
-        LOG_WARN("failed to fetch external table statistics from catalog", K(ret));
-      }
+    update_stat_cache_arg.tenant_id_ = tenant_id;
+    update_stat_cache_arg.table_id_ = key.table_id_;
+    update_stat_cache_arg.no_invalidate_ = (key.plan_expired_before_ == NO_EXPIRED_AT);
+    update_stat_cache_arg.plan_expired_before_ =
+        (key.plan_expired_before_ == NO_EXPIRED_AT) ? 0 : key.plan_expired_before_;
+    update_stat_cache_arg.standby_last_evict_time_ = key.gmt_modified_;
+    if (OB_FAIL(broadcast_evict_opt_stat_kvcache(tenant_id, all_server_arr,
+                                                  timeout, update_stat_cache_arg))) {
+      LOG_WARN("failed to broadcast evict opt stat kvcache", K(ret));
     } else {
-      // odps tunnel 比较特殊不能获得所有分区rowcount api限制 需要通过选中分区缩放，其他通过全局分区缩放
-      // 如果只有一个分区那么all_partition_names 就是key_partition_names
-      if (OB_FAIL(fetch_external_table_statistics_from_catalog(stat_allocator,
-                                                                schema_guard,
-                                                                lake_table_metadata,
-                                                                all_partition_names,
-                                                                column_names,
-                                                                external_table_stat,
-                                                                external_column_stats))) {
-        LOG_WARN("failed to fetch external table statistics from catalog", K(ret));
-      }
-    }
-
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(put_external_table_stats_to_cache(tenant_id,
-                                                        catalog_id,
-                                                        table_id,
-                                                        key_partition_names,
-                                                        external_table_stat,
-                                                        external_column_stats,
-                                                        handle,
-                                                        column_handles))) {
-      LOG_WARN("failed to put external table stats to cache", K(ret));
-    }
-  }
-  if (OB_NOT_NULL(external_table_stat)) {
-    external_table_stat->~ObOptExternalTableStat();
-  }
-  if (!external_column_stats.empty()) {
-    for (int64_t i = 0; i < external_column_stats.count(); ++i) {
-      external_column_stats.at(i)->~ObOptExternalColumnStat();
+      last_gmt_modified = key.gmt_modified_;
+      LOG_INFO("successfully evict standby opt stat kvcache",
+               K(key.table_id_), K(key.plan_expired_before_));
     }
   }
   return ret;
 }
 
-int ObOptStatService::extract_column_names_from_table_schema(const share::schema::ObTableSchema &table_schema,
-                                                             ObIArray<ObString> &column_names)
+int ObOptStatService::evict_all_opt_stat_kvcache(const uint64_t tenant_id,
+                                                 int64_t &last_gmt_modified)
 {
   int ret = OB_SUCCESS;
-  const int64_t column_count = table_schema.get_column_count();
-  for (int64_t i = 0; OB_SUCC(ret) && i < column_count; ++i) {
-    const share::schema::ObColumnSchemaV2 *column_schema = table_schema.get_column_schema_by_idx(i);
-    if (OB_ISNULL(column_schema)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("column schema is null", K(ret), K(i));
-    } else if (column_schema->is_hidden() || column_schema->is_unused()) {
-      // Skip hidden and unused columns
-    } else if (OB_FAIL(column_names.push_back(column_schema->get_column_name_str()))) {
-      LOG_WARN("failed to add column name", K(ret), K(column_schema->get_column_name_str()));
-    }
-  }
-  LOG_TRACE("extracted column names from table schema", K(column_count), K(column_names.count()));
-  return ret;
-}
-
-int ObOptStatService::fetch_external_table_statistics_from_catalog(ObIAllocator &allocator,
-                                                                   sql::ObSqlSchemaGuard &schema_guard,
-                                                                   const share::ObILakeTableMetadata *lake_table_metadata,
-                                                                   const ObIArray<ObString> &partition_names,
-                                                                   const ObIArray<ObString> &column_names,
-                                                                   ObOptExternalTableStat *&external_table_stat,
-                                                                   ObIArray<ObOptExternalColumnStat *> &external_column_stats)
-{
-  int ret = OB_SUCCESS;
-  external_table_stat = nullptr;
-
-  if (OB_ISNULL(lake_table_metadata)) {
+  const static int64_t max_table_cnt = 2000;
+  ObSEArray<ObEvictTableKey, 32> keys;
+  ObSEArray<share::ObServerLocality, 4> all_server_arr;
+  bool has_read_only_zone = false; // UNUSED;
+  int64_t timeout = MAX_OPT_STATS_PROCESS_RPC_TIMEOUT;
+  ObSchemaGetterGuard schema_guard;
+  hash::ObHashSet<uint64_t> table_ids_set;
+  if (!inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("statistics service is not initialized. ", K(ret), K(tenant_id));
+  } else if (OB_ISNULL(GCTX.srv_rpc_proxy_) || OB_ISNULL(GCTX.locality_manager_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("rpc_proxy or session is null", K(ret), K(GCTX.srv_rpc_proxy_), K(GCTX.locality_manager_));
+  } else if (OB_ISNULL(GCTX.schema_service_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("lake table metadata is null", K(ret));
-  } else if (column_names.empty()) {
-    LOG_TRACE("no columns to fetch statistics for");
+    LOG_WARN("get unexpected error", K(ret), K(GCTX.schema_service_));
+  } else if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
+    LOG_WARN("get tenant schema guard failed", K(ret));
+  } else if (OB_FAIL(GCTX.locality_manager_->get_server_locality_array(all_server_arr,
+                                                                       has_read_only_zone))) {
+    LOG_WARN("fail to get server locality", K(ret));
+  } else if (OB_FAIL(table_ids_set.create(max_table_cnt, "TableIdsSet", "TableIdsSetNode", tenant_id))) {
+    LOG_WARN("failed to create table ids set", K(ret));
   } else {
-    // Construct cached catalog meta getter
-    share::schema::ObSchemaGetterGuard *schema_getter_guard = schema_guard.get_schema_guard();
-    if (OB_ISNULL(schema_getter_guard)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("schema getter guard is null", K(ret));
-    } else {
-      // Use the passed-in allocator instead of creating a local one
-      share::ObCachedCatalogMetaGetter catalog_getter(*schema_getter_guard, allocator);
-      // Fetch table and column statistics via catalog
-      if (OB_FAIL(catalog_getter.fetch_table_statistics(allocator,
-                                                        schema_guard,
-                                                        lake_table_metadata,
-                                                        partition_names,
-                                                        column_names,
-                                                        external_table_stat,
-                                                        external_column_stats))) {
-        LOG_WARN("failed to fetch table statistics via catalog", K(ret));
-      } else if (OB_ISNULL(external_table_stat)) {
-        // No table stat found, generate complete default statistics
-        if (OB_FAIL(generate_default_external_table_statistics(allocator,
-                                                               lake_table_metadata,
-                                                               partition_names,
-                                                               column_names,
-                                                               external_table_stat,
-                                                               external_column_stats))) {
-          LOG_WARN("failed to generate default external table statistics", K(ret));
-        } else {
-          LOG_TRACE("successfully generated default external table statistics",
-                    KP(external_table_stat), K(external_column_stats.count()));
-        }
-      } else if (OB_UNLIKELY(external_column_stats.count() != column_names.count())) {
-        if (OB_FAIL(generate_missing_external_column_statistics(allocator,
-                                                                lake_table_metadata,
-                                                                partition_names,
-                                                                column_names,
-                                                                external_column_stats))) {
-          LOG_WARN("failed to generate missing external column statistics", K(ret));
-        } else {
-          LOG_TRACE("successfully generated missing external column statistics",
-                    K(external_column_stats.count()), K(column_names.count()));
-        }
-      }
-    }
-  }
-
-  return ret;
-}
-
-int ObOptStatService::put_external_table_stats_to_cache(const uint64_t tenant_id,
-                                                       const uint64_t catalog_id,
-                                                       const uint64_t table_id,
-                                                       const ObIArray<ObString> &partition_names,
-                                                       ObOptExternalTableStat *external_table_stat,
-                                                       const ObIArray<ObOptExternalColumnStat *> &external_column_stats,
-                                                       ObOptExternalTableStatHandle &handle,
-                                                       ObIArray<ObOptExternalColumnStatHandle> &column_handles)
-{
-  int ret = OB_SUCCESS;
-  ObString partition_value = partition_names.empty() ? ObString("") : partition_names.at(0);
-
-  // Put table statistics to cache
-  if (OB_ISNULL(external_table_stat)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("external table stat is null", K(ret));
-  } else {
-    ObOptExternalTableStat::Key table_key;
-    table_key.tenant_id_ = tenant_id;
-    table_key.catalog_id_ = catalog_id;
-    table_key.database_name_ = external_table_stat->get_database_name();
-    table_key.table_name_ = external_table_stat->get_table_name();
-    table_key.partition_value_ = partition_value;
-
-    if (OB_FAIL(external_table_stat_cache_.put_and_fetch_value(table_key, *external_table_stat, handle))) {
-      LOG_WARN("failed to put and fetch external table stat", K(ret), K(table_key));
-    } else {
-      LOG_TRACE("successfully put external table stat to cache", K(table_key));
-    }
-  }
-
-  // Put column statistics to cache
-  if (OB_SUCC(ret)) {
-    for (int64_t i = 0; OB_SUCC(ret) && i < external_column_stats.count(); ++i) {
-      const ObOptExternalColumnStat *column_stat = external_column_stats.at(i);
-      if (OB_ISNULL(column_stat)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("column stat is null", K(ret), K(i));
+    LOG_INFO("begin evict standby opt stat kvcache", K(tenant_id), K(last_gmt_modified));
+    do {
+      keys.reuse();
+      if (OB_FAIL(sql_service_.get_recent_updated_stats(tenant_id,
+                                                        last_gmt_modified,
+                                                        max_table_cnt,
+                                                        keys))) {
+        LOG_WARN("failed to get recent updated stats", K(ret));
       } else {
-        ObOptExternalColumnStat::Key column_key;
-        ObOptExternalColumnStatHandle *column_handle = column_handles.alloc_place_holder();
-        column_key.tenant_id_ = tenant_id;
-        column_key.catalog_id_ = catalog_id;
-        column_key.database_name_ = column_stat->get_database_name();
-        column_key.table_name_ = column_stat->get_table_name();
-        column_key.partition_value_ = partition_value;
-        column_key.column_name_ = column_stat->get_column_name();
-
-        if (OB_ISNULL(column_handle)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to alloc place holder", K(ret));
-        } else if (OB_FAIL(external_column_stat_cache_.put_and_fetch_row(column_key, *column_stat, *column_handle))) {
-          LOG_WARN("failed to put and fetch external column stat", K(ret), K(column_key));
-        } else {
-          LOG_TRACE("successfully put external column stat to cache", K(column_key));
-        }
-      }
-    }
-  }
-
-  return ret;
-}
-
-int ObOptStatService::get_external_table_stat(const uint64_t tenant_id,
-                                              const ObOptExternalTableStat::Key &key,
-                                              ObOptExternalTableStatHandle &handle)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("statistics service is not initialized. ", K(ret), K(key));
-  } else if (OB_FAIL(external_table_stat_cache_.get_value(key, handle))) {
-    // For external table stats, we need to fetch from catalog if not in cache
-    if (OB_ENTRY_NOT_EXIST != ret) {
-      LOG_WARN("get external table stat from cache failed", K(ret), K(key));
-    } else {
-      LOG_TRACE("external table stat not found in cache", K(key));
-    }
-  } else if (OB_ISNULL(handle.stat_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("cache hit but value is NULL. BUG here.", K(ret), K(key));
-  }
-  return ret;
-}
-
-int ObOptStatService::get_external_column_stat(const uint64_t tenant_id,
-                                                const ObOptExternalColumnStat::Key &key,
-                                                ObOptExternalColumnStatHandle &handle)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("statistics service is not initialized. ", K(ret), K(key));
-  } else if (OB_FAIL(external_column_stat_cache_.get_row(key, handle))) {
-    // For external column stats, we don't auto-load - just return cache miss
-    if (OB_ENTRY_NOT_EXIST != ret) {
-      LOG_WARN("get external column stat from cache failed", K(ret), K(key));
-    } else {
-      LOG_TRACE("external column stat not found in cache", K(key));
-    }
-  } else if (OB_ISNULL(handle.stat_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("cache hit but value is NULL. BUG here.", K(ret), K(key));
-  }
-  return ret;
-}
-
-int ObOptStatService::get_external_column_stats(const uint64_t tenant_id,
-                                                ObIArray<ObOptExternalColumnStat::Key> &keys,
-                                                ObIArray<ObOptExternalColumnStatHandle> &handles)
-{
-  int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(!inited_)) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("statistics service is not initialized. ", K(ret), K(keys));
-  } else {
-    LOG_TRACE("begin get external column stats", K(keys));
-    for (int64_t i = 0; OB_SUCC(ret) && i < keys.count(); ++i) {
-      ObOptExternalColumnStatHandle handle;
-      if (OB_FAIL(external_column_stat_cache_.get_row(keys.at(i), handle))) {
-        // For external column stats, we don't auto-load - just return cache miss
-        if (OB_ENTRY_NOT_EXIST != ret) {
-          LOG_WARN("get external column stat from cache failed", K(ret), K(keys.at(i)));
-        } else {
-          LOG_TRACE("external column stat not found in cache", K(keys.at(i)));
-          if (OB_FAIL(handles.push_back(handle))) {
-            LOG_WARN("failed to push back", K(ret));
-          }
-        }
-      } else if (OB_ISNULL(handle.stat_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("cache hit but value is NULL. BUG here.", K(ret), K(keys.at(i)));
-      } else if (OB_FAIL(handles.push_back(handle))) {
-        LOG_WARN("failed to push back", K(ret));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObOptStatService::generate_missing_external_column_statistics(ObIAllocator &allocator,
-                                                                  const share::ObILakeTableMetadata *lake_table_metadata,
-                                                                  const ObIArray<ObString> &partition_names,
-                                                                  const ObIArray<ObString> &column_names,
-                                                                  ObIArray<ObOptExternalColumnStat *> &external_column_stats)
-{
-  int ret = OB_SUCCESS;
-
-  if (OB_ISNULL(lake_table_metadata)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("lake table metadata is null", K(ret));
-  } else {
-    ObString partition_value = partition_names.empty() ? ObString("") : partition_names.at(0);
-    // Use hash map to build column name -> column stat mapping for O(1) lookup
-    hash::ObHashMap<ObString, ObOptExternalColumnStat *> existing_column_stats_map;
-    if (OB_FAIL(existing_column_stats_map.create(external_column_stats.count() * 2 + 512,
-                                                 ObModIds::OB_HASH_BUCKET))) {
-      LOG_WARN("failed to create existing column stats hash map", K(ret), K(external_column_stats.count()));
-    } else {
-      // Build hash map with existing column stats
-      for (int64_t j = 0; OB_SUCC(ret) && j < external_column_stats.count(); ++j) {
-        if (OB_NOT_NULL(external_column_stats.at(j))) {
-          const ObString &existing_column_name = external_column_stats.at(j)->get_column_name();
-          if (OB_FAIL(existing_column_stats_map.set_refactored(existing_column_name,
-                                                               external_column_stats.at(j)))) {
-            LOG_WARN("failed to insert column stat to hash map", K(ret), K(j), K(existing_column_name));
-          }
-        }
-      }
-
-      // Clear the external_column_stats array and rebuild it in column_names order
-      external_column_stats.reuse();
-
-      // Build ordered column stats array according to column_names
-      for (int64_t i = 0; OB_SUCC(ret) && i < column_names.count(); ++i) {
-        const ObString &column_name = column_names.at(i);
-        ObOptExternalColumnStat *column_stat = nullptr;
-
-        // Try to find existing column stat in hash map
-        int hash_ret = existing_column_stats_map.get_refactored(column_name, column_stat);
-        if (OB_SUCCESS == hash_ret && OB_NOT_NULL(column_stat)) {
-          // Use existing column stat
-          if (OB_FAIL(external_column_stats.push_back(column_stat))) {
-            LOG_WARN("failed to add existing column stat to ordered array", K(ret), K(i), K(column_name));
-          }
-        } else if (OB_HASH_NOT_EXIST == hash_ret ||
-                   OB_ISNULL(column_stat)) {
-          // Column not found, generate default column stat
-          ObOptExternalColumnStatBuilder column_stat_builder(allocator);
-
-          if (OB_FAIL(column_stat_builder.set_basic_info(lake_table_metadata->tenant_id_,
-                                                         lake_table_metadata->catalog_id_,
-                                                         lake_table_metadata->namespace_name_,
-                                                         lake_table_metadata->table_name_,
-                                                         partition_value,
-                                                         column_name))) {
-            LOG_WARN("failed to set basic info for missing column stat", K(ret), K(i), K(column_name));
-          } else if (OB_FAIL(column_stat_builder.set_stat_info(0,     // num_null
-                                                               0,     // num_not_null
-                                                               0,     // num_distinct
-                                                               0,     // avg_length
-                                                               0,     // last_analyzed = 0
-                                                               CS_TYPE_UTF8MB4_GENERAL_CI))) { // default collation
-            LOG_WARN("failed to set stat info for missing column stat", K(ret), K(i), K(column_name));
-          } else if (OB_FAIL(column_stat_builder.build(allocator, column_stat))) {
-            LOG_WARN("failed to build missing external column stat", K(ret), K(i), K(column_name));
-          } else if (OB_ISNULL(column_stat)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("external column stat is null", K(ret), K(i), K(column_name));
-          } else if (OB_FAIL(external_column_stats.push_back(column_stat))) {
-            LOG_WARN("failed to add generated column stat to ordered array", K(ret), K(i), K(column_name));
+        for (int64_t i = 0; OB_SUCC(ret) && i < keys.count(); ++i) {
+          const ObEvictTableKey &key = keys.at(i);
+          if (OB_FAIL(THIS_WORKER.check_status())) {
+            LOG_WARN("failed to check status", K(ret));
+          } else if (OB_FAIL(table_ids_set.set_refactored(key.table_id_))) {
+            if (OB_HASH_EXIST == ret) {
+              ret = OB_SUCCESS;
+              last_gmt_modified = key.gmt_modified_;
+              LOG_TRACE("table id already exists, skip evict", K(key.table_id_));
+            } else {
+              LOG_WARN("failed to set refactored", K(ret), K(key.table_id_));
+            }
           } else {
-            LOG_TRACE("generated default stat for missing column", K(column_name));
+            timeout = std::min(MAX_OPT_STATS_PROCESS_RPC_TIMEOUT, THIS_WORKER.get_timeout_remain());
+            int tmp_ret = evict_one_table_opt_stat_kvcache(tenant_id, key, schema_guard,
+                                                           all_server_arr, timeout,
+                                                           last_gmt_modified);
+            if (OB_SUCCESS != tmp_ret) {
+              LOG_WARN("failed to evict one table opt stat kvcache, skip",
+                       K(tmp_ret), K(key.table_id_));
+              last_gmt_modified = key.gmt_modified_;
+            }
           }
-        } else {
-          // Hash map error
-          ret = hash_ret;
-          LOG_WARN("failed to get column stat from hash map", K(ret), K(i), K(column_name));
         }
       }
-
-      // Clean up hash map
-      existing_column_stats_map.destroy();
-    }
+    } while (OB_SUCC(ret) && max_table_cnt == keys.count());
+    LOG_INFO("end evict standby opt stat kvcache", K(tenant_id), K(last_gmt_modified), K(table_ids_set.size()));
   }
-
-  return ret;
-}
-
-int ObOptStatService::generate_default_external_table_statistics(ObIAllocator &allocator,
-                                                                 const share::ObILakeTableMetadata *lake_table_metadata,
-                                                                 const ObIArray<ObString> &partition_names,
-                                                                 const ObIArray<ObString> &column_names,
-                                                                 ObOptExternalTableStat *&external_table_stat,
-                                                                 ObIArray<ObOptExternalColumnStat *> &external_column_stats)
-{
-  int ret = OB_SUCCESS;
-  external_table_stat = nullptr;
-
-  if (OB_ISNULL(lake_table_metadata)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("lake table metadata is null", K(ret));
-  } else {
-    // Generate default table statistics
-    ObOptExternalTableStatBuilder table_stat_builder;
-    ObString partition_value = partition_names.empty() ? ObString("") : partition_names.at(0);
-
-    if (OB_FAIL(table_stat_builder.set_basic_info(lake_table_metadata->tenant_id_,
-                                                   lake_table_metadata->catalog_id_,
-                                                   lake_table_metadata->namespace_name_,
-                                                   lake_table_metadata->table_name_,
-                                                   partition_value))) {
-      LOG_WARN("failed to set basic info for default table stat", K(ret));
-    } else if (OB_FAIL(table_stat_builder.set_stat_info(0,
-                                                        0,
-                                                        0,
-                                                        0))) {
-      LOG_WARN("failed to set stat info for default table stat", K(ret));
-    } else if (OB_FAIL(table_stat_builder.build(allocator, external_table_stat))) {
-      LOG_WARN("failed to build default external table stat", K(ret));
-    } else if (OB_ISNULL(external_table_stat)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("external table stat is null", K(ret));
-    } else if (OB_FAIL(generate_missing_external_column_statistics(allocator,
-                                                                   lake_table_metadata,
-                                                                   partition_names,
-                                                                   column_names,
-                                                                   external_column_stats))) {
-      LOG_WARN("failed to generate missing external column statistics", K(ret));
-    }
-  }
-
   return ret;
 }
 

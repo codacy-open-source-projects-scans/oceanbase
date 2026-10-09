@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
@@ -52,6 +45,15 @@ int ObExprOracleDecode::calc_result_typeN(ObExprResType &type,
     LOG_WARN("invalid params", K(param_num), K(RESULT_TYPE_INDEX), K(LEAST_PARAM_NUMS), K(CALC_TYPE_INDEX));
     ret = OB_INVALID_ARGUMENT;
   } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < param_num; ++i) {
+      if (ob_is_collection_sql_type(types_stack[i].get_type())) {
+        ret = OB_ERR_INVALID_TYPE_FOR_OP;
+        LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "-",
+                    ob_obj_type_str(types_stack[i].get_type()));
+        LOG_WARN("invalid type of parameter, collection not allowed in DECODE",
+                 K(ret), K(i), K(types_stack[i]));
+      }
+    }
     //除了返回值， 其他参数不能为lob或roaringbitmap类型
     if (types_stack[0].is_lob() || types_stack[0].is_roaringbitmap()) {
       ret = OB_ERR_INVALID_TYPE_FOR_OP;
@@ -599,10 +601,15 @@ OB_SERIALIZE_MEMBER(ObExprOracleDecode,
 
 DEF_SET_LOCAL_SESSION_VARS(ObExprOracleDecode, raw_expr) {
   int ret = OB_SUCCESS;
-  SET_LOCAL_SYSVAR_CAPACITY(3);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_SQL_MODE);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_TIME_ZONE);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  if (is_mysql_mode()) {
+    SET_LOCAL_SYSVAR_CAPACITY(3);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_SQL_MODE);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_TIME_ZONE);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  } else {
+    SET_LOCAL_SYSVAR_CAPACITY(1);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_TIME_ZONE);
+  }
   return ret;
 }
 

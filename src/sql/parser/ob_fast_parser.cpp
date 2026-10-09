@@ -1,16 +1,11 @@
-/** * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_PARSER
 #include "ob_fast_parser.h"
+#include "ob_parser_fullwidth_converter.h"
 #include "sql/udr/ob_udr_struct.h"
 #include "share/ob_define.h"
 #include "lib/ash/ob_active_session_guard.h"
@@ -30,6 +25,29 @@ do { \
     } \
   } \
 } while (0)
+
+static int preprocess_fullwidth_symbols(const oceanbase::common::ObString &stmt,
+                                        const oceanbase::sql::FPContext &fp_ctx,
+                                        oceanbase::common::ObIAllocator &allocator,
+                                        oceanbase::common::ObString &processed_stmt)
+{
+  int ret = OB_SUCCESS;
+  processed_stmt = stmt;
+  ObCharsetType charset_type = ObCharset::charset_type_by_coll(
+                               fp_ctx.charsets4parser_.string_collation_);
+  // only convert for oracle mode with specific charsets that contain fullwidth symbols
+  if (oceanbase::lib::is_oracle_mode() && ObFullWidthSymbolConverter::need_convert(charset_type, stmt)) {
+    ObFullWidthSymbolConverter full_width_sym_converter(&allocator, charset_type);
+    ObString converted_stmt;
+    if (OB_FAIL(full_width_sym_converter.convert(stmt, converted_stmt))) {
+      LOG_WARN("failed to preprocess fullwidth symbols for fast parser", K(ret), K(stmt));
+    } else if (full_width_sym_converter.has_conversions()) {
+      processed_stmt = converted_stmt;
+      LOG_DEBUG("fullwidth symbols preprocessed in fast parser", K(stmt), K(processed_stmt));
+    }
+  }
+  return ret;
+}
 
 int StringBuffer::resize_buffer(const int64_t size)
 {
@@ -106,8 +124,11 @@ int ObFastParser::parse(const common::ObString &stmt,
     }
   } else {
     ObFastParserOracle fp(allocator, fp_ctx);
-    if (OB_FAIL(fp.parse(stmt, no_param_sql, no_param_sql_len, param_list, param_num, values_token_pos))) {
-      LOG_WARN("failed to fast parser", K(stmt));
+    ObString processed_stmt = stmt;
+    if (OB_FAIL(preprocess_fullwidth_symbols(stmt, fp_ctx, allocator, processed_stmt))) {
+      LOG_WARN("failed to preprocess fullwidth symbols for fast parser", K(ret), K(stmt));
+    } else if (OB_FAIL(fp.parse(processed_stmt, no_param_sql, no_param_sql_len, param_list, param_num, values_token_pos))) {
+      LOG_WARN("failed to fast parser", K(processed_stmt));
     }
     if (OB_ISNULL(fp.param_node_list_)) {
       param_list = NULL;
@@ -144,8 +165,11 @@ int ObFastParser::parse(const common::ObString &stmt,
     }
   } else {
     ObFastParserOracle fp(allocator, fp_ctx);
-    if (OB_FAIL(fp.parse(stmt, no_param_sql, no_param_sql_len, param_list, param_num, values_token_pos))) {
-      LOG_WARN("failed to fast parser", K(stmt));
+    ObString processed_stmt = stmt;
+    if (OB_FAIL(preprocess_fullwidth_symbols(stmt, fp_ctx, allocator, processed_stmt))) {
+      LOG_WARN("failed to preprocess fullwidth symbols for fast parser", K(ret), K(stmt));
+    } else if (OB_FAIL(fp.parse(processed_stmt, no_param_sql, no_param_sql_len, param_list, param_num, values_token_pos))) {
+      LOG_WARN("failed to fast parser", K(processed_stmt));
     } else {
       fp_result.question_mark_ctx_ = fp.get_question_mark_ctx();
     }
@@ -160,7 +184,7 @@ ObFastParserBase::ObFastParserBase(ObIAllocator &allocator, const FPContext fp_c
   copy_begin_pos_(0), copy_end_pos_(0), str_buffer_(allocator), last_escape_check_pos_(0),
   try_check_tick_(0), param_node_list_(nullptr), tail_param_node_(nullptr),
   cur_token_type_(INVALID_TOKEN), allocator_(allocator),
-  found_insert_status_(NOT_FOUND_INSERT_TOKEN), values_token_pos_(0),
+  found_insert_status_(NOT_FOUND_INSERT_TOKEN), values_token_pos_(0), left_parenthesis_count_(0),
   parse_next_token_func_(nullptr), process_idf_func_(nullptr)
 {
   question_mark_ctx_.count_ = 0;
@@ -2860,7 +2884,7 @@ int ObFastParserMysql::process_identifier_begin_with_backslash()
 int ObFastParserMysql::process_values(const char *str)
 {
   int ret = OB_SUCCESS;
-  if (found_insert_status_ == FOUND_INSERT_TOKEN_ONCE) {
+  if (found_insert_status_ == FOUND_INSERT_TOKEN_ONCE && 0 == left_parenthesis_count_) {
     if (!is_oracle_mode_) {
       // mysql support: insert ... values / value (xx, ...);
       if (CHECK_EQ_STRNCASECMP("alues", 5)) {
@@ -3162,6 +3186,13 @@ int ObFastParserMysql::parse_next_token()
           }
         } else if (is_normal_char(ch)) {
           cur_token_type_ = NORMAL_TOKEN;
+          if (FOUND_INSERT_TOKEN_ONCE == found_insert_status_) {
+            if (is_left_parenthesis(ch)) {
+              left_parenthesis_count_++;
+            } else if (is_right_parenthesis(ch)) {
+              left_parenthesis_count_--;
+            }
+          }
           raw_sql_.scan();
         } else {
           cur_token_type_ = IGNORE_TOKEN;
@@ -3569,12 +3600,17 @@ int ObFastParserOracle::parse_next_token()
         break;
       }
       default : {
+        int64_t saved_pos = raw_sql_.cur_pos_;
         int64_t next_idf_pos = is_first_identifier_flags(raw_sql_.cur_pos_);
         if (-1 != next_idf_pos) {
           raw_sql_.cur_pos_ = next_idf_pos;
           if (OB_LIKELY(process_idf_func_ != nullptr)) {
             OZ ((this->*process_idf_func_)(false));
           }
+        } else if (raw_sql_.cur_pos_ != saved_pos) {
+          // Multi-byte special character (e.g. fullwidth comma/space/parenthesis)
+          // was consumed by is_first_identifier_flags via scan(), treat as normal token
+          cur_token_type_ = NORMAL_TOKEN;
         } else if (is_normal_char(ch)) {
           cur_token_type_ = NORMAL_TOKEN;
           raw_sql_.scan();

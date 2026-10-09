@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_OB_AGGREGATED_STORE_H_
@@ -43,6 +36,7 @@ public:
   }
   virtual ~ObCGAggCells() { reset(); }
   void reset();
+  void reuse();
   bool check_finished() const;
   int can_use_index_info(const blocksstable::ObMicroIndexInfo &index_info, const int32_t col_index, bool &can_agg) override;
   int add_agg_cell(ObAggCell *cell);
@@ -134,7 +128,7 @@ public:
                 (index_info.is_macro_node() || skip_index_info.min_snapshot_ > context_.trans_version_range_.base_version_) &&
                 !agg_row_.check_need_access_data() &&
                 index_info.can_blockscan() &&
-                (index_info.row_header_->is_major_node() || (iter_param_->enable_inc_skip_index() && index_info.row_header_->is_single_version_rows())) &&
+                (index_info.row_header_->is_major_node() || (iter_param_->enable_inc_skip_index() && index_info.row_header_->is_all_single_version_rows())) &&
                 (!agg_row_.has_lob_column_out() || !index_info.has_lob_out_row()) &&
                 !index_info.is_left_border() &&
                 !index_info.is_right_border();

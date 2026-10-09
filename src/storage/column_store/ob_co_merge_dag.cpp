@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -18,9 +11,6 @@
 #include "share/scheduler/ob_dag_warning_history_mgr.h"
 #include "storage/compaction/ob_compaction_dag_ranker.h"
 #include "observer/ob_server_event_history_table_operator.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_major_merge_ctx.h"
-#endif
 namespace oceanbase
 {
 using namespace share;
@@ -204,7 +194,9 @@ int ObCOMergePrepareTask::create_schedule_dag(ObCOTabletMergeCtx &ctx)
 
   if (OB_FAIL(ret)) {
   } else if (minor_result.handle_.get_count() > 0) {
-    if (OB_FAIL(schedule_minor_exec_dag(ctx, minor_result))) {
+    if (OB_FAIL(ObPartitionMergePolicy::set_filled_tx_scn_for_minor_merge(*ctx.get_tablet(), minor_result))) {
+      LOG_WARN("failed to set filled tx scn for minor merge", K(ret), K(minor_result));
+    } else if (OB_FAIL(schedule_minor_exec_dag(ctx, minor_result))) {
       LOG_WARN("failed to schedule minor exec dag", K(ret));
     }
   } else {
@@ -1143,6 +1135,24 @@ int ObCOMergeLogReplayTask::generate_next_task(ObITask *&next_task)
   return ret;
 }
 
+int ObCOMergeLogReplayTask::init_replayer(ObCOTabletMergeCtx &ctx)
+{
+  int ret = OB_SUCCESS;
+  if (ctx.enable_vectorized_batch_merge()) { // batch merge
+    if (OB_ISNULL(replayer_ = OB_NEWx(ObCOBatchMergeLogReplayer, &allocator_,
+        allocator_, ctx.static_param_, start_cg_idx_, end_cg_idx_))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("failed to alloc memory for replayer", K(ret));
+    }
+  } else if (OB_ISNULL(replayer_ = OB_NEWx(ObCOMergeLogReplayer, &allocator_,
+      allocator_, ctx.static_param_, start_cg_idx_, end_cg_idx_,
+      ctx.prefer_reuse_macro_block_ ? false :ctx.only_use_row_store()))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to alloc memory for replayer", K(ret));
+  }
+  return ret;
+}
+
 int ObCOMergeLogReplayTask::process()
 {
   int ret = OB_SUCCESS;
@@ -1163,12 +1173,8 @@ int ObCOMergeLogReplayTask::process()
   } else if (FALSE_IT(SET_MEM_CTX(ctx->mem_ctx_))) {
   } else if (OB_FAIL(ctx->prepare_index_builder(start_cg_idx_, end_cg_idx_))) {
     LOG_WARN("failed to prepare merge info", K(ret));
-  } else if (OB_ISNULL(buf = allocator_.alloc(sizeof(ObCOMergeLogReplayer)))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to alloc memory for persister", K(ret));
-  } else if (FALSE_IT(replayer_ = new (buf) ObCOMergeLogReplayer(allocator_,
-      ctx->static_param_, start_cg_idx_, end_cg_idx_,
-      ctx->prefer_reuse_macro_block_ ? false :ctx->only_use_row_store()))) {
+  } else if (OB_FAIL(init_replayer(*ctx))) {
+    LOG_WARN("failed to init replayer", K(ret));
   } else if (OB_FAIL(replayer_->init(*ctx, range_idx_))) {
     LOG_WARN("failed to init replayer", K(ret));
   } else if (OB_FAIL(replayer_->replay_merge_log())) {
@@ -1196,12 +1202,14 @@ int ObCOMergeLogReplayTask::process()
     }
   } else {
     ctx->update_execute_time(ObClockGenerator::getClock() - start_time);
-    LOG_INFO("succeed to replay merge log", K(ret), KPC(this));
     if (ctx->is_using_column_tmp_file() &&
         OB_TMP_FAIL(ctx->do_replay_finish(range_idx_, start_cg_idx_, end_cg_idx_))) { // release tmp file
       LOG_WARN("failed to do replay finish", K(tmp_ret));
     }
     (void)exe_dag->finish_replay(range_idx_, start_cg_idx_, end_cg_idx_, all_cg_replay_finished);
+    LOG_INFO("succeed to replay merge log", K(ret), K(all_cg_replay_finished), KPC(this), "tablet_id", ctx->get_tablet_id(),
+             "is_using_column_tmp_file", ctx->is_using_column_tmp_file());
+
     // cg status will not revert after this
     // if failed to generate finish task, dag retry will do it (TODO: add retry logic)
     if (all_cg_replay_finished && OB_FAIL(exe_dag->try_generate_finish_task(this))) {
@@ -1487,10 +1495,6 @@ int ObCOMergeDagNet::prepare_co_merge_ctx()
     LOG_INFO("Tenant Merge has been paused", K(ret), KPC(this));
   } else if (is_local_exec_mode(basic_param_.exec_mode_)) {
     co_merge_ctx_ = NEW_CTX(ObCOTabletMergeCtx);
-#ifdef OB_BUILD_SHARED_STORAGE
-  } else if (is_output_exec_mode(basic_param_.exec_mode_)) {
-    co_merge_ctx_ = NEW_CTX(ObSSCOTabletMergeCtx);
-#endif
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid exec mode", KR(ret), K_(basic_param));

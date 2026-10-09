@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_fd_simulator.h"
@@ -78,6 +71,21 @@ int ObFdSimulator::init_manager_array(FdSlot* second_array)
   }
 
   return ret;
+}
+
+void ObFdSimulator::destroy()
+{
+  common::ObSpinLockGuard guard(lock_);
+  if (is_init_) {
+    first_array_ = nullptr;
+    second_array_num_ = 0;
+    used_fd_cnt_ = 0;
+    total_fd_cnt_ = 0;
+    alloc_fd_cnt_ = 0;
+    release_fd_cnt_ = 0;
+    allocator_.reset();
+    is_init_ = false;
+  }
 }
 
 /*init the fd management unit*/

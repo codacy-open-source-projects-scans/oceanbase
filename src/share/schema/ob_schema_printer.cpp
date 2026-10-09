@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "lib/ob_errno.h"
@@ -43,11 +36,13 @@ using namespace common;
 ObSchemaPrinter::ObSchemaPrinter(ObSchemaGetterGuard &schema_guard,
                                  bool strict_compat,
                                  bool sql_quote_show_create,
-                                 bool ansi_quotes)
+                                 bool ansi_quotes,
+                                 ObCharsetCompatType charset_compat_type)
     : schema_guard_(schema_guard),
       strict_compat_(strict_compat),
       sql_quote_show_create_(sql_quote_show_create),
-      ansi_quotes_(ansi_quotes)
+      ansi_quotes_(ansi_quotes),
+      charset_compat_type_(charset_compat_type)
 {
 }
 
@@ -260,7 +255,8 @@ int ObSchemaPrinter::print_table_definition_columns(const ObTableSchema &table_s
             if (OB_SUCCESS == ret
                 && !is_agent_mode
                 && !is_oracle_mode
-                && !ObCharset::is_default_collation(col->get_collation_type())
+                && !ObCharset::is_default_collation(
+                  col->get_collation_type(), charset_compat_type_)
                 && CS_TYPE_INVALID != col->get_collation_type()
                 && CS_TYPE_BINARY != col->get_collation_type()) {
               if (OB_FAIL(databuff_printf(buf, buf_len, pos, " COLLATE %s",
@@ -1836,7 +1832,8 @@ int ObSchemaPrinter::print_table_definition_table_options(const ObTableSchema &t
   }
   if (OB_SUCCESS == ret && !is_oracle_mode && !agent_mode && !is_for_table_status
       && !is_index_tbl && !is_no_table_options(sql_mode) && CS_TYPE_INVALID != table_schema.get_collation_type()
-      && !ObCharset::is_default_collation(table_schema.get_charset_type(), table_schema.get_collation_type())) {
+      && !ObCharset::is_default_collation(
+        table_schema.get_charset_type(), table_schema.get_collation_type(), charset_compat_type_)) {
     if (OB_FAIL(databuff_printf(buf, buf_len, pos, "COLLATE = %s ",
                                              ObCharset::collation_name(table_schema.get_collation_type())))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print collate", K(ret), K(table_schema));
@@ -2157,6 +2154,22 @@ int ObSchemaPrinter::print_partition_func(const ObTableSchema &table_schema,
   }
 
   if (OB_FAIL(ret)) {
+  } else if (table_schema.is_random_part()) {
+    // Random-distributed table reuses the auto-partition machinery internally
+    // (auto_part_=true, part_func_type_=RANDOM, is_range_part(RANDOM)=true), so
+    // it would otherwise fall into the auto-partition range branch below and
+    // print "partition by <type_str>(<func_expr>) size (...)". The type string
+    // for RANDOM is the sentinel "unknown" and the func expr is the hidden
+    // "__pk_increment" column, both of which leak through when the random_part
+    // case is not checked first. Handle it explicitly up front and skip the
+    // partition list (printed by the caller) for the same reason.
+    if (!strict_compat) {
+      int64_t random_partition_size = part_opt.get_auto_part_size();
+      random_partition_size = random_partition_size >> 20; // MB
+      if (OB_FAIL(databuff_printf(buf, buf_len, pos, "partition by random size (\'%ldMB\')", random_partition_size))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to append display random distribution expr", K(ret));
+      }
+    }
   } else if (part_opt.get_auto_part() && part_opt.is_range_part() && !part_opt.is_interval_part()) {
     // is auto partition table
     // do not support show index table auto part info, because now we do not support index auto split sql grammar
@@ -2172,7 +2185,7 @@ int ObSchemaPrinter::print_partition_func(const ObTableSchema &table_schema,
                                     auto_split_size))) {
           SHARE_SCHEMA_LOG(WARN, "fail to append display auto split expr", K(ret));
         }
-      } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "partition by %.*s(%.*s)",
+      } else if (table_schema.is_partitioned_table() && OB_FAIL(databuff_printf(buf, buf_len, pos, "partition by %.*s(%.*s)",
                                          type_str.length(),
                                          type_str.ptr(),
                                          func_expr.length(),
@@ -2368,7 +2381,15 @@ int ObSchemaPrinter::print_table_definition_partition_options(const ObTableSchem
       if (OB_SUCC(ret)) {
         bool print_sub_part_element = is_subpart &&
                                       (strict_compat_ || !partition_schema->sub_part_template_def_valid());
-        if (table_schema.is_range_part()) {
+        if (table_schema.is_random_part()) {
+          // Random-distributed table is internally a range-typed auto-partition
+          // (is_range_part(RANDOM)==true), so it would fall into the range branch
+          // below and print partition elements like (partition "P8192" values
+          // less than (...)). Random partitions are an internal implementation
+          // detail and must NOT appear in show create. The "partition by random
+          // size (...)" text printed by print_partition_func is the entire
+          // user-visible partition clause for this table type.
+        } else if (table_schema.is_range_part()) {
           if (OB_FAIL(print_range_partition_elements(partition_schema, buf, buf_len, pos,
                                                     print_sub_part_element, agent_mode, false, tz_info))) {
             SHARE_SCHEMA_LOG(WARN, "fail to print partition elements", K(ret));
@@ -2494,7 +2515,8 @@ int ObSchemaPrinter::print_table_definition_table_options(
     }
   }
   if (OB_SUCC(ret)  && !is_for_table_status && !is_index_tbl && CS_TYPE_INVALID != table_schema.get_collation_type()
-      && !ObCharset::is_default_collation(table_schema.get_charset_type(), table_schema.get_collation_type())) {
+      && !ObCharset::is_default_collation(
+        table_schema.get_charset_type(), table_schema.get_collation_type(), charset_compat_type_)) {
     if (OB_FAIL(databuff_printf(buf, buf_len, pos, "COLLATE = %s ",
                                              ObCharset::collation_name(table_schema.get_collation_type())))) {
       OB_LOG(WARN, "fail to print collate", K(ret), K(table_schema));
@@ -2768,6 +2790,13 @@ int ObSchemaPrinter::print_index_definition_columns(
       } else if (NULL == (col = index_schema.get_column_schema(rowkey_column->column_id_))) {
         ret = OB_SCHEMA_ERROR;
         SHARE_SCHEMA_LOG(WARN, "fail to get column schema", K(ret));
+      } else if (!col->is_shadow_column()
+                 && OB_NOT_NULL(data_schema.get_column_schema(col->get_column_id()))
+                 && data_schema.get_column_schema(col->get_column_id())->is_spatial_generated_column()
+                 && !data_schema.get_column_schema(col->get_column_id())->is_spatial_cellid_column()) {
+        // 空间索引会在几何列上生成 cellid 和 mbr 两个隐藏生成列，
+        // SHOW CREATE/DBMS_METADATA 只需展示原始几何列一次（在 cellid 列处打印），
+        // 这里跳过 mbr 列，避免后面把它当作前缀索引解析表达式而报 -4016。
       } else if (!col->is_shadow_column()) {
         if (!is_first) {
           if (OB_FAIL(databuff_printf(buf, buf_len, pos, ",\n"))) {
@@ -2790,6 +2819,23 @@ int ObSchemaPrinter::print_index_definition_columns(
                             data_schema, data_col->get_column_name(), full_text_columns,
                             buf, buf_len, pos, is_first, is_agent_mode))) {
                 OB_LOG(WARN, "failed to print full text columns", K(ret));
+              }
+            } else if (data_col->is_spatial_cellid_column()) {
+              // 空间索引：索引列是建立在几何列上的隐藏生成列(cellid/mbr)，
+              // mbr 列已在外层跳过，这里只打印原始几何列名。
+              const uint64_t geo_col_id = data_col->get_geo_col_id();
+              const ObColumnSchemaV2 *geo_col = data_schema.get_column_schema(geo_col_id);
+              virtual_column_id = data_col->get_column_id();
+              if (OB_ISNULL(geo_col)) {
+                ret = OB_ERR_UNEXPECTED;
+                OB_LOG(WARN, "geo column schema is null", K(ret), K(geo_col_id));
+              } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " "))) {
+                OB_LOG(WARN, "fail to print space", K(ret));
+              } else if (OB_FAIL(print_identifier(buf, buf_len, pos, geo_col->get_column_name(), is_oracle_mode))) {
+                OB_LOG(WARN, "fail to print geo column name", K(ret), KPC(geo_col));
+              } else if (is_agent_mode
+                         && OB_FAIL(databuff_printf(buf, buf_len, pos, " id %lu", data_col->get_column_id()))) {
+                OB_LOG(WARN, "fail to print column id", K(ret), KPC(data_col));
               }
             } else if (data_col->is_func_idx_column()) {
               const ObString &expr_str = data_col->get_cur_default_value().is_null() ?
@@ -3098,11 +3144,18 @@ int ObSchemaPrinter::print_index_table_definition(
   if (OB_SUCC(ret)) {
     ObSEArray<ObString, 4> full_text_columns;
     uint64_t virtual_column_id = OB_INVALID_ID;
-    if (OB_FAIL(print_index_definition_columns(
+    bool is_oracle_mode = false;
+    if (OB_FAIL(index_table_schema->check_if_oracle_compat_mode(is_oracle_mode))) {
+      LOG_WARN("fail to check oracle mode", KR(ret), KPC(index_table_schema));
+    } else if (OB_FAIL(print_index_definition_columns(
                   *table_schema, *index_table_schema, full_text_columns, virtual_column_id, buf, buf_len, pos, is_agent_mode))) {
       OB_LOG(WARN, "fail to print columns", K(ret), K(*index_table_schema));
     } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n) "))) {
       OB_LOG(WARN, "fail to print )", K(ret));
+    } else if (is_oracle_mode && index_table_schema->is_spatial_index()
+               && OB_FAIL(databuff_printf(buf, buf_len, pos, "INDEXTYPE IS MDSYS.SPATIAL_INDEX "))) {
+      // 空间索引在 Oracle 下需要带上 INDEXTYPE IS MDSYS.SPATIAL_INDEX 子句
+      OB_LOG(WARN, "fail to print spatial index type", K(ret));
     } else if (OB_FAIL(print_table_definition_table_options(
                        *index_table_schema, full_text_columns, virtual_column_id, buf, buf_len, pos, false, NULL, is_agent_mode))) {
       OB_LOG(WARN, "fail to print table options", K(ret), K(*index_table_schema));
@@ -3188,210 +3241,6 @@ int ObSchemaPrinter::print_view_definiton(
   } else {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("buf is bull", K(ret));
-  }
-  return ret;
-}
-int ObSchemaPrinter::print_materialized_view_definition(
-    const uint64_t tenant_id,
-    const uint64_t table_id,
-    char *buf,
-    const int64_t &buf_len,
-    int64_t &pos,
-    const ObTimeZoneInfo *tz_info,
-    bool agent_mode,
-    ObSQLMode sql_mode) const
-{
-  int ret = OB_SUCCESS;
-  if (OB_ISNULL(buf)) {
-    ret = OB_ERR_UNEXPECTED;
-    SHARE_SCHEMA_LOG(WARN, "buf is null", KR(ret));
-  } else if (buf_len <= 0) {
-    ret = OB_ERR_UNEXPECTED;
-    SHARE_SCHEMA_LOG(WARN, "buf_len should bigger than 0", KR(ret));
-  } else {
-    const ObTableSchema *table_schema = nullptr;
-    const ObTableSchema *container_table_schema = nullptr;
-    uint64_t container_table_id = OB_INVALID_ID;
-    ObMViewInfo mview_info;
-    bool is_oracle_mode = false;
-    common::ObSEArray<uint64_t, 16> column_ids;
-    if (OB_FAIL(schema_guard_.get_table_schema(tenant_id, table_id, table_schema))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to get table schema", KR(ret), K(tenant_id), K(table_id));
-    } else if (OB_ISNULL(table_schema)) {
-      ret = OB_TABLE_NOT_EXIST;
-      SHARE_SCHEMA_LOG(WARN, "Unknow table", KR(ret), K(table_id));
-    } else if (OB_INVALID_ID == (container_table_id = table_schema->get_data_table_id())) {
-      ret = OB_ERR_UNEXPECTED;
-      SHARE_SCHEMA_LOG(WARN, "fail to get container_table_id", KR(ret), K(tenant_id), K(table_id));
-    } else if (OB_FAIL(schema_guard_.get_table_schema(tenant_id, container_table_id, container_table_schema))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to get container_table_schema", KR(ret), K(tenant_id), K(table_id), K(container_table_id));
-    } else if (OB_ISNULL(container_table_schema)) {
-      ret = OB_TABLE_NOT_EXIST;
-      SHARE_SCHEMA_LOG(WARN, "Unknow container table", KR(ret), K(table_id), K(container_table_id));
-    } else if (OB_FAIL(table_schema->check_if_oracle_compat_mode(is_oracle_mode))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to check oracle mode", KR(ret), KPC(table_schema));
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "CREATE MATERIALIZED VIEW "))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print materialized view definition", KR(ret));
-    } else if (OB_FAIL(print_identifier(buf, buf_len, pos, table_schema->get_table_name(), is_oracle_mode))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print materialized view name", KR(ret));
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " "))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print space", KR(ret));
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "("))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-    } else if (OB_FAIL(table_schema->get_column_ids(column_ids))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-    } else if (OB_FAIL(print_column_list(*table_schema, column_ids, buf, buf_len, pos))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-    }
-    if (OB_SUCC(ret) && !strict_compat_) {
-      const ObRowkeyInfo &rowkey_info = container_table_schema->get_rowkey_info();
-      bool is_first_col = true;
-      for (int64_t j = 0; OB_SUCC(ret) && j < rowkey_info.get_size(); ++j) {
-        const ObColumnSchemaV2 *col = nullptr;
-        if (OB_ISNULL(rowkey_info.get_column(j))) {
-          ret = OB_ERR_UNEXPECTED;
-          SHARE_SCHEMA_LOG(WARN, "fail to get column", KR(ret), K(tenant_id));
-        } else if (OB_ISNULL(col = schema_guard_.get_column_schema(tenant_id,
-                                                    container_table_id,
-                                                    rowkey_info.get_column(j)->column_id_))) {
-          ret = OB_ERR_UNEXPECTED;
-          SHARE_SCHEMA_LOG(WARN, "fail to get column schema", KR(ret), K(tenant_id),
-                       "column_id", rowkey_info.get_column(j)->column_id_);
-        } else if (OB_SUCC(ret)
-                   && col->get_column_id() != OB_HIDDEN_SESSION_ID_COLUMN_ID
-                   && !col->is_shadow_column()
-                   && !col->is_hidden()) {
-          if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%s%.*s%s",
-                                      is_first_col ? ", PRIMARY KEY (" : "",
-                                      col->get_column_name_str().length(),
-                                      col->get_column_name_str().ptr(),
-                                      j < rowkey_info.get_size() - 1 ? ", " : ""))) {
-            SHARE_SCHEMA_LOG(WARN, "fail to print primary key", KR(ret), K(col->get_column_name()));
-          }
-          is_first_col = false;
-          if (OB_SUCC(ret) && rowkey_info.get_size() - 1 == j
-              && OB_FAIL(databuff_printf(buf, buf_len, pos, ")"))) {
-            SHARE_SCHEMA_LOG(WARN, "fail to print materialized view rowkey", KR(ret));
-          }
-        }
-      }
-    }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ") "))) {
-      SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-    }
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(print_table_definition_table_options(*container_table_schema,
-                                                       buf,
-                                                       buf_len,
-                                                       pos,
-                                                       false,
-                                                       agent_mode,
-                                                       sql_mode))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to print table options", KR(ret), K(*container_table_schema));
-      } else if (!strict_compat_ && OB_FAIL(print_table_definition_partition_options(*container_table_schema,
-                                                                  buf,
-                                                                  buf_len,
-                                                                  pos,
-                                                                  agent_mode,
-                                                                  tz_info))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to print partition options", KR(ret), K(*container_table_schema));
-      } else if (OB_FAIL(print_table_definition_column_group(*container_table_schema,
-                                                              buf,
-                                                              buf_len,
-                                                              pos))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to print materialized view column group", KR(ret), K(*container_table_schema));
-      } else if (OB_FAIL(ObMViewInfo::fetch_mview_info(*GCTX.sql_proxy_, tenant_id, table_id, mview_info))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to fecth materialized view info", KR(ret), K(table_id));
-      } else if (!strict_compat_) {
-        switch (mview_info.get_refresh_method()) {
-          case ObMVRefreshMethod::NEVER:
-            if (OB_FAIL(databuff_printf(buf, buf_len, pos, " NEVER REFRESH "))) {
-              SHARE_SCHEMA_LOG(WARN, "fail to print refresh method never", KR(ret));
-            }
-            break;
-          case ObMVRefreshMethod::COMPLETE:
-            if (OB_FAIL(databuff_printf(buf, buf_len, pos, " REFRESH COMPLETE "))) {
-              SHARE_SCHEMA_LOG(WARN, "fail to print refresh method complete", KR(ret));
-            }
-            break;
-          case ObMVRefreshMethod::FAST:
-            if (OB_FAIL(databuff_printf(buf, buf_len, pos, " REFRESH FAST "))) {
-              SHARE_SCHEMA_LOG(WARN, "fail to print refresh method fast", KR(ret));
-            }
-            break;
-          case ObMVRefreshMethod::FORCE:
-            if (OB_FAIL(databuff_printf(buf, buf_len, pos, " REFRESH FORCE "))) {
-              SHARE_SCHEMA_LOG(WARN, "fail to print refresh method force", KR(ret));
-            }
-            break;
-          default:
-            ret = OB_NOT_SUPPORTED;
-            SHARE_SCHEMA_LOG(WARN, "unsupported refresh method", KR(ret));
-            break;
-        }
-        if (OB_SUCC(ret)) {
-          switch (mview_info.get_refresh_mode()) {
-            case ObMVRefreshMode::NEVER:
-              // nothing to print
-              break;
-            case ObMVRefreshMode::DEMAND:
-            default:
-              if (OB_FAIL(databuff_printf(buf, buf_len, pos, "ON DEMAND "))) {
-                SHARE_SCHEMA_LOG(WARN, "fail to print refresh mode", KR(ret));
-              }
-              break;
-          }
-        }
-      }
-    }
-    if (!strict_compat_ && OB_SUCC(ret)) {
-      if (OB_NOT_NULL(mview_info.get_refresh_next().ptr())) {
-        if (OB_FAIL(databuff_printf(buf, buf_len, pos,
-                                           "START WITH sysdate%s",
-                                           is_oracle_mode ? " + 0" : "()"))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print materialized view refresh start", KR(ret));
-        } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " NEXT %.*s ",
-                                            mview_info.get_refresh_next().length(),
-                                            mview_info.get_refresh_next().ptr()))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print mv refresh next", KR(ret));
-        }
-      }
-      if (OB_SUCC(ret)) {
-        if (table_schema->mv_enable_query_rewrite()
-                        && OB_FAIL(databuff_printf(buf, buf_len, pos,
-                                                  "ENABLE QUERY REWRITE "))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print materialized view enable qurey rewrite", KR(ret));
-        } else if (table_schema->mv_on_query_computation()
-                  && OB_FAIL(databuff_printf(buf, buf_len, pos,
-                                            "ENABLE ON QUERY COMPUTATION "))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print materialized view on query computation", KR(ret));
-        }
-      }
-    }
-    if (OB_SUCC(ret)) {
-      if (OB_FAIL(databuff_printf(buf, buf_len, pos, " AS "))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-      } else if (OB_FAIL(print_view_define_str(buf, buf_len, pos, is_oracle_mode,
-                                              table_schema->get_view_schema().get_view_definition_str()))) {
-        SHARE_SCHEMA_LOG(WARN, "fail to print view definition", K(ret));
-      } else if (!table_schema->get_view_schema().get_view_is_updatable() && is_oracle_mode) {
-        // with read only is only supported in syntax in oracle mode, but some inner system view is
-        // nonupdatable, so we have to check compatible mode here.
-        // view in oracle mode can't be both with read only and with check option.
-        if (OB_FAIL(databuff_printf(buf, buf_len, pos, " WITH READ ONLY"))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print view definition with read only", K(ret));
-        }
-      } else if (VIEW_CHECK_OPTION_CASCADED == table_schema->get_view_schema().get_view_check_option()) {
-        if (OB_FAIL(databuff_printf(buf, buf_len, pos, " WITH CHECK OPTION"))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print view definition with check option", K(ret));
-        }
-      } else if (VIEW_CHECK_OPTION_LOCAL == table_schema->get_view_schema().get_view_check_option()) {
-        if (OB_FAIL(databuff_printf(buf, buf_len, pos, " WITH LOCAL CHECK OPTION"))) {
-          SHARE_SCHEMA_LOG(WARN, "fail to print view definition with local check option", K(ret));
-        }
-      }
-    }
   }
   return ret;
 }
@@ -3489,19 +3338,23 @@ int ObSchemaPrinter::print_tablegroup_definition_tablegroup_options(
     }
   }
   if (OB_SUCC(ret)) {
-    bool is_oracle_mode = false;
     uint64_t compat_version = OB_INVALID_VERSION;
     uint64_t tenant_id = tablegroup_schema.get_tenant_id();
-    if (OB_FAIL(tablegroup_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
-    SHARE_SCHEMA_LOG(WARN, "fail to check oracle mode", KR(ret), K(tablegroup_id));
-    } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
-        LOG_WARN("get min data_version failed", K(ret), K(tenant_id));
-    } else if (compat_version >= DATA_VERSION_4_2_0_0) {
+    if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, compat_version))) {
+      SHARE_SCHEMA_LOG(WARN, "get min data_version failed", KR(ret), K(tenant_id));
+    } else {
       const ObString sharding = tablegroup_schema.get_sharding();
       if (OB_FAIL(databuff_printf(buf, buf_len, pos,
                                   " SHARDING = \'%.*s\'",
                                   sharding.length(), sharding.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print tablegroup sharding", K(ret), K(tablegroup_schema.get_sharding()));
+      } else if (!tablegroup_schema.get_scope().empty() && ((compat_version >= MOCK_DATA_VERSION_4_4_2_1
+          && compat_version < DATA_VERSION_4_5_0_0) || compat_version >= DATA_VERSION_4_6_1_0)) {
+        const ObString scope = tablegroup_schema.get_scope();
+        if (OB_FAIL(databuff_printf(buf, buf_len, pos,
+                                    " SCOPE = '%.*s'", scope.length(), scope.ptr()))) {
+          SHARE_SCHEMA_LOG(WARN, "fail to print tablegroup scope", KR(ret), K(scope));
+        }
       }
     }
   }
@@ -3992,7 +3845,8 @@ int ObSchemaPrinter::print_database_definiton(
     }
   }
   if (OB_SUCCESS == ret && !lib::is_oracle_mode() && CS_TYPE_INVALID != database_schema->get_collation_type()
-      && !ObCharset::is_default_collation(database_schema->get_collation_type())) {
+      && !ObCharset::is_default_collation(
+        database_schema->get_collation_type(), charset_compat_type_)) {
     if (OB_FAIL(databuff_printf(buf, buf_len, pos, " DEFAULT COLLATE = %s",
                                              ObCharset::collation_name(database_schema->get_collation_type())))) {
       SHARE_SCHEMA_LOG(WARN, "fail to print default collate", K(ret), K(*database_schema));
@@ -4036,6 +3890,39 @@ int ObSchemaPrinter::print_database_definiton(
       } else {
         ret = OB_ERR_UNEXPECTED;
         SHARE_SCHEMA_LOG(WARN, "tablegroup schema is null");
+      }
+    }
+  }
+  if (OB_SUCC(ret) && !strict_compat_) {
+    uint64_t tablespace_id = database_schema->get_default_tablespace_id();
+    if (common::OB_INVALID_ID == tablespace_id) {
+      const ObTenantSchema *tenant_schema = NULL;
+      if (OB_FAIL(schema_guard_.get_tenant_info(tenant_id, tenant_schema))) {
+        LOG_WARN("fail to get tenant info", K(ret));
+      } else if (OB_ISNULL(tenant_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        SHARE_SCHEMA_LOG(WARN, "tenant schema is null", K(ret), K(tenant_id));
+      } else if (tenant_schema->get_default_tablespace_id() == OB_INVALID_ID) {
+        // do nothing
+      } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " DEFAULT TABLESPACE NULL"))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace prefix", K(ret));
+      }
+    } else {
+      const ObTablespaceSchema *tablespace_schema = NULL;
+      if (OB_FAIL(schema_guard_.get_tablespace_schema(tenant_id, tablespace_id, tablespace_schema))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to get tablespace schema", K(ret), K(tenant_id), K(tablespace_id));
+      } else if (OB_ISNULL(tablespace_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        SHARE_SCHEMA_LOG(WARN, "tablespace schema is null", K(ret), K(tenant_id), K(tablespace_id));
+      } else if (OB_UNLIKELY(tablespace_schema->get_tablespace_name().empty())) {
+        ret = OB_ERR_UNEXPECTED;
+        SHARE_SCHEMA_LOG(WARN, "tablespace name is empty", K(ret), K(tenant_id), K(tablespace_id));
+      } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " DEFAULT TABLESPACE "))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace prefix", K(ret));
+      } else if (OB_FAIL(print_identifier(buf, buf_len, pos,
+                                          tablespace_schema->get_tablespace_name_str(),
+                                          lib::is_oracle_mode()))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace name", K(ret));
       }
     }
   }
@@ -5918,6 +5805,44 @@ int ObSchemaPrinter::print_user_definition(uint64_t tenant_id,
                                           is_oracle_mode))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print profile", K(ret));
       }
+    }
+  }
+
+  if (OB_SUCC(ret) && is_oracle_mode && !is_role) {
+    const ObDatabaseSchema *database_schema = NULL;
+    const ObTablespaceSchema *tablespace_schema = NULL;
+    if (OB_FAIL(schema_guard_.get_database_schema(tenant_id,
+                                                  user_info.get_user_name(),
+                                                  database_schema))) {
+      SHARE_SCHEMA_LOG(WARN, "fail to get database schema", K(ret));
+    } else if (OB_ISNULL(database_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      SHARE_SCHEMA_LOG(WARN, "database schema is null", K(ret));
+    } else if (OB_INVALID_ID == database_schema->get_default_tablespace_id()) {
+      const ObTenantSchema *tenant_schema = NULL;
+      if (OB_FAIL(schema_guard_.get_tenant_info(tenant_id, tenant_schema))) {
+        LOG_WARN("fail to get tenant info", K(ret));
+      } else if (OB_ISNULL(tenant_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        SHARE_SCHEMA_LOG(WARN, "tenant schema is null", K(ret), K(tenant_id));
+      } else if (tenant_schema->get_default_tablespace_id() == OB_INVALID_ID) {
+        // do nothing
+      } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " DEFAULT TABLESPACE NULL"))) {
+        SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace", K(ret));
+      }
+    } else if (OB_FAIL(schema_guard_.get_tablespace_schema(tenant_id,
+                                                           database_schema->get_default_tablespace_id(),
+                                                           tablespace_schema))) {
+      SHARE_SCHEMA_LOG(WARN, "fail to get tablespace schema", K(ret));
+    } else if (OB_ISNULL(tablespace_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      SHARE_SCHEMA_LOG(WARN, "tablespace schema is null", K(ret));
+    } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, " DEFAULT TABLESPACE "))) {
+      SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace prefix", K(ret));
+    } else if (OB_FAIL(print_identifier(buf, buf_len, pos,
+                                        tablespace_schema->get_tablespace_name_str(),
+                                        is_oracle_mode))) {
+      SHARE_SCHEMA_LOG(WARN, "fail to print default tablespace name", K(ret));
     }
   }
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TABLELOCK_OB_OBJ_LOCK_
@@ -203,7 +196,8 @@ public:
       const ObTableLockOp &lock_op,
       const uint64_t lock_mode_cnt_in_same_trans[],
       ObMalloc &allocator,
-      ObTxIDSet &conflict_tx_set);
+      ObTxIDSet &conflict_tx_set,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int unlock(
       const ObTableLockOp &unlock_op,
       const bool is_try_lock,
@@ -230,7 +224,8 @@ public:
       const int64_t expired_time,
       ObMalloc &allocator,
       const bool include_finish_tx = true,
-      const bool only_check_dml_lock = false);
+      const bool only_check_dml_lock = false,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   share::SCN get_min_ddl_lock_committed_scn(const share::SCN &flushed_scn) const;
   int get_table_lock_store_info(
       ObIArray<ObTableLockOp> &store_arr,
@@ -295,7 +290,8 @@ private:
       bool &conflict_with_dml_lock,
       const bool include_finish_tx = true,
       const bool only_check_dml_lock = false,
-      const bool check_for_replace = false);
+      const bool check_for_replace = false,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int update_lock_status_(
       const ObTableLockOp &lock_op,
       const share::SCN &commit_version,
@@ -311,17 +307,20 @@ private:
       const ObTableLockOp &lock_op,
       const uint64_t lock_mode_cnt_in_same_trans[],
       ObMalloc &allocator,
-      ObTxIDSet &conflict_tx_set);
+      ObTxIDSet &conflict_tx_set,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int slow_lock(
       const ObLockParam &param,
       const ObTableLockOp &lock_op,
       const uint64_t lock_mode_cnt_in_same_trans[],
       ObMalloc &allocator,
-      ObTxIDSet &conflict_tx_set);
+      ObTxIDSet &conflict_tx_set,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int try_fast_lock_(
       const ObTableLockOp &lock_op,
       const uint64_t lock_mode_cnt_in_same_trans[],
-      ObTxIDSet &conflict_tx_set);
+      ObTxIDSet &conflict_tx_set,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int unlock_(
       const ObTableLockOp &unlock_op,
       ObMalloc &allocator);
@@ -510,7 +509,8 @@ public:
       storage::ObStoreCtx &ctx,
       const ObTableLockOp &lock_op,
       const uint64_t lock_mode_cnt_in_same_trans[],
-      ObTxIDSet &conflict_tx_set);
+      ObTxIDSet &conflict_tx_set,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int unlock(
       const ObTableLockOp &lock_op,
       const bool is_try_lock,
@@ -531,7 +531,8 @@ public:
       ObTxIDSet &conflict_tx_set,
       const int64_t expired_time,
       const bool include_finish_tx = true,
-      const bool only_check_dml_lock = false);
+      const bool only_check_dml_lock = false,
+      ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   void print();
   share::SCN get_min_ddl_committed_scn(share::SCN &flushed_scn);
   int get_table_lock_store_info(ObIArray<ObTableLockOp> &store_arr, share::SCN freeze_scn);

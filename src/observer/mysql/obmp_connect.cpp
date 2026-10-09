@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -289,6 +282,8 @@ int ObMPConnect::get_proxy_user_name(ObString &proxied_user)
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_SERVER_INIT_NON_SYS);
+ERRSIM_POINT_DEF(ERRSIM_SERVER_INIT_REPLACE_SYS);
 int ObMPConnect::process()
 {
   int ret = deser_ret_;
@@ -320,18 +315,23 @@ int ObMPConnect::process()
     ObDiagnosticInfoSwitchGuard di_guard(conn->get_diagnostic_info());
     if (OB_FAIL(get_user_tenant(*conn))) {
       LOG_WARN("get user name and tenant name failed", K(ret));
-    } else if ((SS_INIT == GCTX.status_ || SS_STARTING == GCTX.status_)
+    } else if (((SS_INIT == GCTX.status_ || SS_STARTING == GCTX.status_) || ERRSIM_SERVER_INIT_NON_SYS)
                && !tenant_name_.empty()
                && 0 != tenant_name_.compare(OB_SYS_TENANT_NAME)) {
-      // accept system tenant for bootstrap, do not let other users login before observer start service
       ret = OB_SERVER_IS_INIT;
-      LOG_WARN("server is initializing", K(ret));
+      LOG_WARN("server is initializing, non-sys tenant login denied", KR(ret), K_(tenant_name));
+      FORWARD_USER_ERROR(OB_SERVER_IS_INIT,
+          "Server is initializing, non-sys tenant login is not allowed."
+          " Please login as sys tenant (root@sys).");
     } else if (SS_STOPPING == GCTX.status_) {
       ret = OB_SERVER_IS_STOPPING;
       LOG_WARN("server is stopping", K(ret));
-    } else if (GCTX.in_replace_sys()) {
+    } else if (GCTX.in_replace_sys() || ERRSIM_SERVER_INIT_REPLACE_SYS) {
       ret = OB_SERVER_IS_INIT;
       LOG_WARN("server is replacing sys tenant", KR(ret));
+      FORWARD_USER_ERROR(OB_SERVER_IS_INIT,
+          "Server is replacing sys tenant, login is temporarily unavailable."
+          " Please retry later.");
     } else if (OB_FAIL(extract_service_name(*conn, service_name, failover_mode))) {
       LOG_WARN("fail to extraxt service name", KR(ret));
     } else if (OB_FAIL(check_update_tenant_id(*conn, tenant_id))) {
@@ -382,6 +382,7 @@ int ObMPConnect::process()
                "user_id", session->get_user_id(),
                K(tenant_id),
                K(user_name_),
+               "database_name", session->get_database_name(),
                "group_id", conn->group_id_,
                "sql_req_level", conn->sql_req_level_);
       conn->set_auth_phase();
@@ -442,10 +443,12 @@ int ObMPConnect::process()
         case OB_PASSWORD_WRONG:
         case OB_ERR_INVALID_TENANT_NAME: {
           ret = OB_PASSWORD_WRONG;
+          const bool using_password = (NULL != session) ? !session->get_login_info().passwd_.empty()
+                                                        : !hsr_.get_auth_response().empty();
           snprintf(buf, OB_MAX_ERROR_MSG_LEN, ob_errpkt_str_user_error(ret, lib::is_oracle_mode()),
                    user_name_.length(), user_name_.ptr(),
                    host_name.length(), host_name.ptr(),
-                   (hsr_.get_auth_response().empty() ? "NO" : "YES"));
+                   (using_password ? "YES" : "NO"));
           break;
         }
         case OB_CLUSTER_NO_MATCH: {
@@ -479,15 +482,16 @@ int ObMPConnect::process()
                                     use_ssl ? "true" : "false",
                                     get_cs_protocol_type_name(protoType));
 
-      (void)ObSecurityAuditUtils::handle_security_audit(*session,
-                                                        stmt::T_LOGIN,
-                                                        ObString::make_string("CONNECT"),
-                                                        comment_text.string(),
-                                                        proc_ret);
+      (void)ObSecurityAuditUtils::handle_connect_security_audit(*session,
+                                                                stmt::T_LOGIN,
+                                                                ObString::make_string("CONNECT"),
+                                                                comment_text.string(),
+                                                                user_name_, client_ip_, db_name_,
+                                                                get_peer(), proc_ret);
       if (OB_SUCC(proc_ret)) {
-        ObAuditLogUtils::hanlde_connect_audit_log(*session, "LOGIN");
+        ObAuditLogUtils::handle_connect_audit_log(*session, "LOGIN");
       } else {
-        ObAuditLogUtils::hanlde_connect_fail_audit_log(*session, user_name_, client_ip_,
+        ObAuditLogUtils::handle_connect_fail_audit_log(*session, user_name_, client_ip_,
                                                        db_name_, get_peer(), proc_ret);
       }
 #endif
@@ -733,6 +737,12 @@ int ObMPConnect::load_privilege_info(ObSQLSessionInfo &session)
                                                                      ssl_st,
                                                                      asr_mem_pool_))) {
                 LOG_WARN("failed to handle caching_sha2_password authentication", K(ret));
+              }
+            }
+            // Update session login_info with the updated password after auth switch/caching_sha2
+            if (OB_SUCC(ret)) {
+              if (OB_FAIL(session.set_login_info(login_info))) {
+                LOG_WARN("failed to update login_info after auth switch", K(ret));
               }
             }
           }
@@ -1625,6 +1635,7 @@ int ObMPConnect::get_user_tenant(ObSMConnection &conn)
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_SERVER_INIT_SCHEMA_NOT_REFRESHED);
 int ObMPConnect::get_tenant_id(ObSMConnection &conn, uint64_t &tenant_id)
 {
   int ret = OB_SUCCESS;
@@ -1648,16 +1659,38 @@ int ObMPConnect::get_tenant_id(ObSMConnection &conn, uint64_t &tenant_id)
     } else if (OB_ISNULL(GCTX.schema_service_) || OB_ISNULL(GCTX.ob_service_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("schema_service or ob_service is NULL", KR(ret), K(tenant_id));
-    } else if (!GCTX.schema_service_->is_tenant_refreshed(tenant_id)) {
+    } else if (!GCTX.schema_service_->is_tenant_refreshed(tenant_id)
+               || ERRSIM_SERVER_INIT_SCHEMA_NOT_REFRESHED) {
       bool is_empty = false;
+      ObServerEmptyCheckInfo check_result;
       if (is_sys_tenant(tenant_id)
-          && OB_FAIL(GCTX.ob_service_->check_server_empty(is_empty))) {
+          && OB_FAIL(ObServerEmptyChecker::check_server_empty(is_empty, check_result))) {
         LOG_WARN("fail to check server is empty", KR(ret));
       } else if (is_sys_tenant(tenant_id) && is_empty) {
           //in bootstrap, we could use sys to login
-      } else {
+      } else if (!is_sys_tenant(tenant_id)) {
         ret = OB_SERVER_IS_INIT;
         LOG_WARN("tenant schema not refreshed yet", KR(ret), K(tenant_id));
+        FORWARD_USER_ERROR(OB_SERVER_IS_INIT,
+            "Server is initializing, non-sys tenant login is not allowed."
+            " Please login as sys tenant (root@sys).");
+      } else if (check_result.has_server_id()) {
+        ret = OB_SERVER_IS_INIT;
+        LOG_WARN("server is restarting, sys tenant schema not refreshed yet",
+                 KR(ret), "server_id", check_result.get_server_id());
+        FORWARD_USER_ERROR_MSG(OB_SERVER_IS_INIT,
+            "Server is not empty (server_id=%lu)."
+            " Sys tenant schema has not been refreshed yet, please retry later.",
+            check_result.get_server_id());
+      } else {
+        ret = OB_SERVER_IS_INIT;
+        LOG_WARN("server has never been bootstrapped but is not empty",
+                 KR(ret), K(check_result));
+        char diag_buf[ObServerEmptyCheckInfo::MAX_DIAG_LEN];
+        FORWARD_USER_ERROR_MSG(OB_SERVER_IS_INIT,
+            "Server is not empty but has never been bootstrapped. %s."
+            " Please check observer log for [CHECK_SERVER_EMPTY].",
+            check_result.to_cstr(diag_buf, sizeof(diag_buf)));
       }
     }
   }
@@ -1972,6 +2005,18 @@ int ObMPConnect::check_update_proxy_capability(ObSMConnection &conn) const
       server_proxy_cap_flag.cap_flags_.OB_CAP_CHANGE_USER_CONN_ATTRS = 1;
     } else {
       server_proxy_cap_flag.cap_flags_.OB_CAP_CHANGE_USER_CONN_ATTRS = 0;
+    }
+    // Enable proxy one way sync extra info for database level resource isolation
+    if (GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_6_1_0) {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_PROXY_EXTRA_INFO_ONE_WAY_SYNC = 1;
+    } else {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_PROXY_EXTRA_INFO_ONE_WAY_SYNC = 0;
+    }
+    if ((GET_MIN_CLUSTER_VERSION() >= MOCK_CLUSTER_VERSION_4_4_2_1 && GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_5_0_0) ||
+        GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_6_1_0) {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_MAX_EXECUTION_TIME = 1;
+    } else {
+      server_proxy_cap_flag.cap_flags_.OB_CAP_MAX_EXECUTION_TIME = 0;
     }
     server_proxy_cap_flag.cap_flags_.OB_CAP_OB_PROTOCOL_V2_COMPRESS = 1;
     conn.proxy_cap_flags_.capability_ = (server_proxy_cap_flag.capability_ & client_proxy_cap);  // if old java client, set it 0
@@ -2326,6 +2371,7 @@ int ObMPConnect::check_update_tenant_id(ObSMConnection &conn, uint64_t &tenant_i
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_SERVER_INIT_PRIV_FAIL);
 int ObMPConnect::verify_identify(ObSMConnection &conn, ObSQLSessionInfo &session,
     const uint64_t tenant_id)
 {
@@ -2335,10 +2381,13 @@ int ObMPConnect::verify_identify(ObSMConnection &conn, ObSQLSessionInfo &session
   if (OB_ISNULL(req_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("null request", K(ret));
-  } else if (OB_FAIL(load_privilege_info(session))) {
+  } else if (OB_FAIL(load_privilege_info(session)) || ERRSIM_SERVER_INIT_PRIV_FAIL) {
     int pre_ret = ret;
-    if (SS_INIT == GCTX.status_) {
+    if (SS_INIT == GCTX.status_ || ERRSIM_SERVER_INIT_PRIV_FAIL) {
       ret = OB_SERVER_IS_INIT;
+      FORWARD_USER_ERROR(OB_SERVER_IS_INIT,
+          "Server is initializing, privilege info has not been loaded yet."
+          " Please retry later.");
     }
     LOG_WARN("load privilege info fail", K(pre_ret), K(ret), K(GCTX.status_));
   } else if (ORACLE_MODE == session.get_compatibility_mode()

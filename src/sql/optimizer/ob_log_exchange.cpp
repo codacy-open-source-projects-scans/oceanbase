@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -425,13 +418,17 @@ int ObLogExchange::compute_op_parallel_and_server_info()
     } else {
       static_cast<ObLogExchange*>(child)->set_in_server_cnt(get_server_cnt());
     }
-    if (OB_SUCC(ret) && ObGlobalHint::DEFAULT_PARALLEL > get_parallel()) {
-      if (child->is_single()) {
-        set_parallel(child->get_available_parallel());
-        set_available_parallel(child->get_available_parallel());
+    if (OB_SUCC(ret)) {
+      if (ObGlobalHint::DEFAULT_PARALLEL > get_parallel()) {
+        if (child->is_single()) {
+          set_parallel(child->get_available_parallel());
+          set_available_parallel(child->get_available_parallel());
+        } else {
+          set_parallel(child->get_parallel());
+          set_available_parallel(child->get_available_parallel());
+        }
       } else {
-        set_parallel(child->get_parallel());
-        set_available_parallel(child->get_available_parallel());
+        set_available_parallel(std::max(get_parallel(), child->get_available_parallel()));
       }
     }
   }
@@ -499,7 +496,8 @@ int ObLogExchange::inner_est_cost(int64_t parallel, double child_card, double &o
                                     child->get_width(),
                                     dist_method_,
                                     parallel,
-                                    get_in_server_cnt());
+                                    get_in_server_cnt(),
+                                    popular_values_ratio_);
     if (OB_FAIL(ObOptEstCost::cost_exchange_out(est_cost_info,
                                                 op_cost,
                                                 opt_ctx))) {
@@ -513,7 +511,8 @@ int ObLogExchange::inner_est_cost(int64_t parallel, double child_card, double &o
                                    parallel,
                                    get_server_cnt(),
                                    is_local_order_,
-                                   sort_keys_);
+                                   sort_keys_,
+                                   popular_values_ratio_);
     if (OB_FAIL(ObOptEstCost::cost_exchange_in(est_cost_info,
                                                op_cost,
                                                opt_ctx))) {
@@ -537,6 +536,11 @@ int ObLogExchange::compute_sharding_info()
   } else {
     if (NULL != get_sharding()) {
       /* for hash-hash, repartition, broadcast, will be set separately*/
+      // When unmatch_row_dist_method_ is RANDOM, data is not truly partitioned
+      // Some rows may go to random workers, so we should use distributed sharding
+      if (unmatch_row_dist_method_ == ObPQDistributeMethod::RANDOM) {
+        strong_sharding_ = get_plan()->get_optimizer_context().get_distributed_sharding();
+      }
     } else if (is_pq_local()) {
       // for pull to local
       strong_sharding_ = get_plan()->get_optimizer_context().get_local_sharding();
@@ -572,6 +576,8 @@ int ObLogExchange::set_exchange_info(const ObExchangeInfo &exch_info)
   unmatch_row_dist_method_ = exch_info.unmatch_row_dist_method_;
   null_row_dist_method_ = exch_info.null_row_dist_method_;
   slave_mapping_type_ = exch_info.slave_mapping_type_;
+  slave_mapping_id_ = exch_info.slave_mapping_id_;
+  popular_values_ratio_ = exch_info.popular_values_ratio_;
   if (is_producer()) {
     in_server_cnt_ = exch_info.server_cnt_;
     slice_count_ = exch_info.slice_count_;

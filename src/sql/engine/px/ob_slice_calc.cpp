@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -640,12 +633,7 @@ int ObSlaveMapPkeyRandomIdxCalc::get_slice_idx_batch_inner(const ObIArray<ObExpr
       }
       if (OB_FAIL(get_task_idx_by_tablet_id(tablet_ids_[i], slice_indexes_[i]))) {
         if (OB_HASH_NOT_EXIST == ret) {
-          if (tablet_ids_[i] <= 0 && table_schema_.is_interval_part()) {
-            // interval partition is not supported to add partition by pdml, so change error code here
-            ret = OB_NOT_SUPPORTED;
-            LOG_WARN("add partition by pdml in interval partition table is not supported", K(ret));
-            LOG_USER_ERROR(OB_NOT_SUPPORTED, "add partition by pdml in interval partition table is");
-          } else if (OB_FAIL(check_schema_not_match())) {
+          if (OB_FAIL(check_schema_not_match())) {
             LOG_WARN("schema not match", K(ret));
           } else {
             ret = OB_NO_PARTITION_FOR_GIVEN_VALUE;
@@ -1865,11 +1853,6 @@ int ObSlaveMapPkeyHashIdxCalc::get_slice_indexes_inner(const ObIArray<ObExpr*> &
         } else {
           slice_idx_array.at(0) = part_ch_array.at(hash_idx).second_;
         }
-      } else if (tablet_id <= 0 && table_schema_.is_interval_part()) {
-        // interval partition is not supported to add partition by pdml, so change error code here
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("add partition by pdml in interval partition table is not supported", K(ret));
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "add partition by pdml in interval partition table is");
       } else {
         ret = OB_NO_PARTITION_FOR_GIVEN_VALUE;
         LOG_WARN("can't get the right partition", K(ret), K(tablet_id), K(unmatch_row_dist_method_));

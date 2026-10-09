@@ -1,17 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/mv/ob_mv_printer.h"
+#include "sql/resolver/mv/ob_mv_compat_control.h"
+#include "share/schema/ob_schema_service.h"
+#include "share/schema/ob_table_schema.h"
 #include "sql/optimizer/ob_optimizer_util.h"
 
 namespace oceanbase
@@ -51,9 +47,19 @@ int ObMVPrinter::print_mv_operators(ObIAllocator &str_alloc,
     LOG_WARN("failed to init mv printer", K(ret));
   } else if (OB_FAIL(gen_mv_operator_stmts(dml_stmts))) {
     LOG_WARN("failed to print mv operators", K(ret));
-  } else if (OB_UNLIKELY(dml_stmts.empty())) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected empty array", K(ret), K(dml_stmts.empty()));
+  } else if (dml_stmts.empty()) {
+    // only when all tables are the proctime table or without delta data, the dml_stmts are empty
+    for (int64_t i = 0; OB_SUCC(ret) && i < mv_def_stmt_.get_table_size(); ++i) {
+      const TableItem *table = mv_def_stmt_.get_table_item(i);
+      if (OB_ISNULL(table)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null table item", K(ret), K(i));
+      } else if (OB_UNLIKELY(!is_table_skip_refresh(*table)
+                             && !is_table_without_delta_data(*table))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("there is a table that needs to refresh, but gets unexpected empty refresh dml stmts", K(ret), KPC(table));
+      }
+    }
   } else if (OB_FAIL(operators.prepare_allocate(dml_stmts.count()))) {
     LOG_WARN("failed to prepare allocate ObSqlString arrays", K(ret), K(dml_stmts.count()));
   } else {
@@ -65,7 +71,10 @@ int ObMVPrinter::print_mv_operators(ObIAllocator &str_alloc,
                                               dml_stmts.at(i),
                                               operators.at(i),
                                               mv_def_stmt_.get_query_ctx()->sql_schema_guard_.get_schema_guard(),
-                                              obj_print_params))) {
+                                              obj_print_params,
+                                              NULL, /* param_store */
+                                              NULL, /* session */
+                                              true /* c_style, true for trans.write() */))) {
         LOG_WARN("fail to reconstruct sql", K(ret));
       } else {
         LOG_TRACE("generate one mv operator", K(i), K(operators.at(i)));
@@ -251,13 +260,12 @@ int ObMVPrinter::gen_delete_insert_data_access_stmt(const TableItem &source_tabl
 
 /**
  * @brief ObMVPrinter::gen_pre_table_view
- * SELECT xxx FROM ori_table where ora_rowscn <= last_refresh_scn;
  */
 int ObMVPrinter::gen_pre_table_view(const TableItem &ori_table, ObSelectStmt *&view_stmt)
 {
   int ret = OB_SUCCESS;
   TableItem *new_table = NULL;
-  ObRawExpr *scn_filter = NULL;
+  ObRawExpr *cond_expr = NULL;
   view_stmt = NULL;
   if (OB_FAIL(create_simple_stmt(view_stmt))) {
     LOG_WARN("failed to create simple stmt", K(ret));
@@ -275,10 +283,15 @@ int ObMVPrinter::gen_pre_table_view(const TableItem &ori_table, ObSelectStmt *&v
     LOG_WARN("failed to generate delta table view select lists", K(ret));
   } else if (is_table_skip_refresh(ori_table)) {
     // do nothing, no need to add exists cond for pre table view
-  } else if (OB_FAIL(gen_pre_scn_filter_for_table(ori_table, scn_filter))) {
-    LOG_WARN("failed to generate pre scn filter", K(ret));
-  } else if (OB_FAIL(view_stmt->add_condition_expr(scn_filter))) {
-    LOG_WARN("failed to push back scn filter", K(ret));
+  } else if (OB_FAIL(gen_modified_rows_cond_for_table(&ori_table,
+                                                      new_table,
+                                                      false, /* is_exists */
+                                                      false, /* match_old_only */
+                                                      false, /* use_orig_sel_alias */
+                                                      cond_expr))) {
+    LOG_WARN("failed to generate modified rows cond for table", K(ret));
+  } else if (OB_FAIL(view_stmt->get_condition_exprs().push_back(cond_expr))) {
+    LOG_WARN("failed to push back not exists filter", K(ret));
   }
   return ret;
 }
@@ -905,20 +918,155 @@ int ObMVPrinter::init()
   return ret;
 }
 
+/** @brief Generate a condition to include or exclude rows modified in `source_table`.
+ *
+ * 1. If `!is_exists && !match_old_only`
+ *    and the mlog of `source_table` covers all user-updatable columns in the base table,
+ *    the NOT EXISTS condition can be optimized to a row SCN filter:
+ *
+ *    `source_table`.ora_rowscn <= last_refresh_scn of `source_table`;
+ *
+ * 2. Otherwise, generate an EXISTS / NOT EXISTS condition according to `is_exists`:
+ *
+ *    [NOT] EXISTS
+ *      (SELECT 1 FROM mlog table of `source_table`
+ *       WHERE `outer_table`.pk = mlog(`source_table`).pk
+ *         AND mlog(`source_table`).ora_rowscn > last_refresh_scn of `source_table`
+ *         AND OLD_NEW$$ = 'O'  -- if `match_old_only`
+ *         -- no OLD_NEW$$ filter if `!match_old_only`)
+ *
+ * Valid combinations:
+ *   is_exists=false, match_old_only=false : pre-data, exclude all modified rows
+ *   is_exists=true,  match_old_only=true  : locate MV rows affected by old values (for delete/update)
+ *   is_exists=false, match_old_only=true  : exclude MV rows that have been deleted/updated
+ */
+int ObMVPrinter::gen_modified_rows_cond_for_table(const TableItem *source_table,
+                                                  const TableItem *outer_table,
+                                                  const bool is_exists,
+                                                  const bool match_old_only,
+                                                  const bool use_orig_sel_alias,
+                                                  ObRawExpr *&cond_expr)
+{
+  int ret = OB_SUCCESS;
+  bool can_use_rowscn = false;
+  if (OB_ISNULL(outer_table) || OB_ISNULL(source_table)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(outer_table), K(source_table));
+  } else if (!is_exists && !match_old_only
+             && OB_FAIL(check_mlog_covers_all_columns(*source_table, can_use_rowscn))) {
+    LOG_WARN("failed to check if mlog covers all columns", K(ret));
+  } else if (can_use_rowscn) {
+    if (OB_FAIL(gen_pre_scn_filter_for_table(*source_table, cond_expr))) {
+      LOG_WARN("failed to generate pre scn filter", K(ret));
+    }
+  } else if (OB_FAIL(gen_exists_cond_for_table(source_table,
+                                               outer_table,
+                                               is_exists,
+                                               match_old_only,
+                                               use_orig_sel_alias,
+                                               cond_expr))) {
+    LOG_WARN("failed to generate exists cond for table", K(ret));
+  }
+  return ret;
+}
+
+/**
+ * Check if mlog covers all user-updatable columns of the base table.
+ * If so, all user dml on the base table would be logged in mlog so that
+ * a NOT EXISTS (with matching both new and old mlog rows) filter
+ * can be equivalently optimized to an rowscn filter.
+ */
+int ObMVPrinter::check_mlog_covers_all_columns(const TableItem &table, bool &covers_all) const
+{
+  int ret = OB_SUCCESS;
+  covers_all = true;
+  const ObTableSchema *mlog_schema = NULL;
+  const ObTableSchema *base_table_schema = NULL;
+  ObQueryCtx *query_ctx = ctx_.stmt_factory_.get_query_ctx();
+  int64_t last_refresh_ts_us = 0;
+  if (OB_ISNULL(query_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null query ctx", K(ret));
+  } else if (OB_FAIL(get_mlog_table_schema(&table, mlog_schema))) {
+    LOG_WARN("failed to get mlog schema", K(ret));
+  } else if (OB_ISNULL(mlog_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null mlog schema", K(ret));
+  } else if (OB_FAIL(query_ctx->sql_schema_guard_.get_table_schema(table.ref_id_,
+                                                                   base_table_schema))) {
+    LOG_WARN("failed to get base table schema", K(ret));
+  } else if (OB_ISNULL(base_table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get unexpected null base table schema", K(ret), K(table.ref_id_));
+  } else if (NULL == ctx_.refresh_info_) {
+    // for rt mv that lacks refresh_info, use prefetched last refresh timestamp
+    last_refresh_ts_us = ctx_.rt_mv_last_refresh_ts_;
+  } else {
+    // for non-rt mv, get last_refresh_scn from refresh_info_ if it's valid
+    const share::SCN *scn = (MATERIALIZED_VIEW == table.table_type_)
+                            ? ctx_.refresh_info_->mv_last_refresh_scn_
+                            : &ctx_.refresh_info_->last_refresh_scn_;
+    if (NULL != scn && scn->is_valid()) {
+      last_refresh_ts_us = scn->convert_to_ts();
+    }
+  }
+  if (OB_FAIL(ret) || !covers_all) {
+    // do nothing
+  } else if (OB_UNLIKELY(last_refresh_ts_us <= 0)) {
+    covers_all = false; // should not reach here but fallback for safety
+  } else {
+    for (ObTableSchema::const_column_iterator col_iter = base_table_schema->column_begin();
+         OB_SUCC(ret) && covers_all && col_iter != base_table_schema->column_end();
+         ++col_iter) {
+      const ObColumnSchemaV2 *col = *col_iter;
+      uint64_t mlog_cid = OB_INVALID_ID;
+      const ObColumnSchemaV2 *mlog_col = NULL;
+      if (OB_ISNULL(col)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null column schema", K(ret));
+      } else if (col->is_hidden() || col->is_generated_column() || col->is_shadow_column()) {
+        // hidden columns, generated columns and shadow columns cannot be directly updated by user DML
+        // skip coverage check for these types of columns
+      } else if (FALSE_IT(mlog_cid = ObTableSchema::gen_mlog_col_id_from_ref_col_id(col->get_column_id()))) {
+      } else if (NULL == (mlog_col = mlog_schema->get_column_schema(mlog_cid))) {
+        covers_all = false;  // the column is not covered by mlog
+      } else if (mlog_col->is_rowkey_column()) {
+        // rowkey column cannot be added after creation, skip check
+      } else {
+        // check if the mlog column existed since last refresh
+        const int64_t mlog_col_schema_version = mlog_col->get_schema_version();
+        if (mlog_col_schema_version <= 0
+            || !share::schema::ObSchemaService::is_formal_version(mlog_col_schema_version)) {
+          // should not reach here but fallback for safety
+          covers_all = false;
+          LOG_INFO("mlog column schema version is not formal, disable rowscn optimization",
+                   K(ret), K(mlog_cid), K(mlog_col_schema_version));
+        // Formal schema_version is generated from ObTimeUtility::current_time()
+        // in microseconds, so it can be compared with SCN::convert_to_ts().
+        } else if (mlog_col_schema_version > last_refresh_ts_us) {
+          // mlog column was modified after last refresh, the coverage cannot be guaranteed
+          covers_all = false;
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 /**
  * @brief ObMVPrinter::gen_exists_cond_for_table
  *
- * EXISTS / NOT EXISTS
+ * [NOT] EXISTS
  *   (SELECT 1 FROM mlog$_source_table
  *    WHERE outer_table.pk <=> mlog$_source_table.pk
- *          AND ora_rowscn > last_refresh_scn
- *          AND OLD_NEW$$ = 'N'  -- for access_new_data = true
- *          AND OLD_NEW$$ = 'O'  -- for access_new_data = false
+ *      AND mlog$_source_table.ora_rowscn > last_refresh_scn of `source_table`
+ *      AND OLD_NEW$$ = 'O'  -- if `match_old_only`
+ *      -- no OLD_NEW$$ filter if `!match_old_only`)
  */
 int ObMVPrinter::gen_exists_cond_for_table(const TableItem *source_table,
                                            const TableItem *outer_table,
                                            const bool is_exists,
-                                           const bool access_new_data,
+                                           const bool match_old_only,
                                            const bool use_orig_sel_alias,
                                            ObRawExpr *&exists_expr)
 {
@@ -953,17 +1101,15 @@ int ObMVPrinter::gen_exists_cond_for_table(const TableItem *source_table,
   } else if (OB_FAIL(create_simple_table_item(subquery, mlog_schema->get_table_name_str(),
                                               delta_src_table))) {
     LOG_WARN("failed to create simple table item", K(ret));
-  // already chose dynamic sampling for mlog in ObDynamicSamplingUtils::get_valid_dynamic_sampling_level, do not need hint
-  // } else if (OB_FAIL(add_dynamic_sampling_hint(subquery, delta_src_table))) {
-  //   LOG_WARN("failed to add dynamic sampling hint", K(ret));
   } else if (OB_FAIL(subquery->get_select_items().push_back(sel_item))) {
     LOG_WARN("failed to push back not exists expr", K(ret));
   } else if (OB_FAIL(gen_mlog_table_scn_filters(*source_table, *delta_src_table, subquery->get_condition_exprs()))) {
     LOG_WARN("failed to generate mlog table scn filters", K(ret));
-  } else if (OB_FAIL(append_old_new_col_filter(*delta_src_table,
-                                               access_new_data,
-                                               false, /* access_null */
-                                               subquery->get_condition_exprs()))) {
+  } else if (match_old_only
+             && OB_FAIL(append_old_new_col_filter(*delta_src_table,
+                                                  false, /* access_new */
+                                                  false, /* access_null */
+                                                  subquery->get_condition_exprs()))) {
     LOG_WARN("failed to append old new filter", K(ret));
   } else if (OB_FAIL(gen_rowkey_join_conds_for_table(*source_table,
                                                      *delta_src_table,
@@ -1364,11 +1510,18 @@ int ObMVPrinter::add_mv_rowkey_into_select(ObSelectStmt *stmt,
 int ObMVPrinter::add_semi_to_inner_hint(ObDMLStmt *stmt)
 {
   int ret = OB_SUCCESS;
+  bool is_disabled = false;
   ObSemiToInnerHint *semi_to_inner_hint = NULL;
   ObSEArray<ObItemType, 1> conflict_hints;
   if (OB_ISNULL(stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(stmt));
+  } else if (OB_FAIL(ObMVCompatControl::check_feature_enable(ctx_.compat_version_,
+                                                              ObMVCompatFeatureType::DISABLE_SEMI_TO_INNER_HINT,
+                                                              is_disabled))) {
+    LOG_WARN("failed to check mv compat feature", K(ret));
+  } else if (is_disabled) {
+    // do nothing
   } else if (OB_FAIL(ObQueryHint::create_hint(&ctx_.alloc_, T_SEMI_TO_INNER, semi_to_inner_hint))) {
     LOG_WARN("failed to create semi to inner hint", K(ret));
   } else if (OB_ISNULL(semi_to_inner_hint)) {
@@ -1406,10 +1559,26 @@ int ObMVPrinter::add_dynamic_sampling_hint(ObDMLStmt *stmt,
   return ret;
 }
 
-bool ObMVPrinter::is_table_skip_refresh(const TableItem &table) const
+bool ObMVPrinter::is_table_without_delete(const TableItem &table) const
 {
-  // TODO we can skip refresh for tables that do not contain delta data
-  return table.is_mv_proctime_table_;
+  bool without_delete = false;
+  if (table.is_basic_table()
+      && NULL != ctx_.refresh_info_
+      && NULL != ctx_.refresh_info_->tables_without_delete_) {
+    without_delete = ObOptimizerUtil::find_item(*ctx_.refresh_info_->tables_without_delete_, table.ref_id_);
+  }
+  return without_delete;
+}
+
+bool ObMVPrinter::is_table_without_insert(const TableItem &table) const
+{
+  bool without_insert = false;
+  if (table.is_basic_table()
+      && NULL != ctx_.refresh_info_
+      && NULL != ctx_.refresh_info_->tables_without_insert_) {
+    without_insert = ObOptimizerUtil::find_item(*ctx_.refresh_info_->tables_without_insert_, table.ref_id_);
+  }
+  return without_insert;
 }
 
 int ObMVPrinter::print_complete_refresh_mview_operator(ObRawExprFactory &expr_factory,

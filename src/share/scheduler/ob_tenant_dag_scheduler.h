@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SHARE_SCHEDULER_OB_DAG_SCHEDULER_H_
@@ -363,6 +356,11 @@ public:
     TASK_TYPE_SS_SSTABLE_BACKUP = 200,
     TASK_TYPE_SS_SSTABLE_BACKUP_FINISH = 201,
     TASK_TYPE_SS_FINISH_LS_BACKUP = 202,
+    TASK_TYPE_BACKUP_INDEX_REBUILD_PREPARE = 203,
+    TASK_TYPE_BACKUP_MACRO_INDEX_MERGE_FINISH = 204,
+    TASK_TYPE_BACKUP_MACRO_INDEX_READ = 205,
+    TASK_TYPE_BACKUP_META_INDEX_MERGE_FINISH = 206,
+    TASK_TYPE_BACKUP_META_INDEX_READ = 207,
     TASK_TYPE_MAX,
   };
 
@@ -570,8 +568,6 @@ public:
       diagnose_type = ObDiagnoseTabletType::TYPE_MINI_MERGE;
     } else if (ObDagType::ObDagTypeEnum::DAG_TYPE_MERGE_EXECUTE == type) {
       diagnose_type = ObDiagnoseTabletType::TYPE_MINOR_MERGE;
-    } else if (ObDagType::ObDagTypeEnum::DAG_TYPE_REFRESH_SSTABLES == type) {
-      diagnose_type = ObDiagnoseTabletType::TYPE_S2_REFRESH;
     } else if (ObDagType::ObDagTypeEnum::DAG_TYPE_MAJOR_MERGE <= type
             && ObDagType::ObDagTypeEnum::DAG_TYPE_CO_MERGE_SCHEDULE >= type) {
       diagnose_type = ObDiagnoseTabletType::TYPE_MEDIUM_MERGE;
@@ -1010,7 +1006,9 @@ public:
     : allocator_(nullptr),
       ha_allocator_(nullptr),
       scheduler_(nullptr),
-      dag_net_map_rwlock_(ObLatchIds::DAG_NET_SCHEDULER)
+      dag_net_map_rwlock_(ObLatchIds::DAG_NET_SCHEDULER),
+      max_co_major_running_dag_net_cnt_(0),
+      co_major_running_cnt_(0)
   {}
   ~ObDagNetScheduler() { destroy(); }
   void destroy();
@@ -1028,7 +1026,15 @@ public:
   void finish_dag_net_without_lock(ObIDagNet &dag_net);
   void erase_dag_net_list_or_abort(const ObDagNetListIndex &dag_net_list_index, ObIDagNet *dag_net);
   void add_dag_net_list_or_abort(const ObDagNetListIndex &dag_net_list_index, ObIDagNet *dag_net);
+  static inline bool is_co_major_running_event_(const ObDagNetListIndex &dag_net_list_index,
+                                                const ObIDagNet *dag_net)
+  {
+    return RUNNING_DAG_NET_LIST == dag_net_list_index
+        && OB_NOT_NULL(dag_net)
+        && ObDagNetType::DAG_NET_TYPE_CO_MAJOR == dag_net->get_type();
+  }
   void finish_dag_net(ObIDagNet &dag_net);
+  void refresh_co_major_cap(const int64_t compaction_dag_limit);
   void dump_dag_status();
   int64_t get_dag_net_count();
   void get_all_dag_scheduler_info(
@@ -1067,7 +1073,12 @@ private:
   static const int64_t PRINT_SLOW_DAG_NET_THREASHOLD = 30 * 60 * 1000 * 1000L; // 30m
   static const int64_t SLOW_COMPACTION_DAG_NET_THREASHOLD = 6 * 60 * 60 * 1000 * 1000L; // 6hours
   static const int64_t LOOP_PRINT_LOG_INTERVAL = 30 * 1000 * 1000L; // 30s
+  static const int64_t STARVATION_LOG_INTERVAL = 30 * 1000 * 1000L; // 30s
 
+  // CO_MAJOR sub-cap = compaction_dag_limit * 90% (min 1), reserves ~10% for other types
+  // (MIGRATION/BACKUP/RESTORE, etc.) to avoid starvation from tablet-granularity CO_MAJOR floods.
+  // Init snapshots from dag_limit; refresh_co_major_cap keeps it in sync at runtime.
+  static constexpr int64_t CO_MAJOR_RATIO_PERCENT = 90;
 private:
   ObIAllocator* allocator_;
   ObIAllocator* ha_allocator_;
@@ -1081,6 +1092,8 @@ private:
   DagNetList dag_net_list_[DAG_NET_LIST_MAX];
   DagNetIdMap dag_net_id_map_; // for HA to search dag_net of specified dag_id  // lock by dag_net_map_rwlock_
   int64_t dag_net_cnts_[ObDagNetType::DAG_NET_TYPE_MAX];  // lock by dag_net_map_rwlock_
+  int64_t max_co_major_running_dag_net_cnt_;  // lock by dag_net_map_rwlock_; refreshed via refresh_co_major_cap
+  int64_t co_major_running_cnt_;  // lock by dag_net_map_rwlock_
 };
 
 class ObReclaimUtil
@@ -1207,6 +1220,7 @@ public:
   int cancel_dag(const ObIDag &dag, const bool force_cancel = false);
   int check_dag_exist(const ObIDag &dag, bool &exist, bool &is_emergency);
   int64_t get_limit(); // without lock
+  int64_t get_dag_list_size_without_lock() const; // without lock, sum of RANK & READY & WAITING dag lists
   int64_t get_adaptive_limit();
   void set_adaptive_limit(const int64_t limit);
   int64_t get_running_task_cnt();
@@ -1395,6 +1409,7 @@ public:
   void clear_fast_schedule_dag_net() { ATOMIC_SET(&fast_schedule_dag_net_, false); }
   bool dag_count_overflow(const ObDagType::ObDagTypeEnum type);
   int64_t get_dag_count(const ObDagType::ObDagTypeEnum type);
+  int64_t get_prio_dag_count_without_lock(const ObDagPrio::ObDagPrioEnum prio); // without lock
   int64_t get_running_task_cnt(const ObDagPrio::ObDagPrioEnum priority);
   int get_limit(const int64_t prio, int64_t &limit);
   int get_adaptive_limit(const int64_t prio, int64_t &limit);
@@ -1500,11 +1515,7 @@ private:
       int64_t &idx);
   common::ObIAllocator &get_allocator(const bool is_ha);
   int init_allocator(const uint64_t tenant_id, const lib::ObLabel &label, lib::MemoryContext &mem_context);
-  void inner_reload_config();
   void adapt_window_thread_cnt() { (void) prio_sche_[ObDagPrio::DAG_PRIO_COMPACTION_LOW].adapt_window_thread_cnt(); }
-#ifdef OB_BUILD_SHARED_STORAGE
-  #include "share/scheduler/ob_tenant_ss_dag_scheduler.h"
-#endif
 private:
   bool is_inited_;
   bool fast_schedule_dag_net_;
@@ -1659,8 +1670,7 @@ int ObTenantDagScheduler::alloc_dag_with_priority(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     COMMON_LOG(WARN, "ObTenantDagScheduler is not inited", K(ret));
-  } else if (prio < ObDagPrio::DAG_PRIO_COMPACTION_HIGH
-     || prio >= ObDagPrio::DAG_PRIO_MAX) {
+  } else if (OB_UNLIKELY(!ObDagPrio::is_valid_prio(prio))) {
     ret = OB_INVALID_ARGUMENT;
     COMMON_LOG(WARN, "get invalid arg", K(ret), K(prio));
   } else if (OB_FAIL(alloc_dag(dag, is_ha_prio_dag(prio)))) {
@@ -1777,16 +1787,6 @@ int ObTenantDagScheduler::create_and_add_dag(
 inline bool is_ha_backfill_dag(const ObDagType::ObDagTypeEnum dag_type)
 {
   return ObDagType::DAG_TYPE_TABLET_BACKFILL_TX == dag_type
-#ifdef OB_BUILD_SHARED_STORAGE
-      || ObDagType::DAG_TYPE_SS_START_TRANSFER_BACKFILL_TX == dag_type
-      || ObDagType::DAG_TYPE_SS_FINISH_TRANSFER_BACKFILL_TX == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_BACKFILL_SCHEDULE == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_BACKFILL_UPLOAD == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_BACKFILL_TX == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_REPLACE_TABLE == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_REFRESH_TABLE == dag_type
-      || ObDagType::DAG_TYPE_SS_TABLET_UPDATE_INFO == dag_type
-#endif
       ;
 }
 

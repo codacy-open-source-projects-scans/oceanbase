@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -18,6 +11,7 @@
 #include "storage/tx/ob_trans_id.h"
 #include "storage/tx/ob_tx_seq.h"
 #include "lib/allocator/page_arena.h"
+#include "share/scn.h"
 
 namespace oceanbase
 {
@@ -117,7 +111,7 @@ class ObDDLIncCommitLog final
 public:
   ObDDLIncCommitLog();
   ~ObDDLIncCommitLog();
-  int init(const ObDDLIncLogBasic &log_basic, const bool is_rollback);
+  int init(const ObDDLIncLogBasic &log_basic, const bool is_rollback, const share::SCN start_scn = share::SCN::base_scn());
   int set_ss_inc_major(const blocksstable::ObSSTable *data_inc_major,
                        const blocksstable::ObSSTable *lob_inc_major);
   bool is_valid() const { return log_basic_.is_valid(); }
@@ -126,7 +120,8 @@ public:
   bool is_co_sstable() const { return is_co_sstable_; }
   const ObString &get_data_inc_major_buffer() const { return data_inc_major_buffer_; }
   const ObString &get_lob_inc_major_buffer() const { return lob_inc_major_buffer_; }
-  TO_STRING_KV(K_(log_basic), K_(is_rollback), K_(is_co_sstable), K_(data_inc_major_buffer), K_(lob_inc_major_buffer));
+  share::SCN get_start_scn() const { return start_scn_; }
+  TO_STRING_KV(K_(log_basic), K_(is_rollback), K_(is_co_sstable), K_(data_inc_major_buffer), K_(lob_inc_major_buffer), K_(start_scn));
 private:
   ObArenaAllocator allocator_;
   ObDDLIncLogBasic log_basic_;
@@ -134,6 +129,7 @@ private:
   bool is_co_sstable_;
   ObString data_inc_major_buffer_;
   ObString lob_inc_major_buffer_;
+  share::SCN start_scn_;
 };
 
 } // namespace storage

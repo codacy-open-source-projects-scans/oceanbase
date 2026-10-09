@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_INDEX_BLOCK_DATA_PREPARE_H_
@@ -593,6 +586,7 @@ void TestIndexBlockDataPrepare::close_builder_and_prepare_sstable(const int64_t 
   param.original_size_ = res.original_size_;
   param.nested_offset_ = res.nested_offset_;
   param.nested_size_ = res.nested_size_;
+  param.sstable_skip_index_ = res.sstable_skip_index_;
   param.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   ASSERT_EQ(OB_SUCCESS, param.data_block_ids_.assign(res.data_block_ids_));
   ASSERT_EQ(OB_SUCCESS, param.other_block_ids_.assign(res.other_block_ids_));
@@ -720,6 +714,7 @@ void TestIndexBlockDataPrepare::close_builder_and_prepare_co_sstable(const int64
   param.original_size_ = res.original_size_;
   param.nested_offset_ = res.nested_offset_;
   param.nested_size_ = res.nested_size_;
+  param.sstable_skip_index_ = res.sstable_skip_index_;
   param.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   ASSERT_EQ(OB_SUCCESS, param.data_block_ids_.assign(res.data_block_ids_));
   ASSERT_EQ(OB_SUCCESS, param.other_block_ids_.assign(res.other_block_ids_));
@@ -1427,6 +1422,7 @@ void TestIndexBlockDataPrepare::prepare_partial_sstable(const int64_t column_cnt
   param.original_size_ = res.original_size_;
   param.nested_offset_ = res.nested_offset_;
   param.nested_size_ = res.nested_size_;
+  param.sstable_skip_index_ = res.sstable_skip_index_;
   param.compressor_type_ = ObCompressorType::NONE_COMPRESSOR;
   param.ddl_scn_.convert_from_ts(ObTimeUtility::current_time());
   param.rec_scn_.set_min();

@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file is for implement of func json expr helper
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -844,8 +836,15 @@ int cast_to_string(common::ObIAllocator *allocator,
                    uint8_t &is_type_mismatch)
 {
   INIT_SUCC(ret);
-  UNUSED(ctx);
   ObString val;
+  bool need_pad_char = false;
+  // Check if PAD_CHAR_TO_FULL_LENGTH mode is enabled for CHAR type in MySQL mode
+  if (lib::is_mysql_mode() && ObCharType == cast_param.dst_type_) {
+    ObBasicSessionInfo *session = ctx.exec_ctx_.get_my_session();
+    if (OB_NOT_NULL(session)) {
+      need_pad_char = is_pad_char_to_full_length(session->get_sql_mode());
+    }
+  }
   if (OB_ISNULL(j_base)) {
     ret = OB_ERR_NULL_VALUE;
     LOG_WARN("json base is null", K(ret));
@@ -967,8 +966,14 @@ int cast_to_string(common::ObIAllocator *allocator,
           LOG_USER_ERROR(OB_OPERATE_OVERFLOW, "STRING", "json expr");
         }
       }
-      if (OB_SUCC(ret) && ObCharType == cast_param.dst_type_ && CS_TYPE_BINARY == cast_param.dst_coll_type_) {   // binary need padding
-        int64_t text_length = val.length();
+      // Padding for CHAR type: binary CHAR always needs padding, non-binary CHAR needs padding
+      // when PAD_CHAR_TO_FULL_LENGTH is set
+      if (OB_SUCC(ret) && ObCharType == cast_param.dst_type_
+          && (CS_TYPE_BINARY == cast_param.dst_coll_type_ || need_pad_char)) {
+        // For binary charset, use byte length; for non-binary charset, use character length
+        int64_t text_length = (CS_TYPE_BINARY == cast_param.dst_coll_type_)
+                              ? val.length()
+                              : str_len_char;
         if (max_accuracy_len > text_length) {
           int64_t padding_cnt = max_accuracy_len - text_length;
           ObString padding_res;
@@ -1873,10 +1878,9 @@ int ObJsonUtil::get_json_path(ObExpr* expr,
   INIT_SUCC(ret);
   ObDatum *json_datum = NULL;
   ObObjType type = expr->datum_meta_.type_;
-  ObJsonPathCache ctx_cache(&temp_allocator);
   ObJsonPath* j_path = nullptr;
   ObString j_path_text;
-  ObJsonPathCache* path_cache = path_cache = param_ctx->get_path_cache();
+  ObJsonPathCache* path_cache = param_ctx->get_path_cache();
   // parse json path
   if (!param_ctx->is_first_exec_ && param_ctx->is_json_path_const_
       && OB_NOT_NULL(path_cache)) {
@@ -1905,7 +1909,6 @@ int ObJsonUtil::get_json_path(ObExpr* expr,
                                                        j_path_text))) {
         LOG_WARN("convert string memory failed", K(ret), K(j_path_text));
       }
-      path_cache = ((path_cache != NULL) ? path_cache : &ctx_cache);
     }
   }
   if (OB_SUCC(ret)) {
@@ -1933,7 +1936,11 @@ int ObJsonUtil::get_json_doc(ObExpr *expr,
   ObDatum *json_datum = NULL;
   ObObjType val_type = expr->datum_meta_.type_;
   ObCollationType cs_type = expr->datum_meta_.cs_type_;
-
+  ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+  int64_t cached_json_max_depth = JSON_DOCUMENT_MAX_DEPTH;
+  if (OB_NOT_NULL(session)) {
+    cached_json_max_depth = session->get_cached_json_document_max_depth();
+  }
   bool is_oracle = lib::is_oracle_mode();
 
   if (OB_FAIL(allocator.eval_arg(expr, ctx, json_datum))) {
@@ -1956,12 +1963,17 @@ int ObJsonUtil::get_json_doc(ObExpr *expr,
       ObJsonInType j_in_type = ObJsonExprHelper::get_json_internal_type(val_type);
       ObJsonInType expect_type = j_in_type;
       bool relax_json = (is_oracle && relax);
+      ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+      bool json_float_full_precision =
+        OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
       uint32_t parse_flag = relax_json ? ObJsonParser::JSN_RELAXED_FLAG : 0;
+      ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                       ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
       if (is_oracle && j_str.length() == 0) {
         is_null = true;
       } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&allocator, j_str, j_in_type,
                                                   expect_type, j_base, parse_flag,
-                                                  ObJsonExprHelper::get_json_max_depth_config()))) {
+                                                  cached_json_max_depth))) {
         LOG_WARN("fail to get json base", K(ret), K(j_in_type));
         if (ret == OB_ERR_JSON_OUT_OF_DEPTH) {
           is_cover_by_error = false;

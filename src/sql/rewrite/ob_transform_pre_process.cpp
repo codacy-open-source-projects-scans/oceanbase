@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -5185,6 +5178,7 @@ int ObTransformPreProcess::transform_for_nested_aggregate(ObDMLStmt *&stmt, bool
   } else {
     ObSelectStmt *sub_stmt = NULL;
     ObSelectStmt *select_stmt = static_cast<ObSelectStmt *>(stmt);
+    bool hier_trans_happened = false;
     /**
      * 本函数将含有嵌套聚合的stmt改写成两层stmt
      * select sum(b), max(sum(b)) from t1 group by b;
@@ -5203,14 +5197,22 @@ int ObTransformPreProcess::transform_for_nested_aggregate(ObDMLStmt *&stmt, bool
     } else if (OB_FAIL(generate_child_level_aggr_stmt(select_stmt,
                                                       sub_stmt))) {
       LOG_WARN("failed to generate first level aggr stmt.", K(ret));
+    } else if (select_stmt->is_hierarchical_query()
+               && OB_FAIL(transform_for_hierarchical_query(sub_stmt, hier_trans_happened))) {
+      LOG_WARN("failed to transform hierarchical query in child stmt", K(ret));
     } else if (OB_FAIL(generate_parent_level_aggr_stmt(select_stmt,
                                                        sub_stmt))) {
       LOG_WARN("failed to generate nested aggr stmt.", K(ret));
-    } else if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_))) {
-      LOG_WARN("failed to formalize stmt.", K(ret));
     } else {
-      trans_happened = true;
-      stmt = select_stmt;
+      if (select_stmt->is_hierarchical_query()) {
+        select_stmt->reset_hierarchical_params();
+      }
+      if (OB_FAIL(select_stmt->formalize_stmt(ctx_->session_info_))) {
+        LOG_WARN("failed to formalize stmt.", K(ret));
+      } else {
+        trans_happened = true;
+        stmt = select_stmt;
+      }
     }
   }
   return ret;
@@ -8222,8 +8224,11 @@ int ObTransformPreProcess::transform_udt_columns(const ObIArray<ObParentDMLStmt>
   if (OB_ISNULL(stmt) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->session_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt is NULL", K(ret), K(ctx_), K(ctx_->session_info_));
-  } else if (is_mysql_mode() || ctx_->session_info_->get_ddl_info().is_ddl()) {
+  } else if (is_mysql_mode()) {
     // do nothing
+  } else if (ctx_->session_info_->get_ddl_info().is_ddl()
+             && ctx_->session_info_->get_ddl_info().is_dest_table_hidden()) {
+    // online DDL data movement to hidden table: skip all UDT transforms
   } else if (OB_FAIL(ObTransformUdtUtils::transform_query_udt_columns_exprs(ctx_, parent_stmts, stmt, trans_happened))) {
     LOG_WARN("failed to do query udt exprs transform", K(ret));
   } else if (OB_FAIL(ObTransformUdtUtils::transform_udt_columns_constraint_exprs(ctx_, stmt, trans_happened))) {
@@ -9807,7 +9812,8 @@ int ObTransformPreProcess::transform_rollup_groupset_exprs(ObDMLStmt *stmt, bool
                                             column_ref_remove_const_exprs,
                                             query_ref_exprs,
                                             query_ref_remove_const_exprs,
-                                            trans_happened))) {
+                                            trans_happened,
+                                            true))) {
       LOG_WARN("failed to get rollup const exprs", K(ret));
     } else if (static_const_exprs.empty() && exec_param_exprs.empty() && query_ref_exprs.empty()) {
       //do nothing
@@ -9869,7 +9875,8 @@ int ObTransformPreProcess::transform_rollup_groupset_exprs(ObDMLStmt *stmt, bool
                                                   ObIArray<ObRawExpr*> &column_ref_remove_const_exprs,
                                                   ObIArray<ObRawExpr*> &query_ref_exprs,
                                                   ObIArray<ObRawExpr*> &query_ref_remove_const_exprs,
-                                                  bool &trans_happened)
+                                                  bool &trans_happened,
+                                                  bool is_rollup)
 {
   int ret = OB_SUCCESS;
   ObSEArray<std::pair<int64_t, ObRawExpr *>, 2> dummy_onetime_exprs;
@@ -9913,7 +9920,7 @@ int ObTransformPreProcess::transform_rollup_groupset_exprs(ObDMLStmt *stmt, bool
         trans_happened = true;
       }
     } else if (expr->is_static_const_expr()) { //static const expr
-      if (ObOptimizerUtil::find_item(static_const_exprs, expr)) {
+      if (ObOptimizerUtil::find_item(static_const_exprs, expr) && !is_rollup) {
         //do nothing, skip dup exprs
       } else if (OB_FAIL(ObRawExprUtils::build_remove_const_expr(
                                         *ctx_->expr_factory_,
@@ -9932,7 +9939,7 @@ int ObTransformPreProcess::transform_rollup_groupset_exprs(ObDMLStmt *stmt, bool
         replacing_exprs.at(i) = remove_const_expr;
         trans_happened = true;
       }
-    }  else if (ObOptimizerUtil::find_item(exec_param_exprs, expr)) {
+    } else if (ObOptimizerUtil::find_item(exec_param_exprs, expr) && !is_rollup) {
       //do nothing, skip dup exprs
     } else if (OB_FAIL(ObRawExprUtils::build_remove_const_expr(
                                       *ctx_->expr_factory_,
@@ -10568,9 +10575,42 @@ int ObTransformPreProcess::do_remove_shared_expr(hash::ObHashSet<uint64_t, hash:
                                                  bool &has_padnull_column)
 {
   int ret = OB_SUCCESS;
+  bool need_copy_tree = false;
+  ObSEArray<ObRawExpr *, 4> copy_exprs;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("expr is null", K(ret));
+  // Copying while traversing child-first is not enough here: a copied child can still
+  // be wired through an old shared parent after that parent is copied later. Collect the
+  // whole dangerous chain first, then rebuild it from parent to child.
+  } else if (OB_FAIL(collect_remove_shared_expr(expr_set,
+                                                padnull_exprs,
+                                                is_nullside,
+                                                expr,
+                                                copy_exprs,
+                                                has_padnull_column,
+                                                need_copy_tree))) {
+    LOG_WARN("failed to collect remove shared expr", K(ret));
+  } else if (need_copy_tree && OB_FAIL(copy_remove_shared_expr(copy_exprs, expr))) {
+    LOG_WARN("failed to copy remove shared expr", K(ret));
+  }
+  return ret;
+}
+
+int ObTransformPreProcess::collect_remove_shared_expr(hash::ObHashSet<uint64_t, hash::NoPthreadDefendMode> &expr_set,
+                                                      ObIArray<ObRawExpr *> &padnull_exprs,
+                                                      bool is_nullside,
+                                                      ObRawExpr *expr,
+                                                      ObIArray<ObRawExpr *> &copy_exprs,
+                                                      bool &has_padnull_column,
+                                                      bool &need_copy_tree)
+{
+  int ret = OB_SUCCESS;
   bool need_copy = false;
   uint64_t key = reinterpret_cast<uint64_t>(expr);
+  int exist_ret = OB_HASH_NOT_EXIST;
   has_padnull_column = false;
+  need_copy_tree = false;
   if (OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("expr is null", K(ret));
@@ -10579,34 +10619,39 @@ int ObTransformPreProcess::do_remove_shared_expr(hash::ObHashSet<uint64_t, hash:
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
     bool has = false;
-    if (OB_FAIL(SMART_CALL(do_remove_shared_expr(expr_set,
-                                                 padnull_exprs,
-                                                 is_nullside,
-                                                 expr->get_param_expr(i),
-                                                 has)))) {
-      LOG_WARN("failed to remove shared expr", K(ret));
-    } else if (has) {
-      has_padnull_column = true;
+    bool child_need_copy = false;
+    if (OB_FAIL(SMART_CALL(collect_remove_shared_expr(expr_set,
+                                                      padnull_exprs,
+                                                      is_nullside,
+                                                      expr->get_param_expr(i),
+                                                      copy_exprs,
+                                                      has,
+                                                      child_need_copy)))) {
+      LOG_WARN("failed to collect remove shared expr", K(ret));
+    } else {
+      has_padnull_column |= has;
+      need_copy_tree |= child_need_copy;
     }
   }
-  if (OB_SUCC(ret) &&
-      OB_HASH_EXIST == expr_set.exist_refactored(key) &&
-      !expr->is_column_ref_expr() &&
-      !expr->is_query_ref_expr() &&
-      !expr->is_const_raw_expr() &&
-      !expr->is_exec_param_expr() &&
-      !expr->is_pseudo_column_expr()) {
+  if (OB_SUCC(ret) && OB_UNLIKELY(OB_HASH_EXIST != (exist_ret = expr_set.exist_refactored(key))
+                                  && OB_HASH_NOT_EXIST != exist_ret)) {
+    ret = exist_ret;
+    LOG_WARN("failed to check expr hash set", K(ret), K(key), KP(expr));
+  }
+  if (OB_SUCC(ret)
+      && OB_HASH_EXIST == exist_ret
+      && !expr->is_column_ref_expr()
+      && !expr->is_query_ref_expr()
+      && !expr->is_const_raw_expr()
+      && !expr->is_exec_param_expr()
+      && !expr->is_pseudo_column_expr()) {
     bool bret = false;
-    ObRawExpr *new_expr = NULL;
-    if (OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("params have null", K(ret));
-    } else if (padnull_exprs.empty() || !has_padnull_column) {
-      // do nothing
-    } else if (OB_FAIL(ObTransformUtils::is_null_propagate_expr(expr, padnull_exprs, bret))) {
-      LOG_WARN("failed to check is null propogate expr", K(ret));
-    } else if (!bret) {
-      need_copy = true;
+    if (!padnull_exprs.empty() && has_padnull_column) {
+      if (OB_FAIL(ObTransformUtils::is_null_propagate_expr(expr, padnull_exprs, bret))) {
+        LOG_WARN("failed to check is null propogate expr", K(ret));
+      } else if (!bret) {
+        need_copy = true;
+      }
     }
     if (OB_SUCC(ret) && !need_copy && is_nullside) {
       if (OB_FAIL(check_nullside_expr(expr, bret))) {
@@ -10615,14 +10660,42 @@ int ObTransformPreProcess::do_remove_shared_expr(hash::ObHashSet<uint64_t, hash:
         need_copy = true;
       }
     }
-    if (OB_SUCC(ret) && need_copy) {
-      if (OB_FAIL(ObRawExprCopier::copy_expr_node(*ctx_->expr_factory_,
-                                                  expr,
-                                                  new_expr))) {
-        LOG_WARN("failed to copy expr node", K(ret));
-      } else {
-        expr = new_expr;
-      }
+  }
+  if (OB_SUCC(ret)) {
+    // Once a child needs copying, every ancestor on that path must also be copied so
+    // that later child replacement happens on a private parent tree instead of on a
+    // shared one.
+    need_copy_tree = need_copy_tree || need_copy;
+    if (need_copy_tree && OB_FAIL(add_var_to_array_no_dup(copy_exprs, expr))) {
+      LOG_WARN("failed to add copy expr into array", K(ret), KP(expr));
+    }
+  }
+  return ret;
+}
+
+int ObTransformPreProcess::copy_remove_shared_expr(ObIArray<ObRawExpr *> &copy_exprs,
+                                                   ObRawExpr *&expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("expr is null", K(ret));
+  } else if (ObOptimizerUtil::find_item(copy_exprs, expr)) {
+    // Copy parent first so that copied children will be attached to the new tree and
+    // cannot remain shared through pointers reachable from the old parent.
+    ObRawExpr *new_expr = NULL;
+    if (OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("params have null", K(ret));
+    } else if (OB_FAIL(ObRawExprCopier::copy_expr_node(*ctx_->expr_factory_, expr, new_expr))) {
+      LOG_WARN("failed to copy expr node", K(ret));
+    } else {
+      expr = new_expr;
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
+    if (OB_FAIL(SMART_CALL(copy_remove_shared_expr(copy_exprs, expr->get_param_expr(i))))) {
+      LOG_WARN("failed to copy remove shared expr", K(ret));
     }
   }
   return ret;
@@ -11423,6 +11496,10 @@ int ObTransformPreProcess::check_stmt_need_preserve_order(ObDMLStmt *stmt,
   } else if (OB_FALSE_IT(sel_stmt=static_cast<ObSelectStmt*>(stmt))) {
   } else if (!sel_stmt->has_limit() || NULL != sel_stmt->get_limit_percent_expr()) {
     OPT_TRACE("query do not have normal limit offset");
+  } else if (sel_stmt->has_rollup() ||
+             sel_stmt->has_grouping_sets() ||
+             sel_stmt->has_cube()) {
+    OPT_TRACE("query with grouping sets/rollup/cube will not preserve order for pagination");
   } else if (OB_FALSE_IT(is_valid = true)) {
   } else if (sel_stmt->has_order_by() ||
              sel_stmt->has_group_by() ||

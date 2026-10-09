@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_COMPACTION_PARTITION_MERGE_FUSER_H_
@@ -48,7 +41,7 @@ class ObMergeFuser
 public:
   ObMergeFuser(common::ObIAllocator &allocator)
     : is_inited_(false),
-      enable_delete_insert_(false),
+      original_merge_engine_type_(ObMergeEngineType::OB_MERGE_ENGINE_MAX),
       allocator_(allocator),
       column_cnt_(0),
       result_row_(),
@@ -62,7 +55,7 @@ public:
   int set_multi_version_flag(const blocksstable::ObMultiVersionRowFlag &row_flag);
   template<typename T, typename... Args>
   int fuse_rows(const T& row, const Args&... args);
-  int fuse_row(MERGE_ITER_ARRAY &macro_row_iters);
+  int fuse_row(MERGE_ITER_ARRAY &macro_row_iters, bool &append_row_flag);
   inline const blocksstable::ObDatumRow &get_result_row() const { return result_row_; }
   int make_result_row_shadow(const int64_t sql_sequence_col_idx);
   VIRTUAL_TO_STRING_KV(K_(column_cnt), K_(result_row), K_(is_inited));
@@ -79,7 +72,7 @@ protected:
   virtual int end_fuse_row(const storage::ObNopPos &nop_pos, blocksstable::ObDatumRow &result_row);
 protected:
   bool is_inited_;
-  bool enable_delete_insert_;
+  ObMergeEngineType original_merge_engine_type_;
   common::ObIAllocator &allocator_;
   int64_t column_cnt_;
   bool is_fuse_row_flag_;
@@ -135,14 +128,25 @@ public:
 class ObIPartitionMergeFuser : public ObMergeFuser
 {
 public:
-  ObIPartitionMergeFuser(common::ObIAllocator &allocator) : ObMergeFuser(allocator)
+  ObIPartitionMergeFuser(common::ObIAllocator &allocator) : ObMergeFuser(allocator), default_row_()
   {}
   virtual ~ObIPartitionMergeFuser() {}
   virtual int init(const ObMergeParameter &merge_param, const bool is_fuse_row_flag = false) override final;
   virtual bool is_valid() const override;
+  // nullptr when default_row_ was not filled (e.g. ObCOMinorSSTableFuser); else schema default row for NOP fill.
+  OB_INLINE const blocksstable::ObDatumRow *get_default_row_ptr() const
+  {
+    const blocksstable::ObDatumRow *row = nullptr;
+    if (default_row_.is_valid()) {
+      row = &default_row_;
+    }
+    return row;
+  }
   INHERIT_TO_STRING_KV("ObMergeFuser", ObMergeFuser, "cur_fuser", "ObIPartitionMergeFuser");
 protected:
   virtual int inner_init(const ObMergeParameter &merge_param) = 0;
+  int init_default_row(const ObMergeParameter &merge_param);
+  blocksstable::ObDatumRow default_row_;
 };
 
 class ObMajorPartitionMergeFuser : public ObIPartitionMergeFuser
@@ -150,7 +154,6 @@ class ObMajorPartitionMergeFuser : public ObIPartitionMergeFuser
 public:
   ObMajorPartitionMergeFuser(common::ObIAllocator &allocator, const int64_t cluster_version)
     : ObIPartitionMergeFuser(allocator),
-      default_row_(),
       generated_cols_(allocator_),
       cluster_version_(cluster_version)
   {}
@@ -160,7 +163,6 @@ public:
 protected:
   virtual int inner_init(const ObMergeParameter &merge_param) override;
 protected:
-  blocksstable::ObDatumRow default_row_;
   ObFixedArray<int32_t, ObIAllocator> generated_cols_;
   const int64_t cluster_version_;
 private:
@@ -172,18 +174,21 @@ class ObMinorPartitionMergeFuser : public ObIPartitionMergeFuser
 public:
   ObMinorPartitionMergeFuser(common::ObIAllocator &allocator)
     : ObIPartitionMergeFuser(allocator),
-      multi_version_rowkey_column_cnt_(0)
+      multi_version_rowkey_column_cnt_(0),
+      decide_merge_by_row_(false)
   {}
   virtual ~ObMinorPartitionMergeFuser() {}
   virtual bool is_valid() const override;
+  void fill_default_value_of_added_columns(blocksstable::ObDatumRow& row);
   INHERIT_TO_STRING_KV("ObIPartitionMergeFuser", ObIPartitionMergeFuser,
-      K_(multi_version_rowkey_column_cnt));
+      K_(multi_version_rowkey_column_cnt), K_(decide_merge_by_row));
 protected:
   virtual int inner_init(const ObMergeParameter &merge_param) override;
   virtual int preprocess_fuse_row(const blocksstable::ObDatumRow &row, bool &is_need_fuse) override;
   virtual int end_fuse_row(const storage::ObNopPos &nop_pos, blocksstable::ObDatumRow &result_row) override;
 protected:
   int64_t multi_version_rowkey_column_cnt_;
+  bool decide_merge_by_row_;
   DISALLOW_COPY_AND_ASSIGN(ObMinorPartitionMergeFuser);
 };
 
@@ -192,7 +197,8 @@ public:
   static int build(const ObMergeParameter &merge_param,
                    const int64_t cluster_version,
                    ObIAllocator &allocator,
-                   ObIPartitionMergeFuser *&partition_fuser);
+                   ObIPartitionMergeFuser *&partition_fuser,
+                   const bool use_co_inc_fuser);
 };
 } //compaction
 } //oceanbase

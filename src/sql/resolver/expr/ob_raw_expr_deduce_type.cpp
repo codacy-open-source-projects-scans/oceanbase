@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -19,6 +12,7 @@
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "sql/parser/ob_parser.h"
 #include "sql/engine/expr/ob_expr_estimate_ndv.h"
+#include "share/aggregate/util.h"
 
 namespace oceanbase
 {
@@ -377,7 +371,9 @@ bool need_reject_geometry_type(ObItemType item_type)
       || item_type == T_FUN_SYS_RADIANS
       || item_type == T_FUN_SYS_FORMAT
       || item_type == T_FUN_SYS_COT
-      || item_type == T_OP_CONV) {
+      || item_type == T_OP_CONV
+      || item_type == T_FUN_CK_RAND_CANONICAL
+      || item_type == T_FUN_AVG_WEIGHTED) {
     bool_ret = true;
   }
   return bool_ret;
@@ -1723,6 +1719,14 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
         }
         break;
       }
+      case T_FUN_WINDOW_FUNNEL: {
+        // window_funnel返回uint32（范围0到N）
+        result_type.set_type(ObUInt32Type);
+        result_type.set_calc_type(ObUInt32Type);
+        result_type.set_accuracy(ObAccuracy::MAX_ACCURACY[ObUInt32Type]);
+        expr.set_result_type(result_type);
+        break;
+      }
       case T_FUN_SYS_BIT_AND:
       case T_FUN_SYS_BIT_OR:
       case T_FUN_SYS_BIT_XOR: {
@@ -1745,6 +1749,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
       case T_FUN_VAR_POP:
       case T_FUN_VAR_SAMP:
       case T_FUN_AVG:
+      case T_FUN_AVG_WEIGHTED:
       case T_FUN_SUM:
       case T_FUN_KEEP_AVG:
       case T_FUN_KEEP_SUM:
@@ -1789,7 +1794,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
             result_type.set_calc_accuracy(result_type.get_accuracy());
             expr.set_result_type(result_type);
           }
-          if (T_FUN_SUM == expr.get_expr_type() || T_FUN_AVG == expr.get_expr_type()) {
+          if (T_FUN_SUM == expr.get_expr_type() || T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) {
             const int16_t MAX_PRECISION_NO_NEED_CAST = 34;
             if (ObDecimalIntType == from_type &&
                 child_expr->get_result_type().get_precision() <= MAX_PRECISION_NO_NEED_CAST) {
@@ -1836,7 +1841,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
           ObObjType obj_type = result_type.get_type();
           ObScale scale_increment = 0;
           ObScale calc_scale = child_expr->get_extra_calc_scale();
-          if (T_FUN_AVG == expr.get_expr_type()) {
+          if (T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) {
             int64_t increment = 0;
             if (OB_ISNULL(my_session_)) {
               ret = OB_INVALID_ARGUMENT;
@@ -1890,7 +1895,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
               scale_increment_recover = result_type.get_scale();
               precision_increment_recover = result_type.get_precision();
               result_type.set_scale(static_cast<ObScale>(result_type.get_scale() + scale_increment));
-              if (T_FUN_AVG == expr.get_expr_type()) {
+              if (T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) {
                 result_type.set_precision(
                   static_cast<ObPrecision>(result_type.get_precision() + scale_increment));
               } else {
@@ -1911,7 +1916,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
             result_type.set_scale(SCALE_UNKNOWN_YET);
             result_type.set_precision(PRECISION_UNKNOWN_YET);
           } else if (ob_is_collection_sql_type(obj_type)) {
-            if (T_FUN_SUM == expr.get_expr_type() || T_FUN_AVG == expr.get_expr_type()) {
+            if (T_FUN_SUM == expr.get_expr_type() || T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) {
               ObSQLSessionInfo *session = const_cast<ObSQLSessionInfo *>(my_session_);
               ObExecContext *exec_ctx = OB_ISNULL(session) ? NULL : session->get_cur_exec_ctx();
               uint16_t subschema_id = result_type.get_subschema_id();
@@ -1947,7 +1952,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
             } else {
               result_type.set_number();
             }
-            if (T_FUN_AVG == expr.get_expr_type()) {
+            if (T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) {
               // FIXME: @zuojiao.hzj : remove this after we can keep high division calc scale
               // using decimal int
               result_type.set_number();
@@ -2294,10 +2299,14 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
       case T_FUN_MAX:
       case T_FUN_MIN:
       case T_FUN_ARG_MAX:
-      case T_FUN_ARG_MIN: {
-        ret = set_agg_min_max_result_type(expr, result_type, need_add_cast,
+      case T_FUN_ARG_MIN:
+      case T_FUN_SYS_EXT_MIN:
+      case T_FUN_SYS_EXT_MAX: {
+        ret = set_agg_min_max_result_type(expr,
+                                          result_type,
+                                          need_add_cast,
                                           expr.get_expr_type() == T_FUN_ARG_MAX
-                                          || expr.get_expr_type() == T_FUN_ARG_MIN);
+                                              || expr.get_expr_type() == T_FUN_ARG_MIN);
         break;
       }
       default: {
@@ -2313,7 +2322,7 @@ int ObRawExprDeduceType::visit(ObAggFunRawExpr &expr)
         result_type.set_calc_accuracy(result_type.get_accuracy());
         result_type.set_calc_meta(result_type.get_obj_meta());
       }
-      if (T_FUN_AVG == expr.get_expr_type() && -2 != scale_increment_recover) {
+      if ((T_FUN_AVG == expr.get_expr_type() || T_FUN_AVG_WEIGHTED == expr.get_expr_type()) && -2 != scale_increment_recover) {
         result_type.set_calc_scale(scale_increment_recover);
         result_type.set_calc_precision(precision_increment_recover);
       }
@@ -2497,18 +2506,21 @@ int ObRawExprDeduceType::check_group_aggr_param(ObAggFunRawExpr &expr)
                 && T_FUN_GROUP_PERCENTILE_CONT != expr.get_expr_type()
                 && T_FUN_GROUP_PERCENTILE_DISC != expr.get_expr_type()
                 && T_FUN_SUM_OPNSIZE != expr.get_expr_type()
+                && T_FUN_PL_AGG_UDF != expr.get_expr_type()
                 && !expr.is_need_deserialize_row()
-                && !(T_FUN_PL_AGG_UDF == expr.get_expr_type() && !expr.is_param_distinct())
                 && !(T_FUN_WM_CONCAT == expr.get_expr_type() && !expr.is_param_distinct()))) {
       if (ob_is_json(param_expr->get_data_type())
           && !(expr.get_expr_type() == T_FUN_SUM
-               || expr.get_expr_type() == T_FUN_AVG)) {
+               || expr.get_expr_type() == T_FUN_AVG
+               || expr.get_expr_type() == T_FUN_AVG_WEIGHTED)) {
           ret = OB_ERR_INVALID_CMP_OP;
           LOG_WARN("lob or json type parameter not expected", K(ret));
       } else if ((ob_is_user_defined_sql_type(param_expr->get_data_type())
                     || ob_is_user_defined_pl_type(param_expr->get_data_type()))
                  && (expr.get_expr_type() == T_FUN_MAX
                      || expr.get_expr_type() == T_FUN_MIN
+                     || expr.get_expr_type() == T_FUN_SYS_EXT_MIN
+                     || expr.get_expr_type() == T_FUN_SYS_EXT_MAX
                      || expr.get_expr_type() == T_FUN_GROUPING)) {
         // other udt types not run here, xmltype does not have order or map member function for compare
         ret = OB_ERR_NO_ORDER_MAP_SQL;
@@ -2521,10 +2533,70 @@ int ObRawExprDeduceType::check_group_aggr_param(ObAggFunRawExpr &expr)
     } else if (ob_is_collection_sql_type(param_expr->get_data_type())
                && (T_FUN_SUM == expr.get_expr_type()
                    || T_FUN_AVG == expr.get_expr_type()
+                   || T_FUN_AVG_WEIGHTED == expr.get_expr_type()
                    || T_FUN_COUNT == expr.get_expr_type())
                && expr.is_param_distinct()) {
         ret = OB_NOT_SUPPORTED;
         LOG_USER_ERROR(OB_NOT_SUPPORTED, "vector aggregation with distinct is");
+    } else if (T_FUN_WINDOW_FUNNEL == expr.get_expr_type()) {
+      if (i == 0) {
+        // timestamp column
+        if (lib::is_oracle_mode() &&
+            (ob_is_number_tc(param_expr->get_data_type())
+             || ob_is_decimal_int_tc(param_expr->get_data_type()))) {
+          ObCastMode def_cast_mode = CM_NONE;
+          ObExprResType res_type = param_expr->get_result_type();
+          res_type.set_calc_meta(res_type.get_obj_meta());
+          res_type.set_calc_type(ObIntType);
+          if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false, 0, my_session_, def_cast_mode))) {
+            LOG_WARN("get_default_cast_mode failed", K(ret));
+          } else if (OB_FAIL(try_add_cast_expr(expr, i, res_type, def_cast_mode))) {
+            LOG_WARN("try_add_cast_expr failed", K(ret), K(i), K(expr));
+          }
+        } else if (!ob_is_datetime_tc(param_expr->get_data_type()) &&
+                   !ob_is_date_tc(param_expr->get_data_type()) &&
+                   !ob_is_int_uint_tc(param_expr->get_data_type()) &&
+                   !ob_is_time_tc(param_expr->get_data_type()) &&
+                   !ob_is_mysql_datetime_tc(param_expr->get_data_type()) &&
+                   !ob_is_mysql_date_tc(param_expr->get_data_type())) {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "time or int type", K(param_expr->get_data_type()));
+        }
+      } else if (i == 1) {
+        // window column
+        if (!param_expr->is_const_expr()) {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "integer const expr", K(param_expr->get_data_type()));
+        } else if (ob_is_int_tc(param_expr->get_data_type())) {
+          // do nothing
+        } else if (ob_is_number_tc(param_expr->get_data_type())
+                   || ob_is_decimal_int_tc(param_expr->get_data_type())) {
+          ObCastMode def_cast_mode = CM_NONE;
+          ObExprResType res_type = param_expr->get_result_type();
+          res_type.set_calc_meta(res_type.get_obj_meta());
+          res_type.set_calc_type(ObIntType);
+          if (OB_FAIL(ObSQLUtils::get_default_cast_mode(false, 0, my_session_, def_cast_mode))) {
+            LOG_WARN("get_default_cast_mode failed", K(ret));
+          } else if (OB_FAIL(try_add_cast_expr(expr, i, res_type, def_cast_mode))) {
+            LOG_WARN("try_add_cast_expr failed", K(ret), K(i), K(expr));
+          }
+        } else {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "integer const expr", K(param_expr->get_data_type()));
+        }
+      } else if (i == 2) {
+        // mode column
+        if (!param_expr->is_const_expr() || !ob_is_string_type(param_expr->get_data_type())) {
+          ret = OB_ERR_INVALID_TYPE_FOR_OP;
+          LOG_USER_ERROR(OB_ERR_INVALID_TYPE_FOR_OP, "const string type", K(param_expr->get_data_type()));
+        }
+      } else if (i >= share::aggregate::WINDOW_FUNNEL_CONDITION_START_IDX && i < expr.get_real_param_count()) {
+        // condition columns
+        if (!ob_is_int_tc(param_expr->get_data_type())) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("get unexpected error, condition column must be int type", K(ret), K(param_expr->get_data_type()));
+        }
+      }
     }
   }
   return ret;
@@ -4195,6 +4267,7 @@ int ObRawExprDeduceType::add_implicit_cast(ObAggFunRawExpr &parent,
                parent.get_expr_type() == T_FUN_SYS_ST_ASMVT ||
                ((parent.get_expr_type() == T_FUN_SUM ||
                  parent.get_expr_type() == T_FUN_AVG ||
+                 parent.get_expr_type() == T_FUN_AVG_WEIGHTED ||
                  parent.get_expr_type() == T_FUN_COUNT) &&
                  child_ptr->get_expr_type() == T_FUN_SYS_OP_OPNSIZE) ||
                 (lib::is_mysql_mode() &&

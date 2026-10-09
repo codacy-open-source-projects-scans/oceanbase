@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_BASIC_OB_VECTOR_RESULT_HOLDER_H_
@@ -118,10 +111,10 @@ private:
     void restore_fixed_base_single_row(ObFixedLengthBase &vec, int64_t from_idx, int64_t to_idx) const;
     void restore_discrete_base_single_row(ObDiscreteBase &vec, int64_t from_idx, int64_t to_idx) const;
     void restore_continuous_base_single_row(ObVectorBase &vec, int64_t from_idx, int64_t to_idx, VectorFormat dst_fmt) const;
-    void restore_uniform_base_single_row(ObUniformBase &vec, int64_t from_idx, int64_t to_idx, bool is_const) const;
+    void restore_uniform_base_single_row(ObUniformBase &vec, int64_t from_idx, int64_t to_idx, bool is_const, char *res_buf) const;
     void extend_fixed_base_vector(ObFixedLengthBase &vec, const int64_t src_start_idx, const int64_t srt_end_idx, const int64_t size, const int64_t start_dst_idx) const;
     void extend_discrete_base_vector(ObDiscreteBase &vec, const int64_t src_start_idx, const int64_t srt_end_idx, const int64_t size, const int64_t start_dst_idx) const;
-    void extend_uniform_base_vector(ObUniformBase &vec, const int64_t src_start_idx, const int64_t srt_end_idx, const int64_t size, const int64_t start_dst_idx, const bool is_const) const;
+    void extend_uniform_base_vector(ObUniformBase &vec, const int64_t src_start_idx, const int64_t srt_end_idx, const int64_t size, const int64_t start_dst_idx, const bool is_const, char *res_buf) const;
     void extend_continuous_base_vector(ObVectorBase &vec, const int64_t src_start_idx, const int64_t srt_end_idx, const int64_t size, const int64_t start_dst_idx, const VectorFormat dst_fmt) const;
     void convert_continuous_to_fixed(ObFixedLengthBase &vec, const int64_t from_idx, const int64_t to_idx) const;
     void convert_continuous_to_discrete(ObDiscreteBase &vec, const int64_t from_idx, const int64_t to_idx) const;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -323,7 +316,6 @@ int ObLobAppendHandler::init(ObLobMetaManager *lob_meta_mngr)
 int ObLobAppendHandler::execute(ObString &data, bool ori_is_inrow)
 {
   int ret = OB_SUCCESS;
-  ObLobPersistInsertIter insert_iter;
   ObLobMetaWriteIter iter(param_.get_tmp_allocator(), store_chunk_size_);
   bool need_get_last_info = ! (ori_is_inrow || param_.byte_size_ == 0);
   if (IS_NOT_INIT) {

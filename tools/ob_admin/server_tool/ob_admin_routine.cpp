@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_admin_routine.h"
@@ -401,6 +394,42 @@ DEF_COMMAND(SERVER, force_set_ls_as_single_replica, 1, "tenant_id:ls_id  # force
     }
   }
   COMMON_LOG(INFO, "force_set_ls_as_single_replica", K(ret), K(arg));
+  return ret;
+}
+
+// force_remove_ls_replica
+// @params [in]  tenant_id, which tenant the log stream belongs to
+// @params [in]  ls_id, which log stream replica to remove
+// ATTENTION:
+//   The replica is force removed only on the server this command connects to,
+//   bypassing the normal disaster-recovery member change flow. Prefer a follower
+//   replica, and disable rereplication first if the removal must stay effective.
+DEF_COMMAND(SERVER, force_remove_ls_replica, 1, "tenant_id:ls_id  # force remove ls replica on the connected server")
+{
+  int ret = OB_SUCCESS;
+  obrpc::ObForceRemoveLSReplicaArg arg;
+  string arg_str;
+  if (cmd_ == action_name_) {
+    ret = OB_INVALID_ARGUMENT;
+    ADMIN_WARN("## Error: should provide tenant_id:ls_id");
+  } else {
+    arg_str = cmd_.substr(action_name_.length() + 1);
+  }
+  uint64_t tenant_id = 0;
+  int64_t ls_id_val = -1;
+  if (OB_FAIL(ret)) {
+  } else if (2 != sscanf(arg_str.c_str(), "%ld:%ld", &tenant_id, &ls_id_val)) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid arg", K(ret));
+  } else {
+    share::ObLSID ls_id(ls_id_val);
+    if (OB_SUCCESS != (ret = arg.init(tenant_id, ls_id))) {
+      COMMON_LOG(ERROR, "init arg failed", K(ret), K(arg), K(tenant_id), K(ls_id));
+    } else if (OB_SUCCESS != (ret = client_->force_remove_ls_replica(arg))) {
+      COMMON_LOG(ERROR, "send req failed", K(ret), K(arg));
+    }
+  }
+  COMMON_LOG(INFO, "force_remove_ls_replica", K(ret), K(arg));
   return ret;
 }
 
@@ -2063,3 +2092,41 @@ DEF_COMMAND(SERVER, push_ss_gc_last_succ_scn, 1, "tenant_id:succ_scn # push ss g
   return ret;
 }
 #endif
+
+// clear_transfer_meta_info
+// @params [in]  tenant_id, which tenant to modify
+// @params [in]  ls_id, which log stream to modify
+DEF_COMMAND(SERVER, clear_transfer_meta_info, 1, "tenant_id:ls_id # clear_transfer_meta_info")
+{
+  int ret = OB_SUCCESS;
+  string arg_str;
+  ObAdminClearTransferMetaInfoOpArg arg;
+  uint64_t tenant_id_to_set = OB_INVALID_TENANT_ID;
+  int64_t ls_id_to_set = 0;
+
+  if (cmd_ == action_name_) {
+    ret = OB_INVALID_ARGUMENT;
+    ADMIN_WARN("should provide tenant_id, ls_id");
+  } else {
+    arg_str = cmd_.substr(action_name_.length() + 1);
+  }
+
+  if (OB_FAIL(ret)) {
+  } else if (2 != sscanf(arg_str.c_str(), "%ld:%ld", &tenant_id_to_set, &ls_id_to_set)) {
+    ret = OB_INVALID_ARGUMENT;
+    COMMON_LOG(WARN, "invalid arg", K(ret), K(arg_str.c_str()), K(cmd_.c_str()),
+               K(tenant_id_to_set), K(ls_id_to_set));
+  } else {
+    share::ObLSID ls_id(ls_id_to_set);
+    if (OB_INVALID_ID == tenant_id_to_set || !ls_id.is_valid()) {
+      ret = OB_INVALID_ARGUMENT;
+      COMMON_LOG(WARN, "argument is invalid", K(ret), K(tenant_id_to_set), K(ls_id));
+    } else if (OB_FAIL(arg.set(tenant_id_to_set, ls_id))) {
+      COMMON_LOG(WARN, "failed to set clear transfer meta info op arg", K(ret), K(tenant_id_to_set), K(ls_id));
+    } else if (OB_FAIL(client_->admin_clear_transfer_meta_info_op(arg))) {
+      COMMON_LOG(ERROR, "send req fail", K(ret));
+    }
+  }
+  COMMON_LOG(INFO, "clear_transfer_meta_info", K(ret), K(arg));
+  return ret;
+}

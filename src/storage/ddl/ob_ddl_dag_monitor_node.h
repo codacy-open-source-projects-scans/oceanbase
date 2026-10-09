@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OB_STORAGE_DDL_DAG_MONITOR_NODE_H__
@@ -139,6 +132,11 @@ public:
 
   bool is_finished() const { return finish_timestamp_ > 0; }
   bool is_expired(const int64_t current_time, const int64_t ttl_us) const;
+  // Returns true if the node currently holds no task-side monitor info.
+  // Used by the manager's cleanup path to reclaim finished nodes whose
+  // info list has already been drained, avoiding empty nodes piling up in
+  // the allocator while waiting for TTL.
+  bool is_info_list_empty() const;
 
   const Key &get_key() const { return key_; }
   const void *get_dag_ptr() const { return reinterpret_cast<const void *>(key_.dag_ptr_); }

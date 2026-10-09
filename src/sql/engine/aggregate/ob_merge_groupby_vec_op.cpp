@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -791,10 +784,10 @@ int ObMergeGroupByVecOp::batch_collect_local_ndvs(const ObBatchRows *child_brs)
     } else {
       bool is_batch_seed = (0 != i);
       ObIVector *vec = expr->get_vector(eval_ctx_);
-      if (OB_FAIL(vec->murmur_hash_v3(*expr, rollup_hash_vals_, *child_brs->skip_,
-                                      EvalBound(child_brs->size_, child_brs->all_rows_active_),
-                                      is_batch_seed ? rollup_hash_vals_ : &hash_value_seed,
-                                      is_batch_seed))) {
+      if (OB_FAIL(vec->hash(*expr, rollup_hash_vals_, *child_brs->skip_,
+                               EvalBound(child_brs->size_, child_brs->all_rows_active_),
+                               is_batch_seed ? rollup_hash_vals_ : &hash_value_seed,
+                               is_batch_seed))) {
         SQL_ENG_LOG(WARN, "failed to calc hash value", K(ret));
       }
       if (OB_FAIL(ret)) {

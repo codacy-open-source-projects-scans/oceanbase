@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OPTIMIZER_OB_OPT_EST_COST_
@@ -244,12 +237,17 @@ public:
                                                     double &row_count);
 
   static int calculate_filter_selectivity(AccessPath &path);
+  static int calculate_external_table_non_partition_filter_sel(
+      AccessPath &path,
+      ObCostTableScanInfo &est_cost_info);
 
   static int stat_estimate_single_range_rc(const ObCostTableScanInfo &est_cost_info,
                                            const ObNewRange &range,
                                            double &count);
 
   static double get_estimate_width_from_type(const ObRawExprResType &type);
+  static int estimate_width_for_external_table(const share::schema::ObTableSchema &table_schema,
+                                               int64_t &schema_row_width);
   static double calc_pred_cost_per_row(const ObRawExpr *expr,
                                       double card,
                                       double &cost,

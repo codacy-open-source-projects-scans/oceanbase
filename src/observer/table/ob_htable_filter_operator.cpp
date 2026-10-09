@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -814,7 +807,7 @@ int ObHTableRowIterator::get_next_result_internal(ResultType*& result)
         if (time_to_live_ > 0) {
           column_tracker_->set_ttl(time_to_live_);
         }
-        if (max_version_ > 0) {
+        if (max_version_ > 0 && !htable_filter_.is_keep_max_versions()) {
           int32_t real_max_version = std::min(column_tracker_->get_max_version(), max_version_);
           column_tracker_->set_max_version(real_max_version);
         }
@@ -2267,7 +2260,7 @@ int ObHTableRowIterator::get_next_result_internal_with_get_optimization(ResultTy
       if (time_to_live_ > 0) {
         column_tracker_->set_ttl(time_to_live_);
       }
-      if (max_version_ > 0) {
+      if (max_version_ > 0 && !htable_filter_.is_keep_max_versions()) {
         int32_t real_max_version = std::min(column_tracker_->get_max_version(), max_version_);
         column_tracker_->set_max_version(real_max_version);
       }

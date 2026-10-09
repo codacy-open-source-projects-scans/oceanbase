@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -437,7 +430,7 @@ int ObRawExprInfoExtractor::visit_subquery_node(ObOpRawExpr &expr)
   return ret;
 }
 
-ObItemType ObRawExprInfoExtractor::get_subquery_comparison_type(ObItemType cmp_type) const
+ObItemType ObRawExprInfoExtractor::get_subquery_comparison_type(ObItemType cmp_type)
 {
   ObItemType ret = cmp_type;
   switch (cmp_type) {
@@ -516,6 +509,7 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
   } else {
     // these functions should not be calculated first
     if (T_FUN_SYS_AUTOINC_NEXTVAL == expr.get_expr_type()
+        || T_FUN_SYS_RANDOM_PART_NEXTVAL == expr.get_expr_type()
         || T_FUN_SYS_VEC_VID == expr.get_expr_type()
         || T_FUN_SYS_DOC_ID == expr.get_expr_type()
         || T_PSEUDO_HIDDEN_CLUSTERING_KEY == expr.get_expr_type()
@@ -547,7 +541,8 @@ int ObRawExprInfoExtractor::visit(ObSysFunRawExpr &expr)
       if (OB_FAIL(expr.add_flag(IS_VALUES))) {
         LOG_WARN("failed to add flag IS_VALUES", K(ret));
       }
-    } else if ((T_FUN_SYS_RAND == expr.get_expr_type() || T_FUN_SYS_RANDOM == expr.get_expr_type()) &&
+    } else if ((T_FUN_SYS_RAND == expr.get_expr_type() || T_FUN_SYS_RANDOM == expr.get_expr_type()
+              || T_FUN_CK_RAND_CANONICAL == expr.get_expr_type()) &&
                !expr.has_flag(CNT_COLUMN)) {
       if (OB_FAIL(expr.add_flag(IS_RAND_FUNC))) {
         LOG_WARN("failed to add flag IS_RAND_FUNC", K(ret));

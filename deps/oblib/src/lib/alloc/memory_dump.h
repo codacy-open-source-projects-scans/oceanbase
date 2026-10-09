@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_DUMP_MEMORY_H_
@@ -166,6 +159,7 @@ struct TenantCtxRange
 
 struct Stat {
   LabelItem up2date_items_[MAX_LABEL_ITEM_CNT];
+  int32_t up_items_sorted_ids_[MAX_LABEL_ITEM_CNT];
   TenantCtxRange tcrs_[MAX_TENANT_CNT * ObCtxIds::MAX_CTX_ID];
   lib::ObMallocSampleMap  malloc_sample_map_;
   int tcr_cnt_ = 0;
@@ -230,7 +224,7 @@ private:
   void run1() override;
   void handle(void *task);
 
-  void print_malloc_sample_info();
+  void print_malloc_sample_info(uint64_t min_print_size);
 private:
   AChunk *find_chunk(void *ptr);
 private:

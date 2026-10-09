@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -135,7 +128,8 @@ int ObExprHash::calc_hash_value_expr_vector(VECTOR_EVAL_FUNC_ARG_DECL)
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < expr.arg_cnt_; i++) {
       ObIVector *vec = expr.args_[i]->get_vector(ctx);
-      ret = vec->murmur_hash_v3(*expr.args_[i], hash_vals, my_skip, bound, i > 0 ? hash_vals : &hash_seed, i > 0);
+      ret = vec->hash(*expr.args_[i], hash_vals, my_skip, bound,
+                         i > 0 ? hash_vals : &hash_seed, i > 0);
     }
     if (OB_SUCC(ret)) {
       VectorFormat res_format = expr.get_format(ctx);

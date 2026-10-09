@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -117,7 +110,9 @@ int ObSSTableRowScanner<PrefetchType>::advance_scan(const blocksstable::ObDatumR
 {
   int ret = OB_SUCCESS;
   if (nullptr == skip_scanner_) {
-    if (OB_FAIL(ObIndexSkipScanFactory::build_index_skip_scanner(*iter_param_, *access_ctx_, &range, skip_scanner_))) {
+    const bool is_mv_sstable = nullptr != sstable_ && sstable_->is_multi_version_minor_sstable();
+    if (OB_FAIL(ObIndexSkipScanFactory::build_index_skip_scanner(*iter_param_, *access_ctx_, &range, skip_scanner_,
+                                                                  false/*is_for_memtable*/, is_mv_sstable))) {
       LOG_WARN("failed to build index skip scanner", K(ret));
     }
   } else if (OB_FAIL(skip_scanner_->advance_scan(range))) {
@@ -196,7 +191,9 @@ int ObSSTableRowScanner<PrefetchType>::inner_open(
                  OB_FAIL(ObIndexSkipScanFactory::build_index_skip_scanner(iter_param,
                                                                           access_ctx,
                                                                           static_cast<const ObDatumRange *>(query_range),
-                                                                          skip_scanner_)))) {
+                                                                          skip_scanner_,
+                                                                          false/*is_for_memtable*/,
+                                                                          sstable_->is_multi_version_minor_sstable())))) {
         LOG_WARN("failed to build index skip scanner", K(ret));
       } else if (FALSE_IT(prefetcher_.skip_scanner_ = skip_scanner_)) {
       } else if (OB_FAIL(prefetcher_.prefetch())) {
@@ -239,7 +236,7 @@ int ObSSTableRowScanner<PrefetchType>::init_micro_scanner()
   if (sstable_->is_multi_version_minor_sstable()) {
     if (iter_param_->is_delete_insert_) {
       INIT_MICRO_DATA_SCANNER(mv_di_micro_data_scanner_, ObMultiVersionDIMicroBlockRowScanner);
-    } else if (iter_param_->is_append_only_can_blockscan()) {
+    } else if (iter_param_->enable_append_only_blockscan_) {
       INIT_MICRO_DATA_SCANNER(mv_io_micro_data_scanner_, ObMultiVersionIOMicroBlockRowScanner);
     } else {
       INIT_MICRO_DATA_SCANNER(mv_micro_data_scanner_, ObMultiVersionMicroBlockRowScanner);
@@ -476,6 +473,13 @@ int ObSSTableRowScanner<PrefetchType>::fetch_row(ObSSTableReadHandle &read_handl
                 K(prefetcher_.cur_micro_data_fetch_idx_), K(read_handle));
       prefetcher_.cur_micro_data_fetch_idx_ = read_handle.micro_begin_idx_;
       need_open_micro = true;
+    } else if (iter_param_->is_skip_scan() &&
+               prefetcher_.current_micro_info().skip_state_.is_skipped() &&
+               prefetcher_.cur_micro_data_fetch_idx_ < read_handle.micro_end_idx_) {
+      LOG_DEBUG("[INDEX SKIP SCAN] current micro is skipped, skip to next micro", K(cur_range_idx_),
+                K(prefetcher_.cur_micro_data_fetch_idx_), K(read_handle));
+      ++prefetcher_.cur_micro_data_fetch_idx_;
+      need_open_micro = true;
     }
     if (need_open_micro) {
       if (OB_FAIL(open_cur_data_block(read_handle))) {
@@ -605,6 +609,13 @@ int ObSSTableRowScanner<PrefetchType>::fetch_rows(ObSSTableReadHandle &read_hand
       LOG_DEBUG("[INDEX BLOCK] begin to fetch row", K(cur_range_idx_),
                 K(prefetcher_.cur_micro_data_fetch_idx_), K(read_handle));
       prefetcher_.cur_micro_data_fetch_idx_ = read_handle.micro_begin_idx_;
+      need_open_micro = true;
+    } else if (iter_param_->is_skip_scan() &&
+               prefetcher_.current_micro_info().skip_state_.is_skipped() &&
+               prefetcher_.cur_micro_data_fetch_idx_ < read_handle.micro_end_idx_) {
+      LOG_DEBUG("[INDEX SKIP SCAN] current micro is skipped, skip to next micro", K(cur_range_idx_),
+          K(prefetcher_.cur_micro_data_fetch_idx_), K(read_handle));
+      ++prefetcher_.cur_micro_data_fetch_idx_;
       need_open_micro = true;
     }
     if (need_open_micro) {
@@ -1090,7 +1101,8 @@ int ObSSTableRowScanner<PrefetchType>::get_next_rowkey(int64_t &curr_scan_index,
   rowkey.reset();
   block_row_store_->disable();
   bool is_delete_insert = iter_param_->is_delete_insert_; // save is_delete_insert_
-  const_cast<ObTableIterParam*>(iter_param_)->is_delete_insert_ = false;  // to avoid using the blockscan path
+  bool enable_append_only_blockscan = iter_param_->enable_append_only_blockscan_; // save enable_append_only_blockscan_
+  const_cast<ObTableIterParam*>(iter_param_)->disable_delete_insert();  // to avoid using the blockscan path
 
   // get next row
   if (OB_FAIL(get_next_row(row))) {
@@ -1118,6 +1130,7 @@ int ObSSTableRowScanner<PrefetchType>::get_next_rowkey(int64_t &curr_scan_index,
   }
 
   const_cast<ObTableIterParam*>(iter_param_)->is_delete_insert_ = is_delete_insert; // restore is_delete_insert_
+  const_cast<ObTableIterParam*>(iter_param_)->enable_append_only_blockscan_ = enable_append_only_blockscan; // restore enable_append_only_blockscan_
   return ret;
 }
 

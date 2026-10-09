@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef OB_SYS_PRIV_TYPE_DEF
@@ -370,7 +363,6 @@ OB_SYS_PRIV_TYPE_DEF(PRIV_ID_MERGE_ANY_VIEW, "MERGE ANY VIEW")
 OB_SYS_PRIV_TYPE_DEF(PRIV_ID_UNDER_ANY_VIEW, "UNDER ANY VIEW")
 
 OB_SYS_PRIV_TYPE_DEF(PRIV_ID_ON_COMMIT_REFRESH, "ON COMMIT REFRESH")
-
 
 OB_SYS_PRIV_TYPE_DEF(PRIV_ID_RESUMABLE, "RESUMABLE")
 

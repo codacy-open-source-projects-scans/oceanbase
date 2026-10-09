@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -121,6 +114,9 @@ int ObLogExprValues::compute_fd_item_set()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpect parameter", K(my_plan_), K(get_stmt()));
   } else if (!get_stmt()->is_select_stmt()) {
+    set_fd_item_set(&empty_fd_item_set_);
+  } else if (contain_array_binding_param()) {
+    /* array binding param is not a single row */
     set_fd_item_set(&empty_fd_item_set_);
   } else {
     ObFdItemSet *fd_item_set = NULL;
@@ -260,6 +256,9 @@ int ObLogExprValues::compute_one_row_info()
     LOG_WARN("get unexpected null", K(ret));
   } else if (get_stmt()->is_insert_stmt()) {
     /* do nothing */
+  } else if (contain_array_binding_param()) {
+    /* array binding param is not a single row */
+    is_at_most_one_row_ = false;
   } else if (is_values_table_) {
     if (OB_ISNULL(table_def_)) {
       ret = OB_ERR_UNEXPECTED;

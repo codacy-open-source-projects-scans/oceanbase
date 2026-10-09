@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -915,7 +908,7 @@ int LimitPushdownRewriter::pushdown_limit_for_child(ObLogicalOperator *&child,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
   } else if (valuable && context != NULL && OB_FALSE_IT(context->becomes_valuable())) {
-  } else if (OB_FAIL(this->dispatch_visit(child, context, result))){
+  } else if (OB_FAIL(SMART_CALL(this->visit(child, context, result)))){
     LOG_WARN("failed to rewrite child", K(ret));
   }
   return ret;
@@ -970,7 +963,7 @@ int LimitPushdownRewriter::default_rewrite(ObLogicalOperator *&plannode, LimitPu
   for (int64_t i = 0; OB_SUCC(ret) && i < plannode->get_num_of_child(); ++i) {
     ObLogicalOperator* child = plannode->get_child(i);
     LimitPushdownResult *child_result = NULL;
-    if (OB_FAIL(this->dispatch_visit(child, NULL, child_result))) {
+    if (OB_FAIL(this->visit(child, NULL, child_result))) {
       LOG_WARN("failed to rewrite child", K(ret), K(plannode->get_name()));
     } else if (OB_ISNULL(child_result)) {
       ret = OB_ERR_UNEXPECTED;

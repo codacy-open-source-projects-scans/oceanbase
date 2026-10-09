@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -1193,7 +1186,9 @@ int ObTableColumns::resolve_view_definition(
     ObSelectStmt *&select_stmt,
     ObRawExprFactory &expr_factory,
     ObStmtFactory &stmt_factory,
-    bool throw_error) {
+    bool throw_error,
+    common::ObIArray<obrpc::ObDependencyObjDDLArg> *alter_view_compile_args)
+{
   int ret = OB_SUCCESS;
   /*
     之前这里的逻辑是先切租户再resolve视图定义，然而resolver层已经有一套切租户的
@@ -1249,6 +1244,7 @@ int ObTableColumns::resolve_view_definition(
         resolver_ctx.expr_factory_ = &expr_factory;
         resolver_ctx.stmt_factory_ = &stmt_factory;
         resolver_ctx.sql_proxy_ = GCTX.sql_proxy_;
+        resolver_ctx.alter_view_compile_args_ = alter_view_compile_args;
         if (OB_ISNULL(resolver_ctx.query_ctx_ = stmt_factory.get_query_ctx())) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("create query context failed", K(ret));
@@ -1256,6 +1252,7 @@ int ObTableColumns::resolve_view_definition(
           // set # of question marks
           resolver_ctx.query_ctx_->set_questionmark_count(static_cast<int64_t> (parse_result.question_mark_ctx_.count_));
           resolver_ctx.query_ctx_->sql_schema_guard_.set_schema_guard(schema_guard);
+          resolver_ctx.expr_factory_->set_query_ctx(resolver_ctx.query_ctx_);
           uint64_t session_id = 0;
           if (session->get_session_type() != ObSQLSessionInfo::INNER_SESSION) {
             session_id = session->get_sessid_for_table();
@@ -1305,21 +1302,6 @@ int ObTableColumns::resolve_view_definition(
               LOG_WARN("select_stmt should not NULL", K(ret));
             } else { /*do-nothing*/ }
           }
-        }
-        int tmp_ret = OB_SUCCESS;
-        bool reset_column_infos = (OB_SUCCESS == ret) ? false : (lib::is_oracle_mode() ? true : false);
-        if (OB_UNLIKELY(OB_SUCCESS != ret && OB_ERR_VIEW_INVALID != ret)) {
-          LOG_WARN("failed to resolve view", K(ret));
-        } else if (OB_UNLIKELY(OB_ERR_VIEW_INVALID == ret && lib::is_mysql_mode())) {
-          // do nothing
-        } else if (OB_SUCCESS != (tmp_ret = ObSQLUtils::async_recompile_view(table_schema, select_stmt, reset_column_infos, *allocator, *session))) {
-          LOG_WARN("failed to add recompile view task", K(tmp_ret));
-          if (OB_ERR_TOO_LONG_COLUMN_LENGTH == tmp_ret) {
-            tmp_ret = OB_SUCCESS; //ignore
-          }
-        }
-        if (OB_SUCCESS == ret) {
-          ret = tmp_ret;
         }
       }
     }

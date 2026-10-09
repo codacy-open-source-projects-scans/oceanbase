@@ -1,14 +1,7 @@
 /**
-* Copyright (c) 2021 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*/
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #ifndef OCEANBASE_SCHEMA_COLUMN_SCHEMA_H_
 #define OCEANBASE_SCHEMA_COLUMN_SCHEMA_H_
@@ -49,21 +42,21 @@ class ObColumnSchemaV2 : public ObSchema
 {
   OB_UNIS_VERSION_V(1);
 public:
-static const char *convert_column_type_to_str(common::ColumnType type);
-static common::ColumnType convert_str_to_column_type(const char *str);
-//constructor and destructor
-ObColumnSchemaV2();
-explicit ObColumnSchemaV2(common::ObIAllocator *allocator);
-DISABLE_COPY_ASSIGN(ObColumnSchemaV2);
-virtual ~ObColumnSchemaV2();
+  static const char *convert_column_type_to_str(common::ColumnType type);
+  static common::ColumnType convert_str_to_column_type(const char *str);
+  // constructor and destructor
+  ObColumnSchemaV2();
+  explicit ObColumnSchemaV2(common::ObIAllocator *allocator);
+  DISABLE_COPY_ASSIGN(ObColumnSchemaV2);
+  virtual ~ObColumnSchemaV2();
 
-//operators
-bool operator==(const ObColumnSchemaV2 &r) const;
-bool operator!=(const ObColumnSchemaV2 &r) const;
+  // operators
+  bool operator==(const ObColumnSchemaV2 &r) const;
+  bool operator!=(const ObColumnSchemaV2 &r) const;
 
-int assign(const ObColumnSchemaV2 &src_schema);
+  int assign(const ObColumnSchemaV2 &src_schema);
 
-//set methods
+  // set methods
   inline void set_tenant_id(const uint64_t id) { tenant_id_ = id; }
   inline void set_table_id(const uint64_t id) { table_id_ = id; }
   inline void set_column_id(const uint64_t id) { column_id_ = id; }
@@ -113,6 +106,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline void set_data_scale(const int16_t data_scale) { accuracy_.set_scale(data_scale); }
   inline void set_zero_fill(const bool is_zero_fill) { is_zero_fill_ = is_zero_fill; }
   inline void set_nullable(const bool is_nullable) { is_nullable_ = is_nullable; }
+  inline void set_has_used_as_ttl(const bool has_used_as_ttl) { has_used_as_ttl_ = has_used_as_ttl; }
   // add default not null constraint
   inline void add_not_null_cst();
   inline void add_not_null_cst(const bool rely_flag, const bool enable_flag,
@@ -205,6 +199,7 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_mysql_date_or_date() const { return meta_type_.is_mysql_date_or_date(); }
   inline bool is_mysql_datetime_or_datetime() const { return meta_type_.is_mysql_datetime_or_datetime(); }
   inline bool is_timestamp() const { return meta_type_.is_timestamp(); }
+  inline bool has_used_as_ttl() const { return has_used_as_ttl_; }
 
   inline bool is_xmltype() const {
     return ((meta_type_.is_ext() || meta_type_.is_user_defined_sql_type()) && sub_type_ == T_OBJ_XML)
@@ -403,6 +398,15 @@ int assign(const ObColumnSchemaV2 &src_schema);
   int is_same_collection_column(const ObColumnSchemaV2 &other, bool &is_same) const;
   static bool can_set_on_update_column_type(const common::ObObjMeta &meta_type);
   bool is_minimal_mode_related_time_column() const;
+
+  /**
+   * @brief The function is used for online ddl. In offline ddl, there is no need to check this.
+   *        Check if the column needs progressive merge if modify to the after_modify_column.
+   *
+   * @param after_modify_column The column after modify.
+   */
+  bool need_progressive_merge_if_modify_to(const ObColumnSchemaV2 &after_modify_column) const;
+
   DECLARE_VIRTUAL_TO_STRING;
 private:
   int alloc_column_ref_set();
@@ -413,7 +417,6 @@ private:
   int64_t schema_version_;
   int64_t rowkey_position_;  // greater than zero if this is rowkey column, 0 if this is common column
   int64_t index_position_;  // greater than zero if this is index column
-  common::ObOrderType order_in_rowkey_; // asc or desc; if this column is index column this means order in index
   union {
     struct {
       uint64_t part_key_pos_:8;//partition key pos
@@ -422,16 +425,18 @@ private:
     int64_t tbl_part_key_pos_;
   };//greater than zero if this column is used to calc part expr
   common::ObObjMeta meta_type_;
+  common::ObOrderType order_in_rowkey_; // asc or desc; if this column is index column this means order in index
   common::ObAccuracy accuracy_;
   bool is_nullable_;
   bool is_zero_fill_;
   bool is_autoincrement_;
   bool is_hidden_;
+  bool has_used_as_ttl_;
+  bool is_binary_collation_;
+  bool on_update_current_timestamp_;
   int64_t column_flags_;
   ColumnReferenceSet *column_ref_idxs_;
   common::ObCharsetType charset_type_;//default:utf8mb4
-  bool is_binary_collation_;
-  bool on_update_current_timestamp_;
   //default value
   common::ObObj orig_default_value_;//first default value, used for alter table add column; collation must be same with the column
   common::ObObj cur_default_value_; //collation must be same with the column

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 
@@ -76,6 +69,7 @@ void oceanbase::observer::init_srv_xlator_for_partition(ObSrvRpcXlator *xlator) 
   RPC_PROCESSOR(ObForceSwitchILogFileP, gctx_);
   RPC_PROCESSOR(ObForceSetAllAsSingleReplicaP, gctx_);
   RPC_PROCESSOR(ObForceSetLSAsSingleReplicaP, gctx_);
+  RPC_PROCESSOR(ObForceRemoveLSReplicaP, gctx_);
   // RPC_PROCESSOR(ObSplitDestPartitionRequestP, gctx_.par_ser_);
   // RPC_PROCESSOR(ObReplicaSplitProgressRequestP, gctx_.par_ser_);
   // RPC_PROCESSOR(ObCheckMemberMajorSSTableEnoughP, gctx_.par_ser_);
@@ -187,6 +181,7 @@ void oceanbase::observer::init_srv_xlator_for_migration(ObSrvRpcXlator *xlator)
 
   //rebuild tablet
   RPC_PROCESSOR(ObRebuildTabletSSTableInfoP, gctx_.bandwidth_throttle_);
+  RPC_PROCESSOR(ObAdminClearTransferMetaInfoP, gctx_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
@@ -201,6 +196,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
 
   // update optimizer statistic
   RPC_PROCESSOR(ObUpdateLocalStatCacheP, gctx_);
+  RPC_PROCESSOR(ObUpdateLocalCatalogStatCacheP, gctx_);
   RPC_PROCESSOR(ObInitSqcP, gctx_);
   RPC_PROCESSOR(ObInitTaskP, gctx_);
   RPC_PROCESSOR(ObInitFastSqcP, gctx_);
@@ -271,8 +267,7 @@ void oceanbase::observer::init_srv_xlator_for_others(ObSrvRpcXlator *xlator) {
 
   // flush opt stat monitoring info rpc
   RPC_PROCESSOR(ObFlushLocalOptStatMonitoringInfoP, gctx_);
-  // send bloom filter
-  RPC_PROCESSOR(ObSendBloomFilterP);
+
   // GC check member list
   RPC_PROCESSOR(ObQueryLSIsValidMemberP, gctx_);
 

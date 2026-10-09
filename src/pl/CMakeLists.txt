@@ -8,12 +8,33 @@ if(RET AND NOT RET EQUAL 0)
   message(FATAL_ERROR "Generate pl parser failed and check error in ${PROJECT_SOURCE_DIR}/src/pl/parser/_gen_parser.error")
 endif()
 
-ob_set_subtarget(ob_pl ALONE
+set(ob_pl_alone_sources
   parser/ob_pl_parser.cpp
   parser/pl_non_reserved_keywords_mysql_mode.c
   parser/pl_parser_base.c
   parser/pl_parser_mysql_mode_lex.c
   parser/pl_parser_mysql_mode_tab.c
+)
+
+if(OB_BUILD_ORACLE_PL)
+  list(APPEND ob_pl_alone_sources
+    parser/pl_parser_oracle_latin1_mode_lex.c
+    parser/pl_parser_oracle_latin1_mode_tab.c
+    parser/pl_non_reserved_keywords_oracle_latin1_mode.c
+    parser/pl_parser_oracle_utf8_mode_lex.c
+    parser/pl_parser_oracle_utf8_mode_tab.c
+    parser/pl_non_reserved_keywords_oracle_utf8_mode.c
+    parser/pl_parser_oracle_gbk_mode_lex.c
+    parser/pl_parser_oracle_gbk_mode_tab.c
+    parser/pl_non_reserved_keywords_oracle_gbk_mode.c
+    parser/pl_parser_oracle_hkscs_mode_lex.c
+    parser/pl_parser_oracle_hkscs_mode_tab.c
+    parser/pl_non_reserved_keywords_oracle_hkscs_mode.c
+  )
+endif()
+
+ob_set_subtarget(ob_pl ALONE
+  ${ob_pl_alone_sources}
 )
 
 ob_set_subtarget(ob_pl common
@@ -51,6 +72,7 @@ ob_set_subtarget(ob_pl pl_cache
 
 ob_set_subtarget(ob_pl sys_package
   sys_package/ob_dbms_stats.cpp
+  sys_package/ob_dbms_catalog_stats.cpp
   sys_package/ob_dbms_scheduler.cpp
   sys_package/ob_dbms_application.cpp
   sys_package/ob_dbms_session.cpp
@@ -79,6 +101,7 @@ ob_set_subtarget(ob_pl sys_package
   sys_package/ob_dbms_python.cpp
   sys_package/ob_dbms_lob_manager.cpp
   sys_package/ob_dbms_daily_maintenance.cpp
+  sys_package/ob_dbms_schema.cpp
 )
 
 ob_set_subtarget(ob_pl pl_recompile
@@ -102,14 +125,6 @@ ob_set_subtarget(ob_pl external_routine
 
 ob_server_add_target(ob_pl)
 
-find_program(PYTHON_EXECUTABLE 
-  NAMES python3 python
-  DOC "Python interpreter")
-
-if(NOT PYTHON_EXECUTABLE)
-  message(FATAL_ERROR "Python interpreter not found. Please install python or python3.")
-endif()
-
 set(SYS_PACK_SQL_SOURCE_DIR ${PROJECT_SOURCE_DIR}/src/share/inner_table/sys_package)
 set(gen_syspack_src ${SYS_PACK_SQL_SOURCE_DIR}/syspack_source.cpp)
 set(SYS_PACK_RELEASE_DIR ${CMAKE_BINARY_DIR}/syspack_release CACHE PATH "The path to the system package release directory")
@@ -117,7 +132,7 @@ set(SYS_PACK_RELEASE_DIR ${CMAKE_BINARY_DIR}/syspack_release CACHE PATH "The pat
 if(OB_BUILD_ORACLE_PL)
   add_custom_command(
     OUTPUT ${gen_syspack_src}
-    COMMAND ${PYTHON_EXECUTABLE} ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py -rd ${SYS_PACK_RELEASE_DIR} -wp $<TARGET_FILE:wrap>
+    COMMAND python ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py -rd ${SYS_PACK_RELEASE_DIR} -wp $<TARGET_FILE:wrap>
     DEPENDS ${SYS_PACK_SQL_SOURCE_DIR}/*.sql ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py wrap
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating wrapped syspack source files"
@@ -125,7 +140,7 @@ if(OB_BUILD_ORACLE_PL)
 else()
   add_custom_command(
     OUTPUT ${gen_syspack_src}
-    COMMAND ${PYTHON_EXECUTABLE} ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py -rd ${SYS_PACK_RELEASE_DIR}
+    COMMAND python ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py -rd ${SYS_PACK_RELEASE_DIR}
     DEPENDS ${SYS_PACK_SQL_SOURCE_DIR}/*.sql ${SYS_PACK_SQL_SOURCE_DIR}/syspack_codegen.py
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Generating wrapped syspack source files"

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_trans_submit_log_cb.h"
@@ -123,6 +116,7 @@ void ObTxLogCb::reset()
   if (OB_NOT_NULL(extra_cb_) && need_free_extra_cb_) {
     mtl_free(extra_cb_);
   }
+  extra_cb_ = nullptr;
   need_free_extra_cb_ = false;
 
   // is_callbacking_ = false;
@@ -144,6 +138,7 @@ void ObTxLogCb::reuse()
   if (OB_NOT_NULL(extra_cb_) && need_free_extra_cb_) {
     mtl_free(extra_cb_);
   }
+  extra_cb_ = nullptr;
   need_free_extra_cb_ = false;
 
   first_part_scn_.invalid_scn();
@@ -185,6 +180,17 @@ int ObTxLogCb::on_success()
       ret = OB_ERR_UNEXPECTED;
       TRANS_LOG(ERROR, "ctx is null", K(ret), KPC(part_ctx));
     } else {
+#ifdef ERRSIM
+    const uint64_t tenant_id = MTL_ID();
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
+    if (tenant_config.is_valid()) {
+      const bool need_inject_latency = tenant_config->inject_latency_before_on_success;
+      if (need_inject_latency) {
+        STORAGE_LOG(ERROR, "errsim : inject latency before on success", K(ret));
+        ob_usleep(500 * 1000); //500ms
+      }
+    }
+#endif
       if (OB_FAIL(part_ctx->on_success(this))) {
         TRANS_LOG(WARN, "sync log success callback error", K(ret), K(tx_id), K(ls_id), K(log_ts));
       }

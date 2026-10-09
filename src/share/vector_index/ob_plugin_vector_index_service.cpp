@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 #include "share/vector_index/ob_plugin_vector_index_service.h"
@@ -1079,13 +1072,31 @@ void ObPluginVectorIndexService::destroy()
 {
   if (IS_INIT) {
     FLOG_INFO("destroy vector index service", K_(tenant_id));
-    is_inited_ = false;
-    has_start_ = false;
-    tenant_id_ = OB_INVALID_TENANT_ID;
-    is_ls_or_tablet_changed_ = false;
-    schema_service_ = NULL;
-    ls_service_ = NULL;
-    sql_proxy_ = NULL;
+
+    // Stop creating/acquiring new vector objects before reclaiming allocators.
+    stop();
+    wait();
+
+    // destroy vec async task
+    if (OB_NOT_NULL(tenant_vec_async_task_sched_)) {
+      tenant_vec_async_task_sched_->destroy();  // destroy tg_id_
+      ob_free(tenant_vec_async_task_sched_);
+      tenant_vec_async_task_sched_ = nullptr;
+    }
+
+    // TODO: destory shared tg_id
+    if (kmeans_tg_id_ != OB_INVALID_TG_ID) {
+      TG_DESTROY(kmeans_tg_id_);
+      kmeans_tg_id_ = OB_INVALID_TG_ID;
+    }
+    if (embedding_tg_id_ != OB_INVALID_TG_ID) {
+      TG_DESTROY(embedding_tg_id_);
+      embedding_tg_id_ = OB_INVALID_TG_ID;
+    }
+    // destroy kmeans build task handler
+    kmeans_build_task_handler_.destroy();
+    // destroy async task handler
+    vec_async_task_handle_.destroy();
 
     FOREACH(iter, vec_idx_tmp_map_) {
       ObVectorIndexTmpInfo *tmp_info = iter->second;
@@ -1113,26 +1124,13 @@ void ObPluginVectorIndexService::destroy()
     tmp_info_allocator_.reset();
     adaptor_allocator_.reset();
 
-    // destroy vec async task
-    if (OB_NOT_NULL(tenant_vec_async_task_sched_)) {
-      tenant_vec_async_task_sched_->destroy();  // destroy tg_id_
-      ob_free(tenant_vec_async_task_sched_);
-      tenant_vec_async_task_sched_ = nullptr;
-    }
-
-    // TODO: destory shared tg_id
-    if (kmeans_tg_id_ != OB_INVALID_TG_ID) {
-      TG_DESTROY(kmeans_tg_id_);
-      kmeans_tg_id_ = OB_INVALID_TG_ID;
-    }
-    if (embedding_tg_id_ != OB_INVALID_TG_ID) {
-      TG_DESTROY(embedding_tg_id_);
-      embedding_tg_id_ = OB_INVALID_TG_ID;
-    }
-    // destroy kmeans build task handler
-    kmeans_build_task_handler_.destroy();
-    // destroy async task handler
-    vec_async_task_handle_.destroy();
+    is_inited_ = false;
+    has_start_ = false;
+    tenant_id_ = OB_INVALID_TENANT_ID;
+    is_ls_or_tablet_changed_ = false;
+    schema_service_ = NULL;
+    ls_service_ = NULL;
+    sql_proxy_ = NULL;
   }
 }
 
@@ -1317,6 +1315,7 @@ void ObPluginVectorIndexService::wait()
     if (OB_NOT_NULL(tenant_vec_async_task_sched_)) {
       tenant_vec_async_task_sched_->wait();
     }
+    get_vec_async_task_handle().wait();
     kmeans_build_task_handler_.wait();
     embedding_task_handler_.wait();
   }
@@ -1449,6 +1448,7 @@ int ObPluginVectorIndexMgr::replace_with_complete_adapter(ObVectorIndexAdapterCa
                                                           ObVecIdxSharedTableInfoMap &info_map,
                                                           ObIAllocator &allocator)
 {
+  DEBUG_SYNC(BEFORE_REPLACE_WITH_COMPLETE_ADAPTER);
   int ret = OB_SUCCESS;
   ObPluginVectorIndexAdapterGuard &inc_adapter_guard = candidate->inc_adatper_guard_;
   ObPluginVectorIndexAdapterGuard &bitmap_adapter_guard = candidate->bitmp_adatper_guard_;
@@ -1495,7 +1495,7 @@ int ObPluginVectorIndexMgr::replace_with_complete_adapter(ObVectorIndexAdapterCa
     } else {
       WLockGuard lock_guard(adapter_map_rwlock_);
       int overwrite = 0;
-      // should not fail in followring process
+      // should not fail in following process
       if (OB_FAIL(set_complete_adapter_(new_adapter->get_inc_tablet_id(), new_adapter, overwrite))) {
         LOG_WARN("failed to set new complete partial adapter", K(new_adapter->get_inc_tablet_id()), KR(ret));
       } else if (OB_FAIL(set_complete_adapter_(new_adapter->get_vbitmap_tablet_id(), new_adapter, overwrite))) {
@@ -1599,7 +1599,6 @@ int ObPluginVectorIndexMgr::replace_old_adapter_with_scn_check(ObPluginVectorInd
     LOG_WARN("get null adapter", KR(ret));
   } else {
     // Optimistic lock: compare and swap
-    DEBUG_SYNC(BEFORE_REPLACE_OLD_ADAPTOR);
     ObPluginVectorIndexAdaptor *cur_adapter = nullptr;
     if (OB_FAIL(complete_index_adpt_map_.get_refactored(new_adapter->get_inc_tablet_id(), cur_adapter))) {
       if (OB_HASH_NOT_EXIST == ret) {
@@ -1688,28 +1687,52 @@ int ObPluginVectorIndexMgr::replace_with_full_partial_adapter(ObVectorIndexAcqui
                 && OB_FAIL(new_adapter->init(*vec_index_param, dim, memory_context_, all_vsag_use_mem_))) {
       LOG_WARN("failed to init adpt.", K(ret), K(*vec_index_param), K(dim));
     } else {
+      DEBUG_SYNC(BEFORE_REPLACE_WITH_FULL_PARTIAL_ADAPTER);
       WLockGuard lock_guard(adapter_map_rwlock_);
-      int overwrite = 1;
-      // should not fail in followring process
-      if (OB_FAIL(erase_partial_adapter_(ctx.inc_tablet_id_))) {
-        LOG_WARN("fail to release partial index adapter", K(ctx.inc_tablet_id_), KR(ret));
-      } else if (OB_FAIL(erase_partial_adapter_(ctx.vbitmap_tablet_id_))) {
-        LOG_WARN("fail to release partial index adapter", K(ctx.vbitmap_tablet_id_), KR(ret));
-      } else if (OB_FAIL(erase_partial_adapter_(ctx.snapshot_tablet_id_))) {
-        LOG_WARN("fail to release partial index adapter", K(ctx.snapshot_tablet_id_), KR(ret));
-      } else if (OB_FAIL(set_partial_adapter_(ctx.inc_tablet_id_, new_adapter, overwrite))) {
-        LOG_WARN("failed to set new full partial adapter", K(ctx.inc_tablet_id_), KR(ret));
-      } else if (OB_FAIL(set_partial_adapter_(ctx.vbitmap_tablet_id_, new_adapter, overwrite))) {
-        LOG_WARN("failed to set new full partial adapter", K(ctx.vbitmap_tablet_id_), KR(ret));
-      } else if (OB_FAIL(set_partial_adapter_(ctx.snapshot_tablet_id_, new_adapter, overwrite))) {
-        LOG_WARN("failed to set new full partial adapter", K(ctx.snapshot_tablet_id_), KR(ret));
-      } else if (OB_FAIL(ctx.embedded_tablet_id_.is_valid() && set_partial_adapter_(ctx.embedded_tablet_id_, new_adapter, overwrite))) {
-        LOG_WARN("failed to set new full partial adapter", K(ctx.embedded_tablet_id_), KR(ret));
-      } else if (OB_FAIL(adapter_guard.set_adapter(new_adapter))) {
-        LOG_WARN("failed to set adapter", K(ctx), KR(ret));
+      // check is full or complete: map may have been replaced by another thread while building new_adapter
+      ObPluginVectorIndexAdaptor *cur_adapter = nullptr;
+      int get_ret = partial_index_adpt_map_.get_refactored(ctx.inc_tablet_id_, cur_adapter);
+      bool already_full_or_complete = (OB_SUCC(get_ret) && OB_NOT_NULL(cur_adapter)
+          && (cur_adapter->get_create_type() == CreateTypeFullPartial
+              || cur_adapter->get_create_type() == CreateTypeComplete));
+      if (OB_FAIL(get_ret) && OB_HASH_NOT_EXIST != get_ret) {
+        LOG_WARN("failed to get partial adapter for check", K(ctx.inc_tablet_id_), KR(get_ret));
+        ret = get_ret;
+      } else if (already_full_or_complete) {
+        if (OB_FAIL(adapter_guard.set_adapter(cur_adapter))) {
+          LOG_WARN("failed to set adapter to existing full/complete", K(ctx), KR(ret));
+        } else {
+          new_adapter->~ObPluginVectorIndexAdaptor();
+          allocator.free(adpt_buff);
+          new_adapter = nullptr;
+          adpt_buff = nullptr;
+          FLOG_INFO("[VECTOR INDEX ADAPTOR] skip replace, already full or complete", K(ctx.inc_tablet_id_), KP(cur_adapter), K(lbt()));
+        }
       } else {
-        FLOG_INFO("[VECTOR INDEX ADAPTOR] create full partial adaptor success", KP(new_adapter),
-            K(ctx.inc_tablet_id_), K(ctx.vbitmap_tablet_id_), K(ctx.snapshot_tablet_id_), K(ctx.embedded_tablet_id_), K(lbt()));
+        int overwrite = 1;
+        // should not fail in following process
+        if (OB_FAIL(erase_partial_adapter_(ctx.inc_tablet_id_))) {
+          LOG_WARN("fail to release partial index adapter", K(ctx.inc_tablet_id_), KR(ret));
+        } else if (OB_FAIL(erase_partial_adapter_(ctx.vbitmap_tablet_id_))) {
+          LOG_WARN("fail to release partial index adapter", K(ctx.vbitmap_tablet_id_), KR(ret));
+        } else if (OB_FAIL(erase_partial_adapter_(ctx.snapshot_tablet_id_))) {
+          LOG_WARN("fail to release partial index adapter", K(ctx.snapshot_tablet_id_), KR(ret));
+        } else if (OB_FAIL(ctx.embedded_tablet_id_.is_valid() && erase_partial_adapter_(ctx.embedded_tablet_id_))) {
+          LOG_WARN("fail to release partial index adapter", K(ctx.embedded_tablet_id_), KR(ret));
+        } else if (OB_FAIL(set_partial_adapter_(ctx.inc_tablet_id_, new_adapter, overwrite))) {
+          LOG_WARN("failed to set new full partial adapter", K(ctx.inc_tablet_id_), KR(ret));
+        } else if (OB_FAIL(set_partial_adapter_(ctx.vbitmap_tablet_id_, new_adapter, overwrite))) {
+          LOG_WARN("failed to set new full partial adapter", K(ctx.vbitmap_tablet_id_), KR(ret));
+        } else if (OB_FAIL(set_partial_adapter_(ctx.snapshot_tablet_id_, new_adapter, overwrite))) {
+          LOG_WARN("failed to set new full partial adapter", K(ctx.snapshot_tablet_id_), KR(ret));
+        } else if (ctx.embedded_tablet_id_.is_valid() && OB_FAIL(set_partial_adapter_(ctx.embedded_tablet_id_, new_adapter, overwrite))) {
+          LOG_WARN("failed to set new full partial adapter", K(ctx.embedded_tablet_id_), KR(ret));
+        } else if (OB_FAIL(adapter_guard.set_adapter(new_adapter))) {
+          LOG_WARN("failed to set adapter", K(ctx), KR(ret));
+        } else {
+          FLOG_INFO("[VECTOR INDEX ADAPTOR] create full partial adaptor success", KP(new_adapter),
+              K(ctx.inc_tablet_id_), K(ctx.vbitmap_tablet_id_), K(ctx.snapshot_tablet_id_), K(ctx.embedded_tablet_id_), K(lbt()));
+        }
       }
     }
   }

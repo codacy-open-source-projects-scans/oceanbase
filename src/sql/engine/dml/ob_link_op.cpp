@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -216,7 +209,8 @@ int ObLinkOp::combine_link_stmt(const ObString &link_stmt_fmt,
     }
   }
   link_stmt_pos += reserve_proxy_route_space;
-  if (OB_SUCC(ret) && param_infos.count() && OB_FAIL(ObDblinkService::get_spell_collation_type(ctx_.get_my_session(), spell_coll))) {
+  if (OB_SUCC(ret) && param_infos.count() &&
+      OB_FAIL(ObDblinkService::get_spell_collation_type(ctx_.get_my_session(), link_type_, spell_coll))) {
     LOG_WARN("failed to get spell collation type", K(ret));
   }
   while (OB_SUCC(ret) && stmt_fmt_pos <  link_stmt_fmt.length()) {

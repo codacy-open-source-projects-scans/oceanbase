@@ -1,22 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "ob_partition_merge_progress.h"
 #include "ob_tenant_compaction_progress.h"
 #include "storage/column_store/ob_co_merge_dag.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_major_merge_ctx.h"
-#endif
 
 namespace oceanbase
 {
@@ -431,15 +421,8 @@ int ObCOMajorMergeProgress::finish_merge_progress()
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null ctx", K(ret), KPC_(ctx));
   } else if (typeid(*ctx_) != typeid(ObCOTabletMergeCtx)) {
-    if (!GCTX.is_shared_storage_mode()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ctx has unexpected type", K(ret), KPC_(ctx));
-#ifdef OB_BUILD_SHARED_STORAGE
-    } else if (typeid(*ctx_) != typeid(ObSSCOTabletMergeCtx)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("ctx has unexpected type", K(ret), KPC_(ctx));
-#endif
-    }
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("ctx has unexpected type", K(ret), KPC_(ctx));
   }
 
   if (OB_SUCC(ret)) {

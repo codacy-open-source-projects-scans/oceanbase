@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -110,18 +103,14 @@ void ObLSRestoreCtx::reuse()
 ObLSRestoreDagNetInitParam::ObLSRestoreDagNetInitParam()
   : arg_(),
     task_id_(),
-    bandwidth_throttle_(nullptr),
-    svr_rpc_proxy_(nullptr),
-    storage_rpc_(nullptr)
+    ha_svc_ctx_()
 {
 }
 
 bool ObLSRestoreDagNetInitParam::is_valid() const
 {
   return arg_.is_valid() && !task_id_.is_invalid()
-      && OB_NOT_NULL(bandwidth_throttle_)
-      && OB_NOT_NULL(svr_rpc_proxy_)
-      && OB_NOT_NULL(storage_rpc_);
+      && ha_svc_ctx_.is_valid();
 }
 
 
@@ -132,10 +121,7 @@ ObLSRestoreDagNet::ObLSRestoreDagNet()
       meta_index_store_(),
       second_meta_index_store_(),
       kv_cache_(nullptr),
-      bandwidth_throttle_(nullptr),
-      svr_rpc_proxy_(nullptr),
-      storage_rpc_(nullptr)
-
+      ha_svc_ctx_()
 {
 }
 
@@ -257,9 +243,7 @@ int ObLSRestoreDagNet::init_by_param(const ObIDagInitParam *param)
   } else {
     ctx_->task_id_ = init_param->task_id_;
     kv_cache_ = &OB_BACKUP_INDEX_CACHE;
-    bandwidth_throttle_ = init_param->bandwidth_throttle_;
-    svr_rpc_proxy_ = init_param->svr_rpc_proxy_;
-    storage_rpc_ = init_param->storage_rpc_;
+    ha_svc_ctx_ = init_param->ha_svc_ctx_;
     is_inited_ = true;
   }
 #ifdef ERRSIM
@@ -618,9 +602,7 @@ ObInitialLSRestoreTask::ObInitialLSRestoreTask()
   : ObITask(TASK_TYPE_MIGRATE_PREPARE),
     is_inited_(false),
     ctx_(nullptr),
-    bandwidth_throttle_(nullptr),
-    svr_rpc_proxy_(nullptr),
-    storage_rpc_(nullptr),
+    ha_svc_ctx_(),
     dag_net_(nullptr)
 {
 }
@@ -648,9 +630,7 @@ int ObInitialLSRestoreTask::init()
   } else if (FALSE_IT(ls_restore_dag_net = static_cast<ObLSRestoreDagNet*>(dag_net))) {
   } else {
     ctx_ = ls_restore_dag_net->get_ls_restore_ctx();
-    bandwidth_throttle_ = ls_restore_dag_net->get_bandwidth_throttle();
-    svr_rpc_proxy_ = ls_restore_dag_net->get_storage_rpc_proxy();
-    storage_rpc_ = ls_restore_dag_net->get_storage_rpc();
+    ha_svc_ctx_ = ls_restore_dag_net->get_ha_svc_ctx();
     dag_net_ = dag_net;
     is_inited_ = true;
     LOG_INFO("succeed init initial ls restore task", "ls id", ctx_->arg_.ls_id_,
@@ -835,9 +815,7 @@ ObStartLSRestoreTask::ObStartLSRestoreTask()
   : ObITask(TASK_TYPE_MIGRATE_PREPARE),
     is_inited_(false),
     ctx_(nullptr),
-    bandwidth_throttle_(nullptr),
-    svr_rpc_proxy_(nullptr),
-    storage_rpc_(nullptr)
+    ha_svc_ctx_()
 {
 }
 
@@ -864,9 +842,7 @@ int ObStartLSRestoreTask::init()
   } else if (FALSE_IT(ls_restore_dag_net = static_cast<ObLSRestoreDagNet*>(dag_net))) {
   } else {
     ctx_ = ls_restore_dag_net->get_ls_restore_ctx();
-    bandwidth_throttle_ = ls_restore_dag_net->get_bandwidth_throttle();
-    svr_rpc_proxy_ = ls_restore_dag_net->get_storage_rpc_proxy();
-    storage_rpc_ = ls_restore_dag_net->get_storage_rpc();
+    ha_svc_ctx_ = ls_restore_dag_net->get_ha_svc_ctx();
     is_inited_ = true;
     LOG_INFO("succeed init start ls restore task", "ls id", ctx_->arg_.ls_id_,
         "dag_id", *ObCurTraceId::get_trace_id(), "dag_net_id", ctx_->task_id_);
@@ -979,7 +955,7 @@ int ObStartLSRestoreTask::alloc_copy_ls_view_reader_(ObICopyLSViewInfoReader *&r
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to alloc memory", K(ret));
     } else if (FALSE_IT(ob_reader = new (buf) ObCopyLSViewInfoObReader())) {
-    } else if (OB_FAIL(ob_reader->init(src_info, arg, *svr_rpc_proxy_, *bandwidth_throttle_))) {
+    } else if (OB_FAIL(ob_reader->init(src_info, arg, *ha_svc_ctx_.svr_rpc_proxy_, *ha_svc_ctx_.bandwidth_throttle_))) {
       LOG_WARN("failed to init tablet restore reader", K(ret), K(src_info), K(arg));
     } else {
       reader = ob_reader;
@@ -1293,13 +1269,10 @@ ObSysTabletsRestoreTask::ObSysTabletsRestoreTask()
     is_inited_(false),
     ls_handle_(),
     ctx_(nullptr),
-    bandwidth_throttle_(nullptr),
-    svr_rpc_proxy_(nullptr),
-    storage_rpc_(nullptr),
+    ha_svc_ctx_(),
     meta_index_store_(nullptr),
     second_meta_index_store_(nullptr),
     ha_tablets_builder_()
-
 {
 }
 
@@ -1327,9 +1300,7 @@ int ObSysTabletsRestoreTask::init()
   } else if (FALSE_IT(ls_restore_dag_net = static_cast<ObLSRestoreDagNet*>(dag_net))) {
   } else {
     ctx_ = ls_restore_dag_net->get_ls_restore_ctx();
-    bandwidth_throttle_ = ls_restore_dag_net->get_bandwidth_throttle();
-    svr_rpc_proxy_ = ls_restore_dag_net->get_storage_rpc_proxy();
-    storage_rpc_ = ls_restore_dag_net->get_storage_rpc();
+    ha_svc_ctx_ = ls_restore_dag_net->get_ha_svc_ctx();
     meta_index_store_ = ls_restore_dag_net->get_meta_index_store();
     second_meta_index_store_ = ls_restore_dag_net->get_second_meta_index_store();
     const ObTabletRestoreAction::ACTION &restore_action = ObTabletRestoreAction::ACTION::RESTORE_ALL;
@@ -1365,6 +1336,8 @@ int ObSysTabletsRestoreTask::process()
     LOG_WARN("failed to create or update tablets", K(ret), K(*ctx_));
   } else if (OB_FAIL(ObStorageHAUtils::deal_compat_with_ls_inner_tablet(ctx_->arg_.ls_id_))) {
     LOG_WARN("failed to deal compcat with ls inner tablet", K(ret), KPC(ctx_));
+  } else if (OB_FAIL(try_remove_tablets_info_())) {
+    LOG_WARN("failed to try remove tablets info", K(ret), KPC(ctx_));
   } else if (OB_FAIL(build_tablets_sstable_info_())) {
     LOG_WARN("failed to build tablets sstable info", K(ret), K(*ctx_));
   } else if (OB_FAIL(generate_sys_tablet_restore_dag_())) {
@@ -1511,6 +1484,54 @@ int ObSysTabletsRestoreTask::generate_sys_tablet_restore_dag_()
   return ret;
 }
 
+int ObSysTabletsRestoreTask::try_remove_tablets_info_()
+{
+  // The whole sys tablets restore dag may be retried (e.g., when a retryable
+  // error is encountered after build_tablets_sstable_info_ has already
+  // populated ctx_->ha_table_info_mgr_). On retry, the stale entries make the
+  // following init_tablet_info() in build_tablets_sstable_info() fail with
+  // -4016. Clean them up before rebuilding, mirroring the migration path.
+  int ret = OB_SUCCESS;
+  bool is_in_retry = false;
+  ObSysTabletsRestoreDag *dag = nullptr;
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("sys tablets restore task do not init", K(ret), KPC(ctx_));
+  } else if (OB_ISNULL(dag = static_cast<ObSysTabletsRestoreDag *>(this->get_dag()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("sys tablets restore dag should not be NULL", K(ret), KPC(ctx_), KP(dag));
+  } else if (OB_FAIL(dag->check_is_in_retry(is_in_retry))) {
+    LOG_WARN("failed to check is in retry", K(ret), KPC(ctx_), KP(dag));
+  } else if (!is_in_retry) {
+    //do nothing
+  } else if (OB_FAIL(remove_tablets_info_())) {
+    LOG_WARN("failed to try remove tablets info", K(ret), KPC(ctx_));
+  }
+  return ret;
+}
+
+int ObSysTabletsRestoreTask::remove_tablets_info_()
+{
+  int ret = OB_SUCCESS;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("sys tablets restore task do not init", K(ret), KPC(ctx_));
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < ctx_->sys_tablet_id_array_.count(); ++i) {
+      const ObTabletID &tablet_id = ctx_->sys_tablet_id_array_.at(i).tablet_id_;
+      if (OB_FAIL(ctx_->ha_table_info_mgr_.remove_tablet_table_info(tablet_id))) {
+        if (OB_HASH_NOT_EXIST == ret) {
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("failed to remove tablet info", K(ret), K(tablet_id), KPC(ctx_));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 /******************ObDataTabletsMetaRestoreDag*********************/
 ObDataTabletsMetaRestoreDag::ObDataTabletsMetaRestoreDag()
   : ObLSRestoreDag(ObDagType::DAG_TYPE_DATA_TABLETS_META_RESTORE),
@@ -1594,9 +1615,7 @@ ObDataTabletsMetaRestoreTask::ObDataTabletsMetaRestoreTask()
   : ObITask(TASK_TYPE_MIGRATE_PREPARE),
     is_inited_(false),
     ctx_(nullptr),
-    bandwidth_throttle_(nullptr),
-    svr_rpc_proxy_(nullptr),
-    storage_rpc_(nullptr),
+    ha_svc_ctx_(),
     finish_dag_(nullptr)
 {
 }
@@ -1636,9 +1655,7 @@ int ObDataTabletsMetaRestoreTask::init()
         LOG_WARN("ls restore dag type is unexpected", K(ret), K(*child_dag));
       } else {
         ctx_ = ls_restore_dag_net->get_ls_restore_ctx();
-        bandwidth_throttle_ = ls_restore_dag_net->get_bandwidth_throttle();
-        svr_rpc_proxy_ = ls_restore_dag_net->get_storage_rpc_proxy();
-        storage_rpc_ = ls_restore_dag_net->get_storage_rpc();
+        ha_svc_ctx_ = ls_restore_dag_net->get_ha_svc_ctx();
         finish_dag_ = static_cast<ObIDag*>(child_dag);
         is_inited_ = true;
 
@@ -1715,7 +1732,6 @@ int ObDataTabletsMetaRestoreTask::generate_tablet_group_dag_()
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   ObTabletGroupMetaRestoreDag *tablet_group_dag = nullptr;
-  ObTenantDagScheduler *scheduler = nullptr;
   ObIDagNet *dag_net = nullptr;
   ObDataTabletsMetaRestoreDag *data_tablets_meta_restore_dag = nullptr;
   ObHATabletGroupCtx *tablet_group_ctx = nullptr;
@@ -1741,36 +1757,11 @@ int ObDataTabletsMetaRestoreTask::generate_tablet_group_dag_()
   } else if (OB_ISNULL(dag_net = data_tablets_meta_restore_dag->get_dag_net())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dag net should not be NULL", K(ret), K(*this));
-  } else if (OB_ISNULL(scheduler = MTL(ObTenantDagScheduler*))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ObTenantDagScheduler from MTL", K(ret));
-  } else {
-    if (OB_FAIL(scheduler->alloc_dag(tablet_group_dag, true/*is_ha_dag*/))) {
-      LOG_WARN("failed to alloc tablet group meta restore dag ", K(ret));
-    } else if (OB_FAIL(tablet_group_dag->init(tablet_id_array, dag_net, finish_dag_))) {
-      LOG_WARN("failed to init tablet group dag", K(ret), K(tablet_id_array));
-    } else if (OB_FAIL(dag_net->add_dag_into_dag_net(*tablet_group_dag))) {
-      LOG_WARN("failed to add dag into dag net", K(ret), KPC(tablet_group_dag));
-    } else if (OB_FAIL(this->get_dag()->add_child_without_inheritance(*tablet_group_dag))) {
-      LOG_WARN("failed to add tablet group dag as child", K(ret), K(*tablet_group_dag));
-    } else if (OB_FAIL(tablet_group_dag->create_first_task())) {
-      LOG_WARN("failed to create first task", K(ret), K(*ctx_));
-    } else if (OB_FAIL(tablet_group_dag->add_child_without_inheritance(*finish_dag_))) {
-      LOG_WARN("failed to add finish dag as child", K(ret), K(*tablet_group_dag), K(*finish_dag_));
-    } else if (OB_FAIL(scheduler->add_dag(tablet_group_dag))) {
-      LOG_WARN("failed to add tablet group meta dag", K(ret), K(*tablet_group_dag));
-      if (OB_SIZE_OVERFLOW != ret && OB_EAGAIN != ret) {
-        LOG_WARN("Fail to add task", K(ret));
-        ret = OB_EAGAIN;
-      }
-    }
-
-    if (OB_FAIL(ret)) {
-      if (OB_NOT_NULL(tablet_group_dag)) {
-        scheduler->free_dag(*tablet_group_dag);
-        tablet_group_dag = nullptr;
-      }
-    }
+  } else if (OB_FAIL(ObStorageHADagUtils::alloc_and_schedule_dag(
+      dag_net, this->get_dag()/*parent_dag*/, finish_dag_/*child_dag*/,
+      this->get_dag()->get_priority(), false/*emergency*/, tablet_group_dag/*new_dag*/,
+      tablet_id_array, dag_net, finish_dag_))) {
+    LOG_WARN("failed to schedule tablet group meta restore dag", K(ret), K(tablet_id_array));
   }
 
   return ret;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -95,9 +88,9 @@ int ObLogForUpdate::get_plan_item_info(PlanText &plan_text,
           } else {
             table = base_table;
           }
-        } else {
+        } else if (OB_ISNULL(table = table->ref_query_->get_table_item_by_id(index_dml_info_.at(i)->loc_table_id_))) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("not a hierarchical query", K(ret), KPC(stmt));
+          LOG_WARN("table item is NULL", K(ret));
         }
       }
       if (OB_SUCC(ret) && OB_FAIL(BUF_PRINTF("%c%.*s%c",

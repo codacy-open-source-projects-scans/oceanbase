@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -65,9 +58,9 @@ int ObWaitEventContainer::get_and_set(
           if (OB_ISNULL(pool_)) {
             ret = OB_ALLOCATE_MEMORY_FAILED;
           } else {
-            ObWaitEventStatArray *array = pool_->borrow_object();
-            if (OB_ISNULL(array)) {
-              ret = OB_ALLOCATE_MEMORY_FAILED;
+            ObWaitEventStatArray *array = nullptr;
+            if (OB_FAIL(pool_->borrow_object(array))) {
+              LOG_WARN("failed to borrow object", K(ret));
             } else {
               array_ = array;
               copy_list_stat_to_array();
@@ -297,6 +290,26 @@ void ObDiagnosticInfo::end_wait_event(const int64_t event_no, const bool is_idle
           (curr_wait_.wait_time_ > (static_cast<int64_t>(curr_wait_.timeout_ms_) * 1000))) {
         ++event_record->total_timeouts_;
       }
+    }
+    switch (OB_WAIT_EVENTS[event_no].wait_class_) {
+      case ObWaitClassIds::CONCURRENCY: {
+        add_stat(ObStatEventIds::CCWAIT_TIME, curr_wait_.wait_time_);
+        break;
+      }
+      case ObWaitClassIds::USER_IO: {
+        add_stat(ObStatEventIds::USER_IO_WAIT_TIME, curr_wait_.wait_time_);
+        break;
+      }
+      case ObWaitClassIds::APPLICATION: {
+        add_stat(ObStatEventIds::APWAIT_TIME, curr_wait_.wait_time_);
+        break;
+      }
+      case ObWaitClassIds::SCHEDULER: {
+        add_stat(ObStatEventIds::SCHEDULE_WAIT_TIME, curr_wait_.wait_time_);
+        break;
+      }
+      default:
+        break;
     }
   } else {
     // do noting

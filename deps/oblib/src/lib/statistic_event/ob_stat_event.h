@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef STAT_EVENT_ADD_DEF
@@ -119,6 +112,10 @@ STAT_EVENT_ADD_DEF(FREEZE_BY_GC_RETAIN_CTX_COUNT, "memtable freeze by gc retain 
 STAT_EVENT_ADD_DEF(FREEZE_BY_TEST_MODE_COUNT, "memtable freeze by test mode count", ObStatClassIds::TRANS, 30099, false, true, true, "Number of MemTable freezes triggered by test mode. Each time a MemTable is frozen due to test mode, this count is incremented by 1.")
 STAT_EVENT_ADD_DEF(FREEZE_BY_TABLET_SPLIT_COUNT, "memtable freeze by tablet split count", ObStatClassIds::TRANS, 30100, false, true, true, "Number of MemTable freezes triggered by tablet split. Each time a MemTable is frozen due to tablet split, this count is incremented by 1.")
 STAT_EVENT_ADD_DEF(FREEZE_BY_GC_TABLET_COUNT, "memtable freeze by gc tablet count", ObStatClassIds::TRANS, 30101, false, true, true, "Number of MemTable freezes triggered by gc tablet. Each time a MemTable is frozen due to gc tablet, this count is incremented by 1.")
+
+// commit and rollback stmt
+STAT_EVENT_ADD_DEF(TRANSACTION_COMMIT_STMT_TOTAL_COUNT, "transaction commit stmt total count", ObStatClassIds::TRANS, 30102, false, true, true, "Total number of transaction commit statement, including both successes and failures. After executing commit statement from user on the transaction side, this count is incremented by 1.")
+STAT_EVENT_ADD_DEF(TRANSACTION_ROLLBACK_STMT_TOTAL_COUNT, "transaction rollback stmt total count", ObStatClassIds::TRANS, 30103, false, true, true, "Total number of transaction rollback statement, including both successes and failures. After executing rollback statement from user on the transaction side, this count is incremented by 1.")
 
 // XA TRANS
 STAT_EVENT_ADD_DEF(XA_START_TOTAL_COUNT, "xa start total count", ObStatClassIds::TRANS, 30200, false, true, true, "Total number of xa_start statement executions for XA transactions, including both successes and failures. After executing the xa_start logic on the transaction side, this count is incremented by 1.")

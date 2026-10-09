@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -17,6 +10,7 @@
 #include "lib/json_type/ob_json_tree.h"
 #include "share/ob_json_access_utils.h"
 #include "lib/udt/ob_array_type.h"
+#include "share/search_index/ob_search_index_config_filter.h"
 #include "share/vector_index/ob_vector_index_util.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
@@ -69,6 +63,9 @@ int ObHybridSearchGenerator::deal_table_scan_filters(ObIndexMergeNode *hybrid_se
       if (OB_FAIL(recurse_count_index_nodes(fusion_node->children_.at(0), index_scan_count,
                                             ingore_normal_access_path))) {
         LOG_WARN("failed to recurse count index nodes", K(ret));
+      } else if (OB_FAIL(collect_unprecise_index_filters(fusion_node->children_.at(0),
+                                                         table_filters))) {
+        LOG_WARN("failed to collect unprecise index filters", K(ret));
       }
     } else if (fusion_node->children_.at(0)->node_type_ != INDEX_MERGE_HYBRID_BOOLEAN_QUERY) {
       // do nothing
@@ -146,6 +143,8 @@ int ObHybridSearchGenerator::deal_table_scan_filters(ObIndexMergeNode *hybrid_se
         if (OB_FAIL(recurse_count_index_nodes(bool_node, index_scan_count,
                                               ingore_normal_access_path))) {
           LOG_WARN("failed to recurse count index nodes", K(ret));
+        } else if (OB_FAIL(collect_unprecise_index_filters(bool_node, table_filters))) {
+          LOG_WARN("failed to collect unprecise index filters", K(ret));
         }
       }
     }
@@ -195,7 +194,7 @@ int ObHybridSearchGenerator::deal_child_node(ObIndexMergeNode *node, bool &prune
         }
       }
       if (OB_SUCC(ret) && !prune_happened) {
-        if (min_selectivity > MAX_INTERSECTION_MERGE_SEL) {
+        if (min_selectivity < 1.0 && min_selectivity > MAX_INTERSECTION_MERGE_SEL) {
           prune_happened = true;
         } else {
           sel = 0.0;
@@ -252,19 +251,50 @@ int ObHybridSearchGenerator::recurse_count_index_nodes(const ObIndexMergeNode *n
     CK (bool_node->must_not_nodes_.empty());
     for (int i = 0; i < bool_node->filter_nodes_.count() && OB_SUCC(ret); i++) {
       ObIndexMergeNode *child_node = static_cast<ObIndexMergeNode *>(bool_node->filter_nodes_.at(i));
-      if (OB_FAIL(recurse_count_index_nodes(child_node, index_scan_count, ingore_normal_access_path))) {
+      if (OB_FAIL(SMART_CALL(recurse_count_index_nodes(child_node, index_scan_count, ingore_normal_access_path)))) {
         LOG_WARN("failed to recurse count index nodes", K(ret), K(i), KPC(child_node));
       }
     }
     for (int i = 0; i < bool_node->should_nodes_.count() && OB_SUCC(ret); i++) {
       ObIndexMergeNode *child_node = static_cast<ObIndexMergeNode *>(bool_node->should_nodes_.at(i));
-      if (OB_FAIL(recurse_count_index_nodes(child_node, index_scan_count, ingore_normal_access_path))) {
+      if (OB_FAIL(SMART_CALL(recurse_count_index_nodes(child_node, index_scan_count, ingore_normal_access_path)))) {
         LOG_WARN("failed to recurse count index nodes", K(ret), K(i), KPC(child_node));
       }
     }
   } else {
     // other node type, set ingore_normal_access_path to true
     ingore_normal_access_path = true;
+  }
+  return ret;
+}
+
+int ObHybridSearchGenerator::collect_unprecise_index_filters(const ObIndexMergeNode *node,
+                                                              ObIArray<ObRawExpr*> &unprecise_filters) const
+{
+  int ret = OB_SUCCESS;
+  if (node->is_hybrid_scalar_node() && OB_NOT_NULL(node->ap_)) {
+    const ObScalarQueryNode *scalar_node = static_cast<const ObScalarQueryNode*>(node);
+    const ObIArray<ObRawExpr*> &pushdown_filters = scalar_node->pri_table_query_params_.pushdown_filters_;
+    const ObIArray<ObRawExpr*> &range_exprs = scalar_node->ap_->get_query_range_provider()->get_range_exprs();
+    for (int64_t i = 0; i < pushdown_filters.count() && OB_SUCC(ret); i++) {
+      ObRawExpr *filter = pushdown_filters.at(i);
+      if (ObOptimizerUtil::find_item(range_exprs, filter)) {
+        // filter is in range exprs, which is precise filter
+      } else if (node->ap_->is_search_index_path() &&
+          (filter->is_json_domain_expr() || filter->is_domain_array_expr())) {
+        // domain expr on search index path is always precise filter
+      } else if (OB_FAIL(add_var_to_array_no_dup(unprecise_filters, filter))) {
+        LOG_WARN("failed to append expr", K(ret));
+      }
+    }
+  } else if (node->node_type_ == INDEX_MERGE_HYBRID_BOOLEAN_QUERY) {
+    const ObBooleanQueryNode *bool_node = static_cast<const ObBooleanQueryNode*>(node);
+    for (int i = 0; i < bool_node->filter_nodes_.count() && OB_SUCC(ret); i++) {
+      ObIndexMergeNode *child_node = static_cast<ObIndexMergeNode *>(bool_node->filter_nodes_.at(i));
+      if (OB_FAIL(SMART_CALL(collect_unprecise_index_filters(child_node, unprecise_filters)))) {
+        LOG_WARN("failed to collect unprecise index filters", K(ret), K(i), KPC(child_node));
+      }
+    }
   }
   return ret;
 }
@@ -298,7 +328,7 @@ int ObHybridSearchGenerator::generate(const ObDSLQueryInfo *dsl_query,
         LOG_WARN("failed to generate hybrid search node", K(ret));
       } else if (OB_FAIL(fusion_node->children_.push_back(sub_node))) {
         LOG_WARN("failed to append hybrid search node", K(ret));
-      } else if (OB_FAIL(collect_child_boost_and_update_flags(fusion_node, sub_node, one_boost_expr, i))) {
+      } else if (OB_FAIL(collect_child_boost_and_update_flags(dsl_info, fusion_node, sub_node, one_boost_expr, i))) {
         LOG_WARN("failed to collect child boost and update flags", K(ret), K(i));
       }
     }
@@ -414,13 +444,24 @@ int ObHybridSearchGenerator::generate_node(const ObDSLQuery *query,
 int ObHybridSearchGenerator::generate_knn_node(const ObDSLKnnQuery *knn_query, ObVecSearchNode *&knn_node)
 {
   int ret = OB_SUCCESS;
-  bool has_index = false;
   uint64_t index_id = OB_INVALID_ID;
-  if (OB_ISNULL(knn_node = OB_NEWx(ObVecSearchNode, allocator_, *allocator_))) {
+  if (OB_ISNULL(knn_query)
+      || OB_ISNULL(knn_query->field_)
+      || OB_ISNULL(knn_query->distance_)
+      || OB_ISNULL(schema_guard_)
+      || OB_ISNULL(schema_guard_->get_schema_guard())
+      || OB_ISNULL(table_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), KP(knn_query), KP(schema_guard_), KP(table_schema_));
+  } else if (OB_ISNULL(knn_node = OB_NEWx(ObVecSearchNode, allocator_, *allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate hybrid search node", K(ret));
-  } else if (OB_FAIL(get_vector_index_tid_from_expr(knn_query->field_, index_id))) {
-    LOG_WARN("failed to allocate hybrid search node", K(ret));
+  } else if (OB_FAIL(ObVectorIndexUtil::get_matched_vector_index_tid(*(schema_guard_->get_schema_guard()),
+                                                                      *table_schema_,
+                                                                      knn_query->field_->get_column_id(),
+                                                                      knn_query->distance_->get_expr_type(),
+                                                                      index_id))) {
+    LOG_WARN("failed to get matched vector index tid", K(ret), K(knn_query->field_->get_column_id()));
   } else if (index_id == OB_INVALID_ID) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "knn search without vector index");
@@ -518,30 +559,6 @@ int ObHybridSearchGenerator::generate_knn_node(const ObDSLKnnQuery *knn_query, O
   return ret;
 }
 
-int ObHybridSearchGenerator::get_vector_index_tid_from_expr(ObColumnRefRawExpr *field, uint64_t& vec_index_tid)
-{
-  int ret = OB_SUCCESS;
-  bool vector_index_match = false;
-  ObIndexType index_type;
-  if (OB_FAIL(ObVectorIndexUtil::check_column_has_vector_index(*table_schema_,
-                                                                *(schema_guard_->get_schema_guard()),
-                                                                field->get_column_id(),
-                                                                vector_index_match,
-                                                                index_type))) {
-    LOG_WARN("failed to check column has vector index", K(ret), K(field->get_column_id()), K(vector_index_match));
-  } else if (vector_index_match) {
-    if (OB_FAIL(ObVectorIndexUtil::get_vector_index_tid(schema_guard_->get_schema_guard(),
-                                                        *table_schema_,
-                                                        index_type,
-                                                        field->get_column_id(),
-                                                        true,
-                                                        vec_index_tid))) {
-      LOG_WARN("fail to get spec vector delta buffer table id", K(ret), K(field->get_column_id()), KPC(table_schema_));
-    }
-  }
-  return ret;
-}
-
 int ObHybridSearchGenerator::generate_scalar_node(ObRawExpr *filter, ObScalarQueryNode *&scalar_node)
 {
   int ret = OB_SUCCESS;
@@ -617,25 +634,50 @@ int ObHybridSearchGenerator::check_filter_has_index(ObRawExpr *filter, bool &has
   return ret;
 }
 
-int ObHybridSearchGenerator::check_filter_has_search_index(ObRawExpr *filter, bool &has_search_index)
+int ObHybridSearchGenerator::get_search_index_cons_encode_type(ObRawExpr *filter,
+                                                               bool &has_search_index,
+                                                               uint8_t &cons_encode_type)
 {
   int ret = OB_SUCCESS;
   has_search_index = false;
+  cons_encode_type = 0;
   ObSEArray<uint64_t, 4> column_ids;
-  has_search_index = false;
-  if (OB_FAIL(ObRawExprUtils::extract_column_ids(filter, column_ids))) {
-    LOG_WARN("failed to extract column ids", K(filter), K(ret));
+  if (OB_ISNULL(filter) || OB_ISNULL(schema_guard_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), KP(filter), KP(schema_guard_));
+  } else if (OB_FAIL(ObRawExprUtils::extract_column_ids(filter, column_ids))) {
+    LOG_WARN("failed to extract column ids", K(ret), KPC(filter));
   } else if (column_ids.count() != 1) {
     // empty or multiple columns, can not use search index
   } else {
+    const uint64_t column_id = column_ids.at(0);
     for (int64_t i = 0; OB_SUCC(ret) && i < valid_index_ids_.count() && !has_search_index; ++i) {
       const uint64_t index_id = valid_index_ids_.at(i);
       const ObIArray<uint64_t> &index_column_ids = valid_index_cols_.at(i);
-      // search index can ignore prefix
       const bool can_ignore_prefix = index_can_ignore_prefix_.at(i);
       if (can_ignore_prefix && ObOptimizerUtil::check_index_match_prefix(
           column_ids, index_column_ids, true /* ignore prefix */)) {
+        const ObTableSchema *index_schema = nullptr;
+        const ObColumnSchemaV2 *index_column_schema = nullptr;
         has_search_index = true;
+        if (OB_FAIL(schema_guard_->get_table_schema(index_id, index_schema))) {
+          LOG_WARN("failed to get table schema", K(ret), K(index_id));
+        } else if (OB_ISNULL(index_schema)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("index schema is null", K(ret), K(index_id));
+        } else if (OB_ISNULL(index_column_schema = index_schema->get_column_schema(column_id))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("index column schema is null", K(ret), K(index_id), K(column_id));
+        } else if (ob_is_json(index_column_schema->get_data_type())
+                   && !index_column_schema->get_comment_str().empty()) {
+          share::ObSearchIndexConfigFilter json_filter(index_schema->get_tenant_id());
+          if (OB_FAIL(json_filter.init_from_comment(index_column_schema->get_comment_str()))) {
+            LOG_WARN("failed to parse json column filter", K(ret), K(index_id), K(column_id),
+                     K(index_column_schema->get_comment_str()));
+          } else {
+            cons_encode_type = json_filter.get_type_mask();
+          }
+        }
       }
     }
   }
@@ -686,6 +728,198 @@ int ObHybridSearchGenerator::move_bool_nodes_to_children(ObIndexMergeNode* node)
       LOG_WARN("failed to append filter nodes", K(ret));
     } else if (OB_FAIL(common::append(bool_node->children_, bool_node->must_not_nodes_))) {
       LOG_WARN("failed to append must not nodes", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObHybridSearchGenerator::extract_partition_related_filters(
+    const ObIArray<ObRawExpr*> &filters,
+    const ObIArray<uint64_t> &part_col_ids,
+    ObIArray<ObRawExpr*> &partition_filters)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < filters.count(); ++i) {
+    ObRawExpr *filter = filters.at(i);
+    if (OB_ISNULL(filter)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null filter", K(ret), K(i));
+    } else {
+      ObSEArray<uint64_t, 4> col_ids;
+      if (OB_FAIL(ObRawExprUtils::extract_column_ids(filter, col_ids))) {
+        LOG_WARN("failed to extract column ids from filter", K(ret));
+      } else {
+        bool references_part_col = ObOptimizerUtil::overlap(col_ids, part_col_ids);
+        if (references_part_col) {
+          if (OB_FAIL(add_var_to_array_no_dup(partition_filters, filter))) {
+            LOG_WARN("failed to add partition filter", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObHybridSearchGenerator::build_or_partition_filter(
+    const ObIArray<ObRawExpr*> &left_filters,
+    const ObIArray<ObRawExpr*> &right_filters,
+    ObIArray<ObRawExpr*> &result)
+{
+  int ret = OB_SUCCESS;
+  result.reuse();
+  if (left_filters.empty() || right_filters.empty()) {
+    // If either branch has no partition filter, we cannot prune any partition
+    // because that branch could match rows in any partition.
+  } else {
+    ObRawExprFactory &expr_factory = plan_->get_optimizer_context().get_expr_factory();
+    ObRawExpr *left_and_expr = nullptr;
+    ObRawExpr *right_and_expr = nullptr;
+    ObRawExpr *or_expr = nullptr;
+    if (OB_FAIL(ObRawExprUtils::build_and_expr(expr_factory, left_filters, left_and_expr))) {
+      LOG_WARN("failed to build and expr for left filters", K(ret));
+    } else if (OB_FAIL(ObRawExprUtils::build_and_expr(expr_factory, right_filters, right_and_expr))) {
+      LOG_WARN("failed to build and expr for right filters", K(ret));
+    } else {
+      ObSEArray<ObRawExpr*, 2> or_params;
+      if (OB_FAIL(or_params.push_back(left_and_expr))) {
+        LOG_WARN("failed to push back left and expr", K(ret));
+      } else if (OB_FAIL(or_params.push_back(right_and_expr))) {
+        LOG_WARN("failed to push back right and expr", K(ret));
+      } else if (OB_FAIL(ObRawExprUtils::build_or_exprs(expr_factory, or_params, or_expr))) {
+        LOG_WARN("failed to build or expr", K(ret));
+      } else if (OB_NOT_NULL(or_expr)) {
+        if (OB_FAIL(or_expr->formalize(plan_->get_optimizer_context().get_session_info()))) {
+          LOG_WARN("failed to formalize or expr", K(ret));
+        } else if (OB_FAIL(result.push_back(or_expr))) {
+          LOG_WARN("failed to push back or expr", K(ret));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObHybridSearchGenerator::extract_partition_filters_from_tree(
+    ObIndexMergeNode *node,
+    const ObIArray<uint64_t> &part_col_ids,
+    ObIArray<ObRawExpr*> &partition_filters)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(node)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null node", K(ret));
+  } else if (part_col_ids.empty()) {
+  } else {
+    switch (node->node_type_) {
+      case INDEX_MERGE_HYBRID_SCALAR_QUERY: {
+        if (OB_FAIL(extract_partition_related_filters(
+                node->filter_, part_col_ids, partition_filters))) {
+          LOG_WARN("failed to extract partition filters from scalar node", K(ret));
+        }
+        break;
+      }
+      case INDEX_MERGE_HYBRID_BOOLEAN_QUERY: {
+        ObBooleanQueryNode *bool_node = static_cast<ObBooleanQueryNode*>(node);
+        for (int64_t i = 0; OB_SUCC(ret) && i < bool_node->must_nodes_.count(); ++i) {
+          if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                  bool_node->must_nodes_.at(i), part_col_ids, partition_filters)))) {
+            LOG_WARN("failed to extract from must node", K(ret), K(i));
+          }
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < bool_node->filter_nodes_.count(); ++i) {
+          if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                  bool_node->filter_nodes_.at(i), part_col_ids, partition_filters)))) {
+            LOG_WARN("failed to extract from filter node", K(ret), K(i));
+          }
+        }
+        // For should (OR) nodes, the correct partition pruning semantics is:
+        //   partitions(branch1) UNION partitions(branch2) UNION ...
+        // We achieve this by building an OR expression from each branch's
+        // partition filters: (branch1_filters) OR (branch2_filters) OR ...
+        // The optimizer's partition pruning module will then compute the
+        // union of partitions from the OR expression.
+        // If any branch has no partition filter, we cannot prune at all
+        // because that branch could match rows in any partition.
+        if (OB_SUCC(ret) && bool_node->should_nodes_.count() > 0) {
+          ObSEArray<ObRawExpr*, 4> accumulated_filters;
+          if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                  bool_node->should_nodes_.at(0), part_col_ids, accumulated_filters)))) {
+            LOG_WARN("failed to extract from first should node", K(ret));
+          }
+          for (int64_t i = 1; OB_SUCC(ret) && i < bool_node->should_nodes_.count()
+                              && accumulated_filters.count() > 0; ++i) {
+            ObSEArray<ObRawExpr*, 4> child_filters;
+            ObSEArray<ObRawExpr*, 4> or_result;
+            if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                    bool_node->should_nodes_.at(i), part_col_ids, child_filters)))) {
+              LOG_WARN("failed to extract from should node", K(ret), K(i));
+            } else if (OB_FAIL(build_or_partition_filter(
+                    accumulated_filters, child_filters, or_result))) {
+              LOG_WARN("failed to build or partition filter", K(ret));
+            } else if (OB_FAIL(accumulated_filters.assign(or_result))) {
+              LOG_WARN("failed to assign or result filters", K(ret));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            if (OB_FAIL(append_array_no_dup(partition_filters, accumulated_filters))) {
+              LOG_WARN("failed to append should partition filters", K(ret));
+            }
+          }
+        }
+        break;
+      }
+      case INDEX_MERGE_HYBRID_FUSION_SEARCH: {
+        // For fusion nodes, the semantics is the same as should (OR):
+        // each child path may match different partitions, so we need the
+        // union of all children's partitions.
+        ObFusionNode *fusion = static_cast<ObFusionNode*>(node);
+        if (fusion->children_.count() > 0) {
+          ObSEArray<ObRawExpr*, 4> accumulated_filters;
+          if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                  fusion->children_.at(0), part_col_ids, accumulated_filters)))) {
+            LOG_WARN("failed to extract from first fusion child", K(ret));
+          }
+          for (int64_t i = 1; OB_SUCC(ret) && i < fusion->children_.count()
+                              && accumulated_filters.count() > 0; ++i) {
+            ObSEArray<ObRawExpr*, 4> child_filters;
+            ObSEArray<ObRawExpr*, 4> or_result;
+            if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                    fusion->children_.at(i), part_col_ids, child_filters)))) {
+              LOG_WARN("failed to extract from fusion child", K(ret), K(i));
+            } else if (OB_FAIL(build_or_partition_filter(
+                    accumulated_filters, child_filters, or_result))) {
+              LOG_WARN("failed to build or partition filter for fusion", K(ret));
+            } else if (OB_FAIL(accumulated_filters.assign(or_result))) {
+              LOG_WARN("failed to assign or result filters", K(ret));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            if (OB_FAIL(append_array_no_dup(partition_filters, accumulated_filters))) {
+              LOG_WARN("failed to append fusion partition filters", K(ret));
+            }
+          }
+        }
+        break;
+      }
+      case INDEX_MERGE_HYBRID_KNN: {
+        ObVecSearchNode *vec_node = static_cast<ObVecSearchNode*>(node);
+        for (int64_t i = 0; OB_SUCC(ret) && i < vec_node->filter_nodes_.count(); ++i) {
+          if (OB_FAIL(SMART_CALL(extract_partition_filters_from_tree(
+                  vec_node->filter_nodes_.at(i), part_col_ids, partition_filters)))) {
+            LOG_WARN("failed to extract from knn filter node", K(ret), K(i));
+          }
+        }
+        break;
+      }
+      case INDEX_MERGE_HYBRID_FTS_QUERY: {
+        break;
+      }
+      default: {
+        LOG_TRACE("skip extracting partition filters from unknown node type",
+                  K(node->node_type_));
+        break;
+      }
     }
   }
   return ret;
@@ -1226,17 +1460,17 @@ int ObHybridSearchNodeBase::collect_vec_infos(ObIArray<ObVecIndexInfo *> &vec_in
 int ObVecSearchNode::init_vec_info(ObSqlSchemaGuard *schema_guard)
 {
   int ret = OB_SUCCESS;
-  if (ap_ != NULL) {
+  if (ap_ != NULL && OB_NOT_NULL(ap_->vec_idx_info_)) {
     vec_info_.main_table_tid_ = table_schema_->get_table_id();
     vec_info_.vec_type_ = ObVecIndexType::VEC_INDEX_INVALID;
-    vec_info_.selectivity_ = ap_->vec_idx_info_.vec_extra_info_.get_selectivity();
-    vec_info_.row_count_ = ap_->vec_idx_info_.vec_extra_info_.get_row_count();
-    vec_info_.set_can_use_vec_pri_opt(ap_->vec_idx_info_.vec_extra_info_.can_use_vec_pri_opt());
-    vec_info_.vector_index_param_ = ap_->vec_idx_info_.vec_extra_info_.get_vector_index_param();
-    vec_info_.adaptive_try_path_ = ap_->vec_idx_info_.vec_extra_info_.adaptive_try_path_;
-    vec_info_.can_extract_range_ = ap_->vec_idx_info_.vec_extra_info_.can_extract_range_;
-    vec_info_.is_spatial_index_ =  ap_->vec_idx_info_.vec_extra_info_.is_spatial_index_;
-    vec_info_.is_multi_value_index_ = ap_->vec_idx_info_.vec_extra_info_.is_multi_value_index_;
+    vec_info_.selectivity_ = ap_->vec_idx_info_->vec_extra_info_.get_selectivity();
+    vec_info_.row_count_ = ap_->vec_idx_info_->vec_extra_info_.get_row_count();
+    vec_info_.set_can_use_vec_pri_opt(ap_->vec_idx_info_->vec_extra_info_.can_use_vec_pri_opt());
+    vec_info_.vector_index_param_ = ap_->vec_idx_info_->vec_extra_info_.get_vector_index_param();
+    vec_info_.adaptive_try_path_ = ap_->vec_idx_info_->vec_extra_info_.adaptive_try_path_;
+    vec_info_.can_extract_range_ = ap_->vec_idx_info_->vec_extra_info_.can_extract_range_;
+    vec_info_.is_spatial_index_ =  ap_->vec_idx_info_->vec_extra_info_.is_spatial_index_;
+    vec_info_.is_multi_value_index_ = ap_->vec_idx_info_->vec_extra_info_.is_multi_value_index_;
     bool is_hybrid = false;
     if (search_option_ != nullptr) {
       vec_info_.query_param_ = search_option_->param_;
@@ -1708,22 +1942,23 @@ bool ObHybridSearchGenerator::is_knn_subquery(ObIndexMergeNode *node) const
 }
 
 int ObHybridSearchGenerator::collect_child_boost_and_update_flags(
+    const ObDSLQueryInfo *dsl_info,
     ObFusionNode *fusion_node,
     ObIndexMergeNode *sub_node,
     ObConstRawExpr *one_boost_expr,
     int64_t child_idx)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(fusion_node) || OB_ISNULL(sub_node)) {
+  if (OB_ISNULL(dsl_info) || OB_ISNULL(fusion_node) || OB_ISNULL(sub_node)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("fusion_node or sub_node is null", K(ret), KP(fusion_node), KP(sub_node));
+    LOG_WARN("dsl_info, fusion_node or sub_node is null", K(ret), KP(dsl_info), KP(fusion_node), KP(sub_node));
   } else {
     ObHybridSearchNodeBase *top_score_node = static_cast<ObHybridSearchNodeBase *>(sub_node);
+
     ObRawExpr *path_top_k_limit = nullptr;
-    if (OB_FAIL(fusion_node->weight_cols_.push_back(top_score_node->boost_))) {
+    ObRawExpr *weight_expr = is_search_subquery(sub_node) ? dsl_info->query_top_level_boost_ : top_score_node->boost_;
+    if (OB_FAIL(fusion_node->weight_cols_.push_back(weight_expr))) {
       LOG_WARN("failed to push back weight expr", K(ret), K(child_idx));
-    } else if (OB_FALSE_IT(top_score_node->boost_ = one_boost_expr)) {
-      LOG_WARN("failed to set boost expr", K(ret));
     } else if (is_search_subquery(sub_node)) {
       if (fusion_node->has_search_subquery_) {
         ret = OB_ERR_UNEXPECTED;
@@ -1762,12 +1997,13 @@ int ObHybridSearchGenerator::split_domain_contains_node(const ObDSLScalarQuery *
   } else if (filter_expr->get_expr_type() == T_FUN_SYS_JSON_CONTAINS ||
              filter_expr->get_expr_type() == T_FUNC_SYS_ARRAY_CONTAINS_ALL) {
     bool has_search_index = false;
-    if (OB_FAIL(check_filter_has_search_index(filter_expr, has_search_index))) {
-      LOG_WARN("failed to check filter has search index", K(ret));
+    uint8_t cons_encode_type = 0;
+    if (OB_FAIL(get_search_index_cons_encode_type(filter_expr, has_search_index, cons_encode_type))) {
+      LOG_WARN("failed to get search index constraint encode type", K(ret), KPC(filter_expr));
     } else if (!has_search_index) {
       // no search index, no need to split
     } else if (filter_expr->get_expr_type() == T_FUN_SYS_JSON_CONTAINS) {
-      if (OB_FAIL(split_json_contains(scalar_query, filter_expr, split_node))) {
+      if (OB_FAIL(split_json_contains(scalar_query, filter_expr, cons_encode_type, split_node))) {
         LOG_WARN("failed to split json contains node", K(ret));
       }
     } else if (filter_expr->get_expr_type() == T_FUNC_SYS_ARRAY_CONTAINS_ALL) {
@@ -1783,6 +2019,7 @@ int ObHybridSearchGenerator::split_domain_contains_node(const ObDSLScalarQuery *
 
 int ObHybridSearchGenerator::split_json_contains(const ObDSLScalarQuery *scalar_query,
                                                  ObRawExpr *filter_expr,
+                                                 uint8_t cons_encode_type,
                                                  ObIndexMergeNode *&split_node)
 {
   int ret = OB_SUCCESS;
@@ -1833,7 +2070,7 @@ int ObHybridSearchGenerator::split_json_contains(const ObDSLScalarQuery *scalar_
         // scalar, no need to split, need to add scalar constraint during query range extraction
       } else if (j_base->json_type() != common::ObJsonNodeType::J_ARRAY) {
         // not an array, no need to split
-      } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_or_array_match(j_base, 0,
+      } else if (OB_FAIL(ObSearchIndexConstraint::is_json_scalar_or_array_match(j_base, cons_encode_type,
                                                                                 can_extract))) {
         LOG_WARN("failed to check json array match", K(ret));
       } else if (!can_extract) {
@@ -1901,7 +2138,7 @@ int ObHybridSearchGenerator::split_json_contains(const ObDSLScalarQuery *scalar_
           // add json array count constraint
           PreCalcExprExpectResult expect_result = PRE_CALC_SEARCH_INDEX_CONSTRAINT;
           int64_t extra = ObSearchIndexConstraint::make_extra(
-              ObSearchIndexConstraint::JSON_ARRAY_COUNT, 0, element_count);
+              ObSearchIndexConstraint::JSON_ARRAY_COUNT, cons_encode_type, element_count);
           ObConstraintExtra cons_extra;
           cons_extra.extra_ = extra;
           if (OB_FAIL(bool_node->all_expr_constraints_.push_back(
@@ -1950,6 +2187,7 @@ int ObHybridSearchGenerator::split_array_contains_all(const ObDSLScalarQuery *sc
       ObObj result;
       ObArenaAllocator tmp_allocator(ObModIds::OB_SQL_EXPR_CALC);
       const common::ObSqlCollectionInfo *coll_info = nullptr;
+      const common::ObSqlCollectionInfo *col_coll_info = nullptr;
       if (OB_FAIL(ObSQLUtils::calc_const_or_calculable_expr(exec_ctx,
                                                            candidate_expr,
                                                            result,
@@ -1963,12 +2201,17 @@ int ObHybridSearchGenerator::split_array_contains_all(const ObDSLScalarQuery *sc
       } else if (OB_ISNULL(coll_info) || OB_ISNULL(coll_info->collection_meta_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("collection info is null", K(ret), KPC(coll_info));
+      } else if (OB_FAIL(ObRawExprUtils::get_expr_collection_info(array_expr, exec_ctx, col_coll_info))) {
+        LOG_WARN("failed to get column collection info", K(ret));
+      } else if (OB_ISNULL(col_coll_info) || OB_ISNULL(col_coll_info->collection_meta_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column collection info is null", K(ret));
       } else {
         ObString data_str = result.get_string();
         common::ObIArrayType *arr_obj = nullptr;
         bool can_extract = true;
         const bool need_array_string_constraint =
-          ObSearchIndexConstraint::need_array_string_constraint(*coll_info);
+          ObSearchIndexConstraint::need_array_string_constraint(*col_coll_info);
         if (OB_FAIL(ObTextStringHelper::read_real_string_data(&tmp_allocator, result, data_str))) {
           LOG_WARN("failed to read array data", K(ret));
         } else if (OB_FAIL(common::ObArrayTypeObjFactory::construct(tmp_allocator,

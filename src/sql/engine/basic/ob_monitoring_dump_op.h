@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SQL_ENGINE_BASIC_OB_MONITORING_DUMP_OP_H_
@@ -53,6 +46,10 @@ public:
   }
 
 private:
+  int calc_hash_value_batch(const ObBatchRows &brs);
+  void print_batch_vector_headers(const ObBatchRows &brs);
+
+private:
   common::ObDatum op_name_;
   common::ObDatum tracefile_identifier_;
   uint64_t open_time_;
@@ -61,6 +58,7 @@ private:
   uint64_t last_row_time_;
   bool first_row_fetched_;
   common::ObFixedArray<uint64_t, common::ObIAllocator> output_hash_;
+  common::ObFixedArray<uint64_t, common::ObIAllocator> batch_hash_values_;
 };
 
 }

@@ -1,12 +1,5 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_STORAGE_COMPACTION_SSTABLE_MERGE_INFO_H_
 #define OB_STORAGE_COMPACTION_SSTABLE_MERGE_INFO_H_
 #include "common/ob_tablet_id.h"
@@ -100,8 +93,18 @@ struct PartTableInfo {
     end_scn_ = 0;
   }
   void fill_info(char *buf, const int64_t buf_len) const;
-  TO_STRING_KV(K_(is_major_merge), K_(table_cnt), K_(inc_major_cnt), K_(snapshot_version),
-               K_(inc_major_start_scn), K_(inc_major_end_scn), K_(start_scn), K_(end_scn));
+  int64_t to_string(char *buf, const int64_t buf_len) const
+  {
+    int64_t pos = 0;
+    J_OBJ_START();
+    J_KV(K_(is_major_merge), K_(table_cnt), K_(snapshot_version), K_(start_scn), K_(end_scn));
+    if (inc_major_cnt_ > 0) {
+      J_COMMA();
+      J_KV(K_(inc_major_cnt), K_(inc_major_start_scn), K_(inc_major_end_scn));
+    }
+    J_OBJ_END();
+    return pos;
+  }
   bool is_major_merge_;
   int32_t table_cnt_;
   int32_t inc_major_cnt_;

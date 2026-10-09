@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_expr_atan.h"
@@ -156,6 +149,7 @@
 #include "ob_expr_timestamp_diff.h"
 #include "ob_expr_timestamp_add.h"
 #include "ob_expr_from_tz.h"
+#include "ob_expr_new_time.h"
 #include "ob_expr_tz_offset.h"
 #include "ob_expr_orahash.h"
 #include "ob_expr_get_user_var.h"
@@ -226,6 +220,7 @@
 #include "ob_expr_encode_sortkey.h"
 #include "ob_expr_hash.h"
 #include "ob_expr_nlssort.h"
+#include "ob_expr_nls_charset_id.h"
 #include "ob_expr_json_object.h"
 #include "ob_expr_json_extract.h"
 #include "ob_expr_json_contains.h"
@@ -485,13 +480,18 @@
 #include "ob_expr_edit_distance.h"
 #include "ob_expr_reverse.h"
 #include "ob_expr_operator.h"
+#include "ob_expr_parse_date_time.h"
 #include "ob_expr_is_nan.h"
 #include "ob_expr_to_days.h"
 #include "ob_expr_md5_concat_ws.h"
 #include "ob_expr_search_index_inner.h"
 #include "ob_expr_pos_list.h"
 #include "sql/engine/expr/ob_expr_ai/ob_expr_load_file.h"
+#include "ob_expr_rand_canonical.h"
 #include "ob_expr_collation.h"
+#include "ob_expr_random_part_nextval.h"
+#include "ob_expr_get_routine_param_type_str.h"
+#include "ob_expr_image_type.h"
 
 namespace oceanbase
 {
@@ -1446,17 +1446,10 @@ static ObExpr::EvalFunc g_expr_eval_functions[] = {
   ObExprUDF::eval_external_udf,                                        /* 850 */
   ObExprStartUpMode::eval_startup_mode,                                /* 851 */
   ObExprVectorL2Squared::calc_l2_squared,                              /* 852 */
-#if defined(ENABLE_DEBUG_LOG) || !defined(NDEBUG)
   ObExprTmpFileOpen::eval_tmp_file_open,                              /* 853 */
   ObExprTmpFileClose::eval_tmp_file_close,                            /* 854 */
   ObExprTmpFileWrite::eval_tmp_file_write,                            /* 855 */
   ObExprTmpFileRead::eval_tmp_file_read,                              /* 856 */
-#else
-  NULL,// ObExprTmpFileOpen::eval_tmp_file_open,                      /* 853 */
-  NULL,// ObExprTmpFileClose::eval_tmp_file_close,                    /* 854 */
-  NULL,// ObExprTmpFileWrite::eval_tmp_file_write,                    /* 855 */
-  NULL,// ObExprTmpFileRead::eval_tmp_file_read,                      /* 856 */
-#endif
   ObExprAIComplete::eval_ai_complete,                                 /* 857 */
   ObExprAIEmbed::eval_ai_embed,                                       /* 858 */
   ObExprAIRerank::eval_ai_rerank,                                     /* 859 */
@@ -1486,27 +1479,38 @@ static ObExpr::EvalFunc g_expr_eval_functions[] = {
   ObExprDateSubClickhouse::calc_date_sub_ck,                          /* 883 */
   ObExprPosList::generate_pos_list,                                   /* 884 */
   ObExprMonthsAdd::calc_months_add,                                   /* 885 */
-  NULL, // ObExprParseDateTime::calc_parse_date_time                  /* 886 */
+  ObExprParseDateTime::calc_parse_date_time,                          /* 886 */
   ObExprIsNan::eval_is_nan,                                           /* 887 */
   ObExprCollectFileList::collect_file_list,                           /* 888 */
   ObExprVoid::calc_void_expr,                                         /* 889 */
-  NULL, // ObExprRandCanonical::calc_random_expr_canonical            /* 890 */
+ObExprRandCanonical::calc_random_expr_canonical,                    /* 890 */
   ObExprLoadFile::eval_load_file,                                     /* 891 */
   NULL, // ObExprAIParseDocument::eval_ai_parse_document              /* 892 */
   ObExprSearchIndexInnerPath::calc_search_index_inner_path,           /* 893 */
   ObExprSearchIndexInnerValue::calc_search_index_inner_value,         /* 894 */
   NULL, // ObExprToTypeName::eval_to_type_name,                       /* 895 */
   NULL, // ObExprToFloat64OrNull::eval_to_float64_or_null,            /* 896 */
-  NULL, // ObExprNewTime::eval_new_time,                              /* 897 */
-  NULL, // ObExprNLSCharsetId::eval_nls_charset_id,                   /* 898 */
+  ObExprNewTime::eval_new_time,                                       /* 897 */
+  ObExprNLSCharsetId::eval_nls_charset_id,                            /* 898 */
   NULL, // calc_cbrt_expr_mysql,                                      /* 899 */
   NULL, // ObExprE::eval_e,                                           /* 900 */
   NULL, // ObExprCountSubstrings::eval_count_substrings,              /* 901 */
   ObExprCollationTypeToCharset::eval_collation_type_to_charset,       /* 902 */
   ObExprCollationTypeToCollation::eval_collation_type_to_collation,   /* 903 */
-  NULL, // ObExprAuditLogPasswordGet::eval_get_encryption_password,   /* 904 */
-  NULL, // ObExprAuditLogPasswordSet::eval_set_encryption_password,   /* 905 */
-  NULL, // ObExprImageType::eval_image_type,                          /* 906 */
+  ObExprAuditLogPasswordGet::eval_get_encryption_password,            /* 904 */
+  ObExprAuditLogPasswordSet::eval_set_encryption_password,            /* 905 */
+  ObExprImageType::eval_image_type,                                   /* 906 */
+  ObExprRandomPartNextval::eval_nextval,                              /* 907 */
+  ObExprGetRoutineParamTypeStr::eval_routine_param_type_str,          /* 908 */
+  ObExprNchr::calc_nchr_expr,                                         /* 909 */
+  NULL, // ObExprToMonday::calc_to_monday,                            /* 910 */
+  NULL, // ObExprSplitByString::calc_split_by_string,                 /* 911 */
+  ObExprRegexp::eval_re2_regexp,                                      /* 912 */
+  ObExprRegexpCount::eval_re2_regexp_count,                           /* 913 */
+  ObExprRegexpInstr::eval_re2_regexp_instr,                           /* 914 */
+  ObExprRegexpLike::eval_re2_regexp_like,                             /* 915 */
+  ObExprRegexpReplace::eval_re2_regexp_replace,                       /* 916 */
+  ObExprRegexpSubstr::eval_re2_regexp_substr,                         /* 917 */
 };
 
 static ObExpr::EvalBatchFunc g_expr_eval_batch_functions[] = {
@@ -2006,20 +2010,20 @@ static ObExpr::EvalVectorFunc g_expr_eval_vector_functions[] = {
   NULL, //ObExprUnhex::eval_unhex_vector,                                /* 308 */
   ObExprAddMonths::calc_add_months_vector,                               /* 309 */
   ObExprMonthsAdd::calc_months_add_vector,                               /* 310 */
-  NULL, // ObExprParseDateTime::calc_parse_date_time_vector              /* 311 */
+  ObExprParseDateTime::calc_parse_date_time_vector,                      /* 311 */
   ObExprReverse::calc_reverse_expr_vector,                               /* 312 */
   ObExprIsNan::eval_is_nan_vector,                                       /* 313 */
-  NULL, // ObExprSpace::eval_space_vector,                               /* 314 */
-  NULL, // ObExprIfNull::eval_ifnull_vector,                             /* 315 */
+  ObExprSpace::eval_space_vector,                                        /* 314 */
+  ObExprIfNull::eval_ifnull_vector,                                      /* 315 */
   ObExprQuarter::calc_quarter_vector,                                    /* 316 */
   ObExprToDays::calc_to_days_vector,                                     /* 317 */
-  NULL, // ObExprRandCanonical::calc_random_expr_canonical_vector        /* 318 */
+  ObExprRandCanonical::calc_random_expr_canonical_vector,                /* 318 */
   ObExprLoadFile::eval_load_file_vector,                                 /* 319 */
   NULL, // ObExprAIParseDocument::eval_ai_parse_document_vector          /* 320 */
   NULL, // ObExprToTypeName::eval_to_type_name_vector,                   /* 321 */
   NULL, // ObExprToFloat64OrNull::eval_to_float64_or_null_vector,        /* 322 */
-  NULL, // ObExprNewTime::eval_new_time_vector,                          /* 323 */
-  NULL, // ObExprNLSCharsetId::eval_nls_charset_id_vector,               /* 324 */
+  ObExprNewTime::eval_new_time_vector,                                   /* 323 */
+  ObExprNLSCharsetId::eval_nls_charset_id_vector,                        /* 324 */
   NULL, // ObExprCbrt::eval_cbrt_vector,                                 /* 325 */
   NULL, // ObExprJSONUnquote::eval_json_unquote_vector,                  /* 326 */
   NULL, // ObExprJSONQuote::eval_json_quote_vector,                      /* 327 */
@@ -2029,6 +2033,7 @@ static ObExpr::EvalVectorFunc g_expr_eval_vector_functions[] = {
   NULL, // ObExprE::eval_e_vector,                                       /* 331 */
   NULL, // ObExprCountSubstrings::eval_count_substrings_vector,          /* 332 */
   NULL, // ObExprImageType::eval_image_type_vector,                      /* 333 */
+  ObExprRegexpReplace::eval_re2_regexp_replace_vector,                   /* 334 */
 };
 
 REG_SER_FUNC_ARRAY(OB_SFA_SQL_EXPR_EVAL,

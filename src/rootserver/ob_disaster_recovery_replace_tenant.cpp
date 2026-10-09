@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -237,7 +230,7 @@ int ObDRReplaceTenant::basic_check_for_replace_tenant_()
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "Current logservice is not enabled, replace tenant is");
     LOG_WARN("logservice is not enabled", KR(ret));
-  } else if (OB_FAIL(GCTX.ob_service_->check_server_empty(server_empty))) {
+  } else if (OB_FAIL(observer::ObServerEmptyChecker::check_server_empty(server_empty))) {
     LOG_WARN("fail to check server empty", KR(ret));
   } else if (!server_empty) {
     ret = OB_OP_NOT_ALLOW;

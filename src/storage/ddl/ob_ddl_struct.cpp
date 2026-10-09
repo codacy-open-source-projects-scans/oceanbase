@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -507,7 +500,7 @@ bool ObDDLMacroBlockRedoInfo::is_valid() const
               // the type is default invalid, allow default value for compatibility
               && type_ >= ObDirectLoadType::DIRECT_LOAD_INVALID && type_ < ObDirectLoadType::DIRECT_LOAD_MAX;
   if (ret && is_incremental_direct_load(type_)) {
-    ret = logic_id_.is_valid() && trans_id_.is_valid();
+    ret = trans_id_.is_valid();
   }
 
   if (ret && ObDDLMacroBlockType::DDL_MB_SS_EMPTY_DATA_TYPE != block_type_){
@@ -815,7 +808,8 @@ int ObDDLTableSchema::fill_ddl_table_schema(
     const uint64_t table_id,
     const uint64_t tenant_data_version,
     ObArenaAllocator &allocator,
-    ObDDLTableSchema &ddl_table_schema)
+    ObDDLTableSchema &ddl_table_schema,
+    const bool is_vec_tablet_rebuild)
 {
   int ret = OB_SUCCESS;
   ObArray<ObColDesc> column_descs;
@@ -835,7 +829,20 @@ int ObDDLTableSchema::fill_ddl_table_schema(
     LOG_WARN("get column desc array failed", K(ret));
   } else if (OB_FAIL(table_schema->get_is_column_store(ddl_table_schema.table_item_.is_column_store_))) {
     LOG_WARN("fail to get is column store", K(ret));
-  } else {
+  } else if (table_schema->get_ttl_flag().is_lob_meta_has_ttl_column() && OB_INVALID_ID != table_schema->get_aux_lob_meta_tid()) {
+    const ObTTLFlag &ttl_flag = table_schema->get_ttl_flag();
+    const ObColumnSchemaV2 *column_schema = nullptr;
+    if (OB_FAIL(table_schema->get_column_idx_with_multi_version_col(ttl_flag.get_last_user_ttl_column_id(), ddl_table_schema.table_item_.user_ttl_column_idx_))) {
+      LOG_WARN("fail to get ttl column idx with multi version col", K(ret));
+    } else if (OB_ISNULL(column_schema = table_schema->get_column_schema(ttl_flag.get_last_user_ttl_column_id()))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("fail to get ttl column schema", K(ret), KPC(table_schema));
+    } else if (OB_FAIL(ObTTLFilterColTypeUtil::to_filter_col_type(column_schema->get_data_type(), ddl_table_schema.table_item_.user_ttl_column_type_))) {
+      LOG_WARN("fail to convert ttl column type", K(ret), K(column_schema->get_data_type()));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     ddl_table_schema.table_id_ = table_id;
     ddl_table_schema.table_item_.is_index_table_ = table_schema->is_index_table();
     ddl_table_schema.table_item_.is_unique_index_ = table_schema->is_unique_index();
@@ -844,7 +851,8 @@ int ObDDLTableSchema::fill_ddl_table_schema(
     ddl_table_schema.table_item_.lob_inrow_threshold_ = table_schema->get_lob_inrow_threshold();
     ddl_table_schema.table_item_.compress_type_ = table_schema->get_compressor_type();
     ddl_table_schema.table_item_.index_type_ = table_schema->get_index_type();
-    ddl_table_schema.table_item_.is_vec_tablet_rebuild_ = !table_schema->is_unavailable_index() && table_schema->is_vec_hnsw_index();
+    // Only set true for HNSW when: (1) index is already available, or (2) caller explicitly indicates rebuild (new index is unavailable during build).
+    ddl_table_schema.table_item_.is_vec_tablet_rebuild_ = table_schema->is_vec_hnsw_index() && is_vec_tablet_rebuild;
     ddl_table_schema.data_table_id_ = table_schema->get_data_table_id();
     if (OB_FAIL(ddl_table_schema.column_descs_.assign(column_descs))) {
       LOG_WARN("assign column descs failed", K(ret));

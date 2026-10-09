@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -78,6 +71,11 @@ int ObIntervalPartitionResolver::resolve_set_interval(
     LOG_WARN("tenant data version is less than 4.4.2, set interval is not supported",
              KR(ret), KDV(tenant_data_version));
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "version is less than 4.4.2, set interval");
+  } else if (table_schema.is_random_part()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "Set interval on random-distributed table");
+    SQL_RESV_LOG(WARN, "set interval on random-distributed table is not supported",
+                 KR(ret), K(table_schema));
   } else if (!table_schema.is_range_part()) {
     ret = OB_ERR_SET_INTERVAL_IS_NOT_LEGAL_ON_THIS_TABLE;
     SQL_RESV_LOG(WARN, "set interval on no range partitioned table", KR(ret));

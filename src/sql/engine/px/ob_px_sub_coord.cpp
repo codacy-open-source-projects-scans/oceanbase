@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -586,7 +579,7 @@ int ObPxSubCoord::setup_op_input(ObExecContext &ctx,
     } else if (OB_FAIL(external_properties.odps_format_.decrypt())) {
       LOG_WARN("failed to decrypt odps format", K(ret));
     }  else {
-      if (!GCONF._use_odps_jni_connector) {
+      if (!external_properties.odps_format_.use_odps_jni_connector_) {
 #if defined (OB_BUILD_CPP_ODPS)
         ObOdpsPartitionUploaderMgr &odps_mgr = sqc_ctx.gi_pump_.get_odps_uploader_mgr();
         if (OB_FAIL(odps_mgr.init_uploader(
@@ -979,6 +972,7 @@ int ObPxSubCoord::start_ddl()
       ddl_dag_param.ddl_task_param_.schema_version_ = schema_version; // for idempotence, the schema version must be fixed, so get it from task record
       ddl_dag_param.ddl_task_param_.is_no_logging_ = is_no_logging;
       ddl_dag_param.ddl_task_param_.is_offline_index_rebuild_ = is_offline_index_rebuild;
+      ddl_dag_param.ddl_task_param_.is_vec_tablet_rebuild_ = is_vec_tablet_rebuild;
       ddl_dag_param.ddl_task_param_.max_batch_size_ = phy_plan->get_batch_size();
       ddl_dag_param.ddl_task_param_.is_partition_local_ = GET_MY_SESSION(*exec_ctx)->get_ddl_info().is_partition_local_ddl();
       if (OB_FAIL(get_participants(sqc_arg_.sqc_, ddl_table_id, ddl_dag_param.ls_tablet_ids_))) {

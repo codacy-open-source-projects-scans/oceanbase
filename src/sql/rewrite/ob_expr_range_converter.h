@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SQL_REWRITE_OB_RANGE_NODE_GENERATOR_H_
 #define OCEANBASE_SQL_REWRITE_OB_RANGE_NODE_GENERATOR_H_
@@ -264,11 +257,11 @@ private:
   int preprocess_json_access_expr(const ObRawExpr *json_expr,
                                   const ObItemType op_type,
                                   const ObRawExpr *&new_expr,
-                                  bool &can_extract,
-                                  const ObRawExpr *const_expr = nullptr);
+                                  bool &can_extract);
   int get_final_search_index_value_param_idx(const ObRawExpr &const_expr,
                                              const ObObjType *cmp_type,
                                              int64_t &value_param_idx);
+  int check_str_length_for_search_index_range(const ObRawExpr *const_expr, bool &can_extract);
   int gen_search_index_cmp_node(const ObColumnRefRawExpr &column_expr,
                                 const ObRawExpr *const_expr,
                                 ObItemType cmp_type,

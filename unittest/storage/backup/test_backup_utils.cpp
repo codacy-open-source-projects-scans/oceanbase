@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -18,7 +11,6 @@
 #include "storage/blocksstable/ob_data_file_prepare.h"
 #include "mtlenv/mock_tenant_module_env.h"
 #include "src/storage/backup/ob_backup_iterator.h"
-#include "close_modules/shared_storage/storage/incremental/sslog/ob_sslog_define.h"
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -215,29 +207,6 @@ TEST(TestBackupUtils, test_task_mgr)
   test_task_mgr(1024, 10240, 1);
 }
 
-TEST(TestBackupUtils, test_should_backup_sslog_meta_type)
-{
-  using namespace oceanbase::sslog;
-  // meta types that should be backed up
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_LS_META));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_TABLET_META));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MINI_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MINOR_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MDS_MINI_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MDS_MINOR_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_FLUSH_MINI_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_SPLIT_MINOR_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_SPLIT_MDS_MINOR_SSTABLE));
-  EXPECT_TRUE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MAJOR_SSTABLE));
-  // meta types that should NOT be backed up
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_INVALID_META));
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_TABLET_TABLESTORE));
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_TABLET_STORAGE_SCHEMA));
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_TABLET_SSTABLE));
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_TABLET_SSTABLE_FOR_DDL));
-  EXPECT_FALSE(should_backup_sslog_meta_type(ObSSLogMetaType::SSLOG_MAX_META));
-}
-
 void make_macro_block_id_array(const int64_t tablet_id, const int64_t logic_version,
     const common::ObIArray<int64_t> &data_seq_list, common::ObIArray<ObBackupMacroBlockIDPair> &id_list)
 {
@@ -292,7 +261,6 @@ void TestBackupExternalSort::SetUp()
 
   ObTimerService *timer_service = nullptr;
   EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_new(timer_service));
-  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
   tenant_ctx.set(timer_service);
 
   tmp_file::ObTenantTmpFileManager *tf_mgr = nullptr;
@@ -300,6 +268,7 @@ void TestBackupExternalSort::SetUp()
   tenant_ctx.set(tf_mgr);
   EXPECT_EQ(OB_SUCCESS, tmp_file::ObTenantTmpFileManager::mtl_init(tf_mgr));
   tf_mgr->get_sn_file_manager().write_cache_.default_memory_limit_ = 40*1024*1024;
+  EXPECT_EQ(OB_SUCCESS, ObTimerService::mtl_start(timer_service));
   EXPECT_EQ(OB_SUCCESS, tf_mgr->start());
 
   ObTenantEnv::set_tenant(&tenant_ctx);
@@ -311,10 +280,15 @@ void TestBackupExternalSort::TearDown()
   allocator_.reuse();
 
   tmp_file::ObTmpPageCache::get_instance().destroy();
+  tmp_file::ObTenantTmpFileManager *tf_mgr = MTL(tmp_file::ObTenantTmpFileManager *);
   ObTimerService *timer_service = MTL(ObTimerService *);
+  ASSERT_NE(nullptr, tf_mgr);
   ASSERT_NE(nullptr, timer_service);
+  tf_mgr->stop();
   timer_service->stop();
+  tf_mgr->wait();
   timer_service->wait();
+  tf_mgr->destroy();
   timer_service->destroy();
   TestDataFilePrepare::TearDown();
   common::ObClockGenerator::destroy();

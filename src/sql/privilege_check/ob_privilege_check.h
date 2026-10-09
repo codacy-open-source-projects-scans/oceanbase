@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_PRIVILEGE_CHECK_OB_PRIVILEGE_CHECK_
@@ -88,7 +81,8 @@ public:
   ///@param stmt_need_priv[out]   priv info needed by stmt
   static int get_stmt_need_privs(const share::schema::ObSessionPrivInfo &session_priv,
                                  const ObStmt *basic_stmt,
-                                 common::ObIArray<share::schema::ObNeedPriv> &stmt_need_priv);
+                                 common::ObIArray<share::schema::ObNeedPriv> &stmt_need_priv,
+                                 const ObSqlCtx *sql_ctx = NULL);
   // check privilege version for upgrade compatibility
   static int get_priv_need_check(const share::schema::ObSessionPrivInfo &session_priv,
                                  const share::ObCompatFeatureType feature_type,
@@ -113,7 +107,8 @@ private:
    ///@param stmt_need_priv[out]   priv info needed by stmt
   static int one_level_stmt_need_priv(const share::schema::ObSessionPrivInfo &session_priv,
                                       const ObStmt *basic_stmt,
-                                      common::ObIArray<share::schema::ObNeedPriv> &stmt_need_priv);
+                                      common::ObIArray<share::schema::ObNeedPriv> &stmt_need_priv,
+                                      const ObSqlCtx *sql_ctx = NULL);
 
   static const ObGetStmtNeedPrivsFunc priv_check_funcs_[];
   static const ObGetStmtOraNeedPrivsFunc get_ora_priv_funcs_[];

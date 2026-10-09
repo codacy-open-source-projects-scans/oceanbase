@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -31,6 +24,7 @@
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/ob_index_builder_util.h"
 #include "sql/resolver/ob_resolver_utils.h"
+#include "storage/tablet/ob_tablet_random_mds_helper.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -507,9 +501,9 @@ int ObTableHelper::create_tablets_()
     // - primary table may be incorrect when ddl execute concurrently.
     ObNewTableTabletAllocator new_table_tablet_allocator(
                               tenant_id_,
-                              schema_guard,
+                              schema_guard_wrapper_,
                               sql_proxy,
-                              true /*use parallel ddl*/);
+                              true/*use_parallel_ddl*/);
     const ObTablegroupSchema *data_tablegroup_schema = NULL; // keep NULL if no tablegroup
     int64_t last_schema_version = OB_INVALID_VERSION;
     ObSchemaVersionGenerator *tsi_generator = GET_TSI(TSISchemaVersionGenerator);
@@ -574,9 +568,7 @@ int ObTableHelper::create_tablets_()
       } else if (schemas.count() > 0) {
         if (OB_FAIL(new_table_tablet_allocator.prepare(get_trans_(),
                                                        data_table,
-                                                       data_tablegroup_schema,
-                                                       false,  /* is_add_partition */
-                                                       get_external_trans_() == NULL ? NULL : schema_guard_wrapper_.get_latest_schema_guard()))) {
+                                                       data_tablegroup_schema))) {
           LOG_WARN("fail to prepare ls for data table", KR(ret));
         } else if (OB_FAIL(new_table_tablet_allocator.get_ls_id_array(ls_id_array))) {
           LOG_WARN("fail to get ls id array", KR(ret));
@@ -585,6 +577,9 @@ int ObTableHelper::create_tablets_()
           LOG_WARN("create table partitions failed", KR(ret), K(data_table));
         } else if (OB_FAIL(table_creator.execute())) {
           LOG_WARN("execute create partition failed", KR(ret));
+        } else if (data_table.is_random_part() && OB_FAIL(storage::ObTabletRandomMdsHelper::set_autoinc_seq_for_create(
+                data_table, 1/*prev_high_bound_val*/, get_trans_()))) {
+          LOG_WARN("failed to set autoinc seq for create", KR(ret), K(data_table));
         }
       }
     }
@@ -848,10 +843,15 @@ int ObTableHelper::inner_generate_table_schema_(const ObCreateTableArg &arg, ObT
              arg.schema_.get_minor_row_store_type());
     LOG_USER_ERROR(OB_NOT_SUPPORTED,
                    "create table with non-flat delta format under this version is");
-  } else if (compat_version < ObCompactionTTLUtil::COMPACTION_TTL_CMP_DATA_VERSION && arg.schema_.has_ttl_definition() && !arg.schema_.get_ttl_flag().is_valid(compat_version)) {
+  } else if (!arg.schema_.get_ttl_flag().is_valid(compat_version)) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("fail to generate schema, not support ttl flag for this version", KR(ret), K_(tenant_id), K(compat_version), K(arg.schema_));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "this version not support ttl flag");
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "this ttl flag in this version is");
+  } else if (compat_version < DATA_VERSION_4_6_1_0 && arg.schema_.is_random_part()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("fail to generate schema, not support random partitioned table for this version",
+             KR(ret), K(tenant_id_), K(compat_version), K(arg));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "this version not support random partitioned table");
   } else if (arg.schema_.is_duplicate_table()) { // check compatibility for duplicate table
     bool is_compatible = false;
     if (OB_FAIL(ObShareUtil::check_compat_version_for_readonly_replica(tenant_id_, is_compatible))) {
@@ -865,6 +865,10 @@ int ObTableHelper::inner_generate_table_schema_(const ObCreateTableArg &arg, ObT
       LOG_WARN("not user tenant, create duplicate table not supported", KR(ret), K_(tenant_id));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "not user tenant, create duplicate table");
     }
+  } else if (compat_version >= DATA_VERSION_4_6_1_0 && new_table.is_fulltext_dict()
+             && OB_FAIL(ObFtsIndexBuilderUtil::check_fulltext_dict_schema(
+                 new_table, tenant_id_, arg.index_arg_list_.count()))) {
+    LOG_WARN("fulltext dict schema check failed", K(ret), K(tenant_id_), K(new_table.get_table_id()));
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(ObCompactionTTLUtil::check_create_append_only_engine_valid(arg.schema_, tenant_id_))) {
@@ -1020,7 +1024,6 @@ int ObTableHelper::inner_generate_table_schema_(const ObCreateTableArg &arg, ObT
       LOG_WARN("fail to check location ", KR(ret), K(new_table));
     }
   }
-
 
   return ret;
 }

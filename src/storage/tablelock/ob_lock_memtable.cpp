@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TABLELOCK
@@ -258,7 +251,8 @@ void ObLockMemtable::reset()
 int ObLockMemtable::lock_(
     const ObLockParam &param,
     ObStoreCtx &ctx,
-    ObTableLockOp &lock_op)
+    ObTableLockOp &lock_op,
+    ObIArray<ObTableLockHolderInfo> *holder_info)
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
@@ -312,7 +306,7 @@ int ObLockMemtable::lock_(
             ret = OB_OBJ_LOCK_EXIST;
           }
           LOG_DEBUG("lock is exist", K(ret), K(lock_op));
-        } else if (OB_FAIL(obj_lock_map_.lock(param, ctx, lock_op, lock_mode_cnt_in_same_trans, conflict_tx_set))) {
+        } else if (OB_FAIL(obj_lock_map_.lock(param, ctx, lock_op, lock_mode_cnt_in_same_trans, conflict_tx_set, holder_info))) {
           if (ret != OB_TRY_LOCK_ROW_CONFLICT &&
               ret != OB_OBJ_LOCK_EXIST) {
             LOG_WARN("record lock at lock map mgr failed.", K(ret), K(lock_op));
@@ -903,7 +897,8 @@ int ObLockMemtable::check_lock_conflict(const ObMemtableCtx *mem_ctx,
 int ObLockMemtable::lock(
     const ObLockParam &param,
     ObStoreCtx &ctx,
-    ObTableLockOp &lock_op)
+    ObTableLockOp &lock_op,
+    ObIArray<ObTableLockHolderInfo> *holder_info)
 {
   int ret = OB_SUCCESS;
   LOG_DEBUG("ObLockMemtable::lock ", K(lock_op));
@@ -920,7 +915,7 @@ int ObLockMemtable::lock(
   //                                            ctx))) {
   //   LOG_WARN("can not lock because table lock spliting",
   //            K(ret), K(param), K(lock_op), K(ctx));
-  } else if (OB_FAIL(lock_(param, ctx, lock_op))) {
+  } else if (OB_FAIL(lock_(param, ctx, lock_op, holder_info))) {
     if (ret != OB_TRY_LOCK_ROW_CONFLICT) {
       LOG_WARN("lock failed.", K(ret), K(param), K(lock_op));
     }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef CTX_ITEM_DEF
@@ -38,6 +31,7 @@ CTX_ITEM_DEF(UNEXPECTED_IN_500)
 CTX_ITEM_DEF(MERGE_RESERVE_CTX_ID)
 CTX_ITEM_DEF(MERGE_NORMAL_CTX_ID)
 CTX_ITEM_DEF(VECTOR_CTX_ID)
+CTX_ITEM_DEF(DDL_KV_CTX_ID)
 CTX_ITEM_DEF(MAX_CTX_ID)
 #endif
 
@@ -433,6 +427,7 @@ LABEL_ITEM_DEF(OB_QUERY_ALLOCATOR, QueryAllocator)
 LABEL_ITEM_DEF(OB_PARTITION, Partition)
 LABEL_ITEM_DEF(OB_PARTITION_SPLIT, PartitioSplit)
 LABEL_ITEM_DEF(OB_PARTITION_STORAGE, PartitioStorage)
+LABEL_ITEM_DEF(OB_FT_DICT_BUILD_LOCK_MGR, FtDictBuildLock)
 LABEL_ITEM_DEF(OB_PARTITION_SERVICE, PartitioService)
 LABEL_ITEM_DEF(OB_MEMSTORE_ALLOCATOR, MemstoreAllocat)
 LABEL_ITEM_DEF(OB_MEMSTORE, Memstore)
@@ -690,7 +685,7 @@ struct InnerModIds
   #undef LABEL_ITEM_DEF
   };
   enum { LABEL_COUNT_LIMIT = InnerModIds::OB_MOD_END };
-  STATIC_ASSERT(LABEL_COUNT_LIMIT == 453, "forbidden to add new label!!!");
+  STATIC_ASSERT(LABEL_COUNT_LIMIT == 454, "forbidden to add new label!!!");
 };
 
 #define ObNewModIds ObModIds

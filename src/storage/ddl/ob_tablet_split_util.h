@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_DDL_OB_TABLET_SPLIT_UTIL_H
@@ -177,11 +170,7 @@ public:
       const ObTabletHandle &local_source_tablet_handle,
       const ObArray<ObTabletID> &dest_tablets_id,
       const int64_t compaction_scn,
-      const share::SCN &min_split_start_scn
-#ifdef OB_BUILD_SHARED_STORAGE
-      , bool &is_data_split_executor
-#endif
-      );
+      const share::SCN &min_split_start_scn);
   static int get_split_dest_tablets_info(
       const share::ObLSID &ls_id,
       const ObTabletID &source_tablet_id,
@@ -236,7 +225,18 @@ public:
       ObLS *ls,
       const ObTabletHandle &local_tablet_handle,
       bool &has_mds_table_for_dump);
+  static int build_adjusted_col_layout_storage_schema(
+      ObIAllocator &allocator,
+      const ObSSTable &src_sstable,
+      const ObStorageSchema &split_mds_storage_schema,
+      const ObStorageSchema *target_storage_schema,
+      const ObStorageSchema *&storage_schema);
 private:
+  static int build_split_base_storage_schema(
+      ObIAllocator &allocator,
+      const ObSSTable &src_sstable,
+      const ObStorageSchema &split_mds_storage_schema,
+      ObStorageSchema *&target_storage_schema);
   static int check_and_determine_mds_end_scn(
       const ObTabletHandle &dest_tablet_handle,
       share::SCN &end_scn);
@@ -334,17 +334,6 @@ public:
       const ObTabletID &tablet_id,
       int64_t &epoch,
       bool &is_data_split_executor);
-
-  static int check_satisfy_ss_split_condition(
-      const ObLSHandle &ls_handle,
-      const ObTabletHandle &local_source_tablet_handle,
-      const ObArray<ObTabletID> &dest_tablets_id,
-      bool &is_data_split_executor);
-
-  static int check_ss_data_completed(
-      const ObLSHandle &ls_handle,
-      const ObIArray<ObTabletID> &dest_tablet_ids,
-      bool &is_completed);
 
   static int create_shared_tablet_if_not_exist(
       const ObLSID &ls_id,

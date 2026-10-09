@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef TG_DEF
@@ -217,10 +210,14 @@ TG_DEF(ExtDiskCacheServerTimer, ExtDiskCacheServerTimer, TIMER)
 TG_DEF(TmpFileSwap, TFSwap, THREAD_POOL, 1)
 TG_DEF(TableGroupCommitMgr, TableGroupCommitMgr, TIMER)
 TG_DEF(TmpFileFlush, TFFlush, TIMER)
+TG_DEF(TmpFileFlushWait, TFWait, TIMER)
 TG_DEF(LogFetcherBGWorker, LogFetcherBGW, TIMER)
 TG_DEF(MaBlkBFLoader, MBFLoad, THREAD_POOL, 1)
 TG_DEF(TLD_HTimer, TLD_HTimer, TIMER)
 TG_DEF(ShrBlkChk, ShrBlkChk, TIMER)
 TG_DEF(WindowLoop, WindowLoop, TIMER)
 TG_DEF(OMTProcCpuSampler, OmtProcCpuSampler, THREAD_POOL, 1)
+TG_DEF(MViewSched, MViewSched, REENTRANT_THREAD_POOL, 1)
+TG_DEF(FTDictRefresh, FTDictRefresh, TIMER)
+TG_DEF(FTDictAccessRowScnCache, FTDictAccessRowScnCache, TIMER)
 #endif

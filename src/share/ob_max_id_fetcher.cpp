@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -85,7 +78,11 @@ const char *ObMaxIdFetcher::max_id_name_info_[OB_MAX_ID_TYPE][2] = {
   { "ob_max_sensitive_rule_id", "max sensitive rule id"},
   { "ob_max_used_ai_model_id", "max used ai model id"},
   { "ob_max_used_ai_model_endpoint_id", "max used ai model endpoint id"},
-  { "ob_max_used_java_policy_id", "max used java policy id"}};
+  { "ob_max_used_java_policy_id", "max used java policy id"},
+  { "ob_max_used_ai_model_provider_id", "max used ai model provider id"},
+  { "ob_max_used_ai_gateway_id", "max used ai gateway id"},
+  { "ob_max_used_ai_model_profile_id", "max used ai model profile id"}
+};
 
 ObMaxIdFetcher::ObMaxIdFetcherMutexWrapper ObMaxIdFetcher::mutex_bucket_[MAX_TENANT_MUTEX_BUCKET_CNT];
 
@@ -168,7 +165,8 @@ int ObMaxIdFetcher::convert_id_type(
     case OB_MAX_USED_AI_MODEL_ID_TYPE:
     case OB_MAX_USED_LOCATION_ID_TYPE:
     case OB_MAX_USED_CCL_RULE_ID_TYPE:
-    case OB_MAX_USED_SENSITIVE_RULE_ID_TYPE: {
+    case OB_MAX_USED_SENSITIVE_RULE_ID_TYPE:
+    case OB_MAX_USED_JAVA_POLICY_ID_TYPE: {
       dst = OB_MAX_USED_OBJECT_ID_TYPE;
       break;
     }

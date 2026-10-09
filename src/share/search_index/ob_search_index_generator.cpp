@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
 
 #include "share/search_index/ob_search_index_generator.h"
+#include "lib/charset/ob_charset.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/json_type/ob_json_base.h"
 #include "lib/json_type/ob_json_tree.h"
@@ -24,6 +18,7 @@
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/engine/expr/ob_array_expr_utils.h"
 #include "lib/udt/ob_collection_type.h"
+#include "lib/udt/ob_array_utils.h"
 
 namespace oceanbase
 {
@@ -57,9 +52,18 @@ int ObSearchIndexRowGenerator::Generator::init(const uint64_t column_idx, const 
     if (OB_FAIL(ObSearchIndexValueEncoder::init_json_string_enc_param(enc_param_))) {
       LOG_WARN("fail to init json string enc param", K(ret));
     }
-  } else if (ob_is_string_tc(col_type)) {
-    if (OB_FAIL(ObSearchIndexValueEncoder::init_string_enc_param(obj_meta_.get_type(),
-                                                                 obj_meta_.get_collation_type(),
+  } else if (ob_is_string_type(col_type)) {
+    ObObjType obj_type = ob_is_text_tc(col_type) ? ObVarcharType : obj_meta_.get_type();
+    ObCollationType cs_type = obj_meta_.get_collation_type();
+    ObCharsetType charset = ObCharset::charset_type_by_coll(cs_type);
+    if (CHARSET_UTF16 == charset || CHARSET_UTF16LE == charset) {
+      orig_cs_type_ = cs_type;
+      need_normalize_encoding_ = true;
+      cs_type = ObCharset::is_bin_sort(cs_type) ? CS_TYPE_UTF8MB4_BIN
+                                                : CS_TYPE_UTF8MB4_GENERAL_CI;
+    }
+    if (OB_FAIL(ObSearchIndexValueEncoder::init_string_enc_param(obj_type,
+                                                                 cs_type,
                                                                  0, /** sql_mode */
                                                                  true, /** is_null_first */
                                                                  true, /** is_asc */
@@ -104,16 +108,33 @@ int ObSearchIndexRowGenerator::Generator::init_array_generator(const common::ObC
     } else {
       arr_type_ = static_cast<common::ObCollectionArrayType *>(dst);
       uint32_t depth = 0;
-      const ObDataType *basic_elem_type = &(arr_type_->get_basic_meta(depth));
-      ObObjMeta elem_meta = basic_elem_type->get_meta_type();
-      void *elem_generator_ptr = nullptr;
-      if (OB_ISNULL(elem_generator_ptr = inner_allocator_.alloc(sizeof(Generator)))) {
-        ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_WARN("fail to allocate memory for element generator", K(ret));
+      const ObDataType &basic_elem = arr_type_->get_basic_meta(depth);
+      char path_buf[64];
+      if (OB_FAIL(common::ObArrayUtil::get_type_name(static_cast<common::ObNestedType>(arr_type_->type_id_),
+                                                     basic_elem, path_buf, sizeof(path_buf)))) {
+        LOG_WARN("fail to get array type name", K(ret));
       } else {
-        elem_generator_ = new (elem_generator_ptr) Generator(allocator_, inner_allocator_);
-        if (OB_FAIL(elem_generator_->init(column_idx_, elem_meta, nullptr, nullptr))) {
-          LOG_WARN("fail to init element generator", K(ret));
+        const int32_t path_len = static_cast<int32_t>(strlen(path_buf));
+        char *copy = static_cast<char *>(inner_allocator_.alloc(path_len));
+        if (OB_ISNULL(copy)) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("fail to alloc array index path", K(ret));
+        } else {
+          MEMCPY(copy, path_buf, path_len);
+          array_index_path_.assign_ptr(copy, path_len);
+          ObObjMeta elem_meta = basic_elem.get_meta_type();
+          void *elem_generator_ptr = nullptr;
+          if (OB_ISNULL(elem_generator_ptr = inner_allocator_.alloc(sizeof(Generator)))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("fail to allocate memory for element generator", K(ret));
+          } else {
+            elem_generator_ = new (elem_generator_ptr) Generator(allocator_, inner_allocator_);
+            if (OB_FAIL(elem_generator_->init(column_idx_, elem_meta, nullptr, nullptr))) {
+              LOG_WARN("fail to init element generator", K(ret));
+            } else {
+              elem_generator_->array_index_path_ = array_index_path_;
+            }
+          }
         }
       }
     }
@@ -172,8 +193,36 @@ int ObSearchIndexRowGenerator::Generator::generate_rows(
       }
       case ObVarcharType:
       case ObCharType: {
-        ret = ObSearchIndexValueEncoder::encode_string(allocator_, datum.get_string(), value,
-                                                       enc_param_);
+        ObString str_value = datum.get_string();
+        ObCollationType tmp_cs = orig_cs_type_;
+        if (need_normalize_encoding_
+            && OB_FAIL(ObSearchIndexValueEncoder::normalize_string_for_encoding(
+                   allocator_, str_value, tmp_cs))) {
+          LOG_WARN("fail to normalize string for encoding", K(ret));
+        } else if (OB_FAIL(ObSearchIndexValueEncoder::encode_string(
+                       allocator_, str_value, value, enc_param_))) {
+          LOG_WARN("fail to encode string", K(ret));
+        }
+        break;
+      }
+      case ObTinyTextType:
+      case ObTextType:
+      case ObMediumTextType:
+      case ObLongTextType: {
+        ObString str_value = datum.get_string();
+        ObCollationType tmp_cs = orig_cs_type_;
+        if (OB_FAIL(sql::ObTextStringHelper::read_real_string_data(
+                &allocator_, obj_meta_.get_type(), obj_meta_.get_collation_type(),
+                true, str_value))) {
+          LOG_WARN("fail to read real string data", K(ret));
+        } else if (need_normalize_encoding_
+                   && OB_FAIL(ObSearchIndexValueEncoder::normalize_string_for_encoding(
+                          allocator_, str_value, tmp_cs))) {
+          LOG_WARN("fail to normalize string for encoding", K(ret));
+        } else if (OB_FAIL(ObSearchIndexValueEncoder::encode_string(
+                       allocator_, str_value, value, enc_param_))) {
+          LOG_WARN("fail to encode string", K(ret));
+        }
         break;
       }
       case ObDateType:
@@ -212,7 +261,11 @@ int ObSearchIndexRowGenerator::Generator::generate_rows(
       }
     }
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(rows.push_back(ObSearchIndexRow(column_idx_, value, doc_id)))) {
+      if (!array_index_path_.empty()) {
+        if (OB_FAIL(rows.push_back(ObSearchIndexRow(column_idx_, array_index_path_, value, doc_id)))) {
+          LOG_WARN("fail to push back gin row", K(ret));
+        }
+      } else if (OB_FAIL(rows.push_back(ObSearchIndexRow(column_idx_, value, doc_id)))) {
         LOG_WARN("fail to push back gin row", K(ret));
       }
     }
@@ -271,7 +324,9 @@ int ObSearchIndexRowGenerator::Generator::generate_rows(
     LOG_WARN("json base is null", K(ret));
   } else {
     ObJsonNodeType node_type = j_base->json_type();
-    if (ObJsonNodeType::J_OBJECT == node_type) {
+    const int64_t elem_cnt = j_base->element_count();
+    const bool is_empty = (elem_cnt == 0);
+    if (ObJsonNodeType::J_OBJECT == node_type && !is_empty) {
       JsonObjectIterator iter(j_base);
       while (OB_SUCC(ret) && !iter.end()) {
         common::ObJsonObjPair elem;
@@ -286,11 +341,8 @@ int ObSearchIndexRowGenerator::Generator::generate_rows(
           iter.next();
         }
       }
-    } else if (ObJsonNodeType::J_ARRAY == node_type) {
-      const uint64_t elem_cnt = j_base->element_count();
-      if (elem_cnt == 0) {
-        // empty array, do nothing
-      } else if (OB_FAIL(path_items.push_back(ObSearchIndexPathEncoder::make_array_path()))) {
+    } else if (ObJsonNodeType::J_ARRAY == node_type && !is_empty) {
+      if (OB_FAIL(path_items.push_back(ObSearchIndexPathEncoder::make_array_path()))) {
         LOG_WARN("fail to push path string", K(ret));
       } else {
         for (uint64_t i = 0; OB_SUCC(ret) && i < elem_cnt; ++i) {
@@ -307,13 +359,16 @@ int ObSearchIndexRowGenerator::Generator::generate_rows(
       // scalar json node
       ObString path;
       ObString value;
+      const bool is_json_scalar = j_base->is_json_scalar(node_type);
       bool passed = true;
       if (OB_NOT_NULL(config_filter_) && OB_FAIL(config_filter_->is_indexed(path_items, node_type, passed))) {
         LOG_WARN("failed to check path filter", K(ret));
       } else if (!passed) {
         // do nothing
-      } else if (OB_FAIL(ObSearchIndexValueEncoder::encode_json_scalar(allocator_, j_base, value,
-                                                                enc_param_))) {
+      } else if (is_json_scalar && OB_FAIL(ObSearchIndexValueEncoder::encode_json_scalar(allocator_,
+                                                                                         j_base,
+                                                                                         value,
+                                                                                         enc_param_))) {
         LOG_WARN("fail to encode json scalar", K(ret));
       } else if (OB_FAIL(ObSearchIndexPathEncoder::encode_path(allocator_, path_items, node_type,
                                                                path))) {
@@ -359,18 +414,21 @@ int ObSearchIndexRowGenerator::Generator::generate_rows_for_array_obj(
     uint32_t len = distinct_arr_obj->size();
     for (uint32_t i = 0; OB_SUCC(ret) && i < len; ++i) {
       if (distinct_arr_obj->is_null(i)) {
-        continue;
-      }
-      common::ObObj elem_obj;
-      ObDatum elem_datum;
-      char elem_datum_buf[common::OBJ_DATUM_MAX_RES_SIZE] = {0};
-      elem_datum.ptr_ = elem_datum_buf;
-      if (OB_FAIL(distinct_arr_obj->elem_at(i, elem_obj))) {
-        LOG_WARN("fail to get array element", K(ret), K(i));
-      } else if (OB_FAIL(elem_datum.from_obj(elem_obj))) {
-        LOG_WARN("fail to convert obj to datum", K(ret), K(elem_obj));
-      } else if (OB_FAIL(elem_generator_->generate_rows(doc_id, elem_datum, rows))) {
-        LOG_WARN("fail to generate gin rows for array element", K(ret), K(i));
+        if (OB_FAIL(rows.push_back(ObSearchIndexRow(column_idx_, doc_id, array_index_path_)))) {
+          LOG_WARN("fail to push back gin row", K(ret));
+        }
+      } else {
+        common::ObObj elem_obj;
+        ObDatum elem_datum;
+        char elem_datum_buf[common::OBJ_DATUM_MAX_RES_SIZE] = {0};
+        elem_datum.ptr_ = elem_datum_buf;
+        if (OB_FAIL(distinct_arr_obj->elem_at(i, elem_obj))) {
+          LOG_WARN("fail to get array element", K(ret), K(i));
+        } else if (OB_FAIL(elem_datum.from_obj(elem_obj))) {
+          LOG_WARN("fail to convert obj to datum", K(ret), K(elem_obj));
+        } else if (OB_FAIL(elem_generator_->generate_rows(doc_id, elem_datum, rows))) {
+          LOG_WARN("fail to generate gin rows for array element", K(ret), K(i));
+        }
       }
     }
   }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
@@ -575,6 +568,7 @@ int ObVariableSetExecutor::update_global_variables(ObExecContext &ctx,
   ObString extra_val;
   ObString val_str;
   ObCollationType extra_coll_type = CS_TYPE_INVALID;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   char extra_var_value_buf[32] = {'\0'};
   int64_t pos = 0;
   bool should_update_extra_var = false;
@@ -638,8 +632,10 @@ int ObVariableSetExecutor::update_global_variables(ObExecContext &ctx,
       } else if (FALSE_IT(cs_str = ObString::make_string(ObCharset::charset_name(
                                    ObCharset::charset_type_by_coll(static_cast<ObCollationType>(coll_int64)))))) {
         //do nothing
+      } else if (OB_FAIL(session->get_charset_compat_type(charset_compat_type))) {
+        LOG_WARN("fail to get charset compat type", K(ret));
       } else if (OB_FAIL(ObBasicSysVar::get_collation_var_and_val_by_charset(
-          set_var.var_name_, cs_str, extra_var_name, extra_val, extra_coll_type))) {
+          set_var.var_name_, cs_str, extra_var_name, extra_val, extra_coll_type, charset_compat_type))) {
         LOG_ERROR("fail to get collation variable and value by charset", K(ret), K(set_var.var_name_), K(val), K(cs_str));
       } else if (OB_FAIL(databuff_printf(extra_var_value_buf, sizeof(extra_var_value_buf), pos, "%d", static_cast<int32_t>(extra_coll_type)))) {
         LOG_WARN("databuff printf failed", K(extra_coll_type), K(ret));
@@ -1475,8 +1471,9 @@ int ObVariableSetExecutor::sync_update_px_target_workers_per_cpu(ObExecContext &
   int ret = OB_SUCCESS;
   ObSQLSessionInfo *session = NULL;
   common::ObMySQLProxy *sql_proxy = NULL;
-
-  if (OB_ISNULL(session = ctx.get_my_session())) {
+  if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_6_0_0) {
+    // do nothing.
+  } else if (OB_ISNULL(session = ctx.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("session is NULL", K(ret));
   } else if (OB_ISNULL(sql_proxy = ctx.get_sql_proxy())) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_LOG_STREAM_BACKUP_HANDLER_H_
@@ -36,13 +29,6 @@ public:
       const share::SCN &start_scn, const share::SCN &end_scn, const bool is_only_calc_stat);
   static int schedule_backup_fuse_tablet_meta_dag(const ObBackupJobDesc &job_desc, const share::ObBackupDest &backup_dest,
       const uint64_t tenant_id, const share::ObBackupSetDesc &backup_set_desc, const share::ObLSID &ls_id, const int64_t turn_id, const int64_t retry_id);
-
-#ifdef OB_BUILD_SHARED_STORAGE
-public:
-  static int schedule_ss_backup_dag(const ObBackupJobDesc &job_desc, const share::ObBackupDest &backup_dest,
-      const uint64_t tenant_id, const share::ObBackupSetDesc &backup_set_desc,
-      const share::ObLSID &ls_id, const int64_t retry_id, const share::SCN &start_scn, const bool is_backup_data);
-#endif
 };
 
 }  // namespace backup

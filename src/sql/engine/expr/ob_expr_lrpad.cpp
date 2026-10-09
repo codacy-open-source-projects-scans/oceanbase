@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/expr/ob_expr_lrpad.h"
 #include "sql/engine/ob_exec_context.h"
+#include "lib/utility/ob_tracepoint.h"
 
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "lib/charset/ob_charset_string_helper.h"
@@ -1008,7 +1002,10 @@ int ObExprBaseLRpad::calc_mysql_inner_vector(const LRpadType pad_type,
       }
     } else if (!ob_is_text_tc(type)) {
       char *result_buf = expr.get_str_res_mem(ctx, result_size, idx);
-      if (OB_FAIL(padding_vector(pad_type, cs_type, str_text.ptr(), str_text.length(), str_pad.ptr(),
+      if (OB_ISNULL(result_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Failed to alloc", K(ret));
+      } else if (OB_FAIL(padding_vector(pad_type, cs_type, str_text.ptr(), str_text.length(), str_pad.ptr(),
                                   str_pad.length(), prefix_size, repeat_count, false, result_buf,
                                   result_size))) {
         LOG_WARN("Failed to pad", K(ret), K(str_text), K(str_pad), K(prefix_size), K(repeat_count));
@@ -1065,7 +1062,10 @@ int ObExprBaseLRpad::calc_mysql_inner_vector(const LRpadType pad_type,
     // if lob is outrow, may cause return data that's allocated from tmp allocator
     ObString data = res_vec->get_string(idx);
     char *result_buf = expr.get_str_res_mem(ctx, data.length(), idx);
-    if (data.empty()) { // skip empty string
+    if (OB_ISNULL(result_buf)) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("Failed to alloc", K(ret));
+    } else if (data.empty()) { // skip empty string
     } else {
       MEMCPY(result_buf, data.ptr(), data.length());
       res_vec->set_string(idx, result_buf, data.length());
@@ -1163,7 +1163,7 @@ int ObExprBaseLRpad::init_pad_ctx(const ObExpr &expr,
     if (OB_FAIL(ret)) {
     } else {
       int64_t repeat_count = (length + pad_len - 1) / pad_len;
-      repeat_count = std::min(repeat_count, max_result_size / str_pad.length());
+      repeat_count = std::min(repeat_count, (max_result_size + str_pad.length() - 1) / str_pad.length());
       char *pad_buf = static_cast<char *>(exec_ctx.get_allocator().alloc(str_pad.length() * repeat_count));
       if (OB_ISNULL(pad_buf)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1188,7 +1188,10 @@ int ObExprBaseLRpad::init_pad_ctx(const ObExpr &expr,
     } else {
       pad_ctx->set_result_buf(result_buf);
       for (int64_t i = 0; OB_SUCC(ret) && i < max_batch_size; ++i) {
-        result_buf[i] = expr.get_str_res_mem(ctx, buffer_size, i);
+        if (OB_ISNULL(result_buf[i] = expr.get_str_res_mem(ctx, buffer_size, i))) {
+          ret = OB_ALLOCATE_MEMORY_FAILED;
+          LOG_WARN("Failed to alloc", K(ret));
+        }
       }
     }
   }
@@ -1653,9 +1656,14 @@ int ObExprBaseLRpad::calc_oracle(LRpadType pad_type, const ObExpr &expr,
 
 DEF_SET_LOCAL_SESSION_VARS(ObExprBaseLRpad, raw_expr) {
   int ret = OB_SUCCESS;
-  SET_LOCAL_SYSVAR_CAPACITY(2);
-  EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_MAX_ALLOWED_PACKET);
-  EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_COLLATION_CONNECTION);
+  if (is_mysql_mode()) {
+    SET_LOCAL_SYSVAR_CAPACITY(2);
+    EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_MAX_ALLOWED_PACKET);
+    EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_COLLATION_CONNECTION);
+  } else {
+    SET_LOCAL_SYSVAR_CAPACITY(1);
+    EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_MAX_ALLOWED_PACKET);
+  }
   return ret;
 }
 
@@ -1688,7 +1696,9 @@ int ObExprLpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
   UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);
   rt_expr.eval_func_ = calc_mysql_lpad_expr;
-  rt_expr.eval_vector_func_ = calc_mysql_lpad_expr_vector;
+  if ((OB_E(EventTable::EN_ENABLE_VEC_LRPAD) OB_SUCCESS) != OB_SUCCESS) {
+    rt_expr.eval_vector_func_ = calc_mysql_lpad_expr_vector;
+  }
   return ret;
 }
 
@@ -1737,7 +1747,9 @@ int ObExprRpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
   UNUSED(expr_cg_ctx);
   UNUSED(raw_expr);
   rt_expr.eval_func_ = calc_mysql_rpad_expr;
-  rt_expr.eval_vector_func_ = calc_mysql_rpad_expr_vector;
+  if ((OB_E(EventTable::EN_ENABLE_VEC_LRPAD) OB_SUCCESS) != OB_SUCCESS) {
+    rt_expr.eval_vector_func_ = calc_mysql_rpad_expr_vector;
+  }
   return ret;
 }
 
@@ -1820,7 +1832,9 @@ int ObExprOracleLpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_exp
       info->is_called_in_sql_ = is_called_in_sql();
       rt_expr.extra_info_ = extra_info;
       rt_expr.eval_func_ = calc_oracle_lpad_expr;
-      rt_expr.eval_vector_func_ = calc_oracle_lpad_expr_vector;
+      if ((OB_E(EventTable::EN_ENABLE_VEC_LRPAD) OB_SUCCESS) != OB_SUCCESS) {
+        rt_expr.eval_vector_func_ = calc_oracle_lpad_expr_vector;
+      }
     }
   }
   return ret;
@@ -1905,7 +1919,9 @@ int ObExprOracleRpad::cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_exp
       info->is_called_in_sql_ = is_called_in_sql();
       rt_expr.extra_info_ = extra_info;
       rt_expr.eval_func_ = calc_oracle_rpad_expr;
-      rt_expr.eval_vector_func_ = calc_oracle_rpad_expr_vector;
+      if ((OB_E(EventTable::EN_ENABLE_VEC_LRPAD) OB_SUCCESS) != OB_SUCCESS) {
+        rt_expr.eval_vector_func_ = calc_oracle_rpad_expr_vector;
+      }
     }
   }
   return ret;
@@ -2217,7 +2233,10 @@ int ObExprBaseLRpad::calc_oracle_inner_vector(const LRpadType pad_type,
       LOG_WARN("Failed to get max display width", K(ret));
     } else if (!ob_is_text_tc(type)) {
       char *result_buf = expr.get_str_res_mem(ctx, prefix_size, idx);
-      if (OB_FAIL(padding_vector(pad_type, cs_type, "", 0, str_text.ptr(),
+      if (OB_ISNULL(result_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Failed to alloc", K(ret));
+      } else if (OB_FAIL(padding_vector(pad_type, cs_type, "", 0, str_text.ptr(),
                                  str_text.length(), prefix_size, 0,
                                  (total_width != width), result_buf,
                                  result_size))) {
@@ -2266,7 +2285,10 @@ int ObExprBaseLRpad::calc_oracle_inner_vector(const LRpadType pad_type,
       result_size = str_text.length() + str_pad.length() * repeat_count + prefix_size +
                     (pad_space ? ObCharsetUtils::get_const_str(cs_type, ' ').length() : 0);
       char *result_buf = expr.get_str_res_mem(ctx, result_size, idx);
-      if (OB_FAIL(padding_vector(pad_type, cs_type, str_text.ptr(),
+      if (OB_ISNULL(result_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("Failed to alloc", K(ret));
+      } else if (OB_FAIL(padding_vector(pad_type, cs_type, str_text.ptr(),
                                  str_text.length(), str_pad.ptr(),
                                  str_pad.length(), prefix_size, repeat_count,
                                  pad_space, result_buf, result_size))) {

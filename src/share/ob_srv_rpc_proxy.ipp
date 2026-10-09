@@ -30,8 +30,6 @@
   RPC_S(PR5 backup_build_index, OB_BACKUP_BUILD_INDEX, (ObBackupBuildIdxArg));
   RPC_S(PR5 backup_meta, OB_BACKUP_META, (ObBackupMetaArg));
   RPC_S(PR5 backup_fuse_tablet_meta, OB_BACKUP_FUSE_TABLET_META, (ObBackupFuseTabletMetaArg));
-  RPC_S(PR5 ss_ha_copy_macro_blocks, OB_SS_HA_COPY_MACRO_BLOCKS, (ObSSHAMacroBlocksArg));
-  RPC_S(PR5 ss_ha_delete_macro_blocks, OB_SS_HA_DELETE_MACRO_BLOCKS, (ObSSHAMacroBlocksArg));
   RPC_S(PR5 check_backup_task_exist, OB_CHECK_BACKUP_TASK_EXIST, (ObBackupCheckTaskArg), obrpc::Bool);
   RPC_S(PR5 report_backup_over, OB_BACKUP_LS_DATA_RES, (ObBackupTaskRes));
   RPC_S(PR5 report_backup_clean_over, OB_DELETE_BACKUP_LS_TASK_RES, (ObBackupTaskRes));
@@ -137,6 +135,7 @@
   RPC_AP(PR5 batch_set_tablet_autoinc_seq, OB_BATCH_SET_TABLET_AUTOINC_SEQ, (obrpc::ObBatchSetTabletAutoincSeqArg), obrpc::ObBatchSetTabletAutoincSeqRes);
   RPC_S(PR5 set_tablet_autoinc_seq, OB_SET_TABLET_AUTOINC_SEQ, (obrpc::ObBatchSetTabletAutoincSeqArg), obrpc::ObBatchSetTabletAutoincSeqRes);
   RPC_AP(PR5 clear_tablet_autoinc_seq_cache, OB_CLEAR_TABLET_AUTOINC_SEQ_CACHE, (obrpc::ObClearTabletAutoincSeqCacheArg), obrpc::Int64);
+  RPC_AP(PR5 sync_tablet_autoinc_seq_cache, OB_SYNC_TABLET_AUTOINC_SEQ_CACHE, (obrpc::ObSyncTabletSeqCacheArg), obrpc::Int64);
   RPC_S(PR5 batch_get_tablet_binding, OB_BATCH_GET_TABLET_BINDING, (obrpc::ObBatchGetTabletBindingArg), obrpc::ObBatchGetTabletBindingRes);
   RPC_S(PR5 batch_get_tablet_split, OB_BATCH_GET_TABLET_SPLIT, (obrpc::ObBatchGetTabletSplitArg), obrpc::ObBatchGetTabletSplitRes);
   RPC_S(PRD force_create_sys_table, OB_FORCE_CREATE_SYS_TABLE, (ObForceCreateSysTableArg));
@@ -148,6 +147,7 @@
   RPC_S(PR5 notify_create_duplicate_ls, OB_NOTIFY_CREATE_DUPLICATE_LS, (obrpc::ObCreateDupLSArg), obrpc::ObCreateDupLSResult);
 
   RPC_S(PR5 update_local_stat_cache, obrpc::OB_SERVER_UPDATE_STAT_CACHE, (ObUpdateStatCacheArg));
+  RPC_S(PR5 update_local_catalog_stat_cache, obrpc::OB_SERVER_UPDATE_CATALOG_STAT_CACHE, (ObUpdateCatalogStatCacheArg));
   // The optimizer estimates the number of rows
   RPC_S(PR5 estimate_partition_rows, OB_ESTIMATE_PARTITION_ROWS, (ObEstPartArg), ObEstPartRes);
 
@@ -205,6 +205,7 @@
   RPC_S(PR4 admin_update_lock_op, OB_UPDATE_OBJ_LOCK, (transaction::tablelock::ObAdminUpdateLockOpArg));
   RPC_S(PR5 remote_write_ddl_redo_log, OB_REMOTE_WRITE_DDL_REDO_LOG, (obrpc::ObRpcRemoteWriteDDLRedoLogArg));
   RPC_S(PR5 remote_write_ddl_commit_log, OB_REMOTE_WRITE_DDL_COMMIT_LOG, (obrpc::ObRpcRemoteWriteDDLCommitLogArg), obrpc::Int64);
+  RPC_S(PR5 refresh_fulltext_dict, OB_REFRESH_FULLTEXT_DICT, (obrpc::ObRefreshFulltextDictArg));
   #ifdef OB_BUILD_SHARED_STORAGE
   RPC_S(PR5 remote_write_ddl_finsih_log, OB_REMOTE_WRITE_DDL_FINISH_LOG, (obrpc::ObRpcRemoteWriteDDLFinishLogArg));
   RPC_S(PR5 get_ss_macro_block, OB_GET_SS_MACRO_BLOCK, (obrpc::ObGetSSMacroBlockArg), obrpc::ObGetSSMacroBlockResult);
@@ -261,6 +262,7 @@
   RPC_S(PR5 sync_rewrite_rules, OB_SYNC_REWRITE_RULES, (ObSyncRewriteRuleArg));
   RPC_AP(PR1 get_ls_replayed_scn, OB_GET_LS_REPLAYED_SCN, (ObGetLSReplayedScnArg), obrpc::ObGetLSReplayedScnRes);
   RPC_S(PR5 force_set_ls_as_single_replica, OB_LOG_FORCE_SET_LS_AS_SINGLE_REPLICA, (obrpc::ObForceSetLSAsSingleReplicaArg));
+  RPC_S(PR5 force_remove_ls_replica, OB_FORCE_REMOVE_LS_REPLICA, (obrpc::ObForceRemoveLSReplicaArg));
   RPC_AP(PR5 net_endpoint_predict_ingress, OB_PREDICT_INGRESS_BW, (obrpc::ObNetEndpointPredictIngressArg), obrpc::ObNetEndpointPredictIngressRes);
   RPC_AP(PR5 net_endpoint_set_ingress, OB_SET_INGRESS_BW, (obrpc::ObNetEndpointSetIngressArg), obrpc::ObNetEndpointSetIngressRes);
   RPC_S(PR5 session_info_verification, OB_SESS_INFO_VERIFICATION, (ObSessInfoVerifyArg), ObSessionInfoVeriRes);
@@ -305,6 +307,7 @@
   RPC_S(PR5 notify_logservice_access_point, OB_NOTIFY_LOGSERVICE_ACCESS_POINT, (obrpc::ObNotifyLogServiceAccessPointArg), obrpc::ObNotifyLogServiceAccessPointResult);
   RPC_S(PR5 broadcast_config_version, OB_BROADCAST_CONFIG_VERSION, (ObBroadcastConfigVersionArg));
   RPC_S(PR5 notify_ls_restore_finish, OB_NOTIFY_LS_RESTORE_FINISH, (obrpc::ObNotifyLSRestoreFinishArg));
+  RPC_AP(PR5 drop_gtt_v2_session_tablet, OB_DROP_GTT_V2_SESSION_TABLET, (share::ObDropGTTV2SessionTabletArg), share::ObDropGTTV2SessionTabletRes);
   RPC_S(PR5 notify_start_archive, OB_NOTIFY_START_ARCHIVE, (obrpc::ObNotifyStartArchiveArg));
   RPC_S(PR5 ha_rebuild_tablet, OB_HA_REBUILD_TABLET, (obrpc::ObRebuildTabletArg));
   RPC_S(PR5 trigger_dump_data_dict, OB_DATA_DICT_TRIGGER_DUMP, (ObTriggerDumpDataDictArg));
@@ -315,6 +318,7 @@
   RPC_S(PR5 write_inner_tablet, OB_WRITE_INNER_TABLET, (ObWriteInnerTabletArg), ObWriteInnerTabletResult);
   RPC_S(PR5 force_drop_lonely_lob_aux_table, OB_ADMIN_FORCE_DROP_LONELY_LOB_AUX_TABLE, (obrpc::ObForceDropLonelyLobAuxTableArg));
   RPC_AP(PR5 clear_fetched_log_cache, OB_CLEAR_FETCHED_LOG_CACHE, (share::ObClearFetchedLogCacheArg), share::ObClearFetchedLogCacheRes);
+  RPC_S(PR5 batch_get_tablet_random, OB_BATCH_GET_TABLET_RANDOM, (obrpc::ObBatchGetTabletRandomArg), obrpc::ObBatchGetTabletRandomRes);
   RPC_S(PR5 check_nested_mview_mds, OB_CHECK_NESTED_MVIEW_MDS, (obrpc::ObCheckNestedMViewMdsArg), obrpc::ObCheckNestedMViewMdsRes);
   RPC_AP(PRZ load_tenant_table_schema, OB_LOAD_TENANT_TABLE_SCHEMA, (obrpc::ObLoadTenantTableSchemaArg));
   RPC_AP(PR5 check_sys_table_schema, OB_CHECK_SYS_TABLE_SCHEMA, (obrpc::ObCheckSysTableSchemaArg), obrpc::ObCheckSysTableSchemaResult);
@@ -323,3 +327,11 @@
   RPC_S(PR5 write_backup_dest_format_file, OB_WRITE_BACKUP_DEST_FORMAT_FILE, (obrpc::ObRemoteCheckBackupDestValidityArg));
   RPC_S(PR5 validate_backup_ls_task, OB_VALIDATE_BACKUP_LS_TASK, (ObBackupValidateLSArg));
   RPC_S(PR5 report_backup_validate_over, OB_VALIDATE_BACKUP_LS_TASK_RES, (ObBackupTaskRes));
+  RPC_AP(PR5 run_mview_pending_task, OB_RUN_MVIEW_PENDING_TASK, (obrpc::ObRunMViewPendingTaskArg), obrpc::ObRunMViewPendingTaskResult);
+  RPC_S(PR5 schedule_mview_refresh, OB_SCHEDULE_MVIEW_REFRESH, (obrpc::ObScheduleMViewRefreshArg), obrpc::ObScheduleMViewRefreshResult);
+  RPC_S(PR5 kill_mview_refresh, OB_KILL_MVIEW_REFRESH, (obrpc::ObKillMViewRefreshArg), obrpc::ObKillMViewRefreshResult);
+  RPC_S(PR5 admin_clear_transfer_meta_info_op, OB_HA_CLEAR_TRANSFER_META_INFO, (obrpc::ObAdminClearTransferMetaInfoOpArg));
+  RPC_AP(PR5 get_tenant_memory_info, OB_GET_TENANT_MEMORY_INFO, (obrpc::ObGetTenantMemoryInfoArg), obrpc::ObGetTenantMemoryInfoResult);
+  RPC_S(PR5 run_inspection, OB_RUN_INSPECTION, (obrpc::ObRunInspectionArg));
+  RPC_AP(PR5 async_run_inspection, OB_ASYNC_RUN_INSPECTION, (obrpc::ObRunInspectionArg));
+  RPC_S(PR5 get_inspection_status, OB_GET_INSPECTION_STATUS, (obrpc::ObGetInspectionStatusArg), obrpc::ObGetInspectionStatusResult);

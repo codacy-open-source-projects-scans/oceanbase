@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_FUSION_ITER_H_
@@ -269,7 +262,8 @@ public:
       rowkey_is_uint64_(false),
       output_idx_(0),
       input_row_cnt_(0),
-      output_row_cnt_(0)
+      output_row_cnt_(0),
+      fusion_profile_(nullptr)
   {}
   virtual ~ObDASFusionIter() {}
 
@@ -415,6 +409,7 @@ private:
 
   int64_t input_row_cnt_;
   int64_t output_row_cnt_;
+  common::ObOpProfile<common::ObMetric> *fusion_profile_;
 };
 
 }  // namespace sql

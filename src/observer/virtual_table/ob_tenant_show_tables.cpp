@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "observer/virtual_table/ob_tenant_show_tables.h"
@@ -28,6 +21,7 @@ ObTenantShowTables::ObTenantShowTables()
     : ObVirtualTableIterator(),
       tenant_id_(OB_INVALID_ID),
       database_id_(OB_INVALID_ID),
+      catalog_id_(OB_INTERNAL_CATALOG_ID),
       table_schemas_(),
       table_schema_idx_(0)
 {
@@ -67,6 +61,7 @@ int ObTenantShowTables::inner_open()
       }
     }
     if (OB_SUCC(ret)) {
+      catalog_id_ = OB_INTERNAL_CATALOG_ID;
       if (OB_UNLIKELY(!is_valid_id(database_id_))) {
         // FIXME(tingshuai.yts):暂时定为显示该错误信息，只有直接查询该虚拟表才可能出现
         ret = OB_NOT_SUPPORTED;
@@ -100,6 +95,7 @@ void ObTenantShowTables::reset()
   session_ = NULL;
   tenant_id_ = OB_INVALID_ID;
   database_id_ = OB_INVALID_ID;
+  catalog_id_ = OB_INTERNAL_CATALOG_ID;
   table_schemas_.reset();
   table_schema_idx_ = 0;
   ObVirtualTableIterator::reset();
@@ -206,8 +202,12 @@ int ObTenantShowTables::inner_get_next_row()
                 priv_info.reset();
                 if (OB_FAIL(session_->get_session_priv_info(priv_info))) {
                   SERVER_LOG(WARN, "fail to get session priv info", K(ret));
-                } else if (OB_FAIL(schema_guard_->check_table_show(priv_info, session_->get_enable_role_array(), database_name_,
-                                                            table_schema->get_table_name_str(), is_allow))) {
+                } else if (OB_FAIL(schema_guard_->check_table_show(priv_info,
+                                                                   session_->get_enable_role_array(),
+                                                                   catalog_id_,
+                                                                   database_name_,
+                                                                   table_schema->get_table_name_str(),
+                                                                   is_allow))) {
                   SERVER_LOG(WARN, "check show table priv failed", K(ret));
                 }
               }
@@ -244,11 +244,11 @@ int ObTenantShowTables::fetch_catalog_table_schemas_(const uint64_t tenant_id,
   } else if (OB_FAIL(session_->get_name_case_mode(case_mode))) {
     SERVER_LOG(WARN, "failed to get session variable", K(ret));
   } else {
-    uint64_t catalog_id = external_object->catalog_id;
+    catalog_id_ = external_object->catalog_id;
     database_name = external_object->database_name;
     ObCachedCatalogMetaGetter ob_catalog_meta_getter{*schema_guard_, *allocator_};
-    if (OB_FAIL(ob_catalog_meta_getter.list_table_names(tenant_id, catalog_id, database_name, case_mode, tbl_names))) {
-      SERVER_LOG(WARN, "list_table_names failed", K(ret), K(tenant_id), K(catalog_id), K(database_name));
+    if (OB_FAIL(ob_catalog_meta_getter.list_table_names(tenant_id, catalog_id_, database_name, case_mode, tbl_names))) {
+      SERVER_LOG(WARN, "list_table_names failed", K(ret), K(tenant_id), K(catalog_id_), K(database_name));
     }
   }
 

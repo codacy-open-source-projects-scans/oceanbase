@@ -419,17 +419,6 @@ def get_version(version_str):
   version = (major << 32) | (minor << 16) | (major_patch << 8) | minor_patch
   return version
 
-def get_max_zone_count(query_cur):
-  sql = "select count(*) from oceanbase.DBA_OB_ZONES"
-  try:
-    (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
-    if len(results) == 0:
-      return 0
-    return results[0][0]
-  except Exception as e:
-    logging.exception('fail to query DBA_OB_ZONES')
-    raise
-
 # 检查集群版本是否支持向量索引（>= 4.3.3.0）
 def check_cluster_version_for_vector_index(query_cur):
   try:
@@ -466,12 +455,63 @@ def has_vector_index(query_cur):
   (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
   return len(results) > 0
 
-def query_vector_index_info_all(query_cur):
+def query_vector_index_info_all(query_cur, valid_tablets):
   sql = """select /*+ query_timeout(120000000) */ tenant_id, snapshot_index_tablet_id, svr_ip, svr_port, sync_info, data_table_id, snapshot_index_table_id, ls_id
            from oceanbase.__all_virtual_vector_index_info
            order by tenant_id, snapshot_index_tablet_id, svr_ip, svr_port"""
   (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
-  return results
+  filtered_results = filter_valid_vector_index_tablets(results, valid_tablets)
+  filtered_all = len(results) > 0 and len(filtered_results) == 0
+  return filtered_results, filtered_all
+
+def query_valid_vector_index_tablets(query_cur):
+  sql = """select /*+ query_timeout(120000000) */ tenant_id, snapshot_index_table_id
+           from oceanbase.__all_virtual_vector_index_info
+           group by tenant_id, snapshot_index_table_id"""
+  (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
+  if len(results) == 0:
+    return set([])
+
+  BATCH_SIZE = 100
+  tenant_table_ids = {}
+  for row in results:
+    tenant_id = row[0]
+    snapshot_index_table_id = row[1]
+    if tenant_id not in tenant_table_ids:
+      tenant_table_ids[tenant_id] = set([])
+    tenant_table_ids[tenant_id].add(snapshot_index_table_id)
+
+  valid_tablets = set([])
+  for tenant_id, table_ids in tenant_table_ids.items():
+    table_id_list = list(table_ids)
+    for i in range(0, len(table_id_list), BATCH_SIZE):
+      batch_table_ids = table_id_list[i:i + BATCH_SIZE]
+      table_id_str = ",".join([str(table_id) for table_id in batch_table_ids])
+      sql = """select /*+ query_timeout(120000000) */ distinct tenant_id, table_id, tablet_id
+               from oceanbase.CDB_OB_TABLE_LOCATIONS
+               where tenant_id = {0}
+                 and table_id in ({1})""".format(tenant_id, table_id_str)
+      (desc, location_results) = query_cur.exec_query(sql, print_when_succ=False)
+      for location_row in location_results:
+        valid_tablets.add((location_row[0], location_row[1], location_row[2]))
+  logging.info("Got %d valid vector index tablets from CDB_OB_TABLE_LOCATIONS", len(valid_tablets))
+  return valid_tablets
+
+def filter_valid_vector_index_tablets(results, valid_tablets):
+  if len(results) == 0:
+    return []
+  if len(valid_tablets) == 0:
+    logging.info("No valid vector index tablets found in CDB_OB_TABLE_LOCATIONS")
+    return []
+  filtered_results = []
+  for row in results:
+    key = (row[0], row[6], row[1])
+    if key in valid_tablets:
+      filtered_results.append(row)
+  if len(filtered_results) != len(results):
+    logging.info("Filtered invalid vector index tablets, before=%d, after=%d",
+                 len(results), len(filtered_results))
+  return filtered_results
 
 # 解析 sync_info
 def parse_sync_info(sync_info_str):
@@ -507,7 +547,7 @@ def parse_sync_info(sync_info_str):
 
   return result
 
-# 获得指定租户的副本数
+# 获得指定租户的副本数（按租户和 LS 分组）
 def get_expected_replica_count(query_cur):
   sql = """select tenant_id, ls_id, count(*) as replica_count from oceanbase.CDB_OB_LS_LOCATIONS
            where ls_id != 1
@@ -521,19 +561,26 @@ def get_expected_replica_count(query_cur):
     logging.exception('fail to query CDB_OB_LS_LOCATIONS')
     raise
 
-  tenant_replica_count = {}
+  # 返回结构：{tenant_id: {ls_id: replica_count}}
+  tenant_ls_replica_count = {}
   for tenant_id, ls_id, count in results:
-    if tenant_id not in tenant_replica_count:
-      tenant_replica_count[tenant_id] = count
-    elif count != tenant_replica_count[tenant_id]:
-      logging.error("Inconsistent replica count: tenant_id=%d, ls_id=%s, expected=%d, actual=%d",
-                    tenant_id, ls_id, tenant_replica_count[tenant_id], count)
-      raise MyError("Inconsistent replica count: tenant_id={0}, ls_id={1}, expected={2}, actual={3}".format(
-        tenant_id, ls_id, tenant_replica_count[tenant_id], count))
+    if tenant_id not in tenant_ls_replica_count:
+      tenant_ls_replica_count[tenant_id] = {}
+    tenant_ls_replica_count[tenant_id][ls_id] = count
 
-  logging.info("Got expected replica count from CDB_OB_LS_LOCATIONS: %d tenants, details: %s",
-               len(tenant_replica_count), tenant_replica_count)
-  return tenant_replica_count
+  # 统计信息：每个租户有多少个不同的副本数配置
+  for tenant_id, ls_counts in tenant_ls_replica_count.items():
+    unique_counts = set(ls_counts.values())
+    if len(unique_counts) > 1:
+      logging.info("Tenant %d has multiple replica configurations: %d LS groups with different counts: %s",
+                   tenant_id, len(ls_counts), dict(ls_counts))
+    else:
+      logging.info("Tenant %d has uniform replica count: %d (across %d LS)",
+                   tenant_id, list(unique_counts)[0], len(ls_counts))
+
+  logging.info("Got expected replica count from CDB_OB_LS_LOCATIONS: %d tenants, %d total LS",
+               len(tenant_ls_replica_count), sum(len(ls_dict) for ls_dict in tenant_ls_replica_count.values()))
+  return tenant_ls_replica_count
 
 # 按租户和tablet分组，同时区分HNSW/HGRAPH和IVF索引
 def group_by_tenant_and_tablet(results):
@@ -569,7 +616,16 @@ def group_by_tenant_and_tablet(results):
 
   return grouped
 
-def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_replica_count, max_zone_count):
+def calc_vector_index_wait_seconds(replicas):
+  snap_cnts = [r['sync_info']['snap_cnt'] or 0 for r in replicas]
+  incr_cnts = [r['sync_info']['incr_cnt'] or 0 for r in replicas]
+  vbitmap_cnts = [r['sync_info']['vbitmap_cnt'] or 0 for r in replicas]
+  max_snap_cnt = max(snap_cnts) if snap_cnts else 0
+  max_incr_cnt = max(incr_cnts) if incr_cnts else 0
+  max_vbitmap_cnt = max(vbitmap_cnts) if vbitmap_cnts else 0
+  return max_incr_cnt / 250.0 + max_vbitmap_cnt / 250.0 + max_snap_cnt / 300000.0
+
+def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, tenant_ls_replica_count):
   # snap_cnt放宽条件
   SNAP_MAX_PER_TABLET = 100000       # 不一致快照索引单个tablet不超过10W向量
   SNAP_MAX_TABLETS = 30              # 不一致快照索引tablet数量低于30个
@@ -589,6 +645,7 @@ def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_re
   snap_diff_sum = 0
   incr_diff_tablets = 0
   incr_diff_sum = 0
+  max_wait_seconds = 0.0
 
   if tenant_id not in incr_history:
     incr_history[tenant_id] = {}
@@ -596,16 +653,37 @@ def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_re
   for tablet_id, tablet_info in tablets.items():
     replicas = tablet_info['replicas']
     data_table_id = tablet_info['data_table_id']
+    ls_id = tablet_info['ls_id']
     actual_count = len(replicas)
+    tablet_wait_seconds = calc_vector_index_wait_seconds(replicas)
 
-    # 检查1: 副本数是否匹配
-    if actual_count > max_zone_count or actual_count < expected_replica_count:
+    # 根据 tablet 所属的 LS ID 获取预期的副本数
+    expected_count = tenant_ls_replica_count.get(ls_id, 0)
+    if expected_count == 0:
+      logging.warn("No replica count found for tenant %d LS %d (tablet %d), will retry",
+                   tenant_id, ls_id, tablet_id)
+      max_wait_seconds = max(max_wait_seconds, tablet_wait_seconds)
+      return False, [{
+        'tablet_id': tablet_id,
+        'data_table_id': data_table_id,
+        'ls_id': ls_id,
+        'reason': 'ls_replica_count_not_found',
+        'expected': 'unknown',
+        'actual': actual_count,
+        'wait_seconds': tablet_wait_seconds
+      }], max_wait_seconds
+
+    # 检查 1: 副本数是否匹配
+    if actual_count != expected_count:
+      max_wait_seconds = max(max_wait_seconds, tablet_wait_seconds)
       pending_list.append({
         'tablet_id': tablet_id,
         'data_table_id': data_table_id,
+        'ls_id': ls_id,
         'reason': 'replica_count_mismatch',
-        'expected': expected_replica_count,
-        'actual': actual_count
+        'expected': expected_count,
+        'actual': actual_count,
+        'wait_seconds': tablet_wait_seconds
       })
       continue
 
@@ -623,20 +701,24 @@ def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_re
           # 继续检查 incr_cnt
         else:
           # 超过放宽条件限制, 不通过加入pending_list, 继续检查下一个tablet
+          max_wait_seconds = max(max_wait_seconds, tablet_wait_seconds)
           pending_list.append({
             'tablet_id': tablet_id,
             'data_table_id': data_table_id,
             'reason': 'snap_cnt_inconsistent',
-            'snap_cnts': snap_cnts
+            'snap_cnts': snap_cnts,
+            'wait_seconds': tablet_wait_seconds
           })
           continue
       else:
         # 不通过加入pending_list, 继续检查下一个tablet
+        max_wait_seconds = max(max_wait_seconds, tablet_wait_seconds)
         pending_list.append({
           'tablet_id': tablet_id,
           'data_table_id': data_table_id,
           'reason': 'snap_cnt_inconsistent',
-          'snap_cnts': snap_cnts
+          'snap_cnts': snap_cnts,
+          'wait_seconds': tablet_wait_seconds
         })
         continue
 
@@ -713,8 +795,8 @@ def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_re
                      tenant_id, tablet_id)
         loaded_tablets += 1
         continue
-
     #检查不通过加入pending_list，继续检查下一个tablet
+    max_wait_seconds = max(max_wait_seconds, tablet_wait_seconds)
     pending_list.append({
       'tablet_id': tablet_id,
       'data_table_id': data_table_id,
@@ -722,10 +804,11 @@ def check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_re
       'max_incr': max_incr,
       'min_incr': min_incr,
       'diff': incr_diff,
-      'history_rounds': len(history['diff_history'])
+      'history_rounds': len(history['diff_history']),
+      'wait_seconds': tablet_wait_seconds
     })
 
-  return loaded_tablets, pending_list
+  return loaded_tablets, pending_list, max_wait_seconds
 
 def format_tenant_status(tenant_stats, elapsed=None):
   lines = []
@@ -750,11 +833,29 @@ def format_tenant_status(tenant_stats, elapsed=None):
 
   return "\n".join(lines)
 
+def get_vector_index_loaded_count(tenant_stats):
+  loaded = 0
+  for stats in tenant_stats.values():
+    loaded += stats.get('loaded', 0)
+  return loaded
+
+def get_vector_index_status_signature(tenant_stats):
+  signatures = []
+  for tenant_id in sorted(tenant_stats.keys()):
+    stats = tenant_stats[tenant_id]
+    pending_list = stats.get('pending_list', [])
+    pending_signatures = []
+    for item in pending_list:
+      pending_signatures.append(str(sorted(item.items())))
+    signatures.append((tenant_id, stats.get('loaded', 0), stats.get('total', 0), sorted(pending_signatures)))
+  return str(signatures)
+
 
 # 检查向量索引是否加载完成
 # 按租户分组检查, 确保同一租户的所有tablet副本数一致，并比较同一tablet在不同副本上的sync_info是否一致
 # 轮询等待(10秒间隔)直到所有索引加载完成或超时
 def check_vector_index_loaded(query_cur, zone, timeout):
+  STABLE_SECONDS = 60
   need_check = 0
   if has_vector_index(query_cur):
     need_check = 1
@@ -770,11 +871,21 @@ def check_vector_index_loaded(query_cur, zone, timeout):
     check_done = 0
     incr_history = {}
     hnsw_tenant_stats = {}
+    last_status_signature = ''
+    last_loaded_count = -1
+    last_progress_time = start_time
+    stable_wait_start_time = None
+    raw_max_wait_seconds = 0.0
+    max_wait_seconds = 0.0
+    valid_tablets = query_valid_vector_index_tablets(query_cur)
 
     while times >= 0 and check_done == 0:
-      results = query_vector_index_info_all(query_cur)
+      results, filtered_all = query_vector_index_info_all(query_cur, valid_tablets)
 
       if len(results) == 0:
+        if filtered_all:
+          logging.info("No valid vector index tablets after filtering, skip vector index loading check")
+          return
         logging.warn("Query returned empty, may be query unstable, will retry")
       else:
         grouped = group_by_tenant_and_tablet(results)
@@ -783,45 +894,76 @@ def check_vector_index_loaded(query_cur, zone, timeout):
           logging.warn("Query returned empty, may be query unstable, will retry")
         else:
           tenant_expected_replica_count = get_expected_replica_count(query_cur)
-          max_zone_count = get_max_zone_count(query_cur)
-          logging.info("Zone count: %d", max_zone_count)
 
-          result, tenant_stats = check_vector_index_loaded_one_round(grouped, tenant_expected_replica_count, incr_history, max_zone_count, max_times - times, max_times)
+          result, tenant_stats = check_vector_index_loaded_one_round(grouped, tenant_expected_replica_count, incr_history, max_times - times, max_times)
+          hnsw_tenant_stats = tenant_stats
           if result == 'success':
             check_done = 1
           else:
-            hnsw_tenant_stats = tenant_stats
+            current_status_signature = get_vector_index_status_signature(tenant_stats)
+            current_loaded_count = get_vector_index_loaded_count(tenant_stats)
+            raw_max_wait_seconds = max([stats.get('max_wait_seconds', 0.0) for stats in tenant_stats.values()] or [0.0])
+            max_wait_seconds = raw_max_wait_seconds
+            if current_status_signature != last_status_signature or current_loaded_count > last_loaded_count:
+              last_status_signature = current_status_signature
+              last_loaded_count = current_loaded_count
+              last_progress_time = time.time()
+              stable_wait_start_time = None
+            elif stable_wait_start_time is None and time.time() - last_progress_time >= STABLE_SECONDS:
+              stable_wait_start_time = time.time()
+              logging.info("Vector index loading status stable for %d seconds, start max wait timer", STABLE_SECONDS)
+            if stable_wait_start_time is not None and max_wait_seconds > wait_timeout:
+              error_msg = format_tenant_status(hnsw_tenant_stats, time.time() - start_time)
+              logging.warn(error_msg)
+              raise MyError("vector index load wait seconds {0:.2f}s exceeds wait timeout {1}s, block upgrade, need retry. {2}".format(
+                max_wait_seconds, wait_timeout, error_msg))
 
       times -= 1
-      if times == -1 and check_done == 0:
-        elapsed = time.time() - start_time
+      elapsed = time.time() - start_time
+      if check_done == 0 and stable_wait_start_time is not None \
+          and max_wait_seconds > 0 and max_wait_seconds <= wait_timeout and elapsed >= max_wait_seconds:
         error_msg = format_tenant_status(hnsw_tenant_stats, elapsed)
         logging.warn(error_msg)
-        raise MyError(error_msg)
+        logging.warn("skip vector index loaded check after stable max wait seconds %.2f", max_wait_seconds)
+        return
+      if times == -1 and check_done == 0:
+        error_msg = format_tenant_status(hnsw_tenant_stats, elapsed)
+        logging.warn(error_msg)
+        raise MyError("vector index loaded check reached wait timeout {0}s before load wait seconds {1:.2f}s, block upgrade, need retry. {2}".format(
+          wait_timeout, raw_max_wait_seconds, error_msg))
 
       if check_done == 0:
         time.sleep(10)
 
-def check_vector_index_loaded_one_round(grouped, tenant_expected_replica_count, incr_history, max_zone_count, current_round, max_round):
+def check_vector_index_loaded_one_round(grouped, tenant_expected_replica_count, incr_history, current_round, max_round):
   # 收集HNSW索引的tablet信息
   # 检查HNSW/HGRAPH索引
   all_loaded = 1
   hnsw_tenant_stats = {}
 
   for tenant_id, tablets in grouped['hnsw'].items():
-    expected_count = tenant_expected_replica_count.get(tenant_id, 0)
-    if expected_count == 0:
+    tenant_ls_counts = tenant_expected_replica_count.get(tenant_id, {})
+    if not tenant_ls_counts:
       logging.warn("No replica count found for tenant %d, will retry", tenant_id)
       return 'retry', {}
 
-    loaded, pending_list = check_tenant_hnsw_index_loaded(tenant_id, tablets, incr_history, expected_count, max_zone_count)
+    loaded, pending_list, max_wait_seconds = check_tenant_hnsw_index_loaded(
+        tenant_id, tablets, incr_history, tenant_ls_counts)
+
+    # 统计该租户的副本数分布（用于日志）
+    unique_counts = set(tenant_ls_counts.values())
+    if len(unique_counts) > 1:
+      expected_count_str = "variable({})".format(dict(tenant_ls_counts))
+    else:
+      expected_count_str = str(list(unique_counts)[0])
 
     hnsw_tenant_stats[tenant_id] = {
       'loaded': loaded,
       'total': len(tablets),
       'pending': len(pending_list),
       'pending_list': pending_list,
-      'expected_replica_count': expected_count
+      'expected_replica_count': expected_count_str,
+      'max_wait_seconds': max_wait_seconds
     }
 
     if len(pending_list) > 0:
@@ -847,7 +989,8 @@ def check_vector_index_loaded_one_round(grouped, tenant_expected_replica_count, 
 # ====== 向量索引加载检查相关函数结束 ======
 
 # 开始健康检查
-def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, need_check_major_status, zone = ''):
+def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout,
+             need_check_major_status, zone = '', need_check_vector_loaded = True):
   try:
     conn = mysql.connector.connect(user = my_user,
                                    password = my_passwd,
@@ -867,7 +1010,8 @@ def do_check(my_host, my_port, my_user, my_passwd, upgrade_params, timeout, need
       check_server_version_by_zone(query_cur, zone)
       if True == need_check_major_status:
         check_major_merge(query_cur, timeout)
-      check_vector_index_loaded(query_cur, zone, timeout)
+      if True == need_check_vector_loaded:
+        check_vector_index_loaded(query_cur, zone, timeout)
     except Exception as e:
       logging.exception('run error')
       raise

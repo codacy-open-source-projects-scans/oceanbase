@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -159,6 +152,10 @@ bool ObLinkedMacroInfoWriteParam::is_valid() const
       is_valid = tablet_id_.is_valid() && start_macro_seq_ >= 0;
       break;
     }
+    case ObLinkedMacroBlockWriteType::SHARED_INC_MAJOR_MACRO_INFO : {
+      is_valid = tablet_id_.is_valid() && start_macro_seq_ >= 0 && reorganization_scn_ >= 0;
+      break;
+    }
     case ObLinkedMacroBlockWriteType::SHARED_INC_MACRO_INFO : {
       is_valid = ls_id_.is_valid() && tablet_id_.is_valid() && start_macro_seq_ >= 0 && reorganization_scn_ >= 0;
       break;
@@ -184,8 +181,15 @@ int ObLinkedMacroInfoWriteParam::build_linked_marco_info_param(
     tablet_id_       = persist_param.tablet_id_;
     start_macro_seq_ = cur_macro_seq;
     write_callback_  = persist_param.ddl_redo_callback_;
-  } else if (persist_param.is_inc_shared_object()) {
+  }
 #ifdef OB_BUILD_SHARED_STORAGE
+  else if (persist_param.is_inc_major_shared_object()) {
+    type_               = ObLinkedMacroBlockWriteType::SHARED_INC_MAJOR_MACRO_INFO;
+    tablet_id_          = persist_param.tablet_id_;
+    start_macro_seq_    = cur_macro_seq;
+    reorganization_scn_ = persist_param.reorganization_scn_;
+    write_callback_     = persist_param.ddl_redo_callback_;
+  } else if (persist_param.is_inc_shared_object()) {
     type_               = ObLinkedMacroBlockWriteType::SHARED_INC_MACRO_INFO;
     ls_id_              = persist_param.ls_id_;
     tablet_id_          = persist_param.tablet_id_;
@@ -193,8 +197,9 @@ int ObLinkedMacroInfoWriteParam::build_linked_marco_info_param(
     start_macro_seq_    = cur_macro_seq;
     reorganization_scn_ = persist_param.reorganization_scn_;
     write_callback_     = persist_param.ddl_redo_callback_;
+  }
 #endif
-  } else { // private
+  else { // private
     type_                = ObLinkedMacroBlockWriteType::PRIV_MACRO_INFO;
     tablet_id_           = persist_param.tablet_id_;
     tablet_private_transfer_epoch_ = persist_param.private_transfer_epoch_;

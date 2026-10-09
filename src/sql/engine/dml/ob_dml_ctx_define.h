@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef DEV_SRC_SQL_ENGINE_DML_OB_DML_CTX_DEFINE_H_
@@ -326,7 +319,8 @@ public:
       uint64_t is_ref_old_rowid_ : 1;
       uint64_t is_ref_new_rowid_ : 1;
       uint64_t is_prune_columns_ : 1;
-      uint64_t reserved_: 59;
+      uint64_t is_precise_batch_exec_ : 1;  // set at CG time from _enable_trigger_precise_batch_exec
+      uint64_t reserved_: 58;
     };
   };
   bool inline is_ref_old_row() const { return is_ref_old_row_ || !is_prune_columns_; }
@@ -473,6 +467,7 @@ struct ColumnContent
     is_nullable_(false),
     is_implicit_(false),
     is_predicate_column_(false),
+    is_key_column_(false),
     srs_id_(UINT64_MAX),
     column_name_()
   {}
@@ -482,6 +477,7 @@ struct ColumnContent
                N_NULLABLE, is_nullable_,
                "implicit", is_implicit_,
                K_(is_predicate_column),
+               K_(is_key_column),
                K_(srs_id),
                N_COLUMN_NAME, column_name_);
 
@@ -490,6 +486,10 @@ struct ColumnContent
   bool is_nullable_;
   bool is_implicit_;
   bool is_predicate_column_;
+  // the column is a rowkey / partition key / unique index key,
+  // consumed by check_update_key_column_changed to decide if the UPDATE
+  // actually changed a key value (used to gate update_split_trace_id).
+  bool is_key_column_;
   union { // only for gis
     struct {
       uint32_t geo_type_ : 5;
@@ -540,7 +540,8 @@ public:
                        K_(has_instead_of_trigger),
                        KPC_(trans_info_expr),
                        K_(is_vec_hnsw_index_vid_opt),
-                       K_(is_table_with_clustering_key));
+                       K_(is_table_with_clustering_key),
+                       K_(is_compaction_ttl_table));
 
   ObDMLOpType dml_type_;
   ExprFixedArray check_cst_exprs_;
@@ -566,6 +567,7 @@ public:
   ObExpr *trans_info_expr_;
   bool is_table_with_clustering_key_;
   bool is_vec_hnsw_index_vid_opt_;
+  bool is_compaction_ttl_table_;
 protected:
   ObDMLBaseCtDef(common::ObIAllocator &alloc,
                  ObDASDMLBaseCtDef &das_base_ctdef,
@@ -586,7 +588,8 @@ protected:
       has_instead_of_trigger_(false),
       trans_info_expr_(nullptr),
       is_table_with_clustering_key_(false),
-      is_vec_hnsw_index_vid_opt_(false)
+      is_vec_hnsw_index_vid_opt_(false),
+      is_compaction_ttl_table_(false)
   { }
 };
 
@@ -704,6 +707,7 @@ public:
   ObUpdCtDef(common::ObIAllocator &alloc)
     : ObDMLBaseCtDef(alloc, dupd_ctdef_, DAS_OP_TABLE_UPDATE),
       dupd_ctdef_(alloc),
+      enable_update_split_trace_id_(false),
       need_check_filter_null_(false),
       need_check_table_cycle_(false),
       distinct_algo_(T_DISTINCT_NONE),
@@ -720,6 +724,7 @@ public:
   { }
   INHERIT_TO_STRING_KV("ObDMLBaseCtDef", ObDMLBaseCtDef,
                        K_(dupd_ctdef),
+                       K_(enable_update_split_trace_id),
                        K_(need_check_filter_null),
                        K_(need_check_table_cycle),
                        K_(distinct_algo),
@@ -734,6 +739,7 @@ public:
                        K_(related_del_ctdefs),
                        K_(related_ins_ctdefs));
   ObDASUpdCtDef dupd_ctdef_;
+  bool enable_update_split_trace_id_;
   bool need_check_filter_null_;
   // need_check_table_cycle_ is true if the fk cascade update may cause a cycle reference.
   bool need_check_table_cycle_;
@@ -771,7 +777,8 @@ public:
       related_upd_rtdefs_(),
       related_del_rtdefs_(),
       related_ins_rtdefs_(),
-      table_rowkey_()
+      table_rowkey_(),
+      batch_rowkey_()
   { }
   virtual ~ObUpdRtDef()
   {
@@ -792,6 +799,7 @@ public:
       dlock_rtdef_ = nullptr;
     }
     table_rowkey_.reset();
+    batch_rowkey_.reset();
   }
   INHERIT_TO_STRING_KV("base_rtdef", ObDMLBaseRtDef,
                        K_(dupd_rtdef),
@@ -817,6 +825,7 @@ public:
   DASDelRtDefArray related_del_rtdefs_;
   DASInsRtDefArray related_ins_rtdefs_;
   ObRowkey table_rowkey_;
+  ObRowkey batch_rowkey_;
 };
 
 struct ObMultiLockCtDef

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_INDEX_MERGE_ITER_H_
@@ -95,6 +88,7 @@ public:
         relevances_(nullptr)
     {}
     int init(common::ObIAllocator &allocator,
+             common::ObIAllocator &row_store_allocator,
              const common::ObIArray<ObExpr*> *exprs,
              ObEvalCtx *eval_ctx,
              int64_t max_size,
@@ -247,6 +241,7 @@ protected:
                       ObTableScanParam &scan_param) const;
 private:
   int prepare_scan_ranges(ObTableScanParam &scan_param, const ObDASScanRtDef *rtdef) const;
+  int transform_physical_rowid_ranges(ObTableScanParam &scan_param, const ObDASScanRtDef *rtdef) const;
   int check_disable_bitmap();
   int check_rowkey_is_uint64();
   int init_mock_skip(common::ObIAllocator &alloc, int64_t max_size);

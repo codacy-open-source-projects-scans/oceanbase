@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_HINT_
@@ -253,16 +246,31 @@ struct ObOptParamHint
     DEF(USE_DISTINCT_WITH_EXPANSION,)               \
     DEF(ENABLE_FAST_REFRESH_WITH_CUR_TIME,)         \
     DEF(ENABLE_WINDOW_FUNCTION_STREAMING_PROCESS,)  \
+    DEF(ENABLE_FAST_REFRESH_WITHOUT_ONLY_FULL_GROUP_BY,)         \
+    DEF(ENABLE_FAST_REFRESH_SIMPLIFY_AGGR_DEP,)     \
     DEF(DISABLE_SHARED_EXPR_EXTRACTION,)            \
     DEF(AP_QUERY_ROUTE_POLICY,)                     \
     DEF(ENABLE_MERGE_INTO,)                         \
     DEF(JOIN_ORDER_ENUM_THRESHOLD,)                 \
     DEF(OPTIMIZER_MAX_PERMUTATIONS,)                \
     DEF(IDP_STEP_REDUCTION_THRESHOLD,)              \
+    DEF(_OB_JAVA_ODPS_DATA_TRANSFER_MODE,)          \
+    DEF(_USE_ODPS_JNI_CONNECTOR,)                   \
+    DEF(ODPS_JDK_STORAGE_BATCH_SIZE,)               \
+    DEF(CACHE_AWARE_ROW_NUM,)                       \
+    DEF(FORCE_EQUAL_SEMI_TO_INNER,)                 \
+    DEF(FORCE_SUBQUERY_UNNEST,)                     \
+    DEF(UDF_COST_FACTOR,)                      \
+    DEF(UDF_SELECTIVITY,)                           \
+    DEF(ENABLE_PLAN_EXPIRATION_BY_EXEC_FEEDBACK,)                    \
+    DEF(ENABLE_SEPARATE_SPF_FOR_SELECT_ITEMS,)         \
+    DEF(ENABLE_PARTITION_SORT,)                   \
+    DEF(ENABLE_ADAPTIVE_AUTO_DOP,)                \
 
 
   DECLARE_ENUM(OptParamType, opt_param, OPT_PARAM_TYPE_DEF, static);
 
+  static bool varchar_to_double(const ObObj &val, double &dval);
   static bool is_param_val_valid(const OptParamType param_type, const ObObj &val);
   int merge_opt_param_hint(const ObOptParamHint &other);
   int add_opt_param_hint(const ObString &param_name, const ObObj &val)
@@ -278,6 +286,7 @@ struct ObOptParamHint
   int get_integer_opt_param(const OptParamType param_type, int64_t &val, bool &is_exists) const;
   int get_integer_opt_param(const OptParamType param_type, int64_t &val) const;
   int get_integer_opt_param(const OptParamType param_type, uint64_t &val) const;
+  int get_double_opt_param(const OptParamType param_type, double &val) const;
   int get_opt_param_runtime_filter_type(int64_t &rf_type) const;
   int get_hash_rollup_param(ObObj &val, bool &has_opt_param) const;
   int get_enum_opt_param(const OptParamType param_type, int64_t &val) const;
@@ -480,6 +489,7 @@ struct ObGlobalHint {
 #define COMPAT_VERSION_4_2_5_BP5  (oceanbase::common::cal_version(4, 2, 5, 5))
 #define COMPAT_VERSION_4_2_5_BP6  (oceanbase::common::cal_version(4, 2, 5, 6))
 #define COMPAT_VERSION_4_2_5_BP7  (oceanbase::common::cal_version(4, 2, 5, 7))
+#define COMPAT_VERSION_4_2_5_BP8  (oceanbase::common::cal_version(4, 2, 5, 8))
 #define COMPAT_VERSION_4_3_0      (oceanbase::common::cal_version(4, 3, 0, 0))
 #define COMPAT_VERSION_4_3_1      (oceanbase::common::cal_version(4, 3, 1, 0))
 #define COMPAT_VERSION_4_3_2      (oceanbase::common::cal_version(4, 3, 2, 0))
@@ -491,16 +501,19 @@ struct ObGlobalHint {
 #define COMPAT_VERSION_4_3_5_BP3  (oceanbase::common::cal_version(4, 3, 5, 3))
 #define COMPAT_VERSION_4_3_5_BP4  (oceanbase::common::cal_version(4, 3, 5, 4))
 #define COMPAT_VERSION_4_3_5_BP5  (oceanbase::common::cal_version(4, 3, 5, 5))
+#define COMPAT_VERSION_4_3_5_BP6  (oceanbase::common::cal_version(4, 3, 5, 6))
 #define COMPAT_VERSION_4_4_0      (oceanbase::common::cal_version(4, 4, 0, 0))
 #define COMPAT_VERSION_4_4_1      (oceanbase::common::cal_version(4, 4, 1, 0))
 #define COMPAT_VERSION_4_4_2      (oceanbase::common::cal_version(4, 4, 2, 0))
 #define COMPAT_VERSION_4_4_2_BP1  (oceanbase::common::cal_version(4, 4, 2, 1))
+#define COMPAT_VERSION_4_4_2_BP2  (oceanbase::common::cal_version(4, 4, 2, 2))
 #define COMPAT_VERSION_4_5_0      (oceanbase::common::cal_version(4, 5, 0, 0))
 #define COMPAT_VERSION_4_5_1      (oceanbase::common::cal_version(4, 5, 1, 0))
 #define COMPAT_VERSION_4_6_0      (oceanbase::common::cal_version(4, 6, 0, 0))
-#define LASTED_COMPAT_VERSION     COMPAT_VERSION_4_6_0
+#define COMPAT_VERSION_4_6_1      (oceanbase::common::cal_version(4, 6, 1, 0))
+#define LATEST_COMPAT_VERSION     COMPAT_VERSION_4_6_1
   static bool is_valid_opt_features_version(uint64_t version)
-  { return COMPAT_VERSION_4_0 <= version && (LASTED_COMPAT_VERSION >= version || CLUSTER_CURRENT_VERSION >= version); }
+  { return COMPAT_VERSION_4_0 <= version && (LATEST_COMPAT_VERSION >= version || CLUSTER_CURRENT_VERSION >= version); }
 
   static constexpr common::ObConsistencyLevel UNSET_CONSISTENCY = common::INVALID_CONSISTENCY;
   static constexpr int64_t UNSET_QUERY_TIMEOUT = -1;
@@ -512,6 +525,7 @@ struct ObGlobalHint {
   static constexpr int64_t SET_ENABLE_MANUAL_DOP = -2;
   static constexpr int64_t UNSET_DYNAMIC_SAMPLING = -1;
   static constexpr int64_t UNSET_PX_NODE_COUNT = -1;
+  static constexpr int64_t UNSET_MAX_EXECUTION_TIME = -1;
 
   int merge_global_hint(const ObGlobalHint &other);
   int merge_dop_hint(uint64_t dfo, uint64_t dop);
@@ -519,6 +533,8 @@ struct ObGlobalHint {
   int merge_alloc_op_hints(const ObIArray<ObAllocOpHint> &alloc_op_hints);
   void merge_query_timeout_hint(int64_t hint_time);
   void reset_query_timeout_hint() { query_timeout_ = -1; }
+  void merge_max_execution_time_hint(int64_t hint_time);
+  void reset_max_execution_time_hint() { max_execution_time_ = UNSET_MAX_EXECUTION_TIME; }
   void merge_tm_sessid_tx_id(int64_t tx_id, uint32_t tm_sessid);
   void merge_dblink_info_tx_id(int64_t tx_id);
   void merge_dblink_info_tm_sessid(uint32_t tm_sessid);
@@ -634,7 +650,8 @@ struct ObGlobalHint {
                K_(dblink_hints),
                K_(px_node_hint),
                K_(disable_op_rich_format_hint),
-               K_(trigger_hint));
+               K_(trigger_hint),
+               K_(max_execution_time));
 
   int64_t frozen_version_;
   int64_t topk_precision_;
@@ -671,6 +688,7 @@ struct ObGlobalHint {
   ObPxNodeHint px_node_hint_;
   DisableOpRichFormatHint disable_op_rich_format_hint_;
   TriggerHint trigger_hint_;
+  int64_t max_execution_time_;
 private:
   bool has_hint_exclude_concurrent_;  // not hint, used to mark weather exists hint exclude max_concurrent
 };
@@ -680,6 +698,7 @@ struct ObPhyPlanHint
 {
   OB_UNIS_VERSION(1);
 public:
+  static const int64_t LOOKUP_BATCH_RPC_FLAG_DEFAULT = -1;
   ObPhyPlanHint()
       : read_consistency_(common::INVALID_CONSISTENCY),
         query_timeout_(-1),
@@ -688,7 +707,9 @@ public:
         log_level_(),
         parallel_(-1),
         monitor_(false),
-        table_lock_mode_(0)
+        table_lock_mode_(0),
+        max_execution_time_(ObGlobalHint::UNSET_MAX_EXECUTION_TIME),
+        lookup_batch_rpc_flag_(LOOKUP_BATCH_RPC_FLAG_DEFAULT)
   {}
 
   ObPhyPlanHint(const ObGlobalHint &global_hint)
@@ -699,7 +720,9 @@ public:
         log_level_(global_hint.log_level_),
         parallel_(global_hint.parallel_),
         monitor_(global_hint.monitor_),
-        table_lock_mode_(global_hint.table_lock_mode_)
+        table_lock_mode_(global_hint.table_lock_mode_),
+        max_execution_time_(global_hint.max_execution_time_),
+        lookup_batch_rpc_flag_(LOOKUP_BATCH_RPC_FLAG_DEFAULT)
   {}
 
   int deep_copy(const ObPhyPlanHint &other, common::ObIAllocator &allocator);
@@ -713,7 +736,9 @@ public:
                K_(log_level),
                K_(parallel),
                K_(monitor),
-               K_(table_lock_mode));
+               K_(table_lock_mode),
+               K_(max_execution_time),
+               K_(lookup_batch_rpc_flag));
 
   common::ObConsistencyLevel read_consistency_;
   int64_t query_timeout_;
@@ -724,6 +749,7 @@ public:
   bool monitor_;
   int64_t table_lock_mode_;
   int64_t max_execution_time_;
+  int64_t lookup_batch_rpc_flag_;
 };
 
 struct ObLeadingTable {
@@ -862,6 +888,7 @@ public:
   bool is_join_filter_hint() const { return HINT_JOIN_FILTER == hint_class_; }
   bool is_project_prune_hint() const { return T_PROJECT_PRUNE == hint_type_; }
   bool is_table_dynamic_sampling_hint() const { return T_TABLE_DYNAMIC_SAMPLING == hint_type_; }
+  bool is_table_cache_hint() const { return T_CACHE_HINT == hint_type_ || T_NOCACHE_HINT == hint_type_; }
   bool is_pq_subquery_hint() const { return T_PQ_SUBQUERY == hint_type_; }
   bool is_decorrelate_hint() const { return T_DECORRELATE == hint_type_; }
   bool is_coalesce_aggr_hint() const {return HINT_COALESCE_AGGR == hint_class_; }
@@ -1232,6 +1259,7 @@ public:
   virtual ~ObIndexHint() {}
 
   static const ObString PRIMARY_KEY;
+  static const ObString KEY;  // INDEX(table key) on heap table: main table with range
 
   virtual int get_all_table_in_hint(ObIArray<ObTableInHint*> &all_tables) override { return all_tables.push_back(&table_); }
   virtual int print_hint_desc(PlanText &plan_text) const override;
@@ -1259,6 +1287,21 @@ public:
   {
     return T_INDEX_DESC_HINT == get_hint_type() ||
            T_INDEX_SS_DESC_HINT == get_hint_type();
+  }
+  // On a heap-organized table, INDEX(table key) and INDEX(table primary) both
+  // select the main table. The hint name "key" is resolved identically to "primary"
+  // for heap-organized tables, but the two names carry different semantics:
+  //  - "primary": scan through the hidden primary key index (same as IOT)
+  //  - "key":     scan the main table directly using its clustering key order
+  // This method checks whether the hint's index_name_ matches the "key" literal.
+  bool is_heap_org_key_hint() const
+  {
+    return (T_INDEX_HINT == get_hint_type() ||
+            T_INDEX_DESC_HINT == get_hint_type() ||
+            T_INDEX_SS_HINT == get_hint_type() ||
+            T_INDEX_SS_DESC_HINT == get_hint_type() ||
+            T_NO_INDEX_HINT == get_hint_type()) &&
+           0 == index_name_.case_compare(KEY);
   }
   bool is_unordered_hint() const
   {
@@ -1605,6 +1648,27 @@ private:
   ObTableInHint table_;
   int64_t dynamic_sampling_;
   int64_t sample_block_cnt_;
+};
+
+class ObCacheHint : public ObOptHint
+{
+public:
+  ObCacheHint(ObItemType hint_type = T_CACHE_HINT)
+    : ObOptHint(hint_type)
+  {
+    set_hint_class(HINT_OPTIMIZE);
+  }
+  int assign(const ObCacheHint &other);
+  virtual ~ObCacheHint() {}
+  virtual int get_all_table_in_hint(ObIArray<ObTableInHint*> &all_tables) override { return all_tables.push_back(&table_); }
+  virtual int print_hint_desc(PlanText &plan_text) const override;
+  ObTableInHint &get_table() { return table_; }
+  const ObTableInHint &get_table() const { return table_; }
+
+  INHERIT_TO_STRING_KV("ObHint", ObHint, K_(table));
+
+private:
+  ObTableInHint table_;
 };
 
 }

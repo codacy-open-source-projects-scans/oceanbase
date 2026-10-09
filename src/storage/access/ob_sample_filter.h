@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_SAMPLE_FILTER_
@@ -184,7 +177,7 @@ public:
   ObSampleFilterExecutor(
       common::ObIAllocator &alloc,
       ObPushdownSampleFilterNode &filter,
-      sql::ObPushdownOperator &op,
+      sql::ObPushdownOperator *op,
       sql::PushdownExecutorType type);
   virtual ~ObSampleFilterExecutor();
   virtual void reset();
@@ -222,11 +215,6 @@ public:
   {
     return filter_.get_col_ids();
   }
-  OB_INLINE sql::ObPushdownOperator & get_op() override
-  {
-    OB_ASSERT(false); // op_ maybe null, can not get_op in sample filter
-    return op_;
-  }
   OB_INLINE int init_evaluated_datums(bool &is_valid) override
   {
     is_valid = true;
@@ -250,7 +238,7 @@ public:
   ObTrivalSampleFilterExecutor(
       common::ObIAllocator &alloc,
       ObPushdownSampleFilterNode &filter,
-      sql::ObPushdownOperator &op);
+      sql::ObPushdownOperator *op);
   virtual ~ObTrivalSampleFilterExecutor();
   void reset() override;
   void reuse() override;
@@ -310,7 +298,7 @@ public:
   ObHybridSampleFilterExecutor(
       common::ObIAllocator &alloc,
       ObPushdownSampleFilterNode &filter,
-      sql::ObPushdownOperator &op);
+      sql::ObPushdownOperator *op);
   virtual ~ObHybridSampleFilterExecutor();
   void reset() override;
   void reuse() override;

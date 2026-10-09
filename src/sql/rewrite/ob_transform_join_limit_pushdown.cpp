@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -256,7 +249,6 @@ int ObTransformJoinLimitPushDown::check_lazy_join_is_unique(ObIArray<ObTransform
 {
   int ret = OB_SUCCESS;
   is_unique_join = true;
-  bool is_simply_join = false;
   ObSqlBitSet<> right_table_ids;
   ObSEArray<ObRawExpr*, 4> join_keys;
   if (OB_ISNULL(stmt) || OB_ISNULL(ctx_)) {
@@ -274,11 +266,8 @@ int ObTransformJoinLimitPushDown::check_lazy_join_is_unique(ObIArray<ObTransform
       LOG_WARN("failed to get table rel ids", K(ret));
     } else if (OB_FAIL(ObTransformUtils::get_join_keys(lazy_join.at(i).join_conditions_, 
                                                       right_table_ids, 
-                                                      join_keys, 
-                                                      is_simply_join))) {
+                                                      join_keys))) {
       LOG_WARN("failed to get right table join keys", K(ret));
-    } else if (!is_simply_join) {
-      is_unique_join = false;
     } else if (OB_FAIL(ObTransformUtils::check_exprs_unique(*stmt, 
                                                             lazy_join.at(i).right_table_, 
                                                             join_keys,

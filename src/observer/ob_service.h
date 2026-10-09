@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_SERVICE_H_
@@ -20,6 +13,7 @@
 #include "observer/ob_heartbeat.h"
 #include "observer/ob_server_schema_updater.h"
 #include "observer/ob_rpc_processor_simple.h"
+#include "observer/ob_server_empty_checker.h"
 #include "observer/ob_uniq_task_queue.h"
 #include "observer/report/ob_i_meta_report.h"
 #include "observer/report/ob_ls_table_updater.h"
@@ -169,6 +163,7 @@ public:
   int get_ls_sync_scn(const obrpc::ObGetLSSyncScnArg &arg,
                            obrpc::ObGetLSSyncScnRes &result);
   int force_set_ls_as_single_replica(const obrpc::ObForceSetLSAsSingleReplicaArg &arg);
+  int force_remove_ls_replica(const obrpc::ObForceRemoveLSReplicaArg &arg);
   int force_set_server_list(const obrpc::ObForceSetServerListArg &arg, obrpc::ObForceSetServerListResult &result);
   int refresh_tenant_info(const obrpc::ObRefreshTenantInfoArg &arg,
                           obrpc::ObRefreshTenantInfoRes &result);
@@ -312,8 +307,12 @@ public:
       obrpc::ObCheckStorageOperationStatusResult &result);
   int ob_admin_unlock_member_list(
       const obrpc::ObAdminUnlockMemberListOpArg &arg);
-  int check_server_empty(bool &server_empty);
   int change_external_storage_dest(obrpc::ObAdminSetConfigArg &arg);
+  int ob_admin_clear_transfer_meta_info(
+      const obrpc::ObAdminClearTransferMetaInfoOpArg &arg);
+
+// injected from ob_srv_mem_info.h
+#include "observer/ob_srv_mem_info.h"
 
 private:
   int inner_fill_tablet_info_(

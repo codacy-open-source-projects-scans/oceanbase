@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -193,7 +186,7 @@ int ObDDLIncRedoLogWriter::write_inc_start_log(
   } else if (OB_FAIL(local_write_inc_start_log(log, tx_desc, start_scn))) {
     LOG_WARN("local write inc start log fail", K(ret));
   } else {
-    FLOG_INFO("success to write inc start log", K(log));
+    FLOG_INFO("success to write inc start log", K(log), K(start_scn));
   }
   return ret;
 }
@@ -228,6 +221,7 @@ int ObDDLIncRedoLogWriter::write_inc_commit_log(
     const ObTabletID &lob_meta_tablet_id,
     const int64_t snapshot_version,
     const uint64_t data_format_version,
+    const share::SCN &start_scn,
     ObTxDesc *tx_desc,
     const ObSSTable *inc_major,
     const ObSSTable *lob_inc_major,
@@ -253,7 +247,7 @@ int ObDDLIncRedoLogWriter::write_inc_commit_log(
           direct_load_type_, trans_id_, seq_no_, snapshot_version, data_format_version))) {
       LOG_WARN("fail to init log_basic", K(ret), K_(tablet_id), K(lob_meta_tablet_id),
           K_(trans_id), K_(seq_no), K(snapshot_version), K(data_format_version));
-    } else if (OB_FAIL(log.init(log_basic, false/*is_rollback*/))) {
+    } else if (OB_FAIL(log.init(log_basic, false/*is_rollback*/, start_scn))) {
       LOG_WARN("fail to init DDLIncCommitLog", K(ret), K(log_basic));
     }
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -276,7 +270,7 @@ int ObDDLIncRedoLogWriter::write_inc_commit_log(
     }
   }
   if (OB_SUCC(ret) && remote_write_) {
-    if (OB_FAIL(retry_remote_write_inc_commit_log(lob_meta_tablet_id, snapshot_version, data_format_version, tx_desc, inc_major, lob_inc_major, commit_scn))) {
+    if (OB_FAIL(retry_remote_write_inc_commit_log(lob_meta_tablet_id, snapshot_version, data_format_version, start_scn, tx_desc, inc_major, lob_inc_major, commit_scn))) {
       LOG_WARN("remote write inc commit log fail", K(ret), K(tablet_id_),
           K(lob_meta_tablet_id), K(snapshot_version), K(data_format_version));
     }
@@ -376,6 +370,7 @@ int ObDDLIncRedoLogWriter::write_inc_commit_log_with_retry(
     const ObTabletID &lob_meta_tablet_id,
     const int64_t snapshot_version,
     const uint64_t data_format_version,
+    const share::SCN &start_scn,
     ObTxDesc *tx_desc,
     const ObSSTable *inc_major,
     const ObSSTable *lob_inc_major,
@@ -392,7 +387,7 @@ int ObDDLIncRedoLogWriter::write_inc_commit_log_with_retry(
       ret = OB_TIMEOUT;
       LOG_WARN("already timeout", K(ret), K(start_ts));
     } else if (OB_FAIL(write_inc_commit_log(allow_remote_write, lob_meta_tablet_id,
-        snapshot_version, data_format_version, tx_desc, inc_major, lob_inc_major, commit_scn))) {
+        snapshot_version, data_format_version, start_scn, tx_desc, inc_major, lob_inc_major, commit_scn))) {
       LOG_WARN("write inc ddl commit log failed", K(ret), K(allow_remote_write),
           K(lob_meta_tablet_id), K(snapshot_version), K(data_format_version));
       if (ObDDLIncRedoLogWriter::need_retry(ret, false/*allow_remote_write*/)) {
@@ -494,6 +489,9 @@ int ObDDLIncRedoLogWriter::local_write_inc_start_log(
   } else if (is_incremental_minor_direct_load(direct_load_type_)
       && OB_FAIL(freeze_inc_minor_ddl_kv(ls, tablet_id_, lob_meta_tablet_id))) {
     LOG_WARN("failed to freeze inc minor ddl kv", KR(ret));
+  } else if (is_incremental_major_direct_load(direct_load_type_)
+      && OB_FAIL(freeze_for_inc_major(ls, tablet_id_, lob_meta_tablet_id))) {
+    LOG_WARN("failed to freeze for inc major", KR(ret));
   } else if (OB_ISNULL(cb = OB_NEW(ObDDLIncStartClogCb, ObMemAttr(MTL_ID(), "DDL_IRLW")))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to alloc memory", K(ret));
@@ -523,6 +521,8 @@ int ObDDLIncRedoLogWriter::local_write_inc_start_log(
                                ObTabletCommon::DEFAULT_GET_TABLET_NO_WAIT,
                                ObMDSGetTabletMode::READ_ALL_COMMITED))) {
       LOG_WARN("get tablet_handle failed", K(ret), K(tablet_id_));
+    } else if (OB_FAIL(ls->get_tablet_svr()->update_tablet_inc_major_replay_scn(tablet_id_, start_scn))) {
+      LOG_WARN("failed to update inc major replay scn", KR(ret), K(ls_id_), K(tablet_id_), K(start_scn));
     } else if (OB_FAIL(ObIncDDLMergeTaskUtils::update_tablet_table_store_with_storage_schema(
         ls, tablet_handle, log.get_storage_schema()))) {
       LOG_WARN("failed to update tablet table store with storage schema",
@@ -573,6 +573,21 @@ int ObDDLIncRedoLogWriter::freeze_inc_minor_tablet(
                                        false, /*need_rewrite_meta*/
                                        ObFreezeSourceFlag::DIRECT_INC_START))) {
     LOG_WARN("sync tablet freeze failed", K(ret), K(tablet_id));
+  }
+  return ret;
+}
+
+int ObDDLIncRedoLogWriter::freeze_for_inc_major(
+  ObLS *ls,
+  const ObTabletID &tablet_id,
+  const ObTabletID &lob_meta_tablet_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObIncDDLMergeTaskUtils::freeze_ddl_kv(ls, tablet_id))) {
+    LOG_WARN("fail to freeze ddl kv", KR(ret), KPC(ls), K(tablet_id));
+  } else if (lob_meta_tablet_id.is_valid()
+      && OB_FAIL(ObIncDDLMergeTaskUtils::freeze_ddl_kv(ls, lob_meta_tablet_id))) {
+    LOG_WARN("fail to freeze ddl kv", KR(ret), KPC(ls), K(lob_meta_tablet_id));
   }
   return ret;
 }
@@ -681,17 +696,14 @@ int ObDDLIncRedoLogWriter::local_write_inc_commit_log(
   } else if (OB_FAIL(trans_ctx->submit_direct_load_inc_commit_log(log, cb, scn, false /*need_free_extra_cb*/, true/*is_inc_major_log*/))) {
     LOG_WARN("fail to submit ddl inc commit log", K(ret), K(log));
   } else {
+    handle.cb_ = cb;
+    cb = nullptr;
     if (OB_FAIL(ObDDLRedoLogWriter::wait_gts_elapse_with_timeout(MTL_ID(), scn, ObDDLIncLogHandle::DDL_INC_LOG_TIMEOUT))) {
       LOG_WARN("fail to wait gts elapse", K(ret), K(log));
-    }
-    {
+    } else {
       common::ObTimeGuard timeguard("write_inc_commit_log wait", 5 * 1000 * 1000); // 5s
-      if (OB_SUCC(ret)) {
-        handle.cb_ = cb;
-        cb = nullptr;
-        if (OB_FAIL(handle.wait())) {
-          LOG_WARN("wait inc commit log finish failed", K(ret), K(tablet_id_));
-        }
+      if (OB_FAIL(handle.wait())) {
+        LOG_WARN("wait inc commit log finish failed", K(ret), K(tablet_id_));
       }
     }
   }
@@ -710,6 +722,7 @@ int ObDDLIncRedoLogWriter::retry_remote_write_inc_commit_log(
     const ObTabletID lob_meta_tablet_id,
     const int64_t snapshot_version,
     const uint64_t data_format_version,
+    const share::SCN &start_scn,
     transaction::ObTxDesc *tx_desc,
     const ObSSTable *inc_major,
     const ObSSTable *lob_inc_major,
@@ -724,6 +737,7 @@ int ObDDLIncRedoLogWriter::retry_remote_write_inc_commit_log(
     } else if (OB_FAIL(remote_write_inc_commit_log(lob_meta_tablet_id,
                                                    snapshot_version,
                                                    data_format_version,
+                                                   start_scn,
                                                    tx_desc,
                                                    inc_major,
                                                    lob_inc_major,
@@ -733,7 +747,7 @@ int ObDDLIncRedoLogWriter::retry_remote_write_inc_commit_log(
         ret = OB_SUCCESS;
       } else {
         LOG_WARN("remote write ddl inc commit log failed", K(ret), K_(leader_ls_id),
-            K_(leader_addr), K(lob_meta_tablet_id), K(snapshot_version), K(data_format_version));
+            K_(leader_addr), K(lob_meta_tablet_id), K(snapshot_version), K(data_format_version), K(start_scn));
       }
     } else {
       break;
@@ -747,6 +761,7 @@ int ObDDLIncRedoLogWriter::remote_write_inc_commit_log(
     const ObTabletID lob_meta_tablet_id,
     const int64_t snapshot_version,
     const uint64_t data_format_version,
+    const share::SCN &start_scn,
     transaction::ObTxDesc *tx_desc,
     const ObSSTable *inc_major,
     const ObSSTable *lob_inc_major,
@@ -770,10 +785,11 @@ int ObDDLIncRedoLogWriter::remote_write_inc_commit_log(
                          trans_id_,
                          seq_no_,
                          snapshot_version,
-                         data_format_version))) {
+                         data_format_version,
+                         start_scn))) {
       LOG_WARN("fail to init ObRpcRemoteWriteDDLIncCommitLogArg", K(ret), K_(leader_ls_id),
           K_(tablet_id),K(lob_meta_tablet_id), K(tx_desc), K_(direct_load_type),
-          K_(trans_id), K_(seq_no), K(snapshot_version), K(data_format_version));
+          K_(trans_id), K_(seq_no), K(snapshot_version), K(data_format_version), K(start_scn));
     }
 #ifdef OB_BUILD_SHARED_STORAGE
     else if (GCTX.is_shared_storage_mode()
@@ -858,9 +874,12 @@ int ObDDLIncRedoLogWriterCallback::write(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObDDLIncRedoLogWriterCallback is not inited", K(ret));
-  } else if (OB_UNLIKELY((param_.need_submit_io_ && !macro_handle.is_valid()) || !logic_id.is_valid() || nullptr == buf || row_count <= 0)) {
+  } else if (OB_UNLIKELY((param_.need_submit_io_ && !macro_handle.is_valid())
+                          || nullptr == buf
+                          || (ObDDLMacroBlockType::DDL_MB_DATA_TYPE == param_.block_type_
+                              && (!logic_id.is_valid() || row_count <= 0)))) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument", K(ret), K(macro_handle), K(logic_id), KP(buf), K(row_count));
+    LOG_WARN("invalid argument", K(ret), K(macro_handle), K(logic_id), KP(buf), K(row_count), K(param_.block_type_));
   } else {
     redo_info_.table_key_ = param_.table_key_;
     if (ObDDLMacroBlockType::DDL_MB_SS_EMPTY_DATA_TYPE == param_.block_type_) {

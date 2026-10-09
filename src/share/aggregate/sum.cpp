@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
 
 #include "sum.h"
 #include "sum_nmb.h"
+#include "sum_simd.h"
 
 namespace oceanbase
 {
@@ -43,6 +37,18 @@ int init_sum_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
     ret = init_agg_func<SumAggregate<in_tc, out_tc>>(agg_ctx, agg_col_id, aggr_info.has_distinct_, \
                                                      allocator, agg);                              \
   }
+
+#if defined(__ARM_NEON)
+#define INIT_NEON_SUM_I32_TO_I128()                                                                \
+  if (tmp_res_size != nullptr) {                                                                   \
+    *tmp_res_size = 0;                                                                             \
+  } else {                                                                                         \
+    ret = init_agg_func<NeonSumI32ToI128>(agg_ctx, agg_col_id, aggr_info.has_distinct_,            \
+                                          allocator, agg);                                         \
+  }
+#else
+#define INIT_NEON_SUM_I32_TO_I128() INIT_SUM_AGGREGATE(VEC_TC_DEC_INT32, VEC_TC_DEC_INT128)
+#endif
 
   int ret = OB_SUCCESS;
   ObAggrInfo &aggr_info = agg_ctx.locate_aggr_info(agg_col_id);
@@ -160,7 +166,7 @@ int init_sum_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
       break;
     }
     case VEC_TC_DEC_INT128: {
-      INIT_SUM_AGGREGATE(VEC_TC_DEC_INT32, VEC_TC_DEC_INT128);
+      INIT_NEON_SUM_I32_TO_I128();
       break;
     }
     default: {

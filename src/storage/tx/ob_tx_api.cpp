@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_trans_service.h"
@@ -2016,10 +2009,11 @@ inline int ObTransService::sync_rollback_savepoint__(ObTxDesc &tx,
   return ret;
 }
 
+// NOTE that this is only for px
 int ObTransService::merge_tx_state(ObTxDesc &to, const ObTxDesc &from)
 {
   TRANS_LOG(TRACE, "merge_tx_state", K(to), K(from));
-  int ret = to.merge_exec_info_with(from);
+  int ret = to.merge_exec_info_for_px(from);
   ObTransTraceLog &tlog = to.get_tlog();
   REC_TRANS_TRACE_EXT(&tlog, merge_tx_state, OB_Y(ret),
                       OB_ID(to), (void*)&to,
@@ -2329,6 +2323,21 @@ int ObTransService::refresh_read_snapshot_tx_state(ObTxReadSnapshot &snapshot, c
         ret = OB_TRANS_HAS_DECIDED;
       }
     }
+  }
+  return ret;
+}
+
+int ObTransService::set_app_trace_id(
+    ObTxDesc &tx,
+    const common::ObString &app_trace_id,
+    const bool is_plain_select)
+{
+  int ret = OB_SUCCESS;
+  ObSpinLockGuard guard(tx.lock_);
+  if (tx.is_tx_active() || !is_plain_select) {
+    // if app_trace_id is empty, confirm app_trace_id
+    tx.trace_info_.set_app_trace_id(app_trace_id);
+    TRANS_LOG(DEBUG, "set app trace id", K(app_trace_id));
   }
   return ret;
 }

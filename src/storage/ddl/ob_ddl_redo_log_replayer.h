@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_DDL_REDO_LOG_REPLAYER_H
@@ -60,7 +53,8 @@ private:
                                  const uint64_t data_format_version,
                                  const bool is_rollback,
                                  const bool is_co_sstable,
-                                 const ObString &inc_major_buffer);
+                                 const ObString &inc_major_buffer,
+                                 const share::SCN &start_scn);
 
 private:
   static const int64_t TOTAL_LIMIT = 10 * 1024 * 1024 * 1024L;

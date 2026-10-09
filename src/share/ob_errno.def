@@ -19,6 +19,7 @@
 // OBKV错误码值域：[-10500, -10700)
 // 富客户端错误码，值域：[-10700, -10900)
 // SQL扩展区段1：[-11000, -12000)
+// CDC错误码值域:[-12000, -12500)
 
 //////////////////////////////////// 新增(占位)须知 ////////////////////////////////////
 // 1. 新增错误码需要先在master分支提交，保证master是所有版本的超集，避免出现错误码冲突
@@ -481,7 +482,7 @@ DEFINE_ERROR(OB_MIGRATE_TX_DATA_NOT_CONTINUES, -4408, -1, "HY000", "migrate tx d
 DEFINE_ERROR(OB_INVALID_ZERO_DATE, -4409, -1, "HY000", "invalid zero date in no_zero_date mode");
 DEFINE_ERROR(OB_LS_NOT_IN_LEARNER_LIST, -4410, -1, "HY000", "ls not in learner list");
 DEFINE_ERROR(OB_MEMORY_LEAK, -4411, -1, "HY000", "observer has memory leak");
-DEFINE_ERROR(OB_OUT_OF_MAX_EXECUTION_TIME, -4412, ER_QUERY_TIMEOUT, "HY000", "Query execution was interrupted, maximum statement execution time exceeded. maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again");
+DEFINE_ERROR(OB_OUT_OF_MAX_EXECUTION_TIME, -4412, ER_QUERY_TIMEOUT, "HY000", "Query execution was interrupted, maximum statement execution time exceeded, maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again");
 DEFINE_ERROR(OB_ERR_MAX_EXECUTION_TIME_TRUNCATED, -4413, WARN_DATA_TRUNCATED, "01000", "Max execution time is truncated to the range [0, 4294967295]");
 DEFINE_ERROR(OB_NON_RO_SELECT_DISABLE_TIMER, -4414, ER_NON_RO_SELECT_DISABLE_TIMER, "HY000", "Select is not a read only statement, disabling timer");
 // 余留位置
@@ -900,7 +901,7 @@ DEFINE_ERROR_EXT_DEP(OB_CANT_AGGREGATE_2COLLATIONS, -5177, ER_CANT_AGGREGATE_2CO
 DEFINE_ERROR_EXT(OB_ERR_FIELD_TYPE_NOT_ALLOWED_AS_PARTITION_FIELD, -5178, ER_FIELD_TYPE_NOT_ALLOWED_AS_PARTITION_FIELD, "HY000", "Field is of a not allowed type for this type of partitioning", "Field \'%.*s\' is of a not allowed type for this type of partitioning");
 DEFINE_ORACLE_ERROR_EXT(OB_ERR_TOO_LONG_IDENT, -5179, ER_TOO_LONG_IDENT, "42000", "Identifier name is too long", "Identifier name \'%.*s\' is too long", 972, "identifier is too long", "identifier \'%.*s\' is too long");
 DEFINE_ERROR_EXT(OB_ERR_WRONG_TYPE_FOR_VAR, -5180, ER_WRONG_TYPE_FOR_VAR, "42000", "Incorrect argument type to variable", "Incorrect argument type to variable '%.*s'");
-DEFINE_ERROR_EXT(OB_WRONG_USER_NAME_LENGTH, -5181, ER_WRONG_STRING_LENGTH, "HY000", "String is too long for user_name (should be no longer than 64)", "String '%.*s' is too long for user name (should be no longer than 64)");
+DEFINE_ERROR_EXT(OB_WRONG_USER_NAME_LENGTH, -5181, ER_WRONG_STRING_LENGTH, "HY000", "String is too long for user_name (should be no longer than %ld)", "String '%.*s' is too long for user name (should be no longer than %ld)");
 DEFINE_ERROR(OB_ERR_PRIV_USAGE, -5182, ER_WRONG_USAGE, "HY000", "Incorrect usage of DB GRANT and GLOBAL PRIVILEGES");
 DEFINE_ERROR(OB_ILLEGAL_GRANT_FOR_TABLE, -5183, ER_ILLEGAL_GRANT_FOR_TABLE, "42000", "Illegal GRANT/REVOKE command; please consult the manual to see which privileges can be used");
 DEFINE_ERROR(OB_ERR_REACH_AUTOINC_MAX, -5184, ER_AUTOINC_READ_FAILED, "HY000", "Failed to read auto-increment value from storage engine");
@@ -1079,7 +1080,7 @@ DEFINE_ORACLE_ERROR_EXT(OB_ERR_DUPLICATED_UNIQUE_KEY, -5358, ER_DUP_ENTRY, "2300
 DEFINE_ORACLE_ERROR(OB_DOUBLE_OVERFLOW, -5359, ER_WARN_DATA_OUT_OF_RANGE, "22003", "result Double value is out of range", 1426, "Double value overflow");
 
 DEFINE_ORACLE_ERROR(OB_ERR_NO_SYS_PRIVILEGE, -5360, -1, "HY000", "insufficient privileges", 1031, "insufficient privileges");
-DEFINE_ORACLE_ERROR_EXT(OB_ERR_NO_LOGIN_PRIVILEGE, -5361, -1, "HY000", "user lacks CREATE SESSION privilege logon denied", "user %.*s lacks CREATE SESSION privilege; logon denied", 1045, "user lacks CREATE SESSION privilege; logon denied", "user %.*s lacks CREATE SESSION privilege; logon denied");
+DEFINE_ORACLE_ERROR_EXT(OB_ERR_NO_LOGIN_PRIVILEGE, -5361, -1, "HY000", "user lacks CREATE SESSION privilege logon denied", "user %.*s lacks %.*s privilege; logon denied", 1045, "user lacks CREATE SESSION privilege; logon denied", "user %.*s lacks %.*s privilege; logon denied");
 DEFINE_ORACLE_ERROR(OB_ERR_CANNOT_REVOKE_PRIVILEGES_YOU_DID_NOT_GRANT, -5362, OB_ERR_NO_GRANT, "42000", "No such grant defined", 1927, "cannot REVOKE privileges you did not grant");
 DEFINE_ORACLE_ERROR_EXT(OB_ERR_SYSTEM_PRIVILEGES_NOT_GRANTED_TO, -5363, -1, "HY000", "system privileges not granted to", "system privileges not granted to '%.*s'", 1952, "system privileges not granted to", "system privileges not granted to '%.*s'");
 DEFINE_ORACLE_ERROR(OB_ERR_ONLY_SELECT_AND_ALTER_PRIVILEGES_ARE_VALID_FOR_SEQUENCES, -5364, -1, "HY000", "only SELECT and ALTER privileges are valid for sequences", 2205, "only SELECT and ALTER privileges are valid for sequences");
@@ -1888,7 +1889,6 @@ DEFINE_ERROR(OB_USER_OUTOF_DATA_DISK_SPACE, -6330, -1, "HY000", "user data disk 
 DEFINE_ERROR(OB_ARB_DEGRADE, -6331, -1, "HY000", "logstream has been degraded due to error")
 DEFINE_ERROR(OB_OBJ_LOCK_WRONG_WORKER, -6332, -1, "HY000", "object lock worker thread wrong")
 DEFINE_ORACLE_ERROR(OB_ERR_TEMP_TABLE_BUSY, -6333, -1, "HY000", "attempt to access a transactional temp table already in use", 14450, "attempt to access a transactional temp table already in use");
-DEFINE_ERROR(OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING, -6334, -1, "HY000", "mvcc write callback freeze clock order descending")
 
 // 余留位置
 ////////////////////////////////////////////////////////////////
@@ -2157,6 +2157,8 @@ DEFINE_ORACLE_ERROR(OB_ERR_COMPARE_VARRAY_LOB_ATTR, -7432, -1, "42000", "cannot 
 DEFINE_ORACLE_ERROR(OB_ERR_XML_PARENT_ALREADY_CONTAINS_CHILD, -7433, -1, "42000", "Parent %.*s already contains child entry %s%.*s", 31003, "Parent %.*s already contains child entry %s%.*s");
 DEFINE_ORACLE_ERROR(OB_ERR_CONVERSION_OF_UNIT, -7434, -1, "42000", "conversion error between the specified unit and standard unit", 13291, "conversion error between the specified unit and standard unit");
 DEFINE_ORACLE_ERROR(OB_ERR_PARAM_OUT_OF_RANGE, -7435, -1, "42000", "value is out of range", 13011, "value is out of range");
+DEFINE_ORACLE_ERROR(OB_ERR_XML_WRONG_DOCUMENT, -7436, -1, "42000", "A node is used in a different document than the one that created it", 31013, "A node is used in a different document than the one that created it");
+DEFINE_ORACLE_ERROR(OB_ERR_XML_VALUE_TOO_LARGE_FOR_TYPE, -7437, -1, "HY000", "attribute or element value is larger than specified in type", 22814, "attribute or element value is larger than specified in type");
 
 // 余留位置
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2230,7 +2232,7 @@ DEFINE_ERROR_DEP(OB_OSS_ERROR, -9003, -1, "HY000", "OSS error");
 DEFINE_ERROR_DEP(OB_INIT_MD5_ERROR, -9004, -1, "HY000", "Init MD5 fail");
 DEFINE_ERROR_DEP(OB_OUT_OF_ELEMENT, -9005, -1, "HY000", "Out of element");
 DEFINE_ERROR_DEP(OB_UPDATE_MD5_ERROR, -9006, -1, "HY000", "Update MD5 fail");
-DEFINE_ERROR_DEP(OB_FILE_LENGTH_INVALID, -9007, -1, "HY000", "Invalid OSS file length");
+DEFINE_ERROR_DEP(OB_FILE_LENGTH_INVALID, -9007, -1, "HY000", "Invalid file length");
 DEFINE_ERROR(OB_NOT_READ_ALL_DATA, -9008, -1, "HY000", "Read all data fail");
 DEFINE_ERROR(OB_BUILD_MD5_ERROR, -9009, -1, "HY000", "Build MD5 fail");
 DEFINE_ERROR(OB_MD5_NOT_MATCH, -9010, -1, "HY000", "OSS file MD5 not match");
@@ -2399,6 +2401,9 @@ DEFINE_ERROR_DEP(OB_SS_LS_IN_GC_STATUS, -9156, -1, "HY000", "ss ls is in gc stat
 DEFINE_ERROR(OB_BACKUP_WAIT_SS_LS_CONSISTENCY_TIMEOUT, -9157, -1, "HY000", "backup wait shared storage ls consistency timeout");
 DEFINE_ERROR(OB_OBJECT_STORAGE_INVALID_OBJECT_TYPE, -9158, -1, "HY000", "the object type is invalid");
 DEFINE_ERROR(OB_BACKUP_SET_NOT_FOUND, -9159, -1, "HY000", "available data backup set is not found");
+DEFINE_ERROR(OB_INC_MAJOR_COUNT_REACH_LIMIT, -9160, -1, "HY000", "number of inc major has reached limit");
+DEFINE_ERROR(OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED, -9161, -1, "HY000", "backup failed because sslog table size exceeded the threshold while garbage collection was disabled during backup. Please retry backup later after sslog table space is reclaimed");
+DEFINE_ERROR(OB_BACKUP_NOT_FIND_ANY_SET_OR_PIECE, -9162, -1, "HY000", "can not find any backup set or archive piece");
 // 余留位置，在该行之前继续添加storage错误码
 
 ////////////////////////////////////////////////////////////////
@@ -2772,6 +2777,14 @@ DEFINE_ERROR(OB_ERR_MVIEW_CAN_NOT_USE_DIRECT_LOAD, -9835, -1, "HY000", "material
 DEFINE_PLS_ERROR(OB_ERR_FORALL_BULK_INDEX_IN_INTO_CLAUSE, -9836, -1, "HY000", "FORALL bulk index cannot be used in INTO clause", 437, "FORALL bulk index cannot be used in INTO clause");
 DEFINE_PLS_ERROR(OB_ERR_FORALL_INVLIAD_IN_BIND_VARIABLE, -9837, -1, "HY000", "FORALL bulk IN-bind variables cannot be used here", 440, "FORALL bulk IN-bind variables cannot be used here");
 DEFINE_PLS_ERROR(OB_ERR_BULK_SQL_ATTRS_NOT_SINGLE_INDEX, -9838, -1, "HY000", "bulk SQL attributes must use a single index", 431, "bulk SQL attributes must use a single index");
+DEFINE_ORACLE_ERROR_EXT(OB_ERR_JAVA_SESSION_STATE_CHANGED, -9839, -1, "HY000", "class has changed, Java session state cleared", "class %.*s has changed, Java session state cleared", 29549, "class has changed, Java session state cleared", "class %.*s has changed, Java session state cleared");
+DEFINE_ORACLE_ERROR(OB_ERR_OBJECT_HAS_TYPE_OR_TABLE_DEPENDENT, -9840, -1, "HY000", "cannot change object with type or table dependents", 22933, "cannot change object with type or table dependents");
+DEFINE_ORACLE_ERROR(OB_ERR_PL_DOM_HANDLE_INVALID, -9841, -1, "HY000", "PL/SQL DOM handle accesses node that is no longer available", 31181, "PL/SQL DOM handle accesses node that is no longer available");
+DEFINE_ORACLE_ERROR(OB_ERR_PL_PARSER_HANDLE_INVALID, -9842, -1, "HY000", "invalid PL/SQL XML parser handle", 64500, "invalid PL/SQL XML parser handle");
+DEFINE_ORACLE_ERROR(OB_ERR_MISSING_EXPRESSION, -9843, -1, "HY000", "missing expression", 936, "missing expression");
+DEFINE_ORACLE_ERROR(OB_ERR_MISSING_RIGHT_PARENTHESIS, -9844, -1, "HY000", "missing right parenthesis", 907, "missing right parenthesis");
+DEFINE_ORACLE_ERROR(OB_ERR_INVALID_RELATIONAL_OPERATOR, -9845, -1, "HY000", "invalid relational operator", 920, "invalid relational operator");
+
 // 余留位置
 ////////////////////////////////////////////////////////////////
 // PL/SQL错误码值域 [-9500, -10000)
@@ -2967,12 +2980,39 @@ DEFINE_ERROR_EXT(OB_HTTP_SERVER_ERROR, -11125, OB_HTTP_SERVER_ERROR, "HY000", "H
 DEFINE_ERROR_EXT(OB_INVALID_DATE_TRUNC_FORMAT, -11126, -1, "HY000", "unit not recognized", "unit \'%.*s\' not recognized");
 DEFINE_ERROR(OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES, -11127, -1, "HY000", "Privilege not allowed for sensitive rules");
 DEFINE_ERROR(OB_AP_QUERY_NEED_RETRY, -11128, -1, "HY000", "AP query will retry with column replica");
-
 DEFINE_ERROR_EXT(OB_KAFKA_ERROR, -11129, -1, "HY000", "kafka server throw error", "kafka server throw error: ErrorMsg=%s");
 DEFINE_ERROR(OB_KAFKA_NEED_RETRY, -11130, -1, "HY000", "retry with kafka error");
+DEFINE_ORACLE_ERROR(OB_ERR_INVALID_USERENV_PARAMETER, -11131, -1, "HY000", "invalid USERENV parameter", 2003, "invalid USERENV parameter");
+DEFINE_ERROR_EXT(OB_SRF_NOT_ALLOWED, -11132, -1, "HY000", "set-returning functions usage are not allowed", "set-returning functions '%.*s' usage are not allowed")
+DEFINE_ERROR_EXT(OB_AI_REMOTE_SERVICE_ERROR, -11133, -1, "HY000", "AI REMOTE SERVICE ERROR", "AI REMOTE SERVICE ERROR: %.*s");
+DEFINE_ERROR(OB_NOT_SUPPORTED_FOR_PARALLEL_DDL, -11134, -1, "HY000", "Operation not supported in parallel DDL path");
 // 余留位置
 ////////////////////////////////////////////////////////////////
 // SQL扩展区段1：[-11000, -12000)
+////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////
+// CDC错误码值域:[-12000, -12500)
+////////////////////////////////////////////////////////////////
+DEFINE_ERROR_EXT_DEP(OB_CDC_STREAM_ALREADY_EXISTS, -12000, -1, "42S01", "CDC stream already exists", "CDC stream '%.*s' already exists");
+DEFINE_ERROR_EXT_DEP(OB_CDC_STREAM_NOT_FOUND, -12001, -1, "HY000", "CDC stream not found", "CDC stream '%.*s' not found");
+DEFINE_ERROR_EXT_DEP(OB_CDC_STREAM_STATE_NOT_MATCH, -12002, -1, "HY000", "CDC stream state not match", "CDC stream '%.*s' state not match");
+DEFINE_ERROR_EXT_DEP(OB_CDC_STREAM_INVALID_ARGUMENT, -12003, -1, "HY000", "Invalid CDC stream argument", "Invalid CDC stream argument: %.*s");
+DEFINE_ERROR_EXT_DEP(OB_CDC_CLIENT_CHANNEL_OCCUPIED, -12004, -1, "HY000", "CDC client channel occupied", "CDC channel conflict on stream %ld channel %d (owned by client %ld)");
+DEFINE_ERROR_EXT_DEP(OB_CDC_CLIENT_PARAM_MISMATCH, -12005, -1, "HY000", "CDC client register parameter mismatch", "CDC client '%.*s' already registered with different stream/channels");
+DEFINE_ERROR_EXT_DEP(OB_CDC_CLIENT_CHANNEL_OUT_OF_RANGE, -12006, -1, "HY000", "CDC client channel out of range", "CDC channel %d out of range [0, %d) for stream %ld");
+DEFINE_ERROR_EXT_DEP(OB_CDC_CLIENT_NOT_ACTIVE, -12007, -1, "HY000", "CDC client not active", "CDC client %ld is not in Active state");
+DEFINE_ERROR_EXT_DEP(OB_CDC_CHANNEL_INVALID, -12008, -1, "HY000", "CDC channel invalid", "CDC channel %d not in client %ld channel_list");
+DEFINE_ERROR_EXT_DEP(OB_CDC_INVALID_ARGUMENT, -12009, -1, "HY000", "Invalid CDC ACK argument", "Invalid CDC ACK argument: %.*s");
+DEFINE_ERROR_EXT_DEP(OB_CDC_METADB_UNAVAILABLE, -12010, -1, "HY000", "CDC MetaDB unavailable", "CDC MetaDB write failed for stream %ld");
+DEFINE_ERROR_EXT_DEP(OB_CDC_NO_ACTIVE_ONLINE_SERVER, -12011, -1, "HY000", "CDC no active online server available", "CDC no active online server available for stream resume");
+DEFINE_ERROR_DEP(OB_CDC_TOKEN_VERSION_NOT_MATCH, -12012, -1, "HY000", "CDC connection rejected due to token version conflict");
+DEFINE_ERROR_DEP(OB_CDC_FLOW_CONTROL, -12013, -1, "HY000", "CDC flow control triggered");
+DEFINE_ERROR_DEP(OB_CDC_EPOCH_MISMATCH, -12014, -1, "HY000", "CDC epoch mismatch");
+DEFINE_ERROR_DEP(OB_CDC_SEQ_GAP, -12015, -1, "HY000", "CDC non-contiguous sequence gap");
+DEFINE_ERROR_DEP(OB_CDC_STREAM_RUNTIME_FAILED, -12016, -1, "HY000", "CDC stream runtime FAILED, rebalance dispatch retry budget exhausted");
+DEFINE_ERROR_EXT_DEP(OB_CDC_NOT_LEADER, -12017, -1, "HY000", "CDC server is not leader", "CDC server is not leader, current leader: %s:%d");
+// 余留位置
 ////////////////////////////////////////////////////////////////
 
 //////////////////////////////////// 新增(占位)须知 ////////////////////////////////////

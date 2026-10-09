@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -608,7 +601,7 @@ int ObDASRef::process_remote_task_resp()
     if (OB_UNLIKELY(OB_SUCCESS != task_resp.get_err_code())) {
       LOG_WARN("das async execution failed", K(task_resp));
       for (int i = 0; i < task_ops.count(); i++) {
-        get_exec_ctx().get_my_session()->get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
+        get_exec_ctx().get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
       }
       save_ret = task_resp.get_err_code();
     }
@@ -686,7 +679,7 @@ int ObDASRef::close_all_task()
     // indicate some transaction participants info unknown
     if (merge_trans_result_fail && OB_NOT_NULL(session)) {
       LOG_WARN("close all task fail, set trans_result to incomplete", K(ret));
-      session->get_trans_result().set_incomplete();
+      exec_ctx_.get_trans_result().set_incomplete();
     }
     batched_tasks_.destroy();
     del_aggregated_tasks_.destroy();

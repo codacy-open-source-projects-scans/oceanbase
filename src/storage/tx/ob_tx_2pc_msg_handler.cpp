@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/tx/ob_trans_service.h"
@@ -32,6 +25,7 @@ int ObPartTransCtx::post_msg_(const ObTwoPhaseCommitMsgType& msg_type,
     prepare_redo_req.upstream_ = ls_id_;
     prepare_redo_req.xid_ = exec_info_.xid_;
     prepare_redo_req.app_trace_info_ = trace_info_.get_app_trace_info();
+    prepare_redo_req.app_trace_id_ = trace_info_.get_app_trace_id();
     if (OB_FAIL(post_msg_(receiver, prepare_redo_req))) {
       TRANS_LOG(WARN, "rpc post msg failed", K(ret), K(*this), K(receiver), K(msg_type));
     }
@@ -60,6 +54,7 @@ int ObPartTransCtx::post_msg_(const ObTwoPhaseCommitMsgType& msg_type,
       build_tx_common_msg_(receiver, prepare_req);
       prepare_req.upstream_ = ls_id_;
       prepare_req.app_trace_info_ = trace_info_.get_app_trace_info();
+      prepare_req.app_trace_id_ = trace_info_.get_app_trace_id();
       if (OB_FAIL(post_msg_(receiver, prepare_req))) {
         TRANS_LOG(WARN, "rpc post msg failed", K(ret), K(*this), K(receiver), K(msg_type));
       }
@@ -530,6 +525,8 @@ int ObPartTransCtx::apply_2pc_msg_(const ObTwoPhaseCommitMsgType msg_type)
         TRANS_LOG(WARN, "set coordinator failed", KR(ret), K(msg), K(*this));
       } else if (OB_FAIL(set_app_trace_info_(msg.app_trace_info_))) {
         TRANS_LOG(WARN, "set app trace info failed", KR(ret), K(msg), K(*this));
+      } else if (OB_FAIL(set_app_trace_id_(msg.app_trace_id_))) {
+        TRANS_LOG(WARN, "set app trace id failed", KR(ret), K(msg), K(*this));
       } else {
         exec_info_.xid_ = msg.xid_;
         exec_info_.is_sub2pc_ = true;
@@ -555,6 +552,8 @@ int ObPartTransCtx::apply_2pc_msg_(const ObTwoPhaseCommitMsgType msg_type)
           TRANS_LOG(WARN, "set coordinator failed", KR(ret), K(msg), K(*this));
         } else if (OB_FAIL(set_app_trace_info_(msg.app_trace_info_))) {
           TRANS_LOG(WARN, "set app trace info failed", KR(ret), K(msg), K(*this));
+        } else if (OB_FAIL(set_app_trace_id_(msg.app_trace_id_))) {
+          TRANS_LOG(WARN, "set app trace id failed", KR(ret), K(msg), K(*this));
         }
       }
       break;
@@ -688,6 +687,8 @@ int ObPartTransCtx::handle_tx_2pc_prepare_req(const Ob2pcPrepareReqMsg &msg)
       TRANS_LOG(WARN, "set request id failed", KR(ret), K(msg), K(*this));
     } else if (OB_FAIL(set_app_trace_info_(msg.app_trace_info_))) {
       TRANS_LOG(WARN, "set app trace info failed", KR(ret), K(msg), K(*this));
+    } else if (OB_FAIL(set_app_trace_id_(msg.app_trace_id_))) {
+      TRANS_LOG(WARN, "set app trace id failed", KR(ret), K(msg), K(*this));
     } else if (OB_FAIL(handle_2pc_req(msg_type))) {
       TRANS_LOG(WARN, "handle 2pc request failed", KR(ret), K(msg), K(*this));
     }

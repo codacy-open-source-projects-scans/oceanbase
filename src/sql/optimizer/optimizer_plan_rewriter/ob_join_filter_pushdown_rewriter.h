@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_JOIN_FILTER_PUSHDOWN_REWRITER_H
@@ -33,8 +26,8 @@ struct JoinFilterMetaInfo;
 struct JoinUseMetaInfo;
 // Join filter pushdown specific context and result
 struct JoinFilterPushdownContext : public RewriterContext {
-  JoinFilterPushdownContext()
-    : pushdown_rtfs_()
+  JoinFilterPushdownContext(ObIAllocator &allocator)
+    : pushdown_rtfs_(allocator)
   { }
 
   virtual ~JoinFilterPushdownContext()
@@ -105,7 +98,7 @@ struct JoinFilterPushdownContext : public RewriterContext {
     return ret;
   }
 
-  common::ObSEArray<JoinFilterMetaInfo*, 4, common::ModulePageAllocator, true> pushdown_rtfs_;
+  ObSqlArray<JoinFilterMetaInfo*> pushdown_rtfs_;
 
   TO_STRING_KV(K_(pushdown_rtfs));
 };
@@ -247,8 +240,8 @@ public:
       query_ctx_(query_ctx),
       max_creater_row_count_(max_creater_row_count),
       min_user_partition_count_(min_user_partiton_count),
-      valid_rtfs_(),
-      consumer_table_infos_(),
+      valid_rtfs_(allocator),
+      consumer_table_infos_(allocator),
       valid_producer_cache_set_()
   {}
   virtual ~JoinFilterPruneAndUpdateRewriter() {}
@@ -332,8 +325,8 @@ public:
   ObQueryCtx *query_ctx_;
   int64_t max_creater_row_count_;
   int64_t min_user_partition_count_;
-  common::ObSEArray<JoinFilterMetaInfo*, 4, common::ModulePageAllocator, true> valid_rtfs_;
-  common::ObSEArray<JoinUseMetaInfo*, 4, common::ModulePageAllocator, true> consumer_table_infos_;
+  ObSqlArray<JoinFilterMetaInfo*> valid_rtfs_;
+  ObSqlArray<JoinUseMetaInfo*> consumer_table_infos_;
   // valid msg id hash set
   common::hash::ObHashSet<int64_t> valid_msg_ids_set_;
   common::hash::ObHashSet<uint64_t> valid_table_ids_set_;
@@ -349,8 +342,8 @@ public:
       allocator_(allocator),
       expr_factory_(expr_factory),
       session_info_(session_info),
-      valid_rtfs_(),
-      consumer_table_infos_()
+      valid_rtfs_(allocator),
+      consumer_table_infos_(allocator)
   {}
   virtual ~JoinFilterPushdownRewriter() {}
 
@@ -402,8 +395,8 @@ public:
   common::ObIAllocator &allocator_;
   sql::ObRawExprFactory &expr_factory_;
   ObSQLSessionInfo *session_info_;
-  common::ObSEArray<JoinFilterMetaInfo*, 4, common::ModulePageAllocator, true> valid_rtfs_;
-  common::ObSEArray<JoinUseMetaInfo*, 4, common::ModulePageAllocator, true> consumer_table_infos_;
+  ObSqlArray<JoinFilterMetaInfo*> valid_rtfs_;
+  ObSqlArray<JoinUseMetaInfo*> consumer_table_infos_;
 };
 
 } // namespace sql

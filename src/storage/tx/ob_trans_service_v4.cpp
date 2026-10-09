@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "src/storage/tx/ob_trans_part_ctx.h"
@@ -188,7 +181,8 @@ int ObTransService::do_commit_tx_(ObTxDesc &tx,
                                          SCN::max_scn(),
                                          tx.get_coord_epoch(),
                                          commit_version,
-                                         self_))
+                                         self_,
+                                         tx.trace_info_.get_app_trace_id()))
              || !commit_need_retry_(ret))) {
     if (OB_FAIL(ret)) {
       TRANS_LOG(WARN, "local ls commit tx fail", K(ret), K_(tx.coord_id), K(tx));
@@ -726,6 +720,7 @@ int ObTransService::build_tx_sub_prepare_msg_(const ObTxDesc &tx, ObTxSubPrepare
   msg.cluster_id_ = tx.cluster_id_;
   msg.request_id_ = tx.op_sn_;
   msg.xid_ = tx.xid_;
+  msg.app_trace_id_ = tx.trace_info_.get_app_trace_id();
   CONVERT_COMMIT_PARTS_TO_PARTS(tx.commit_parts_, msg.parts_);
   if (FAILEDx(msg.commit_parts_.assign(tx.commit_parts_))) {
     TRANS_LOG(WARN, "assign commit parts fail", K(ret), K(tx));
@@ -1751,6 +1746,7 @@ int ObTransService::build_tx_commit_msg_(const ObTxDesc &tx, ObTxCommitMsg &msg)
   msg.request_id_ = tx.op_sn_;
   msg.epoch_ = tx.get_coord_epoch();
   msg.commit_start_scn_ = tx.commit_start_scn_;
+  msg.app_trace_id_ = tx.trace_info_.get_app_trace_id();
   CONVERT_COMMIT_PARTS_TO_PARTS(tx.commit_parts_, msg.parts_);
   if (FAILEDx(msg.commit_parts_.assign(tx.commit_parts_))) {
     TRANS_LOG(WARN, "assign part epochs fail", K(ret), K(tx));
@@ -2112,7 +2108,8 @@ int ObTransService::handle_trans_commit_request(ObTxCommitMsg &msg,
                               msg.commit_start_scn_,
                               msg.epoch_,
                               commit_version,
-                              msg.sender_addr_);
+                              msg.sender_addr_,
+                              msg.app_trace_id_);
   }
   result.reset();
   result.init(ret, msg.get_timestamp());
@@ -2147,7 +2144,8 @@ int ObTransService::local_ls_commit_tx_(const ObTransID &tx_id,
                                         const SCN commit_start_scn,
                                         const int64_t epoch,
                                         SCN &commit_version,
-                                        const common::ObAddr &caller)
+                                        const common::ObAddr &caller,
+                                        const common::ObString &app_trace_id)
 {
   int ret = OB_SUCCESS;
   MonotonicTs commit_time = get_req_receive_mts_();
@@ -2202,7 +2200,8 @@ int ObTransService::local_ls_commit_tx_(const ObTransID &tx_id,
   } else if (!ctx->is_exec_complete(coord, epoch, -1 /*transfer_epoch*/)) {
     ret = OB_TRANS_CTX_NOT_EXIST;
     TRANS_LOG(WARN, "tx exec not complete", K(ret));
-  } else if (OB_FAIL(ctx->commit(parts, commit_time, expire_ts, app_trace_info, request_id))) {
+  } else if (OB_FAIL(ctx->commit(parts, commit_time, expire_ts, app_trace_info, request_id,
+          app_trace_id))) {
     TRANS_LOG(WARN, "commit fail", K(ret), K(coord), K(tx_id));
   }
   if (OB_NOT_NULL(ctx)) {
@@ -2345,6 +2344,34 @@ int ObTransService::check_ls_status(const share::ObLSID &ls_id){
     TRANS_LOG(DEBUG, "check_ls_status success", K(ls_id));
   }
 
+  return ret;
+}
+
+int ObTransService::check_ls_tx_ctx_mgr_exist(const share::ObLSID &ls_id, bool &exist)
+{
+  int ret = OB_SUCCESS;
+  ObLSTxCtxMgr *ls_tx_ctx_mgr = NULL;
+  exist = false;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    TRANS_LOG(WARN, "ObTransService not inited", K(ret));
+  } else if (OB_UNLIKELY(!is_running_)) {
+    ret = OB_NOT_RUNNING;
+    TRANS_LOG(WARN, "ObTransService is not running", K(ret));
+  } else if (OB_UNLIKELY(!ls_id.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    TRANS_LOG(WARN, "invalid argument", K(ret), K(ls_id));
+  } else if (OB_FAIL(tx_ctx_mgr_.get_ls_tx_ctx_mgr(ls_id, ls_tx_ctx_mgr))) {
+    // OB_PARTITION_NOT_EXIST means the ls tx ctx mgr is no longer in the map.
+    if (OB_PARTITION_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+    } else {
+      TRANS_LOG(WARN, "get ls tx ctx mgr failed", K(ret), K(ls_id));
+    }
+  } else {
+    exist = true;
+    tx_ctx_mgr_.revert_ls_tx_ctx_mgr(ls_tx_ctx_mgr);
+  }
   return ret;
 }
 
@@ -3291,7 +3318,8 @@ int ObTransService::handle_sub_prepare_request(const ObTxSubPrepareMsg &msg,
                                       msg.expire_ts_,
                                       msg.app_trace_info_,
                                       msg.request_id_,
-                                      msg.xid_))) {
+                                      msg.xid_,
+                                      msg.app_trace_id_))) {
       TRANS_LOG(WARN, "handle tx commit request fail", K(ret), K(msg));
     }
   } else {
@@ -3304,7 +3332,8 @@ int ObTransService::handle_sub_prepare_request(const ObTxSubPrepareMsg &msg,
                                       msg.expire_ts_,
                                       msg.app_trace_info_,
                                       msg.request_id_,
-                                      msg.xid_))) {
+                                      msg.xid_,
+                                      msg.app_trace_id_))) {
       TRANS_LOG(WARN, "handle tx commit request fail", K(ret), K(msg));
     }
   }
@@ -3320,7 +3349,8 @@ int ObTransService::sub_prepare_local_ls_(const ObTransID &tx_id,
                                           const int64_t &expire_ts,
                                           const common::ObString &app_trace_info,
                                           const int64_t &request_id,
-                                          const ObXATransID &xid)
+                                          const ObXATransID &xid,
+                                          const common::ObString &app_trace_id)
 {
   int ret = OB_SUCCESS;
   MonotonicTs commit_time = get_req_receive_mts_();
@@ -3352,7 +3382,7 @@ int ObTransService::sub_prepare_local_ls_(const ObTransID &tx_id,
       }
     }
   } else if (OB_FAIL(ctx->sub_prepare(parts, commit_time, expire_ts, app_trace_info, request_id,
-          xid))) {
+          xid, app_trace_id))) {
     TRANS_LOG(WARN, "commit fail", K(ret), K(coord), K(tx_id));
   }
   if (OB_NOT_NULL(ctx)) {

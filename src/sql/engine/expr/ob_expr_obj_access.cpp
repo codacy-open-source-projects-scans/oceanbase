@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -30,9 +23,17 @@ ObExprObjAccess::ExtraInfo::ExtraInfo(common::ObIAllocator &alloc, ObExprOperato
     property_type_(pl::ObCollectionType::INVALID_PROPERTY),
     coll_idx_(OB_INVALID_INDEX),
     extend_size_(0),
-    access_idxs_(alloc)
+    sql_udt_access_(false),
+    access_idxs_(alloc),
+    sql_udt_access_idxs_(alloc)
 {
 }
+
+OB_SERIALIZE_MEMBER(ObExprObjAccess::ExtraInfo::SqlUdtAccessIdx,
+  var_index_,
+  elem_user_type_id_,
+  var_pl_type_,
+  is_const_);
 
 OB_SERIALIZE_MEMBER(ObExprObjAccess::ExtraInfo,
                     get_attr_func_,
@@ -41,7 +42,9 @@ OB_SERIALIZE_MEMBER(ObExprObjAccess::ExtraInfo,
                     for_write_,
                     property_type_,
                     coll_idx_,
-                    extend_size_);
+                    extend_size_,
+                    sql_udt_access_,
+                    sql_udt_access_idxs_);
 
 OB_SERIALIZE_MEMBER((ObExprObjAccess, ObExprOperator),
                     info_.get_attr_func_,
@@ -49,7 +52,9 @@ OB_SERIALIZE_MEMBER((ObExprObjAccess, ObExprOperator),
                     info_.access_idx_cnt_,
                     info_.for_write_,
                     info_.property_type_,
-                    info_.coll_idx_);
+                    info_.coll_idx_,
+                    info_.sql_udt_access_,
+                    info_.sql_udt_access_idxs_);
                     // extend_size_ is not needed here, we got extend size from result_type_
 
 ObExprObjAccess::ObExprObjAccess(ObIAllocator &alloc)
@@ -72,7 +77,9 @@ void ObExprObjAccess::ExtraInfo::reset()
   property_type_  = pl::ObCollectionType::INVALID_PROPERTY;
   coll_idx_ = OB_INVALID_INDEX;
   extend_size_ = 0;
+  sql_udt_access_ = false;
   access_idxs_.reset();
+  sql_udt_access_idxs_.reset();
 }
 
 void ObExprObjAccess::reset()
@@ -103,8 +110,10 @@ int ObExprObjAccess::ExtraInfo::assign(const ObExprObjAccess::ExtraInfo &other)
   property_type_ = other.property_type_;
   coll_idx_ = other.coll_idx_;
   extend_size_ = other.extend_size_;
+  sql_udt_access_ = other.sql_udt_access_;
   OZ(param_idxs_.assign(other.param_idxs_));
   OZ(access_idxs_.assign(other.access_idxs_));
+  OZ(sql_udt_access_idxs_.assign(other.sql_udt_access_idxs_));
   return ret;
 }
 
@@ -448,7 +457,7 @@ int ObExprObjAccess::ExtraInfo::calc(ObObj &result,
   int ret = OB_SUCCESS;
   typedef int32_t (*GetAttr)(int64_t, int64_t [], int64_t *, int64_t *);
   GetAttr get_attr = reinterpret_cast<GetAttr>(get_attr_func_);
-  ParamArray param_array;
+  ParamArray param_array(&alloc);
   CK (OB_NOT_NULL(ctx));
   OZ (init_param_array(param_store, params, param_num, param_array));
 

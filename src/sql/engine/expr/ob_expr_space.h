@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_EXPR_OB_EXPR_SPACE_
@@ -35,9 +28,13 @@ public:
                       ObExpr &rt_expr) const override;
 
   static int eval_space(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &expr_datum);
+  static int eval_space_vector(VECTOR_EVAL_FUNC_ARG_DECL);
   DECLARE_SET_LOCAL_SESSION_VARS;
 private:
   int calc_result_type(ObExprTypeCtx &type_ctx, const ObObj &obj, ObObjType &res_type) const;
+
+  template <typename ArgVec, typename ResVec>
+  static int space_vector(VECTOR_EVAL_FUNC_ARG_DECL);
 
   DISALLOW_COPY_AND_ASSIGN(ObExprSpace);
 };

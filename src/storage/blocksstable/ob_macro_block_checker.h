@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_MACRO_BLOCK_CHECKER_H
@@ -19,6 +12,8 @@
 #include "storage/blocksstable/ob_macro_block_common_header.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
 #include "storage/blocksstable/ob_imicro_block_reader.h"
+#include "storage/blocksstable/ob_micro_block_reader_helper.h"
+#include "storage/blocksstable/ob_macro_block_reader.h"
 #include "storage/slog_ckpt/ob_linked_macro_block_struct.h"
 #include "storage/blocksstable/ob_logic_macro_id.h"
 #include "lib/hash/ob_hashset.h"
@@ -46,11 +41,22 @@ public:
       const char *macro_block_buf,
       const int64_t macro_block_buf_size,
       const ObMacroBlockCheckLevel check_level = CHECK_LEVEL_PHYSICAL);
+  static int check_micro_desc_rows(
+    const ObMicroBlockDesc &micro_block_desc,
+    const ObDataStoreDesc &data_store_desc,
+    const ObIndexBlockRowHeader *index_row_header);
+  static int check_micro_block_rows(
+    const ObMicroBlock &micro_block);
   static int check_data_macro_block_rows_and_index(
       const char *macro_block_buf,
       const int64_t macro_block_buf_size,
       const ObMacroBlockCheckLevel check_level);
 private:
+  static int check_micro_rows_by_index(
+    const char *micro_block_buf,
+    const int64_t micro_buf_size,
+    const ObIndexBlockRowHeader *index_row_header,
+    ObDatumRow &check_datum_row);
   static int check_logical_checksum(
       const ObMacroBlockCommonHeader &common_header,
       const char *macro_block_buf,

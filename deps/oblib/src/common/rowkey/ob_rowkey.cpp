@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_rowkey.h"
@@ -167,7 +160,7 @@ int ObRowkey::equal(const ObRowkey &rhs, bool &is_equal) const
             ObString str;
             ObString rhs_str;
             if (OB_UNLIKELY(obj.is_outrow_lob() || rhs_obj.is_outrow_lob())) {
-              ret = OB_ERR_UNEXPECTED;
+              ret = OB_NOT_SUPPORTED;
               COMMON_LOG(WARN, "not supported outrow lob", K(ret), K(obj), K(rhs_obj));
             } else if (OB_FAIL(obj.get_string(str))) {
               COMMON_LOG(WARN, "Lob: get inrow string failed", K(ret), K(obj));

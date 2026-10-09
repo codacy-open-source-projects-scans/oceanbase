@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -1458,7 +1451,7 @@ int ObHiveTableMetadata::calc_num_from_str(const ObString &part_val,
       } else if (part_val.ptr()[k] == '-') {
         is_negative = true;
       } else {
-        ret = OB_ERR_UNEXPECTED;
+        ret = OB_ERR_INCORRECT_STRING_VALUE;
         LOG_WARN("unexpected part_val", K(ret), K(is_tinyint), K(part_val));
       }
     }

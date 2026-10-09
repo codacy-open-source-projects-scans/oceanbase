@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 
@@ -20,6 +13,7 @@
 #include "sql/executor/ob_remote_executor_processor.h"
 #include "sql/engine/cmd/ob_kill_executor.h"
 #include "sql/engine/cmd/ob_load_data_rpc.h"
+#include "storage/tablet/ob_drop_gtt_v2_session_tablet_rpc.h"
 #include "sql/dtl/ob_dtl_rpc_processor.h"
 #include "sql/das/ob_das_rpc_processor.h"
 #include "storage/lock_wait_mgr/ob_lock_wait_mgr_rpc.h"
@@ -36,6 +30,9 @@
 #include "share/detect/ob_detect_rpc_processor.h"
 
 #include "share/external_table/ob_external_table_file_rpc_processor.h"
+#ifdef OB_BUILD_MV_REFRESH_QUEUEING
+#include "rootserver/mview/ob_mview_pending_task_rpc_processor.h"
+#endif
 
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "storage/incremental/ob_sswriter_rpc.h"
@@ -82,11 +79,14 @@ void oceanbase::observer::init_srv_xlator_for_sys(ObSrvRpcXlator *xlator) {
   // DTL
   RPC_PROCESSOR(dtl::ObDtlSendMessageP);
   RPC_PROCESSOR(dtl::ObDtlBCSendMessageP);
+  RPC_PROCESSOR(dtl::ObDtlBatchSendMessageP);
 
   // tenant freezer
   RPC_PROCESSOR(ObTenantFreezerP);
   //session
   RPC_PROCESSOR(ObRpcKillSessionP, gctx_);
+  // drop oracle gtt v2 session tablet across observers
+  RPC_PROCESSOR(storage::ObRpcDropGTTV2SessionTabletP, gctx_);
 
   // BatchRpc
   RPC_PROCESSOR(ObBatchP);
@@ -116,8 +116,22 @@ void oceanbase::observer::init_srv_xlator_for_sys(ObSrvRpcXlator *xlator) {
   RPC_PROCESSOR(ObRpcStopDBMSSchedJobP, gctx_);
   RPC_PROCESSOR(ObRpcDBMSSchedPurgeP, gctx_);
 
+  //mview pending task
+#ifdef OB_BUILD_MV_REFRESH_QUEUEING
+  RPC_PROCESSOR(ObRpcRunMViewPendingTaskP, gctx_);
+  RPC_PROCESSOR(ObRpcScheduleMViewRefreshP, gctx_);
+  RPC_PROCESSOR(ObRpcKillMViewRefreshP, gctx_);
+#endif
+
   RPC_PROCESSOR(ObRpcGetServerResourceInfoP, gctx_);
   RPC_PROCESSOR(ObRpcReverseKeepaliveP, gctx_);
+
+  RPC_PROCESSOR(ObRpcGetTenantMemoryInfoP, gctx_);
+
+  //inspection
+  RPC_PROCESSOR(ObRunInspectionP, gctx_);
+  RPC_PROCESSOR(ObAsyncRunInspectionP, gctx_);
+  RPC_PROCESSOR(ObGetInspectionStatusP, gctx_);
 }
 
 void oceanbase::observer::init_srv_xlator_for_schema_test(ObSrvRpcXlator *xlator) {

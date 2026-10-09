@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_PLAN_CACHE_OB_PLAN_CACHE_VALUE_
@@ -15,6 +8,7 @@
 
 #include "lib/lock/ob_spin_rwlock.h"
 #include "common/object/ob_object.h"
+#include "sql/plan_cache/ob_plan_cache_struct.h"
 #include "sql/plan_cache/ob_plan_set.h"
 #include "sql/engine/ob_physical_plan.h"
 namespace test
@@ -44,6 +38,7 @@ class ObPlanCache;
 class ObPCVSet;
 class ObPhysicalPlan;
 class ObTablePartitionInfo;
+class ObSQLSessionInfo;
 
 enum ObPlanCacheItemStatus
 {
@@ -380,6 +375,16 @@ private:
   int cmp_not_param_info(const NotParamInfoList &l_param_info_list,
                          const NotParamInfoList &r_param_info_list,
                          bool &is_equal);
+  int resolve_params_for_choose_plan(ObPlanCacheCtx &pc_ctx);
+  int init_param_store_for_rich_format(ObPlanCacheCtx &pc_ctx,
+                                       ObSQLSessionInfo &session,
+                                       bool enable_rich_format);
+  int choose_plan_from_plan_sets(ObPlanCacheCtx &pc_ctx,
+                                 ObSQLSessionInfo &session,
+                                 uint64_t tenant_id,
+                                 int64_t outline_param_idx,
+                                 bool enable_rich_format,
+                                 ObPlanCacheObject *&plan);
   int check_need_force_miss_match(const ObPlanCacheCtx &pc_ctx,
                                   const ObPlanCacheObject &plan);
 
@@ -470,7 +475,6 @@ private:
    */
   TplSqlConstCons tpl_sql_const_cons_;
   //***********  end user-defined rules **************
-  bool enable_rich_vector_format_;
   common::ObBitSet<> fmt_int_or_ch_decint_idx_;
   int64_t switchover_epoch_;
   // Force miss match plan cache. e.g. contain lake table or mview

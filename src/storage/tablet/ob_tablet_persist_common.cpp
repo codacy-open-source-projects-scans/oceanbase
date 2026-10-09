@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -153,6 +146,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
     private_transfer_epoch_(private_transfer_epoch),
     snapshot_version_(0),
     start_macro_seq_(0),
+    is_inc_major_shared_object_(false),
     ddl_redo_callback_(nullptr),
     ddl_finish_callback_(nullptr)
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -180,7 +174,9 @@ ObTabletPersisterParam::ObTabletPersisterParam(
   const int64_t snapshot_version,
   const int64_t start_macro_seq,
   blocksstable::ObIMacroBlockFlushCallback *ddl_redo_callback,
-  blocksstable::ObIMacroBlockFlushCallback *ddl_finish_callback)
+  blocksstable::ObIMacroBlockFlushCallback *ddl_finish_callback,
+  const bool is_inc_major_shared_object,
+  const int64_t reorganization_scn)
   : data_version_(data_version),
     ls_id_(),
     ls_epoch_(0),
@@ -188,6 +184,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
     private_transfer_epoch_(private_transfer_epoch),
     snapshot_version_(snapshot_version),
     start_macro_seq_(start_macro_seq),
+    is_inc_major_shared_object_(is_inc_major_shared_object),
     ddl_redo_callback_(ddl_redo_callback),
     ddl_finish_callback_(ddl_finish_callback)
 #ifdef OB_BUILD_SHARED_STORAGE
@@ -195,7 +192,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
     file_(nullptr),
     update_reason_(ObMetaUpdateReason::INVALID_META_UPDATE_REASON),
     sstable_op_id_(0),
-    reorganization_scn_(0),
+    reorganization_scn_(reorganization_scn),
     meta_version_(0),
     src_tablet_block_info_(nullptr)
 #endif
@@ -228,6 +225,7 @@ ObTabletPersisterParam::ObTabletPersisterParam(
     private_transfer_epoch_(OB_INVALID_TRANSFER_SEQ),
     snapshot_version_(0),
     start_macro_seq_(start_macro_seq),
+    is_inc_major_shared_object_(false),
     ddl_redo_callback_(ddl_redo_callback),
     ddl_finish_callback_(ddl_finish_callback),
     op_handle_(handle),
@@ -253,6 +251,8 @@ bool ObTabletPersisterParam::is_valid() const
   } else if (is_major_shared_object()) { // shared_major
     valid = 0 == ls_epoch_ && start_macro_seq_ >= 0;
   #ifdef OB_BUILD_SHARED_STORAGE
+  } else if (is_inc_major_shared_object()) { // shared_inc_major
+    valid = 0 == ls_epoch_ && start_macro_seq_ >= 0 && reorganization_scn_ >= 0;
   } else if (is_inc_shared_object()) { // inc_shared
     valid = OB_NOT_NULL(op_handle_) && OB_NOT_NULL(file_) && is_valid_update_reason(update_reason_);
   #endif
@@ -665,7 +665,7 @@ ObMultiTimeStats::~ObMultiTimeStats()
 int ObMultiTimeStats::acquire_stats(const char *owner, ObMultiTimeStats::TimeStats *&stats)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(stats_count_ > MAX_STATS_CNT)) {
+  if (OB_UNLIKELY(stats_count_ >= MAX_STATS_CNT)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("too many time stats", K(ret), K(stats_count_));
   } else if (OB_ISNULL(stats_) &&
@@ -757,7 +757,7 @@ int ObSSTableMetaPersistHelper::register_write_op(ObSSTableMetaPersistHelper::IW
 int ObSSTableMetaPersistHelper::do_persist_all_sstables(
     const ObTabletTableStore &old_table_store,
     common::ObArenaAllocator &new_table_store_allocator,
-    /*out*/ ObMultiTimeStats &multi_stats,
+    /*out*/ ObMultiTimeStats *multi_stats,
     /*out*/ ObTabletTableStore &new_table_store,
     /*out*/ int64_t &sst_meta_size_aligned)
 {
@@ -784,11 +784,11 @@ int ObSSTableMetaPersistHelper::do_persist_all_sstables(
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "helper is not ready for persist", K(ret), KPC(this));
   } else if (FALSE_IT(sst_write_op_->reset())) {
-  } else if (OB_FAIL(multi_stats.acquire_stats("fetch_and_persist_sstable", time_stats))) {
+  } else if (OB_NOT_NULL(multi_stats) && OB_FAIL(multi_stats->acquire_stats("fetch_and_persist_sstable", time_stats))) {
     STORAGE_LOG(WARN, "failed to acquire stats", K(ret));
   } else if (OB_FAIL(old_table_store.get_all_sstable(sstable_iter))) {
     STORAGE_LOG(WARN, "failed to get all sstable iterator", K(ret), K(old_table_store));
-  } else if (FALSE_IT(time_stats->click("get_all_sst_iter"))) {
+  } else if (OB_NOT_NULL(time_stats) && FALSE_IT(time_stats->click("get_all_sst_iter"))) {
   }
 
   if (OB_SUCC(ret)) {
@@ -813,14 +813,15 @@ int ObSSTableMetaPersistHelper::do_persist_all_sstables(
       ret = OB_SUCCESS;
     }
   }
-
-  if (FAILEDx(time_stats->set_extra_info("%s:%ld,%s:%ld,%s:%ld,%s:%ld",
-      "large_co_sst_cnt", ctx_.large_co_sstable_cnt_,
-      "small_co_sst_cnt", ctx_.small_co_sstable_cnt_,
-      "cg_sst_cnt", ctx_.cg_sstable_cnt_,
-      "normal_sst_cnt", ctx_.normal_sstable_cnt_))) {
+  if (OB_FAIL(ret)) {
+  } else if (OB_NOT_NULL(time_stats)
+             && OB_FAIL(time_stats->set_extra_info("%s:%ld,%s:%ld,%s:%ld,%s:%ld",
+             "large_co_sst_cnt", ctx_.large_co_sstable_cnt_,
+             "small_co_sst_cnt", ctx_.small_co_sstable_cnt_,
+             "cg_sst_cnt", ctx_.cg_sstable_cnt_,
+             "normal_sst_cnt", ctx_.normal_sstable_cnt_))) {
     LOG_WARN("fail to set time stats extra info", K(ret));
-  } else if (FALSE_IT(time_stats->click("fill_all_sstable_write_info"))) {
+  } else if (OB_NOT_NULL(time_stats) && FALSE_IT(time_stats->click("fill_all_sstable_write_info"))) {
   }
   // update block info set
   else if (OB_FAIL(ObTabletBlockInfoSetBuilder::convert_macro_info_map(ctx_.shared_macro_map_, block_info_set.clustered_data_block_info_map_))) {
@@ -833,17 +834,18 @@ int ObSSTableMetaPersistHelper::do_persist_all_sstables(
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "write result mismatch with write requests", K(ret), K(ctx_.write_infos_.count()),
       K(sst_write_op_->get_written_addrs().count()));
-  } else if (FALSE_IT(time_stats->click("batch_write_sst_write_infos"))) {
+  } else if (OB_NOT_NULL(time_stats) && FALSE_IT(time_stats->click("batch_write_sst_write_infos"))) {
   }
   // init new table store
   else if (OB_FAIL(new_table_store.init(new_table_store_allocator,
-                                          ctx_.tables_,
-                                          sst_write_op_->get_written_addrs(),
-                                          major_ckm_info))) {
+                                        ctx_.tables_,
+                                        sst_write_op_->get_written_addrs(),
+                                        major_ckm_info))) {
     STORAGE_LOG(WARN, "failed to init new table store", K(ret), K(ctx_.tables_), K(sst_write_op_->get_written_addrs()));
   } else {
-    // calculate written bytes(aligned by 4K)
-    time_stats->click("init_new_table_store");
+    if (OB_NOT_NULL(time_stats)) {
+      time_stats->click("init_new_table_store");
+    }
     const common::ObIArray<ObMetaDiskAddr> &addrs = sst_write_op_->get_written_addrs();
     for (int64_t i = 0; OB_SUCC(ret) && i < addrs.count(); i++) {
       int64_t size = 0;
@@ -948,6 +950,28 @@ int ObSSTableMetaPersistHelper::persist_sstable_linked_block_if_need_(ObSSTable 
   return ret;
 }
 
+#define PERSIST_CG_SSTABLES(sstables)                                                                                               \
+  do {                                                                                                                              \
+    for (int64_t idx = 0; OB_SUCC(ret) && idx < sstables.count(); ++idx) {                                                          \
+      if (OB_ISNULL(sstables[idx])) {                                                                                               \
+        ret = OB_ERR_UNEXPECTED;                                                                                                    \
+        STORAGE_LOG(WARN, "unexpected null cg sstable", K(ret), K(idx), KP(sstables[idx]), K(co_sstable));                          \
+      } else if (sstables[idx]->get_addr().is_disked()) {                                                                           \
+        /* do nothing */                                                                                                            \
+      } else if (OB_FAIL(persist_sstable_linked_block_if_need_(*sstables[idx]))) {                                                  \
+        STORAGE_LOG(WARN, "fail to persist sstable linked_block if need", K(ret), K(idx), KPC(sstables[idx]), K(start_macro_seq_)); \
+      }                                                                                                                             \
+                                                                                                                                    \
+      if (FAILEDx(fill_sstable_write_info_and_record_(*sstables[idx],                                                               \
+                                                      false, /*check_has_padding_meta_cache*/                                       \
+                                                      write_infos))) {                                                              \
+        STORAGE_LOG(WARN, "fail to fill sstable write_info", KR(ret), KPC(sstables[idx]), K(idx), K(ctx_));                         \
+      } else {                                                                                                                      \
+        ctx_.cg_sstable_cnt_++;                                                                                                     \
+      }                                                                                                                             \
+    }                                                                                                                               \
+  } while (false)
+
 int ObSSTableMetaPersistHelper::persist_large_co_sstable_(
     ObCOSSTableV2 &co_sstable,
     ObCOSSTableV2 *&out_co_sstable)
@@ -974,28 +998,12 @@ int ObSSTableMetaPersistHelper::persist_large_co_sstable_(
       STORAGE_LOG(WARN, "failed to get co meta handle", K(ret), K(co_sstable));
     } else {
       const ObSSTableArray &cg_sstables = co_meta_handle.get_sstable_meta().get_cg_sstables();
-      for (int64_t idx = 0; OB_SUCC(ret) && idx < cg_sstables.count(); ++idx) {
-        if (OB_ISNULL(cg_sstables[idx])) {
-          ret = OB_ERR_UNEXPECTED;
-          STORAGE_LOG(WARN, "unexpected null cg sstable", K(ret), K(idx), KP(cg_sstables[idx]), K(co_sstable));
-        } else if (cg_sstables[idx]->get_addr().is_disked()) {
-          // do nothing
-        } else if (OB_FAIL(persist_sstable_linked_block_if_need_(*cg_sstables[idx]))) {
-          STORAGE_LOG(WARN, "fail to persist sstable linked_block if need", K(ret), K(idx), KPC(cg_sstables[idx]), K(start_macro_seq_));
-        }
-
-        if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(fill_sstable_write_info_and_record_(*cg_sstables[idx],
-                                                              false, /*check_has_padding_meta_cache*/
-                                                              write_infos))) {
-          STORAGE_LOG(WARN, "fail to fill sstable write_info", KR(ret), KPC(cg_sstables[idx]), K(idx), K(ctx_));
-        } else {
-          ctx_.cg_sstable_cnt_++;
-        }
-      }
+      const ObSSTableArray &hidden_cg_sstable = co_meta_handle.get_sstable_meta().get_hidden_rowkey_sstable();
+      PERSIST_CG_SSTABLES(cg_sstables);
+      PERSIST_CG_SSTABLES(hidden_cg_sstable);
 
       if (OB_FAIL(ret)) {
-      } else if (OB_UNLIKELY(cg_sstables.count() != write_infos.count())) {
+      } else if (OB_UNLIKELY(cg_sstables.count() + hidden_cg_sstable.count() != write_infos.count())) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "cg_write_infos' count mismatch", K(ret), K(cg_sstables.count()), K(write_infos.count()));
       } else if (write_infos.count() > 0
@@ -1077,6 +1085,36 @@ int ObSSTableMetaPersistHelper::persist_normal_sstable_(ObSSTable &sstable)
   return ret;
 }
 
+#define RECORD_CG_SSTABLES_MACRO_INFO(cg_sstables)                                                                                 \
+  for (int64_t idx = 0; OB_SUCC(ret) && idx < cg_sstables.count(); ++idx) {                                                        \
+    ObSSTable *cg_sstable = cg_sstables[idx];                                                                                      \
+    MacroBlockId block_id;                                                                                                         \
+    const ObMetaDiskAddr &sstable_addr = cg_sstable->get_addr();                                                                   \
+    if (OB_FAIL(ObTabletBlockInfoSetBuilder::copy_sstable_macro_info(*cg_sstable,                                                  \
+                                                                     ctx_.shared_macro_map_,                                       \
+                                                                     ctx_.block_info_set_))) {                                     \
+      STORAGE_LOG(WARN, "fail to call sstable macro info", K(ret));                                                                \
+    } else if (sstable_addr.is_block()) {                                                                                          \
+      /* this cg sstable has been persisted before */                                                                              \
+      int64_t size = 0;                                                                                                            \
+      if (OB_FAIL(sstable_addr.get_macro_block_id(block_id))) {                                                                    \
+        STORAGE_LOG(WARN, "fail to get block id from meta disk addr", K(ret), K(sstable_addr), K(block_id));                       \
+      } else if (OB_FAIL(sstable_addr.get_size_for_tablet_space_usage(size))) {                                                    \
+        STORAGE_LOG(WARN, "fail to get size for tablet space usage", K(ret), K(sstable_addr));                                     \
+      } else if (OB_FAIL(ctx_.block_info_set_.shared_meta_block_info_set_.set_refactored(block_id, 0 /*whether to overwrite*/))) { \
+        if (OB_HASH_EXIST != ret) {                                                                                                \
+          STORAGE_LOG(WARN, "fail to push macro id into set", K(ret), K(sstable_addr));                                            \
+        } else {                                                                                                                   \
+          ret = OB_SUCCESS;                                                                                                        \
+        }                                                                                                                          \
+      }                                                                                                                            \
+                                                                                                                                   \
+      if (OB_SUCC(ret)) {                                                                                                          \
+        cg_sstable_meta_size += size;                                                                                              \
+      }                                                                                                                            \
+    }                                                                                                                              \
+  }
+
 int ObSSTableMetaPersistHelper::record_cg_sstables_macro_(const ObCOSSTableV2 &co_sstable)
 {
   OB_ASSERT(is_ready_for_persist_());
@@ -1089,38 +1127,11 @@ int ObSSTableMetaPersistHelper::record_cg_sstables_macro_(const ObCOSSTableV2 &c
     STORAGE_LOG(WARN, "failed to get co meta handle", K(ret), K(co_sstable));
   } else {
     const ObSSTableArray &cg_sstables = co_meta_handle.get_sstable_meta().get_cg_sstables();
-    ctx_.cg_sstable_cnt_ += cg_sstables.count();
+    const ObSSTableArray &hidden_cg_sstable = co_meta_handle.get_sstable_meta().get_hidden_rowkey_sstable();
+    ctx_.cg_sstable_cnt_ += cg_sstables.count() + hidden_cg_sstable.count();
 
-    ObSSTable *cg_sstable = nullptr;
-    MacroBlockId block_id;
-    for (int64_t idx = 0; OB_SUCC(ret) && idx < cg_sstables.count(); ++idx) {
-      cg_sstable = cg_sstables[idx];
-      block_id.reset();
-      const ObMetaDiskAddr &sstable_addr = cg_sstable->get_addr();
-      if (OB_FAIL(ObTabletBlockInfoSetBuilder::copy_sstable_macro_info(*cg_sstable,
-                                                                       ctx_.shared_macro_map_,
-                                                                       ctx_.block_info_set_))) {
-        STORAGE_LOG(WARN, "fail to call sstable macro info", K(ret));
-      } else if (sstable_addr.is_block()) {
-        // this cg sstable has been persisted before
-        int64_t size = 0;
-        if (OB_FAIL(sstable_addr.get_macro_block_id(block_id))) {
-          STORAGE_LOG(WARN, "fail to get block id from meta disk addr", K(ret), K(sstable_addr), K(block_id));
-        } else if (OB_FAIL(sstable_addr.get_size_for_tablet_space_usage(size))) {
-          STORAGE_LOG(WARN, "fail to get size for tablet space usage", K(ret), K(sstable_addr));
-        } else if (OB_FAIL(ctx_.block_info_set_.shared_meta_block_info_set_.set_refactored(block_id, 0 /*whether to overwrite*/))) {
-          if (OB_HASH_EXIST != ret) {
-            STORAGE_LOG(WARN, "fail to push macro id into set", K(ret), K(sstable_addr));
-          } else {
-            ret = OB_SUCCESS;
-          }
-        }
-
-        if (OB_SUCC(ret)) {
-          cg_sstable_meta_size += size;
-        }
-      }
-    }
+    RECORD_CG_SSTABLES_MACRO_INFO(cg_sstables);
+    RECORD_CG_SSTABLES_MACRO_INFO(hidden_cg_sstable);
   }
   if (OB_SUCC(ret)) {
     ctx_.total_tablet_meta_size_ += upper_align(cg_sstable_meta_size, DIO_READ_ALIGN_SIZE);
@@ -1176,7 +1187,10 @@ int ObTabletPersistCommon::build_async_write_start_opt(
     STORAGE_LOG(WARN, "invalid args", K(ret), K(param), K(cur_macro_seq));
   }
   #ifdef OB_BUILD_SHARED_STORAGE
-  else if (param.is_major_shared_object()) {
+  else if (param.is_inc_major_shared_object()) {
+    start_opt.set_ss_inc_major_meta_macro_object_opt(
+      param.tablet_id_.id(), cur_macro_seq, 0/*cg_id*/, param.reorganization_scn_);
+  } else if (param.is_major_shared_object()) {
     start_opt.set_ss_share_meta_macro_object_opt(
       param.tablet_id_.id(), cur_macro_seq, 0/*cg_id*/, param.reorganization_scn_);
   } else if (param.is_inc_shared_object()) {
@@ -1201,6 +1215,8 @@ int ObTabletPersistCommon::sync_cur_macro_seq_from_opt(
   if (OB_UNLIKELY(!param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     STORAGE_LOG(WARN, "invalid args", K(ret), K(param), K(curr_opt));
+  } else if (param.is_inc_major_shared_object()) {
+    cur_macro_seq = curr_opt.ss_share_opt_.data_seq_;
   } else if (param.is_major_shared_object()) {
     cur_macro_seq = curr_opt.ss_share_opt_.data_seq_;
   } else if (param.is_inc_shared_object()) {

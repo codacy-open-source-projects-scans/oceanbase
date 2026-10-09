@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_OB_OBJECT_H_
@@ -1423,7 +1416,8 @@ struct ObObjPrintParams
       uint32_t character_hex_safe_represent_:1;
       uint32_t binary_string_print_base64_:1;
       uint32_t not_print_internal_catalog_:1;
-      uint32_t reserved_:19;
+      uint32_t print_dbtbname_as_wildcard_:1;
+      uint32_t reserved_:18;
     };
   };
 
@@ -1496,7 +1490,8 @@ public:
   inline void reset();
   //when in not strict sql mode, build default value refer to data type
   // @string_cs_type: default value of string type need set collation type, since the space will be trim when compaction, see ObStorageSchema::trim
-  int build_not_strict_default_value(int16_t precision, const ObCollationType string_cs_type);
+  int build_not_strict_default_value(int16_t precision, const ObCollationType string_cs_type,
+                                     bool is_collection_vector_type = false);
   static ObObj make_min_obj();
   static ObObj make_max_obj();
   static ObObj make_nop_obj();
@@ -2373,6 +2368,14 @@ struct ObXxHash : public ObjHashBase
   static uint64_t hash(const void *data, uint64_t len, uint64_t seed)
   {
     return XXH64(data, static_cast<size_t>(len), seed);
+  }
+};
+
+struct ObCrcHash : public ObjHashBase
+{
+  OB_INLINE static uint64_t hash(const void *data, uint64_t len, uint64_t seed)
+  {
+    return crc_hash_64(data, static_cast<int32_t>(len), seed);
   }
 };
 

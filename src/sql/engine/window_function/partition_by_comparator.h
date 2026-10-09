@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_PARTITION_BY_COMPARATOR_H_
@@ -60,6 +53,9 @@ public:
   int save_pby_row_for_wf(WinFuncColExpr* start, WinFuncColExpr *end_wf,
                                     const int64_t batch_idx);
   int64_t get_max_pby_col_cnt() const { return max_pby_col_cnt_; }
+  int32_t *get_pby_row_mapped_idx_arr() { return pby_row_mapped_idx_arr_; }
+  int32_t *get_last_row_idx_arr() { return last_row_idx_arr_; }
+  const ObSEArray<ObExpr *, 8> &get_all_part_exprs() const { return all_part_exprs_; }
 
 private:
   struct cell_info {

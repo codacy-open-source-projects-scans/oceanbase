@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_tx_log_adapter.h"
@@ -116,7 +109,6 @@ int ObLSTxLogAdapter::init(ObITxLogParam *param, ObTxTable *tx_table)
 }
 
 ERRSIM_POINT_DEF(ERRSIM_TX_NONBLOCK_SUBMIT_LOG);
-ERRSIM_POINT_DEF(EN_TX_NONBLOCK_SUBMIT_LOG_WITHOUT_RETRY);
 int ObLSTxLogAdapter::submit_log(const char *buf,
                                  const int64_t size,
                                  const SCN &base_scn,
@@ -193,7 +185,7 @@ int ObLSTxLogAdapter::submit_log(const char *buf,
         ob_usleep(sleep_us);
         cur_ts = ObTimeUtility::current_time();
       }
-    } while (OB_EAGAIN == ret && cur_ts < expire_us && EN_TX_NONBLOCK_SUBMIT_LOG_WITHOUT_RETRY == OB_SUCCESS);
+    } while (OB_EAGAIN == ret && cur_ts < expire_us);
 
   }
   TRANS_LOG(DEBUG, "ObLSTxLogAdapter::submit_ls_log", KR(ret), KP(cb));

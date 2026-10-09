@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OCEANBASE_SQL_ENGINE_PX_DFO_H__
@@ -248,7 +241,8 @@ public:
               p2p_dh_map_info_(),
               sqc_order_gi_tasks_(false),
               locations_order_(),
-              lake_table_file_desc_(allocator_)
+              lake_table_file_desc_(allocator_),
+              collect_finish_res_succ_(false)
   {}
   ~ObPxSqcMeta() = default;
   int assign(const ObPxSqcMeta &other);
@@ -360,7 +354,7 @@ public:
   bool transmit_use_interm_result() const { return transmit_use_interm_result_; }
   bool recieve_use_interm_result() const { return recieve_use_interm_result_; }
   int add_serial_recieve_channel(const ObPxReceiveDataChannelMsg &channel);
-  int set_rescan_batch_params(ObBatchRescanParams &params) { return rescan_batch_params_.assign(params); }
+  int set_rescan_batch_params(const ObBatchRescanParams &params) { return rescan_batch_params_.assign(params); }
   ObBatchRescanParams &get_rescan_batch_params() { return rescan_batch_params_; }
   common::ObIArray<ObTableLocation> &get_pruning_table_locations()
   { return partition_pruning_table_locations_; }
@@ -374,6 +368,8 @@ public:
   int64_t get_sqc_count() const { return sqc_count_;}
   void set_sqc_order_gi_tasks(bool v) { sqc_order_gi_tasks_ = v; }
   bool sqc_order_gi_tasks() const { return sqc_order_gi_tasks_; }
+  void set_collect_finish_res_succ(bool v) { collect_finish_res_succ_ = v; }
+  bool collect_finish_res_succ() const { return collect_finish_res_succ_; }
   inline void set_partition_random_affinitize(bool partition_random_affinitize)
   {
     partition_random_affinitize_ = partition_random_affinitize;
@@ -473,6 +469,7 @@ private:
   ObSEArray<std::pair<int64_t, bool>, 18> locations_order_;
   // for lake table file
   ObLakeTableFileDesc lake_table_file_desc_;
+  bool collect_finish_res_succ_;
 };
 
 class ObDfo
@@ -520,8 +517,10 @@ public:
     parent_dfo_id_(common::OB_INVALID_ID),
     px_sequence_id_(common::OB_INVALID_ID),
     temp_table_id_(0),
-    in_slave_mapping_type_(SlaveMappingType::SM_NONE),
+    in_slave_mapping_types_(),
+    in_slave_mapping_ids_(),
     out_slave_mapping_type_(SlaveMappingType::SM_NONE),
+    out_slave_mapping_id_(0),
     part_ch_map_(),
     dist_method_(ObPQDistributeMethod::NONE),
     use_scatter_channel_for_pkey_hash_(false),
@@ -589,17 +588,22 @@ public:
   inline void set_into_odps(bool has_into_odps) { has_into_odps_ = has_into_odps; }
   inline bool has_into_odps() const { return has_into_odps_; }
   inline bool is_fast_dfo() const { return is_prealloc_receive_channel() || is_prealloc_transmit_channel(); }
-  inline void set_in_slave_mapping_type(SlaveMappingType v) { in_slave_mapping_type_ = v; }
   inline void set_out_slave_mapping_type(SlaveMappingType v) { out_slave_mapping_type_ = v; }
-  inline SlaveMappingType get_in_slave_mapping_type() { return in_slave_mapping_type_; }
-  inline SlaveMappingType get_out_slave_mapping_type() { return out_slave_mapping_type_; }
-  inline bool is_in_slave_mapping() { return SlaveMappingType::SM_NONE != in_slave_mapping_type_; }
+  inline void set_out_slave_mapping_id(int64_t v) { out_slave_mapping_id_ = v; }
+  inline SlaveMappingType get_out_slave_mapping_type() const { return out_slave_mapping_type_; }
+  inline int64_t get_out_slave_mapping_id() const { return out_slave_mapping_id_; }
   inline bool is_out_slave_mapping() { return SlaveMappingType::SM_NONE != out_slave_mapping_type_; }
   inline void set_use_scatter_channel_for_pkey_hash(bool use_scatter_channel_for_pkey_hash)
   {
     use_scatter_channel_for_pkey_hash_ = use_scatter_channel_for_pkey_hash;
   }
   inline bool use_scatter_channel_for_pkey_hash() const { return use_scatter_channel_for_pkey_hash_; }
+
+  int append_in_slave_mapping_child(const SlaveMappingType v,
+                                    const int64_t slave_mapping_id);
+  bool is_in_slave_mapping() const { return in_slave_mapping_types_.count() > 0; }
+  bool has_reference_child() const ;
+  int64_t get_first_ref_child_sm_id() const;
 
   ObPxPartChMapArray &get_part_ch_map() { return part_ch_map_; }
 
@@ -746,7 +750,7 @@ public:
                KP_(depend_sibling),
                KP_(parent),
                "child", get_child_count(),
-               K_(in_slave_mapping_type),
+               K_(in_slave_mapping_types),
                K_(out_slave_mapping_type),
                K_(dist_method),
                K_(pkey_table_loc_id),
@@ -814,8 +818,13 @@ private:
   int64_t parent_dfo_id_;
   uint64_t px_sequence_id_;
   uint64_t temp_table_id_;
-  SlaveMappingType in_slave_mapping_type_;
+
+  // a parent dfo may has more than one slave mapping childs
+  ObTMArray<SlaveMappingType> in_slave_mapping_types_;
+  ObTMArray<int64_t> in_slave_mapping_ids_;
+  // a child dfo only has one slave mapping output to parent
   SlaveMappingType out_slave_mapping_type_;
+  int64_t out_slave_mapping_id_;
   ObPxPartChMapArray part_ch_map_;
   ObPQDistributeMethod::Type dist_method_;
   bool use_scatter_channel_for_pkey_hash_;

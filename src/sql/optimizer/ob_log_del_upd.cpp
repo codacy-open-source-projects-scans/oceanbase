@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -40,7 +33,7 @@ int IndexDMLInfo::deep_copy(ObIRawExprCopier &expr_copier, const IndexDMLInfo &o
   is_update_part_key_ = other.is_update_part_key_;
   is_update_primary_key_ = other.is_update_primary_key_;
   is_vec_hnsw_index_vid_opt_ = other.is_vec_hnsw_index_vid_opt_;
-  is_compaction_scn_ttl_di_table_ = other.is_compaction_scn_ttl_di_table_;
+  is_compaction_ttl_table_ = other.is_compaction_ttl_table_;
   assignments_.reset();
   if (OB_FAIL(expr_copier.copy(other.column_exprs_, column_exprs_))) {
     LOG_WARN("failed to assign column exprs", K(ret));
@@ -86,7 +79,7 @@ int IndexDMLInfo::assign_basic(const IndexDMLInfo &other)
   is_update_primary_key_ = other.is_update_primary_key_;
   trans_info_expr_ = other.trans_info_expr_;
   is_vec_hnsw_index_vid_opt_ = other.is_vec_hnsw_index_vid_opt_;
-  is_compaction_scn_ttl_di_table_ = other.is_compaction_scn_ttl_di_table_;
+  is_compaction_ttl_table_ = other.is_compaction_ttl_table_;
   if (OB_FAIL(column_exprs_.assign(other.column_exprs_))) {
     LOG_WARN("failed to assign column exprs", K(ret));
   } else if (OB_FAIL(column_convert_exprs_.assign(other.column_convert_exprs_))) {
@@ -230,6 +223,15 @@ int IndexDMLInfo::init_column_convert_expr(const ObAssignments &assignments)
         insert_expr = const_cast<ObRawExpr *>(assignments.at(j).expr_);
         found++;
         break;
+      }
+    }
+    // PDML split insert (delete + insert): columns not in SET keep column refs. For HNSW vector vid,
+    // that would re-read the old vid while PK already changed — delta buffer insert then duplicates (vid,'I').
+    // Use the generated VEC_VID expression (dependant_expr), consistent with non-PDML update new_row.
+    if (OB_SUCC(ret) && OB_NOT_NULL(insert_expr) && insert_expr->is_column_ref_expr()) {
+      ObColumnRefRawExpr *col_ref = static_cast<ObColumnRefRawExpr *>(insert_expr);
+      if (col_ref->is_vec_hnsw_vid_column() && OB_NOT_NULL(col_ref->get_dependant_expr())) {
+        insert_expr = col_ref->get_dependant_expr();
       }
     }
     if (OB_ISNULL(insert_expr)) {

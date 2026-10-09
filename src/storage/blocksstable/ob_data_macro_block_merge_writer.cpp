@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include "storage/blocksstable/ob_data_macro_block_merge_writer.h"
 #include "storage/blocksstable/ob_data_store_desc.h"
@@ -46,7 +39,8 @@ int ObDataMacroBlockMergeWriter::open(
     ObISSTableObjectCleaner &object_cleaner,
     ObIMacroBlockFlushCallback *callback,
     ObIMacroBlockValidator *validator,
-    ObIODevice *device_handle)
+    ObIODevice *device_handle,
+    const storage::ObITableReadInfo *merge_micro_block_read_info)
 {
   UNUSED(device_handle);
   int ret = OB_SUCCESS;
@@ -56,7 +50,7 @@ int ObDataMacroBlockMergeWriter::open(
   next_block_use_freespace_ = false;
   if (OB_FAIL(ObMacroBlockWriter::open(
           data_store_desc, parallel_idx, macro_seq_param, pre_warm_param,
-          object_cleaner, callback, validator))) {
+          object_cleaner, callback, validator, device_handle, merge_micro_block_read_info))) {
     STORAGE_LOG(WARN, "Fail to open macro block writer", K(ret));
   }
 
@@ -85,7 +79,8 @@ int ObDataMacroBlockMergeWriter::append_row(
 
 int ObDataMacroBlockMergeWriter::append_micro_block(
     const ObMicroBlock &micro_block,
-    const ObMacroBlockDesc *curr_macro_desc)
+    const ObMacroBlockDesc *curr_macro_desc,
+    compaction::ObMergeVectorStore *read_vector_store)
 {
   int ret = OB_SUCCESS;
   if (OB_NOT_NULL(curr_macro_desc) && OB_UNLIKELY(!curr_macro_desc->is_valid_with_macro_meta())) {
@@ -96,7 +91,7 @@ int ObDataMacroBlockMergeWriter::append_micro_block(
   }
 
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(ObMacroBlockWriter::append_micro_block(micro_block))) {
+  } else if (OB_FAIL(ObMacroBlockWriter::append_micro_block(micro_block, curr_macro_desc, read_vector_store))) {
     STORAGE_LOG(WARN, "ObMacroBlockWriter fail to append_micro_block", K(ret));
   } else if (check_need_switch_macro_block()) {
     if (OB_FAIL(try_switch_macro_block())) {

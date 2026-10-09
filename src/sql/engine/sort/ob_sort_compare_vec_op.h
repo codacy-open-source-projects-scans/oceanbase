@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_SORT_SORT_COMPARE_VEC_OP_H_
@@ -135,6 +128,15 @@ template <typename Store_Row, bool has_addon>
 class GeneralCompare : public CompareBase
 {
 public:
+  struct StableTopNSortKey
+  {
+  public:
+    StableTopNSortKey() : row_(nullptr), seq_num_(0) {}
+    StableTopNSortKey(const Store_Row *row, int64_t seq_num) : row_(const_cast<Store_Row *>(row)), seq_num_(seq_num) {}
+    Store_Row *row_;
+    int64_t seq_num_;
+    TO_STRING_KV(KP(row_), K(seq_num_));
+  };
   using SortVecOpChunk = ObSortVecOpChunk<Store_Row, has_addon>;
   GeneralCompare(ObIAllocator &allocator) : CompareBase(allocator)
   {}
@@ -162,6 +164,7 @@ public:
   }
   int with_ties_cmp(const Store_Row *r, ObEvalCtx &eval_ctx);
   int with_ties_cmp(const Store_Row *l, const Store_Row *r);
+  int stable_cmp(const StableTopNSortKey &l, const StableTopNSortKey &r);
 
 protected:
   int compare(const Store_Row *l, const Store_Row *r, const RowMeta *row_meta);
@@ -177,6 +180,15 @@ class SingleColCompare : public CompareBase
   typedef int (SingleColCompare::*CmpFunc) (const Store_Row*, const Store_Row*, const RowMeta*);
   typedef int (SingleColCompare::*TopNCmpFunc) (const Store_Row*, ObEvalCtx&, const RowMeta*);
 public:
+  struct StableTopNSortKey
+  {
+  public:
+    StableTopNSortKey() : row_(nullptr), seq_num_(0) {}
+    StableTopNSortKey(const Store_Row *row, int64_t seq_num) : row_(const_cast<Store_Row *>(row)), seq_num_(seq_num) {}
+    Store_Row *row_;
+    int64_t seq_num_;
+    TO_STRING_KV(KP(row_), K(seq_num_));
+  };
   using SortVecOpChunk = ObSortVecOpChunk<Store_Row, has_addon>;
   SingleColCompare(ObIAllocator &allocator) : CompareBase(allocator)
   {}
@@ -210,6 +222,7 @@ public:
   }
   OB_INLINE int with_ties_cmp(const Store_Row *r, ObEvalCtx &eval_ctx);
   OB_INLINE int with_ties_cmp(const Store_Row *l, const Store_Row *r);
+  int stable_cmp(const StableTopNSortKey &l, const StableTopNSortKey &r);
 
 protected:
   OB_INLINE int compare(const Store_Row *l, const Store_Row *r, const RowMeta *row_meta);
@@ -276,6 +289,15 @@ class FixedCompare : public CompareBase
 
 public:
   using SortVecOpChunk = ObSortVecOpChunk<Store_Row, has_addon>;
+  struct StableTopNSortKey
+  {
+  public:
+    StableTopNSortKey() : row_(nullptr), seq_num_(0) {}
+    StableTopNSortKey(const Store_Row *row, int64_t seq_num) : row_(const_cast<Store_Row *>(row)), seq_num_(seq_num) {}
+    Store_Row *row_;
+    int64_t seq_num_;
+    TO_STRING_KV(KP(row_), K(seq_num_));
+  };
   FixedCompare(ObIAllocator &allocator) : CompareBase(allocator), basic_cmp_funcs_(allocator)
   {}
   ~FixedCompare()
@@ -311,6 +333,7 @@ public:
     ret_ = OB_NOT_IMPLEMENT;
     return 0;
   }
+  int stable_cmp(const StableTopNSortKey &l, const StableTopNSortKey &r);
 
 protected:
   int compare(const Store_Row *l, const Store_Row *r, const RowMeta *row_meta);

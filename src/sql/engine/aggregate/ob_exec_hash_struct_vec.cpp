@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL_ENG
 
@@ -37,7 +30,7 @@ int ShortStringAggregator::fallback_calc_hash_value_batch(const common::ObIArray
     } else {
       const bool is_batch_seed = (i > 0);
       ObIVector *col_vec = expr->get_vector(eval_ctx);
-      if (OB_FAIL(col_vec->murmur_hash_v3(*expr, new_hash_values, *child_brs.skip_,
+      if (OB_FAIL(col_vec->hash(*expr, new_hash_values, *child_brs.skip_,
                                           EvalBound(child_brs.size_, child_brs.all_rows_active_),
                                           is_batch_seed ? new_hash_values : &seed, is_batch_seed))) {
         LOG_WARN("failed to calc hash value", K(ret));

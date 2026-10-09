@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -89,6 +82,72 @@ int ObDropExternalResourceArg::assign(const ObDropExternalResourceArg &other)
 
 OB_SERIALIZE_MEMBER(ObCreateExternalResourceRes, resource_id_, schema_version_);
 OB_SERIALIZE_MEMBER(ObDropExternalResourceRes, resource_id_, schema_version_, type_);
+
+int ObOraUploadJarArg::assign(const ObOraUploadJarArg &other)
+{
+  int ret = OB_SUCCESS;
+
+  if (this == &other) {
+    // do nothing
+  } else if (!other.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(ret), K(other));
+  } else if (OB_FAIL(ObDDLArg::assign(other))) {
+    LOG_WARN("failed to assign base class", K(ret), K(*this), K(other));
+  } else if (OB_FAIL(class_names_.assign(other.class_names_))) {
+    LOG_WARN("failed to assign class names", K(ret), K(*this), K(other));
+  } else {
+    tenant_id_ = other.tenant_id_;
+    database_id_ = other.database_id_;
+    jar_name_ = other.jar_name_;
+    jar_binary_ = other.jar_binary_;
+  }
+
+  return ret;
+}
+
+bool ObOraUploadJarArg::is_valid() const
+{
+  return is_valid_tenant_id(tenant_id_)
+           && OB_INVALID_ID != database_id_
+           && !jar_name_.empty()
+           && !jar_binary_.empty()
+           && !class_names_.empty();
+}
+
+OB_SERIALIZE_MEMBER((ObOraUploadJarArg, ObDDLArg), tenant_id_, database_id_, jar_name_, jar_binary_, class_names_, is_force_);
+OB_SERIALIZE_MEMBER(ObOraUploadJarRes, jar_id_, schema_version_, class_ids_, del_jar_id_, del_class_ids_);
+
+int ObOraDropJarArg::assign(const ObOraDropJarArg &other)
+{
+  int ret = OB_SUCCESS;
+
+  if (this == &other) {
+    // do nothing
+  } else if (!other.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid arg", K(ret), K(other));
+  } else if (OB_FAIL(ObDDLArg::assign(other))) {
+    LOG_WARN("failed to assign base class", K(ret), K(*this), K(other));
+  } else if (OB_FAIL(class_names_.assign(other.class_names_))) {
+    LOG_WARN("failed to assign class names", K(ret), K(*this), K(other));
+  } else {
+    tenant_id_ = other.tenant_id_;
+    jar_id_ = other.jar_id_;
+  }
+
+  return ret;
+}
+
+bool ObOraDropJarArg::is_valid() const
+{
+  return is_valid_tenant_id(tenant_id_)
+           && OB_INVALID_ID != jar_id_
+           && !class_names_.empty();
+}
+
+OB_SERIALIZE_MEMBER((ObOraDropJarArg, ObDDLArg), tenant_id_, jar_id_, class_names_);
+OB_SERIALIZE_MEMBER(ObOraDropJarRes, jar_id_, schema_version_, del_class_ids_);
 
 } // namespace obrpc
 } // namespace oceanbase

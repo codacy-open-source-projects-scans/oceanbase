@@ -1,17 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
 #include "ob_pl_type.h"
+#include "lib/utility/ob_print_utils.h"
+#include "sql/ob_spi.h"
 #include "observer/mysql/obsm_utils.h"
 #include "src/sql/resolver/ob_resolver_utils.h"
 #include "ob_pl_code_generator.h"
@@ -114,7 +109,7 @@ int ObPLDataType::get_pkg_type_by_name(uint64_t tenant_id,
                                        ObPLResolveCache *resolve_cache)
 {
   int ret = OB_SUCCESS;
-  ObArenaAllocator allocator;
+  ObArenaAllocator allocator("GetPkgType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   const share::schema::ObPackageInfo *package_info = NULL;
   int64_t compatible_mode = lib::is_oracle_mode() ? COMPATIBLE_ORACLE_MODE
                                                   : COMPATIBLE_MYSQL_MODE;
@@ -225,7 +220,7 @@ int ObPLDataType::get_table_type_by_name(uint64_t tenant_id,
                                          ObPLResolveCache *resolve_cache)
 {
   int ret = OB_SUCCESS;
-  ObArenaAllocator allocator;
+  ObArenaAllocator allocator("GetTableType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
   const ObTableSchema *table_info = NULL;
   ObPLPackageGuard dummy_guard(session_info.get_effective_tenant_id());
   ObMySQLProxy dummy_proxy;
@@ -475,6 +470,47 @@ int ObPLDataType::transform_from_iparam(const ObRoutineParam *iparam,
   }
   return ret;
 }
+
+#ifdef OB_BUILD_ORACLE_PL
+int ObPLDataType::to_type_str(const ObPLDataType &pl_type,
+                                         char *buf, int64_t buf_len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(pl_type.get_data_type())) {
+    const ObDataType *data_type = pl_type.get_data_type();
+    const char *type_name = ob_obj_type_str(data_type->get_meta_type().get_type());
+    OZ (databuff_printf(buf, buf_len, pos, "%s", type_name));
+  } else {
+    // Oracle EXTEND_TYPE format: REF CURSOR, OBJECT, VARRAY, TABLE, PL/SQL RECORD, PL/SQL TABLE, OPAQUE/XMLTYPE
+    switch (pl_type.get_type()) {
+      case PL_RECORD_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "%s",
+                            pl_type.is_udt_type() ? "OBJECT" : "PL/SQL RECORD"));
+        break;
+      case PL_VARRAY_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "VARRAY"));
+        break;
+      case PL_NESTED_TABLE_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "TABLE"));
+        break;
+      case PL_ASSOCIATIVE_ARRAY_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "PL/SQL TABLE"));
+        break;
+      case PL_OPAQUE_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "OPAQUE/XMLTYPE"));
+        break;
+      case PL_REF_CURSOR_TYPE:
+      case PL_CURSOR_TYPE:
+        OZ (databuff_printf(buf, buf_len, pos, "REF CURSOR"));
+        break;
+      default:
+        OZ (databuff_printf(buf, buf_len, pos, "EXT"));
+        break;
+    }
+  }
+  return ret;
+}
+#endif
 
 int ObPLDataType::transform_and_add_routine_param(const pl::ObPLRoutineParam *param,
                                                   int64_t position,
@@ -1129,7 +1165,7 @@ int ObPLDataType::serialize(share::schema::ObSchemaGetterGuard &schema_guard,
   } else {
     const ObUserDefinedType *user_type = NULL;
     const ObUDTTypeInfo *udt_info = NULL;
-    ObArenaAllocator local_allocator;
+    ObArenaAllocator local_allocator("SerUdtType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
     const uint64_t tenant_id = get_tenant_id_by_object_id(get_user_type_id());
     if (!is_udt_type()) {
       ret = OB_NOT_SUPPORTED;
@@ -1171,7 +1207,7 @@ int ObPLDataType::deserialize(ObSchemaGetterGuard &schema_guard,
     uint16_t flags;
     ObScale num_decimals;
     ObObj param;
-    ObArenaAllocator local_allocator;
+    ObArenaAllocator local_allocator("DeserUdtType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
     if (OB_FAIL(get_size(PL_TYPE_INIT_SIZE, init_size))) {
       LOG_WARN("get base type init size failed", K(ret));
     } else if (OB_ISNULL(dst) || (dst_len - dst_pos < init_size)) {
@@ -1202,7 +1238,7 @@ int ObPLDataType::deserialize(ObSchemaGetterGuard &schema_guard,
   } else {
     const ObUserDefinedType *user_type = NULL;
     const ObUDTTypeInfo *udt_info = NULL;
-    ObArenaAllocator local_allocator;
+    ObArenaAllocator local_allocator("DeserUdtType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
     const uint64_t tenant_id = get_tenant_id_by_object_id(get_user_type_id());
     ObObj *obj = reinterpret_cast<ObObj *>(dst + dst_pos);
     int64_t new_dst_len = 0;
@@ -2437,6 +2473,19 @@ int ObPLCursorInfo::deep_copy(ObPLCursorInfo &src, common::ObIAllocator *allocat
   return ret;
 }
 
+void ObPLCursorInfo::open(void *spi_cursor)
+{
+  spi_cursor != NULL ? (void)NULL : reset();
+  isopen_ = true;
+  spi_cursor_ = spi_cursor;
+  is_explicit_ = spi_cursor != NULL;
+  reset_cursor_total_time();
+  if (is_streaming_ && OB_NOT_NULL(spi_cursor)) {
+    sql::ObSPIResultSet *spi_result = static_cast<sql::ObSPIResultSet*>(spi_cursor);
+    spi_result->set_streaming_stat_pending(true);
+  }
+}
+
 int ObPLCursorInfo::close(sql::ObSQLSessionInfo &session, bool is_reuse, bool close_by_open_thread)
 {
   int ret = OB_SUCCESS;
@@ -2681,7 +2730,7 @@ int ObPLCursorInfo::prepare_spi_result(ObPLExecCtx *ctx, ObSPIResultSet *&spi_re
   OX (spi_result = new (spi_cursor_) ObSPIResultSet());
   OX (last_stream_cursor_ = true);
   if (OB_FAIL(ret)) {
-  } else if (OB_FAIL(spi_result->init(*ctx->exec_ctx_->get_my_session()))) {
+  } else if (OB_FAIL(spi_result->init_memory_context(*ctx->exec_ctx_->get_my_session()))) {
     LOG_WARN("spi result init failed", K(ret));
     if (is_ps_cursor()) {
       spi_result->~ObSPIResultSet();
@@ -2813,7 +2862,7 @@ int ObPsCursorInfo::close(sql::ObSQLSessionInfo &session,
                           bool close_by_open_thread)
 {
   int ret = OB_SUCCESS;
-  LOG_INFO("close ps cursor start", K(ret), K(session.get_server_sid()), K(is_reuse), K(close_by_open_thread), K(lbt()));
+  LOG_TRACE("close ps cursor start", K(ret), K(session.get_server_sid()), K(is_reuse), K(close_by_open_thread), K(lbt()));
   if (!close_by_open_thread && is_async()) {
     while (OB_SUCCESS == get_store_ret() && !is_client_close()) {
       ObSpinLockGuard guard(spin_lock_);
@@ -2824,7 +2873,9 @@ int ObPsCursorInfo::close(sql::ObSQLSessionInfo &session,
     if (OB_NOT_NULL(spi_result)) {
       if (OB_NOT_NULL(spi_result->get_result_set())) {
         spi_result->destruct_exec_params(session);
+        const int64_t saved_affected_rows = session.get_affected_rows();
         int close_ret = spi_result->close_result_set();
+        session.set_affected_rows(saved_affected_rows);
         if (OB_SUCCESS != close_ret) {
           LOG_WARN("close mysql result failed", K(close_ret));
         }
@@ -2865,7 +2916,7 @@ int ObPsCursorInfo::close(sql::ObSQLSessionInfo &session,
   if (FAILEDx(ObPLCursorInfo::close(session, is_reuse))) {
     LOG_WARN("pl cursor info close failed", K(ret));
   }
-  LOG_INFO("close ps cursor end", K(ret), K(session.get_server_sid()), K(lbt()));
+  LOG_TRACE("close ps cursor end", K(ret), K(session.get_server_sid()), K(lbt()));
   return ret;
 }
 

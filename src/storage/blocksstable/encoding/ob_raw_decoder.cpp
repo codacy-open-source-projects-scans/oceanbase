@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -1643,6 +1636,7 @@ class RawAggFunctionImpl
       const uint64_t null_value,
       uint32_t from,
       uint32_t to,
+      bool &has_null,
       uint64_t &res)
   {
     const DataType *start_pos = reinterpret_cast<const DataType *>(raw_data);
@@ -1656,6 +1650,8 @@ class RawAggFunctionImpl
         } else if (Op::apply(*a_pos, res_value)) {
           res_value = *a_pos;
         }
+      } else {
+        has_null = true;
       }
       ++a_pos;
     }

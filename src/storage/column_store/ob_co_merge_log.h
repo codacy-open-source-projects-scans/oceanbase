@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file is for define of plugin vector index util
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OB_STORAGE_COLUMN_STORE_OB_CO_MERGE_LOG_H_
 #define OB_STORAGE_COLUMN_STORE_OB_CO_MERGE_LOG_H_
@@ -20,7 +12,9 @@
 #include "storage/tmp_file/ob_tmp_file_manager.h"
 #include "storage/compaction/ob_basic_tablet_merge_ctx.h"
 #include "storage/compaction/ob_compaction_schedule_util.h"
+#include "storage/compaction/vectorization/ob_merge_vector_store.h"
 
+#include "storage/blocksstable/ob_datum_row.h"
 namespace oceanbase
 {
 namespace compaction
@@ -31,7 +25,7 @@ struct ObMergeLog final {
 public:
   OB_UNIS_VERSION(1);
 public:
-  enum OpType : uint8_t {
+  enum OpType : uint8_t { //FARM COMPAT WHITELIST
     INSERT = 1,
     UPDATE,
     DELETE,
@@ -105,6 +99,8 @@ public:
   const blocksstable::ObDatumRow &get_project_row() const { return project_row_; }
   int project(const blocksstable::ObDatumRow &row);
   int project(const blocksstable::ObDatumRow &row, blocksstable::ObDatumRow &result_row, bool &is_all_nop) const;
+  OB_INLINE const uint16_t *get_projector() const { return projector_; }
+  OB_INLINE int64_t get_projector_count() const { return projector_count_; }
   TO_STRING_KV(K_(is_inited), K_(projector), K_(project_row))
 private:
   void clean_project_row();
@@ -125,8 +121,8 @@ public:
   virtual ~ObCOMergeLogIterator() = default;
   virtual int init(ObBasicTabletMergeCtx &ctx, const int64_t idx, const int64_t cg_idx) = 0;
   virtual void reset() = 0;
-  // when mergelog.op_ = REPLAY, row = nullptr
-  virtual int get_next_log(ObMergeLog &mergelog, const blocksstable::ObDatumRow *&row) = 0;
+  // when mergelog.op_ = REPLAY, row = nullptr, vector_store = nullptr
+  virtual int get_next_log(ObMergeLog &mergelog, const ObMergeVectorStore *&vector_store, const blocksstable::ObDatumRow *&row) = 0;
   virtual int close() = 0;
   // for unittest / debug: expose major-merge-helper allocated iterators (major sstable) to check iterator type.
   // NOTE: this API appends into `iters`; caller should pass an empty array.
@@ -484,6 +480,7 @@ public:
   int init(
       const common::ObIArray<ObStorageColumnGroupSchema> &cg_array,
       const int64_t file_block_size,
+      const bool has_all_column_group,
       const bool skip_base_cg = false);
   void reset();
   int close_part(const int64_t start_cg_idx, const int64_t end_cg_idx);

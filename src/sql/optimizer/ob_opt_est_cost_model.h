@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OPTIMIZER_OB_OPT_EST_COST_MODEL_
@@ -66,7 +59,11 @@ struct ObTableMetaInfo
       is_broadcast_table_(false),
       lake_table_format_(share::ObLakeTableFormat::INVALID),
       lake_table_file_count_(0),
-      lake_table_snapshot_id_(OB_INVALID_ID)
+      lake_table_snapshot_id_(OB_INVALID_ID),
+      external_format_type_(-1),
+      total_file_size_(0),
+      schema_row_width_(0),
+      is_local_external_storage_(false)
   { }
   virtual ~ObTableMetaInfo()
   { }
@@ -86,6 +83,10 @@ struct ObTableMetaInfo
     micro_block_count_ = 0;
     table_type_ = share::schema::MAX_TABLE_TYPE;
     is_broadcast_table_ = false;
+    external_format_type_ = -1;
+    total_file_size_ = 0;
+    schema_row_width_ = 0;
+    is_local_external_storage_ = false;
   }
 
   void assign(const ObTableMetaInfo &table_meta_info);
@@ -116,6 +117,10 @@ struct ObTableMetaInfo
   share::ObLakeTableFormat lake_table_format_;
   int64_t lake_table_file_count_;
   int64_t lake_table_snapshot_id_;
+  int64_t external_format_type_;
+  int64_t total_file_size_;
+  int64_t schema_row_width_;
+  bool is_local_external_storage_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObTableMetaInfo);
 };
@@ -268,6 +273,7 @@ struct ObCostTableScanInfo
      pushdown_prefix_filter_sel_(1.0),
      postfix_filter_sel_(1.0),
      table_filter_sel_(1.0),
+     non_partition_filter_sel_(1.0),
      join_filter_sel_(1.0),
      ss_prefix_ndv_(1.0),
      ss_postfix_range_filters_sel_(1.0),
@@ -346,6 +352,7 @@ struct ObCostTableScanInfo
   double pushdown_prefix_filter_sel_;
   double postfix_filter_sel_;
   double table_filter_sel_;
+  double non_partition_filter_sel_;  // non-partition-column filter sel for external tables
   double join_filter_sel_;
   double ss_prefix_ndv_;  // skip scan prefix columns NDV
   double ss_postfix_range_filters_sel_;
@@ -663,16 +670,18 @@ struct ObExchInCostInfo
                    double width,
                    ObPQDistributeMethod::Type dist_method,
                    int64_t parallel,
-                    int64_t server_cnt,
+                   int64_t server_cnt,
                    bool is_local_order,
-                   const ObIArray<OrderItem> &sort_keys)
+                   const ObIArray<OrderItem> &sort_keys,
+                   double popular_values_ratio = 0.0)
   : sort_keys_(sort_keys),
     rows_(rows),
     width_(width),
     dist_method_(dist_method),
     parallel_(parallel),
     server_cnt_(server_cnt),
-    is_local_order_(is_local_order)
+    is_local_order_(is_local_order),
+    popular_values_ratio_(popular_values_ratio)
   {}
   const ObIArray<OrderItem> &sort_keys_;
   double rows_;
@@ -681,6 +690,7 @@ struct ObExchInCostInfo
   int64_t parallel_;
   int64_t server_cnt_;
   bool is_local_order_;
+  double popular_values_ratio_;
 };
 
 struct ObExchOutCostInfo
@@ -689,18 +699,21 @@ struct ObExchOutCostInfo
                     double width,
                     ObPQDistributeMethod::Type dist_method,
                     int64_t parallel,
-                    int64_t server_cnt)
+                    int64_t server_cnt,
+                    double popular_values_ratio = 0.0)
   : rows_(rows),
     width_(width),
     dist_method_(dist_method),
     parallel_(parallel),
-    server_cnt_(server_cnt)
+    server_cnt_(server_cnt),
+    popular_values_ratio_(popular_values_ratio)
   {}
   double rows_;
   double width_;
   ObPQDistributeMethod::Type dist_method_;
   int64_t parallel_;
   int64_t server_cnt_;
+  double popular_values_ratio_;
 };
 
 class ObOptEstCostModel
@@ -714,10 +727,13 @@ public:
 	ObOptEstCostModel(const ObOptCostModelParameter &cost_params,
                     const OptSystemStat &stat)
 		:cost_params_(cost_params),
-    sys_stat_(stat)
+    sys_stat_(stat),
+    udf_cost_factor_(1.0)
 	{}
 
   virtual ~ObOptEstCostModel()=default;
+
+  void set_udf_cost_factor(double f) { udf_cost_factor_ = f; }
 
   int cost_nestloop(const ObCostNLJoinInfo &est_cost_info,
 										double &cost);
@@ -930,6 +946,10 @@ protected:
                         const double part_cnt_per_dop,
 												double &cost);
 
+  int cost_external_table(const ObCostTableScanInfo &est_cost_info,
+                          int64_t parallel,
+                          double &cost);
+
   int cost_index_scan(const ObCostTableScanInfo &est_cost_info,
                       double row_count,
                       double &cost);
@@ -991,6 +1011,7 @@ protected:
 protected:
   const ObOptCostModelParameter &cost_params_;
   const OptSystemStat &sys_stat_;
+  double udf_cost_factor_;
   DISALLOW_COPY_AND_ASSIGN(ObOptEstCostModel);
 };
 

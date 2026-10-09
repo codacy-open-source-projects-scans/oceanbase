@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_AGGREGATE_CTX_H_
@@ -82,6 +75,13 @@ struct AggrRowMeta
   {
     return static_cast<const char *>(locate_cell_payload(col_id, const_cast<char *>(agg_row)));
   }
+  inline int32_t get_fixed_cell_len(const int32_t col_id) const
+  {
+    OB_ASSERT(col_id < col_cnt_);
+    OB_ASSERT(col_offsets_ != nullptr);
+    OB_ASSERT(tmp_res_sizes_ != nullptr);
+    return col_offsets_[col_id + 1] - col_offsets_[col_id] - tmp_res_sizes_[col_id];
+  }
   inline int32_t get_cell_len(const int32_t col_id, const char *row) const
   {
     OB_ASSERT(col_id < col_cnt_);
@@ -90,7 +90,7 @@ struct AggrRowMeta
     if (use_var_len_ != nullptr && use_var_len_->at(col_id)) {
       return *reinterpret_cast<const int32_t *>(row + col_offsets_[col_id] + sizeof(char *));
     } else {
-      return col_offsets_[col_id + 1] - col_offsets_[col_id] - tmp_res_sizes_[col_id];
+      return get_fixed_cell_len(col_id);
     }
   }
 
@@ -264,6 +264,12 @@ struct RuntimeContext
                                                           const char *agg_cell)
   {
     return get_extra_stores(agg_col_id, agg_cell)->data_store;
+  }
+
+  inline WindowFunnelVecExtraResult *&get_extra_window_funnel_store(const int64_t agg_col_id,
+                                                                 const char *agg_cell)
+  {
+    return get_extra_stores(agg_col_id, agg_cell)->window_funnel_store_;
   }
 
   inline TopFreHistVecExtraResult *&get_extra_top_fre_hist_store(const int64_t agg_col_id,

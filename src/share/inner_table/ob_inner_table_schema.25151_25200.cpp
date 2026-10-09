@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -876,7 +869,7 @@ int ObInnerTableSchema::dba_ob_tablegroups_ora_schema(ObTableSchema &table_schem
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT TABLEGROUP_NAME,           CAST('NONE' AS VARCHAR2(13)) AS PARTITIONING_TYPE,           CAST('NONE' AS VARCHAR2(13)) AS SUBPARTITIONING_TYPE,           CAST(NULL AS NUMBER) AS PARTITION_COUNT,           CAST(NULL AS NUMBER) AS DEF_SUBPARTITION_COUNT,           CAST(NULL AS NUMBER) AS PARTITIONING_KEY_COUNT,           CAST(NULL AS NUMBER) AS SUBPARTITIONING_KEY_COUNT,           SHARDING   FROM SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT   )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT TABLEGROUP_NAME,           CAST('NONE' AS VARCHAR2(13)) AS PARTITIONING_TYPE,           CAST('NONE' AS VARCHAR2(13)) AS SUBPARTITIONING_TYPE,           CAST(NULL AS NUMBER) AS PARTITION_COUNT,           CAST(NULL AS NUMBER) AS DEF_SUBPARTITION_COUNT,           CAST(NULL AS NUMBER) AS PARTITIONING_KEY_COUNT,           CAST(NULL AS NUMBER) AS SUBPARTITIONING_KEY_COUNT,           SHARDING,          (CASE             WHEN SCOPE IS NULL OR SCOPE IN ('', 'NULL') THEN               (CASE                  WHEN UPPER(SHARDING) = 'NONE' THEN 'SERVER'                  WHEN UPPER(SHARDING) IN ('PARTITION', 'ADAPTIVE') THEN 'CLUSTER'                END)             ELSE SCOPE           END) AS SCOPE   FROM SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT   )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -1029,7 +1022,7 @@ int ObInnerTableSchema::dba_ob_databases_ora_schema(ObTableSchema &table_schema)
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT D.DATABASE_NAME AS DATABASE_NAME,          (CASE D.IN_RECYCLEBIN WHEN 0 THEN 'NO' ELSE 'YES' END) AS IN_RECYCLEBIN,          C.COLLATION AS COLLATION,          (CASE D.READ_ONLY WHEN 0 THEN 'NO' ELSE 'YES' END) AS READ_ONLY,          D."COMMENT" AS "COMMENT",          TG.TABLEGROUP_NAME AS TABLEGROUP_NAME   FROM SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT D   LEFT JOIN SYS.TENANT_VIRTUAL_COLLATION C   ON D.COLLATION_TYPE = C.COLLATION_TYPE   LEFT JOIN SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT TG   ON D.TENANT_ID = TG.TENANT_ID AND D.DEFAULT_TABLEGROUP_ID = TG.TABLEGROUP_ID   )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT D.DATABASE_NAME AS DATABASE_NAME,          (CASE D.IN_RECYCLEBIN WHEN 0 THEN 'NO' ELSE 'YES' END) AS IN_RECYCLEBIN,          C.COLLATION AS COLLATION,          (CASE D.READ_ONLY WHEN 0 THEN 'NO' ELSE 'YES' END) AS READ_ONLY,          D."COMMENT" AS "COMMENT",          TG.TABLEGROUP_NAME AS TABLEGROUP_NAME,          (SELECT TS.TABLESPACE_NAME             FROM SYS.ALL_VIRTUAL_TENANT_TABLESPACE_REAL_AGENT TS            WHERE TS.TENANT_ID = D.TENANT_ID              AND TS.TABLESPACE_ID = D.DEFAULT_TABLESPACE_ID) AS DEFAULT_TABLESPACE   FROM SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT D   LEFT JOIN SYS.TENANT_VIRTUAL_COLLATION C   ON D.COLLATION_TYPE = C.COLLATION_TYPE   LEFT JOIN SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT TG   ON D.TENANT_ID = TG.TENANT_ID AND D.DEFAULT_TABLEGROUP_ID = TG.TABLEGROUP_ID   )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -1080,7 +1073,7 @@ int ObInnerTableSchema::dba_ob_tablegroup_tables_ora_schema(ObTableSchema &table
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT TG.TABLEGROUP_NAME AS TABLEGROUP_NAME,          D.DATABASE_NAME AS OWNER,          T.TABLE_NAME AS TABLE_NAME,          TG.SHARDING AS SHARDING   FROM SYS.ALL_VIRTUAL_TABLE_REAL_AGENT T   JOIN SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT D   ON T.TENANT_ID = D.TENANT_ID AND T.DATABASE_ID = D.DATABASE_ID   JOIN SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT TG   ON T.TENANT_ID = TG.TENANT_ID AND T.TABLEGROUP_ID = TG.TABLEGROUP_ID   WHERE T.TABLE_TYPE in (0, 3, 6)   AND BITAND((T.TABLE_MODE / 4096), 15) IN (0,1)   /*do not show deleting index*/   AND BITAND(T.INDEX_ATTRIBUTES_SET, 16) = 0   )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(   SELECT TG.TABLEGROUP_NAME AS TABLEGROUP_NAME,          D.DATABASE_NAME AS OWNER,          T.TABLE_NAME AS TABLE_NAME,          TG.SHARDING AS SHARDING,          (CASE             WHEN TG.SCOPE IS NULL OR TG.SCOPE IN ('', 'NULL') THEN               (CASE                  WHEN UPPER(TG.SHARDING) = 'NONE' THEN 'SERVER'                  WHEN UPPER(TG.SHARDING) IN ('PARTITION', 'ADAPTIVE') THEN 'CLUSTER'                END)             ELSE TG.SCOPE           END) AS SCOPE   FROM SYS.ALL_VIRTUAL_TABLE_REAL_AGENT T   JOIN SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT D   ON T.TENANT_ID = D.TENANT_ID AND T.DATABASE_ID = D.DATABASE_ID   JOIN SYS.ALL_VIRTUAL_TABLEGROUP_REAL_AGENT TG   ON T.TENANT_ID = TG.TENANT_ID AND T.TABLEGROUP_ID = TG.TABLEGROUP_ID   WHERE T.TABLE_TYPE in (0, 3, 6)   AND BITAND((T.TABLE_MODE / 4096), 15) IN (0,1)   /*do not show deleting index*/   AND BITAND(T.INDEX_ATTRIBUTES_SET, 16) = 0   )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }

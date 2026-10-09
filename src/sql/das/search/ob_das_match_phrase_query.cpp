@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -66,6 +59,7 @@ int ObDASMatchPhraseRtDef::generate_op(
   } else if (param.query_tokens_.empty()) {
     ObDASDummyOp *dummy_op = nullptr;
     ObDASDummyOpParam dummy_op_param;
+    dummy_op_param.set_is_scoring(ctdef->is_scoring());
     if (OB_FAIL(search_ctx.create_op(dummy_op_param, dummy_op))) {
       LOG_WARN("failed to create dummy op", K(ret));
     } else {
@@ -93,6 +87,7 @@ int ObDASMatchPhraseRtDef::generate_op(
   } else if (1 == param.query_tokens_.count() && !has_duplicate_tokens) {
     ObDASTokenOp *token_op = nullptr;
     ObDASTokenOpParam token_op_param;
+    token_op_param.set_is_scoring(ctdef->is_scoring());
     token_op_param.ir_ctdef_ = ctdef->get_ir_ctdef();
     token_op_param.ir_rtdef_ = get_ir_rtdef();
     token_op_param.block_max_param_ = &block_max_param_;
@@ -112,7 +107,7 @@ int ObDASMatchPhraseRtDef::generate_op(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected non-positive boost", K(ret), K_(param.boost));
   } else {
-    param.allocator_ = &allocator_;
+    param.set_is_scoring(ctdef->is_scoring());
     param.ir_ctdef_ = ctdef->get_ir_ctdef();
     param.ir_rtdef_ = get_ir_rtdef();
     param.block_max_param_ = &block_max_param_;

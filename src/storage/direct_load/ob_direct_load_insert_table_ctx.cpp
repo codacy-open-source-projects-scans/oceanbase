@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -64,6 +57,7 @@ ObDirectLoadInsertTableParam::ObDirectLoadInsertTableParam()
     lob_column_idxs_(nullptr),
     online_sample_percent_(1.),
     is_no_logging_(false),
+    merge_engine_type_(ObMergeEngineType::OB_MERGE_ENGINE_MAX),
     max_batch_size_(0),
     enable_dag_(false),
     dag_(nullptr),
@@ -82,6 +76,7 @@ bool ObDirectLoadInsertTableParam::is_valid() const
          (!is_incremental_ || trans_param_.is_valid()) && nullptr != datum_utils_ &&
          nullptr != col_descs_ && col_descs_->count() == column_count_ && nullptr != cmp_funcs_ &&
          nullptr != col_nullables_ && nullptr != lob_column_idxs_ && max_batch_size_ > 0 &&
+         ObMergeEngineStoreFormat::is_merge_engine_valid(merge_engine_type_) &&
          (!enable_dag_ || nullptr != dag_);
 }
 
@@ -206,6 +201,7 @@ int ObDirectLoadInsertTabletContext::get_row_info(ObDirectLoadInsertTableRowInfo
     row_info.seq_no_ = param_->trans_param_.tx_seq_.cast_to_int();
     row_info.trans_version_vector_ = table_ctx_->trans_version_vector_;
     row_info.seq_no_vector_ = table_ctx_->seq_no_vector_;
+    row_info.merge_engine_type_ = get_merge_engine_type();
   }
   return ret;
 }
@@ -240,6 +236,7 @@ int ObDirectLoadInsertTabletContext::init_datum_row(ObDatumRow &datum_row, const
       // fill sql_no
       datum_row.storage_datums_[param_->rowkey_column_count_ + 1].set_int(
         -param_->trans_param_.tx_seq_.cast_to_int());
+      datum_row.merge_engine_type_ = get_merge_engine_type();
     }
   }
   return ret;

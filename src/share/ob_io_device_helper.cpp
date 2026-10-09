@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -327,6 +320,20 @@ int ObIODeviceLocalFileOp::mkdir(const char *pathname, mode_t mode)
   return ret;
 }
 
+// Note: this function would return OB_FILE_OR_DIRECTORY_EXIST, if the directory already exists.
+int ObIODeviceLocalFileOp::mkdir_exclusively(const char *pathname, mode_t mode)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(pathname) || OB_UNLIKELY(STRLEN(pathname) == 0)) {
+    ret = OB_INVALID_ARGUMENT;
+    SHARE_LOG(WARN, "invalid arguments.", K(pathname), K(ret));
+  } else if (::mkdir(pathname, mode) != 0) {
+    ret = convert_sys_errno();
+    SHARE_LOG(WARN, "create directory failed.", K(pathname), K(errno), KERRMSG, K(ret));
+  }
+  return ret;
+}
+
 int ObIODeviceLocalFileOp::rmdir(const char *pathname)
 {
   int ret = OB_SUCCESS;
@@ -342,6 +349,8 @@ int ObIODeviceLocalFileOp::rmdir(const char *pathname)
   } else if (0 != ::rmdir(pathname)) {
     ret = convert_sys_errno();
     SHARE_LOG(WARN, "rmdir failed.", K(pathname), K(errno), KERRMSG, K(ret));
+  } else {
+    FLOG_INFO("succ to rmdir", K(pathname));
   }
   return ret;
 }

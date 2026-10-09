@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_OB_TENANT_TABLET_SCHEDULER_H_
@@ -208,19 +201,6 @@ public:
       const ObMergeType &merge_type,
       ObLSHandle &ls_handle,
       ObTabletHandle &tablet_handle);
-#ifdef OB_BUILD_SHARED_STORAGE
-  static int schedule_tablet_ss_minor_merge(
-      ObLSHandle &ls_handle,
-      const ObTabletID &tablet_id,
-      ObTabletHandle &local_tablet_handle,
-      const share::SCN &transfer_scn);
-  static int schedule_tablet_ss_minor_merge(
-      const ObMergeType &merge_type,
-      ObLSHandle &ls_handle,
-      ObTabletHandle &tablet_handle,
-      const ObSSTabletTableStoreMetaInfo &table_store_meta_info,
-      bool &scheduled);
-#endif
   static int schedule_tablet_meta_merge(
       ObLSHandle &ls_handle,
       ObTabletHandle &tablet_handle,
@@ -293,8 +273,6 @@ public:
   typedef common::ObSEArray<ObGetMergeTablesResult, compaction::ObPartitionMergePolicy::OB_MINOR_PARALLEL_INFO_ARRAY_SIZE> MinorParallelResultArray;
 private:
   static const int64_t BLOOM_FILTER_LOAD_BUILD_THREAD_CNT = 1;
-  static const int64_t NO_MAJOR_MERGE_TYPE_CNT = 3;
-  static const int64_t INNER_TABLET_NO_MAJOR_MERGE_TYPE_CNT = 1;
   static const int64_t BF_TASK_QUEUE_SIZE = 10L * 1000;
   static const int64_t BF_TASK_MAP_SIZE = 10L * 1000;
   static const int64_t BF_TASK_TOTAL_LIMIT = 512L * 1024L * 1024L;

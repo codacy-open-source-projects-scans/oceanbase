@@ -1,16 +1,7 @@
-/*************************************************************************
-  * Copyright (c) 2022 OceanBase
-  * OceanBase is licensed under Mulan PubL v2.
-  * You can use this software according to the terms and conditions of the Mulan PubL v2
-  * You may obtain a copy of Mulan PubL v2 at:
-  *          http://license.coscl.org.cn/MulanPubL-2.0
-  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-  * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-  * See the Mulan PubL v2 for more details.
-  * File Name   : ob_column_oriented_sstable.h
-  * Created  on : 09/05/2022
- ************************************************************************/
+/**
+ * Copyright (c) 2022 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #ifndef _OB_COLUMN_ORIENTED_SSTABLE_H
 #define _OB_COLUMN_ORIENTED_SSTABLE_H
 
@@ -67,7 +58,6 @@ public:
   OB_INLINE void reset() { MEMSET(this, 0, sizeof(ObCOSSTableMeta)); }
   OB_INLINE bool is_valid() const { return column_group_cnt_ > 0; }
   OB_INLINE bool is_empty() const { return 0 == data_macro_block_cnt_; }
-  OB_INLINE uint32_t get_column_group_count() const { return column_group_cnt_; }
   OB_INLINE uint64_t get_total_macro_block_count() const { return data_macro_block_cnt_ + index_macro_block_cnt_; }
   OB_INLINE uint64_t get_total_use_old_macro_block_count() const { return use_old_macro_block_cnt_; }
 
@@ -88,7 +78,7 @@ public:
   uint64_t occupy_size_;
   uint64_t original_size_;
   int64_t data_checksum_;
-  uint32_t column_group_cnt_; // Attention ! including all column cg.
+  uint32_t column_group_cnt_; // Attention ! including all column cg && hidden rowkey cg.
   uint32_t full_column_cnt_;
 };
 
@@ -104,9 +94,10 @@ enum ObCOSSTableBaseType : int32_t
 enum ObMajorSSTableStatus : uint8_t {
   MAJOR_SSTABLE_STATUS_INVALID = 0,
   ROW_STORE = 1,           // Pure row store
-  ALL_CG = 2,         // Only ALL column group
+  ALL_CG = 2,              // Only ALL column group
   ALL_EACH_CG = 3,         // ALL CG + EACH CG
   EACH_CG = 4,             // EACH CG (rowkey + normal)
+  ALL_EACH_HIDDEN_CG = 5,  // ALL CG + EACH CG + HIDDEN ROWKEY CG
   MAJOR_SSTABLE_STATUS_MAX
 };
 inline bool is_valid_major_sstable_status(const ObMajorSSTableStatus status)
@@ -116,6 +107,10 @@ inline bool is_valid_major_sstable_status(const ObMajorSSTableStatus status)
 inline bool is_rowkey_cg_status(const ObMajorSSTableStatus status)
 {
   return EACH_CG == status;
+}
+inline bool is_all_cg_base_status(const ObMajorSSTableStatus status)
+{
+  return ALL_CG == status || ALL_EACH_CG == status || ALL_EACH_HIDDEN_CG == status;
 }
 const char* major_sstable_status_to_str(const ObMajorSSTableStatus status);
 /*
@@ -141,6 +136,8 @@ public:
       const int64_t upper_trans_version) override;
   int set_progressive_merge_step(const int64_t progressive_merge_step);
   OB_INLINE const ObCOSSTableMeta &get_cs_meta() const { return cs_meta_; }
+  bool has_hidden_rowkey_cg() const;
+  int64_t get_column_group_count(const bool include_hidden_cg) const;
   OB_INLINE bool is_all_cg_base() const override final { return ObCOSSTableBaseType::ALL_CG_TYPE == base_type_; }
   OB_INLINE bool is_rowkey_cg_base() const { return ObCOSSTableBaseType::ROWKEY_CG_TYPE == base_type_; }
   OB_INLINE bool is_inited() const { return is_cgs_empty_co_table() || is_cs_valid(); }
@@ -154,7 +151,7 @@ public:
       const uint32_t cg_idx,
       ObSSTableWrapper &cg_wrapper) const;
   virtual int get_cg_sstable(const uint32_t cg_idx, ObSSTableWrapper &cg_wrapper) const;
-  virtual int get_all_tables(common::ObIArray<ObSSTableWrapper> &table_wrappers) const;
+  virtual int get_all_tables(common::ObIArray<ObSSTableWrapper> &table_wrappers, const bool include_hiden_cg = true) const;
 
   virtual int64_t get_serialize_size(const uint64_t data_version) const override;
   virtual int serialize(const uint64_t data_version, char *buf, const int64_t buf_len, int64_t &pos) const override;

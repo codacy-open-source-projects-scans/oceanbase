@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -437,7 +430,10 @@ int ObTableApiInsertUpExecutor::do_update(const ObConflictValue &constraint_valu
         for (int i = 0; i < insert_up_rtdefs_.count() && OB_SUCC(ret); i++) {
           const ObTableUpdCtDef &upd_ctdef = insert_up_spec_.get_ctdefs().at(i)->upd_ctdef_;
           ObTableUpdRtDef &upd_rtdef = insert_up_rtdefs_.at(i).upd_rtdef_;
-          if (OB_FAIL(ObTableApiModifyExecutor::update_row_to_das(upd_ctdef, upd_rtdef, dml_rtctx_))) {
+          // 对于主表(i==0)，使用 conflict_checker_ 中的 calc_part_id_expr_ 计算旧行的分区ID
+          // 确保删除操作在正确的分区执行
+          ObExpr *old_row_calc_part_id_expr = (i == 0) ? conflict_checker_.checker_ctdef_.calc_part_id_expr_ : nullptr;
+          if (OB_FAIL(ObTableApiModifyExecutor::update_row_to_das(upd_ctdef, upd_rtdef, dml_rtctx_, old_row_calc_part_id_expr))) {
             LOG_WARN("fail to update row", K(ret));
           }
         }

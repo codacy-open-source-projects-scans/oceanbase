@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -759,8 +752,6 @@ int ObTextRetrievalTokenIter::estimate_token_doc_cnt()
     if (OB_ISNULL(total_doc_cnt_param_expr)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null total doc cnt expr", K(ret));
-    } else if (0 == token_doc_cnt_) {
-      max_token_relevance_ = 0;
     } else {
       int64_t total_doc_cnt = 0;
       if (total_doc_cnt_param_expr->enable_rich_format()
@@ -1234,6 +1225,7 @@ ObTextRetrievalBlockMaxIter::ObTextRetrievalBlockMaxIter()
     block_max_iter_param_(nullptr),
     block_max_scan_param_(nullptr),
     ranking_param_(),
+    domain_id_cmp_(),
     curr_id_(nullptr),
     max_score_tuple_(nullptr),
     dim_max_score_(0),
@@ -1258,6 +1250,8 @@ int ObTextRetrievalBlockMaxIter::init(
     LOG_WARN("invalid iter param", K(ret), K(block_max_iter_param), K(scan_param));
   } else if (OB_FAIL(token_iter_.init(iter_param))) {
     LOG_WARN("failed to init token iter", K(ret));
+  } else if (OB_FAIL(domain_id_cmp_.init(iter_param.inv_scan_domain_id_col_->obj_meta_))) {
+    LOG_WARN("failed to init domain id cmp", K(ret));
   } else {
     curr_id_ = nullptr;
     block_max_iter_param_ = &block_max_iter_param;
@@ -1277,6 +1271,7 @@ void ObTextRetrievalBlockMaxIter::reset()
 {
   token_iter_.reset();
   block_max_iter_.reset();
+  domain_id_cmp_.reset();
   curr_id_ = nullptr;
   block_max_iter_param_ = nullptr;
   block_max_scan_param_ = nullptr;
@@ -1350,6 +1345,7 @@ int ObTextRetrievalBlockMaxIter::advance_to(const ObDatum &id_datum)
 int ObTextRetrievalBlockMaxIter::advance_shallow(const ObDatum &id_datum, const bool inclusive)
 {
   int ret = OB_SUCCESS;
+  int cmp_result = 1;
   LOG_DEBUG("[Sparse Retrieval] advance shallow", K(ret), K(id_datum), K(inclusive));
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -1359,7 +1355,11 @@ int ObTextRetrievalBlockMaxIter::advance_shallow(const ObDatum &id_datum, const 
   } else if (OB_UNLIKELY(!block_max_inited_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected block max iter not calculated", K(ret), K_(block_max_inited));
-  } else if (OB_FAIL(block_max_iter_.advance_to(id_datum, inclusive))) {
+  } else if (nullptr != curr_id_
+      && OB_FAIL(domain_id_cmp_.compare(id_datum, *curr_id_, cmp_result))) {
+    LOG_WARN("failed to compare target id and curr id", K(ret), K(id_datum), K_(curr_id));
+  } else if (OB_FAIL(block_max_iter_.advance_to(
+      cmp_result < 0 ? *curr_id_ : id_datum, cmp_result < 0 ? true : inclusive))) {
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
       LOG_WARN("failed to advance to id datum", K(ret));
     } else {

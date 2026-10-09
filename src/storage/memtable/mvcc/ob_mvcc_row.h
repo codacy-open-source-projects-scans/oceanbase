@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_MEMTABLE_MVCC_OB_MVCC_ROW_
@@ -410,7 +403,7 @@ struct ObMvccRow
 
   // ===================== ObMvccRow Getter Interface =====================
   // need_compact checks whether the compaction is necessary
-  bool need_compact(const bool for_read, const bool for_replay, const bool is_delete_insert);
+  bool need_compact(const bool for_read, const bool for_replay);
   // is_empty checks whether ObMvccRow has no tx node(while the row may be deleted)
   bool is_empty() const { return (NULL == ATOMIC_LOAD(&list_head_)); }
   // get_list_head gets the head tx node

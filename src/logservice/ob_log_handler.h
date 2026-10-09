@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LOGSERVICE_OB_LOG_HANDLER_
@@ -927,6 +920,18 @@ private:
   ObLogReplayService *replay_service_;
   ObRoleChangeService *rc_service_;
   // Note: using TCRWLock for using WLockGuardWithTimeout
+  //
+  // LOCK ORDER INVARIANT: deps_lock_ MUST be acquired BEFORE lock_ (the base
+  // class RWLock). Never take lock_ first and then deps_lock_. This is the
+  // opposite of the usual intuition (deps_lock_ looks like an auxiliary lock
+  // guarding a few state bits, while lock_ is the "main" lock), so it is easy
+  // to get wrong.
+  // Reason: the config-change RPC callback path holds deps_lock_ first
+  // (handle_config_change_cmd_rpc), then re-enters and acquires lock_ deep in
+  // the callback chain (PalfHandleImpl::one_stage_config_change_ ->
+  // ObReconfigCheckerAdapter -> ObLogHandler::stat). If any other path (e.g.
+  // stop()/destroy(), driven by LS replica GC) takes lock_ before deps_lock_,
+  // the two form an AB-BA deadlock.
   common::TCRWLock deps_lock_;
   mutable palf::PalfLocationCacheCb *lc_cb_;
   mutable obrpc::ObLogServiceRpcProxy *rpc_proxy_;

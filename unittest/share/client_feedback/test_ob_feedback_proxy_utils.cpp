@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define UNITTEST_DEBUG
@@ -70,12 +63,13 @@ TEST(ObFeedbackProxyUtils, test_serialize_from_session)
   bool verified = false;
 
   session.set_is_lock_session(true);
+  session.set_is_temporary_table_session(true);
   ret = ObFeedbackProxyUtils::serialize_(session, buf, LEN, pos);
   ASSERT_EQ(ret, OB_SUCCESS);
-  ASSERT_EQ(pos, 7);
+  ASSERT_EQ(pos, 14);
 
   // result in hex
-  std::string hex_string = "00000100000031";
+  std::string hex_string = "0000010000003101000100000031";
   verified = verifyHexString(buf, pos, hex_string);
   ASSERT_TRUE(verified);
 }

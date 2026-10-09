@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the geometry utils abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -563,7 +555,8 @@ int ObGeoTypeUtil::build_geometry(ObIAllocator &allocator,
       } else if (FALSE_IT(geo->set_data(wkb_data))) {
       } else if (!is_3d_geo_type(header.type_)) {
         bool need_check_ring = build_flag & ObGeoBuildFlag::GEO_CHECK_RING;
-        ObGeoWkbCheckVisitor wkb_check(wkb_data, header.bo_, need_check_ring);
+        bool need_check_finite = build_flag & ObGeoBuildFlag::GEO_CHECK_FINITE;
+        ObGeoWkbCheckVisitor wkb_check(wkb_data, header.bo_, need_check_ring, need_check_finite);
         if (OB_FAIL(geo->do_visit(wkb_check))) {
           ret = OB_ERR_GIS_INVALID_DATA;
           LOG_WARN("invalid swkb", K(swkb), K(header.type_), K(header.srid_), K(crs));

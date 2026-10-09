@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -41,6 +34,8 @@ ObIMicroBlockRowScanner::ObIMicroBlockRowScanner(common::ObIAllocator &allocator
     last_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
     reserved_pos_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
     step_(1),
+    runtime_rowkey_border_enabled_(false),
+    runtime_rowkey_border_exclusive_idx_(ObIMicroBlockReaderInfo::INVALID_ROW_INDEX),
     row_(),
     macro_id_(),
     read_info_(nullptr),
@@ -88,6 +83,7 @@ void ObIMicroBlockRowScanner::reuse()
   start_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
   last_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
   reserved_pos_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
+  clear_runtime_rowkey_border();
 }
 
 int ObIMicroBlockRowScanner::init(
@@ -119,6 +115,7 @@ int ObIMicroBlockRowScanner::init(
     if (NULL != reader_) {
       reader_->reset();
     }
+    clear_runtime_rowkey_border();
     LOG_DEBUG("init ObIMicroBlockRowScanner", K(context), KPC_(read_info), K(param));
   }
   return ret;
@@ -159,6 +156,7 @@ int ObIMicroBlockRowScanner::switch_context(
     sstable_ = sstable;
     range_ = nullptr;
     block_row_store_ = context.block_row_store_;
+    clear_runtime_rowkey_border();
   }
 
   return ret;
@@ -191,6 +189,7 @@ int ObIMicroBlockRowScanner::open(
     is_left_border_ = is_left_border;
     is_right_border_ = is_right_border;
     macro_id_ = macro_id;
+    clear_runtime_rowkey_border();
   }
   return ret;
 }
@@ -239,6 +238,7 @@ int ObIMicroBlockRowScanner::open_column_block(
       last_ = end;
       step_ = 1;
     }
+    clear_runtime_rowkey_border();
   }
   return ret;
 }
@@ -471,6 +471,8 @@ int ObIMicroBlockRowScanner::end_of_block() const
   int ret = common::OB_SUCCESS;
   if (ObIMicroBlockReaderInfo::INVALID_ROW_INDEX == current_) {
     ret = common::OB_ITER_END;
+  } else if (is_runtime_rowkey_border_hit()) {
+    ret = common::OB_ITER_END;
   } else {
     if (!reverse_scan_) {
       if (current_ > last_) {
@@ -483,6 +485,51 @@ int ObIMicroBlockRowScanner::end_of_block() const
     }
   }
   return ret;
+}
+
+int ObIMicroBlockRowScanner::set_runtime_rowkey_border(const ObDatumRowkey &border_key)
+{
+  int ret = OB_SUCCESS;
+  bool is_equal = false;
+  int64_t border_row_idx = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
+  const int64_t start_idx = current_;
+  const int64_t end_idx = last_ + 1; // exclusive
+  clear_runtime_rowkey_border();
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (OB_UNLIKELY(reverse_scan_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("reverse scan is not supported for runtime rowkey border", K(ret), K_(reverse_scan));
+  } else if (OB_UNLIKELY(!border_key.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid border rowkey", K(ret), K(border_key));
+  } else if (OB_ISNULL(reader_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("reader is null", K(ret), KP_(reader));
+  } else if (OB_FAIL(end_of_block())) {
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+      LOG_WARN("failed to check end of block", K(ret));
+    } else {
+      ret = OB_SUCCESS;
+    }
+  } else if (OB_FAIL(reader_->locate_border_row_id(border_key, start_idx, end_idx, border_row_idx, is_equal))) {
+    LOG_WARN("failed to locate border row id", K(ret), K(border_key), K(start_idx), K(end_idx));
+  } else if (OB_UNLIKELY(border_row_idx < start_idx || border_row_idx > end_idx)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected border row idx", K(ret), K(border_row_idx), K(start_idx), K(end_idx), K(border_key));
+  } else if (border_row_idx < end_idx) {
+    // Only treat as a runtime border when border_key falls within current micro remain range.
+    runtime_rowkey_border_enabled_ = true;
+    runtime_rowkey_border_exclusive_idx_ = border_row_idx;
+  } // border_key is beyond current micro block end; this micro should end naturally.
+  return ret;
+}
+
+void ObIMicroBlockRowScanner::clear_runtime_rowkey_border()
+{
+  runtime_rowkey_border_enabled_ = false;
+  runtime_rowkey_border_exclusive_idx_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
 }
 
 int ObIMicroBlockRowScanner::fuse_row(
@@ -781,6 +828,145 @@ int ObIMicroBlockRowScanner::get_rows_for_rich_format(
   return ret;
 }
 
+// border_key is a exclusive border
+int ObIMicroBlockRowScanner::inner_get_next_batch_rows(
+    compaction::ObMergeVectorStore &vector_store,
+    const ObDatumRowkey &border_key,
+    bool &reach_border)
+{
+  int ret = OB_SUCCESS;
+  reach_border = false;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (OB_UNLIKELY(reverse_scan_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("reverse scan is not supported for merge batch read", K(ret), K_(reverse_scan));
+  } else if (OB_UNLIKELY(!border_key.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid border rowkey", K(ret), K(border_key));
+  } else if (OB_FAIL(end_of_block())) {
+    ret = OB_SUCCESS;
+    reach_border = true;
+  } else if (OB_ISNULL(reader_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("reader is NULL", K(ret));
+  } else {
+    bool is_equal = false;
+    int64_t border_row_idx = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
+    const int64_t start_idx = current_;
+    const int64_t end_idx = last_ + 1; // exclusive
+    if (OB_FAIL(reader_->locate_border_row_id(border_key, start_idx, end_idx, border_row_idx, is_equal))) {
+      LOG_WARN("Fail to locate border row id", K(ret), K(border_key), K(start_idx), K(end_idx));
+    } else if (OB_UNLIKELY(border_row_idx < start_idx || border_row_idx > end_idx)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("Unexpected border row idx", K(ret), K(start_idx), K(end_idx), K(border_row_idx), K(border_key));
+    } else if (OB_FAIL(inner_get_next_batch_rows(vector_store, border_row_idx, reach_border, nullptr))) {
+      LOG_WARN("Failed to get next batch rows", K(ret));
+    }
+  }
+  return ret;
+}
+
+// border_row_id is a inclusive border
+int ObIMicroBlockRowScanner::get_next_batch_rows(
+    compaction::ObMergeVectorStore &vector_store,
+    const int64_t border_row_id_inclusive,
+    bool &reach_border,
+    const common::ObIArrayWrap<uint16_t> *cols)
+{
+  int ret = OB_SUCCESS;
+  reach_border = false;
+  // border_exclusive = border_row_id_inclusive + 1, but border_row_id_inclusive may be INT64_MAX.
+  const int64_t border_exclusive = (border_row_id_inclusive == INT64_MAX)
+      ? INT64_MAX
+      : (border_row_id_inclusive + 1);
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", K(ret));
+  } else if (OB_UNLIKELY(reverse_scan_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("reverse scan is not supported for merge batch read", K(ret), K_(reverse_scan));
+  } else if (OB_FAIL(end_of_block())) {
+    ret = OB_ITER_END;
+    reach_border = true;
+  } else if (OB_ISNULL(reader_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("reader is NULL", K(ret));
+  } else if (OB_UNLIKELY(border_exclusive <= 0)) {
+    reach_border = true; // micro block is beyond border, do not read any data
+  } else if (OB_FAIL(inner_get_next_batch_rows(vector_store, border_exclusive, reach_border, cols))) {
+    LOG_WARN("Failed to get next batch rows", K(ret));
+  }
+  return ret;
+}
+
+int ObIMicroBlockRowScanner::get_next_batch_rows(
+    compaction::ObMergeVectorStore &vector_store,
+    const ObDatumRowkey &border_key,
+    bool &reach_border,
+    bool &need_prepare_micro_border)
+{
+  int ret = OB_SUCCESS;
+  if (can_batch_scan_to_merge_vector()) {
+    if (OB_FAIL(inner_get_next_batch_rows(vector_store, border_key, reach_border))) {
+      LOG_WARN("failed to batch fill rows within micro block", K(ret), K(border_key));
+    }
+  } else {
+    if (need_prepare_micro_border && OB_FAIL(set_runtime_rowkey_border(border_key))) {
+      LOG_WARN("failed to set runtime rowkey border for micro scanner", K(ret), K(border_key));
+    } else {
+      need_prepare_micro_border = false;
+      const ObDatumRow *row = nullptr;
+      if (OB_FAIL(get_next_row(row))) {
+        if (OB_ITER_END == ret) {
+          if (is_runtime_rowkey_border_hit()) {
+            reach_border = true;
+            clear_runtime_rowkey_border();
+            need_prepare_micro_border = true;
+          }
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("failed to get next row", K(ret));
+        }
+      } else if (OB_ISNULL(row)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null row", K(ret));
+      } else if (OB_FAIL(vector_store.set_single_row(row))) {
+        LOG_WARN("failed to set single row", K(ret), KPC(row));
+      } else if (is_runtime_rowkey_border_hit()) {
+        reach_border = true;
+        clear_runtime_rowkey_border();
+        need_prepare_micro_border = true;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObIMicroBlockRowScanner::inner_get_next_batch_rows(
+    compaction::ObMergeVectorStore &vector_store,
+    const int64_t border_exclusive,
+    bool &reach_border,
+    const common::ObIArrayWrap<uint16_t> *cols)
+{
+  int ret = OB_SUCCESS;
+  reach_border = false;
+  const int64_t end_idx = last_ + 1; // exclusive
+  // - if border is beyond this micro block: read remaining rows in this block
+  // - if border is within this micro block: read [current_, border)
+  const int64_t end_exclusive = MIN(border_exclusive, end_idx);
+  const bool border_in_this_micro = (border_exclusive < end_idx);
+  if (OB_FAIL(vector_store.fill_rows(cols, *this, current_, end_exclusive))) {
+    LOG_WARN("Failed to fill rows to merge vector store", K(ret), K(current_), K(end_exclusive));
+  } else {
+    // NOTE: vector_store may be limited by batch capacity and fill_rows() might not advance to end_exclusive.
+    // reach_border should mean we have actually advanced to (or beyond) the border position.
+    reach_border = border_in_this_micro && (current_ >= border_exclusive);
+  }
+  return ret;
+}
+
 ERRSIM_POINT_DEF(EN_FILTER_PUSHDOWN_DISABLE_FLAT_VECTORIZE);
 int ObIMicroBlockRowScanner::filter_pushdown_filter(
     sql::ObPushdownFilterExecutor *parent,
@@ -820,10 +1006,10 @@ int ObIMicroBlockRowScanner::filter_pushdown_filter(
   // use uniform base currently, support new format later
   // TODO(hanling): If the new vectorization format does not start counting from the 0th row, it can be computed in batches.
   } else if (can_use_vectorize &&
-             filter->get_op().enable_rich_format_ &&
+             filter->get_op()->enable_rich_format_ &&
              OB_FAIL(init_exprs_uniform_header(filter->get_cg_col_exprs(),
-                                               filter->get_op().get_eval_ctx(),
-                                               filter->get_op().get_eval_ctx().max_batch_size_))) {
+                                               filter->get_op()->get_eval_ctx(),
+                                               filter->get_op()->get_eval_ctx().max_batch_size_))) {
     LOG_WARN("Failed to init exprs vector header", K(ret));
   } else {
     switch (reader_->get_type())
@@ -1241,6 +1427,10 @@ int ObIMicroBlockRowScanner::get_next_border_rows(const ObDatumRowkey &rowkey)
                                               res))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("Failed to fill rows", K(ret), K_(current), K_(last), K_(step), K(res));
+      } else {
+        // Fix issue 2026061500116751171
+        // end_of_block() governs micro block completion, not fill_rows()
+        ret = OB_SUCCESS;
       }
     }
     if (OB_SUCC(ret)) {
@@ -1511,6 +1701,28 @@ int ObIMicroBlockRowScanner::compare_rowkey(const ObDatumRowkey &rowkey, const b
   return ret;
 }
 
+int ObIMicroBlockRowScanner::get_global_border_row_id(
+    const ObDatumRange &range,
+    const int64_t border_row_id,
+    int64_t &global_border_row_id)
+{
+  int ret = OB_SUCCESS;
+  global_border_row_id = border_row_id;
+  int64_t query_start_rowid = 0;
+  if (INT64_MAX == border_row_id) {
+  } else if (!range.is_whole_range()) {
+    if (OB_UNLIKELY(range.start_key_.is_static_rowkey() || range.start_key_.datum_cnt_ != 1)) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "unexpected query range for rowid batch read", K(ret), K(range));
+    } else {
+      query_start_rowid = range.is_left_closed()
+          ? range.start_key_.datums_[0].get_int()
+          : (range.start_key_.datums_[0].get_int() + 1);
+      global_border_row_id = border_row_id + query_start_rowid;
+    }
+  }
+  return ret;
+}
 ////////////////////////////////// ObMicroBlockRowScanner ////////////////////////////////////////////
 int ObMicroBlockRowScanner::init(
     const storage::ObTableIterParam &param,
@@ -1605,6 +1817,7 @@ void ObMultiVersionMicroBlockRowScanner::reuse()
   finish_scanning_cur_rowkey_ = true;
   is_last_multi_version_row_ = true;
   read_row_direct_flag_ = false;
+  cur_rowkey_exist_new_version_ = false;
 }
 
 void ObMultiVersionMicroBlockRowScanner::inner_reset()
@@ -1621,6 +1834,7 @@ void ObMultiVersionMicroBlockRowScanner::inner_reset()
     reader_->reset();
   }
   step_ = 1;
+  cur_rowkey_exist_new_version_ = false;
   is_inited_ = false;
 }
 
@@ -1704,8 +1918,8 @@ int ObMultiVersionMicroBlockRowScanner::open(
       LOG_INFO("micro block header not has_min_merged_trans_version_", K(ret), K(block_data));
     } else if (OB_NOT_NULL(sstable_)
         && !block_data.get_micro_header()->contain_uncommitted_rows()
-        && block_data.get_micro_header()->max_merged_trans_version_ <= context_->trans_version_range_.snapshot_version_
-        && block_data.get_micro_header()->get_min_merged_trans_version() > context_->trans_version_range_.base_version_) {
+        && block_data.get_micro_header()->max_merged_trans_version_ <= version_range_.snapshot_version_
+        && block_data.get_micro_header()->get_min_merged_trans_version() > version_range_.base_version_) {
       read_row_direct_flag_ = true;
       can_ignore_multi_version_
           = block_data.get_micro_header()->single_version_rows_
@@ -1713,7 +1927,7 @@ int ObMultiVersionMicroBlockRowScanner::open(
             && !reverse_scan_
             && !(0 == version_range_.base_version_ && IF_NEED_CHECK_BASE_VERSION_FILTER(context_));
       LOG_DEBUG("use direct read", K(ret), K(can_ignore_multi_version_),
-                KPC(block_data.get_micro_header()), K(context_->trans_version_range_));
+                KPC(block_data.get_micro_header()), K(version_range_));
     }
   }
   return ret;
@@ -1730,7 +1944,7 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row(const ObDatumRow *&ro
     }
   } else {
     reuse_cur_micro_row();
-    if (OB_FAIL(inner_get_next_row_impl(row))) {
+    if (OB_FAIL(compact_multi_version_rows(row))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("Failed to inner get next row", K(ret), K_(start), K_(last), K_(current));
       }
@@ -1744,6 +1958,7 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row(const ObDatumRow *&ro
 inline void ObMultiVersionMicroBlockRowScanner::reuse_cur_micro_row()
 {
   row_.row_flag_.set_flag(ObDmlFlag::DF_NOT_EXIST);
+  row_.major_merge_flag_.reset();
   nop_pos_.reset();
 }
 
@@ -1752,12 +1967,13 @@ void ObMultiVersionMicroBlockRowScanner::reuse_prev_micro_row()
   for (int64_t i = 0; i < cell_cnt_; ++i) {
     prev_micro_row_.storage_datums_[i].set_nop();
   }
+  prev_micro_row_.major_merge_flag_.reset();
   prev_micro_row_.row_flag_.set_flag(ObDmlFlag::DF_NOT_EXIST);
   cell_allocator_.reuse();
   reserved_pos_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
 }
 
-int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_impl(const ObDatumRow *&ret_row)
+int ObMultiVersionMicroBlockRowScanner::compact_multi_version_rows(const ObDatumRow *&ret_row)
 {
   int ret = OB_SUCCESS;
   // TRUE:For the multi-version row of the current rowkey, when there is no row to be read in this micro_block
@@ -1783,12 +1999,12 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_impl(const ObDatumRow
       multi_version_row = NULL;
       bool version_fit = false;
       if (read_row_direct_flag_) {
-        if (OB_FAIL(inner_get_next_row_directly(multi_version_row, version_fit, final_result))) {
+        if (OB_FAIL(read_row_on_direct_path(multi_version_row, version_fit, final_result))) {
           if (OB_UNLIKELY(OB_ITER_END != ret)) {
             LOG_WARN("failed to inner get next row directly", K(ret), K_(macro_id));
           }
         }
-      } else if (OB_FAIL(inner_inner_get_next_row(multi_version_row, version_fit, final_result, have_uncommited_row))) {
+      } else if (OB_FAIL(read_next_version_row(multi_version_row, version_fit, final_result, have_uncommited_row))) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
           LOG_WARN("failed to inner get next row", K(ret), K_(macro_id));
         }
@@ -1843,6 +2059,7 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_impl(const ObDatumRow
       LOG_ERROR("row is invalid", KPC(ret_row));
     } else {
       LOG_DEBUG("row is valid", KPC(ret_row));
+      cur_rowkey_exist_new_version_ = false;
     }
   } else if (OB_UNLIKELY(OB_SUCCESS == ret || OB_ITER_END == ret)) {
     if (!reverse_scan_ && (last_ < reader_->row_count() - 1) &&
@@ -1858,86 +2075,55 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_impl(const ObDatumRow
 
 int ObMultiVersionMicroBlockRowScanner::locate_cursor_to_read(bool &found_first_row)
 {
-  int ret = OB_SUCCESS;
-  bool need_locate_next_rowkey = false;
-  found_first_row = false;
-
   LOG_DEBUG("locate_cursor_to_read", K(finish_scanning_cur_rowkey_),
             K(is_last_multi_version_row_), K(reserved_pos_),
             K(is_left_border_), K(is_right_border_));
+  int ret = OB_SUCCESS;
   if (!reverse_scan_) {
-    if (OB_FAIL(end_of_block())) {
-      if (OB_UNLIKELY(OB_ITER_END != ret)) {
-        LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
-      } else if (finish_scanning_cur_rowkey_) {
-        reuse_prev_micro_row();
-      }
-    } else if (finish_scanning_cur_rowkey_) {
-      if (!is_last_multi_version_row_) {
-        need_locate_next_rowkey = true;
-      } else {
-        finish_scanning_cur_rowkey_ = false;
-      }
-      reuse_prev_micro_row();
-    }
+    ret = locate_cursor_forward(found_first_row);
   } else {
-    need_locate_next_rowkey = true;
-    if (ObIMicroBlockReaderInfo::INVALID_ROW_INDEX == reserved_pos_) {
-      // For reverse scan, if reserved_pos_ is INVALID_ROW_INDEX and we have cached row in prev_micro_row_,
-      // it means we have read a rowkey from the right micro block but all data in the left micro block
-      // is filtered out (e.g., by skip_range). In this case, we should output the cached row.
-      if (OB_UNLIKELY(param_->is_skip_scan() &&
-                      ObIMicroBlockReaderInfo::INVALID_ROW_INDEX == current_ &&
-                      !finish_scanning_cur_rowkey_ &&
-                      !is_row_empty(prev_micro_row_))) {
-        found_first_row = true;
-        finish_scanning_cur_rowkey_ = true;
-      } else {
-        ret = OB_ITER_END;
-      }
-      need_locate_next_rowkey = false;
+    ret = locate_cursor_reverse(found_first_row);
+  }
+  return ret;
+}
+
+// Forward scan: new→old version order.
+// If current rowkey is done, skip remaining rows of it to find the L (last) flag,
+// then position at the first row of the next rowkey.
+int ObMultiVersionMicroBlockRowScanner::locate_cursor_forward(bool &found_first_row)
+{
+  int ret = OB_SUCCESS;
+  found_first_row = false;
+
+  if (OB_FAIL(end_of_block())) {
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+      LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
     } else if (finish_scanning_cur_rowkey_) {
-      current_ = reserved_pos_ - 1; // skip current L
       reuse_prev_micro_row();
     }
-  }
-
-  // 1)For forward scanning: only after reading the current rowkey,
-  // it will be locate the next rowkey by finding the last row in the current rowkey multi-version row;
-  // 2)For reverse scan: If you have read a rowkey, first locate the last row of rowkey
-  // that needs to be read through reserved_pos_, and then move forward.
-  // If found the last row of the previous rowkey when positioning forward, then start reading,
-  // otherwise, reading from the first row of this micro_block
-  if (OB_SUCC(ret) && need_locate_next_rowkey) {
-    MultiVersionInfo multi_version_info;
-    while (OB_SUCC(ret)) {
-      if (OB_FAIL(end_of_block())) {
-        if (OB_UNLIKELY(OB_ITER_END != ret)) {
-          LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
-        } else {
-          if (reverse_scan_) {
-            // read from the first row
-            finish_scanning_cur_rowkey_ = false;
-            reserved_pos_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
-            current_ = last_;
-            found_first_row = is_left_border_;
-            ret = OB_SUCCESS;
-          } else {
-            // return OB_ITER_END
+  } else if (finish_scanning_cur_rowkey_) {
+    reuse_prev_micro_row();
+    if (is_last_multi_version_row_) {
+      finish_scanning_cur_rowkey_ = false;
+    } else {
+      // Haven't seen L flag yet, skip remaining multi-version rows of current rowkey
+      MultiVersionInfo multi_version_info;
+      while (OB_SUCC(ret)) {
+        if (OB_FAIL(end_of_block())) {
+          if (OB_UNLIKELY(OB_ITER_END != ret)) {
+            LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
           }
           break;
-        }
-      } else if (OB_FAIL(reader_->get_multi_version_info(current_, multi_version_info))) {
-        LOG_WARN("failed to get multi version info", K(ret), K(current_), K_(macro_id));
-      } else {
-        if (multi_version_info.mvcc_row_flag_.is_last_multi_version_row()) {
+        } else if (OB_FAIL(reader_->get_multi_version_info(current_, multi_version_info))) {
+          LOG_WARN("failed to get multi version info", K(ret), K(current_), K_(macro_id));
+        } else if (multi_version_info.mvcc_row_flag_.is_last_multi_version_row()) {
           finish_scanning_cur_rowkey_ = false;
           found_first_row = true;
           reserved_pos_ = current_;
           current_ = current_ + 1;
           break;
         } else {
-          current_ = reverse_scan_ ? current_ - 1 : current_ + 1;
+          current_++;
         }
       }
     }
@@ -1945,7 +2131,65 @@ int ObMultiVersionMicroBlockRowScanner::locate_cursor_to_read(bool &found_first_
   return ret;
 }
 
-int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_directly(
+// Reverse scan: old→new version order within a micro block.
+// Use reserved_pos_ to track the L row of the current rowkey, then scan backward
+// to find the L row of the previous rowkey to determine the start position.
+int ObMultiVersionMicroBlockRowScanner::locate_cursor_reverse(bool &found_first_row)
+{
+  int ret = OB_SUCCESS;
+  found_first_row = false;
+
+  if (ObIMicroBlockReaderInfo::INVALID_ROW_INDEX == reserved_pos_) {
+    // For reverse scan, if reserved_pos_ is INVALID and we have cached row in prev_micro_row_,
+    // it means we read a rowkey from the right micro block but all data in this block
+    // is filtered out (e.g., by skip_range). Output the cached row.
+    if (OB_UNLIKELY(param_->is_skip_scan() &&
+                    ObIMicroBlockReaderInfo::INVALID_ROW_INDEX == current_ &&
+                    !finish_scanning_cur_rowkey_ &&
+                    !is_row_empty(prev_micro_row_))) {
+      found_first_row = true;
+      finish_scanning_cur_rowkey_ = true;
+    } else {
+      ret = OB_ITER_END;
+    }
+  } else {
+    if (finish_scanning_cur_rowkey_) {
+      current_ = reserved_pos_ - 1; // skip current L row
+      reuse_prev_micro_row();
+    }
+    // Scan backward to find the L row of the previous rowkey
+    MultiVersionInfo multi_version_info;
+    while (OB_SUCC(ret)) {
+      if (OB_FAIL(end_of_block())) {
+        if (OB_UNLIKELY(OB_ITER_END != ret)) {
+          LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
+        } else {
+          // Reached block boundary without finding L row,
+          // the target rowkey starts from the first row of this block
+          finish_scanning_cur_rowkey_ = false;
+          reserved_pos_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
+          current_ = last_;
+          found_first_row = is_left_border_;
+          ret = OB_SUCCESS;
+        }
+        break;
+      } else if (OB_FAIL(reader_->get_multi_version_info(current_, multi_version_info))) {
+        LOG_WARN("failed to get multi version info", K(ret), K(current_), K_(macro_id));
+      } else if (multi_version_info.mvcc_row_flag_.is_last_multi_version_row()) {
+        finish_scanning_cur_rowkey_ = false;
+        found_first_row = true;
+        reserved_pos_ = current_;
+        current_ = current_ + 1;
+        break;
+      } else {
+        current_--;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObMultiVersionMicroBlockRowScanner::read_row_on_direct_path(
     const ObDatumRow *&ret_row,
     bool &version_fit,
     bool &final_result)
@@ -2004,7 +2248,7 @@ int ObMultiVersionMicroBlockRowScanner::inner_get_next_row_directly(
   return ret;
 }
 
-int ObMultiVersionMicroBlockRowScanner::read_current_row_with_uncommitted_check(
+int ObMultiVersionMicroBlockRowScanner::read_and_resolve_row(
     const ObDatumRow *&ret_row,
     bool &version_fit,
     bool &final_result,
@@ -2018,75 +2262,173 @@ int ObMultiVersionMicroBlockRowScanner::read_current_row_with_uncommitted_check(
   MultiVersionInfo multi_version_info;
 
   ret_row = nullptr;
-  version_fit = false;
   final_result = false;
+  RowReadAction action = RowReadAction::SKIP;
 
   if (OB_FAIL(reader_->get_multi_version_info(current_, schema_rowkey_count_, multi_version_info, trans_version, sql_sequence))) {
     LOG_WARN("fail to get multi version info", K(ret), K_(current), K_(macro_id));
-  } else if (OB_FAIL(check_trans_version(final_result, version_fit, have_uncommitted_row, trans_version, sql_sequence, multi_version_info.mvcc_row_flag_, multi_version_info.trans_id_))) {
-    LOG_WARN("fail to check trans version", K(ret), K_(current), K(version_fit), K(trans_version), K(sql_sequence));
+  // Must be set before get_row_action: decide_row_read_action_for_ttl (called inside it) consults
+  // is_last_multi_version_row_ to pick the ttl-major virtual-row action, so it has to
+  // reflect the current row, not the previous one.
+  } else if (OB_FALSE_IT(is_last_multi_version_row_ = multi_version_info.mvcc_row_flag_.is_last_multi_version_row())) {
+  } else if (OB_FAIL(get_row_action(final_result, action, have_uncommitted_row, trans_version, sql_sequence, multi_version_info.mvcc_row_flag_, multi_version_info.trans_id_))) {
+    LOG_WARN("fail to check trans version", K(ret), K_(current), K(action), K(trans_version), K(sql_sequence));
   } else if (OB_FAIL(check_foreign_key(trans_version, sql_sequence, multi_version_info.trans_id_))) {
     LOG_WARN("fail to check foreign key", K(ret), K_(current), K(trans_version), K(sql_sequence));
-  } else if (OB_FALSE_IT(is_last_multi_version_row_ = multi_version_info.mvcc_row_flag_.is_last_multi_version_row())) {
-  } else if (version_fit) {
+  } else if (RowReadAction::SKIP != action) {
     ObDatumRow *row = nullptr;
     if (is_row_empty(row_)) {
-      row = &row_;
-    } else {
-      tmp_row_.count_ = tmp_row_.get_capacity();
-      tmp_row_.trans_id_.reset();
-      row = &tmp_row_;
-    }
-
-    if (OB_FAIL(reader_->get_row(current_, *row))) {
-      LOG_WARN("micro block reader fail to get block_row", K(ret), K(current_));
-    } else if (row->row_flag_.is_lock()) {
-      if (OB_FAIL(ObLockRowChecker::check_lock_row_valid(*row, *read_info_))) {
-        LOG_WARN("micro block reader fail to get block_row", K(ret), K(current_), KPC(row), KPC_(read_info));
-      } else if (row->is_uncommitted_row()) {
-        version_fit = false;
-        row->row_flag_.set_flag(ObDmlFlag::DF_NOT_EXIST);
+        row = &row_;
+      } else {
+        tmp_row_.count_ = tmp_row_.get_capacity();
+        tmp_row_.trans_id_.reset();
+        tmp_row_.major_merge_flag_.reset();
+        row = &tmp_row_;
       }
-    }
 
-    if (OB_SUCC(ret) && version_fit) {
-      if (OB_INVALID_INDEX != read_info_->get_trans_col_index()
-          && transaction::is_effective_trans_version(trans_version)) {
-        // only uncommitted row need to be set, committed row set in row reader
-        int64_t trans_idx = read_info_->get_trans_col_index();
-        if (OB_UNLIKELY(trans_idx >= row->count_ || 0 >= trans_version)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("Unexpected trans info", K(ret), K(trans_idx), K(trans_version), KPC(row), KPC_(read_info));
-        } else {
-          LOG_DEBUG("success to set trans_version on uncommitted row", K(ret), K(trans_version));
-          row->storage_datums_[trans_idx].reuse(); // avoid changing the original value
-          row->storage_datums_[trans_idx].set_int(-trans_version);
-        }
-        if (OB_UNLIKELY(0 == version_range_.base_version_ && IF_NEED_CHECK_BASE_VERSION_FILTER(context_))) {
-          if (OB_FAIL(context_->check_filtered_by_base_version(*row))) {
-            LOG_DEBUG("check base version filter fail", K(ret));
-          } else if (row->row_flag_.is_not_exist()) {
-            version_fit = false;
-          }
+      if (OB_FAIL(reader_->get_row(current_, *row))) {
+        LOG_WARN("micro block reader fail to get block_row", K(ret), K(current_));
+      } else if (row->row_flag_.is_lock()) {
+        if (OB_FAIL(ObLockRowChecker::check_lock_row_valid(*row, *read_info_))) {
+          LOG_WARN("micro block reader fail to get block_row", K(ret), K(current_), KPC(row), KPC_(read_info));
+        } else if (row->is_uncommitted_row()) {
+          action = RowReadAction::SKIP;
+          row->row_flag_.set_flag(ObDmlFlag::DF_NOT_EXIST);
         }
       }
-      if (OB_SUCC(ret)) {
-        if (!row->mvcc_row_flag_.is_uncommitted_row()
-            || transaction::is_effective_trans_version(trans_version)) {
-          row->snapshot_version_ = 0;
-          row->trans_id_.reset();
-        } else { // uncommitted row
-          row->snapshot_version_ = INT64_MAX;
-        }
+      if (OB_FAIL(ret) || RowReadAction::SKIP == action) {
+      } else if (OB_FAIL(fill_row_version_info(row, trans_version, action))) {
+        LOG_WARN("fail to fill row version info", K(ret), K(trans_version));
+      } else if (RowReadAction::SKIP != action) {
         ret_row = row;
       }
-    }
+  }
+  // What the caller calls version_fit is just "did we emit a row": ret_row is set iff
+  // the read decision survived every downgrade above.
+  if (OB_SUCC(ret)) {
+    version_fit = (nullptr != ret_row);
   }
 
   return ret;
 }
 
-int ObMultiVersionMicroBlockRowScanner::inner_inner_get_next_row(
+ObMultiVersionMicroBlockRowScanner::RowReadAction
+ObMultiVersionMicroBlockRowScanner::decide_row_read_action_for_ttl(
+    const int64_t trans_version,
+    const bool version_fit,
+    const bool final_result)
+{
+  // The single place ttl-major is consulted: it turns the generic (ttl-blind)
+  // version_range verdict into a full read+mark action, and owns the cross-row
+  // cur_rowkey_exist_new_version_ side effect. mark_ttl_major_flag then only switches on
+  // the returned action and never re-derives anything from trans_version/snapshot.
+  const int64_t snapshot_version = version_range_.snapshot_version_;
+  const int64_t ttl_upper = context_->ttl_major_for_partial_update_upper_snapshot_;
+  RowReadAction action = RowReadAction::SKIP;
+  if (version_fit) {
+    // Passed the read verdict: read it. Pick the ttl-major marker it will carry. Note a
+    // readable row can still sit above snapshot via the iter-uncommitted path, hence the
+    // >snapshot check here as well.
+    action = cur_rowkey_exist_new_version_ ? RowReadAction::READ_MARK_EXIST_NEW : RowReadAction::READ;
+  } else if (trans_version > snapshot_version && trans_version <= ttl_upper) { // cur row beyond snapshot and ttl upper bound
+    // ttl-major overrides the generic verdict: a committed version between snapshot and
+    // the ttl upper bound, which classify_committed_trans_version filtered out.
+    if (is_last_multi_version_row_) {
+      // The L row -> resurrect it (payload kept) and emit it as the virtual marker.
+      action = RowReadAction::READ_AS_VIRTUAL;
+    } else {
+      // Not the L row -> stays filtered, but remember a newer committed version exists so
+      // the rowkey's boundary row can carry the marker.
+      cur_rowkey_exist_new_version_ = true;
+    }
+  } else if (final_result
+             && cur_rowkey_exist_new_version_
+             && is_row_empty(row_)
+             && is_row_empty(prev_micro_row_)) {
+    // ttl-major only: filtered by version_range, but it is the last row of a rowkey
+    // that has a newer committed version and produced no surviving row anywhere
+    // (current block or cross-block cache). Resurrect the filtered boundary row and
+    // emit it purely as a virtual marker.
+    action = RowReadAction::READ_AS_VIRTUAL;
+  }
+  return action;
+}
+
+int ObMultiVersionMicroBlockRowScanner::fill_row_version_info(
+    ObDatumRow *row, const int64_t trans_version, RowReadAction &action)
+{
+  int ret = OB_SUCCESS;
+  if (OB_INVALID_INDEX != read_info_->get_trans_col_index()
+      && transaction::is_effective_trans_version(trans_version)) {
+    int64_t trans_idx = read_info_->get_trans_col_index();
+    if (OB_UNLIKELY(trans_idx >= row->count_ || 0 >= trans_version)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("Unexpected trans info", K(ret), K(trans_idx), K(trans_version), KPC(row), KPC_(read_info));
+    } else {
+      LOG_DEBUG("success to set trans_version on uncommitted row", K(ret), K(trans_version));
+      row->storage_datums_[trans_idx].reuse();
+      row->storage_datums_[trans_idx].set_int(-trans_version);
+    }
+    if (OB_SUCC(ret) && OB_UNLIKELY(0 == version_range_.base_version_
+                                    && IF_NEED_CHECK_BASE_VERSION_FILTER(context_))) {
+      if (OB_FAIL(context_->check_filtered_by_base_version(*row))) {
+        LOG_DEBUG("check base version filter fail", K(ret));
+      } else if (row->row_flag_.is_not_exist()) {
+        action = RowReadAction::SKIP;
+      }
+    }
+  }
+  // Apply the ttl-major marker already encoded in the action. Kept outside the
+  // is_effective_trans_version gate above because a resurrected boundary row
+  // (READ_AS_VIRTUAL) may carry no effective trans_version yet still has to be stamped.
+  if (OB_SUCC(ret) && context_->ttl_major_for_partial_update_upper_snapshot_ > 0) {
+    ret = mark_ttl_major_flag(row, action);
+  }
+  if (OB_SUCC(ret)) {
+    if (!row->mvcc_row_flag_.is_uncommitted_row()
+        || transaction::is_effective_trans_version(trans_version)) {
+      row->snapshot_version_ = 0;
+      row->trans_id_.reset();
+    } else {
+      row->snapshot_version_ = INT64_MAX;
+    }
+  }
+  return ret;
+}
+
+int ObMultiVersionMicroBlockRowScanner::mark_ttl_major_flag(
+    ObDatumRow *row, const RowReadAction action)
+{
+  int ret = OB_SUCCESS;
+  ObMajorMergeFlag &major_merge_flag = row->major_merge_flag_;
+  // Pure switch on the action: which marker to stamp was already decided in
+  // decide_row_read_action_for_ttl; nothing is re-derived from trans_version/snapshot here.
+  switch (action) {
+    case RowReadAction::READ_AS_VIRTUAL:
+      // Resurrected boundary row: filtered by version_range and carrying no usable
+      // payload. Wipe stale flags and keep it purely as a marker. It is the L row by
+      // construction (READ_AS_VIRTUAL requires final_result in decide_row_read_action_for_ttl).
+      if (OB_UNLIKELY(!row->is_last_multi_version_row())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("virtual row for ttl major is not last multi version row", K(ret),
+                  K(version_range_.snapshot_version_), KPC(row));
+      } else {
+        major_merge_flag.reset();
+        major_merge_flag.is_virtual_row_for_ttl_major_ = true;
+      }
+      break;
+    case RowReadAction::READ_MARK_EXIST_NEW:
+      // An earlier version of this rowkey is beyond snapshot: tag the in-range row so
+      // downstream knows a newer committed version exists.
+      major_merge_flag.exist_new_committed_row_ = true;
+      break;
+    default:
+      break;  // READ / SKIP carry no ttl-major marker.
+  }
+  return ret;
+}
+
+int ObMultiVersionMicroBlockRowScanner::read_next_version_row(
     const ObDatumRow *&ret_row, bool &version_fit, bool &final_result, bool &have_uncommitted_row)
 {
   int ret = OB_SUCCESS;
@@ -2099,7 +2441,7 @@ int ObMultiVersionMicroBlockRowScanner::inner_inner_get_next_row(
     if (OB_UNLIKELY(OB_ITER_END != ret)) {
       LOG_WARN("failed to judge end of block or not", K(ret), K_(macro_id));
     }
-  } else if (OB_FAIL(read_current_row_with_uncommitted_check(ret_row, version_fit, final_result, have_uncommitted_row))) {
+  } else if (OB_FAIL(read_and_resolve_row(ret_row, version_fit, final_result, have_uncommitted_row))) {
     LOG_WARN("fail to read current row with uncommitted check", K(ret), K_(current), K(version_fit), K(final_result), K(have_uncommitted_row));
   } else {
     // Multi-version must be forward reading, and reverse positioning is processed in locate_cursor_to_read
@@ -2107,6 +2449,26 @@ int ObMultiVersionMicroBlockRowScanner::inner_inner_get_next_row(
     LOG_DEBUG("inner get next block_row", KPC(ret_row), K_(is_last_multi_version_row), K_(macro_id));
   }
   return ret;
+}
+
+void ObMultiVersionMicroBlockRowScanner::classify_committed_trans_version(
+    const int64_t trans_version,
+    bool &version_fit,
+    bool &final_result)
+{
+  if (trans_version <= version_range_.base_version_) {
+    // filter multi version row whose trans version is smaller than base_version
+    version_fit = false;
+    final_result = true;
+  } else if (trans_version > version_range_.snapshot_version_) {
+    // beyond snapshot: filter it.
+    version_fit = false;
+  }
+  // In-range (base_version < trans_version <= snapshot_version): leave version_fit
+  // UNTOUCHED. For the committed branch the caller sets it true beforehand; for the
+  // uncommitted branch it must preserve the can_read_ / lock_for_read verdict, so that a
+  // row rolled back to a savepoint (committed trans_version, but can_read_ == false)
+  // stays filtered instead of being resurrected.
 }
 
 int ObMultiVersionMicroBlockRowScanner::check_trans_version(
@@ -2120,7 +2482,7 @@ int ObMultiVersionMicroBlockRowScanner::check_trans_version(
 {
   int ret = OB_SUCCESS;
   bool is_ghost_row_flag = false;
-  const int64_t snapshot_version = context_->trans_version_range_.snapshot_version_;
+  const int64_t snapshot_version = version_range_.snapshot_version_;
   memtable::ObMvccAccessCtx &acc_ctx = context_->store_ctx_->mvcc_acc_ctx_;
 
   if (OB_FAIL(ObGhostRowUtil::is_ghost_row(mvcc_row_flag, is_ghost_row_flag))) {
@@ -2149,11 +2511,8 @@ int ObMultiVersionMicroBlockRowScanner::check_trans_version(
         version_fit = trans_state.can_read_;
         trans_version = trans_state.trans_version_;
 
-        if (transaction::is_effective_trans_version(trans_version)
-            && trans_version <= version_range_.base_version_) {
-          version_fit = false;
-          // filter multi version row whose trans version is smaller than base_version
-          final_result = true;
+        if (transaction::is_effective_trans_version(trans_version)) {
+          classify_committed_trans_version(trans_version, version_fit, final_result);
         }
       } else if (OB_FAIL(ret) && OB_HASH_NOT_EXIST != ret) {
         LOG_WARN("fail to get trans state", K(ret), K(trans_id), K(tx_sequence), K_(macro_id));
@@ -2173,11 +2532,8 @@ int ObMultiVersionMicroBlockRowScanner::check_trans_version(
                                   trans_version))) {
           STORAGE_LOG(WARN, "fail to check transaction status",
                       K(ret), K(mvcc_row_flag), K(trans_id), K_(macro_id));
-        } else if (transaction::is_effective_trans_version(trans_version)
-                    && trans_version <= version_range_.base_version_) {
-          version_fit = false;
-          // filter multi version row whose trans version is smaller than base_version
-          final_result = true;
+        } else if (transaction::is_effective_trans_version(trans_version)) {
+          classify_committed_trans_version(trans_version, version_fit, final_result);
         }
       }
     } else {
@@ -2185,21 +2541,43 @@ int ObMultiVersionMicroBlockRowScanner::check_trans_version(
       //        whether uncommitted txns are readable
       if (context_->query_flag_.iter_uncommitted_row()) {
         version_fit = true;
-      } else if (trans_version <= version_range_.base_version_) {
-        // filter multi version row whose trans version is smaller than base_version
-        version_fit = false;
-        final_result = true;
-      } else if (trans_version > snapshot_version) {
-        // filter multi version row whose trans version is larger than snapshot_version
-        version_fit = false;
-        if (OB_NOT_NULL(context_->get_mds_collector())) {
+      } else {
+        // committed row: in-range is readable, so seed version_fit true and let
+        // classify_committed_trans_version only filter out-of-range versions.
+        version_fit = true;
+        classify_committed_trans_version(trans_version, version_fit, final_result);
+        // mds query side channel: a committed version newer than snapshot exists.
+        if (trans_version > snapshot_version && OB_NOT_NULL(context_->get_mds_collector())) {
           context_->get_mds_collector()->exist_new_committed_node_ = true;
           LOG_TRACE("exist new committed node", KR(ret), K(trans_version), K(snapshot_version), KPC(context_->get_mds_collector()));
         }
-      } else {
-        version_fit = true;
       }
     }
+  }
+  return ret;
+}
+
+int ObMultiVersionMicroBlockRowScanner::get_row_action(
+  bool &final_result,
+  RowReadAction &action,
+  bool &have_uncommited_row,
+  int64_t &trans_version,
+  int64_t &sql_sequence,
+  const ObMultiVersionRowFlag &mvcc_row_flag,
+  const transaction::ObTransID &trans_id)
+{
+  bool version_fit = false;
+  int ret = check_trans_version(final_result, version_fit, have_uncommited_row, trans_version, sql_sequence, mvcc_row_flag, trans_id);
+  if (OB_FAIL(ret)) {
+  } else if (0 == context_->ttl_major_for_partial_update_upper_snapshot_) {
+    // Non ttl-major path: the generic version_range verdict is the whole decision.
+    action = version_fit ? RowReadAction::READ : RowReadAction::SKIP;
+  } else {
+    // ttl-major path: decide_row_read_action_for_ttl is the single place ttl-major is consulted,
+    // and it must run for every row regardless of whether trans_version is effective --
+    // committed rows beyond snapshot carry effective trans_versions yet still need the
+    // virtual-row / exist-new-committed handling.
+    action = decide_row_read_action_for_ttl(trans_version, version_fit, final_result);
   }
   return ret;
 }
@@ -2211,7 +2589,7 @@ int ObMultiVersionMicroBlockRowScanner::check_foreign_key(
 {
   int ret = OB_SUCCESS;
   ObStoreRowLockState lock_state;
-  const int64_t snapshot_version = context_->trans_version_range_.snapshot_version_;
+  const int64_t snapshot_version = version_range_.snapshot_version_;
   memtable::ObMvccAccessCtx &acc_ctx = context_->store_ctx_->mvcc_acc_ctx_;
   bool is_plain_insert_gts_opt = context_->query_flag_.is_plain_insert_gts_opt();
   bool is_for_fk_check = context_->query_flag_.is_for_foreign_key_check();
@@ -2249,105 +2627,112 @@ int ObMultiVersionMicroBlockRowScanner::check_foreign_key(
 int ObMultiVersionMicroBlockRowScanner::cache_cur_micro_row(const bool found_first_row, const bool final_result)
 {
   int ret = OB_SUCCESS;
+  if (!reverse_scan_) {
+    ret = cache_cur_micro_row_forward(final_result);
+  } else {
+    ret = cache_cur_micro_row_reverse(found_first_row, final_result);
+  }
+  return ret;
+}
 
-  if (!reverse_scan_) { // forward scan
-    bool has_nop = true;
-    if (final_result && is_row_empty(prev_micro_row_)) {
-      // already get final result and no row cached, just return this row
-      // do not need deep copy
-    } else if (!is_row_empty(row_)) {
-      if (is_row_empty(prev_micro_row_)) { // Save static meta information when first cached
-        prev_micro_row_.row_flag_ = row_.row_flag_;
-        prev_micro_row_.count_ = row_.count_;
-        prev_micro_row_.have_uncommited_row_ = row_.have_uncommited_row_;
+// Forward scan: new→old version order, cur_row is older than prev_row.
+// Only fill nop columns in prev_micro_row_ from cur_row (since prev has newer values).
+// Scanning is done when final_result is true or no nop columns remain.
+int ObMultiVersionMicroBlockRowScanner::cache_cur_micro_row_forward(const bool final_result)
+{
+  int ret = OB_SUCCESS;
+  bool has_nop = true;
+
+  if (final_result && is_row_empty(prev_micro_row_)) {
+    // already get final result and no row cached, just return row_ directly
+  } else if (!is_row_empty(row_)) {
+    if (is_row_empty(prev_micro_row_)) {
+      prev_micro_row_.copy_row_meta(row_);
+    }
+    has_nop = false;
+    for (int64_t i = 0; OB_SUCC(ret) && i < row_.count_; ++i) {
+      ObStorageDatum &src_datum = row_.storage_datums_[i];
+      ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
+      if (dest_datum.is_nop()) {
+        if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
+          LOG_WARN("failed to deep copy datum", K(ret));
+        } else if (!has_nop) {
+          has_nop = dest_datum.is_nop();
+        }
       }
-      // The positive scan scans from new to old (trans_version is negative), so cur_row is older than prev_row
-      // So just add the nop column (column for which the value has not been decided)
-      has_nop = false;
+    }
+  }
+  if (final_result || !has_nop) {
+    finish_scanning_cur_rowkey_ = true;
+  }
+  return ret;
+}
+
+// Reverse scan: old→new version order across micro blocks, cur_row (row_) is newer than prev_micro_row_.
+// Apply newer row's values on top of the cached older row.
+// Scanning is done only when found_first_row is true (i.e., boundary of previous rowkey is found).
+int ObMultiVersionMicroBlockRowScanner::cache_cur_micro_row_reverse(const bool found_first_row, const bool final_result)
+{
+  int ret = OB_SUCCESS;
+
+  if (is_row_empty(prev_micro_row_)) {
+    if (found_first_row) {
+      // row_ is the first and only row for this rowkey, no deep copy needed
+    } else if (!is_row_empty(row_)) {
+      prev_micro_row_.copy_row_meta(row_);
+      int64_t end_cell_pos = row_.count_;
+      if (row_.row_flag_.is_delete()) {
+        end_cell_pos = OB_INVALID_INDEX != read_info_->get_trans_col_index()
+                       ? read_info_->get_schema_rowkey_count() + 1
+                       : read_info_->get_schema_rowkey_count();
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < end_cell_pos; ++i) {
+        ObStorageDatum &src_datum = row_.storage_datums_[i];
+        ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
+        if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
+          LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
+        }
+      }
+    }
+  } else if (!is_row_empty(row_)) {
+    prev_micro_row_.copy_row_meta(row_);
+    if (row_.row_flag_.is_delete()) {
+      for (int64_t i = read_info_->get_schema_rowkey_count(); i < prev_micro_row_.count_; ++i) {
+        prev_micro_row_.storage_datums_[i].set_nop();
+      }
+      // In reverse scan across blocks: prev_micro_row_ is older, row_ is newer.
+      // Need to update the trans version column to the newer value.
+      const int64_t trans_idx = read_info_->get_trans_col_index();
+      if (OB_SUCC(ret) && OB_INVALID_INDEX != trans_idx) {
+        if (OB_UNLIKELY(trans_idx < 0 || trans_idx >= row_.count_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("Unexpected trans info", K(ret), K(trans_idx), K_(row), KPC_(read_info));
+        } else {
+          const ObStorageDatum &src_datum = row_.storage_datums_[trans_idx];
+          ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[trans_idx];
+          dest_datum.reuse();
+          dest_datum.set_int(src_datum.get_int());
+        }
+      }
+    } else if (final_result) {
       for (int64_t i = 0; OB_SUCC(ret) && i < row_.count_; ++i) {
         ObStorageDatum &src_datum = row_.storage_datums_[i];
         ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
-        if (dest_datum.is_nop()) {
-          if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
-            LOG_WARN("failed to deep copy datum", K(ret));
-          } else if (!has_nop) {
-            has_nop = dest_datum.is_nop();
-          }
+        if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
+          LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
+        }
+      }
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < row_.count_; ++i) {
+        ObStorageDatum &src_datum = row_.storage_datums_[i];
+        ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
+        if (!src_datum.is_nop() && OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
+          LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
         }
       }
     }
-    // Forward scan, as long as the fuse result of cur_row is final_result or the fuse result of prev_row has no nop,
-    // it means that the current rowkey has been read
-    if (final_result || !has_nop) {
-      finish_scanning_cur_rowkey_ = true;
-    }
-  } else { // Reverse scan
-    // apply, since cur_row is newer than prev_row
-    if (is_row_empty(prev_micro_row_)) {
-      if (found_first_row) {
-        // do not need deep copy
-      } else if (!is_row_empty(row_)) {
-        prev_micro_row_.row_flag_ = row_.row_flag_;
-        prev_micro_row_.count_ = row_.count_;
-        prev_micro_row_.have_uncommited_row_ = row_.have_uncommited_row_;
-        int64_t end_cell_pos = row_.count_;
-        if (row_.row_flag_.is_delete()) {
-          end_cell_pos = OB_INVALID_INDEX != read_info_->get_trans_col_index() ? read_info_->get_schema_rowkey_count() + 1 :
-            read_info_->get_schema_rowkey_count();
-        }
-        for (int64_t i = 0; OB_SUCC(ret) && i < end_cell_pos; ++i) {
-          ObStorageDatum &src_datum = row_.storage_datums_[i];
-          ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
-          if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
-            LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
-          }
-        }
-      }
-    } else if (!is_row_empty(row_)) {
-      prev_micro_row_.row_flag_ = row_.row_flag_;
-      prev_micro_row_.count_ = row_.count_;
-      prev_micro_row_.have_uncommited_row_ = row_.have_uncommited_row_;
-      if (row_.row_flag_.is_delete()) {
-        for (int64_t i = read_info_->get_schema_rowkey_count(); i < prev_micro_row_.count_; ++i) {
-          prev_micro_row_.storage_datums_[i].set_nop();
-        }
-        // in reverse scan if one rowkey covers multiple blocks, the scan order is: old version block -> new version block
-        // so prev_micro_row_ is older and row_ is newer, need set the newer trans version
-        const int64_t trans_idx = read_info_->get_trans_col_index();
-        if (OB_SUCC(ret) && OB_INVALID_INDEX != trans_idx) {
-          if (OB_UNLIKELY(trans_idx < 0 || trans_idx >= row_.count_)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("Unexpected trans info", K(ret), K(trans_idx), K_(row), KPC_(read_info));
-          } else {
-            const ObStorageDatum &src_datum = row_.storage_datums_[trans_idx];
-            ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[trans_idx];
-            dest_datum.reuse();
-            dest_datum.set_int(src_datum.get_int());
-          }
-        }
-      } else if (final_result) {
-        for (int64_t i = 0; OB_SUCC(ret) && i < row_.count_; ++i) {
-          ObStorageDatum &src_datum = row_.storage_datums_[i];
-          ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
-          if (OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
-            LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
-          }
-        }
-      } else {
-        for (int64_t i = 0; OB_SUCC(ret) && i < row_.count_; ++i) {
-          ObStorageDatum &src_datum = row_.storage_datums_[i];
-          ObStorageDatum &dest_datum = prev_micro_row_.storage_datums_[i];
-          if (!src_datum.is_nop() && OB_FAIL(dest_datum.deep_copy(src_datum, cell_allocator_))) {
-            LOG_WARN("failed to deep copy datum", K(ret), K(src_datum));
-          }
-        }
-      }
-    }
-    // Reverse scanning, only when the latest row is read,
-    // that is, the last row of the previous rowkey is found,
-    // can it be said that the current rowkey has been read.
-    finish_scanning_cur_rowkey_ = found_first_row;
   }
+  finish_scanning_cur_rowkey_ = found_first_row;
   return ret;
 }
 
@@ -2477,7 +2862,7 @@ int ObMultiVersionIOMicroBlockRowScanner::inner_get_next_row(const ObDatumRow *&
         }
       } else if (!filter_result.test(current_)) {
         // filter skipped
-      } else if (OB_FAIL(read_current_row_with_uncommitted_check(row, version_fit, final_result, have_uncommitted_row))) {
+      } else if (OB_FAIL(read_and_resolve_row(row, version_fit, final_result, have_uncommitted_row))) {
         LOG_WARN("fail to read current row with uncommitted check", K(ret), K_(current), K(version_fit), K(final_result), K(have_uncommitted_row));
       } else if (!version_fit || row->is_shadow_row()) {
         // skip

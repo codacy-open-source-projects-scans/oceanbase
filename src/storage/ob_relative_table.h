@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_RELATIVE_TABLE_H_
@@ -86,12 +79,14 @@ public:
   int get_spatial_geo_col_id(uint64_t &column_id) const;
   int get_spatial_cellid_col_id(uint64_t &column_id) const;
   int get_spatial_mbr_col_id(uint64_t &column_id) const;
+  ObMergeEngineType get_merge_engine_type() const;
   bool is_index_table() const;
   bool is_lob_meta_table() const;
   bool is_storage_index_table() const;
   bool is_index_local_storage() const;
   bool can_read_index() const;
   bool is_unique_index() const;
+  bool is_global_unique_index() const;
   bool is_domain_index() const;
   bool is_spatial_index() const;
   bool is_fts_index() const;

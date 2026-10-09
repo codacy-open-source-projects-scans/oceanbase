@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -24,7 +17,7 @@ namespace sql
 
 ERRSIM_POINT_DEF(EN_FORCE_PRIMARY_ROR_SCAN, "Force to use primary ror scan");
 
-OB_SERIALIZE_MEMBER((ObDASScalarCtDef, ObIDASSearchCtDef), has_main_scan_, has_index_scan_);
+OB_SERIALIZE_MEMBER((ObDASScalarCtDef, ObIDASSearchCtDef), has_main_scan_, has_index_scan_, boost_, primary_get_ratio_);
 
 OB_SERIALIZE_MEMBER((ObDASScalarRtDef, ObIDASSearchRtDef));
 
@@ -51,7 +44,8 @@ OB_DEF_SERIALIZE(ObDASScalarScanRtDef)
               sql_mode_,
               scan_flag_,
               key_ranges_,
-              really_need_rowkey_order_);
+              really_need_rowkey_order_,
+              boost_weight_);
   return ret;
 }
 
@@ -65,7 +59,8 @@ OB_DEF_DESERIALIZE(ObDASScalarScanRtDef)
               sql_mode_,
               scan_flag_,
               key_ranges_,
-              really_need_rowkey_order_);
+              really_need_rowkey_order_,
+              boost_weight_);
   if (OB_SUCC(ret)) {
     (void)ObSQLUtils::adjust_time_by_ntp_offset(timeout_ts_);
   }
@@ -82,7 +77,8 @@ OB_DEF_SERIALIZE_SIZE(ObDASScalarScanRtDef)
               sql_mode_,
               scan_flag_,
               key_ranges_,
-              really_need_rowkey_order_);
+              really_need_rowkey_order_,
+              boost_weight_);
   return len;
 }
 
@@ -262,7 +258,9 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
 {
   int ret = OB_SUCCESS;
   // is_rowkey_order_scan_
-  // ├── YES: ROR (Primary/Index ROR)
+  // ├── YES: need_rowkey_order_
+  // |       ├── NO:  Scan Op
+  // |       └── YES: ROR (Primary/Index ROR)
   // └── NO:  need_rowkey_order_
   //          ├── NO:  Scan Op
   //          └── YES: Scan Op + Bitmap/Sort Op
@@ -272,9 +270,22 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
     LOG_WARN("scalar ctdef is null", K(ret));
   } else if (ctdef->is_rowkey_order_scan_) {
     // ROR scan
-    if (ctdef->is_primary_table_scan_) {
+    if (!really_need_rowkey_order_ && !ctdef->is_search_index_) {
+      ObDASScalarScanOpParam op_param(ctdef, this);
+      ObDASScalarScanOp *non_ror_scan_op = nullptr;
+      op_param.set_is_scoring(ctdef->is_scoring());
+      if (OB_FAIL(search_ctx.create_op(op_param, non_ror_scan_op))) {
+        LOG_WARN("failed to create scan op", K(ret));
+      } else if (OB_ISNULL(non_ror_scan_op)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected nullptr", K(ret));
+      } else {
+        op = static_cast<ObIDASSearchOp *>(non_ror_scan_op);
+      }
+    } else if (ctdef->is_primary_table_scan_) {
       ObDASScalarPrimaryROROpParam op_param(ctdef, this);
       ObDASScalarPrimaryROROp *primary_ror_op = nullptr;
+      op_param.set_is_scoring(ctdef->is_scoring());
       if (OB_FAIL(search_ctx.create_op(op_param, primary_ror_op))) {
         LOG_WARN("failed to create primary ror op", K(ret));
       } else if (OB_ISNULL(primary_ror_op)) {
@@ -286,6 +297,7 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
     } else {
       ObDASScalarIndexROROpParam op_param(ctdef, this);
       ObDASScalarIndexROROp *index_ror_op = nullptr;
+      op_param.set_is_scoring(ctdef->is_scoring());
       if (OB_FAIL(search_ctx.create_op(op_param, index_ror_op))) {
         LOG_WARN("failed to create index ror op", K(ret));
       } else if (OB_ISNULL(index_ror_op)) {
@@ -299,6 +311,7 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
     // non-ROR scan
     ObDASScalarScanOpParam op_param(ctdef, this);
     ObDASScalarScanOp *non_ror_scan_op = nullptr;
+    op_param.set_is_scoring(ctdef->is_scoring());
     if (OB_FAIL(search_ctx.create_op(op_param, non_ror_scan_op))) {
       LOG_WARN("failed to create scan op", K(ret));
     } else if (OB_ISNULL(non_ror_scan_op)) {
@@ -310,6 +323,7 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
       if (search_ctx.get_rowid_type() == DAS_ROWID_TYPE_UINT64) {
         ObDASBitmapOpParam bitmap_op_param(non_ror_scan_op);
         ObDASBitmapOp *bitmap_op = nullptr;
+        bitmap_op_param.set_is_scoring(ctdef->is_scoring());
         if (OB_FAIL(search_ctx.create_op(bitmap_op_param, bitmap_op))) {
           LOG_WARN("failed to create bitmap op", K(ret));
         } else if (OB_ISNULL(bitmap_op)) {
@@ -321,6 +335,7 @@ int ObDASScalarScanRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx 
       } else {
         ObDASSortOpParam sort_op_param(non_ror_scan_op);
         ObDASSortOp *sort_op = nullptr;
+        sort_op_param.set_is_scoring(ctdef->is_scoring());
         if (OB_FAIL(search_ctx.create_op(sort_op_param, sort_op))) {
           LOG_WARN("failed to create sort op", K(ret));
         } else if (OB_ISNULL(sort_op)) {

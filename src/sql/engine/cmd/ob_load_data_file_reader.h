@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_LOAD_DATA_FILE_READER_H_
@@ -231,6 +224,9 @@ public:
 
   virtual ObCSVGeneralFormat::ObCSVCompression compression_format() const = 0;
 
+  virtual bool has_remain_data() const { return false; }
+  virtual bool need_more_data() const { return false; }
+
   static int create(ObCSVGeneralFormat::ObCSVCompression format,
                     ObIAllocator &allocator,
                     ObDecompressor *&decompressor);
@@ -323,13 +319,13 @@ private:
 };
 
 /**
- * snappy decompressor
+ * snappy block decompressor
 */
-class ObSnappyDecompressor : public ObDecompressor
+class ObSnappyBlockDecompressor : public ObDecompressor
 {
 public:
-  explicit ObSnappyDecompressor(ObIAllocator &allocator);
-  virtual ~ObSnappyDecompressor();
+  explicit ObSnappyBlockDecompressor(ObIAllocator &allocator);
+  virtual ~ObSnappyBlockDecompressor();
   int  init() override;
   void destroy() override;
 
@@ -338,15 +334,43 @@ public:
 
   ObCSVGeneralFormat::ObCSVCompression compression_format() const override
   {
-    return ObCSVGeneralFormat::ObCSVCompression::SNAPPY;
+    return ObCSVGeneralFormat::ObCSVCompression::SNAPPY_BLOCK;
+  }
+
+  bool has_remain_data() const override
+  {
+    return decomp_buf_pos_ < decomp_buf_size_;
+  }
+
+  bool need_more_data() const override
+  {
+    return need_more_data_;
   }
 
 private:
-  char *buffer_ = nullptr;           // buffer for storing decompressed data
-  int64_t read_size_ = 0;            // already read size in buffer
-  int64_t data_size_ = 0;            // decompressed size in buffer
-  int64_t buffer_capacity_ = 0;      // buffer capacity
-  bool is_decompressed_ = false;
+  static constexpr int64_t BLOCK_HEADER_SIZE = 4;
+  static constexpr int64_t DEFAULT_BUFFER_SIZE = 2 * 1024 * 1024;  // 2MB
+  static inline uint32_t read_be32(const char *p)
+  {
+    return (static_cast<uint32_t>(static_cast<unsigned char>(p[0])) << 24) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(p[1])) << 16) |
+           (static_cast<uint32_t>(static_cast<unsigned char>(p[2])) << 8)  |
+           (static_cast<uint32_t>(static_cast<unsigned char>(p[3])));
+  }
+
+  bool is_inited_ = false;
+  bool need_more_data_ = false;  // 当前数据不完整，需要外部追加更多数据后重试
+
+  // 状态1 大块解压后的大小
+  int64_t remaining_large_block_len_ = 0;
+
+  // 状态2 解压后但 dest 装不下的数据缓冲区
+  char *decomp_buf_ = nullptr;       // pending decompressed data when block > dest_capacity
+  int64_t decomp_buf_pos_ = 0;       // offset already returned within decomp_buf_
+  int64_t decomp_buf_size_ = 0;      // total decompressed size in decomp_buf_
+  int64_t decomp_buf_capacity_ = 0;  // decomp_buf_ capacity
+
+  // 无状态的decompressor
   oceanbase::common::snappy_1_2_2::ObSnappyCompressor1_2_2 snappy_compressor_;
 };
 } // namespace sql

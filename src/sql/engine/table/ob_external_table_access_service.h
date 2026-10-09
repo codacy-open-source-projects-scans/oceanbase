@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -171,25 +164,21 @@ public:
 
 struct ObExternalTableAccessOptions
 {
-  ObExternalTableAccessOptions() :
-    enable_prebuffer_(false), enable_page_cache_(false), enable_disk_cache_(false), cache_options_()
+  ObExternalTableAccessOptions()
+      : enable_prebuffer_(false), enable_memory_cache_(false), enable_disk_cache_(false),
+        enable_parquet_page_cache_(false), cache_options_()
   {
     omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
     if (tenant_config.is_valid()) {
       enable_prebuffer_ = tenant_config->_enable_external_table_prefetch;
-      enable_page_cache_ = tenant_config->_enable_external_table_memory_cache;
+      enable_memory_cache_ = tenant_config->_enable_external_table_memory_cache;
       enable_disk_cache_ = tenant_config->_enable_external_table_disk_cache;
-    }
-  }
-  ObExternalTableAccessOptions(const bool enable_page_cache, const bool enable_disk_cache,
-                               const ObFilePreBuffer::CacheOptions &options) :
-    enable_prebuffer_(false),
-    enable_page_cache_(enable_page_cache), enable_disk_cache_(enable_disk_cache),
-    cache_options_(options)
-  {
-    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
-    if (tenant_config.is_valid()) {
-      enable_prebuffer_ = tenant_config->_enable_external_table_prefetch;
+      enable_parquet_page_cache_ = tenant_config->_enable_external_table_parquet_page_cache;
+
+      if (!enable_prebuffer_ || !enable_memory_cache_) {
+        // parquet page cache rely on memory cache
+        enable_parquet_page_cache_ = false;
+      }
     }
   }
   static ObExternalTableAccessOptions defaults()
@@ -206,18 +195,22 @@ struct ObExternalTableAccessOptions
   }
   static ObExternalTableAccessOptions disable_cache_defaults()
   {
-    return ObExternalTableAccessOptions(/*enable_page_cache=*/false,
-                                        /*enable_disk_cache=*/false,
-                                        ObFilePreBuffer::CacheOptions::defaults());
+    ObExternalTableAccessOptions options = defaults();
+    options.enable_memory_cache_ = false;
+    options.enable_disk_cache_ = false;
+    options.enable_parquet_page_cache_ = false;
+    return options;
   }
   TO_STRING_KV(K_(enable_prebuffer),
-               K_(enable_page_cache),
+               K_(enable_memory_cache),
                K_(enable_disk_cache),
+               K_(enable_parquet_page_cache),
                K_(cache_options));
 
   bool enable_prebuffer_;
-  bool enable_page_cache_;
+  bool enable_memory_cache_;
   bool enable_disk_cache_;
+  bool enable_parquet_page_cache_;
   ObFilePreBuffer::CacheOptions cache_options_;
 };
 
@@ -248,7 +241,8 @@ public:
     scan_param_(nullptr), line_number_expr_(NULL), file_id_expr_(NULL), file_name_expr_(NULL),
     delete_bitmap_(nullptr), delete_bitmap_builder_(nullptr), reader_profile_(),
     need_partition_info_(false), file_column_exprs_(allocator_), mapping_column_ids_(allocator_),
-    file_meta_column_exprs_(allocator_), column_need_conv_(allocator_)
+    file_meta_column_exprs_(allocator_), column_need_conv_(allocator_),
+    is_agg_pushdown_(false)
   {}
   virtual int init(const storage::ObTableScanParam *scan_param);
   ~ObExternalTableRowIterator();
@@ -317,6 +311,7 @@ protected:
   int generate_mapping_column_id(ObExpr* ext_file_column_expr,
                                 int64_t file_column_expr_idx,
                                 ObIArray<std::pair<uint64_t, uint64_t>> &mapping_column_ids);
+  bool is_aggregate_pushdown_mode() const { return is_agg_pushdown_; }
 protected:
   const storage::ObTableScanParam *scan_param_;
   //external table column exprs
@@ -337,6 +332,7 @@ protected:
   ObFixedArray<std::pair<uint64_t, uint64_t>, ObIAllocator> mapping_column_ids_;
   ExprFixedArray file_meta_column_exprs_; //column value from file meta
   common::ObFixedArray<bool, ObIAllocator> column_need_conv_;
+  bool is_agg_pushdown_;
 private:
   ObArenaAllocator allocator_; // used by delete map now
 };
@@ -351,6 +347,7 @@ public:
   virtual int revert_scan_iter(ObNewRowIterator *iter) override;
 
 private:
+  static bool is_ext_min_max_agg_scan(const storage::ObTableScanParam &scan_param);
 
   DISALLOW_COPY_AND_ASSIGN(ObExternalTableAccessService);
 };

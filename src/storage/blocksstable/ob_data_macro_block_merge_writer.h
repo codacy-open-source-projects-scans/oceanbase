@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_DATA_MACRO_BLOCK_MERGE_WRITER_H_
@@ -41,9 +34,13 @@ public:
       ObISSTableObjectCleaner &object_cleaner,
       ObIMacroBlockFlushCallback *callback = nullptr,
       ObIMacroBlockValidator *validator = nullptr,
-      ObIODevice *device_handle = nullptr) override;
+      ObIODevice *device_handle = nullptr,
+      const storage::ObITableReadInfo *merge_micro_block_read_info = nullptr) override;
   virtual int append_row(const ObDatumRow &row, const ObMacroBlockDesc *curr_macro_desc = nullptr) override;
-  virtual int append_micro_block(const ObMicroBlock &micro_block, const ObMacroBlockDesc *curr_macro_desc = nullptr) override;
+  virtual int append_micro_block(
+      const ObMicroBlock &micro_block,
+      const ObMacroBlockDesc *curr_macro_desc = nullptr,
+      compaction::ObMergeVectorStore *read_vector_store = nullptr) override;
   virtual int append_macro_block(
       const ObMacroBlockDesc &macro_desc,
       const ObMicroBlockData *micro_block_data) override;

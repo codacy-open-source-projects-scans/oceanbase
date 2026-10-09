@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_DML_OB_DML_RESOLVER_H_
@@ -520,6 +513,12 @@ protected:
                                  const uint64_t autoinc_col_id,
                                  const ObString autoinc_table_name,
                                  const ObString autoinc_column_name);
+  int build_random_part_nextval_expr(ObRawExpr *&expr,
+                                 const uint64_t autoinc_table_id,
+                                 const uint64_t autoinc_col_id,
+                                 const ObString autoinc_table_name,
+                                 const ObString autoinc_column_name,
+                                 const share::schema::ObTableSchema &table_schema);
   int fill_doc_id_expr_param(
       const uint64_t table_id,
       const uint64_t index_tid,
@@ -1024,6 +1023,7 @@ private:
                          const ParseNode &index_hint_node);
   int resolve_index_merge_hint(const ParseNode &hint_node,
                                ObOptHint *&opt_hint);
+  int resolve_cache_hint(const ParseNode &hint_node, ObOptHint *&opt_hint);
   int resolve_table_parallel_hint(const ParseNode &hint_node, ObOptHint *&opt_hint);
   int resolve_join_order_hint(const ParseNode &hint_node, ObOptHint *&opt_hint);
   int resolve_join_hint(const ParseNode &join_node, ObIArray<ObHint*> &join_hints);
@@ -1137,6 +1137,9 @@ private:
                                   ObIArray<ObMatchFunRawExpr*> &match_exprs,
                                   const ObStmtScope scope);
   int resolve_match_against_expr_with_match_phrase_mode(ObRawExpr *&expr, ObMatchFunRawExpr *&cur_match_expr, const ObStmtScope scope);
+  int get_phrase_like_aux_const_collation(ObMatchFunRawExpr &match_expr,
+                                          const ObRawExpr *search_key_expr,
+                                          ObCollationType &aux_const_cs);
   int resolve_match_index(const ColumnReferenceSet &match_column_set,
                           const ObTableSchema &table_schema,
                           ObMatchFunRawExpr &match_against);

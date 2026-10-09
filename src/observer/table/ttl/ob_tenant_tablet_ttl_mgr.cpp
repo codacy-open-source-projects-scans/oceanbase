@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -1300,12 +1293,14 @@ int ObTabletTTLScheduler::reload_tenant_task()
   int ret = OB_SUCCESS;
   ObTTLStatus tenant_task;
   ObTTLTaskStatus expected_state;
+  ObArenaAllocator tmp_allocator;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret));
   } else if (!is_leader_) {
     // do nothing
-  } else if (OB_FAIL(ObTTLUtil::read_tenant_ttl_task(tenant_id_, get_tenant_task_table_id(), get_ttl_type(), *sql_proxy_, tenant_task))) {
+  } else if (OB_FAIL(ObTTLUtil::read_tenant_ttl_task(tenant_id_, get_tenant_task_table_id(), get_ttl_type(),
+                                        *sql_proxy_, tenant_task, false, &tmp_allocator))) {
     if (OB_ITER_END == ret) {
       ret = OB_SUCCESS;
       local_tenant_task_.reuse();
@@ -1541,6 +1536,29 @@ int ObTenantTabletTTLMgr::init(storage::ObLS *ls)
     ls_id_ = ls->get_ls_id();
     is_inited_ = true;
     LOG_INFO("ObTenantTabletTTLMgr is inited", K_(tenant_id), K_(ls_id), K_(ttl_tg_id), K_(vec_tg_id), K(ls->get_ls_id().is_user_ls()), K_(hrowkey_tg_id));
+  }
+  if (OB_FAIL(ret)) {
+    ObSEArray<ObTabletTTLScheduler *, 4> &schedulers = periodic_task_.get_tablet_ttl_schedulers();
+    for (int i = 0; i < schedulers.count(); i++) {
+      if (OB_NOT_NULL(schedulers.at(i))) {
+        schedulers.at(i)->~ObTabletTTLScheduler();
+        schedulers.at(i) = nullptr;
+      }
+    }
+    ObSEArray<ObTabletTTLScheduler *, 4> &hrowkey_schedulers = hrowkey_periodic_task_.get_tablet_ttl_schedulers();
+    for (int i = 0; i < hrowkey_schedulers.count(); i++) {
+      if (OB_NOT_NULL(hrowkey_schedulers.at(i))) {
+        hrowkey_schedulers.at(i)->~ObTabletTTLScheduler();
+        hrowkey_schedulers.at(i) = nullptr;
+      }
+    }
+    if (vec_tg_id_ != 0 && ls->get_ls_id().is_user_ls()) {
+      TG_STOP(vec_tg_id_);
+      TG_WAIT(vec_tg_id_);
+      TG_DESTROY(vec_tg_id_);
+      vec_tg_id_ = 0;
+      vector_idx_scheduler_.destroy();
+    }
   }
   return ret;
 }

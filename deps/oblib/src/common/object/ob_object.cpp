@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_object.h"
@@ -1567,7 +1560,8 @@ bool ObObj::is_zero() const
 
 int ObObj::build_not_strict_default_value(
     int16_t precision,
-    const ObCollationType string_cs_type)
+    const ObCollationType string_cs_type,
+    bool is_collection_vector_type)
 {
   int ret = OB_SUCCESS;
   const ObObjType &data_type = meta_.get_type();
@@ -1655,10 +1649,28 @@ int ObObj::build_not_strict_default_value(
     case ObTextType:
     case ObMediumTextType:
     case ObLongTextType:
-    case ObGeometryType:
-    case ObCollectionSQLType:{
+    case ObGeometryType:{
         ObString null_str;
         set_string(data_type, null_str);
+        meta_.set_inrow();
+      }
+      break;
+    case ObCollectionSQLType:{
+        // For array/map/sparsevector types, the raw_binary format starts with a
+        // 4-byte uint32_t length_ field. An empty string is illegal because
+        // init() requires raw_data.length() >= sizeof(length_). So we must
+        // provide at least 4 bytes of zeros ("\x00\x00\x00\x00") to represent
+        // an empty collection with length_ = 0.
+        // For vector type, the raw_binary does NOT contain a length_ prefix
+        // (data length is inferred from total bytes), so an empty string is
+        // valid and represents an empty vector.
+        if (is_collection_vector_type) {
+          ObString null_str;
+          set_string(data_type, null_str);
+        } else {
+          ObString empty_arr = ObString(4, "\x00\x00\x00\x00");
+          set_string(data_type, empty_arr);
+        }
         meta_.set_inrow();
       }
       break;
@@ -2590,9 +2602,11 @@ int ObObj::print_varchar_literal(const ObIArray<ObString> &type_infos, char *buf
       LOG_WARN("fail to get set str val", K(str_val), K(type_infos), K(ret));
     }
   }
-  if (OB_SUCC(ret) && databuff_printf(buffer, length, pos, "'%.*s'",
-                                      static_cast<int32_t>(str_val.length()), str_val.ptr())) {
-    LOG_WARN("fail to print string", KP(buffer), K(length), K(pos), K(str_val), K(ret));
+  if (OB_SUCC(ret)) {
+    const ObString out_str(static_cast<int32_t>(str_val.length()), str_val.ptr());
+    if (OB_FAIL(ob_append_quoted_str(buffer, length, pos, out_str))) {
+      LOG_WARN("fail to print string", KP(buffer), K(length), K(pos), K(str_val), K(ret));
+    }
   }
   return ret;
 }

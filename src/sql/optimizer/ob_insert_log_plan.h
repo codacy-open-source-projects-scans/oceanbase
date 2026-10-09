@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_INSERT_LOG_PLAN_H
@@ -80,7 +73,13 @@ protected:
 
   /** @brief Allocate SELECTINTO on top of plan candidates when insert into external table*/
   int candi_allocate_select_into_for_insert();
-  int allocate_select_into_as_top_for_insert(ObLogicalOperator *&old_top);
+  int prepare_external_table_info_for_insert(const schema::ObTableSchema *&table_schema,
+                                             common::ObString &external_properties,
+                                             common::ObString &outfile_name_str);
+  int allocate_select_into_as_top_for_insert(ObLogicalOperator *&old_top,
+                                             const schema::ObTableSchema &table_schema,
+                                             const common::ObString &external_properties,
+                                             const common::ObString &outfile_name_str);
 
   int get_osg_type(bool is_multi_part_dml,
                    ObShardingInfo *insert_table_sharding,

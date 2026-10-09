@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -78,8 +71,17 @@ int ObOuterJoinMJVPrinter::gen_refresh_dmls_for_inner_join(const TableItem *delt
                                                            ObIArray<ObDMLStmt*> &dml_stmts)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(gen_delete_for_inner_join(delta_table, dml_stmts))) {
+  if (OB_ISNULL(delta_table)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("delta table is null", K(ret), K(delta_table_idx));
+  } else if (is_table_without_delete(*delta_table)) {
+    // for table without delete, skip the delete
+  } else if (OB_FAIL(gen_delete_for_inner_join(delta_table, dml_stmts))) {
     LOG_WARN("failed to gen delete stmt for inner join", K(ret));
+  }
+  if (OB_FAIL(ret)) {
+  } else if (is_table_without_insert(*delta_table)) {
+    // for table without insert, skip the insert
   } else if (OB_FAIL(gen_insert_for_outer_join_mjv(delta_table_idx,
                                                    NULL, /* upper_table */
                                                    false, /* is_outer_join */
@@ -95,16 +97,25 @@ int ObOuterJoinMJVPrinter::gen_refresh_dmls_for_left_join(const TableItem *delta
                                                           ObIArray<ObDMLStmt*> &dml_stmts)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(gen_delete_for_left_join(delta_table,
-                                       delta_table_idx,
-                                       upper_table,
-                                       true, /* is_first_delete */
-                                       dml_stmts))) {
+  if (OB_ISNULL(delta_table)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("delta table is null", K(ret), K(delta_table_idx));
+  } else if (is_table_without_delete(*delta_table)) {
+    // for tables without delete, skip the first delete and the update
+  } else if (OB_FAIL(gen_delete_for_left_join(delta_table,
+                                              delta_table_idx,
+                                              upper_table,
+                                              true, /* is_first_delete */
+                                              dml_stmts))) {
     LOG_WARN("failed to generate the first delete stmt for left join", K(ret));
   } else if (OB_FAIL(gen_update_for_left_join(delta_table,
                                               delta_table_idx,
                                               dml_stmts))) {
     LOG_WARN("failed to generate update stmt for left join", K(ret));
+  }
+  if (OB_FAIL(ret)) {
+  } else if (is_table_without_insert(*delta_table)) {
+    // for tables without insert, skip the insert and the second delete
   } else if (OB_FAIL(gen_insert_for_outer_join_mjv(delta_table_idx,
                                                    upper_table,
                                                    true, /* is_outer_join */
@@ -138,7 +149,7 @@ int ObOuterJoinMJVPrinter::gen_delete_for_inner_join(const TableItem *delta_tabl
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(del_stmt), K(mv_table));
   } else if (OB_FALSE_IT(mv_table->database_name_ = mv_db_name_)) {
-  } else if (OB_FAIL(gen_exists_cond_for_table(delta_table, mv_table, true, false, true, semi_filter))) {
+  } else if (OB_FAIL(gen_modified_rows_cond_for_table(delta_table, mv_table, true, true, true, semi_filter))) {
     LOG_WARN("failed to create simple column exprs", K(ret));
   } else if (OB_FAIL(del_stmt->add_condition_expr(semi_filter))) {
     LOG_WARN("failed to push back semi filter", K(ret));
@@ -425,7 +436,7 @@ int ObOuterJoinMJVPrinter::gen_select_for_left_join_first_delete(const TableItem
     LOG_WARN("get unexpected null table item", K(ret), K(in_sel_mv_table));
   } else if (OB_FAIL(gen_format_string_name(INNER_TABLE_FORMAT_NAME, mv_schema_.get_table_name(), in_sel_mv_table->alias_name_))) {
     LOG_WARN("failed to generate format table name", K(ret));
-  } else if (OB_FAIL(gen_exists_cond_for_table(delta_table, in_sel_mv_table, true, false, true, in_sel_cond_expr))) {
+  } else if (OB_FAIL(gen_modified_rows_cond_for_table(delta_table, in_sel_mv_table, true, true, true, in_sel_cond_expr))) {
     LOG_WARN("failed to generate exists cond for mv_stat cond", K(ret));
   } else if (OB_FAIL(in_sel_stmt->add_condition_expr(in_sel_cond_expr))) {
     LOG_WARN("failed to push back semi filter", K(ret));
@@ -643,7 +654,7 @@ int ObOuterJoinMJVPrinter::gen_update_for_left_join(const TableItem *delta_table
   } else if (OB_ISNULL(upd_stmt) || OB_ISNULL(mv_table)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(upd_stmt), K(mv_table));
-  } else if (OB_FAIL(gen_exists_cond_for_table(delta_table, mv_table, true, false, true, semi_filter))) {
+  } else if (OB_FAIL(gen_modified_rows_cond_for_table(delta_table, mv_table, true, true, true, semi_filter))) {
     LOG_WARN("failed to gen exists semi filter", K(ret));
   } else if (OB_FAIL(upd_stmt->add_condition_expr(semi_filter))) {
     LOG_WARN("failed to push back semi filter", K(ret));

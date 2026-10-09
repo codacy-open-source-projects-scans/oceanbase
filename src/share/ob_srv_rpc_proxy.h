@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEABASE_COMMON_OB_SRV_RPC_PROXY_H_
@@ -15,6 +8,7 @@
 
 #include "sql/engine/cmd/ob_kill_session_arg.h"
 #include "storage/tablelock/ob_table_lock_rpc_struct.h"
+#include "share/tablet/ob_drop_gtt_v2_session_tablet_arg.h"
 #include "rpc/obrpc/ob_rpc_proxy.h"
 #include "share/ob_common_id.h"
 #include "share/ob_rpc_struct.h"

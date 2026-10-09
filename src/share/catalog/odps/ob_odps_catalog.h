@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef _SHARE_OB_ODPS_CATALOG_H
 #define _SHARE_OB_ODPS_CATALOG_H
@@ -59,8 +52,13 @@ public:
                              const ObILakeTableMetadata *table_metadata,
                              const ObIArray<ObString> &partition_values,
                              const ObIArray<ObString> &column_names,
-                             ObOptExternalTableStat *&external_table_stat,
-                             ObIArray<ObOptExternalColumnStat *> &external_table_column_stats) override;
+                             ObIArray<ObOptCatalogTableStat *> &catalog_table_stats,
+                             ObIArray<ObOptCatalogColumnStat *> &catalog_table_column_stats) override;
+
+  int fetch_partitions(ObIAllocator &allocator,
+                       const ObILakeTableMetadata *table_metadata,
+                       const ObIArray<ObString> &part_col_names,
+                       ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos) override;
 
   static int get_odps_format_str_from_catalog_properties(common::ObIAllocator &allocator,
     const ObODPSCatalogProperties &properties, const common::ObString &ns_name, const common::ObString &tbl_name,

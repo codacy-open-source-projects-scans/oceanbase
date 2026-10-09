@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_MEMTABLE_OB_MEMTABLE_CONTEXT_
@@ -387,8 +380,8 @@ public:
   //method called when leader revoke
   virtual int commit_to_replay();
   virtual int fill_redo_log(ObTxFillRedoCtx &ctx);
-  bool has_pending_log_for_freeze(const uint32_t freeze_clock) const {
-    return trans_mgr_.has_pending_log_for_freeze(freeze_clock);
+  bool is_logging_blocked(bool &has_pending_log) const {
+    return trans_mgr_.is_logging_blocked(has_pending_log);
   }
   void check_all_redo_flushed();
   int get_log_guard(const transaction::ObTxSEQ &write_seq,
@@ -400,7 +393,6 @@ public:
   int update_checksum(const ObIArray<uint64_t> &checksum,
                       const ObIArray<share::SCN> &checksum_scn);
   int log_submitted(const ObRedoLogSubmitHelper &helper);
-  int prepare_log_submitted(const ObRedoLogSubmitHelper &helper);
   int sync_log_succ(const share::SCN scn, const ObCallbackScopeArray &callbacks);
   void sync_log_fail(const ObCallbackScopeArray &callbacks, const share::SCN &max_applied_scn);
   bool is_slow_query() const;
@@ -414,7 +406,7 @@ public:
   uint64_t get_tenant_id() const;
   inline bool has_row_updated() const { return has_row_updated_; }
   inline void set_row_updated() { has_row_updated_ = true; }
-  int remove_callbacks_for_fast_commit(const uint64_t callback_scope_host_bitmap);
+  int remove_callbacks_for_fast_commit(const ObCallbackScopeArray &callbacks);
   int remove_callbacks_for_fast_commit(const int16_t callback_list_idx, const share::SCN stop_scn);
   int remove_callback_for_uncommited_txn(const memtable::ObMemtableSet *memtable_set);
   int rollback(const transaction::ObTxSEQ seq_no, const transaction::ObTxSEQ from_seq_no,

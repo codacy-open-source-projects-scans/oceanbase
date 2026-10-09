@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -16,6 +9,7 @@
 #include "share/catalog/ob_catalog_utils.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "lib/string/ob_sql_string.h"
+#include "lib/utility/ob_tracepoint.h"
 
 namespace oceanbase
 {
@@ -275,6 +269,17 @@ int ObStmtResolver::resolve_db_and_catalog_info(const ParseNode *node,
       LOG_WARN("No database selected", K(ret));
     } else {
       db_name = session_info_->get_database_name();
+    }
+  }
+  if (OB_SUCC(ret)) {
+    int tmp_ret = OB_E(EventTable::EN_CHECK_PROXY_DB_ACCURACY) OB_SUCCESS;
+    if (OB_SUCCESS != tmp_ret) {
+      const ObString &proxy_db = session_info_->get_proxy_specified_db_name();
+      if (!proxy_db.empty() && proxy_db != db_name) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("proxy specified db does not match resolve db",
+                  K(ret), K(proxy_db), K(db_name));
+      }
     }
   }
   return ret;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_BALANCE_GROUP_LS_STAT_OPERATOR_H_
@@ -38,6 +31,7 @@ class ObLSAttr;
 namespace schema
 {
 class ObSchemaGetterGuard;
+class ObSchemaGuardWrapper;
 class ObPartitionSchema;
 class ObPartition;
 class ObTableSchema;
@@ -164,7 +158,7 @@ public:
   // thus, need the data_table_schema from the latest_schema_guard.
   ObNewTableTabletAllocator(
       const uint64_t tenant_id,
-      share::schema::ObSchemaGetterGuard &schema_guard,
+      share::schema::ObSchemaGuardWrapper &schema_guard_wrapper,
       common::ObISQLClient *sql_proxy,
       const bool use_parallel_ddl = false,
       const share::schema::ObTableSchema *data_table_schema = nullptr);
@@ -176,19 +170,21 @@ public:
       ObMySQLTransaction &trans,
       const share::schema::ObTableSchema &table_schema,
       const share::schema::ObTablegroupSchema *tablegroup_schema,
-      bool is_add_partition = false,
-      share::schema::ObLatestSchemaGuard *latest_schema_guard = NULL);
+      bool is_add_partition = false);
   int prepare_like(
       const share::schema::ObTableSchema &table_schema);
   int prepare_for_oracle_temp_table(
       ObMySQLTransaction &trans,
       const share::schema::ObTableSchema &table_schema,
-      const share::schema::ObTablegroupSchema *tablegroup_schema,
-      const storage::ObSessionTabletInfo &data_table_info,
-      share::schema::ObLatestSchemaGuard *latest_schema_guard = nullptr);
+      const storage::ObSessionTabletInfo &data_table_info);
   int get_ls_id_array(
       common::ObIArray<share::ObLSID> &ls_id_array);
   int finish(const bool commit);
+  static int check_and_replace_ls(
+             common::ObISQLClient *sql_proxy,
+             ObMySQLTransaction &trans,
+             const uint64_t tenant_id,
+             common::ObIArray<share::ObLSID> &ls_id_array);
 private:
   int alloc_ls_for_sys_tablet(
       const share::schema::ObTableSchema &table_schema);
@@ -199,12 +195,14 @@ private:
       const share::schema::ObTableSchema &table_schema);
   int alloc_ls_for_in_tablegroup_tablet(
       const share::schema::ObTableSchema &table_schema,
-      const share::schema::ObTablegroupSchema &tablegroup_schema,
-      share::schema::ObLatestSchemaGuard *latest_schema_guard = NULL);
+      const share::schema::ObTablegroupSchema &tablegroup_schema);
   int alloc_ls_for_normal_table_tablet(
       const share::schema::ObTableSchema &table_schema);
   int alloc_ls_for_duplicate_table_(
       const share::schema::ObTableSchema &table_schema);
+  int alloc_ls_for_global_index_in_subpart_sharding_tablegroup_(
+      const share::schema::ObTableSchema &index_schema,
+      const share::schema::ObTablegroupSchema &tablegroup_schema);
 private:
   int alloc_tablet_for_tablegroup(
       const share::schema::ObTableSchema &table_schema,
@@ -248,20 +246,22 @@ private:
       const common::ObIArray<share::ObLSID> &ls_id_array,
       const int64_t partition_num);
   int check_and_replace_ls_(common::ObMySQLTransaction &trans, const uint64_t tenant_id);
-  void find_last_user_ls_(
-      const common::ObIArray<share::ObLSID> &ls_id_array,
-      int64_t &index);
-  int lock_and_check_ls_(
-      common::ObMySQLTransaction &trans,
-      const uint64_t tenant_id,
-      const common::ObIArray<share::ObLSID> &locked_ls_id_array,
-      const share::ObLSID &ls_id,
-      share::ObLSAttr &ls_attr);
-  int choose_new_ls_(
-      const uint64_t tenant_id,
-      const share::ObLSAttr &old_ls_attr,
-      const share::ObLSID &prev_ls_id,
-      share::ObLSID &new_ls_id);
+  static void find_last_user_ls_(
+         const common::ObIArray<share::ObLSID> &ls_id_array,
+         int64_t &index);
+  static int lock_and_check_ls_(
+             common::ObISQLClient *sql_proxy,
+             ObMySQLTransaction &trans,
+             const uint64_t tenant_id,
+             const common::ObIArray<share::ObLSID> &locked_ls_id_array,
+             const share::ObLSID &ls_id,
+             share::ObLSAttr &ls_attr);
+  static int choose_new_ls_(
+             common::ObISQLClient *sql_proxy,
+             const uint64_t tenant_id,
+             const share::ObLSAttr &old_ls_attr,
+             const share::ObLSID &prev_ls_id,
+             share::ObLSID &new_ls_id);
   int generate_ls_array_by_primary_schema(
       const share::schema::ObTableSchema &primary_schema,
       common::ObArray<share::ObLSID> &pre_ls_id_array);
@@ -272,8 +272,56 @@ private:
   int alloc_tablet_for_add_part_in_tablegroup_sharding_partition(
     const share::schema::ObTableSchema &table_schema,
     const share::schema::ObTableSchema &origin_table_schema);
+  int alloc_tablet_round_robin_in_target_zone_(
+      const common::ObZone &target_zone,
+      const common::ObIArray<share::ObLSID> &available_ls_id_array,
+      const int64_t part_num);
+  // For SHARDING=NONE, SCOPE=ZONE tablegroup
+  int alloc_tablet_for_tablegroup_sharding_none_scope_zone_(
+      const share::schema::ObTableSchema &primary_schema,
+      const share::schema::ObTableSchema &table_schema,
+      const share::schema::ObTablegroupSchema &tablegroup_schema);
+  // For SHARDING=NONE, SCOPE=CLUSTER tablegroup
+  int alloc_tablet_for_tablegroup_sharding_none_scope_cluster_(
+      const share::schema::ObTableSchema &primary_schema,
+      const share::schema::ObTableSchema &table_schema,
+      const share::schema::ObTablegroupSchema &tablegroup_schema);
+  // For SHARDING=NONE, SCOPE=ZONE tablegroup
+  int alloc_tablet_for_empty_tablegroup_sharding_none_scope_zone_(
+    const share::schema::ObTableSchema &table_schema,
+    const share::schema::ObTablegroupSchema &tablegroup_schema,
+    const common::ObIArray<share::ObLSID> &ls_id_array);
+// For SHARDING=NONE, SCOPE=CLUSTER tablegroup
+  int alloc_tablet_for_empty_tablegroup_sharding_none_scope_cluster_(
+      const share::schema::ObTableSchema &table_schema,
+      const share::schema::ObTablegroupSchema &tablegroup_schema,
+      const common::ObIArray<share::ObLSID> &ls_id_array);
+  int alloc_tablet_to_same_ls_(
+      const share::schema::ObTableSchema &table_schema,
+      const common::ObIArray<share::ObLSID> &ls_id_array);
+  int alloc_tablet_to_primary_schema_first_ls_(
+    const share::schema::ObTableSchema &primary_schema,
+    const share::schema::ObTableSchema &table_schema);
+  // Get available LS filtered by primary zone
+  int get_available_ls_by_primary_zone_(
+      const common::ObZone &target_zone,
+      const common::ObIArray<share::ObLSID> &available_ls_id_array,
+      common::ObIArray<share::ObLSID> &zone_ls_array);
+  // Choose target zone for empty tablegroup
+  int choose_zone_for_empty_zone_tablegroup_(
+      common::ObZone &target_zone);
+  // Get first table's primary zone from tablegroup
+  int get_first_table_primary_zone_(
+      const share::schema::ObTableSchema &primary_schema,
+      common::ObZone &target_zone);
+  int get_table_schema_(
+      const uint64_t table_id,
+      const share::schema::ObTableSchema *&table_schema);
   int64_t fetch_ls_offset() {
     return ATOMIC_FAA(&alloc_tablet_ls_offset_, 1);
+  }
+  uint64_t fetch_zone_offset() {
+    return ATOMIC_FAA(&alloc_zone_offset_, 1);
   }
 private:
   static const int64_t MAX_TENANT_LS_CNT = 1024;
@@ -285,7 +333,7 @@ private:
   };
 private:
   uint64_t tenant_id_;
-  share::schema::ObSchemaGetterGuard &schema_guard_;
+  share::schema::ObSchemaGuardWrapper &schema_guard_wrapper_;
   common::ObISQLClient *sql_proxy_;
   ObBalanceGroupLSStatOperator bg_ls_stat_operator_;
   MyStatus status_;
@@ -293,6 +341,7 @@ private:
   bool inited_;
   bool is_add_partition_;
   static int64_t alloc_tablet_ls_offset_;
+  static uint64_t alloc_zone_offset_;
   bool use_parallel_ddl_;
   const share::schema::ObTableSchema *data_table_schema_;
 };

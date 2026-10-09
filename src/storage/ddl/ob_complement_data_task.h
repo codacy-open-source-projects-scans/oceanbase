@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_COMPLEMENT_DATA_TASK_H
@@ -15,6 +8,7 @@
 
 #include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/access/ob_table_access_context.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "storage/compaction/ob_column_checksum_calculator.h"
 #include "storage/ddl/ob_cg_macro_block_write_task.h"
 #include "storage/ddl/ob_tablet_slice_row_iterator.h"
@@ -485,7 +479,7 @@ private:
   ObStoreCtx ctx_;
   ObTableAccessParam access_param_;
   ObTableAccessContext access_ctx_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   common::ObArenaAllocator allocator_;
   common::ObArenaAllocator calc_buf_;
   ObExprCtx expr_ctx_;

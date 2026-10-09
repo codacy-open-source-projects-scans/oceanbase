@@ -1,12 +1,6 @@
-/** * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2024 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -109,6 +103,7 @@ public:
   inline int64_t get_part_count() { return part_count_; }
   inline int64_t get_first_dumped_part_idx() { return first_dumped_part_idx_; }
   ObPartitionStore *get_partition(int64_t i) { return partition_array_.at(i); }
+  ObBitVector *get_build_cols_have_null() { return build_cols_have_null_; }
 
   int prepare_join_partitions(ObIOEventObserver *io_event_observer, int64_t row_count,
                               int64_t global_mem_bound_size);
@@ -169,6 +164,7 @@ private:
   // allocated by arena_alloc_
   ObJoinFilterStoreRow **part_added_rows_{nullptr};
   ObBitVector *null_skip_bitmap_{nullptr};
+  ObBitVector *build_cols_have_null_{nullptr};
 
   // allocated by malloc_alloc_
   ObFixedArray<ObPartitionStore *, common::ObIAllocator> partition_array_;

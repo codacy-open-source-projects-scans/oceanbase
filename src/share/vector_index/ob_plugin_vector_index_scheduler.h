@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_PLUGIN_VECTOR_INDEX_SCHEDULER_DEFINE_H_
@@ -513,6 +506,8 @@ public:
                                 uint32_t &finished_count);
   void check_and_switch_if_needed(bool &need_sync, bool &all_finished);
   VectorIndexMemSyncMap &get_processing_map() { return processing_first_mem_sync_ ? first_mem_sync_map_ : second_mem_sync_map_; }
+  int64_t get_processing_size() const { return processing_first_mem_sync_ ? first_mem_sync_map_.size() : second_mem_sync_map_.size(); }
+  int64_t get_waiting_size() const { return processing_first_mem_sync_ ? second_mem_sync_map_.size() : first_mem_sync_map_.size(); }
 
 private:
   VectorIndexMemSyncMap &get_waiting_map() { return processing_first_mem_sync_ ? second_mem_sync_map_ : first_mem_sync_map_; }

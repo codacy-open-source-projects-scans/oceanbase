@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_mvcc_row.h"
@@ -183,8 +176,7 @@ public:
                          bool &filtered);
 
 private:
-  int read_row_(const ObMvccTransNode &node,
-               bool &final_result);
+  int read_row_(const ObMvccTransNode &node);
   ObMvccMdsFilter &mds_filter_;
   blocksstable::ObDatumRow datum_row_;
   ObNopBitMap bitmap_;
@@ -202,11 +194,10 @@ int ObMvccRowFilter::init()
     ret = OB_INVALID_ARGUMENT;
     TRANS_LOG(WARN, "input mds filter is invalid", KR(ret), K_(mds_filter));
   } else {
-    const int64_t column_cnt = mds_filter_.read_info_->get_schema_column_count() + storage::ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt();
-    if (OB_FAIL(bitmap_.init(column_cnt, mds_filter_.read_info_->get_rowkey_count()))) {
-      TRANS_LOG(WARN, "failed to init bitmap", KR(ret), K(column_cnt));
-    } else if (OB_FAIL(datum_row_.init(column_cnt))) {
-      TRANS_LOG(WARN, "Failed to init datum row", K(ret), K(column_cnt));
+    if (OB_FAIL(bitmap_.init(mds_filter_.read_info_->get_request_count(), mds_filter_.read_info_->get_schema_rowkey_count()))) {
+      TRANS_LOG(WARN, "failed to init bitmap", KR(ret), KPC(mds_filter_.read_info_));
+    } else if (OB_FAIL(datum_row_.init(mds_filter_.read_info_->get_request_count()))) {
+      TRANS_LOG(WARN, "Failed to init datum row", K(ret), KPC(mds_filter_.read_info_));
     } else {
       is_inited_ = true;
       datum_row_empty_ = true;
@@ -224,7 +215,6 @@ int ObMvccRowFilter::read_row_and_check(
   filtered = false;
 
   int ret = OB_SUCCESS;
-  bool final_result = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     TRANS_LOG(WARN, "not init", KR(ret), K_(mds_filter), K(node));
@@ -240,20 +230,22 @@ int ObMvccRowFilter::read_row_and_check(
     if (OB_UNLIKELY(!mds_filter_.is_valid())) {
       ret = OB_INVALID_ARGUMENT;
       TRANS_LOG(WARN, "invalid argument", KR(ret), K_(mds_filter));
-    } else if (OB_FAIL(read_row_(node, final_result))) {
+    } else if (node.get_dml_flag() == blocksstable::ObDmlFlag::DF_LOCK) {
+      complete = false;
+    } else if (OB_FAIL(read_row_(node))) {
       TRANS_LOG(WARN, "failed to read datum row", K(ret), K(node), K_(mds_filter));
-    } else if (final_result) {
+    } else {
+      // If mds filter mgr is not null, the row must be complete. Because we don't have fuse logic for mds filter mgr
+      // case 1: delete-insert/append only --> complete = true
+      // case 2: partial-update + ttl in primary key --> complete enough for duplicate check
       complete = true;
-    } else if (nullptr != mds_filter_.mds_filter_mgr_ && OB_FAIL(mds_filter_.mds_filter_mgr_->check_filter_row_complete(datum_row_, complete))) {
-      TRANS_LOG(WARN, "failed to check filter row complete", KR(ret), K_(datum_row), K(complete));
     }
+
     if (OB_FAIL(ret) || !complete) {
-      ObTaskController::get().allow_next_syslog(); // just a thread_local variable increment, don't worry about performance
       TRANS_LOG(TRACE, "not complete", KR(ret), K_(datum_row), K(filtered), K(complete));
     } else if (nullptr != mds_filter_.mds_filter_mgr_ && OB_FAIL(mds_filter_.mds_filter_mgr_->filter(datum_row_, filtered, true/*check_filter*/, true/*check_version*/))) {
       TRANS_LOG(WARN, "failed to check filtered by mds_filter_mgr", KR(ret), K_(datum_row), K_(mds_filter));
     } else {
-      ObTaskController::get().allow_next_syslog();
       TRANS_LOG(TRACE, "success to check trans node filtered", KR(ret), K_(datum_row), K(filtered));
     }
   }
@@ -261,11 +253,9 @@ int ObMvccRowFilter::read_row_and_check(
 }
 
 int ObMvccRowFilter::read_row_(
-  const ObMvccTransNode &node,
-  bool &final_result)
+  const ObMvccTransNode &node)
 {
   int ret = OB_SUCCESS;
-  final_result = false;
   const ObRowHeader *row_header = nullptr;
   const ObMemtableDataHeader *mtd = reinterpret_cast<const ObMemtableDataHeader *>(node.buf_);
   blocksstable::ObCompatRowReader row_reader;
@@ -470,13 +460,8 @@ int ObMvccRow::unlink_trans_node(const ObMvccTransNode &node)
   return ret;
 }
 
-bool ObMvccRow::need_compact(const bool for_read, const bool for_replay, const bool is_delete_insert)
+bool ObMvccRow::need_compact(const bool for_read, const bool for_replay)
 {
-  if (is_delete_insert) {
-    // return false directly when this is a delete-insert table
-    return false;
-  }
-
   bool bool_ret = false;
   const int32_t updates = ATOMIC_LOAD(&update_since_compact_);
   const int32_t compact_trigger = (for_read || for_replay)

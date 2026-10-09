@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __SQL_OB_ODPS_JNI_TABLE_ROW_ITER_H__
@@ -176,6 +169,7 @@ public:
         timezone_ret_(OB_SUCCESS),
         timezone_offset_(0),
         batch_size_(-1),
+        odps_jdk_storage_batch_size_(-1),
         read_rounds_(0),
         read_rows_(0),
         predicate_buf_(nullptr),
@@ -316,7 +310,8 @@ private:
   int next_task_tunnel_without_data_getter(const int64_t capacity);
   int next_task_tunnel(const int64_t capacity);
   int build_tunnel_partition_task_state(
-      int64_t task_idx, int64_t part_id, const ObString &part_spec, int64_t start, int64_t step, int64_t capacity, const ObString& session_id);
+      int64_t task_idx, int64_t part_id, const ObString &part_spec, int64_t start, int64_t step, int64_t capacity,
+      const ObString& session_id);
   int fill_column_offheaptable(
       ObEvalCtx &ctx, const ObExpr &expr, const MirrorOdpsJniColumn &odps_column, int64_t num_rows, int32_t column_idx);
   int fill_column_arrow(ObEvalCtx &ctx, const ObExpr &expr, const std::shared_ptr<arrow::Array> &array,
@@ -372,6 +367,7 @@ private:
   int timezone_ret_;
   int64_t timezone_offset_;
   int64_t batch_size_;
+  int64_t odps_jdk_storage_batch_size_;  // -1 means not set, use capacity for Java side
   // Only used in reading empty file columns expr, hold the temp remanant records.
   int64_t read_rounds_;
   int64_t read_rows_;

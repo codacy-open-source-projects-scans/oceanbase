@@ -447,80 +447,48 @@ Outputs & filters:
       range_key([t1.c1]), range(MIN ; MAX)always true
 explain select * from t1 where t1.c2 = 5 or exists (select 1 from t2 where t1.c1 > t2.c1);
 Query Plan
-==========================================================
-|ID|OPERATOR                 |NAME |EST.ROWS|EST.TIME(us)|
-----------------------------------------------------------
-|0 |UNION ALL                |     |2       |21          |
-|1 |├─TABLE FULL SCAN        |t1   |1       |3           |
-|2 |└─NESTED-LOOP JOIN       |     |1       |19          |
-|3 |  ├─SUBPLAN SCAN         |VIEW2|1       |3           |
-|4 |  │ └─SCALAR GROUP BY    |     |1       |3           |
-|5 |  │   └─SUBPLAN SCAN     |VIEW3|1       |3           |
-|6 |  │     └─TABLE FULL SCAN|t2   |1       |3           |
-|7 |  └─TABLE RANGE SCAN     |t1   |2       |16          |
-==========================================================
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |SUBPLAN FILTER    |    |2       |33          |
+|1 |├─TABLE FULL SCAN |t1  |2       |3           |
+|2 |└─TABLE RANGE SCAN|t2  |1       |16          |
+==================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
-  1 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c2 = 5]), rowset=16
+  0 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c2 = 5 OR (T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
+  1 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      is_index_back=false, is_global_index=false, 
       range_key([t1.c1]), range(MIN ; MAX)always true
-  2 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
-      conds(nil), nl_params_([VIEW2.T_FUN_MIN(VIEW1.t2.c1)(:0)]), use_batch=true
-  3 - output([VIEW2.T_FUN_MIN(VIEW1.t2.c1)]), filter(nil), rowset=16
-      access([VIEW2.T_FUN_MIN(VIEW1.t2.c1)])
-  4 - output([T_FUN_MIN(VIEW3.t2.c1)]), filter(nil), rowset=16
-      group(nil), agg_func([T_FUN_MIN(VIEW3.t2.c1)])
-  5 - output([VIEW3.t2.c1]), filter(nil), rowset=16
-      access([VIEW3.t2.c1])
-  6 - output([t2.c1]), filter(nil), rowset=16
-      access([t2.c1]), partitions(p0)
+  2 - output([1]), filter(nil), rowset=16
+      access([GROUP_ID]), partitions(p0)
       limit(1), offset(nil), is_index_back=false, is_global_index=false, 
-      range_key([t2.c1]), range(MIN ; MAX)always true
-  7 - output([t1.c1], [t1.c2], [t1.c3]), filter([lnnvl(cast(t1.c2 = 5, TINYINT(-1, 0)))]), rowset=16
-      access([GROUP_ID], [t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
-      range_key([t1.c1]), range(MIN ; MAX), 
-      range_cond([t1.c1 > :0])
+      range_key([t2.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 > t2.c1])
 explain select * from t1 where t1.c2 = 5 or exists (select 1 from t2 where t1.c1 < t2.c1);
 Query Plan
-================================================================
-|ID|OPERATOR                 |NAME       |EST.ROWS|EST.TIME(us)|
-----------------------------------------------------------------
-|0 |UNION ALL                |           |2       |21          |
-|1 |├─TABLE FULL SCAN        |t1         |1       |3           |
-|2 |└─NESTED-LOOP JOIN       |           |1       |19          |
-|3 |  ├─SUBPLAN SCAN         |VIEW2      |1       |3           |
-|4 |  │ └─SCALAR GROUP BY    |           |1       |3           |
-|5 |  │   └─SUBPLAN SCAN     |VIEW3      |1       |3           |
-|6 |  │     └─TABLE FULL SCAN|t2(Reverse)|1       |3           |
-|7 |  └─TABLE RANGE SCAN     |t1         |2       |16          |
-================================================================
+==================================================
+|ID|OPERATOR          |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------
+|0 |SUBPLAN FILTER    |    |2       |33          |
+|1 |├─TABLE FULL SCAN |t1  |2       |3           |
+|2 |└─TABLE RANGE SCAN|t2  |1       |16          |
+==================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([UNION([1])], [UNION([2])], [UNION([3])]), filter(nil), rowset=16
-  1 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c2 = 5]), rowset=16
+  0 - output([t1.c1], [t1.c2], [t1.c3]), filter([t1.c2 = 5 OR (T_OP_EXISTS, subquery(1))]), rowset=16
+      exec_params_([t1.c1(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
+  1 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
+      is_index_back=false, is_global_index=false, 
       range_key([t1.c1]), range(MIN ; MAX)always true
-  2 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
-      conds(nil), nl_params_([VIEW2.T_FUN_MAX(VIEW1.t2.c1)(:0)]), use_batch=true
-  3 - output([VIEW2.T_FUN_MAX(VIEW1.t2.c1)]), filter(nil), rowset=16
-      access([VIEW2.T_FUN_MAX(VIEW1.t2.c1)])
-  4 - output([T_FUN_MAX(VIEW3.t2.c1)]), filter(nil), rowset=16
-      group(nil), agg_func([T_FUN_MAX(VIEW3.t2.c1)])
-  5 - output([VIEW3.t2.c1]), filter(nil), rowset=16
-      access([VIEW3.t2.c1])
-  6 - output([t2.c1]), filter(nil), rowset=16
-      access([t2.c1]), partitions(p0)
+  2 - output([1]), filter(nil), rowset=16
+      access([GROUP_ID]), partitions(p0)
       limit(1), offset(nil), is_index_back=false, is_global_index=false, 
-      range_key([t2.c1]), range(MIN ; MAX)always true
-  7 - output([t1.c1], [t1.c2], [t1.c3]), filter([lnnvl(cast(t1.c2 = 5, TINYINT(-1, 0)))]), rowset=16
-      access([GROUP_ID], [t1.c1], [t1.c2], [t1.c3]), partitions(p0)
-      is_index_back=false, is_global_index=false, filter_before_indexback[false], 
-      range_key([t1.c1]), range(MIN ; MAX), 
-      range_cond([t1.c1 < :0])
+      range_key([t2.c1]), range(MIN ; MAX)always true, 
+      range_cond([:0 < t2.c1])
 explain select * from t1, t2 where t1.c1 > exists(select c1 from t2 where t2.c1 = t1.c1);
 Query Plan
 =============================================================
@@ -531,7 +499,7 @@ Query Plan
 |2 |│ ├─TABLE FULL SCAN          |t1  |2       |3           |
 |3 |│ └─MATERIAL                 |    |2       |3           |
 |4 |│   └─TABLE FULL SCAN        |t2  |2       |3           |
-|5 |└─DISTRIBUTED TABLE GET      |t2  |1       |16          |
+|5 |└─TABLE GET                  |t2  |1       |16          |
 =============================================================
 Outputs & filters:
 -------------------------------------
@@ -558,21 +526,21 @@ Query Plan
 =================================================
 |ID|OPERATOR         |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------
-|0 |SUBPLAN FILTER   |    |1       |41          |
+|0 |SUBPLAN FILTER   |    |1       |36          |
 |1 |├─TABLE FULL SCAN|t1  |2       |3           |
-|2 |├─TABLE GET      |t3  |1       |18          |
+|2 |├─TABLE GET      |t3  |1       |16          |
 |3 |└─TABLE FULL SCAN|t2  |1       |3           |
 =================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([:1 + 1 = ANY(subquery(1))]), rowset=16
-      exec_params_([t1.c1(:0)]), onetime_exprs_([subquery(2)(:1)]), init_plan_idxs_(nil), use_batch=false
+      exec_params_([t1.c1(:0)]), onetime_exprs_([subquery(2)(:1)]), init_plan_idxs_(nil), use_batch=true
   1 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t1.c1]), range(MIN ; MAX)always true
   2 - output([2]), filter(nil), rowset=16
-      access(nil), partitions(p0)
+      access([GROUP_ID]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t3.c1]), range(MIN ; MAX)always true, 
       range_cond([:0 = t3.c1])
@@ -582,14 +550,14 @@ Outputs & filters:
       range_key([t2.c1]), range(MIN ; MAX)always true
 explain select * from t1 having count(*) > (select c1 from t2 where t1.c1=t2.c1);
 Query Plan
-=======================================================
-|ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
--------------------------------------------------------
-|0 |SUBPLAN FILTER         |    |1       |18          |
-|1 |├─SCALAR GROUP BY      |    |1       |3           |
-|2 |│ └─TABLE FULL SCAN    |t1  |2       |3           |
-|3 |└─DISTRIBUTED TABLE GET|t2  |1       |16          |
-=======================================================
+===================================================
+|ID|OPERATOR           |NAME|EST.ROWS|EST.TIME(us)|
+---------------------------------------------------
+|0 |SUBPLAN FILTER     |    |1       |18          |
+|1 |├─SCALAR GROUP BY  |    |1       |3           |
+|2 |│ └─TABLE FULL SCAN|t1  |2       |3           |
+|3 |└─TABLE GET        |t2  |1       |16          |
+===================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([T_FUN_COUNT(*) > subquery(1)]), rowset=16
@@ -773,19 +741,19 @@ Query Plan
 ==============================================================
 |ID|OPERATOR                     |NAME |EST.ROWS|EST.TIME(us)|
 --------------------------------------------------------------
-|0 |SUBPLAN FILTER               |     |1       |75          |
+|0 |SUBPLAN FILTER               |     |1       |64          |
 |1 |├─TABLE FULL SCAN            |t1   |2       |3           |
-|2 |└─SUBPLAN SCAN               |VIEW1|1       |36          |
-|3 |  └─MERGE UNION DISTINCT     |     |1       |36          |
-|4 |    ├─SCALAR GROUP BY        |     |1       |18          |
-|5 |    │ └─DISTRIBUTED TABLE GET|t2   |1       |18          |
-|6 |    └─SCALAR GROUP BY        |     |1       |18          |
-|7 |      └─DISTRIBUTED TABLE GET|t3   |1       |18          |
+|2 |└─SUBPLAN SCAN               |VIEW1|1       |31          |
+|3 |  └─MERGE UNION DISTINCT     |     |1       |31          |
+|4 |    ├─SCALAR GROUP BY        |     |1       |16          |
+|5 |    │ └─DISTRIBUTED TABLE GET|t2   |1       |16          |
+|6 |    └─SCALAR GROUP BY        |     |1       |16          |
+|7 |      └─DISTRIBUTED TABLE GET|t3   |1       |16          |
 ==============================================================
 Outputs & filters:
 -------------------------------------
   0 - output([t1.c1], [t1.c2], [t1.c3]), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
-      exec_params_([t1.c1(:0)], [cast(t1.c2, DECIMAL(11, 0))(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+      exec_params_([t1.c1(:0)], [cast(t1.c2, DECIMAL(11, 0))(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
   1 - output([t1.c1], [t1.c2], [t1.c3]), filter(nil), rowset=16
       access([t1.c1], [t1.c2], [t1.c3]), partitions(p0)
       is_index_back=false, is_global_index=false, 
@@ -797,14 +765,14 @@ Outputs & filters:
        DECIMAL_INT(65, 32)) / cast(T_FUN_COUNT(t2.c1), DECIMAL_INT(20, 0)), DECIMAL(15, 4)) = :1]), rowset=16
       group(nil), agg_func([T_FUN_SUM(t2.c1)], [T_FUN_COUNT(t2.c1)])
   5 - output([t2.c1]), filter(nil), rowset=16
-      access([t2.c1]), partitions(p0)
+      access([GROUP_ID], [t2.c1]), partitions(p0)
       is_index_back=false, is_global_index=false, keep_ordering=true, 
       range_key([t2.c1]), range(MIN ; MAX)always true, 
       range_cond([t2.c1 = :0])
   6 - output([cast(T_FUN_COUNT(*), DECIMAL(24, 4))]), filter([cast(T_FUN_COUNT(*), DECIMAL(24, 4)) = :1]), rowset=16
       group(nil), agg_func([T_FUN_COUNT(*)])
   7 - output(nil), filter(nil), rowset=16
-      access(nil), partitions(p0)
+      access([GROUP_ID]), partitions(p0)
       is_index_back=false, is_global_index=false, keep_ordering=true, 
       range_key([t3.c1]), range(MIN ; MAX)always true, 
       range_cond([t3.c1 = :0])
@@ -1327,13 +1295,13 @@ Query Plan
 =======================================================
 |ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
 -------------------------------------------------------
-|0 |SUBPLAN FILTER         |    |1       |23          |
+|0 |SUBPLAN FILTER         |    |1       |20          |
 |1 |├─TABLE FULL SCAN      |t1  |1       |3           |
-|2 |└─LIMIT                |    |1       |21          |
-|3 |  └─SUBPLAN FILTER     |    |1       |21          |
+|2 |└─LIMIT                |    |1       |18          |
+|3 |  └─SUBPLAN FILTER     |    |1       |18          |
 |4 |    ├─HASH GROUP BY    |    |1       |3           |
 |5 |    │ └─TABLE FULL SCAN|t2  |1       |3           |
-|6 |    └─TABLE FULL SCAN  |t3  |1       |18          |
+|6 |    └─TABLE FULL SCAN  |t3  |1       |16          |
 =======================================================
 Outputs & filters:
 -------------------------------------
@@ -1346,7 +1314,7 @@ Outputs & filters:
   2 - output([1]), filter(nil), rowset=16
       limit(1), offset(nil)
   3 - output(nil), filter([(T_OP_EXISTS, subquery(1))]), rowset=16
-      exec_params_([T_FUN_SUM(t2.a)(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+      exec_params_([T_FUN_SUM(t2.a)(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=true
   4 - output([T_FUN_SUM(t2.a)]), filter(nil), rowset=16
       group([t2.a]), agg_func([T_FUN_SUM(t2.a)])
   5 - output([t2.a]), filter(nil), rowset=16
@@ -1354,7 +1322,7 @@ Outputs & filters:
       is_index_back=false, is_global_index=false, 
       range_key([t2.__pk_increment]), range(MIN ; MAX)always true
   6 - output([1]), filter([cast(t3.a, DECIMAL_INT(33, 0)) > :0]), rowset=16
-      access([t3.a]), partitions(p0)
+      access([GROUP_ID], [t3.a]), partitions(p0)
       limit(1), offset(nil), is_index_back=false, is_global_index=false, filter_before_indexback[false], 
       range_key([t3.__pk_increment]), range(MIN ; MAX)always true
 explain select * from t1 where b > exists(select b from t2 where b > exists(select b from t3));
@@ -1473,247 +1441,351 @@ explain select (select 1 except select pk),
 (select 1 except select pk)
 from t;
 Query Plan
-=======================================================
-|ID|OPERATOR               |NAME|EST.ROWS|EST.TIME(us)|
--------------------------------------------------------
-|0 |SUBPLAN FILTER         |    |1       |3           |
-|1 |├─TABLE FULL SCAN      |t   |1       |3           |
-|2 |├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|3 |│ ├─EXPRESSION         |    |1       |1           |
-|4 |│ └─EXPRESSION         |    |1       |1           |
-|5 |├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|6 |│ ├─EXPRESSION         |    |1       |1           |
-|7 |│ └─EXPRESSION         |    |1       |1           |
-|8 |├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|9 |│ ├─EXPRESSION         |    |1       |1           |
-|10|│ └─EXPRESSION         |    |1       |1           |
-|11|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|12|│ ├─EXPRESSION         |    |1       |1           |
-|13|│ └─EXPRESSION         |    |1       |1           |
-|14|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|15|│ ├─EXPRESSION         |    |1       |1           |
-|16|│ └─EXPRESSION         |    |1       |1           |
-|17|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|18|│ ├─EXPRESSION         |    |1       |1           |
-|19|│ └─EXPRESSION         |    |1       |1           |
-|20|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|21|│ ├─EXPRESSION         |    |1       |1           |
-|22|│ └─EXPRESSION         |    |1       |1           |
-|23|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|24|│ ├─EXPRESSION         |    |1       |1           |
-|25|│ └─EXPRESSION         |    |1       |1           |
-|26|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|27|│ ├─EXPRESSION         |    |1       |1           |
-|28|│ └─EXPRESSION         |    |1       |1           |
-|29|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|30|│ ├─EXPRESSION         |    |1       |1           |
-|31|│ └─EXPRESSION         |    |1       |1           |
-|32|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|33|│ ├─EXPRESSION         |    |1       |1           |
-|34|│ └─EXPRESSION         |    |1       |1           |
-|35|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|36|│ ├─EXPRESSION         |    |1       |1           |
-|37|│ └─EXPRESSION         |    |1       |1           |
-|38|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|39|│ ├─EXPRESSION         |    |1       |1           |
-|40|│ └─EXPRESSION         |    |1       |1           |
-|41|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|42|│ ├─EXPRESSION         |    |1       |1           |
-|43|│ └─EXPRESSION         |    |1       |1           |
-|44|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|45|│ ├─EXPRESSION         |    |1       |1           |
-|46|│ └─EXPRESSION         |    |1       |1           |
-|47|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|48|│ ├─EXPRESSION         |    |1       |1           |
-|49|│ └─EXPRESSION         |    |1       |1           |
-|50|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|51|│ ├─EXPRESSION         |    |1       |1           |
-|52|│ └─EXPRESSION         |    |1       |1           |
-|53|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|54|│ ├─EXPRESSION         |    |1       |1           |
-|55|│ └─EXPRESSION         |    |1       |1           |
-|56|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|57|│ ├─EXPRESSION         |    |1       |1           |
-|58|│ └─EXPRESSION         |    |1       |1           |
-|59|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|60|│ ├─EXPRESSION         |    |1       |1           |
-|61|│ └─EXPRESSION         |    |1       |1           |
-|62|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|63|│ ├─EXPRESSION         |    |1       |1           |
-|64|│ └─EXPRESSION         |    |1       |1           |
-|65|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|66|│ ├─EXPRESSION         |    |1       |1           |
-|67|│ └─EXPRESSION         |    |1       |1           |
-|68|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|69|│ ├─EXPRESSION         |    |1       |1           |
-|70|│ └─EXPRESSION         |    |1       |1           |
-|71|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|72|│ ├─EXPRESSION         |    |1       |1           |
-|73|│ └─EXPRESSION         |    |1       |1           |
-|74|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|75|│ ├─EXPRESSION         |    |1       |1           |
-|76|│ └─EXPRESSION         |    |1       |1           |
-|77|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|78|│ ├─EXPRESSION         |    |1       |1           |
-|79|│ └─EXPRESSION         |    |1       |1           |
-|80|├─MERGE EXCEPT DISTINCT|    |1       |1           |
-|81|│ ├─EXPRESSION         |    |1       |1           |
-|82|│ └─EXPRESSION         |    |1       |1           |
-|83|└─MERGE EXCEPT DISTINCT|    |1       |1           |
-|84|  ├─EXPRESSION         |    |1       |1           |
-|85|  └─EXPRESSION         |    |1       |1           |
-=======================================================
+==============================================================================================================
+|ID |OPERATOR                                                                     |NAME|EST.ROWS|EST.TIME(us)|
+--------------------------------------------------------------------------------------------------------------
+|0  |SUBPLAN FILTER                                                               |    |1       |3           |
+|1  |├─SUBPLAN FILTER                                                             |    |1       |3           |
+|2  |│ ├─SUBPLAN FILTER                                                           |    |1       |3           |
+|3  |│ │ ├─SUBPLAN FILTER                                                         |    |1       |3           |
+|4  |│ │ │ ├─SUBPLAN FILTER                                                       |    |1       |3           |
+|5  |│ │ │ │ ├─SUBPLAN FILTER                                                     |    |1       |3           |
+|6  |│ │ │ │ │ ├─SUBPLAN FILTER                                                   |    |1       |3           |
+|7  |│ │ │ │ │ │ ├─SUBPLAN FILTER                                                 |    |1       |3           |
+|8  |│ │ │ │ │ │ │ ├─SUBPLAN FILTER                                               |    |1       |3           |
+|9  |│ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                             |    |1       |3           |
+|10 |│ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                           |    |1       |3           |
+|11 |│ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                         |    |1       |3           |
+|12 |│ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                       |    |1       |3           |
+|13 |│ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                     |    |1       |3           |
+|14 |│ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                   |    |1       |3           |
+|15 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                                 |    |1       |3           |
+|16 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                               |    |1       |3           |
+|17 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                             |    |1       |3           |
+|18 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                           |    |1       |3           |
+|19 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                         |    |1       |3           |
+|20 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                       |    |1       |3           |
+|21 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                     |    |1       |3           |
+|22 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                   |    |1       |3           |
+|23 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER                 |    |1       |3           |
+|24 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER               |    |1       |3           |
+|25 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER             |    |1       |3           |
+|26 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER           |    |1       |3           |
+|27 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─SUBPLAN FILTER         |    |1       |3           |
+|28 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ ├─TABLE FULL SCAN      |t   |1       |3           |
+|29 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT|    |1       |1           |
+|30 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION         |    |1       |1           |
+|31 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION         |    |1       |1           |
+|32 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT  |    |1       |1           |
+|33 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION           |    |1       |1           |
+|34 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION           |    |1       |1           |
+|35 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT    |    |1       |1           |
+|36 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION             |    |1       |1           |
+|37 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION             |    |1       |1           |
+|38 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT      |    |1       |1           |
+|39 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION               |    |1       |1           |
+|40 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION               |    |1       |1           |
+|41 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT        |    |1       |1           |
+|42 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                 |    |1       |1           |
+|43 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                 |    |1       |1           |
+|44 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT          |    |1       |1           |
+|45 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                   |    |1       |1           |
+|46 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                   |    |1       |1           |
+|47 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT            |    |1       |1           |
+|48 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                     |    |1       |1           |
+|49 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                     |    |1       |1           |
+|50 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT              |    |1       |1           |
+|51 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                       |    |1       |1           |
+|52 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                       |    |1       |1           |
+|53 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                |    |1       |1           |
+|54 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                         |    |1       |1           |
+|55 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                         |    |1       |1           |
+|56 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                  |    |1       |1           |
+|57 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                           |    |1       |1           |
+|58 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                           |    |1       |1           |
+|59 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                    |    |1       |1           |
+|60 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                             |    |1       |1           |
+|61 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                             |    |1       |1           |
+|62 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                      |    |1       |1           |
+|63 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                               |    |1       |1           |
+|64 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                               |    |1       |1           |
+|65 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                        |    |1       |1           |
+|66 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                 |    |1       |1           |
+|67 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                 |    |1       |1           |
+|68 |│ │ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                          |    |1       |1           |
+|69 |│ │ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                   |    |1       |1           |
+|70 |│ │ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                   |    |1       |1           |
+|71 |│ │ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                            |    |1       |1           |
+|72 |│ │ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                     |    |1       |1           |
+|73 |│ │ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                     |    |1       |1           |
+|74 |│ │ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                              |    |1       |1           |
+|75 |│ │ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                       |    |1       |1           |
+|76 |│ │ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                       |    |1       |1           |
+|77 |│ │ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                |    |1       |1           |
+|78 |│ │ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                         |    |1       |1           |
+|79 |│ │ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                         |    |1       |1           |
+|80 |│ │ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                  |    |1       |1           |
+|81 |│ │ │ │ │ │ │ │ │ │   ├─EXPRESSION                                           |    |1       |1           |
+|82 |│ │ │ │ │ │ │ │ │ │   └─EXPRESSION                                           |    |1       |1           |
+|83 |│ │ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                    |    |1       |1           |
+|84 |│ │ │ │ │ │ │ │ │   ├─EXPRESSION                                             |    |1       |1           |
+|85 |│ │ │ │ │ │ │ │ │   └─EXPRESSION                                             |    |1       |1           |
+|86 |│ │ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                      |    |1       |1           |
+|87 |│ │ │ │ │ │ │ │   ├─EXPRESSION                                               |    |1       |1           |
+|88 |│ │ │ │ │ │ │ │   └─EXPRESSION                                               |    |1       |1           |
+|89 |│ │ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                        |    |1       |1           |
+|90 |│ │ │ │ │ │ │   ├─EXPRESSION                                                 |    |1       |1           |
+|91 |│ │ │ │ │ │ │   └─EXPRESSION                                                 |    |1       |1           |
+|92 |│ │ │ │ │ │ └─MERGE EXCEPT DISTINCT                                          |    |1       |1           |
+|93 |│ │ │ │ │ │   ├─EXPRESSION                                                   |    |1       |1           |
+|94 |│ │ │ │ │ │   └─EXPRESSION                                                   |    |1       |1           |
+|95 |│ │ │ │ │ └─MERGE EXCEPT DISTINCT                                            |    |1       |1           |
+|96 |│ │ │ │ │   ├─EXPRESSION                                                     |    |1       |1           |
+|97 |│ │ │ │ │   └─EXPRESSION                                                     |    |1       |1           |
+|98 |│ │ │ │ └─MERGE EXCEPT DISTINCT                                              |    |1       |1           |
+|99 |│ │ │ │   ├─EXPRESSION                                                       |    |1       |1           |
+|100|│ │ │ │   └─EXPRESSION                                                       |    |1       |1           |
+|101|│ │ │ └─MERGE EXCEPT DISTINCT                                                |    |1       |1           |
+|102|│ │ │   ├─EXPRESSION                                                         |    |1       |1           |
+|103|│ │ │   └─EXPRESSION                                                         |    |1       |1           |
+|104|│ │ └─MERGE EXCEPT DISTINCT                                                  |    |1       |1           |
+|105|│ │   ├─EXPRESSION                                                           |    |1       |1           |
+|106|│ │   └─EXPRESSION                                                           |    |1       |1           |
+|107|│ └─MERGE EXCEPT DISTINCT                                                    |    |1       |1           |
+|108|│   ├─EXPRESSION                                                             |    |1       |1           |
+|109|│   └─EXPRESSION                                                             |    |1       |1           |
+|110|└─MERGE EXCEPT DISTINCT                                                      |    |1       |1           |
+|111|  ├─EXPRESSION                                                               |    |1       |1           |
+|112|  └─EXPRESSION                                                               |    |1       |1           |
+==============================================================================================================
 Outputs & filters:
 -------------------------------------
-  0 - output([subquery(1)], [subquery(2)], [subquery(3)], [subquery(4)], [subquery(5)], [subquery(6)], [subquery(7)], [subquery(8)], [subquery(9)], [subquery(10)],
-       [subquery(11)], [subquery(12)], [subquery(13)], [subquery(14)], [subquery(15)], [subquery(16)], [subquery(17)], [subquery(18)], [subquery(19)], [subquery(20)],
-       [subquery(21)], [subquery(22)], [subquery(23)], [subquery(24)], [subquery(25)], [subquery(26)], [subquery(27)], [subquery(28)]), filter(nil), rowset=16
-      exec_params_([t.pk(:0)], [t.pk(:1)], [t.pk(:2)], [t.pk(:3)], [t.pk(:4)], [t.pk(:5)], [t.pk(:6)], [t.pk(:7)], [t.pk(:8)], [t.pk(:9)], [t.pk(:10)], 
-      [t.pk(:11)], [t.pk(:12)], [t.pk(:13)], [t.pk(:14)], [t.pk(:15)], [t.pk(:16)], [t.pk(:17)], [t.pk(:18)], [t.pk(:19)], [t.pk(:20)], [t.pk(:21)], [t.pk(:22)],
-       [t.pk(:23)], [t.pk(:24)], [t.pk(:25)], [t.pk(:26)], [t.pk(:27)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
-  1 - output([t.pk]), filter(nil), rowset=16
+  0 - output([subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:27)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  1 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:26)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  2 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:25)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  3 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:24)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  4 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:23)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  5 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:22)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  6 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:21)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  7 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:20)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  8 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:19)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+  9 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:18)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 10 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:17)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 11 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:16)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 12 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:15)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 13 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:14)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 14 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:13)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 15 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:12)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 16 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:11)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 17 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:10)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 18 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)],
+       [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:9)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 19 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:8)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 20 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:7)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 21 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:6)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 22 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:5)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 23 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:4)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 24 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:3)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 25 - output([t.pk], [subquery(1)], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:2)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 26 - output([t.pk], [subquery(1)], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:1)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 27 - output([t.pk], [subquery(1)]), filter(nil), rowset=16
+      exec_params_([t.pk(:0)]), onetime_exprs_(nil), init_plan_idxs_(nil), use_batch=false
+ 28 - output([t.pk]), filter(nil), rowset=16
       access([t.pk]), partitions(p0)
       is_index_back=false, is_global_index=false, 
       range_key([t.__pk_increment]), range(MIN ; MAX)always true
-  2 - output([EXCEPT([1])]), filter(nil), rowset=16
-  3 - output([1]), filter(nil)
-      values({1})
-  4 - output([cast(:0, BIGINT(20, 0))]), filter([cast(:0, BIGINT(20, 0)) = 1])
-      values({cast(:0, BIGINT(20, 0))})
-  5 - output([EXCEPT([1])]), filter(nil), rowset=16
-  6 - output([1]), filter(nil)
-      values({1})
-  7 - output([cast(:1, BIGINT(20, 0))]), filter([cast(:1, BIGINT(20, 0)) = 1])
-      values({cast(:1, BIGINT(20, 0))})
-  8 - output([EXCEPT([1])]), filter(nil), rowset=16
-  9 - output([1]), filter(nil)
-      values({1})
- 10 - output([cast(:2, BIGINT(20, 0))]), filter([cast(:2, BIGINT(20, 0)) = 1])
-      values({cast(:2, BIGINT(20, 0))})
- 11 - output([EXCEPT([1])]), filter(nil), rowset=16
- 12 - output([1]), filter(nil)
-      values({1})
- 13 - output([cast(:3, BIGINT(20, 0))]), filter([cast(:3, BIGINT(20, 0)) = 1])
-      values({cast(:3, BIGINT(20, 0))})
- 14 - output([EXCEPT([1])]), filter(nil), rowset=16
- 15 - output([1]), filter(nil)
-      values({1})
- 16 - output([cast(:4, BIGINT(20, 0))]), filter([cast(:4, BIGINT(20, 0)) = 1])
-      values({cast(:4, BIGINT(20, 0))})
- 17 - output([EXCEPT([1])]), filter(nil), rowset=16
- 18 - output([1]), filter(nil)
-      values({1})
- 19 - output([cast(:5, BIGINT(20, 0))]), filter([cast(:5, BIGINT(20, 0)) = 1])
-      values({cast(:5, BIGINT(20, 0))})
- 20 - output([EXCEPT([1])]), filter(nil), rowset=16
- 21 - output([1]), filter(nil)
-      values({1})
- 22 - output([cast(:6, BIGINT(20, 0))]), filter([cast(:6, BIGINT(20, 0)) = 1])
-      values({cast(:6, BIGINT(20, 0))})
- 23 - output([EXCEPT([1])]), filter(nil), rowset=16
- 24 - output([1]), filter(nil)
-      values({1})
- 25 - output([cast(:7, BIGINT(20, 0))]), filter([cast(:7, BIGINT(20, 0)) = 1])
-      values({cast(:7, BIGINT(20, 0))})
- 26 - output([EXCEPT([1])]), filter(nil), rowset=16
- 27 - output([1]), filter(nil)
-      values({1})
- 28 - output([cast(:8, BIGINT(20, 0))]), filter([cast(:8, BIGINT(20, 0)) = 1])
-      values({cast(:8, BIGINT(20, 0))})
  29 - output([EXCEPT([1])]), filter(nil), rowset=16
  30 - output([1]), filter(nil)
       values({1})
- 31 - output([cast(:9, BIGINT(20, 0))]), filter([cast(:9, BIGINT(20, 0)) = 1])
-      values({cast(:9, BIGINT(20, 0))})
+ 31 - output([cast(:0, BIGINT(20, 0))]), filter([cast(:0, BIGINT(20, 0)) = 1])
+      values({cast(:0, BIGINT(20, 0))})
  32 - output([EXCEPT([1])]), filter(nil), rowset=16
  33 - output([1]), filter(nil)
       values({1})
- 34 - output([cast(:10, BIGINT(20, 0))]), filter([cast(:10, BIGINT(20, 0)) = 1])
-      values({cast(:10, BIGINT(20, 0))})
+ 34 - output([cast(:1, BIGINT(20, 0))]), filter([cast(:1, BIGINT(20, 0)) = 1])
+      values({cast(:1, BIGINT(20, 0))})
  35 - output([EXCEPT([1])]), filter(nil), rowset=16
  36 - output([1]), filter(nil)
       values({1})
- 37 - output([cast(:11, BIGINT(20, 0))]), filter([cast(:11, BIGINT(20, 0)) = 1])
-      values({cast(:11, BIGINT(20, 0))})
+ 37 - output([cast(:2, BIGINT(20, 0))]), filter([cast(:2, BIGINT(20, 0)) = 1])
+      values({cast(:2, BIGINT(20, 0))})
  38 - output([EXCEPT([1])]), filter(nil), rowset=16
  39 - output([1]), filter(nil)
       values({1})
- 40 - output([cast(:12, BIGINT(20, 0))]), filter([cast(:12, BIGINT(20, 0)) = 1])
-      values({cast(:12, BIGINT(20, 0))})
+ 40 - output([cast(:3, BIGINT(20, 0))]), filter([cast(:3, BIGINT(20, 0)) = 1])
+      values({cast(:3, BIGINT(20, 0))})
  41 - output([EXCEPT([1])]), filter(nil), rowset=16
  42 - output([1]), filter(nil)
       values({1})
- 43 - output([cast(:13, BIGINT(20, 0))]), filter([cast(:13, BIGINT(20, 0)) = 1])
-      values({cast(:13, BIGINT(20, 0))})
+ 43 - output([cast(:4, BIGINT(20, 0))]), filter([cast(:4, BIGINT(20, 0)) = 1])
+      values({cast(:4, BIGINT(20, 0))})
  44 - output([EXCEPT([1])]), filter(nil), rowset=16
  45 - output([1]), filter(nil)
       values({1})
- 46 - output([cast(:14, BIGINT(20, 0))]), filter([cast(:14, BIGINT(20, 0)) = 1])
-      values({cast(:14, BIGINT(20, 0))})
+ 46 - output([cast(:5, BIGINT(20, 0))]), filter([cast(:5, BIGINT(20, 0)) = 1])
+      values({cast(:5, BIGINT(20, 0))})
  47 - output([EXCEPT([1])]), filter(nil), rowset=16
  48 - output([1]), filter(nil)
       values({1})
- 49 - output([cast(:15, BIGINT(20, 0))]), filter([cast(:15, BIGINT(20, 0)) = 1])
-      values({cast(:15, BIGINT(20, 0))})
+ 49 - output([cast(:6, BIGINT(20, 0))]), filter([cast(:6, BIGINT(20, 0)) = 1])
+      values({cast(:6, BIGINT(20, 0))})
  50 - output([EXCEPT([1])]), filter(nil), rowset=16
  51 - output([1]), filter(nil)
       values({1})
- 52 - output([cast(:16, BIGINT(20, 0))]), filter([cast(:16, BIGINT(20, 0)) = 1])
-      values({cast(:16, BIGINT(20, 0))})
+ 52 - output([cast(:7, BIGINT(20, 0))]), filter([cast(:7, BIGINT(20, 0)) = 1])
+      values({cast(:7, BIGINT(20, 0))})
  53 - output([EXCEPT([1])]), filter(nil), rowset=16
  54 - output([1]), filter(nil)
       values({1})
- 55 - output([cast(:17, BIGINT(20, 0))]), filter([cast(:17, BIGINT(20, 0)) = 1])
-      values({cast(:17, BIGINT(20, 0))})
+ 55 - output([cast(:8, BIGINT(20, 0))]), filter([cast(:8, BIGINT(20, 0)) = 1])
+      values({cast(:8, BIGINT(20, 0))})
  56 - output([EXCEPT([1])]), filter(nil), rowset=16
  57 - output([1]), filter(nil)
       values({1})
- 58 - output([cast(:18, BIGINT(20, 0))]), filter([cast(:18, BIGINT(20, 0)) = 1])
-      values({cast(:18, BIGINT(20, 0))})
+ 58 - output([cast(:9, BIGINT(20, 0))]), filter([cast(:9, BIGINT(20, 0)) = 1])
+      values({cast(:9, BIGINT(20, 0))})
  59 - output([EXCEPT([1])]), filter(nil), rowset=16
  60 - output([1]), filter(nil)
       values({1})
- 61 - output([cast(:19, BIGINT(20, 0))]), filter([cast(:19, BIGINT(20, 0)) = 1])
-      values({cast(:19, BIGINT(20, 0))})
+ 61 - output([cast(:10, BIGINT(20, 0))]), filter([cast(:10, BIGINT(20, 0)) = 1])
+      values({cast(:10, BIGINT(20, 0))})
  62 - output([EXCEPT([1])]), filter(nil), rowset=16
  63 - output([1]), filter(nil)
       values({1})
- 64 - output([cast(:20, BIGINT(20, 0))]), filter([cast(:20, BIGINT(20, 0)) = 1])
-      values({cast(:20, BIGINT(20, 0))})
+ 64 - output([cast(:11, BIGINT(20, 0))]), filter([cast(:11, BIGINT(20, 0)) = 1])
+      values({cast(:11, BIGINT(20, 0))})
  65 - output([EXCEPT([1])]), filter(nil), rowset=16
  66 - output([1]), filter(nil)
       values({1})
- 67 - output([cast(:21, BIGINT(20, 0))]), filter([cast(:21, BIGINT(20, 0)) = 1])
-      values({cast(:21, BIGINT(20, 0))})
+ 67 - output([cast(:12, BIGINT(20, 0))]), filter([cast(:12, BIGINT(20, 0)) = 1])
+      values({cast(:12, BIGINT(20, 0))})
  68 - output([EXCEPT([1])]), filter(nil), rowset=16
  69 - output([1]), filter(nil)
       values({1})
- 70 - output([cast(:22, BIGINT(20, 0))]), filter([cast(:22, BIGINT(20, 0)) = 1])
-      values({cast(:22, BIGINT(20, 0))})
+ 70 - output([cast(:13, BIGINT(20, 0))]), filter([cast(:13, BIGINT(20, 0)) = 1])
+      values({cast(:13, BIGINT(20, 0))})
  71 - output([EXCEPT([1])]), filter(nil), rowset=16
  72 - output([1]), filter(nil)
       values({1})
- 73 - output([cast(:23, BIGINT(20, 0))]), filter([cast(:23, BIGINT(20, 0)) = 1])
-      values({cast(:23, BIGINT(20, 0))})
+ 73 - output([cast(:14, BIGINT(20, 0))]), filter([cast(:14, BIGINT(20, 0)) = 1])
+      values({cast(:14, BIGINT(20, 0))})
  74 - output([EXCEPT([1])]), filter(nil), rowset=16
  75 - output([1]), filter(nil)
       values({1})
- 76 - output([cast(:24, BIGINT(20, 0))]), filter([cast(:24, BIGINT(20, 0)) = 1])
-      values({cast(:24, BIGINT(20, 0))})
+ 76 - output([cast(:15, BIGINT(20, 0))]), filter([cast(:15, BIGINT(20, 0)) = 1])
+      values({cast(:15, BIGINT(20, 0))})
  77 - output([EXCEPT([1])]), filter(nil), rowset=16
  78 - output([1]), filter(nil)
       values({1})
- 79 - output([cast(:25, BIGINT(20, 0))]), filter([cast(:25, BIGINT(20, 0)) = 1])
-      values({cast(:25, BIGINT(20, 0))})
+ 79 - output([cast(:16, BIGINT(20, 0))]), filter([cast(:16, BIGINT(20, 0)) = 1])
+      values({cast(:16, BIGINT(20, 0))})
  80 - output([EXCEPT([1])]), filter(nil), rowset=16
  81 - output([1]), filter(nil)
       values({1})
- 82 - output([cast(:26, BIGINT(20, 0))]), filter([cast(:26, BIGINT(20, 0)) = 1])
-      values({cast(:26, BIGINT(20, 0))})
+ 82 - output([cast(:17, BIGINT(20, 0))]), filter([cast(:17, BIGINT(20, 0)) = 1])
+      values({cast(:17, BIGINT(20, 0))})
  83 - output([EXCEPT([1])]), filter(nil), rowset=16
  84 - output([1]), filter(nil)
       values({1})
- 85 - output([cast(:27, BIGINT(20, 0))]), filter([cast(:27, BIGINT(20, 0)) = 1])
+ 85 - output([cast(:18, BIGINT(20, 0))]), filter([cast(:18, BIGINT(20, 0)) = 1])
+      values({cast(:18, BIGINT(20, 0))})
+ 86 - output([EXCEPT([1])]), filter(nil), rowset=16
+ 87 - output([1]), filter(nil)
+      values({1})
+ 88 - output([cast(:19, BIGINT(20, 0))]), filter([cast(:19, BIGINT(20, 0)) = 1])
+      values({cast(:19, BIGINT(20, 0))})
+ 89 - output([EXCEPT([1])]), filter(nil), rowset=16
+ 90 - output([1]), filter(nil)
+      values({1})
+ 91 - output([cast(:20, BIGINT(20, 0))]), filter([cast(:20, BIGINT(20, 0)) = 1])
+      values({cast(:20, BIGINT(20, 0))})
+ 92 - output([EXCEPT([1])]), filter(nil), rowset=16
+ 93 - output([1]), filter(nil)
+      values({1})
+ 94 - output([cast(:21, BIGINT(20, 0))]), filter([cast(:21, BIGINT(20, 0)) = 1])
+      values({cast(:21, BIGINT(20, 0))})
+ 95 - output([EXCEPT([1])]), filter(nil), rowset=16
+ 96 - output([1]), filter(nil)
+      values({1})
+ 97 - output([cast(:22, BIGINT(20, 0))]), filter([cast(:22, BIGINT(20, 0)) = 1])
+      values({cast(:22, BIGINT(20, 0))})
+ 98 - output([EXCEPT([1])]), filter(nil), rowset=16
+ 99 - output([1]), filter(nil)
+      values({1})
+100 - output([cast(:23, BIGINT(20, 0))]), filter([cast(:23, BIGINT(20, 0)) = 1])
+      values({cast(:23, BIGINT(20, 0))})
+101 - output([EXCEPT([1])]), filter(nil), rowset=16
+102 - output([1]), filter(nil)
+      values({1})
+103 - output([cast(:24, BIGINT(20, 0))]), filter([cast(:24, BIGINT(20, 0)) = 1])
+      values({cast(:24, BIGINT(20, 0))})
+104 - output([EXCEPT([1])]), filter(nil), rowset=16
+105 - output([1]), filter(nil)
+      values({1})
+106 - output([cast(:25, BIGINT(20, 0))]), filter([cast(:25, BIGINT(20, 0)) = 1])
+      values({cast(:25, BIGINT(20, 0))})
+107 - output([EXCEPT([1])]), filter(nil), rowset=16
+108 - output([1]), filter(nil)
+      values({1})
+109 - output([cast(:26, BIGINT(20, 0))]), filter([cast(:26, BIGINT(20, 0)) = 1])
+      values({cast(:26, BIGINT(20, 0))})
+110 - output([EXCEPT([1])]), filter(nil), rowset=16
+111 - output([1]), filter(nil)
+      values({1})
+112 - output([cast(:27, BIGINT(20, 0))]), filter([cast(:27, BIGINT(20, 0)) = 1])
       values({cast(:27, BIGINT(20, 0))})
 select (select 1 except select pk),
 (select 1 except select pk),

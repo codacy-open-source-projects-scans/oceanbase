@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1546,28 +1539,33 @@ int ObDbmsStatsExecutor::update_online_stat(ObExecContext &ctx,
       int64_t old_trx_lock_timeout = -1;
       bool need_restore_session = false;
       bool need_reset_trx_lock_timeout = false;
+      bool need_restore_diagnosis = false;
       common::sqlclient::ObISQLConnection *conn = NULL;
       ctx.set_is_online_stats_gathering(true);
       const ObString stash_savepoint_name("online stat stash savepoint");
       bool has_stash_savepoint = false;
+      ObAuditRecordData audit_record;
+      ObSQLSessionInfo::ObAuditRecordDataWrapperGuard guard(ctx.get_my_session(), audit_record);
       //lib::CompatModeGuard guard(lib::Worker::CompatMode::MYSQL);
       if (OB_FAIL(ObDbmsStatsUtils::cancel_async_gather_stats(ctx))) {
         LOG_WARN("failed to cancel async gather stats", K(ret));
-      } else if (OB_FAIL(prepare_conn_and_store_session_for_online_stats(ctx.get_my_session(),
-                                                                         ctx.get_sql_proxy(),
-                                                                         schema_guard,
-                                                                         saved_value,
-                                                                         nested_count,
-                                                                         old_trx_lock_timeout,
-                                                                         need_restore_session,
-                                                                         need_reset_trx_lock_timeout,
-                                                                         conn))) {
+      } else if (OB_FAIL(
+                     prepare_conn_and_store_session_for_online_stats(ctx.get_my_session(),
+                                                                     ctx.get_sql_proxy(),
+                                                                     schema_guard,
+                                                                     saved_value,
+                                                                     nested_count,
+                                                                     old_trx_lock_timeout,
+                                                                     need_restore_session,
+                                                                     need_reset_trx_lock_timeout,
+                                                                     need_restore_diagnosis,
+                                                                     conn))) {
         LOG_WARN("failed to prepare conn and store session for online stats", K(ret));
       } else if (OB_FAIL(ObDbmsStatsUtils::get_current_opt_stats(allocator,
-                                                                 conn,
-                                                                 param,
-                                                                 cur_table_stats,
-                                                                 cur_column_stats))) {
+                                                                  conn,
+                                                                  param,
+                                                                  cur_table_stats,
+                                                                  cur_column_stats))) {
         LOG_WARN("failed to get current opt stats", K(ret));
       } else if (OB_FAIL(ObDbmsStatsUtils::merge_tab_stats(param,
                                                            online_table_stats,
@@ -1620,7 +1618,8 @@ int ObDbmsStatsExecutor::update_online_stat(ObExecContext &ctx,
                                                                      saved_value,
                                                                      nested_count,
                                                                      old_trx_lock_timeout,
-                                                                     need_reset_trx_lock_timeout))) {
+                                                                     need_reset_trx_lock_timeout,
+                                                                     need_restore_diagnosis))) {
           ret = COVER_SUCC(tmp_ret);
           LOG_WARN("failed to restore session", K(tmp_ret));
         }
@@ -1646,6 +1645,7 @@ int ObDbmsStatsExecutor::prepare_conn_and_store_session_for_online_stats(sql::Ob
                                                                          int64_t &old_trx_lock_timeout,
                                                                          bool &need_restore_session,
                                                                          bool &need_reset_trx_lock_timeout,
+                                                                         bool &need_restore_diagnosis,
                                                                          sqlclient::ObISQLConnection *&conn)
 {
   int ret = OB_SUCCESS;
@@ -1658,6 +1658,10 @@ int ObDbmsStatsExecutor::prepare_conn_and_store_session_for_online_stats(sql::Ob
   } else {
     need_restore_session = true;
     nested_count = session->get_nested_count();
+    if (session->is_diagnosis_enabled()) {
+      session->get_diagnosis_info().is_enabled_ = false;
+      need_restore_diagnosis = true;
+    }
     //2.modify seesion info
     //2.1 modify query start time
     session->set_query_start_time(ObTimeUtility::current_time());
@@ -1700,7 +1704,8 @@ int ObDbmsStatsExecutor::restore_session_for_online_stat(sql::ObSQLSessionInfo *
                                                          sql::ObSQLSessionInfo::StmtSavedValue &saved_value,
                                                          int64_t nested_count,
                                                          int64_t old_trx_lock_timeout,
-                                                         bool need_reset_trx_lock_timeout)
+                                                         bool need_reset_trx_lock_timeout,
+                                                         bool need_restore_diagnosis)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(session)) {
@@ -1732,6 +1737,10 @@ int ObDbmsStatsExecutor::restore_session_for_online_stat(sql::ObSQLSessionInfo *
         ret = COVER_SUCC(tmp_ret);
         LOG_WARN("failed to update sys variable for trx lock timeout", K(tmp_ret));
       }
+    }
+    // 4.restore diagnosis switch
+    if (need_restore_diagnosis) {
+      session->get_diagnosis_info().is_enabled_ = true;
     }
   }
   return ret;

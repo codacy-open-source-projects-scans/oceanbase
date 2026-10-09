@@ -1,19 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the JSON path abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "ob_json_path.h"
 #include "ob_json_parse.h"
+#include "common/ob_smart_call.h"
 
 namespace oceanbase {
 namespace common {
@@ -1088,6 +1081,8 @@ void ObJsonPathCache::reset()
     }
   }
   path_arr_ptr_.clear();
+  multi_path_keys_.reset();
+  fast_path_state_ = FAST_PATH_UNCHECKED;
 }
 
 size_t ObJsonPathCache::size()
@@ -1131,7 +1126,40 @@ common::ObIAllocator* ObJsonPathCache::get_allocator()
 {
   return allocator_;
 }
- 
+
+int ObJsonPathCache::append_path_key(const ObIArray<ObString> &keys)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LIB_LOG(WARN, "allocator is null", K(ret));
+  } else {
+    ObMultiPathEntry entry;
+    entry.key_cnt = keys.count();
+    if (entry.key_cnt > 0) {
+      void *buf = allocator_->alloc(sizeof(ObString) * entry.key_cnt);
+      if (OB_ISNULL(buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LIB_LOG(WARN, "alloc keys array failed", K(ret), K(entry.key_cnt));
+      } else {
+        entry.keys = static_cast<ObString*>(buf);
+        for (int64_t i = 0; OB_SUCC(ret) && i < entry.key_cnt; ++i) {
+          ObString copy;
+          if (OB_FAIL(ob_write_string(*allocator_, keys.at(i), copy))) {
+            LIB_LOG(WARN, "ob_write_string fail", K(ret), K(i));
+          } else {
+            new (&entry.keys[i]) ObString(copy);
+          }
+        }
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(multi_path_keys_.push_back(entry))) {
+      LIB_LOG(WARN, "push_back entry failed", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObJsonPathUtil::append_array_index(uint64_t index, bool from_end, ObJsonBuffer& str)
 {
   INIT_SUCC(ret);
@@ -2607,7 +2635,11 @@ bool ObJsonPathUtil::is_utf8_unicode_charator(const char* ori, uint64_t& start, 
   int ret = OB_SUCCESS;
   int32_t well_formed_error = 0;
   int64_t well_formed_len = 0;
-  if (OB_FAIL(ObCharset::well_formed_len(CS_TYPE_UTF8MB4_BIN, ori + start, len, well_formed_len, well_formed_error))) {
+  // Guard against a non-positive length, which can be produced by an underflow at the
+  // caller, otherwise well_formed_len() would scan far beyond the buffer (CWE-125).
+  if (OB_ISNULL(ori) || len <= 0) {
+    ret_bool = false;
+  } else if (OB_FAIL(ObCharset::well_formed_len(CS_TYPE_UTF8MB4_BIN, ori + start, len, well_formed_len, well_formed_error))) {
     ret_bool = false;
   } else {
     ret_bool = true;
@@ -2623,6 +2655,7 @@ bool ObJsonPathUtil::is_letter(unsigned codepoint, const char* ori, uint64_t sta
   if (ret_bool) {
   } else if (!ret_bool && (codepoint >= UNICODE_EXTEND_MARK_MIN
              && codepoint <= UNICODE_EXTEND_MARK_MAX
+             && end >= start
              && ObJsonPathUtil::is_utf8_unicode_charator(ori, start, end - start))) {
     ret_bool = true;
   }
@@ -2681,7 +2714,10 @@ bool ObJsonPathUtil::is_ecmascript_identifier(const char* name, uint64_t length)
 
     // a unicode letter
     uint64_t curr_pos = input_stream.Tell();
-    if (is_letter(codepoint, name, last_pos, curr_pos - last_pos)
+    // NOTE: the 4th argument is the END position of the current character, not its length.
+    // Passing the length here would make is_letter() compute (length - start), which
+    // underflows when start > 0 and leads to an out-of-bound scan in well_formed_len().
+    if (is_letter(codepoint, name, last_pos, curr_pos)
         || codepoint == 0x24 || codepoint == 0x5F ) {
       // $ is ok, _ is ok
     } else if (first_codepoint) {
@@ -4076,7 +4112,7 @@ int ObJsonPath::parse_comp_exist(ObJsonPathFilterNode* filter_comp_node)
         } else {
           spath = new (spath) ObJsonPath(exist_subpath, allocator_);
           spath->set_subpath_arg(is_lax_);
-          if (OB_FAIL(spath->parse_path())) {
+          if (OB_FAIL(SMART_CALL(spath->parse_path()))) {
             LOG_WARN("fail to parse sub_path",K(ret), K(spath->bad_index_), K(exist_subpath));
           } else {
             if (OB_FAIL(filter_comp_node->init_right_comp_path(spath))) {
@@ -4122,7 +4158,7 @@ int ObJsonPath::parse_comp_half(ObJsonPathFilterNode* filter_comp_node, bool lef
       } else {
         spath = new (spath) ObJsonPath(path_string, allocator_);
         spath->set_subpath_arg(is_lax_);
-        if (OB_FAIL(spath->parse_path())) {
+        if (OB_FAIL(SMART_CALL(spath->parse_path()))) {
           LOG_WARN("fail to parse sub_path",K(ret), K(spath->bad_index_), K(path_string));
         } else {
           if (left) {

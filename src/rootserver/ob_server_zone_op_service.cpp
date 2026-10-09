@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -259,20 +252,20 @@ int ObServerZoneOpService::prepare_server_for_adding_server_(const ObAddr &serve
     LOG_WARN("ctx time out", KR(ret), K(timeout));
   } else if (OB_FAIL(GET_MIN_DATA_VERSION(OB_SYS_TENANT_ID, sys_tenant_data_version))) {
     LOG_WARN("fail to get sys tenant's min data version", KR(ret));
-#ifdef OB_BUILD_SHARED_STORAGE
   } else {
-    ObRootKey root_key;
+#ifdef OB_BUILD_SHARED_STORAGE
     if (OB_FAIL(get_and_check_storage_infos_by_zone_(picked_zone, zone_storage_infos))) {
       LOG_WARN("failed to get storage infos", KR(ret), K(picked_zone));
     }
+#endif
 #ifdef OB_BUILD_TDE_SECURITY
+    ObRootKey root_key;
     if (FAILEDx(ObMasterKeyGetter::instance().get_root_key(OB_SYS_TENANT_ID, root_key))) {
       LOG_WARN("failed to get sys root key", KR(ret));
     } else {
       root_key_str = root_key.key_;
       root_key_type = root_key.key_type_;
     }
-#endif
 #endif
   }
   if (FAILEDx(fetch_new_server_id_(server_id))) {

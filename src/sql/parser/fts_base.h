@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SQL_PARSER_FTS_BASE_H_
@@ -28,11 +21,16 @@
 struct ObCharsetInfo;
 #include "parse_malloc.h"
 
+enum {
+  FTS_MAX_BOOLEAN_NESTING_DEPTH = 256,
+};
+
 enum FtsError {
   FTS_OK = 0,
   FTS_ERROR_MEMORY = 1,
   FTS_ERROR_SYNTAX = 2,
   FTS_ERROR_OTHER = 3,
+  FTS_ERROR_INVALID_ARGUMENT = 4,
 };
 
 enum FtsNodeType {

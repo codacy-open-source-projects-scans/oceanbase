@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -663,8 +656,12 @@ bool ObMigrationStatusHelper::check_migration_status_is_fail(const ObMigrationSt
 
 bool ObMigrationStatusHelper::need_online(const ObMigrationStatus &cur_status)
 {
+  // If online ls executes before ls migration handler changes its migration status from
+  // OB_MIGRATION_STATUS_REPLACE_HOLD to OB_MIGRATION_STATUS_NONE. The ls will miss online.
+  // So, ls with migration status of OB_MIGRATION_STATUS_REPLACE_HOLD needs online.
   return (OB_MIGRATION_STATUS_NONE == cur_status
-         || OB_MIGRATION_STATUS_GC == cur_status);
+         || OB_MIGRATION_STATUS_GC == cur_status
+         || OB_MIGRATION_STATUS_REPLACE_HOLD == cur_status);
 }
 
 bool ObMigrationStatusHelper::check_allow_gc_abandoned_ls(const ObMigrationStatus &cur_status)
@@ -1059,11 +1056,12 @@ int ObMigrationStatusHelper::check_ls_with_transfer_task_v1_(
     FLOG_INFO("unit wait gc in observer, allow gc", K(tenant_id), K(src_ls_id));
   } else if (OB_FAIL(ObTransferTaskOperator::get_by_src_ls(
       *sql_proxy, tenant_id, src_ls_id, task, share::OBCG_STORAGE_STREAM))) {
-    LOG_WARN("failed to get transfer task", K(ret), K(tenant_id), K(src_ls_id));
     if (OB_ENTRY_NOT_EXIST == ret || OB_TABLE_NOT_EXIST == ret) {
       need_check_allow_gc = true;
       need_wait_dest_ls_replay = false;
       ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("failed to get transfer task", K(ret), K(tenant_id), K(src_ls_id));
     }
   } else if (OB_FAIL(task_info.convert_from(tenant_id, task))) {
     LOG_WARN("failed to convert from transfer task", K(ret), K(task));
@@ -1387,34 +1385,6 @@ int ObMigrationOpArg::init(const obrpc::ObLSReplaceReplicaArg &arg)
   return ret;
 }
 
-/******************ObTabletsTransferArg*********************/
-ObTabletsTransferArg::ObTabletsTransferArg()
-  : tenant_id_(OB_INVALID_ID),
-    ls_id_(),
-    src_(),
-    tablet_id_array_(),
-    snapshot_log_ts_(0)
-{
-}
-
-bool ObTabletsTransferArg::is_valid() const
-{
-  return tenant_id_ != OB_INVALID_ID
-      && ls_id_.is_valid()
-      && src_.is_valid()
-      && tablet_id_array_.count() > 0
-      && snapshot_log_ts_ > 0;
-}
-
-void ObTabletsTransferArg::reset()
-{
-  tenant_id_ = OB_INVALID_ID;
-  ls_id_.reset();
-  src_.reset();
-  tablet_id_array_.reset();
-  snapshot_log_ts_ = 0;
-}
-
 /******************ObStorageHASrcInfo*********************/
 
 ObStorageHASrcInfo::ObStorageHASrcInfo()
@@ -1448,49 +1418,6 @@ bool ObStorageHASrcInfo::operator ==(const ObStorageHASrcInfo &src_info) const
       && cluster_id_ == src_info.cluster_id_;
 }
 
-/******************ObMacroBlockCopyInfo*********************/
-ObMacroBlockCopyInfo::ObMacroBlockCopyInfo()
-  : logic_macro_block_id_(),
-    need_copy_(true)
-{
-}
-
-ObMacroBlockCopyInfo::~ObMacroBlockCopyInfo()
-{
-}
-
-bool ObMacroBlockCopyInfo::is_valid() const
-{
-  return logic_macro_block_id_.is_valid();
-}
-
-void ObMacroBlockCopyInfo::reset()
-{
-  //logic_macro_block_id_.reset();
-  need_copy_ = true;
-}
-
-/******************ObMacroBlockCopyArgInfo*********************/
-
-ObMacroBlockCopyArgInfo::ObMacroBlockCopyArgInfo()
-  : logic_macro_block_id_()
-{
-}
-
-ObMacroBlockCopyArgInfo::~ObMacroBlockCopyArgInfo()
-{
-}
-
-bool ObMacroBlockCopyArgInfo::is_valid() const
-{
-  return logic_macro_block_id_.is_valid();
-}
-
-void ObMacroBlockCopyArgInfo::reset()
-{
-  //logic_macro_block_id_.reset();
-}
-
 /******************ObCopyTabletSimpleInfo*********************/
 ObCopyTabletSimpleInfo::ObCopyTabletSimpleInfo()
   : tablet_id_(),
@@ -1509,27 +1436,6 @@ void ObCopyTabletSimpleInfo::reset()
 bool ObCopyTabletSimpleInfo::is_valid() const
 {
   return tablet_id_.is_valid() && ObCopyTabletStatus::is_valid(status_) && data_size_ >= 0;
-}
-
-/******************ObMigrationFakeBlockID*********************/
-ObMigrationFakeBlockID::ObMigrationFakeBlockID()
-{
-  migration_fake_block_id_.reset();
-  migration_fake_block_id_.set_block_index(FAKE_BLOCK_INDEX);
-}
-
-/******************ObCopySSTableHelper*********************/
-bool ObCopySSTableHelper::check_can_reuse(
-    const ObSSTableStatus &status)
-{
-  int bool_ret = false;
-
-  if (ObSSTableStatus::SSTABLE_READY_FOR_READ == status
-      || ObSSTableStatus::SSTABLE_READY_FOR_REMOTE_LOGICAL_READ == status
-      || ObSSTableStatus::SSTABLE_READY_FOR_REMOTE_PHYTSICAL_READ == status) {
-    bool_ret = true;
-  }
-  return bool_ret;
 }
 
 /******************ObMigrationUtils*********************/
@@ -2136,7 +2042,6 @@ const char *ObTabletBackfillType::get_str(const ObTabletBackfillType &type)
 ObTabletBackfillInfo::ObTabletBackfillInfo()
   : tablet_id_(),
     is_committed_(false),
-    is_shared_storage_(false),
     relative_ls_id_(false),
     reorganization_scn_(),
     backfill_scn_(),
@@ -2151,7 +2056,6 @@ void ObTabletBackfillInfo::reset()
 {
   tablet_id_.reset();
   is_committed_ = false;
-  is_shared_storage_ = false,
   relative_ls_id_.reset();
   reorganization_scn_.reset();
   backfill_scn_.reset();
@@ -2185,22 +2089,11 @@ bool ObTabletBackfillInfo::operator == (const ObTabletBackfillInfo &other) const
   bool is_same = true;
   if (this == &other) {
     // same
-  } else if (!is_shared_storage_) {
-    if (tablet_id_ != other.tablet_id_
-        || is_committed_ != other.is_committed_) {
-      is_same = false;
-    } else {
-      is_same = true;
-    }
+  } else if (tablet_id_ != other.tablet_id_
+      || is_committed_ != other.is_committed_) {
+    is_same = false;
   } else {
-    is_same = relative_ls_id_ == other.relative_ls_id_
-          && tablet_id_ == other.tablet_id_
-          && reorganization_scn_ == other.reorganization_scn_
-          && backfill_scn_ == other.backfill_scn_
-          && backfill_type_ == other.backfill_type_
-          && tablet_status_ == other.tablet_status_
-          && src_reorganization_scn_ == other.src_reorganization_scn_
-          && is_committed_ == other.is_committed_;
+    is_same = true;
   }
   return is_same;
 }
@@ -2208,19 +2101,7 @@ bool ObTabletBackfillInfo::operator == (const ObTabletBackfillInfo &other) const
 uint64_t ObTabletBackfillInfo::hash() const
 {
   uint64_t hash_val = 0;
-
-  if (is_shared_storage_) {
-    hash_val = relative_ls_id_.hash();
-    hash_val = common::murmurhash(&tablet_id_, sizeof(tablet_id_), hash_val);
-    hash_val = common::murmurhash(&reorganization_scn_, sizeof(reorganization_scn_), hash_val);
-    hash_val = common::murmurhash(&backfill_scn_, sizeof(backfill_scn_), hash_val);
-    hash_val = common::murmurhash(&backfill_type_, sizeof(backfill_type_), hash_val);
-    hash_val = common::murmurhash(&tablet_status_, sizeof(tablet_status_), hash_val);
-    hash_val = common::murmurhash(&src_reorganization_scn_, sizeof(src_reorganization_scn_), hash_val);
-    hash_val = common::murmurhash(&transfer_seq_, sizeof(transfer_seq_), hash_val);
-  } else {
-    hash_val = common::murmurhash(&tablet_id_, sizeof(tablet_id_), hash_val);
-  }
+  hash_val = common::murmurhash(&tablet_id_, sizeof(tablet_id_), hash_val);
   return hash_val;
 }
 
@@ -2861,32 +2742,6 @@ int ObLSMemberListInfo::assign(const ObLSMemberListInfo &info)
   } else {
     learner_list_ = info.learner_list_;
     leader_addr_ = info.leader_addr_;
-  }
-  return ret;
-}
-
-int ObSSHAMacroCopyUtils::get_dag_priority(const ObSSHAMacroTaskType &task_type, ObDagPrio::ObDagPrioEnum &prio)
-{
-  int ret = OB_SUCCESS;
-  if (!task_type.is_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("get invalid argument", K(ret), K(task_type));
-  } else {
-    switch (task_type.type_) {
-      case ObSSHAMacroTaskType::Type::BACKUP: {
-        prio = ObDagPrio::DAG_PRIO_HA_LOW;
-        break;
-      }
-      case ObSSHAMacroTaskType::Type::RESTORE: {
-        prio = ObDagPrio::DAG_PRIO_HA_HIGH;
-        break;
-      }
-      default: {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("type not expected", K(ret), K(task_type));
-        break;
-      }
-    }
   }
   return ret;
 }

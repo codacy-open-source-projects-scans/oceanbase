@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_CACHE_CONTAINER_H_
@@ -26,18 +19,24 @@ namespace storage
 // type
 struct ObFTCacheRangeHandle
 {
-  ObFTDictType type_;
   // kvcache
   ObKVCacheHandle handle_;
-  const ObDictCacheKey *key_;
+  ObDictCacheKey key_;
   const ObDictCacheValue *value_;
 
 public:
   ObFTCacheRangeHandle()
-      : type_(ObFTDictType::DICT_TYPE_INVALID), handle_(), key_(nullptr), value_(nullptr)
+      : handle_(), key_(), value_(nullptr)
   {
   }
   ~ObFTCacheRangeHandle() {}
+  void move_from(ObFTCacheRangeHandle &other)
+  {
+    this->handle_.move_from(other.handle_);
+    this->key_ = other.key_;
+    this->value_ = other.value_;
+    other.value_ = nullptr;
+  }
 };
 
 class ObFTCacheRangeContainer

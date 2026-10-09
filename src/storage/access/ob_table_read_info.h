@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_ACCESS_TABLE_READ_INFO_H_
@@ -94,6 +87,23 @@ public:
   int serialize(char *buf, const int64_t buf_len, int64_t &pos) const;
   int deserialize(const char *buf, const int64_t data_len, int64_t &pos, common::ObIAllocator &allocator);
   int64_t get_serialize_size() const;
+
+  int64_t get_array_idx_by_value(const int64_t value) const
+  {
+    // TODO(menglan): maybe need optimize this function or struct
+
+    int64_t idx = -1, array_count = count();
+
+    for (int64_t i = 0; i < array_count; i++) {
+      if (at(i) == value) {
+        idx = i;
+        break;
+      }
+    }
+
+    return idx;
+  }
+
   DECLARE_TO_STRING;
 private:
   typedef int64_t (*COUNT_FUNC)(uint32_t, const ObFixedMetaObjArray<int32_t> &);
@@ -155,6 +165,7 @@ public:
     : ObITableReadInfo(),
       is_inited_(false),
       is_oracle_mode_(false),
+      original_merge_engine_type_(ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN),
       allocator_(nullptr),
       schema_column_count_(0),
       compat_version_(READ_INFO_VERSION_LATEST),
@@ -247,9 +258,10 @@ public:
   }
   virtual bool has_ttl_definition() const override { return has_ttl_definition_; }
   OB_INLINE bool is_cs_replica_compat() const { return is_cs_replica_compat_; }
-  OB_INLINE bool is_delete_insert_table() const { return is_delete_insert_table_; }
+  OB_INLINE bool is_original_delete_insert_table() const { return ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT == original_merge_engine_type_; }
   OB_INLINE bool is_mv_major_refresh_tablet() const { return is_mv_major_refresh_tablet_; }
   OB_INLINE int64_t get_micro_block_format_version() const { return micro_block_format_version_; }
+  OB_INLINE ObMergeEngineType get_original_merge_engine_type() const { return original_merge_engine_type_; }
   DECLARE_VIRTUAL_TO_STRING;
   int generate_for_column_store(ObIAllocator &allocator,
                                 const ObColDesc &desc,
@@ -259,7 +271,7 @@ public:
                        const bool is_oracle_mode,
                        const bool is_cg_sstable,
                        const bool is_cs_replica_compat,
-                       const bool is_delete_insert_table,
+                       const ObMergeEngineType original_merge_engine_type,
                        const bool is_global_index_table,
                        const int64_t micro_block_format_version,
                        const bool is_mv_major_refresh_tablet,
@@ -277,12 +289,14 @@ protected:
   static const int64_t READ_INFO_VERSION_V5 = 5; // after V4.3.5 bp3
   static const int64_t READ_INFO_VERSION_V6 = 6; // after V4.4.1
   static const int64_t READ_INFO_VERSION_V7 = 7; // after COMPACTION_TTL_CMP_DATA_VERSION
-  static const int64_t READ_INFO_VERSION_LATEST = READ_INFO_VERSION_V7;
+  static const int64_t READ_INFO_VERSION_V8 = 8; // after DATA_VERSION_4_6_1_0
+  static const int64_t READ_INFO_VERSION_LATEST = READ_INFO_VERSION_V8;
   static const int32_t READ_INFO_ONE_BIT = 1;
   static const int32_t READ_INFO_RESERVED_BITS = 11;
 
   bool is_inited_;
   bool is_oracle_mode_;
+  ObMergeEngineType original_merge_engine_type_;
   ObIAllocator *allocator_;
   // distinguish schema changed by schema column count
   union { //FARM COMPAT WHITELIST
@@ -291,7 +305,7 @@ protected:
       uint32_t schema_column_count_;
       uint16_t compat_version_;
       uint16_t is_cs_replica_compat_   : READ_INFO_ONE_BIT; // only used for rowkey_read_info in ObTablet
-      uint16_t is_delete_insert_table_ : READ_INFO_ONE_BIT;
+      uint16_t is_delete_insert_table_ : READ_INFO_ONE_BIT; // attention!!! only for deserialize old read info after V4.5.2, make sure it is assigned correctly when use it
       uint16_t is_global_index_table_  : READ_INFO_ONE_BIT; // only used for rowkey_read_info in ObTablet
       uint16_t is_mv_major_refresh_tablet_  : READ_INFO_ONE_BIT; // only used for rowkey_read_info in ObTablet
       uint16_t has_ttl_definition_     : READ_INFO_ONE_BIT; // only used for rowkey_read_info in ObTablet
@@ -334,7 +348,7 @@ public:
       const bool has_all_column_group = true,
       const bool is_cg_sstable = false,
       const bool need_truncate_filter = false,
-      const bool is_delete_insert_table = false,
+      const ObMergeEngineType original_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN,
       const int64_t micro_block_format_version = ObMicroBlockFormatVersionHelper::DEFAULT_VERSION,
       const bool has_ttl_definition = false);
   int mock_for_sstable_query(
@@ -448,7 +462,7 @@ public:
       const bool is_cg_sstable = false,
       const bool use_default_compat_version = false,
       const bool is_cs_replica_compat = false,
-      const bool is_delete_insert_table = false,
+      const ObMergeEngineType original_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN,
       const bool is_global_index = false,
       const int64_t micro_block_format_version = ObMicroBlockFormatVersionHelper::DEFAULT_VERSION,
       const bool is_mv_major_refresh_tablet = false,
@@ -667,6 +681,7 @@ public:
   bool is_valid() const { return nullptr != cg_read_info_; }
   void set_read_info(ObCGReadInfo *cg_read_info) { cg_read_info_ = cg_read_info; }
   const ObCGReadInfo *get_read_info() const { return cg_read_info_; }
+  TO_STRING_KV(KP_(cg_read_info));
 private:
   ObCGReadInfo *cg_read_info_;
 

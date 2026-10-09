@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_OB_INDEX_TREE_PREFETCHER_H_
@@ -606,7 +599,8 @@ public:
         && index_info.has_agg_data()
         && (sstable_->is_major_sstable() || iter_param_->enable_inc_skip_index())
         && (index_info.can_blockscan() || iter_param_->is_delete_insert_ || iter_param_->is_append_only_merge_engine())
-        && index_info.is_filter_uncertain();
+        && index_info.is_filter_uncertain()
+        && !(nullptr != access_ctx_->block_row_store_ && access_ctx_->block_row_store_->get_pd_filter_info().contain_rowscn_ && index_info.contain_uncommitted_row());
   }
   virtual bool read_wait()
   {

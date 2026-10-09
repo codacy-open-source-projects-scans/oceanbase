@@ -1,22 +1,19 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_vector_index_aux_table_handler.h"
+#include "share/vector_index/ob_plugin_vector_index_utils.h"
+#include "share/vector_index/ob_plugin_vector_index_adaptor.h"
 #include "share/vector_index/ob_vector_index_util.h"
+#include "storage/access/ob_table_scan_iterator.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_schema_getter_guard.h"
 #include "storage/ddl/ob_direct_load_struct.h"
+#include "storage/lob/ob_lob_manager.h"
 #include "sql/das/ob_das_dml_vec_iter.h"
 
 namespace oceanbase
@@ -70,12 +67,12 @@ int ObVectorIndexDeltaTableHandler::init(
   } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_, inc_index_table_id, delta_table_schema))) {
     LOG_WARN("failed to get simple schema", KR(ret), K(tenant_id_), K(inc_index_table_id));
   } else if (OB_ISNULL(delta_table_schema) || delta_table_schema->is_in_recyclebin()) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("vector index table not exist", K(ret), K(tenant_id_), K(inc_index_table_id));
   } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_, vbitmap_table_id, index_table_schema))) {
     LOG_WARN("failed to get simple schema", KR(ret), K(tenant_id_), K(vbitmap_table_id));
   } else if (OB_ISNULL(index_table_schema) || index_table_schema->is_in_recyclebin()) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("vector index table not exist", K(ret), K(tenant_id_), K(vbitmap_table_id));
   } else if (OB_FAIL(ObPluginVectorIndexUtils::read_local_tablet(ls_id_,
                                 adaptor,
@@ -108,6 +105,42 @@ int ObVectorIndexDeltaTableHandler::init(
   } else {
     inc_table_schema_version_ = delta_table_schema->get_schema_version();
     vbitmap_table_schema_version_ = index_table_schema->get_schema_version();
+  }
+  return ret;
+}
+
+int ObVectorIndexDeltaTableHandler::check_delta_table_empty(bool &is_empty)
+{
+  int ret = OB_SUCCESS;
+  is_empty = false;
+  if (OB_ISNULL(delta_table_iter_) || OB_ISNULL(index_table_iter_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("delta table handler not inited for empty check", K(ret), KP_(delta_table_iter), KP_(index_table_iter));
+  } else {
+    ObTableScanIterator *delta_scan_iter = static_cast<ObTableScanIterator *>(delta_table_iter_);
+    ObTableScanIterator *index_scan_iter = static_cast<ObTableScanIterator *>(index_table_iter_);
+    blocksstable::ObDatumRow *datum_row = nullptr;
+    if (OB_FAIL(delta_scan_iter->get_next_row(datum_row))) {
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;
+        if (OB_FAIL(index_scan_iter->get_next_row(datum_row))) {
+          if (OB_ITER_END == ret) {
+            ret = OB_SUCCESS;
+            is_empty = true;
+            LOG_INFO("[VECTOR INDEX MERGE] delta and index-id tables empty at init read scn",
+                K(is_empty), K_(ls_id), K_(tenant_id), K_(inc_index_tablet_id), K_(vbitmap_tablet_id));
+          } else {
+            LOG_WARN("get_next_row from index-id table failed", K(ret));
+          }
+        } else {
+          LOG_INFO("[VECTOR INDEX MERGE] index-id table has rows, not empty", K_(ls_id), K_(tenant_id));
+        }
+      } else {
+        LOG_WARN("get_next_row from delta table failed", K(ret));
+      }
+    } else {
+      LOG_INFO("[VECTOR INDEX MERGE] delta table has rows, not empty", K_(ls_id), K_(tenant_id));
+    }
   }
   return ret;
 }
@@ -297,7 +330,7 @@ int ObVectorIndexSnapTableHandler::init(
     LOG_WARN("failed to get simple schema", KR(ret), K(tenant_id_), K(data_table_id));
   } else if (OB_ISNULL(data_table_schema) || data_table_schema->is_in_recyclebin()
           || OB_ISNULL(snapshot_table_schema) || snapshot_table_schema->is_in_recyclebin()) {
-    ret = OB_ERR_UNEXPECTED;
+    ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("table schema not exist", K(ret), K(data_table_id), K(snapshot_table_id),
       KPC(snapshot_table_schema), KPC(data_table_schema));
   } else if (OB_FAIL(prepare_snapshot_table_column_info(*data_table_schema, *snapshot_table_schema,
@@ -308,6 +341,7 @@ int ObVectorIndexSnapTableHandler::init(
   } else if (OB_FAIL(table_dml_param_.convert(snapshot_table_schema, snapshot_table_schema->get_schema_version(), dml_column_ids_))) {
     LOG_WARN("failed to convert table dml param.", K(ret));
   } else {
+    snapshot_column_count_ = dml_column_ids_.count() - extra_column_idxs_.count();
     schema_version_ = snapshot_table_schema->get_schema_version();
   }
   return ret;
@@ -427,7 +461,9 @@ int ObVectorIndexSnapTableHandler::prepare_insert_iter(
         datum_row.storage_datums_[vector_data_col_idx_].set_has_lob_header();
         datum_row.storage_datums_[vector_vid_col_idx_].set_null();
         datum_row.storage_datums_[vector_col_idx_].set_null();
-        datum_row.storage_datums_[vector_visible_col_idx_].set_true();
+        if (vector_visible_col_idx_ >= 0 && vector_visible_col_idx_ < datum_row.get_column_count()) {
+          datum_row.storage_datums_[vector_visible_col_idx_].set_true();
+        }
         // set extra column default value
         if (extra_column_idxs_.count() > 0) {
           for (int64_t i = 0; OB_SUCC(ret) && i < extra_column_idxs_.count(); i++) {
@@ -454,6 +490,82 @@ int ObVectorIndexSnapTableHandler::prepare_insert_iter(
         datum_row.reuse();
       }
     } // end for
+  }
+  return ret;
+}
+
+int ObVectorIndexSnapTableHandler::prepare_delete_iter(
+    ObPluginVectorIndexAdaptor *adaptor,
+    transaction::ObTxDesc *tx_desc,
+    ObTableScanIterator *table_scan_iter,
+    storage::ObValueRowIterator &row_iter,
+    transaction::ObTxReadSnapshot &snapshot)
+{
+  int ret = OB_SUCCESS;
+  const int64_t tmp_key_col_idx = 0;
+  const int64_t tmp_data_col_idx = 1;
+  ObLobManager *lob_mngr = MTL(ObLobManager*);
+  ObArenaAllocator tmp_allocator(ObMemAttr(tenant_id_, "VecSnapErase"));
+  const uint64_t timeout_us = ObTimeUtility::current_time() + ObInsertLobColumnHelper::LOB_TX_TIMEOUT;
+  if (OB_ISNULL(lob_mngr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("lob mngr is null", K(ret));
+  } else if (OB_ISNULL(table_scan_iter) || OB_ISNULL(adaptor) || OB_ISNULL(tx_desc)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("get null table scan iter or adaptor or tx_desc", K(ret), KP(table_scan_iter), KP(adaptor), KP(tx_desc));
+  } else if (OB_FAIL(row_iter.init())) {
+    LOG_WARN("failed to init row iter", K(ret));
+  }
+  HEAP_VAR(blocksstable::ObDatumRow, old_row, tenant_id_) {
+    if (OB_SUCC(ret) && OB_FAIL(old_row.init(get_dml_column_cnt()))) {
+      LOG_WARN("fail to init datum row", K(ret), K(old_row));
+    }
+    while (OB_SUCC(ret)) {
+      blocksstable::ObDatumRow *datum_row = nullptr;
+      if (OB_FAIL(table_scan_iter->get_next_row(datum_row))) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("get next row failed.", K(ret));
+        }
+      } else if (OB_ISNULL(datum_row) || !datum_row->is_valid()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get row invalid.", K(ret));
+      } else if (datum_row->get_column_count() < 2) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get row column cnt invalid.", K(ret), K(datum_row->get_column_count()));
+      } else {
+        const ObString data = datum_row->storage_datums_[tmp_data_col_idx].get_string();
+        ObLobLocatorV2 lob(data, data.length() > 0);
+        if (lob.has_inrow_data()) {
+          // delete inrow lob no need to use the lob manager
+        } else {
+          tmp_allocator.reuse();
+          ObLobAccessParam lob_param;
+          lob_param.tx_desc_ = tx_desc;
+          lob_param.tablet_id_ = adaptor->get_data_tablet_id();
+          if (!lob.is_valid()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("invalid src lob locator.", K(ret));
+          } else if (OB_FAIL(lob_mngr->build_lob_param(lob_param, tmp_allocator, CS_TYPE_BINARY, 0, UINT64_MAX, timeout_us, lob))) {
+            LOG_WARN("fail to build lob param.", K(ret));
+          } else if (OB_FAIL(lob_param.snapshot_.assign(snapshot))) {
+            LOG_WARN("fail to assign snapshot", K(ret), K(snapshot));
+          } else if (OB_FAIL(lob_mngr->erase(lob_param))) {
+            LOG_WARN("lob meta row delete failed.", K(ret));
+          }
+        }
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(construct_old_row(datum_row, old_row))) {
+          LOG_WARN("fail to construct old row", K(ret));
+        } else if (OB_FAIL(row_iter.add_row(old_row))) {
+          LOG_WARN("failed to add row to iter", K(ret));
+        } else {
+          old_row.reuse();
+        }
+      }
+    } // end while
+  }
+  if (ret == OB_ITER_END) {
+    ret = OB_SUCCESS;
   }
   return ret;
 }
@@ -510,6 +622,28 @@ int ObVectorIndexSnapTableHandler::do_insert(
     LOG_WARN("failed to insert rows to snapshot table", K(ret), K(ls_id_), K(snapshot_tablet_id_), K(dml_param));
   } else {
     LOG_INFO("insert rows success", K(ls_id_), K(snapshot_tablet_id_), K(affected_rows), KPC(tx_desc));
+  }
+
+  store_ctx_guard.reset();
+  row_iter.reset();
+  return ret;
+}
+
+int ObVectorIndexSnapTableHandler::do_delete(
+    storage::ObValueRowIterator &row_iter, transaction::ObTxDesc *tx_desc,
+    transaction::ObTxReadSnapshot &snapshot, const int64_t timeout)
+{
+  int ret = OB_SUCCESS;
+  int64_t affected_rows = 0;
+  ObAccessService *oas = MTL(ObAccessService *);
+  storage::ObStoreCtxGuard store_ctx_guard;
+  ObDMLBaseParam dml_param;
+  if (OB_FAIL(prepare_dml_param(dml_param, store_ctx_guard, tx_desc, snapshot, timeout))) {
+    LOG_WARN("assign snapshot fail", K(ret), K(snapshot));
+  } else if (OB_FAIL(oas->delete_rows(ls_id_, snapshot_tablet_id_, *tx_desc, dml_param, dml_column_ids_, &row_iter, affected_rows))) {
+    LOG_WARN("failed to delete rows from snapshot table", K(ret), K(ls_id_), K(snapshot_tablet_id_), K(dml_param));
+  } else {
+    LOG_INFO("delete rows success", K(ls_id_), K(snapshot_tablet_id_), K(affected_rows), KPC(tx_desc));
   }
 
   store_ctx_guard.reset();
@@ -659,6 +793,24 @@ int ObVectorIndexSnapTableHandler::insert_segment_data(
   return ret;
 }
 
+int ObVectorIndexSnapTableHandler::delete_segment_data(
+    ObPluginVectorIndexAdaptor *adaptor,
+    ObTableScanIterator *table_scan_iter,
+    transaction::ObTxDesc *tx_desc,
+    transaction::ObTxReadSnapshot &snapshot,
+    const int64_t timeout)
+{
+  int ret = OB_SUCCESS;
+  storage::ObValueRowIterator row_iter;
+  if (OB_FAIL(prepare_delete_iter(adaptor, tx_desc, table_scan_iter, row_iter, snapshot))) {
+    LOG_WARN("fail to prepare delete iter", K(ret));
+  } else if (OB_FAIL(do_delete(row_iter, tx_desc, snapshot, timeout))) {
+    LOG_WARN("do delete fail", K(ret));
+  }
+  return ret;
+}
+
+
 int ObVectorIndexSnapTableHandler::prepare_insert_meta_row(blocksstable::ObDatumRow &row, const ObString &meta_data)
 {
   int ret = OB_SUCCESS;
@@ -671,8 +823,10 @@ int ObVectorIndexSnapTableHandler::prepare_insert_meta_row(blocksstable::ObDatum
     row.storage_datums_[vector_data_col_idx_].set_has_lob_header();
     row.storage_datums_[vector_vid_col_idx_].set_null();
     row.storage_datums_[vector_col_idx_].set_null();
-    row.storage_datums_[vector_visible_col_idx_].set_true();
 
+    if (vector_visible_col_idx_ >= 0 && vector_visible_col_idx_ < row.get_column_count()) {
+      row.storage_datums_[vector_visible_col_idx_].set_true();
+    }
     // set extra column default value
     for (int64_t i = 0; OB_SUCC(ret) && i < extra_column_idxs_.count(); i++) {
       if (extra_column_idxs_.at(i) == vector_key_col_idx_ ||
@@ -732,7 +886,12 @@ int ObVectorIndexSnapTableHandler::construct_old_row(blocksstable::ObDatumRow *i
     output.storage_datums_[vector_data_col_idx_].set_has_lob_header();
     output.storage_datums_[vector_vid_col_idx_].set_null();
     output.storage_datums_[vector_col_idx_].set_null();
-    output.storage_datums_[vector_visible_col_idx_].shallow_copy_from_datum(input->storage_datums_[in_visible_col_idx]);
+    if (vector_visible_col_idx_ >= 0
+        && vector_visible_col_idx_ < output.get_column_count()
+        && in_visible_col_idx < input->get_column_count()) {
+      output.storage_datums_[vector_visible_col_idx_].set_bool(
+          input->storage_datums_[in_visible_col_idx].get_bool());
+    }
     LOG_INFO("construct old row", K(output), KPC(input));
     // set extra column default value
     for (int64_t i = 0; OB_SUCC(ret) && i < extra_column_idxs_.count(); i++) {
@@ -858,7 +1017,7 @@ int ObVectorIndexSnapTableHandler::scan_and_lock_meta_row(
   } else if (OB_ISNULL(datum_row) || !datum_row->is_valid()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get row invalid.", K(ret));
-  } else if (datum_row->get_column_count() < 3) {
+  } else if (datum_row->get_column_count() < 2) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get row column cnt invalid.", K(ret), K(datum_row->get_column_count()));
   } else if (!datum_row->storage_datums_[vector_key_col_idx_].get_string().suffix_match("_meta_data")) {

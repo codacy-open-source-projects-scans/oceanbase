@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SHARE
 
@@ -22,7 +15,6 @@ namespace obrpc
 bool ObMViewCompleteRefreshArg::is_valid() const
 {
   bool bret = OB_INVALID_TENANT_ID != exec_tenant_id_ &&
-              !based_schema_object_infos_.empty() &&
               OB_INVALID_TENANT_ID != tenant_id_ &&
               OB_INVALID_ID != table_id_;
   for (int64_t i = 0; bret && i < based_schema_object_infos_.count(); ++i) {
@@ -226,6 +218,7 @@ void ObMViewRefreshInfo::reset()
   select_sql_.reset();
   use_direct_load_for_complete_refresh_ = true;
   direct_dep_cnt_ = 0;
+  need_gather_stats_info_ = false;
 }
 
 int ObMViewRefreshInfo::assign(const ObMViewRefreshInfo &other)
@@ -241,6 +234,7 @@ int ObMViewRefreshInfo::assign(const ObMViewRefreshInfo &other)
     select_sql_ = other.select_sql_;
     use_direct_load_for_complete_refresh_ = other.use_direct_load_for_complete_refresh_;
     direct_dep_cnt_ = other.direct_dep_cnt_;
+    need_gather_stats_info_ = other.need_gather_stats_info_;
   }
   return ret;
 }
@@ -254,7 +248,8 @@ OB_SERIALIZE_MEMBER(ObMViewRefreshInfo,
                     mview_target_data_sync_scn_,
                     select_sql_,
                     use_direct_load_for_complete_refresh_,
-                    direct_dep_cnt_);
+                    direct_dep_cnt_,
+                    need_gather_stats_info_);
 
 OB_SERIALIZE_MEMBER(ObMVRefreshInfo,
     refresh_method_,
@@ -264,7 +259,8 @@ OB_SERIALIZE_MEMBER(ObMVRefreshInfo,
     exec_env_,
     parallel_,
     refresh_dop_,
-    nested_refresh_mode_);
+    nested_refresh_mode_,
+    compat_version_);
 
 OB_SERIALIZE_MEMBER(ObMVRequiredColumnsInfo,
                     base_table_id_,
@@ -305,6 +301,8 @@ bool ObAlterMViewArg::is_valid() const
     is_valid = false;
   } else if (is_alter_nested_refresh_mode_ && ObMVNestedRefreshMode::MAX <= nested_refresh_mode_) {
     is_valid = false;
+  } else if (is_alter_table_dop_ && table_dop_ <= 0) {
+    is_valid = false;
   }
   return is_valid;
 }
@@ -320,12 +318,18 @@ void ObAlterMViewArg::reset()
   refresh_method_ = ObMVRefreshMethod::MAX;
   is_alter_refresh_dop_ = false;
   refresh_dop_ = 0;
+  is_alter_table_dop_ = false;
+  table_dop_ = 0;
   is_alter_refresh_start_ = false;
   start_time_.reset();
   is_alter_refresh_next_ = false;
   next_time_expr_.reset();
   is_alter_nested_refresh_mode_ = false;
   nested_refresh_mode_ = ObMVNestedRefreshMode::MAX;
+  is_alter_table_dop_ = false;
+  table_dop_ = 0;
+  is_alter_compat_version_ = false;
+  compat_version_ = 0;
 }
 
 int ObAlterMViewArg::assign(const ObAlterMViewArg &other)
@@ -341,12 +345,18 @@ int ObAlterMViewArg::assign(const ObAlterMViewArg &other)
     refresh_method_ = other.refresh_method_;
     is_alter_refresh_dop_ = other.is_alter_refresh_dop_;
     refresh_dop_ = other.refresh_dop_;
+    is_alter_table_dop_ = other.is_alter_table_dop_;
+    table_dop_ = other.table_dop_;
     is_alter_refresh_start_ = other.is_alter_refresh_start_;
     start_time_ = other.start_time_;
     is_alter_refresh_next_ = other.is_alter_refresh_next_;
     next_time_expr_ = other.next_time_expr_;
     is_alter_nested_refresh_mode_ = other.is_alter_nested_refresh_mode_;
     nested_refresh_mode_ = other.nested_refresh_mode_;
+    is_alter_table_dop_ = other.is_alter_table_dop_;
+    table_dop_ = other.table_dop_;
+    is_alter_compat_version_ = other.is_alter_compat_version_;
+    compat_version_ = other.compat_version_;
   }
   return ret;
 }
@@ -366,7 +376,11 @@ OB_SERIALIZE_MEMBER(ObAlterMViewArg,
                     is_alter_refresh_next_,
                     next_time_expr_,
                     is_alter_nested_refresh_mode_,
-                    nested_refresh_mode_);
+                    nested_refresh_mode_,
+                    is_alter_table_dop_,
+                    table_dop_,
+                    is_alter_compat_version_,
+                    compat_version_);
 
 bool ObAlterMLogArg::is_valid() const
 {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1106,6 +1099,12 @@ int ObSortOpImpl::preprocess_dump(bool &dumped)
             dumped = need_dump();
           }
         } else { }
+      }
+      if (OB_SUCC(ret) && dumped && 0 == get_rows_count()) {
+        dumped = false; //no data to dump, try to add a batch of data directly
+        LOG_TRACE("Insufficient memory, unable to store a batch of data",
+                  K(mem_context_->used()), K(get_memory_limit()),
+                  K(profile_.get_cache_size()), K(profile_.get_expect_size()));
       }
       LOG_INFO("trace sort need dump", K(dumped), K(mem_context_->used()),
         K(get_ht_bucket_size()), K(get_memory_limit()),
@@ -3234,6 +3233,7 @@ int ObPrefixSortImpl::fetch_rows_batch(const common::ObIArray<ObExpr *> &all_exp
       }
       selector_size_ = 0;
       int64_t new_prefix = -1;
+      int64_t first_prefix = -1;
       for (int64_t i = 0; OB_SUCC(ret) && i < brs_->size_; i++) {
         if (brs_->skip_->at(i)) {
           continue;
@@ -3243,7 +3243,12 @@ int ObPrefixSortImpl::fetch_rows_batch(const common::ObIArray<ObExpr *> &all_exp
           bool is_same = false;
           if (NULL != prev_row_ && OB_FAIL(is_same_prefix(prev_row_, all_exprs, i, is_same))) {
             LOG_WARN("check same prefix failed", K(ret));
-          } else if (NULL == prev_row_ && OB_FAIL(is_same_prefix(all_exprs, 0, i, is_same))) {
+          } else if (NULL == prev_row_ && first_prefix < 0) {
+            first_prefix = i;
+            is_same = true;
+            selector_[selector_size_++] = i;
+          } else if (NULL == prev_row_
+                     && OB_FAIL(is_same_prefix(all_exprs, first_prefix, i, is_same))) {
             LOG_WARN("check same prefix failed", K(ret));
           } else if (is_same) {
             selector_[selector_size_++] = i;

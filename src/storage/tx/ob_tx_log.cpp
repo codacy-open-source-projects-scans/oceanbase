@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/tx/ob_tx_log.h"
@@ -40,7 +33,8 @@ ObTxLogTypeChecker::need_replay_barrier(const ObTxLogType log_type,
         || data_source_type == ObTxDataSourceType::MV_NOTICE_SAFE
         || data_source_type == ObTxDataSourceType::UNBIND_LOB_TABLET
         || data_source_type == ObTxDataSourceType::DDL_COMPLETE_MDS
-        || data_source_type == ObTxDataSourceType::TABLET_SPLIT_INFO) {
+        || data_source_type == ObTxDataSourceType::TABLET_SPLIT_INFO
+        || data_source_type == ObTxDataSourceType::TABLET_RANDOM) {
       barrier_flag = logservice::ObReplayBarrierType::PRE_BARRIER;
 
     } else if (data_source_type == ObTxDataSourceType::FINISH_TRANSFER_IN
@@ -909,6 +903,9 @@ int ObTxRedoLog::format_row_data_(const memtable::ObRowData &row_data, ObAdminMu
   if (row_data.size_ > 0) {
     if (OB_FAIL(row_reader.read_row(row_data.data_, row_data.size_, nullptr, datum_row))) {
       CLOG_LOG(WARN, "Failed to read datum row", K(ret));
+    } else {
+      arg.writer_ptr_->dump_key("MergeEngineType");
+      arg.writer_ptr_->dump_string(ObMergeEngineStoreFormat::get_merge_engine_type_name(datum_row.merge_engine_type_));
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < datum_row.get_column_count(); i++) {
       int64_t pos = 0;

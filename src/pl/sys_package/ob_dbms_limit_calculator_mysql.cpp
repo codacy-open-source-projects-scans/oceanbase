@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -525,7 +518,8 @@ int ObDBMSLimitCalculator::parse_dict_like_args_(
   char key[50] = "";
   int64_t value = 0;
   // parse the argument like: "ls: 1, tablet: 2, xxxx"
-  while (OB_SUCC(ret) && sscanf(ptr, "%[^:]: %ld", key, &value) == 2) {
+  // Use width specifier 49 to prevent stack buffer overflow of key[50].
+  while (OB_SUCC(ret) && sscanf(ptr, "%49[^:]: %ld", key, &value) == 2) {
     int64_t type = get_logic_res_type_by_name(key);
     if (!is_valid_logic_res_type(type)) {
       ret = OB_INVALID_ARGUMENT;

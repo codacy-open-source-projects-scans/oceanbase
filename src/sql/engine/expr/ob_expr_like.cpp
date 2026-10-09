@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -399,20 +392,22 @@ int ObExprLike::set_instr_info(ObIAllocator *exec_allocator,
       }//end deduce instrmode
     }//end else
   }
-#if OB_USE_MULTITARGET_CODE
+#if OB_USE_MULTITARGET_CODE || OB_ARM_USE_MULTITARGET_CODE
   // optimize for special patterns
   if (OB_SUCC(ret)) {
-    if (1 == instr_info.instr_cnt_ && common::is_arch_supported(ObTargetArch::AVX2)) {
-        void *buf = nullptr;
-        if (OB_ISNULL(buf = exec_allocator->alloc(sizeof(StringSearcher)))) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("failed to allocator memory", K(ret));
-        } else if (FALSE_IT(like_ctx.string_searcher_ = new (buf) StringSearcher())) {
-          // do nothing
-        } else if (OB_FAIL(reinterpret_cast<StringSearcher *>(like_ctx.string_searcher_)->init(
-            instr_info.instr_starts_[0], instr_info.instr_lengths_[0]))) {
-          LOG_WARN("failed to init string_searcher_", K(ret));
-        }
+    if (1 == instr_info.instr_cnt_
+        && (common::is_arch_supported(ObTargetArch::AVX2)
+            || common::is_arch_supported(ObTargetArch::NEON))) {
+      void *buf = nullptr;
+      if (OB_ISNULL(buf = exec_allocator->alloc(sizeof(StringSearcher)))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocator memory", K(ret));
+      } else if (FALSE_IT(like_ctx.string_searcher_ = new (buf) StringSearcher())) {
+        // do nothing
+      } else if (OB_FAIL(reinterpret_cast<StringSearcher *>(like_ctx.string_searcher_)
+                           ->init(instr_info.instr_starts_[0], instr_info.instr_lengths_[0]))) {
+        LOG_WARN("failed to init string_searcher_", K(ret));
+      }
     }
   }
 #endif
@@ -817,6 +812,13 @@ int64_t ObExprLike::match_with_instr_mode(const ObString &text,
   } else {
     res = match_with_instr_mode<percent_sign_start, percent_sign_end>(text, instr_info);
   }
+#elif OB_ARM_USE_MULTITARGET_CODE
+  // Same guard as x86: SIMD searcher is only created when instr_cnt_ == 1 (see set_instr_info).
+  if (1 == instr_info.instr_cnt_ && common::is_arch_supported(ObTargetArch::NEON)) {
+    res = match_with_instr_mode_by_simd<percent_sign_start, percent_sign_end>(text, string_searcher);
+  } else {
+    res = match_with_instr_mode<percent_sign_start, percent_sign_end>(text, instr_info);
+  }
 #else
   res = match_with_instr_mode<percent_sign_start, percent_sign_end>(text, instr_info);
 #endif
@@ -879,7 +881,7 @@ OB_INLINE int64_t ObExprLike::match_with_instr_mode_by_simd(const ObString &text
                                                             void *string_searcher)
 {
   bool res = false;
-#if OB_USE_MULTITARGET_CODE
+#if OB_USE_MULTITARGET_CODE || OB_ARM_USE_MULTITARGET_CODE
   int ret = OB_SUCCESS;
   const char *text_ptr = text.ptr();
   uint32_t text_len = text.length();
@@ -1406,18 +1408,18 @@ int ObExprLike::eval_like_expr_vector_only_text_vectorized(VECTOR_EVAL_FUNC_ARG_
   } else {
     VectorFormat text_format = expr.args_[0]->get_format(ctx);
     VectorFormat res_format = expr.get_format(ctx);
-    if (VEC_DISCRETE == text_format && VEC_DISCRETE == res_format) {
-      ret = vector_like<StrDiscVec, StrDiscVec>(VECTOR_EVAL_FUNC_ARG_LIST);
-    } else if (VEC_UNIFORM == text_format && VEC_DISCRETE == res_format) {
-      ret = vector_like<StrUniVec, StrDiscVec>(VECTOR_EVAL_FUNC_ARG_LIST);
-    } else if (VEC_CONTINUOUS == text_format && VEC_DISCRETE == res_format) {
-      ret = vector_like<StrContVec, StrDiscVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+    if (VEC_DISCRETE == text_format && VEC_FIXED == res_format) {
+      ret = vector_like<StrDiscVec, IntegerFixedVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+    } else if (VEC_UNIFORM == text_format && VEC_FIXED == res_format) {
+      ret = vector_like<StrUniVec, IntegerFixedVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+    } else if (VEC_CONTINUOUS == text_format && VEC_FIXED == res_format) {
+      ret = vector_like<StrContVec, IntegerFixedVec>(VECTOR_EVAL_FUNC_ARG_LIST);
     } else if (VEC_DISCRETE == text_format && VEC_UNIFORM == res_format) {
-      ret = vector_like<StrDiscVec, StrUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+      ret = vector_like<StrDiscVec, IntegerUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
     } else if (VEC_UNIFORM == text_format && VEC_UNIFORM == res_format) {
-      ret = vector_like<StrUniVec, StrUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+      ret = vector_like<StrUniVec, IntegerUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
     } else if (VEC_CONTINUOUS == text_format && VEC_UNIFORM == res_format) {
-      ret = vector_like<StrContVec, StrUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
+      ret = vector_like<StrContVec, IntegerUniVec>(VECTOR_EVAL_FUNC_ARG_LIST);
     } else {
       ret = vector_like<ObVectorBase, ObVectorBase>(VECTOR_EVAL_FUNC_ARG_LIST);
     }
@@ -1430,8 +1432,10 @@ int ObExprLike::eval_like_expr_vector_only_text_vectorized(VECTOR_EVAL_FUNC_ARG_
 
 DEF_SET_LOCAL_SESSION_VARS(ObExprLike, raw_expr) {
   int ret = OB_SUCCESS;
-  SET_LOCAL_SYSVAR_CAPACITY(1);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  if (is_mysql_mode()) {
+    SET_LOCAL_SYSVAR_CAPACITY(1);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  }
   return ret;
 }
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/ddl/ob_lob_macro_block_writer.h"
@@ -57,7 +50,8 @@ int ObLobMacroBlockWriter::init(const ObWriteMacroParam &param,
   } else if (OB_UNLIKELY(
         !param.is_valid()
         || !data_tablet_id.is_valid()
-        || !start_sequence.is_valid())) {
+        || !start_sequence.is_valid()
+        || OB_ISNULL(param.ddl_table_schema_.lob_meta_storage_schema_))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(param), K(data_tablet_id), K(start_sequence));
   } else {
@@ -84,7 +78,8 @@ int ObLobMacroBlockWriter::init(const ObWriteMacroParam &param,
 
     // init lob meta row
     if (OB_SUCC(ret)) {
-      if (OB_FAIL(lob_meta_row_.init(ObLobMetaUtil::LOB_META_COLUMN_CNT + ObLobMetaUtil::SKIP_INVALID_COLUMN))) {
+      const bool with_ttl = param.ddl_table_schema_.table_item_.is_user_compaction_ttl_table();
+      if (OB_FAIL(lob_meta_row_.init(ObLobMetaUtil::get_lob_meta_column_cnt(with_ttl) + ObLobMetaUtil::SKIP_INVALID_COLUMN))) {
         LOG_WARN("init lob meta row failed", K(ret));
       } else {
         lob_meta_row_.storage_datums_[ObLobMetaUtil::SEQ_ID_COL_ID + 1].set_int(-param.snapshot_version_);
@@ -96,6 +91,7 @@ int ObLobMacroBlockWriter::init(const ObWriteMacroParam &param,
         lob_meta_row_.mvcc_row_flag_.set_last_multi_version_row(true);
         lob_meta_row_.mvcc_row_flag_.set_uncommitted_row(
             param_.tx_info_.trans_id_.is_valid() && is_incremental_minor_direct_load(param_.direct_load_type_));
+        lob_meta_row_.merge_engine_type_ = param.ddl_table_schema_.lob_meta_storage_schema_->get_merge_engine_type();
       }
     }
 
@@ -106,7 +102,7 @@ int ObLobMacroBlockWriter::init(const ObWriteMacroParam &param,
   return ret;
 }
 
-int ObLobMacroBlockWriter::write(const ObColumnSchemaItem &column_schema, ObIAllocator &row_allocator, blocksstable::ObStorageDatum &datum)
+int ObLobMacroBlockWriter::write(const ObColumnSchemaItem &column_schema, ObIAllocator &row_allocator, blocksstable::ObStorageDatum &datum, const blocksstable::ObStorageDatum *ttl_datum)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited_)) {
@@ -136,6 +132,8 @@ int ObLobMacroBlockWriter::write(const ObColumnSchemaItem &column_schema, ObIAll
                                                                   timeout_ts,
                                                                   true/*has_lob_header*/,
                                                                   param_.ddl_table_schema_.src_tenant_id_,
+                                                                  ttl_datum,
+                                                                  param_.ddl_table_schema_.table_item_.user_ttl_column_type_,
                                                                   meta_write_iter_))) {
       LOG_WARN("insert lob column failed", K(ret), K(param_));
     }

@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_ha_macro_block_writer.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
+#include "observer/ob_server_event_history_table_operator.h"
 
 namespace oceanbase
 {
@@ -32,7 +26,8 @@ ObStorageHAMacroBlockWriter::ObStorageHAMacroBlockWriter()
    reader_(NULL),
    index_block_rebuilder_(nullptr),
    macro_checker_(),
-   extra_info_(nullptr)
+   extra_info_(nullptr),
+   small_sstable_write_opt_()
 {
 }
 
@@ -42,6 +37,7 @@ int ObStorageHAMacroBlockWriter::init(
     const common::ObTabletID &tablet_id,
     const ObDagId &dag_id,
     const ObMigrationSSTableParam *sstable_param,
+    const ObStorageHASmallSSTableWriteOpt &small_sstable_write_opt,
     ObICopyMacroBlockReader *reader,
     ObIndexBlockRebuilder *index_block_rebuilder,
     ObCopyTabletRecordExtraInfo *extra_info)
@@ -57,11 +53,12 @@ int ObStorageHAMacroBlockWriter::init(
             || OB_ISNULL(sstable_param)
             || OB_ISNULL(reader)
             || OB_ISNULL(index_block_rebuilder)
-            || OB_ISNULL(extra_info))
+            || OB_ISNULL(extra_info)
+            || !small_sstable_write_opt.is_valid())
   {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), K(tenant_id), K(tablet_id), KP(sstable_param),
-        KP(reader), KP(index_block_rebuilder), KP(extra_info));
+        KP(reader), KP(index_block_rebuilder), KP(extra_info), K(small_sstable_write_opt));
   } else if (OB_FAIL(check_sstable_param_for_init_(sstable_param))) {
     LOG_WARN("failed to check sstable param", K(ret));
   } else {
@@ -73,6 +70,7 @@ int ObStorageHAMacroBlockWriter::init(
     reader_ = reader;
     index_block_rebuilder_ = index_block_rebuilder;
     extra_info_ = extra_info;
+    small_sstable_write_opt_ = small_sstable_write_opt;
     is_inited_ = true;
   }
   return ret;
@@ -151,6 +149,8 @@ int ObStorageHAMacroBlockWriter::process(
   bool is_cancel = false;
   int64_t data_checksum = 0;
   int32_t result = OB_SUCCESS;
+  bool is_ha_status_failed = false;
+  int64_t last_check_ha_status_ts = 0;
 
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
@@ -170,6 +170,18 @@ int ObStorageHAMacroBlockWriter::process(
         ret = OB_CANCELED;
         STORAGE_LOG(WARN, "copy task has been canceled, skip remaining macro blocks",
           K(ret), K_(dag_id), "finished_macro_block_count", copied_ctx.macro_block_list_.count());
+        break;
+      } else if (OB_FAIL(check_ha_status_failed_(ha_dag_net_ctx, last_check_ha_status_ts, is_ha_status_failed))) {
+        STORAGE_LOG(WARN, "failed to check ls ha status", K(ret), K_(ls_id));
+      } else if (is_ha_status_failed) {
+        ret = OB_CANCELED;
+        if (OB_SUCCESS != (tmp_ret = ha_dag_net_ctx.set_result(ret, false/*need_retry*/))) {
+          LOG_WARN("failed to set dag net result", K(tmp_ret), K(ha_dag_net_ctx));
+        }
+        SERVER_EVENT_ADD("storage_ha", "ha_dag_perceive_failed",
+            "tenant_id", tenant_id_, "ls_id", ls_id_.id(), "tablet_id", tablet_id_.id());
+        STORAGE_LOG(WARN, "ls ha status is failed, stop copy macro block",
+          K(ret), K_(ls_id), K_(dag_id), "finished_macro_block_count", copied_ctx.macro_block_list_.count());
         break;
       } else if (OB_FAIL(ObStorageHAUtils::check_disk_space())) {
         STORAGE_LOG(WARN, "failed to check disk space", K(ret));
@@ -270,6 +282,39 @@ int ObStorageHAMacroBlockWriter::process(
   return ret;
 }
 
+int ObStorageHAMacroBlockWriter::check_ha_status_failed_(
+    ObIHADagNetCtx &ha_dag_net_ctx,
+    int64_t &last_check_ts,
+    bool &is_failed)
+{
+  int ret = OB_SUCCESS;
+  const int64_t CHECK_HA_STATUS_INTERVAL_US = 1 * 1000 * 1000L; // 1s
+  const int64_t cur_ts = ObTimeUtility::current_time();
+  is_failed = false;
+  if (ha_dag_net_ctx.is_failed()) {
+    is_failed = true;
+  } else if (cur_ts - last_check_ts < CHECK_HA_STATUS_INTERVAL_US) {
+  } else if (FALSE_IT(last_check_ts = cur_ts)) {
+  } else if (OB_FAIL(ObStorageHADagUtils::check_ls_ha_status_failed(ls_id_, is_failed))) {
+    LOG_WARN("failed to check ls ha status", K(ret), K_(ls_id));
+  }
+  return ret;
+}
+
+bool ObStorageHAMacroBlockWriter::check_can_flush_small_sstable(const blocksstable::ObBufferReader &data) const
+{
+  const int64_t align_macro_size = data.upper_align_length();
+  const ObSSTableIndexBuilder *sstable_index_builder = OB_ISNULL(index_block_rebuilder_)
+                                                      ? nullptr
+                                                      : index_block_rebuilder_->get_sstable_index_builder();
+  return 1 == small_sstable_write_opt_.range_macro_block_cnt_
+         && align_macro_size < blocksstable::SMALL_SSTABLE_THRESHOLD
+         && OB_NOT_NULL(sstable_index_builder)
+         && ObSSTableIndexBuilder::satisfies_small_sstable_pre_requisites(sstable_index_builder->get_optimization_mode(),
+                                                                          small_sstable_write_opt_.copy_task_concurrent_cnt_,
+                                                                          nullptr);
+}
+
 int ObStorageHAMacroBlockWriter::write_macro_block_(
     const ObStorageObjectOpt &opt,
     blocksstable::ObStorageObjectWriteInfo &write_info,
@@ -278,21 +323,74 @@ int ObStorageHAMacroBlockWriter::write_macro_block_(
     blocksstable::ObBufferReader &data)
 {
   int ret = OB_SUCCESS;
+  MacroBlockId macro_id;
   if (OB_UNLIKELY(!is_inited_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("not inited", K(ret));
-  } else {
-    write_info.buffer_ = data.data();
-    write_info.size_ = data.upper_align_length();
-    write_handle.reset();
-
-    if (OB_FAIL(ObObjectManager::async_write_object(opt, write_info, write_handle))) {
-      LOG_WARN("fail to async write block", K(ret), K(write_info), K(write_handle));
-    } else if (OB_FAIL(copied_ctx.add_macro_block_id(write_handle.get_macro_id()))) {
-      LOG_WARN("fail to add macro id", K(ret), "macro id", write_handle.get_macro_id());
-    } else if (OB_FAIL(append_macro_row_(data.data(), data.capacity(), write_handle.get_macro_id()))) {
-      LOG_WARN("failed to append macro row", K(ret), K(write_handle));
+  } else if (check_can_flush_small_sstable(data)) {
+    if (OB_FAIL(flush_small_sstable_macro_block_(data, macro_id, copied_ctx))) {
+      LOG_WARN("fail to flush small sstable macro block", K(ret), K(opt), K(write_info), K(write_handle), K(data));
+    } else {
+      FLOG_INFO("successfully write small sstable in physical copy task", K(ret));
     }
+  } else if (OB_FAIL(flush_normal_macro_block_(opt, write_info, write_handle, data, macro_id, copied_ctx))) {
+    LOG_WARN("fail to flush normal macro block", K(ret), K(opt), K(write_info), K(write_handle), K(data));
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(append_macro_row_(data.data(), data.capacity(), macro_id))) {
+      LOG_WARN("failed to append macro row", K(ret), K(macro_id));
+    }
+  }
+  return ret;
+}
+
+int ObStorageHAMacroBlockWriter::flush_small_sstable_macro_block_(
+    blocksstable::ObBufferReader &data,
+    MacroBlockId &macro_id,
+    blocksstable::ObMacroBlocksWriteCtx &copied_ctx)
+{
+  int ret = OB_SUCCESS;
+  if (copied_ctx.get_macro_block_count() > 0) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected non-empty macro ctx before small-sstable flush", K(ret),
+             K(copied_ctx.get_macro_block_count()), K(small_sstable_write_opt_.range_macro_block_cnt_));
+  } else {
+    ObSharedMacroBlockMgr *shared_block_mgr = MTL(ObSharedMacroBlockMgr*);
+    const int64_t data_buf_size = data.upper_align_length();
+    ObBlockInfo block_info;
+    if (OB_FAIL(shared_block_mgr->write_block(data.data(), data_buf_size, block_info, copied_ctx))) {
+      LOG_WARN("fail to write small sstable through shared_block_mgr", K(ret));
+    } else if (OB_UNLIKELY(!block_info.is_valid())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("successfully write small sstable data macro block, but block info is invalid", K(ret), K(block_info));
+    } else if (OB_FAIL(index_block_rebuilder_->set_block_info(block_info))) {
+      LOG_WARN("fail to set small sstable block info", K(ret), K(block_info));
+    } else {
+      macro_id = block_info.macro_id_;
+    }
+  }
+  return ret;
+}
+
+int ObStorageHAMacroBlockWriter::flush_normal_macro_block_(
+    const ObStorageObjectOpt &opt,
+    blocksstable::ObStorageObjectWriteInfo &write_info,
+    blocksstable::ObStorageObjectHandle &write_handle,
+    blocksstable::ObBufferReader &data,
+    MacroBlockId &macro_id,
+    blocksstable::ObMacroBlocksWriteCtx &copied_ctx)
+{
+  int ret = OB_SUCCESS;
+  write_info.buffer_ = data.data();
+  write_info.size_ = data.upper_align_length();
+  write_handle.reset();
+
+  if (OB_FAIL(ObObjectManager::async_write_object(opt, write_info, write_handle))) {
+    LOG_WARN("fail to async write block", K(ret), K(write_info), K(write_handle));
+  } else if (OB_FAIL(copied_ctx.add_macro_block_id(write_handle.get_macro_id()))) {
+    LOG_WARN("fail to add macro id", K(ret), "macro id", write_handle.get_macro_id());
+  } else {
+    macro_id = write_handle.get_macro_id();
   }
   return ret;
 }
@@ -353,62 +451,6 @@ int ObStorageHALocalMacroBlockWriter::append_macro_row_(
   return ret;
 }
 
-
-#ifdef OB_BUILD_SHARED_STORAGE
-// ObStorageHASharedMacroBlockWriter
-int ObStorageHASharedMacroBlockWriter::check_sstable_param_for_init_(const ObMigrationSSTableParam *sstable_param) const
-{
-  int ret = OB_SUCCESS;
-  if (!sstable_param->basic_meta_.table_shared_flag_.is_shared_macro_blocks()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("sstable has no shared macro blocks or is shared backup table", K(ret), KPC(sstable_param));
-  }
-  return ret;
-}
-
-int ObStorageHASharedMacroBlockWriter::set_macro_write_info_(
-    const MacroBlockId &macro_block_id,
-    blocksstable::ObStorageObjectWriteInfo &write_info,
-    blocksstable::ObStorageObjectOpt &opt)
-{
-  int ret = OB_SUCCESS;
-  const ObTabletID tablet_id(macro_block_id.second_id());
-  if (!macro_block_id.is_valid() || !macro_block_id.is_id_mode_share()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("prepare shared macro write info get invalid argument", K(ret), K(macro_block_id));
-  } else if (tablet_id_ != tablet_id) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("macro tablet id in shared storage is not match", K(ret), K(macro_block_id), K(tablet_id), K(tablet_id_));
-  } else {
-    write_info.io_desc_.set_wait_event(ObWaitEventIds::DB_FILE_MIGRATE_WRITE);
-    write_info.io_desc_.set_sys_module_id(ObIOModule::SHARED_BLOCK_RW_IO);
-    write_info.io_desc_.set_unsealed();
-    write_info.mtl_tenant_id_ = MTL_ID();
-    write_info.offset_ = 0;
-    write_info.set_ls_epoch_id(0);
-    opt.set_ss_share_data_macro_object_opt(macro_block_id.second_id(), macro_block_id.third_id(), macro_block_id.column_group_id());
-  }
-  return ret;
-}
-
-int ObStorageHASharedMacroBlockWriter::append_macro_row_(
-    const char *buf,
-    const int64_t size,
-    const blocksstable::MacroBlockId &macro_id)
-{
-  int ret = OB_SUCCESS;
-  if (sstable_param_->is_shared_sstable()) {
-    if (OB_FAIL(index_block_rebuilder_->append_macro_row(buf, size, macro_id, -1 /*absolute_row_offset*/))) {
-      LOG_WARN("failed to append macro row", K(ret), K(macro_id));
-    }
-  } else {
-    // sstable which only shared macro blocks need not rebuild index.
-  }
-
-  return ret;
-}
-
-#endif
 
 } // storage
 } // oceanbase

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -868,9 +861,9 @@ int ObSrvDeliver::deliver_mysql_request(ObRequest &req)
       }
       if (OB_FAIL(ret)) {
             // do nothing
-      } else if (tenant->has_stopped()) {
+      } else if (tenant->has_stopped() && tenant->is_kill_session_success()) {
         ret = OB_TENANT_NOT_IN_SERVER;
-        LOG_WARN("tenant is stopped", K(ret), K(tenant->id()));
+        LOG_WARN("tenant is stopped and kill session success", K(ret), K(tenant->id()));
         if (OB_NOT_NULL(conn->get_diagnostic_info())) {
           conn->get_diagnostic_info()->end_wait_event(ObWaitEventIds::NETWORK_QUEUE_WAIT, false);
           req.reset_diagnostic_info();

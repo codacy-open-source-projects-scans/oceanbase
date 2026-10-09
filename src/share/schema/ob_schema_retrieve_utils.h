@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SCHEMA_OB_SCHEMA_RETRIEVE_UTILS_H_
@@ -25,6 +18,7 @@
 #include "observer/ob_server_struct.h"
 #include "observer/omt/ob_tenant_timezone_mgr.h"
 #include "rootserver/ob_locality_util.h"
+#include "share/schema/ob_java_policy_mgr.h"
 
 namespace oceanbase
 {
@@ -356,12 +350,6 @@ public:
                                  ObTableSchema *&table_schema);
 
   template<typename T>
-  static int retrieve_column_group_schema(const uint64_t tenant_id,
-                                          const bool check_deleted,
-                                          T &result,
-                                          ObTableSchema *&table_schema);
-
-  template<typename T>
   static int retrieve_column_group_mapping(const uint64_t tenant_id,
                                            const bool check_deleted,
                                            T &result,
@@ -468,6 +456,8 @@ public:
   RETRIEVE_SCHEMA_FUNC_DECLARE(catalog);
   RETRIEVE_SCHEMA_FUNC_DECLARE(ccl_rule);
   RETRIEVE_SCHEMA_FUNC_DECLARE(ai_model);
+  template <typename T>
+  static int retrieve_java_policy_schema(const uint64_t tenant_id, T &result, common::ObIArray<ObSimpleJavaPolicySchema> &schema_array);
 
   template <typename T>
   static int retrieve_external_resource_schema(const uint64_t tenant_id, T &result, ObIArray<ObSimpleExternalResourceSchema> &schema_array);
@@ -549,6 +539,7 @@ public:
   FILL_SCHEMA_FUNC_DECLARE(ccl_rule, ObSimpleCCLRuleSchema);
   FILL_SCHEMA_FUNC_DECLARE(sensitive_rule, ObSensitiveRuleSchema);
   FILL_SCHEMA_FUNC_DECLARE(sensitive_column, ObSensitiveColumnSchema);
+  FILL_SCHEMA_FUNC_DECLARE(java_policy, ObSimpleJavaPolicySchema);
 
   //for full schema
   template<typename T>

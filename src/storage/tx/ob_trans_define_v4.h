@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_TRANSACTION_OB_TRANS_DEFINE_V4_
@@ -768,11 +761,15 @@ private:
   int set_commit_cb(ObITxCallback *cb);
   bool execute_commit_cb();
 private:
-  int update_part_(ObTxPart &p, const bool append = true, const bool check_only_if_exist = false);
+  int update_part_(ObTxPart &p,
+                   const bool append = true,
+                   const bool check_only_if_exist = false,
+                   const bool is_for_px = false);
   int add_conflict_info_(const storage::ObRowConflictInfo &conflict_info);
   int merge_conflict_info_array_(const ObIArray<storage::ObRowConflictInfo> &conflict_info_array,
                                  const ObIArray<ObTransIDAndAddr> &conflict_info_array_old);
   int update_parts_(const ObTxPartList &list);
+  int update_parts_for_px_(const ObTxPartList &list);
   void post_rb_savepoint_(ObTxPartRefList &parts, const ObTxSEQ &savepoint);
   void implicit_start_tx_();
   bool acq_commit_cb_lock_if_need_();
@@ -835,7 +832,7 @@ public:
   static int branch_id_offset() { return MAX_CALLBACK_LIST_COUNT; }
   static bool is_alloced_branch_id(int branch_id) { return branch_id >= branch_id_offset(); }
   int alloc_branch_id(const int64_t count, int16_t &branch_id);
-  void reset_conflict_info_array() { conflict_info_array_.reset(); }
+  void reset_conflict_info_array();
   int fetch_conflict_info_array(ObIArray<storage::ObRowConflictInfo> &array);
   int fetch_conflict_txs_array(ObIArray<ObTransIDAndAddr> &array);
   ObSArray<storage::ObRowConflictInfo> &get_conflict_info_array() { return conflict_info_array_; }
@@ -939,7 +936,8 @@ public:
   ObITxCallback *get_end_tx_cb() { return commit_cb_; }
   void reset_end_tx_cb() { commit_cb_ = NULL; }
   const ObString &get_tx_state_str() const;
-  int merge_exec_info_with(const ObTxDesc &other);
+  // NOTE that this is only for px
+  int merge_exec_info_for_px(const ObTxDesc &other);
   int get_inc_exec_info(ObTxExecResult &exec_info);
   int add_exec_info(const ObTxExecResult &exec_info);
   bool has_implicit_savepoint() const;

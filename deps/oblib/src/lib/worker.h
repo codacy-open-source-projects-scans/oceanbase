@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEABASE_LIB_WORKER_H_
@@ -90,6 +83,8 @@ public:
   OB_INLINE void set_group_id_(const uint64_t group_id) { group_id_ = group_id;}
 
   OB_INLINE uint64_t get_group_id() const { return group_id_; }
+  OB_INLINE void set_group_index(const int32_t group_index) { group_index_ = group_index;}
+  OB_INLINE int32_t get_group_index() const { return group_index_; }
   OB_INLINE void set_group(void *group) { group_ = group; };
   OB_INLINE void *get_group() { return group_;};
   OB_INLINE bool is_group_worker() const { return OB_NOT_NULL(group_); }
@@ -145,6 +140,8 @@ public:
 public:
   common::ObDLinkNode<Worker*> worker_node_;
   void *group_;
+  int64_t last_idle_ts_;
+
 protected:
   // 线程运行时内存从此分配器分配
   // 初始tenant_id=500, 在处理request时，tenant_id被更新成request的租户id
@@ -171,6 +168,7 @@ private:
 
   // Used to prevent the thread holding the lock from being suspended by check_wait
   bool disable_wait_;
+  int32_t group_index_;
 
   DISALLOW_COPY_AND_ASSIGN(Worker);
 }; // end of class Worker

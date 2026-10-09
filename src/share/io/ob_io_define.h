@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_STORAGE_IO_DEFINE
@@ -46,6 +39,7 @@ namespace common
 {
 
 class ObObjectDevice;
+class ObIOManager;
 
 // the timestamp adjustment will not adjust until the queue is idle for more than this time
 static constexpr int64_t CLOCK_IDLE_THRESHOLD_US = 100 * 1000L;  // 100ms
@@ -201,6 +195,7 @@ private:
 
 private:
   friend struct ObIOResult;
+  friend class ObIOManager;
   void set_func_type(const uint8_t func_type);
   void set_resource_group_id(const uint64_t group_id);
   static constexpr int64_t IO_MODE_BIT = 4; // read, write, append

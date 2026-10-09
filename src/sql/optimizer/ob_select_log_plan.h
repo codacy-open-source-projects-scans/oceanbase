@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OPTIMIZER_OB_LOGICAL_PLAN_TREE_H
@@ -46,6 +39,7 @@ public:
   int allocate_link_scan_as_top(ObLogicalOperator *&old_top);
   const ObSelectStmt *get_stmt() const override
   { return reinterpret_cast<const ObSelectStmt*>(stmt_); }
+  static int check_external_table_scan(ObSelectStmt *stmt, bool &has_external_table);
 
   int perform_late_materialization(ObSelectStmt *stmt,
                                    ObLogicalOperator *&op);
@@ -182,7 +176,9 @@ private:
                           bool &use_merge_valid,
                           bool &part_sort_valid,
                           bool &normal_sort_valid);
-  int update_part_sort_method(bool &part_sort_valid, bool &normal_sort_valid);
+  int update_part_sort_method(bool &part_sort_valid,
+                              bool &normal_sort_valid,
+                              const bool is_win_func = false);
   int candi_allocate_normal_group_by(const bool ignore_transform_distinct_agg,
                                      const ObIArray<ObRawExpr*> &reduce_exprs,
                                      const ObIArray<ObRawExpr*> &group_by_exprs,
@@ -192,6 +188,19 @@ private:
                                      GroupingOpHelper &groupby_helper,
                                      ObIArray<CandidatePlan> &candi_plans,
                                      ObIArray<CandidatePlan> &groupby_plans);
+
+  int generate_group_by_plans_for_sharding_group(const ObIArray<ObRawExpr*> &reduce_exprs,
+                                                 const ObIArray<ObRawExpr*> &group_by_exprs,
+                                                 const ObIArray<ObOrderDirection> &group_directions,
+                                                 const ObIArray<ObRawExpr*> &having_exprs,
+                                                 const ObIArray<ObAggFunRawExpr*> &aggr_items,
+                                                 GroupingOpHelper &groupby_helper,
+                                                 const ObIArray<CandidatePlan> &candidates,
+                                                 ObIArray<CandidatePlan> &groupby_plans,
+                                                 bool use_hash_valid,
+                                                 bool use_merge_valid,
+                                                 bool part_sort_valid,
+                                                 bool normal_sort_valid);
 
   int create_hash_group_plan(const ObIArray<ObRawExpr*> &reduce_exprs,
                              const ObIArray<ObRawExpr*> &group_by_exprs,
@@ -593,6 +602,7 @@ private:
    */
   //    int process_subplan();
   int candi_allocate_subplan_filter_for_select_item();
+  int candi_allocate_separate_spf_for_select_items(const ObIArray<ObRawExpr *> &select_item_exprs);
 
   struct WinFuncOpHelper
   {
@@ -1097,8 +1107,6 @@ int generate_window_functions_plan(WinFuncOpHelper &win_func_helper,
                                     const DistAlgo algo,
                                     bool &ignore_plan,
                                     bool can_ignore_merge = false);
-
-  int check_external_table_scan(ObSelectStmt *stmt, bool &has_external_table);
 
   int contain_enum_set_rowkeys(const ObLogTableScan &table_scan, bool &contain);
   int candi_allocate_order_by_if_losted(ObIArray<OrderItem> &order_items);

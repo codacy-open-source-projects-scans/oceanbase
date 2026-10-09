@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENGINE_OB_OPERATOR_REG_H_
@@ -364,6 +357,23 @@ REGISTER_OPERATOR(ObLogTableScan, PHY_DDL_BLOCK_SAMPLE_SCAN,
                   ObDDLBlockSampleScanSpec, ObDDLBlockSampleScanOp, ObDDLBlockSampleScanOpInput,
                   VECTORIZED_OP);
 
+// External table sampling operators with SUPPORT_RICH_FORMAT
+class ObLogTableScan;
+class ObExternalRowSampleScanOpInput;
+class ObExternalRowSampleScanSpec;
+class ObExternalRowSampleScanOp;
+REGISTER_OPERATOR(ObLogTableScan, PHY_EXTERNAL_ROW_SAMPLE_SCAN,
+                  ObExternalRowSampleScanSpec, ObExternalRowSampleScanOp, ObExternalRowSampleScanOpInput,
+                  VECTORIZED_OP, 0 /*version*/, SUPPORT_RICH_FORMAT);
+
+class ObLogTableScan;
+class ObExternalBlockSampleScanOpInput;
+class ObExternalBlockSampleScanSpec;
+class ObExternalBlockSampleScanOp;
+REGISTER_OPERATOR(ObLogTableScan, PHY_EXTERNAL_BLOCK_SAMPLE_SCAN,
+                  ObExternalBlockSampleScanSpec, ObExternalBlockSampleScanOp, ObExternalBlockSampleScanOpInput,
+                  VECTORIZED_OP, 0 /*version*/, SUPPORT_RICH_FORMAT);
+
 class ObLogMerge;
 class ObTableMergeSpec;
 class ObTableMergeOp;
@@ -610,7 +620,8 @@ class ObLogMonitoringDump;
 class ObMonitoringDumpSpec;
 class ObMonitoringDumpOp;
 REGISTER_OPERATOR(ObLogMonitoringDump, PHY_MONITORING_DUMP, ObMonitoringDumpSpec,
-                  ObMonitoringDumpOp, NOINPUT, VECTORIZED_OP);
+                  ObMonitoringDumpOp, NOINPUT, VECTORIZED_OP, 0 /*+version*/,
+                  SUPPORT_RICH_FORMAT);
 
 class ObLogSequence;
 class ObSequenceSpec;
@@ -650,6 +661,13 @@ class ObPxFifoReceiveOpInput;
 REGISTER_OPERATOR(ObLogExchange, PHY_PX_FIFO_RECEIVE, ObPxFifoReceiveSpec,
                   ObPxFifoReceiveOp, ObPxFifoReceiveOpInput, VECTORIZED_OP,
                   0 /*+version*/, SUPPORT_RICH_FORMAT, "PHY_VEC_PX_FIFO_RECEIVE");
+
+class ObPxOrderedReceiveSpec;
+class ObPxOrderedReceiveOp;
+class ObPxOrderedReceiveOpInput;
+REGISTER_OPERATOR(ObLogExchange, PHY_PX_ORDERED_RECEIVE, ObPxOrderedReceiveSpec,
+                  ObPxOrderedReceiveOp, ObPxOrderedReceiveOpInput, VECTORIZED_OP,
+                  0, SUPPORT_RICH_FORMAT, "PHY_VEC_PX_ORDERED_RECEIVE");
 
 class ObLogExchange;
 class ObPxMSReceiveSpec;

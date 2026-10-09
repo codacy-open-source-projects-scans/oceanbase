@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_MOCK_OB_TABLE_READ_INFO_H_
@@ -56,7 +49,7 @@ int MockObTableReadInfo::init(common::ObIAllocator &allocator,
   const int64_t extra_rowkey_col_cnt = storage::ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt();
   const bool is_cg_sstable = (schema_rowkey_cnt == 0 && schema_column_count == 1);
   init_basic_info(schema_column_count, schema_rowkey_cnt, is_oracle_mode, is_cg_sstable,
-    false /*is_cs_replica_compat*/, false /*is_delete_insert_table*/, false/*is_global_index_table*/,
+    false /*is_cs_replica_compat*/, ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN, false/*is_global_index_table*/,
     1 /* micro_block_format_version */, false/*mv_major_refresh_tablet*/, false /*has_ttl_definition*/); // init basic info
   if (OB_FAIL(prepare_arrays(allocator, cols_desc, out_cols_cnt))) {
     STORAGE_LOG(WARN, "failed to prepare arrays", K(ret), K(out_cols_cnt));

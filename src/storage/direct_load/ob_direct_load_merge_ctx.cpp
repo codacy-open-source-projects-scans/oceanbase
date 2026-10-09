@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -52,6 +45,7 @@ ObDirectLoadMergeParam::ObDirectLoadMergeParam()
     merge_mode_(ObDirectLoadMergeMode::INVALID_MERGE_MODE),
     dml_row_handler_(nullptr),
     insert_table_ctx_(nullptr),
+    snapshot_version_(0),
     trans_param_(),
     file_mgr_(nullptr),
     ctx_(nullptr)
@@ -65,7 +59,7 @@ bool ObDirectLoadMergeParam::is_valid() const
   return OB_INVALID_ID != table_id_ && 0 < rowkey_column_num_ && 0 < column_count_ &&
          nullptr != col_descs_ && nullptr != datum_utils_ && nullptr != lob_column_idxs_ &&
          ObDirectLoadMergeMode::is_type_valid(merge_mode_) && nullptr != insert_table_ctx_ &&
-         nullptr != file_mgr_ && nullptr != ctx_;
+         snapshot_version_ > 0 && nullptr != file_mgr_ && nullptr != ctx_;
 }
 
 /**
@@ -382,6 +376,7 @@ int ObDirectLoadTabletMergeCtx::init(ObDirectLoadMergeCtx *merge_ctx,
       origin_table_param.tablet_id_ = tablet_id_;
       origin_table_param.tx_id_ = param_->trans_param_.tx_id_;
       origin_table_param.tx_seq_ = param_->trans_param_.tx_seq_;
+      origin_table_param.snapshot_version_ = param_->snapshot_version_;
       origin_table_param.rowkey_column_num_ = param_->rowkey_column_num_;
       origin_table_param.col_descs_ = param_->col_descs_;
       if (OB_FAIL(origin_table_.init(origin_table_param))) {

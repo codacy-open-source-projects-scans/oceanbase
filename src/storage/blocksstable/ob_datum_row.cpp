@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -76,7 +69,9 @@ ObDatumRow::ObDatumRow(const uint64_t tenant_id)
     delete_version_(0),
     storage_datums_(nullptr),
     datum_buffer_(),
-    trans_info_(nullptr)
+    merge_engine_type_(ObMergeEngineType::OB_MERGE_ENGINE_MAX),
+    trans_info_(nullptr),
+    major_merge_flag_()
 {
   if (share::is_reserve_mode()) {
     local_allocator_.set_ctx_id(ObCtxIds::MERGE_RESERVE_CTX_ID);
@@ -175,6 +170,7 @@ int ObDatumRow::reserve(const int64_t capacity, const bool keep_data)
     snapshot_version_ = 0;
     insert_version_ = 0;
     delete_version_ = 0;
+    merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
   }
 
   return ret;
@@ -196,7 +192,9 @@ void ObDatumRow::reset()
   row_flag_.reset();
   count_ = 0;
   local_allocator_.reset();
+  merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
   trans_info_ = nullptr;
+  major_merge_flag_.reset();
 }
 
 void ObDatumRow::reuse()
@@ -214,9 +212,11 @@ void ObDatumRow::reuse()
   snapshot_version_ = 0;
   insert_version_ = 0;
   delete_version_ = 0;
+  merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
   if (OB_NOT_NULL(trans_info_)) {
     trans_info_[0] = '\0';
   }
+  major_merge_flag_.reset();
 }
 
 int ObDatumRow::deep_copy(const ObDatumRow &src, ObIAllocator &allocator)
@@ -263,6 +263,7 @@ int ObDatumRow::from_store_row(const storage::ObStoreRow &store_row)
     fast_filter_skipped_ = store_row.fast_filter_skipped_;
     insert_version_ = 0;
     delete_version_ = 0;
+    merge_engine_type_ = store_row.merge_engine_type_;
     for (int64_t i = 0; OB_SUCC(ret) && i < count_; i++) {
       if (OB_FAIL(storage_datums_[i].from_obj_enhance(store_row.row_val_.cells_[i]))) {
         STORAGE_LOG(WARN, "Failed to transfer obj to datum", K(ret), K(i), K(store_row.row_val_.cells_[i]));
@@ -315,6 +316,8 @@ int ObDatumRow::copy_attributes_except_datums(const ObDatumRow &other)
     snapshot_version_ = other.snapshot_version_;
     insert_version_ = other.insert_version_;
     delete_version_ = other.delete_version_;
+    merge_engine_type_ = other.merge_engine_type_;
+    major_merge_flag_ = other.major_merge_flag_;
   }
   return ret;
 }
@@ -338,6 +341,8 @@ int ObDatumRow::shallow_copy(const ObDatumRow &other)
     row_flag_ = other.row_flag_;
     read_flag_ = other.read_flag_;
     count_ = other.count_;
+    merge_engine_type_ = other.merge_engine_type_;
+    major_merge_flag_ = other.major_merge_flag_;
   }
   return ret;
 }
@@ -371,6 +376,7 @@ OB_DEF_SERIALIZE(ObDatumRow)
               group_idx_,
               snapshot_version_);
   OB_UNIS_ENCODE_ARRAY(storage_datums_, count_);
+  OB_UNIS_ENCODE(merge_engine_type_);
   return ret;
 }
 
@@ -399,6 +405,7 @@ OB_DEF_DESERIALIZE(ObDatumRow)
   if (OB_SUCC(ret)) {
     OB_UNIS_DECODE_ARRAY(storage_datums_, count_);
   }
+  OB_UNIS_DECODE(merge_engine_type_);
   return ret;
 }
 
@@ -413,6 +420,7 @@ OB_DEF_SERIALIZE_SIZE(ObDatumRow)
               group_idx_,
               snapshot_version_);
   OB_UNIS_ADD_LEN_ARRAY(storage_datums_, count_);
+  OB_UNIS_ADD_LEN(merge_engine_type_);
   return len;
 }
 
@@ -420,9 +428,10 @@ DEF_TO_STRING(ObDatumRow)
 {
   int64_t pos = 0;
   J_OBJ_START();
-  J_KV(K_(row_flag), K_(trans_id), K_(scan_index), K_(mvcc_row_flag), K_(snapshot_version),
+  J_KV(K_(row_flag), K_(trans_id), K_(scan_index), K_(mvcc_row_flag), K_(major_merge_flag), K_(snapshot_version),
        K_(have_uncommited_row), K_(fast_filter_skipped), K_(is_insert_filtered), K_(is_delete_filtered),
-       K_(insert_version), K_(delete_version), K_(group_idx), K_(count), K_(datum_buffer));
+       K_(insert_version), K_(delete_version), K_(group_idx), K_(count), K_(datum_buffer),
+       K_(merge_engine_type));
   if (NULL != buf && buf_len >= 0) {
     if (NULL != storage_datums_) {
       J_COMMA();

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OB_OPT_STAT_GATHER_STAT_H__
@@ -18,6 +11,7 @@
 #include "lib/container/ob_array.h"
 #include "lib/profile/ob_trace_id.h"
 #include "share/stat/ob_stat_define.h"
+#include "share/stat/catalog/ob_catalog_stat_define.h"
 
 namespace oceanbase
 {
@@ -179,6 +173,12 @@ public:
 
   inline void set_consecutive_failed_count(int64_t failed_count) { consecutive_failed_count_ = failed_count; }
 
+  inline bool need_flush_cache() const { return need_flush_cache_; }
+  inline void set_need_flush_cache(bool need_flush_cache) { need_flush_cache_ = need_flush_cache; }
+  inline bool invalidate_plan() const { return invalidate_plan_; }
+  inline void set_invalidate_plan(bool invalidate_plan) { invalidate_plan_ = invalidate_plan; }
+  inline int64_t get_plan_expired_before() const { return plan_expired_before_; }
+  inline void set_plan_expired_before(int64_t plan_expired_before) { plan_expired_before_ = plan_expired_before; }
   TO_STRING_KV(K(task_info_),
                K(database_name_),
                K(table_id_),
@@ -189,7 +189,8 @@ public:
                K(memory_used_),
                K(stat_refresh_failed_list_),
                K(properties_),
-               K(table_gather_progress_));
+               K(table_gather_progress_),
+               K(plan_expired_before_));
 
 private:
   ObOptStatTaskInfo task_info_;
@@ -205,6 +206,9 @@ private:
   ObString table_gather_progress_;
   int64_t consecutive_failed_count_;
   ObString gather_audit_;
+  bool need_flush_cache_;
+  bool invalidate_plan_;
+  int64_t plan_expired_before_;
 };
 
 struct ObOptStatRunningMonitor
@@ -229,6 +233,8 @@ struct ObOptStatRunningMonitor
             int64_t current_memory_used,
             ObOptStatGatherStat &opt_stat_gather_stat);
   int add_table_info(const common::ObTableStatParam &table_param,
+                     double stale_percent = -1.0);
+  int add_table_info(const common::ObCatalogTableStatParam &table_param,
                      double stale_percent = -1.0);
   int add_monitor_info(ObOptStatRunningPhase current_phase, double extra_progress_ratio = 0);
   double get_monitor_extra_progress_ratio(ObOptStatRunningPhase current_phase,
@@ -275,6 +281,10 @@ public:
   int list_to_array(common::ObIAllocator &allocator,
                     const uint64_t target_tenant_id,
                     common::ObIArray<ObOptStatGatherStat> &stat_array);
+  void update_need_flush_cache(bool need_flush_cache,
+                               bool invalidate_plan,
+                               int64_t plan_expired_before,
+                               ObOptStatGatherStat &stat_value);
 private:
   common::ObDList<ObOptStatGatherStat> stat_list_;
   mutable common::ObSpinLock lock_;

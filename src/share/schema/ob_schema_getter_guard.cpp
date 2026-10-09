@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -26,6 +19,7 @@
 #include "lib/encrypt/ob_caching_sha2_cache_mgr.h"
 
 #include "ob_external_resource_schema_getter_guard.ipp"
+#include "ob_java_policy_schema_getter_guard.ipp"
 #include "ob_ai_model_schema_getter_guard.ipp"
 namespace oceanbase
 {
@@ -4471,6 +4465,32 @@ int ObSchemaGetterGuard::check_database_exists_in_tablegroup(
     LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
   } else {
     ret = mgr->check_database_exists_in_tablegroup(tenant_id, tablegroup_id, not_empty);
+  }
+  return ret;
+}
+
+int ObSchemaGetterGuard::check_database_exists_in_tablespace(
+    const uint64_t tenant_id,
+    const uint64_t tablespace_id,
+    bool &not_empty)
+{
+  int ret = OB_SUCCESS;
+  const ObSchemaMgr *mgr = NULL;
+  not_empty = false;
+
+  if (!check_inner_stat()) {
+    ret = OB_INNER_STAT_ERROR;
+    LOG_WARN("inner stat error", KR(ret));
+  } else if (OB_INVALID_ID == tenant_id
+             || OB_INVALID_ID == tablespace_id) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(tablespace_id));
+  } else if (OB_FAIL(check_tenant_schema_guard(tenant_id))) {
+    LOG_WARN("fail to check tenant schema guard", KR(ret), K(tenant_id), K_(tenant_id));
+  } else if (OB_FAIL(check_lazy_guard(tenant_id, mgr))) {
+    LOG_WARN("fail to check lazy guard", KR(ret), K(tenant_id));
+  } else {
+    ret = mgr->check_database_exists_in_tablespace(tenant_id, tablespace_id, not_empty);
   }
   return ret;
 }

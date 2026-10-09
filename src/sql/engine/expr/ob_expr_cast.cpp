@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_expr_cast.h"
@@ -1418,13 +1411,17 @@ DEF_SET_LOCAL_SESSION_VARS(ObExprCast, raw_expr) {
     ObObjType src = raw_expr->get_param_expr(0)->get_result_type().get_type();
     ObObjType dst = raw_expr->get_result_type().get_type();
     if (is_mysql_mode()) {
+      // 4 vars: SQL_MODE, OB_COMPATIBILITY_VERSION, COLLATION_CONNECTION, and
+      // possibly TIME_ZONE added below when src/dst is datetime.
       SET_LOCAL_SYSVAR_CAPACITY(4);
       EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_SQL_MODE);
       EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_OB_COMPATIBILITY_VERSION);
+      EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_COLLATION_CONNECTION);
     } else {
-      SET_LOCAL_SYSVAR_CAPACITY(5);
+      // oracle mode: up to 4 vars — TIME_ZONE
+      // + NLS_DATE_FORMAT, NLS_TIMESTAMP_FORMAT, NLS_TIMESTAMP_TZ_FORMAT.
+      SET_LOCAL_SYSVAR_CAPACITY(4);
     }
-    EXPR_ADD_LOCAL_SYSVAR(SYS_VAR_COLLATION_CONNECTION);
     if (ob_is_datetime_tc(src)
         || ob_is_datetime_tc(dst)
         || ob_is_otimestampe_tc(src)

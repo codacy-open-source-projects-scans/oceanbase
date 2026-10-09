@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -259,7 +252,7 @@ int ForeignKeyHandle::check_exist_inner_sql(ObTableModifyOp &op,
     }
     LOG_DEBUG("foreign_key_check_exist", "stmt", stmt_buf, K(row), K(fk_arg));
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
-      if (OB_FAIL(op.begin_nested_session(fk_arg.is_self_ref_))) {
+      if (OB_FAIL(op.begin_nested_session())) {
         LOG_WARN("failed to begin nested session", K(ret), K(stmt_buf));
       } else {
         // must call end_nested_session() if begin_nested_session() success.
@@ -415,7 +408,7 @@ int ForeignKeyHandle::cascade(ObTableModifyOp &op,
   }
   if (OB_SUCC(ret) && stmt_pos > 0) {
     LOG_DEBUG("foreign_key_cascade", "stmt", stmt_buf, K(old_row), K(new_row), K(fk_arg));
-    if (OB_FAIL(op.begin_nested_session(fk_arg.is_self_ref_))) {
+    if (OB_FAIL(op.begin_nested_session())) {
       LOG_WARN("failed to begin nested session", K(ret));
     } else {
       if (OB_FAIL(op.execute_write(stmt_buf))) {
@@ -484,7 +477,7 @@ int ForeignKeyHandle::set_null(ObTableModifyOp &op,
 
   if (OB_SUCC(ret) && stmt_pos > 0) {
     LOG_DEBUG("foreign key cascade set null", "stmt", stmt_buf, K(old_row), K(fk_arg));
-    if (OB_FAIL(op.begin_nested_session(fk_arg.is_self_ref_))) {
+    if (OB_FAIL(op.begin_nested_session())) {
       LOG_WARN("failed to begin nested session", K(ret));
     } else {
       if (OB_FAIL(op.execute_write(stmt_buf))) {
@@ -1097,14 +1090,13 @@ int ObTableModifyOp::close_inner_conn()
   return ret;
 }
 
-int ObTableModifyOp::begin_nested_session(bool skip_cur_stmt_tables)
+int ObTableModifyOp::begin_nested_session()
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(inner_conn_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("inner connection is NULL", K(ret));
-  } else if (OB_FAIL(inner_conn_->begin_nested_session(get_saved_session(), saved_conn_,
-                                                       skip_cur_stmt_tables))) {
+  } else if (OB_FAIL(inner_conn_->begin_nested_session(get_saved_session(), saved_conn_))) {
     LOG_WARN("failed to begin nested session", K(ret));
   }
   return ret;
@@ -1161,7 +1153,7 @@ int ObTableModifyOp::check_stack()
   if (OB_ISNULL(session)) {
     ret = OB_ERR_NULL_VALUE;
     LOG_WARN("sql session is NULL", K(ret));
-  } else if (session->get_nested_count() > max_stack_deep) {
+  } else if (lib::is_mysql_mode() && session->get_nested_count() > max_stack_deep) {
     ret = OB_SIZE_OVERFLOW;
     LOG_WARN("too deep recursive", K(ret), K(max_stack_deep), K(session->get_nested_count()));
   } else if (OB_FAIL(check_stack_overflow(is_stack_overflow))) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_FTS_PLUGIN_HELPER_H_
@@ -40,7 +33,6 @@ namespace storage
 
 class ObStopTokenCheckerGen;
 class ObStopTokenChecker;
-class ObFTDictHub;
 
 #define FTS_BUILD_IN_PARSER_LIST                                                                   \
   FT_PARSER_TYPE(FTP_SPACE, space)                                                                 \
@@ -107,7 +99,7 @@ class ObFTParsePluginData final
 {
 public:
   ObFTParsePluginData() :
-      stop_token_checker_gen_(nullptr), dict_hub_(nullptr), handler_allocator_(), is_inited_(false) { }
+      stop_token_checker_gen_(nullptr), handler_allocator_(), is_inited_(false) { }
   ~ObFTParsePluginData();
 
   /**
@@ -123,15 +115,12 @@ public:
 public:
   int get_stop_token_checker(const ObCollationType coll,
                              ObStopTokenChecker &stop_token_checker);
-  int get_dict_hub(ObFTDictHub *&hub);
 
 private:
   int init_stop_token_checker_gen();
-  int init_dict_hub();
 
 private:
   ObStopTokenCheckerGen *stop_token_checker_gen_;
-  ObFTDictHub *dict_hub_;
   common::ObFIFOAllocator handler_allocator_;
   bool is_inited_;
 };
@@ -167,7 +156,8 @@ public:
       common::ObIAllocator *allocator,
       const common::ObString &plugin_name,
       const common::ObString &plugin_properties,
-      const share::schema::ObFTSIndexType fts_index_type);
+      const share::schema::ObFTSIndexType fts_index_type,
+      const bool is_ddl_mode = false);
   /**
    * Split document into multiple words
    *
@@ -224,7 +214,7 @@ public:
 
   OB_INLINE bool is_builtin_parser() const { return parser_name_.is_builtin_parser(); }
 
-  TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited), K_(fts_index_type));
+  TO_STRING_KV(KP_(allocator), K_(parser_name), KP_(parser_desc), K_(is_inited), K_(fts_index_type), K_(parser_property), K_(is_ddl_mode));
 
 private:
   int set_process_token_flag(const plugin::ObIFTParserDesc &ftparser_desc);
@@ -235,8 +225,10 @@ private:
   plugin::ObPluginParam *plugin_param_;
   ObFTParser parser_name_;
   ObProcessTokenFlag process_token_flag_;
+  ObFTParserJsonProps props_;
   ObFTParserProperty parser_property_;
   share::schema::ObFTSIndexType fts_index_type_;
+  bool is_ddl_mode_;
   bool is_inited_;
 
 private:

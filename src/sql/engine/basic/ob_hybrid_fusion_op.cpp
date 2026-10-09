@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "lib/utility/utility.h"
@@ -24,6 +17,8 @@ namespace sql
 // Constants
 static const double EPSILON = 1e-6;
 
+OB_SERIALIZE_MEMBER(ObHybridFusionRerankSpec, has_rerank_, model_key_expr_, query_expr_, field_idx_, window_size_expr_);
+
 ObHybridFusionSpec::ObHybridFusionSpec(ObIAllocator &alloc, const ObPhyOperatorType type)
   : ObOpSpec(alloc, type),
     fusion_method_(ObFusionMethod::WEIGHT_SUM),
@@ -35,7 +30,10 @@ ObHybridFusionSpec::ObHybridFusionSpec(ObIAllocator &alloc, const ObPhyOperatorT
     weights_exprs_(alloc),
     score_exprs_(alloc),
     path_top_k_limit_exprs_(alloc),
-    score_expr_output_indices_(alloc)
+    score_expr_output_indices_(alloc),
+    search_index_(-1),
+    fusion_iter_exec_mode_(ObFusionIterExecMode::SCORE_TOP_K_QUERY_HITS),
+    is_single_partition_(false)
 {
 }
 
@@ -49,7 +47,11 @@ OB_SERIALIZE_MEMBER((ObHybridFusionSpec, ObOpSpec),
                      weights_exprs_,
                      score_exprs_,
                      path_top_k_limit_exprs_,
-                     score_expr_output_indices_);
+                     score_expr_output_indices_,
+                     search_index_,
+                     fusion_iter_exec_mode_,
+                     rerank_spec_,
+                     is_single_partition_);
 
 int ObHybridFusionOp::inner_open()
 {

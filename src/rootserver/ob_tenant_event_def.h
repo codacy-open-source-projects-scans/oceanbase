@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
   /**
    * @description:
@@ -274,6 +267,25 @@
                 BASE_TABLE_NAME,
                 OLD_MLOG_ID);
   };
+
+  class SCHEMA_HISTORY_RECYCLER {
+    public:
+      // keep strings consistent with existing event usage/tests
+      DEF_MODULE(SCHEMA_HISTORY_RECYCLER, "schema_history_recycler");
+      DEF_EVENT(SCHEMA_HISTORY_RECYCLER, BATCH_RECYCLE_BY_TENANT, "batch_recycle_by_tenant",
+                recycle_schema_version);
+  };
+
+  class BALANCE {
+    public:
+      DEF_MODULE(BALANCE, "BALANCE");
+      DEF_EVENT(BALANCE, UPDATE_JOB_STRATEGY, "UPDATE JOB STRATEGY",
+                job_id,
+                status,
+                old_strategy,
+                new_strategy);
+  };
+
 #endif
 #endif
 ////////////////////////////////////////////////////////////////

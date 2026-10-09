@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -85,9 +78,9 @@ public:
   bool is_valid() const { return is_inited_; }
   bool is_column_store() const { return cg_cnt_ > 1; }
   bool is_local_unique_index() const { return is_local_unique_index_table(index_type_); }
-  TO_STRING_KV(K_(table_name), K_(is_partitioned_table), K_(is_table_without_pk), K_(is_table_with_hidden_pk_column),
-               K_(has_autoinc_column), K_(has_identity_column), K_(has_lob_rowkey), K_(rowkey_column_count), K_(store_column_count),
-               K_(cg_cnt), K_(collation_type), K_(column_descs), K_(is_inited));
+  TO_STRING_KV(K_(table_name), K_(is_partitioned_table), K_(is_table_without_pk), K_(is_table_with_hidden_pk_column), K_(is_random_part),
+               K_(random_partkey_column_id), K_(autoinc_column_id), K_(has_identity_column), K_(has_lob_rowkey), K_(rowkey_column_count), K_(store_column_count),
+               K_(cg_cnt), K_(collation_type), K_(column_descs), K_(merge_engine_type), K_(is_inited));
 private:
   int init_table_schema(const share::schema::ObTableSchema *table_schema);
   int init_cmp_funcs(const common::ObIArray<share::schema::ObColDesc> &column_descs,
@@ -104,8 +97,10 @@ public:
   bool is_table_without_pk_;
   bool is_table_with_hidden_pk_column_;
   bool is_delete_insert_engine_;
+  bool is_random_part_;
   share::schema::ObIndexType index_type_;
-  bool has_autoinc_column_;
+  uint64_t random_partkey_column_id_;
+  uint64_t autoinc_column_id_;
   bool has_identity_column_;
   bool has_lob_rowkey_;
   int64_t rowkey_column_count_;
@@ -128,6 +123,7 @@ public:
   blocksstable::ObStorageDatumUtils lob_meta_datum_utils_;
   blocksstable::ObStoreCmpFuncs cmp_funcs_; // for sql statistics
   sql::ObBitVector *col_nullables_;
+  ObMergeEngineType merge_engine_type_;
   bool is_inited_;
 };
 

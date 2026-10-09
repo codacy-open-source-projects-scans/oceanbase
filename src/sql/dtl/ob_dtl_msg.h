@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_DTL_MSG_H
@@ -34,6 +27,9 @@ struct ObDtlMsgHeader {
   }
   bool is_px_bloom_filter_data() {
     return type_ == (uint16_t)ObDtlMsgType::PX_BLOOM_FILTER_DATA;
+  }
+  bool is_dtl_batch_msg() const {
+    return type_ == (uint16_t)ObDtlMsgType::DTL_BATCH_MSG;
   }
   TO_STRING_KV(
       K_(hlen),

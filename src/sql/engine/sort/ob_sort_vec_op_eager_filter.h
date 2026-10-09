@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_SORT_SORT_VEC_OP_EAGER_FILTER_H_
@@ -173,8 +166,7 @@ int ObSortVecOpEagerFilter<Compare, Store_Row, has_addon>::update_filter(
   } else {
     Store_Row *reuse_row = nullptr;
     if (bucket_heap_->count() < bucket_num_) {
-      if (OB_FAIL(store_row_factory_.copy_to_row(bucket_head_row, reuse_row))) {
-        bucket_heap_->top() = reuse_row;
+      if (OB_FAIL(store_row_factory_.copy_sort_row(bucket_head_row, reuse_row))) {
         LOG_WARN("failed to generate new row", K(ret));
       } else {
         int64_t topn_heap_size = bucket_heap_->count();
@@ -195,7 +187,7 @@ int ObSortVecOpEagerFilter<Compare, Store_Row, has_addon>::update_filter(
         LOG_WARN("failed to compare", K(ret));
       } else if (less) {
         if (OB_FAIL(
-                store_row_factory_.copy_to_row(bucket_head_row, reuse_row))) {
+                store_row_factory_.copy_sort_row(bucket_head_row, reuse_row))) {
           LOG_WARN("failed to generate new row", K(ret));
         } else if (OB_FAIL(bucket_heap_->replace_top(reuse_row))) {
           LOG_WARN("failed to replace heap top element", K(ret));

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -549,5 +542,43 @@ int ObLobAccessParam::set_tx_read_snapshot(ObLobLocatorV2 &locator)
   return ret;
 }
 
+int ObLobTTLColumnInfo::transform_to_local_cache_datum(const blocksstable::ObDatumRow *row)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(row) || OB_UNLIKELY(user_ttl_column_idx_ < 0 || user_ttl_column_idx_ >= row->get_column_count())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("row is null", K(ret), KPC(row));
+  } else {
+    init_by_local_datum(row->storage_datums_[user_ttl_column_idx_], ttl_col_type_);
+  }
+
+  return ret;
+}
+
+int ObLobTTLColumnInfo::fill_hidden_ttl_column(ObLobMetaInfo &info) const
+{
+  int ret = OB_SUCCESS;
+
+  if (!use_local_ttl_datum_) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument, should call transform_to_local_cache_datum first", K(ret), KPC(this));
+  } else {
+    info.shallow_copy_ttl_datum(ttl_datum_);
+  }
+
+  return ret;
+}
+
+int ObLobAccessParam::fill_hidden_ttl_column(ObLobMetaInfo &info)
+{
+  int ret = OB_SUCCESS;
+
+  if (has_hidden_ttl_column() && OB_FAIL(lob_ttl_column_info_.fill_hidden_ttl_column(info))) {
+    LOG_WARN("failed to fill hidden ttl column", K(ret), KPC(this));
+  }
+
+  return ret;
+}
 } // storage
 } // oceanbase

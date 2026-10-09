@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_HA_MACRO_BLOCK_WRITER_
@@ -19,6 +12,7 @@
 #include "storage/blocksstable/ob_macro_block_checker.h"
 #include "ob_storage_ha_reader.h"
 #include "ob_physical_copy_task.h"
+#include "ob_storage_ha_small_sstable_write_opt.h"
 #include "storage/blocksstable/index_block/ob_index_block_builder.h"
 
 namespace oceanbase
@@ -53,6 +47,7 @@ public:
       const common::ObTabletID &tablet_id,
       const ObDagId &dag_id,
       const ObMigrationSSTableParam *sstable_param,
+      const ObStorageHASmallSSTableWriteOpt &small_sstable_write_opt,
       ObICopyMacroBlockReader *reader,
       ObIndexBlockRebuilder *index_block_rebuilder,
       ObCopyTabletRecordExtraInfo *extra_info
@@ -74,12 +69,32 @@ protected:
 private:
   int check_macro_block_(
       const blocksstable::ObBufferReader &data);
+  // Throttled check of whether the HA status of ls_id_ indicates failure
+  // (restore failed or migration failed), so that the copy loop can perceive
+  // failure and stop in time. last_check_ts is updated in place to limit frequency.
+  int check_ha_status_failed_(
+      ObIHADagNetCtx &ha_dag_net_ctx,
+      int64_t &last_check_ts,
+      bool &is_failed);
+  bool check_can_flush_small_sstable(const blocksstable::ObBufferReader &data) const;
   int write_macro_block_(
       const ObStorageObjectOpt &opt,
       blocksstable::ObStorageObjectWriteInfo &write_info,
       blocksstable::ObStorageObjectHandle &write_handle,
       blocksstable::ObMacroBlocksWriteCtx &copied_ctx,
       blocksstable::ObBufferReader &data);
+  int flush_small_sstable_macro_block_(
+      blocksstable::ObBufferReader &data,
+      MacroBlockId &macro_id,
+      blocksstable::ObMacroBlocksWriteCtx &copied_ctx);
+
+  int flush_normal_macro_block_(
+      const ObStorageObjectOpt &opt,
+      blocksstable::ObStorageObjectWriteInfo &write_info,
+      blocksstable::ObStorageObjectHandle &write_handle,
+      blocksstable::ObBufferReader &data,
+      MacroBlockId &macro_id,
+      blocksstable::ObMacroBlocksWriteCtx &copied_ctx);
 
 protected:
   bool is_inited_;
@@ -92,6 +107,7 @@ protected:
   ObIndexBlockRebuilder *index_block_rebuilder_;
   blocksstable::ObSSTableMacroBlockChecker macro_checker_;
   ObCopyTabletRecordExtraInfo *extra_info_;
+  ObStorageHASmallSSTableWriteOpt small_sstable_write_opt_;  // small-sstable flush path in physical copy
 };
 
 class ObStorageHALocalMacroBlockWriter final : public ObStorageHAMacroBlockWriter
@@ -116,30 +132,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObStorageHALocalMacroBlockWriter);
 };
 
-
-#ifdef OB_BUILD_SHARED_STORAGE
-class ObStorageHASharedMacroBlockWriter final : public ObStorageHAMacroBlockWriter
-{
-public:
-  ObStorageHASharedMacroBlockWriter () : ObStorageHAMacroBlockWriter() {}
-  virtual ~ObStorageHASharedMacroBlockWriter() {}
-  virtual Type get_type() const override { return SHARED_MACRO_BLOCK_OB_WRITER; }
-
-private:
-  virtual int check_sstable_param_for_init_(const ObMigrationSSTableParam *sstable_param) const override;
-  virtual int set_macro_write_info_(
-      const MacroBlockId &macro_block_id,
-      blocksstable::ObStorageObjectWriteInfo &write_info,
-      blocksstable::ObStorageObjectOpt &opt) override;
-  virtual int append_macro_row_(
-      const char *buf,
-      const int64_t size,
-      const blocksstable::MacroBlockId &macro_id) override;
-
-  DISALLOW_COPY_AND_ASSIGN(ObStorageHASharedMacroBlockWriter);
-};
-
-#endif
 
 }
 }

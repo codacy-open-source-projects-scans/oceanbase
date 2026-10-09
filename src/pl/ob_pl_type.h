@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_PL_OB_PL_TYPE_H_
@@ -119,7 +112,11 @@ enum ObPLOpaqueType
   PL_ANY_TYPE = 0,
   PL_ANY_DATA = 1,
   PL_XML_TYPE = 2,
-  PL_JSON_TYPE = 3
+  PL_JSON_TYPE = 3,
+  PL_XMLPARSER_TYPE = 4,
+  PL_XMLDOM_DOC_TYPE = 5,
+  PL_XMLDOM_NODE_TYPE = 6,
+  PL_XMLDOM_NODELIST_TYPE = 7
 };
 
 enum ObPLIntegerType
@@ -627,6 +624,10 @@ public:
                                   ObIArray<share::schema::ObSchemaObjVersion> *deps = NULL,
                                   pl::ObPLDbLinkGuard *dblink_guard = NULL,
                                   pl::ObPLResolveCache *resolve_cache = nullptr);
+#ifdef OB_BUILD_ORACLE_PL
+  static int to_type_str(const ObPLDataType &pl_type,
+                                     char *buf, int64_t buf_len, int64_t &pos);
+#endif
   static int transform_and_add_routine_param(const pl::ObPLRoutineParam *param,
                                   int64_t position,
                                   int64_t level,
@@ -1052,13 +1053,7 @@ public:
 
   int deep_copy(ObPLCursorInfo &src, common::ObIAllocator *allocator = NULL);
 
-  inline void open(void *spi_cursor = NULL)
-  {
-    spi_cursor != NULL ? (void)NULL : reset();
-    isopen_ = true;
-    spi_cursor_ = spi_cursor;
-    is_explicit_ = spi_cursor != NULL;
-  }
+  void open(void *spi_cursor = NULL);
   virtual int close(sql::ObSQLSessionInfo &session, bool is_reuse = false, bool close_by_open_thread = false);
 
   inline void set_id(int64_t id) { id_ = id; }
@@ -1221,6 +1216,11 @@ public:
   inline void add_cursor_elapsed_time(int64_t time) { cursor_total_elapsed_time_ += time; }
   inline int64_t get_cursor_total_exec_time() const { return cursor_total_exec_time_; }
   inline void add_cursor_exec_time(int64_t time) { cursor_total_exec_time_ += time; }
+  inline void reset_cursor_total_time()
+  {
+    cursor_total_exec_time_ = 0;
+    cursor_total_elapsed_time_ = 0;
+  }
 
   TO_STRING_KV(K_(id),
                K_(magic_num),

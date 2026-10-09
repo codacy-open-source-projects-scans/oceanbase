@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_OB_SQL_EXPR_FUNC_ROUND_
@@ -122,7 +115,8 @@ private:
                                 int64_t param_num, const common::ObObjType &res_type,
                                 ObExprResType &type);
   static int set_res_and_calc_type(ObExprResType *params, int64_t param_num,
-                                   common::ObObjType &res_type);
+                                   common::ObObjType &res_type,
+                                   bool use_oracle_date_dialect = false);
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(ObExprFuncRound);
 };

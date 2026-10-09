@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -45,5 +38,6 @@ CGID_DEF(OBCG_HB_SERVICE, 25, CRITICAL)
 CGID_DEF(OBCG_OLAP_ASYNC_JOB, 26)
 CGID_DEF(OBCG_DTL, 27, CRITICAL)
 CGID_DEF(OBCG_DBMS_SCHED_JOB, 28)
+CGID_DEF(OBCG_TRANSPORT_SERVICE, 29)
 // 100 for CG_LQ
 CGID_DEF(OBCG_LQ, 100)

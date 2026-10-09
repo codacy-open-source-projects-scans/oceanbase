@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_COLUMN_STORE_CO_MERGE_DAG_H_
@@ -17,7 +10,7 @@
 #include "storage/compaction/ob_partition_merger.h"
 #include "storage/column_store/ob_co_merge_ctx.h"
 #include "lib/lock/ob_spin_lock.h"
-#include "storage/column_store/ob_column_oriented_merger.h"
+#include "storage/compaction/vectorization/ob_compaction_batch_merger.h"
 
 namespace oceanbase
 {
@@ -296,6 +289,8 @@ public:
   INHERIT_TO_STRING_KV("ObCOMergeLogReplayTask", ObCOMergeExeTask, K_(start_cg_idx), K_(end_cg_idx));
 protected:
   virtual int process() override;
+private:
+  int init_replayer(ObCOTabletMergeCtx &ctx);
 private:
   ObCOMergeLogReplayer *replayer_;
   int64_t start_cg_idx_;

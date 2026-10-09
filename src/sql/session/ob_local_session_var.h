@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -78,6 +71,11 @@ public:
   int get_different_vars_from_session(const ObBasicSessionInfo *session,
                                       common::ObIArray<const ObSessionSysVar*> &local_diff_vars,
                                       common::ObIArray<ObObj> &session_vals) const;
+  int apply_different_vars_to_session(ObBasicSessionInfo &session,
+                                      common::ObIAllocator *saved_vals_alloc,
+                                      common::ObIArray<ObSessionSysVar> *saved_old_values) const;
+  static int restore_saved_session_vars(ObBasicSessionInfo &session,
+                                        const common::ObIArray<ObSessionSysVar> &saved_old_values);
   int check_var_same_with_session(const ObBasicSessionInfo &session,
                                   const ObSessionSysVar *local_var,
                                   bool &is_same,

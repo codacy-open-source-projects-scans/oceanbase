@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS_COMPACTION
@@ -200,6 +193,7 @@ int ObWindowCompactionHelper::check_window_compaction_could_start(
   if (OB_UNLIKELY(!global_info.is_valid() || global_info.tenant_id_ != tenant_id)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", KR(ret), K(tenant_id), K(global_info));
+  } else if (GCTX.is_shared_storage_mode()) { // window compaction is not supported in shared storage mode
   } else if (global_info.suspend_merging_.get_value()) { // window compaction is not supported when suspend merging
   } else if (global_info.frozen_scn() > global_info.last_merged_scn()) { // tenant major merge is not finished
   } else if (OB_FAIL(tenant_status.init_or_refresh())) {

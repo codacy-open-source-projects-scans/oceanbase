@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_OBLOG_OB_LOG_DBA_EVENT_
@@ -251,6 +244,7 @@ DBA_ERROR_EVENT(OB_BOOTSTRAP_CREATE_SYS_TENANT_FAIL)
 DBA_ERROR_EVENT(OB_BOOTSTRAP_REFRESH_ALL_SCHEMA_FAIL)
 DBA_ERROR_EVENT(OB_BOOTSTRAP_WAIT_ALL_ROOTSERVICE_FAIL)
 DBA_ERROR_EVENT(OB_BOOTSTRAP_FAIL)
+DBA_ERROR_EVENT(OB_BOOTSTRAP_SERVER_NOT_EMPTY)
 
 /* replace sys tenant event */
 // DBA INFO

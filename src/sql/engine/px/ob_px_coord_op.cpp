@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -33,7 +26,7 @@ using namespace sql;
 using namespace sql::dtl;
 namespace sql
 {
-OB_SERIALIZE_MEMBER(ObPxCoordOp::ObPxBatchOpInfo, op_type_, op_id_);
+OB_SERIALIZE_MEMBER(ObPxCoordOp::ObPxBatchOpInfo, op_type_, op_id_, spf_child_idx_);
 
 OB_DEF_SERIALIZE(ObPxCoordSpec)
 {
@@ -150,6 +143,7 @@ int ObPxCoordOp::init_dfc(ObDfo &dfo, dtl::ObDtlChTotalInfo *ch_info)
     dfc_.set_dtl_channel_watcher(&msg_loop_);
     dfc_.set_total_ch_info(ch_info);
     DTL.get_dfc_server().register_dfc(dfc_);
+    dfc_.set_server_groups(&server_groups_);
     dfc_.set_op_metric(&metric_);
     bool force_block = false;
 #ifdef ERRSIM
@@ -541,8 +535,7 @@ int ObPxCoordOp::inner_close()
   if (should_terminate_running_dfos) {
     if (OB_SUCCESS != (terminate_ret = terminate_running_dfos(coord_info_.dfo_mgr_))) {
       // #issue/44180396
-      if (OB_NOT_NULL(ctx_.get_my_session()) &&
-          ctx_.get_my_session()->get_trans_result().is_incomplete()) {
+      if (ctx_.get_trans_result().is_incomplete()) {
         ret = terminate_ret;
       } else {
         LOG_WARN("fail to terminate running dfo, ignore ret", K(terminate_ret));
@@ -647,12 +640,20 @@ int ObPxCoordOp::destroy_all_channel()
     // overwrite ret
     LOG_WARN("unlink channel failed", K(ret));
   }
-
-  // must erase after unlink channel
-  tmp_ret = erase_dtl_interm_result();
-  if (tmp_ret != common::OB_SUCCESS) {
-    LOG_TRACE("release interm result failed", KR(tmp_ret));
+  // the following 1 situation use interm result (need_erase_dtl_interm_result = true):
+  // 1. enable_px_batch_rescan() => ObPxCoordOp::receive_channel_root_dfo
+  bool need_erase_dtl_interm_result = enable_px_batch_rescan();
+  if (need_erase_dtl_interm_result) {
+      // must erase after unlink channel
+      tmp_ret = erase_dtl_interm_result();
+      if (tmp_ret != common::OB_SUCCESS) {
+        LOG_TRACE("release interm result failed", KR(tmp_ret));
+      }
   }
+  // 上面已经把 channel 全部 unregister/unlink，这些容器里残留的都是已释放对象的指针。
+  // 立刻 reset，避免与 free_allocator() 之间出现 use-after-free 的窗口。
+  task_ch_set_.reset();
+  task_channels_.reset();
   return ret;
 }
 
@@ -798,10 +799,10 @@ int ObPxCoordOp::wait_all_running_dfos_exit()
   }
   if (!collect_trans_result_ok) {
     ObSQLSessionInfo *session = ctx_.get_my_session();
-    session->get_trans_result().set_incomplete();
+    ctx_.get_trans_result().set_incomplete();
     LOG_WARN("collect trans_result fail", K(ret),
              "session_id", session->get_server_sid(),
-             "trans_result", session->get_trans_result());
+             "trans_result", ctx_.get_trans_result());
 
   }
   return ret;
@@ -831,28 +832,27 @@ int ObPxCoordOp::check_all_sqc(ObIArray<ObDfo *> &active_dfos,
         }
         all_dfo_terminate = false;
         break;
-      } else if (sqc.is_server_not_alive() || sqc.is_interrupt_by_dm()) {
-        if (sqc.is_interrupt_by_dm()) {
-          ObRpcResultCode err_msg;
-          ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_,
-              OB_RPC_CONNECT_ERROR, err_msg, sqc.get_exec_addr());
-        }
-        sqc.set_server_not_alive(false);
-        sqc.set_interrupt_by_dm(false);
+      } else if (!sqc.collect_finish_res_succ()) {
         const DASTabletLocIArray &access_locations = sqc.get_access_table_locations();
         for (int64_t i = 0; i < access_locations.count() && OB_SUCC(ret); i++) {
-          if (OB_FAIL(ctx_.get_my_session()->get_trans_result().add_touched_ls(access_locations.at(i)->ls_id_))) {
+          if (OB_FAIL(ctx_.get_trans_result().add_touched_ls(access_locations.at(i)->ls_id_))) {
             LOG_WARN("add touched ls failed", K(ret));
           }
         }
         const DASTabletLocIArray &extra_access_locations = sqc.get_extra_access_table_locations();
         for (int64_t i = 0; i < extra_access_locations.count() && OB_SUCC(ret); i++) {
-          if (OB_FAIL(ctx_.get_my_session()->get_trans_result().add_touched_ls(extra_access_locations.at(i)->ls_id_))) {
+          if (OB_FAIL(ctx_.get_trans_result().add_touched_ls(extra_access_locations.at(i)->ls_id_))) {
             LOG_WARN("add touched ls failed", K(ret));
           }
         }
         LOG_WARN("server not alive", K(sqc), K(access_locations),
                   K(sqc.get_access_table_location_keys()), K(extra_access_locations));
+      }
+      if (sqc.is_interrupt_by_dm()) {
+        ObRpcResultCode err_msg;
+        ObPxErrorUtil::update_qc_error_code(coord_info_.first_error_code_,
+            OB_RPC_CONNECT_ERROR, err_msg, sqc.get_exec_addr());
+        sqc.set_interrupt_by_dm(false);
       }
     }
   }
@@ -923,7 +923,6 @@ int ObPxCoordOp::receive_channel_root_dfo(
         ch->set_operator_owner();
         ch->set_thread_id(thread_id);
         ch->set_enable_channel_sync(true);
-        ch->set_send_by_tenant(min_cluster_version >= CLUSTER_VERSION_4_3_5_0);
         if (enable_px_batch_rescan()) {
           ch->set_interm_result(true);
           ch->set_batch_id(get_batch_id());
@@ -996,7 +995,6 @@ int ObPxCoordOp::receive_channel_root_dfo(
         ch->set_audit(enable_audit);
         ch->set_is_px_channel(true);
         ch->set_enable_channel_sync(true);
-        ch->set_send_by_tenant(min_cluster_version >= CLUSTER_VERSION_4_3_5_0);
         if (enable_px_batch_rescan()) {
           ch->set_interm_result(true);
           ch->set_batch_id(get_batch_id());

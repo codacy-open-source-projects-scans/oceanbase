@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -58,6 +51,7 @@ int ObGITaskReBalancer::init(ObExecContext *ctx, ObGranulePump *gi_pump, int64_t
 
 int ObGITaskReBalancer::wait_for_rebalance(ObGranuleIteratorOp *gi_op, bool need_wait_new_task) {
   int ret = OB_SUCCESS;
+  ScopedTimer timer(ObMetricId::WORKER_SYNC_WAIT);
   if (OB_FAIL(process_finished_count(gi_op))) {
     LOG_WARN("failed to process finished count");
   } else if (!need_wait_new_task) {
@@ -942,7 +936,18 @@ int ObGranuleIteratorOp::do_drain_exch()
 int ObGranuleIteratorOp::inner_get_next_row()
 {
   const int64_t row_cnt = 1;
-  return try_get_rows(row_cnt);
+  int ret = try_get_rows(row_cnt);
+
+  // Set DDL slice_id pseudo column for non-batch path
+  if (OB_SUCC(ret) && is_fts_sample_done_ && nullptr != MY_SPEC.ddl_slice_id_expr_) {
+    if (current_slice_idx_ >= 0 && total_slice_count_ > 0) {
+      storage::ObTabletSliceParam slice_param(static_cast<int16_t>(total_slice_count_), static_cast<int16_t>(current_slice_idx_));
+      MY_SPEC.ddl_slice_id_expr_->locate_datum_for_write(eval_ctx_).set_int(slice_param.slice_id_);
+      MY_SPEC.ddl_slice_id_expr_->set_evaluated_projected(eval_ctx_);
+    }
+  }
+
+  return ret;
 }
 
 int ObGranuleIteratorOp::inner_get_next_batch(const int64_t max_row_cnt)

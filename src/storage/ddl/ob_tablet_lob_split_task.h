@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_AUTO_SPLIT_OB_TABLET_LOB_SPLIT_TASK_H_
@@ -176,6 +169,11 @@ public:
 
 private:
   int get_dst_lob_tablet_ids(const ObLobSplitParam& param);
+  int get_dst_lob_main_tablet_handle(
+    const ObLobSplitParam& param,
+    const ObTabletID& main_tablet_id,
+    ObTabletHandle& main_tablet_handle);
+  int report_to_migrate_task();
 private:
   common::ObArenaAllocator range_allocator_; // for datum range.
 public:

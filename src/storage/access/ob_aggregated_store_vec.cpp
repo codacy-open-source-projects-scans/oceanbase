@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -493,7 +486,7 @@ int ObAggregatedStoreVec::can_use_index_info(const blocksstable::ObMicroIndexInf
     // pre agg info will not be generated for lob out row
     can_agg = filter_is_null() && index_info.can_blockscan() &&
               (index_info.is_macro_node() || skip_index_info.min_snapshot_ > context_.trans_version_range_.base_version_) &&
-              (index_info.row_header_->is_major_node() || (iter_param_->enable_inc_skip_index() && index_info.row_header_->is_single_version_rows())) &&
+              (index_info.row_header_->is_major_node() || (iter_param_->enable_inc_skip_index() && index_info.row_header_->is_all_single_version_rows())) &&
               !index_info.is_left_border() && !index_info.is_right_border();
     for (int64_t i = 0; OB_SUCC(ret) && can_agg && i < agg_groups_.count(); ++i) {
       ObAggGroupVec *agg_group = agg_groups_.at(i);

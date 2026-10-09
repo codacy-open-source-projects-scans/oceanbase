@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -2146,6 +2139,25 @@ int ObInnerTableSchema::all_database_schema(ObTableSchema &table_schema)
       in_recyclebin_default,
       in_recyclebin_default); //default_value
   }
+
+  if (OB_SUCC(ret)) {
+    ObObj default_tablespace_id_default;
+    default_tablespace_id_default.set_int(OB_INVALID_ID);
+    ADD_COLUMN_SCHEMA_T("default_tablespace_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      default_tablespace_id_default,
+      default_tablespace_id_default); //default_value
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -2400,6 +2412,25 @@ int ObInnerTableSchema::all_database_history_schema(ObTableSchema &table_schema)
       false, //is_autoincrement
       in_recyclebin_default,
       in_recyclebin_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ObObj default_tablespace_id_default;
+    default_tablespace_id_default.set_int(OB_INVALID_ID);
+    ADD_COLUMN_SCHEMA_T("default_tablespace_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false, //is_autoincrement
+      default_tablespace_id_default,
+      default_tablespace_id_default); //default_value
   }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
@@ -3558,6 +3589,25 @@ int ObInnerTableSchema::all_tenant_schema(ObTableSchema &table_schema)
       arbitration_service_status_default,
       arbitration_service_status_default); //default_value
   }
+
+  if (OB_SUCC(ret)) {
+    ObObj default_tablespace_id_default;
+    default_tablespace_id_default.set_int(OB_INVALID_ID);
+    ADD_COLUMN_SCHEMA_T("default_tablespace_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      false, //is_nullable
+      false, //is_autoincrement
+      default_tablespace_id_default,
+      default_tablespace_id_default); //default_value
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -3937,6 +3987,25 @@ int ObInnerTableSchema::all_tenant_history_schema(ObTableSchema &table_schema)
       false, //is_autoincrement
       arbitration_service_status_default,
       arbitration_service_status_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ObObj default_tablespace_id_default;
+    default_tablespace_id_default.set_int(OB_INVALID_ID);
+    ADD_COLUMN_SCHEMA_T("default_tablespace_id", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false, //is_autoincrement
+      default_tablespace_id_default,
+      default_tablespace_id_default); //default_value
   }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
@@ -7418,6 +7487,40 @@ int ObInnerTableSchema::all_table_history_schema(ObTableSchema &table_schema)
       skip_index_level_default,
       skip_index_level_default); //default_value
   }
+
+  if (OB_SUCC(ret)) {
+    ObObj external_file_pattern_type_default;
+    external_file_pattern_type_default.set_int(0);
+    ADD_COLUMN_SCHEMA_T("external_file_pattern_type", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      sizeof(int64_t), //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false, //is_autoincrement
+      external_file_pattern_type_default,
+      external_file_pattern_type_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("merge_engine_upper_version", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObVarcharType, //column_type
+      CS_TYPE_BINARY, //column_collation_type
+      OB_MAX_VARCHAR_LENGTH, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false); //is_autoincrement
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -8060,6 +8163,25 @@ int ObInnerTableSchema::all_column_history_schema(ObTableSchema &table_schema)
       -1, //column_scale
       true, //is_nullable
       false); //is_autoincrement
+  }
+
+  if (OB_SUCC(ret)) {
+    ObObj has_used_as_ttl_default;
+    has_used_as_ttl_default.set_tinyint(0);
+    ADD_COLUMN_SCHEMA_T("has_used_as_ttl", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObTinyIntType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      1, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false, //is_autoincrement
+      has_used_as_ttl_default,
+      has_used_as_ttl_default); //default_value
   }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
@@ -12045,6 +12167,21 @@ int ObInnerTableSchema::all_outline_schema(ObTableSchema &table_schema)
       format_outline_default,
       format_outline_default); //default_value
   }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("pattern_rules", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObLongTextType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      0, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false); //is_autoincrement
+  }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);
   table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
@@ -12515,6 +12652,21 @@ int ObInnerTableSchema::all_outline_history_schema(ObTableSchema &table_schema)
       false, //is_autoincrement
       format_outline_default,
       format_outline_default); //default_value
+  }
+
+  if (OB_SUCC(ret)) {
+    ADD_COLUMN_SCHEMA("pattern_rules", //column_name
+      ++column_id, //column_id
+      0, //rowkey_id
+      0, //index_id
+      0, //part_key_pos
+      ObLongTextType, //column_type
+      CS_TYPE_INVALID, //column_collation_type
+      0, //column_length
+      -1, //column_precision
+      -1, //column_scale
+      true, //is_nullable
+      false); //is_autoincrement
   }
   table_schema.set_index_using_type(USING_BTREE);
   table_schema.set_row_store_type(ENCODING_ROW_STORE);

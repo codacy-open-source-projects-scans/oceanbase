@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_INSERT_STMT_H_
@@ -102,7 +95,7 @@ public:
   int part_key_has_auto_inc(bool &has) const;
   int part_key_is_updated(bool &is_updated) const;
   int check_pdml_disabled(const bool is_online_ddl, bool &disable_pdml, bool &is_pk_auto_inc) const;
-  int find_first_auto_inc_expr(const ObRawExpr *expr, const ObRawExpr *&auto_inc) const;
+  int find_first_expr(const ObItemType expr_type, const ObRawExpr *expr, const ObRawExpr *&auto_inc) const;
   virtual int get_value_exprs(ObIArray<ObRawExpr *> &value_exprs) const override;
   // use this only when part_generated_col_dep_cols_.count() is not zero
   int get_values_desc_for_heap_table(common::ObIArray<ObColumnRefRawExpr*> &arr) const;

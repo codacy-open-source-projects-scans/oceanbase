@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -736,7 +729,7 @@ int ObMallocAllocator::recycle_tenant_allocator(uint64_t tenant_id)
         char first_bt[MAX_BACKTRACE_LENGTH] = {'\0'};
         ctx_allocator->do_cleanup();
         bool has_unfree = ctx_allocator->check_has_unfree(first_label, first_bt);
-        if (has_unfree) {
+        if (has_unfree && ctx_allocator->get_hold() > 0) {
           if (ObCtxIds::GLIBC == ctx_id
               && 0 == strncmp("Pl", first_label, 2)
               && pl_leaked_times_++ < 10) {

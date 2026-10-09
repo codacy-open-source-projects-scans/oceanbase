@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_SQL_PX_DTL_PROC_H_
@@ -90,18 +83,6 @@ public:
       : msg_proc_(msg_proc) {}
   virtual ~ObPxTransmitDataChannelMsgP() = default;
   int process(const ObPxTransmitDataChannelMsg &pkt) override;
-private:
-  ObIPxSubCoordMsgProc &msg_proc_;
-};
-
-class ObPxCreateBloomFilterChannelMsgP : 
-    public dtl::ObDtlPacketProc<ObPxCreateBloomFilterChannelMsg>
-{
-public:
-  ObPxCreateBloomFilterChannelMsgP(ObIPxSubCoordMsgProc &msg_proc)
-      : msg_proc_(msg_proc) {}
-  virtual ~ObPxCreateBloomFilterChannelMsgP() = default;
-  int process(const ObPxCreateBloomFilterChannelMsg &pkt) override;
 private:
   ObIPxSubCoordMsgProc &msg_proc_;
 };

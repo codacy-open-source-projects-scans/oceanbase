@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -90,7 +83,7 @@ int ObDBMSBalance::trigger_partition_balance(
             K(tenant_id), K(leader));
       } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(leader)
                                               .by(tenant_id)
-                                              .timeout(timeout_ctx.get_abs_timeout())
+                                              .timeout(timeout_ctx.get_timeout())
                                               .trigger_partition_balance(arg))) {
         LOG_WARN("trigger partition balance failed", KR(ret), K(arg));
       }
@@ -494,10 +487,18 @@ int ObDBMSBalance::get_and_check_tablegroup_id_by_name_(
   } else if (OB_ISNULL(tablegroup_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null ptr", KR(ret), K(tablegroup_name), K(tablegroup_id), K(tablegroup_schema));
+  } else if (OB_UNLIKELY(!ObTablegroupSchema::is_sharding_scope_matched(tablegroup_schema->get_sharding(),
+      tablegroup_schema->get_scope()))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid sharding-scope combination", KR(ret), KPC(tablegroup_schema));
   } else if (!tablegroup_schema->is_sharding_none()) {
     ret = OB_NOT_SUPPORTED;
-    LOG_WARN("not support sharding tablegroup", KR(ret), K(tablegroup_name), K(tablegroup_id));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "sharding partition or adaptive tablegroup are");
+    LOG_WARN("not support tg balance weight for sharding partition or adaptive or subpartition tablegroup", KR(ret), KPC(tablegroup_schema));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "sharding partition or adaptive or subpartition tablegroup are");
+  } else if (tablegroup_schema->is_scope_cluster()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("not support tg balance weight for scope cluster tablegroup", KR(ret), KPC(tablegroup_schema));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "scope cluster tablegroup is");
   } else {
     tablegroup_id = tablegroup_schema->get_tablegroup_id();
   }

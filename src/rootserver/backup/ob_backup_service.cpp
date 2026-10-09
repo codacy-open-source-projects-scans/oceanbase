@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -76,7 +69,12 @@ void ObBackupService::run2()
   LOG_INFO("[backupService]backup service start");
   int64_t last_trigger_ts = ObTimeUtility::current_time();
   while (!has_set_stop()) {
-    set_idle_time(ObBackupBaseService::OB_SERVICE_DEFAULT_IDLE_TIME);
+    // _backup_idle_time (default 5m) is the per-iteration idle reset. Code paths
+    // inside process() (e.g., finish_(), check_disk_full_timeout_()) may further
+    // shorten it for a specific iteration via set_idle_time(). Falling back to
+    // OB_SERVICE_DEFAULT_IDLE_TIME keeps prior behavior when the config is unreadable.
+    const int64_t cfg_idle_us = GCONF._backup_idle_time;
+    set_idle_time(cfg_idle_us > 0 ? cfg_idle_us : ObBackupBaseService::OB_SERVICE_DEFAULT_IDLE_TIME);
     ObCurTraceId::init(GCONF.self_addr_);
     share::schema::ObSchemaGetterGuard schema_guard;
     const share::schema::ObTenantSchema *tenant_schema = NULL;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OCEANBASE_SQL_ENGINE_PX_OB_PX_BASIC_INFO_H__
@@ -29,6 +22,7 @@ namespace sql
 // NOTE：可能会有多种 receive op type，这里都需要判断. 目前只有一种
 #define IS_PX_RECEIVE(type) \
      ((type) == PHY_PX_FIFO_RECEIVE || \
+      (type) == PHY_PX_ORDERED_RECEIVE || \
       (type) == PHY_PX_MERGE_SORT_RECEIVE || \
       (type) == PHY_PX_MERGE_SORT_COORD || \
       (type) == PHY_VEC_PX_MERGE_SORT_COORD || \
@@ -100,7 +94,9 @@ namespace sql
 #define IS_SAMPLE_SCAN(type) \
       ((type) == PHY_BLOCK_SAMPLE_SCAN || \
       (type) == PHY_ROW_SAMPLE_SCAN || \
-      (type) == PHY_DDL_BLOCK_SAMPLE_SCAN)
+      (type) == PHY_DDL_BLOCK_SAMPLE_SCAN || \
+      (type) == PHY_EXTERNAL_BLOCK_SAMPLE_SCAN || \
+      (type) == PHY_EXTERNAL_ROW_SAMPLE_SCAN)
 
 enum JoinFilterMode
 {

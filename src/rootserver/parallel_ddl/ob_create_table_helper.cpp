@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -30,6 +23,7 @@
 #include "sql/resolver/ob_resolver_utils.h"
 #include "share/ob_fts_index_builder_util.h"
 #include "rootserver/ob_location_ddl_service.h"
+#include "rootserver/ob_random_partition_helper.h"
 #include "share/compaction_ttl/ob_compaction_ttl_util.h"
 #include "share/ob_license_utils.h"
 #include "share/search_index/ob_search_index_builder_util.h"
@@ -118,6 +112,7 @@ int ObCreateTableHelper::lock_objects_()
   if (FAILEDx(lock_objects_by_id_())) {
     LOG_WARN("fail to lock objects by id", KR(ret), K_(tenant_id));
   }
+  DEBUG_SYNC(BEFORE_DDL_POST_LOCK_OBJECTS_BY_ID);
   // 5. lock objects by id after related objects are locked.
   if (FAILEDx(post_lock_objects_by_id_())) {
     LOG_WARN("fail to lock objects by id in post", KR(ret));
@@ -501,6 +496,8 @@ int ObCreateTableHelper::prefetch_schemas_()
     LOG_WARN("fail to check table name", KR(ret));
   } else if (OB_FAIL(set_tablegroup_id_())) {
     LOG_WARN("fail to set tablegroup id", KR(ret));
+  } else if (OB_FAIL(set_tablespace_id_())) {
+    LOG_WARN("fail to set tablespace id", KR(ret));
   } else if (OB_FAIL(check_and_set_parent_table_id_())) {
     LOG_WARN("fail to check and set parent table id", KR(ret));
   }
@@ -699,6 +696,29 @@ int ObCreateTableHelper::set_tablegroup_id_()
 
   if (OB_SUCC(ret)) {
     (void) const_cast<ObTableSchema&>(table).set_tablegroup_id(tablegroup_id);
+  }
+  return ret;
+}
+
+int ObCreateTableHelper::set_tablespace_id_()
+{
+  int ret = OB_SUCCESS;
+  const ObTableSchema &table = arg_.schema_;
+  uint64_t tablespace_id = table.get_tablespace_id();
+  if (OB_FAIL(check_inner_stat_())) {
+    LOG_WARN("fail to check inner stat", KR(ret));
+  } else if (OB_INVALID_ID == tablespace_id) {
+    const uint64_t database_id = table.get_database_id();
+    const ObDatabaseSchema *database_schema = NULL;
+    if (OB_FAIL(schema_guard_wrapper_.get_database_schema(database_id, database_schema))) {
+      LOG_WARN("fail to get database schema", KR(ret), K_(tenant_id), K(database_id));
+    } else if (OB_ISNULL(database_schema)) {
+      ret = OB_ERR_BAD_DATABASE;
+      LOG_WARN("database not exist", KR(ret), K_(tenant_id), K(database_id));
+    } else {
+      tablespace_id = database_schema->get_default_tablespace_id();
+      (void) const_cast<ObTableSchema&>(table).set_tablespace_id(tablespace_id);
+    }
   }
   return ret;
 }
@@ -1356,6 +1376,32 @@ int ObCreateTableHelper::operate_schemas_() {
   } else if (OB_FAIL(inner_create_table_(&arg_.ddl_stmt_str_,
                                          replace_mock_fk_parent_table_id_))) {
     LOG_WARN("fail create table", KR(ret));
+  } else if (OB_FAIL(record_fts_dict_dependencies_())) {
+    LOG_WARN("fail to record fts dict dependencies", KR(ret));
+  }
+  return ret;
+}
+
+int ObCreateTableHelper::record_fts_dict_dependencies_()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(check_inner_stat_())) {
+    LOG_WARN("fail to check inner stat", KR(ret));
+  } else {
+    // new_tables_[0] is the data table, [1..N] are aux tables in the same order as index_arg_list_
+    for (int64_t i = 0; OB_SUCC(ret) && i < arg_.index_arg_list_.size(); i++) {
+      const int64_t table_idx = i + 1;
+      if (table_idx < new_tables_.count()) {
+        const ObTableSchema &index_schema = new_tables_.at(table_idx);
+        const obrpc::ObCreateIndexArg &index_arg = arg_.index_arg_list_.at(i);
+        if (index_schema.is_fts_index_aux()
+            && OB_FAIL(share::ObFtsIndexBuilderUtil::record_fts_dict_table_dependencies(
+                   index_schema, index_arg.index_option_, get_trans_()))) {
+          LOG_WARN("fail to record fts dict table dependencies", KR(ret),
+                   K(index_schema.get_table_id()));
+        }
+      }
+    }
   }
   return ret;
 }

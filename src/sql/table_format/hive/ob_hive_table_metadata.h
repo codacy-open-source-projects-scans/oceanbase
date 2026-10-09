@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_SQL_TABLE_FORMAT_HIVE_H
@@ -16,7 +9,7 @@
 #include "lib/allocator/ob_allocator.h"
 #include "lib/container/ob_array_wrap.h"
 #include "lib/string/ob_string.h"
-#include "share/catalog/hive/thrift/gen_cpp/hive_metastore_types.h"
+#include <hive_metastore_types.h>
 #include "share/catalog/ob_external_catalog.h"
 #include "share/ob_define.h"
 #include "sql/engine/cmd/ob_load_data_parser.h"

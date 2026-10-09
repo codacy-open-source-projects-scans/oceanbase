@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -16,7 +9,7 @@
 
 #include "ob_unit_manager.h"
 #include "share/ob_max_id_fetcher.h"
-#include "share/ob_tenant_memstore_info_operator.h"
+#include "share/ob_tenant_memory_info_operator.h"
 #include "rootserver/ddl_task/ob_sys_ddl_util.h"  // for ObSysDDLServiceUtil
 #include "rootserver/ob_root_service.h"
 #include "rootserver/ob_disaster_recovery_task_utils.h"
@@ -3525,7 +3518,7 @@ int ObUnitManager::check_tenant_exist_(
 
 int ObUnitManager::read_parameter_from_seed_tenant_(
     const char * parameter_name,
-    ObString &parameter_value)
+    ObSqlString &parameter_value)
 {
   int ret = OB_SUCCESS;
   ObSqlString sql;
@@ -3542,6 +3535,7 @@ int ObUnitManager::read_parameter_from_seed_tenant_(
   } else {
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       sqlclient::ObMySQLResult *result = NULL;
+      ObString tmp_value;
       if (OB_FAIL(GCTX.sql_proxy_->read(res, sql.ptr()))) {
         LOG_WARN("fail to execute sql", KR(ret), K(sql));
       } else if (OB_ISNULL(result = res.get_result())) {
@@ -3554,7 +3548,12 @@ int ObUnitManager::read_parameter_from_seed_tenant_(
           LOG_WARN("fail to get next row", KR(ret));
         }
       } else {
-        EXTRACT_VARCHAR_FIELD_MYSQL(*result, "value", parameter_value);
+        // tmp_value points to MySQLResult-owned buffer; deep copy into parameter_value
+        // before MySQLResult goes out of scope to avoid dangling reference.
+        EXTRACT_VARCHAR_FIELD_MYSQL(*result, "value", tmp_value);
+        if (FAILEDx(parameter_value.assign(tmp_value))) {
+          LOG_WARN("fail to deep copy parameter value", KR(ret), K(tmp_value));
+        }
       }
     }
   }
@@ -3567,7 +3566,7 @@ int ObUnitManager::check_tenant_enable_logonly_replica_(
   int ret = OB_SUCCESS;
   enable_logonly_replica = false;
   bool is_exist = false;
-  ObString parameter_value;
+  ObSqlString parameter_value;
   const char * parameter_name = ENABLE_LOGONLY_REPLICA;
   if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
@@ -3584,7 +3583,6 @@ int ObUnitManager::check_tenant_enable_logonly_replica_(
         enable_logonly_replica = tenant_config->enable_logonly_replica;
       }
     } else {
-      ObSqlString param_value;
       // tenant not exist yet, it means it's being created and value of seed tenant will be used
       // as this tenant's initial value. So try to get value from __all_seed_parameter.
       if (OB_FAIL(read_parameter_from_seed_tenant_(parameter_name , parameter_value))) {
@@ -3592,18 +3590,16 @@ int ObUnitManager::check_tenant_enable_logonly_replica_(
       } else if (parameter_value.empty()) {
         enable_logonly_replica = false;
         LOG_INFO("seed not set, use default value", KR(ret));
-      } else if (OB_FAIL(param_value.assign(parameter_value))) {
-        LOG_WARN("fail to assign param value", KR(ret), K(parameter_value));
       } else {
         bool is_valid = false;
-        enable_logonly_replica = ObConfigBoolParser::get(param_value.ptr(), is_valid);
+        enable_logonly_replica = ObConfigBoolParser::get(parameter_value.ptr(), is_valid);
         if (OB_UNLIKELY(!is_valid)) {
           // defensive check
           enable_logonly_replica = false;
-          LOG_INFO("parameter value is not expected", K(param_value));
+          LOG_INFO("parameter value is not expected", K(parameter_value));
         }
         LOG_INFO("tenant does not exist yet, try to get enable_logonly_replica from seed",
-                 KR(ret), K(tenant_id), K(enable_logonly_replica), K(parameter_value), K(is_valid), K(param_value));
+                 KR(ret), K(tenant_id), K(enable_logonly_replica), K(parameter_value), K(is_valid));
       }
     }
   }
@@ -3615,7 +3611,7 @@ int ObUnitManager::check_tenant_in_heterogeneous_deploy_mode(
 {
   int ret = OB_SUCCESS;
   bool is_exist = false;
-  ObString parameter_value;
+  ObSqlString parameter_value;
   const char * parameter_name = ZONE_DEPLOY_MODE;
   if (OB_UNLIKELY(!is_valid_tenant_id(tenant_id))) {
     ret = OB_INVALID_ARGUMENT;
@@ -3642,7 +3638,7 @@ int ObUnitManager::check_tenant_in_heterogeneous_deploy_mode(
         in_hetero_deploy_mode = false;
         LOG_INFO("seed not set, use default value HOMO", KR(ret));
       } else {
-        in_hetero_deploy_mode = 0 == parameter_value.case_compare(ObConfigZoneDeployModeChecker::HETERO_MODE_STR)
+        in_hetero_deploy_mode = 0 == parameter_value.string().case_compare(ObConfigZoneDeployModeChecker::HETERO_MODE_STR)
             ? true : false;
       }
       LOG_INFO("tenant does not exist yet, try to get zone_deploy_mode from seed",
@@ -6873,17 +6869,20 @@ int ObUnitManager::get_tenant_gts_unit_ids(
       LOG_WARN("failed to get ls status info", KR(ret), K(tenant_id));
     } else if (OB_FAIL(sys_ls_info.get_unit_list(unit_ids_tmp))) {
       LOG_WARN("fail to get unit list ids", KR(ret), K(sys_ls_info));
+    } else if (unit_ids_tmp.count() <= 0) {
+      // gts unit ids not set, empty array, no need to filter out LOGONLY units
     } else if (OB_FAIL(ut_operator.init(*GCTX.sql_proxy_))) {
       LOG_WARN("fail to init unit table operator", KR(ret));
     } else if (OB_FAIL(ut_operator.get_units_by_unit_ids(unit_ids_tmp, units_tmp))) {
       LOG_WARN("fail to get unit by ids", KR(ret), K(tenant_id), K(unit_ids_tmp));
-    }
-    // SYS LS L-replicas do not standalone. filter out LOGONLY units in sys ls unit_list.
-    ARRAY_FOREACH(units_tmp, idx) {
-      if (!ObReplicaTypeCheck::gts_standalone_applicable(units_tmp.at(idx).replica_type_)) {
-        // skip
-      } else if (OB_FAIL(unit_ids.push_back(units_tmp.at(idx).unit_id_))) {
-        LOG_WARN("fail to push back", KR(ret), K(units_tmp.at(idx).unit_id_));
+    } else {
+      // SYS LS L-replicas do not standalone. filter out LOGONLY units in sys ls unit_list.
+      ARRAY_FOREACH(units_tmp, idx) {
+        if (!ObReplicaTypeCheck::gts_standalone_applicable(units_tmp.at(idx).replica_type_)) {
+          // skip
+        } else if (OB_FAIL(unit_ids.push_back(units_tmp.at(idx).unit_id_))) {
+          LOG_WARN("fail to push back", KR(ret), K(units_tmp.at(idx).unit_id_));
+        }
       }
     }
   }
@@ -6891,6 +6890,7 @@ int ObUnitManager::get_tenant_gts_unit_ids(
 }
 
 int ObUnitManager::fill_delete_unit_ptr_array(
+    ObISQLClient &client,
     share::ObResourcePool *pool,
     const common::ObIArray<uint64_t> &delete_unit_id_array,
     const int64_t new_unit_num,
@@ -6917,6 +6917,22 @@ int ObUnitManager::fill_delete_unit_ptr_array(
     if (OB_UNLIKELY(NULL == pool)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid argument", K(ret), KP(pool));
+    } else {
+      // refresh unit_group_id from inner table to avoid stale in-memory values
+      ObArray<ObUnit> table_units;
+      if (OB_FAIL(ut_operator_.get_units_by_pool_id(client, pool->resource_pool_id_, table_units))) {
+        LOG_WARN("fail to get units from table", KR(ret), K(pool->resource_pool_id_));
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < table_units.count(); ++i) {
+        ObUnit *mem_unit = nullptr;
+        if (OB_FAIL(get_unit_by_id(table_units.at(i).unit_id_, mem_unit))) {
+          LOG_WARN("fail to get unit by id", KR(ret), K(table_units.at(i).unit_id_));
+        } else if (OB_NOT_NULL(mem_unit)) {
+          mem_unit->unit_group_id_ = table_units.at(i).unit_group_id_;
+        }
+      }
+    }
+    if (OB_FAIL(ret)) {
     } else if (pool->is_granted_to_tenant()
         && OB_FAIL(get_tenant_gts_unit_ids(pool->tenant_id_, gts_unit_ids))) {
       LOG_WARN("fail to get tenant gts unit ids", KR(ret), KPC(pool));
@@ -6987,7 +7003,7 @@ int ObUnitManager::shrink_pool_unit_num_(
     } else if (OB_FAIL(check_shrink_unit_num_zone_condition(pool, new_unit_num, delete_unit_id_array))) {
       LOG_WARN("fail to check shrink unit num zone condition", K(ret));
     } else if (OB_FAIL(fill_delete_unit_ptr_array(
-            pool, delete_unit_id_array, new_unit_num, output_delete_unit_ptr_array))) {
+            trans, pool, delete_unit_id_array, new_unit_num, output_delete_unit_ptr_array))) {
       LOG_WARN("fail to fill delete unit id array", K(ret));
     } else if (output_delete_unit_ptr_array.count() <= 0) {
       ret = OB_ERR_UNEXPECTED;
@@ -8781,23 +8797,75 @@ int ObUnitManager::check_shrink_memory(
     const double max_used_ratio = 0.9;
     const double shrink_ratio = static_cast<double>(new_memory)
         / static_cast<double>(old_memory);
-    int64_t max_used_memory = 0;
-    ObArray<ObTenantMemstoreInfoOperator::TenantServerMemInfo> mem_infos;
-    ObTenantMemstoreInfoOperator mem_info_operator(*proxy_);
+    ObArray<ObTenantMemoryInfoOperator::TenantServerMemoryInfo> tenant_mem_infos;
+    ObTenantMemoryInfoOperator mem_info_operator(*srv_rpc_proxy_, *proxy_, pool.tenant_id_);
     if (OB_FAIL(ret)) {
-      // failed
-    } else if (OB_FAIL(mem_info_operator.get(pool.tenant_id_, unit_servers, mem_infos))) {
-      LOG_WARN("mem_info_operator get failed", K(ret));
+    } else if (OB_FAIL(mem_info_operator.init())) {
+      LOG_WARN("fail to init mem_info_operator", KR(ret));
+    } else if (OB_FAIL(mem_info_operator.get(unit_servers, tenant_mem_infos))) {
+      LOG_WARN("mem_info_operator get failed", KR(ret));
     } else {
-      FOREACH_CNT_X(mem_info, mem_infos, OB_SUCCESS == ret) {
-        max_used_memory = static_cast<int64_t>(static_cast<double>(mem_info->memstore_limit_)
-            * shrink_ratio * max_used_ratio);
-        if (mem_info->total_memstore_used_ > max_used_memory) {
-          ret = OB_NOT_SUPPORTED;
-          LOG_USER_ERROR(OB_NOT_SUPPORTED, "requested memory over 90 percent of total available memory");
-          LOG_WARN("new memory will cause memory use percentage over ninety percentage",
-              "mem_info", *mem_info, K(old_memory), K(new_memory),
-              K(max_used_ratio), K(max_used_memory), K(ret));
+      FOREACH_CNT_X(tenant_mem_info, tenant_mem_infos, OB_SUCCESS == ret) {
+        const share::TenantMemstoreInfo &memstore_info = tenant_mem_info->get_memstore_info();
+        const share::TenantVectorMemInfo &vector_mem_info = tenant_mem_info->get_vector_mem_info();
+        int64_t max_memstore_mem = static_cast<int64_t>(static_cast<double>(memstore_info.memstore_limit_) * shrink_ratio * max_used_ratio);
+        int64_t vector_mem_used = vector_mem_info.raw_malloc_size_ +
+                                  vector_mem_info.index_metadata_size_ +
+                                  vector_mem_info.vector_mem_hold_;
+        int64_t max_vector_mem = static_cast<int64_t>(static_cast<double>(vector_mem_info.vector_mem_limit_)
+          * shrink_ratio * max_used_ratio);
+        if (vector_mem_used > max_vector_mem) {
+          ObSqlString message_to_user;
+          const char *view_name = OB_GV_OB_VECTOR_MEMORY_TNAME;
+          char ip_buf[common::OB_IP_STR_BUFF] = "";
+          if (OB_UNLIKELY(!mem_info_operator.is_rpc_supported_version())) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected: vector_mem_used > max_vector_mem but version not in supported ranges",
+                     K(vector_mem_used), K(max_vector_mem), KCV(GET_MIN_CLUSTER_VERSION()), KR(ret));
+          } else if (OB_UNLIKELY(!tenant_mem_info->get_server().ip_to_string(ip_buf, sizeof(ip_buf)))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("fail to convert server ip to string", KR(ret));
+          } else if (OB_FAIL(message_to_user.assign_fmt(
+              "The memory of vector index needs to be less than %.0f%% of the new memory "
+              "[tenant_id: %ld, server: %s:%d, old vector mem limit: %ld, vector_mem_used: %ld, new_memory: %ld, old_memory: %ld] "
+              "please check view %s, "
+              "shrink is",
+              max_used_ratio * 100,
+              tenant_mem_info->get_tenant_id(), ip_buf, tenant_mem_info->get_server().get_port(),
+              vector_mem_info.vector_mem_limit_,
+              vector_mem_used,
+              new_memory, old_memory, view_name))) {
+            LOG_WARN("fail to construct message to user", KR(ret));
+          } else {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, message_to_user.ptr());
+            LOG_WARN("new memory is not enough for vector index",
+                     K(*tenant_mem_info), K(old_memory), K(new_memory), K(max_used_ratio), K(max_vector_mem), K(ret));
+          }
+        } else if (memstore_info.total_memstore_used_ > max_memstore_mem) {
+          ObSqlString message_to_user;
+          const char *view_name = mem_info_operator.is_oracle_mode() ? OB_GV_OB_MEMSTORE_ORA_TNAME : OB_GV_OB_MEMSTORE_TNAME;
+          char ip_buf[common::OB_IP_STR_BUFF] = "";
+          if (OB_UNLIKELY(!tenant_mem_info->get_server().ip_to_string(ip_buf, sizeof(ip_buf)))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("fail to convert server ip to string", KR(ret));
+          } else if (OB_FAIL(message_to_user.assign_fmt(
+              "The memory of memstore needs to be less than %.0f%% of the new memory "
+              "[tenant_id: %ld, server: %s:%d, old memstore limit: %ld, memstore used: %ld, new_memory: %ld, old_memory: %ld] "
+              "please check view %s, "
+              "shrink is",
+              max_used_ratio * 100,
+              tenant_mem_info->get_tenant_id(), ip_buf, tenant_mem_info->get_server().get_port(),
+              memstore_info.memstore_limit_,
+              memstore_info.total_memstore_used_,
+              new_memory, old_memory, view_name))) {
+            LOG_WARN("fail to construct message to user", KR(ret));
+          } else {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, message_to_user.ptr());
+            LOG_WARN("new memory is not enough for memstore",
+                     K(*tenant_mem_info), K(old_memory), K(new_memory), K(max_used_ratio), K(max_memstore_mem), K(ret));
+          }
         }
       }
     }

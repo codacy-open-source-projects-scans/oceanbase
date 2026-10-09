@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_COMPACTION_OB_WINDOW_COMPACTION_UTILS_H_
@@ -30,9 +23,20 @@ public:
   int assign(const ObTabletCompactionScoreDynamicInfo &other);
   void gen_info(const int64_t compat_version, char* buf, const int64_t buf_len, int64_t &pos) const;
   bool is_valid() const { return cg_merge_batch_cnt_ > 0; }
-  TO_STRING_KV(K_(queuing_mode), K_(is_hot_tablet), K_(is_insert_mostly), K_(is_update_or_delete_mostly), K_(has_slow_query),
-               K_(has_accumulated_delete), K_(need_recycle_mds), K_(need_progressive_merge), K_(cg_merge_batch_cnt),
-               K_(query_cnt), K_(read_amplification_factor));
+  int64_t to_string(char *buf, const int64_t buf_len) const
+  {
+    int64_t pos = 0;
+    J_OBJ_START();
+    if (!is_valid()) {
+      BUF_PRINTF("empty");
+    } else {
+      J_KV(K_(queuing_mode), K_(is_hot_tablet), K_(is_insert_mostly), K_(is_update_or_delete_mostly), K_(has_slow_query),
+           K_(has_accumulated_delete), K_(need_recycle_mds), K_(need_progressive_merge), K_(cg_merge_batch_cnt),
+           K_(query_cnt), K_(read_amplification_factor));
+    }
+    J_OBJ_END();
+    return pos;
+  }
   OB_UNIS_VERSION(1);
 public:
   static constexpr uint32_t TCSDI_ONE_BIT = 1;

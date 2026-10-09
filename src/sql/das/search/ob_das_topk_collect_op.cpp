@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -56,6 +49,7 @@ int ObDASTopKCollectRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx
   } else if (0 == limit_datum->get_int()) {
     ObDASDummyOp *dummy_op = nullptr;
     ObDASDummyOpParam dummy_op_param;
+    dummy_op_param.set_is_scoring(ctdef->is_scoring());
     if (OB_FAIL(search_ctx.create_op(dummy_op_param, dummy_op))) {
       LOG_WARN("failed to create dummy op", KR(ret));
     } else {
@@ -64,6 +58,7 @@ int ObDASTopKCollectRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx
   } else {
     ObDASTopKCollectOpParam op_param;
     ObDASTopKCollectOp *topk_collect_op = nullptr;
+    op_param.set_is_scoring(ctdef->is_scoring());
     op_param.limit_ = limit_datum->get_int();
     op_param.child_ = child_op;
     if (OB_FAIL(search_ctx.create_op(op_param, topk_collect_op))) {

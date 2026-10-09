@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OB_STORAGE_DDL_DAG_MONITOR_MGR_H__
@@ -58,7 +51,9 @@ public:
 
   // Cleanup API:
   // - CLEAN_ALL_NODE: remove all nodes
-  // - CLEAN_EXPIRED_NODE: remove finished & expired nodes
+  // - CLEAN_EXPIRED_NODE: remove finished & expired nodes, plus finished nodes whose
+  //                       info list has already been drained (to avoid empty nodes
+  //                       piling up in the allocator while waiting for TTL)
   // - CLEAN_FINISHED_INFO: if node expired, remove node; otherwise clean finished infos in node
   int clean_nodes(const CleanMode mode);
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_RS_RPC_PROCESSOR_H_
@@ -42,6 +35,7 @@ inline bool is_parallel_ddl(const obrpc::ObRpcPacketCode pcode, const obrpc::ObD
          || obrpc::OB_PARALLEL_DROP_TABLE == pcode
          || obrpc::OB_PARALLEL_CREATE_NORMAL_TENANT == pcode
          || obrpc::OB_PARALLEL_HTABLE_DDL == pcode
+         || obrpc::OB_PARALLEL_ALTER_TABLE == pcode
          || obrpc::OB_NON_ATOMIC_DROP_TABLE_IN_DATABASE == pcode;
   if (OB_ISNULL(ddl_arg)) {
   } else if (!is_valid_tenant_id(ddl_arg->exec_tenant_id_)) {
@@ -530,8 +524,11 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_RECOVER_RESTORE_TABLE_DDL, ObRpcRecoverRes
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_PARALLEL_CREATE_TABLE, ObRpcParallelCreateTableP, parallel_create_table(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_PARALLEL_SET_COMMENT, ObRpcSetCommentP, set_comment(arg_, result_));
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_ALTER_TABLE, ObRpcAlterTableP, alter_table(arg_, result_));
+DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_PARALLEL_ALTER_TABLE, ObRpcParallelAlterTableP, parallel_alter_table(arg_, result_));
+DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_ALTER_VIEW, ObRpcAlterViewP, alter_view(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_EXCHANGE_PARTITION, ObRpcExchangePartitionP, exchange_partition(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_SPLIT_GLOBAL_INDEX_TABLET, ObSplitGlobalIndexTabletTaskP, split_global_index_tablet(arg_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ALTER_RANDOM_DISTRIBUTION_PARTITION, ObAlterRandomDistributionPartitionP, alter_random_distribution_partition(arg_, result_));
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_DROP_TABLE, ObRpcDropTableP, drop_table(arg_, result_));
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_PARALLEL_DROP_TABLE, ObRpcParallelDropTableP, parallel_drop_table(arg_, result_));
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_RENAME_TABLE, ObRpcRenameTableP, rename_table(arg_));
@@ -802,6 +799,8 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_FORCE_DROP_LONELY_LOB_AUX_TABLE, ObForceDr
 // external resource ddl
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_EXTERNAL_RESOURCE, ObRpcCreateExternalResourceP, create_external_resource(arg_, result_));
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_EXTERNAL_RESOURCE, ObRpcDropExternalResourceP, drop_external_resource(arg_, result_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ORA_UPLOAD_JAR, ObRpcOraUploadJarP, ora_upload_jar_external_resource(arg_, result_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_ORA_DROP_JAR, ObRpcOraDropJarP, ora_drop_jar_external_resource(arg_, result_));
 // htable ddl
 DEFINE_DDL_SYS_TNT_RPC_PROCESSOR(obrpc::OB_PARALLEL_HTABLE_DDL, ObRpcParallelHTableDDLP, parallel_htable_ddl(arg_, result_));
 
@@ -815,6 +814,11 @@ DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_HANDLE_SENSITIVE_RULE_DDL, ObRpcHandleSens
 DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_NON_ATOMIC_DROP_TABLE_IN_DATABASE, ObRpcNonAtomicDropTableInDatabaseP, non_atomic_drop_table_in_database(arg_, result_));
 
 DEFINE_RS_RPC_PROCESSOR(obrpc::OB_GET_REFRESHED_SCHEMA_VERSIONS, ObRpcGetRefreshedSchemaVersionsP, get_refreshed_schema_versions(result_));
+
+// java policy ddl
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_CREATE_JAVA_POLICY, ObRpcCreateJavaPolicyP, create_java_policy(arg_, result_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_DROP_JAVA_POLICY, ObRpcDropJavaPolicyP, drop_java_policy(arg_, result_));
+DEFINE_DDL_RS_RPC_PROCESSOR(obrpc::OB_MODIFY_JAVA_POLICY, ObRpcModifyJavaPolicyP, modify_java_policy(arg_, result_));
 
 #undef DEFINE_RS_RPC_PROCESSOR_
 #undef DEFINE_RS_RPC_PROCESSOR

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef LATCH_DEF
@@ -402,7 +395,7 @@ LATCH_DEF(TABLE_LOAD_STORE_RW_LOCK, 366, "table load read write lock", LATCH_FIF
 LATCH_DEF(TABLE_LOAD_TRANS_LOCK, 367, "table load trans lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(TABLE_LOAD_RESOURCE_SERVICE_LOCK, 368, "table load resource service lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(JAVA_ENV_LOCK, 369, "java env lock", LATCH_FIFO, 2000, 0, true)
-LATCH_DEF(JAVA_HELPER_LOCK, 370, "java helper lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(JNI_ENV_INIT_LOCK, 370, "jni env init lock", LATCH_FIFO, 2000, 0, true) // FARM COMPAT WHITELIST
 LATCH_DEF(MERGE_FROZEN_LOCK, 371, "merge frozen lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(TENANT_TABLET_SCHEDUAL_LOCK, 372, "tenant tablet schedual lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(TABLET_EMPTY_SHELL_HANDLER_LOCK, 373, "tablet empty shell handler lock", LATCH_FIFO, 2000, 0, true)
@@ -435,7 +428,11 @@ LATCH_DEF(VECTOR_SYNC_SWITCH_LOCK, 396, "vector sync switch lock", LATCH_FIFO, 5
 LATCH_DEF(VECTOR_IVF_CACHE_LOCK, 397, "vector ivf cache lock", LATCH_READ_PREFER, 1000, 0, true)
 LATCH_DEF(ERRSIM_LOCK, 398, "ob errsim lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(VECTOR_COMPLETE_LOCK, 399, "vector complete lock", LATCH_FIFO, 200, 0, true)
-LATCH_DEF(JVM_FUNCTION_HELPER_MUTEX, 407, "jvm function helper mutex", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(GI_GLOBAL_TASK_COLLECT_LOCK, 400, "gi global task collect lock", LATCH_FIFO, 200, 0, true)
+LATCH_DEF(OB_VECTOR_INDEX_DUMP_INFO_LOCK, 401, "ob vector index dump info lock", LATCH_FIFO, 200, 0, true)
+LATCH_DEF(OB_VECTOR_ASSIGNMENT_LOCK, 402, "ob vector assignment lock", LATCH_FIFO, 200, 0, true)
+LATCH_DEF(OB_TENANT_CONFIG_CACHE_LOCK, 403, "ob tenant config cache lock", LATCH_FIFO, 200, 0, true)
+LATCH_DEF(JAVA_PLUGIN_DISCOVER_LOCK, 407, "java plugin discover lock", LATCH_FIFO, 2000, 0, true)  // FARM COMPAT WHITELIST
 LATCH_DEF(OB_DEDUP_QUEUE_MUTEX, 408, "ob dedup queue mutex", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(OB_TIMER_SERVICE_MUTEX, 409, "ob timer service mutex", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(PALF_DISK_HANG_DETECTOR_SPIN_LOCK, 410, "palf disk hang detector spin lock", LATCH_FIFO, 2000, 0, true)
@@ -992,7 +989,19 @@ LATCH_DEF(DDL_SORT_PROVIDER_LOCK, 957, "ob ddl sort provider lock", LATCH_FIFO, 
 LATCH_DEF(AI_MODEL_CONFIG_MGR_LOCK, 958, "ai model config manager lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(OB_VEC_IDX_ASYNC_TASK_SCHEDULER_EXECUTOR_MAP_LOCK, 959, "vec idx async task scheduler executor map lock", LATCH_FIFO, 2000, 0, true)
 LATCH_DEF(MA_SYNC_MODE_SWITCH_LOCK, 960, "ma protection level switch helper lock", LATCH_FIFO, 2000, 0, true)
-LATCH_DEF(LATCH_END, 961, "latch end", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(OB_RS_RANDOM_PARTITION_SCHEDULER_LOCK, 961, "ob rs random partition scheduler lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(OB_INSPECTION_SERVICE_LOCK, 962, "ob inspection service lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(OB_SCHEMA_HISTORY_RECYCLE_SERVICE_LOCK, 963, "ob schema history recycle service lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(FT_DICT_BUILD_SLOTS_LOCK, 964, "fulltext dict build slots lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(FT_DICT_ROW_SCN_CACHE_LOCK, 965, "fulltext dict row scn cache lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(SANDBOX_LOCK, 966, "ob_sandbox and sandbox manager lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(OB_PLUGIN_VECTOR_INDEX_TASK_CTX_MAP_LOCK, 967, "ob plugin vector index task ctx map lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(VECTOR_LS_MGR_MAP_LOCK, 968, "vector ls mgr map lock", LATCH_READ_PREFER, 2000, 0, true)
+LATCH_DEF(MVIEW_TASK_QUEUE_LOCK, 969, "mview task queue lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(MVIEW_PENDING_TASK_INSPECTION_LOCK, 970, "mview pending task inspection lock", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(OB_ARB_MONITOR_LOCK, 971, "ob arb monitor lock", LATCH_READ_PREFER, 2000, 0, true)
+LATCH_DEF(JAVA_DATASOURCE_INIT_MUTEX, 972, "java datasource init mutex", LATCH_FIFO, 2000, 0, true)
+LATCH_DEF(LATCH_END, 973, "latch end", LATCH_FIFO, 2000, 0, true)
 
 #endif
 

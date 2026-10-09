@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -244,7 +237,8 @@ int ObExprNeg::calc_result_type1(ObExprResType &type, ObExprResType &type1, ObEx
         type.set_precision(ObAccuracy::DDL_DEFAULT_ACCURACY2[ORACLE_MODE][type.get_type()].
             get_precision());
       } else {
-        if (type.get_type() == ObDoubleType && !ob_is_numeric_tc(type1.get_type_class())) {
+        if (type.get_type() == ObDoubleType && !ob_is_numeric_tc(type1.get_type_class()) && !ob_is_temporal_type(type1.get_type())) {
+          // type is double, input is not numeric (and not temporal type)
           // In this case, the parameter's precision has no effect on the result precision,
           // and should be consistent with the deduction logic in ObRawExprDeduceType::try_add_cast_expr_above_for_deduce_type
           type.set_scale(SCALE_UNKNOWN_YET);

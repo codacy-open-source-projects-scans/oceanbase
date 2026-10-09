@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -22,7 +15,6 @@ using namespace sql;
 using namespace sql::dtl;
 namespace sql
 {
-
 OB_SERIALIZE_MEMBER((ObPxMSReceiveVecOpInput, ObPxReceiveOpInput));
 
 OB_SERIALIZE_MEMBER((ObPxMSReceiveVecSpec, ObPxReceiveSpec),
@@ -200,6 +192,9 @@ int ObPxMSReceiveVecOp::release_merge_inputs()
 {
   int ret = OB_SUCCESS;
   int release_merge_sort_ret = OB_SUCCESS;
+  if (merge_inputs_.count() > MAX_INPUT_NUMBER) {
+    LOG_TRACE("too much local order inputs", K(merge_inputs_.count()));
+  }
   while (0 < merge_inputs_.count()) {
     MergeSortInput *msi = NULL;
     if (OB_SUCCESS != (release_merge_sort_ret = merge_inputs_.pop_back(msi))) {
@@ -602,6 +597,31 @@ void ObPxMSReceiveVecOp::GlobalOrderInput::destroy()
   add_row_store_ = nullptr;
 }
 
+void ObPxMSReceiveVecOp::set_adaptive_block_size(
+    ObTempRowStore &row_store, const int64_t n_channel)
+{
+  if (n_channel > ADAPTIVE_BLOCK_CHANNEL_THRESHOLD) {
+    // Adaptive block sizing: reduce block sizes for high-fanin merge sort to avoid OOM.
+    // With DOP=N, each merge sort receive has N channels, each needing at least one active
+    // data block + index block in memory (cannot be dumped). Using smaller blocks limits
+    // the minimum undumpable memory.
+    // Formula: block_size rounds down to power-of-2, clamped to [MIN_BLOCK_SIZE, BLOCK_SIZE]
+    int64_t raw_blk_size = ObTempBlockStore::BLOCK_SIZE
+        * ADAPTIVE_BLOCK_CHANNEL_THRESHOLD / n_channel;
+    int64_t target_blk_size = next_pow2(raw_blk_size);
+    if (target_blk_size > raw_blk_size) {
+      target_blk_size >>= 1;
+    }
+    target_blk_size = std::max(ObTempBlockStore::MIN_BLOCK_SIZE, target_blk_size);
+    const int64_t target_idx_size = std::max(ObTempBlockStore::MIN_IDX_BLOCK_SIZE,
+        target_blk_size / 2);
+    row_store.set_default_block_size(target_blk_size);
+    row_store.set_index_block_size(target_idx_size);
+    LOG_TRACE("adaptive block sizing for ms receive",
+        K(n_channel), K(target_blk_size), K(target_idx_size));
+  }
+}
+
 int ObPxMSReceiveVecOp::GlobalOrderInput::create_temp_row_store(
   ObPxMSReceiveVecOp &ms_receive_op, uint64_t tenant_id, ObTempRowStore *&row_store)
 {
@@ -634,6 +654,7 @@ int ObPxMSReceiveVecOp::GlobalOrderInput::create_temp_row_store(
       LOG_WARN("row store init fail", K(ret));
     } else {
       row_store->set_dir_id(sql_mem_processor_->get_dir_id());
+      set_adaptive_block_size(*row_store, ms_receive_op.get_channel_count());
     }
   }
   return ret;
@@ -718,8 +739,6 @@ int ObPxMSReceiveVecOp::inner_get_next_batch(const int64_t max_row_cnt)
     LOG_ERROR("Get operator context failed", K(ret), K(MY_SPEC.id_));
   } else if (OB_FAIL(try_link_channel())) {
     LOG_WARN("failed to init channel", K(ret));
-  } else if (OB_FAIL(try_send_bloom_filter())) {
-    LOG_WARN("fail to send bloom filter", K(ret));
   } else if (use_ordered_aggr_opt()) {
     ret = inner_get_next_ordered_aggr_batch(max_row_cnt);
   } else {
@@ -852,6 +871,7 @@ int ObPxMSReceiveVecOp::new_local_order_input(MergeSortInput *&out_msi)
     local_input->row_store_.set_callback(&sql_mem_processor_);
     local_input->row_store_.set_io_event_observer(&io_event_observer_);
     ObMemAttr mem_attr(ctx_.get_my_session()->get_effective_tenant_id(), "PxMSRecvLocal", ObCtxIds::WORK_AREA);
+    bool push_succ = false;
     if (OB_FAIL(local_input->row_store_.init(MY_SPEC.all_exprs_, get_spec().max_batch_size_,
                                          mem_attr, 0 /* mem_limit */, true /* enable_dump*/,
                                          0 /*row_extra_size*/,
@@ -859,13 +879,20 @@ int ObPxMSReceiveVecOp::new_local_order_input(MergeSortInput *&out_msi)
       LOG_WARN("failed to init temp row store", K(ret));
     } else if (FALSE_IT(local_input->row_store_.set_dir_id(sql_mem_processor_.get_dir_id()))) {
       LOG_WARN("failed to allocate dir id for temp row store", K(ret));
+    } else {
+      set_adaptive_block_size(local_input->row_store_, get_channel_count());
+    }
+    if (OB_FAIL(ret)) {
     } else if (OB_FAIL(merge_inputs_.push_back(local_input))) {
       LOG_WARN("fail push back MergeSortInput", K(ret));
+    } else {
+      push_succ = true;
+      out_msi = local_input;
+    }
+    if (OB_FAIL(ret) && !push_succ && NULL != local_input) {
       local_input->clean_row_store(ctx_);
       local_input->destroy();
       mem_context_->get_malloc_allocator().free(local_input);
-    } else {
-      out_msi = local_input;
     }
   }
   return ret;
@@ -982,9 +1009,6 @@ int ObPxMSReceiveVecOp::get_all_rows_from_channels(ObPhysicalPlanCtx *phy_plan_c
                            && OB_FAIL(full_dump_array.push_back(cur_temp_store))) {
                   LOG_WARN("push back failed", K(ret));
                 // create a new local input
-                } else if (OB_UNLIKELY(merge_inputs_.count() > MAX_INPUT_NUMBER)) {
-                  ret = OB_ERR_UNEXPECTED;
-                  LOG_WARN("too much local order inputs", K(ret));
                 } else if (OB_FAIL(new_local_order_input(new_msi))) {
                   LOG_WARN("failed to create new local order input", K(ret));
                 } else {
@@ -1300,14 +1324,14 @@ int ObPxMSReceiveVecOp::MergeSortInput::need_dump(ObSqlMemMgrProcessor &sql_mem_
 {
   int ret = OB_SUCCESS;
   need_dump = false;
-  if (sql_mem_processor.get_data_size() > sql_mem_processor.get_mem_bound()
+  if (alloc.used() > sql_mem_processor.get_mem_bound()
           && GCONF.is_sql_operator_dump_enabled()
           && OB_FAIL(sql_mem_processor.extend_max_memory_size(
             &alloc,
             [&](int64_t max_memory_size) {
-              return sql_mem_processor.get_data_size() > max_memory_size;
+              return alloc.used() > max_memory_size;
             },
-            need_dump, sql_mem_processor.get_data_size()))) {
+            need_dump, alloc.used()))) {
     LOG_WARN("failed to extend max memory size", K(ret));
   }
   return ret;

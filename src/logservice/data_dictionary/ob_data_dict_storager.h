@@ -1,15 +1,7 @@
 /**
-* Copyright (c) 2022 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*
-*/
+ * Copyright (c) 2022 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #ifndef OCEANBASE_DICT_SERVICE_DATA_DICTIONARY_STORAGER_
 #define OCEANBASE_DICT_SERVICE_DATA_DICTIONARY_STORAGER_
@@ -63,6 +55,10 @@ public:
   //                                "ddl_trans commit" if all schema_array are empty.
   // @param [out] buf_len          length of the buf, should usally times of 2M.
   // @param [out] pos              pos of serialized data_dict_meta, should be less than buf_len.
+  // @param [in]  sql_client       optional sql_client used to read GTT v2 session tablet ids. when
+  //                               the caller serializes inc schema inside an uncommitted trans, pass
+  //                               the trans so the query sees its own uncommitted writes. defaults to
+  //                               GCTX.sql_proxy_ when null.
   static int gen_and_serialize_dict_metas(
       ObIAllocator &allocator,
       const ObIArray<const share::schema::ObTenantSchema*> &tenant_schemas,
@@ -70,7 +66,8 @@ public:
       const ObIArray<const share::schema::ObTableSchema*> &table_schemas,
       char *&buf,
       int64_t &buf_len,
-      int64_t &pos);
+      int64_t &pos,
+      common::ObISQLClient *sql_client = nullptr);
   // use parse_dict_metas API if all metas is serialized in the buf.
   static int parse_dict_metas(
       ObIAllocator &allocator,

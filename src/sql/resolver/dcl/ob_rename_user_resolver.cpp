@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -69,9 +62,9 @@ int ObRenameUserResolver::resolve(const ParseNode &parse_tree)
             ret = OB_ERR_NO_PRIVILEGE;
             LOG_WARN("__oceanbase_inner_restore_user is reserved", K(ret));
           } else if (from_user.length() > OB_MAX_USER_NAME_LENGTH) {
-            LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, from_user.length(), from_user.ptr());
+            LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, from_user.length(), from_user.ptr(), OB_MAX_USER_NAME_LENGTH);
           } else if (to_user.length() > OB_MAX_USER_NAME_LENGTH) {
-            LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, to_user.length(), to_user.ptr());
+            LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, to_user.length(), to_user.ptr(), OB_MAX_USER_NAME_LENGTH);
           } else if (OB_FAIL(check_dcl_on_inner_user(node->type_,
                                                      session_info_->get_priv_user_id(),
                                                      from_user,

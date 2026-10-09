@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -2948,6 +2941,12 @@ int ObPDAggFactory::alloc_cell(
           ret = OB_ALLOCATE_MEMORY_FAILED;
           LOG_WARN("Failed to alloc memroy for agg cell", K(ret));
         }
+        break;
+      }
+      case T_FUN_SYS_EXT_MIN:
+      case T_FUN_SYS_EXT_MAX: {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("ext_min/ext_max storage pushdown requires vector 2.0", K(ret), K(basic_info.agg_expr_->type_));
         break;
       }
       default: {

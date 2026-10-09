@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL_ENG
 
@@ -16,6 +9,7 @@
 #include "lib/json_type/ob_json_parse.h"
 #include <fast_float/fast_float.h>
 #include "src/share/object/ob_obj_cast_util.h"
+#include "sql/session/ob_sql_session_info.h"
 #include <string>
 #include <regex>
 
@@ -430,9 +424,10 @@ int ObArrayCastUtils::add_json_node_to_array(common::ObIAllocator &alloc, ObJson
           ObArrayBinary *dst_arr = static_cast<ObArrayBinary *>(dst);
           ObStringBuffer str_buf(&alloc);
           ObAccuracy dst_acc = basic_type->basic_meta_.get_accuracy();
+          const ObCollationType cs_type = basic_type->basic_meta_.meta_.get_collation_type();
           if (OB_FAIL(j_node.print(str_buf, false))) {
             LOG_WARN("failed to push back array value", K(ret));
-          } else if (str_buf.length() > dst_acc.get_length()) {
+          } else if (static_cast<int32_t>(ObCharset::strlen_char(cs_type, str_buf.ptr(), str_buf.length())) > dst_acc.get_length()) {
             ret = OB_ERR_DATA_TOO_LONG;
             LOG_WARN("char type length is too long", K(ret), K(str_buf.length()), K(dst_acc.get_length()));
           } else if (OB_FAIL(dst_arr->push_back(str_buf.string()))) {
@@ -595,7 +590,8 @@ int ObArrayCastUtils::string_cast_map(common::ObIAllocator &alloc,
                                       ObIArrayType *&dst,
                                       const ObCollectionMapType *dst_map_type,
                                       ObCastMode cast_mode,
-                                      const bool is_sparse_vector)
+                                      const bool is_sparse_vector,
+                                      sql::ObSQLSessionInfo *session)
 {
   int ret = OB_SUCCESS;
   std::string src_text(arr_text.ptr(), arr_text.length());
@@ -610,6 +606,10 @@ int ObArrayCastUtils::string_cast_map(common::ObIAllocator &alloc,
   uint64_t err_offset = 0;
   ObJsonNode *j_node = NULL;
   uint32_t parse_flag = ObJsonParser::JSN_RELAXED_FLAG;
+  bool json_float_full_precision =
+    OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+  ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                   ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
   if (OB_FAIL(ObJsonParser::parse_json_text(&alloc, src_text.data(), src_text.length(), syntaxerr, &err_offset, j_node, parse_flag))) {
     LOG_WARN("failed to parse array text", K(ret), K(arr_text), KCSTRING(syntaxerr), K(err_offset));
   } else if (j_node->json_type() != ObJsonNodeType::J_OBJECT) {
@@ -1143,13 +1143,18 @@ int ObArrayCastUtils::string_cast_vector(common::ObIAllocator &alloc, ObString &
 }
 
 int ObArrayCastUtils::string_cast(common::ObIAllocator &alloc, ObString &arr_text,
-                                  ObIArrayType *&dst, const ObCollectionTypeBase *dst_elem_type)
+                                  ObIArrayType *&dst, const ObCollectionTypeBase *dst_elem_type,
+                                  sql::ObSQLSessionInfo *session)
 {
   int ret = OB_SUCCESS;
   const char *syntaxerr = NULL;
   uint64_t err_offset = 0;
   ObJsonNode *j_node = NULL;
   uint32_t parse_flag = ObJsonParser::JSN_RELAXED_FLAG;
+  bool json_float_full_precision =
+    OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+  ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                   ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
   if (OB_FAIL(
           ObJsonParser::parse_json_text(&alloc, arr_text.ptr(), arr_text.length(), syntaxerr, &err_offset, j_node, parse_flag))) {
     LOG_WARN("failed to parse array text", K(ret), K(arr_text), KCSTRING(syntaxerr), K(err_offset));

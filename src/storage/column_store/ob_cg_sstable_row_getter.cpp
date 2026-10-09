@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_cg_sstable_row_getter.h"
@@ -325,7 +318,8 @@ int ObCGSSTableRowGetter::prepare_cg_row_getter(const ObNopPos *nop_pos, ObIArra
     int64_t rowkey_cnt = read_info->get_rowkey_count();
     const ObColumnIndexArray &cols_index = read_info->get_columns_index();
     int64_t column_cnt = (nullptr == nop_pos) ? iter_param_->get_out_col_cnt() : nop_pos->count();
-    int64_t column_group_cnt = co_sstable_->get_cs_meta().get_column_group_count();
+    // TODO(@DanLing) disable hidden cg query temporarily
+    const int64_t column_group_cnt = co_sstable_->get_column_group_count(false/*include hidden cg*/);
     ObSSTableWrapper table_wrapper;
     ObTableIterParam* cg_param = nullptr;
     int32_t cg_idx = INT32_MAX;

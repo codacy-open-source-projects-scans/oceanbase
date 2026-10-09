@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -25,6 +18,8 @@
 
 namespace oceanbase
 {
+namespace share { namespace schema { class ObSchemaGuardWrapper; }}
+
 namespace share
 {
 
@@ -133,12 +128,31 @@ enum ObVecIndexType : uint8_t //FARM COMPAT WHITELIST
   VEC_INDEX_ADAPTIVE_SCAN = 4
 };
 
+enum ObVecPathType : uint8_t //FARM COMPAT WHITELIST
+{
+  VEC_PATH_INVALID = 0,
+  VEC_PATH_PRE_KNN = 1,
+  VEC_PATH_PRE_BRUTE = 2,
+  VEC_PATH_POST_ITERATIVE_FILTER_SEARCH_DRIVER_MODE = 3,
+  VEC_PATH_POST_ITERATIVE_FILTER_EXPR_FILTER_MODE = 4,
+  VEC_PATH_POST_FILTER_SEARCH_DRIVER_MODE = 5,
+  VEC_PATH_POST_FILTER_EXPR_FILTER_MODE = 6,
+  VEC_PATH_POST_WITHOUT_FILTER = 7
+};
+
 enum ObVectorIndexSyncIntervalType
 {
   VSIT_IMMEDIATE = 0,  // 'immediate'
   VSIT_MANUAL = 1,     // 'manual'
   VSIT_NUMERIC = 2,    // numeric value (seconds)
   VSIT_MAX
+};
+
+enum ObVectorIndexContentType
+{
+  VICT_TEXT = 0,
+  VICT_IMAGE = 1,
+  VICT_MAX
 };
 
 static const int64_t OB_MAX_ENDPOINT_LENGTH = 512;
@@ -180,7 +194,7 @@ struct ObVectorIndexParam //FARM COMPAT WHITELIST
     refine_type_(0), bq_bits_query_(DEFAULT_BQ_BITS_QUERY),
     refine_k_(DEFAULT_REFINE_K), bq_use_fht_(false), sync_interval_type_(VSIT_MAX), sync_interval_value_(0), nbits_(0),
     prune_(false), refine_(false), ob_sparse_drop_ratio_build_(0), window_size_(DEFAULT_WINDOW_SIZE),
-    ob_sparse_drop_ratio_search_(0), similarity_threshold_(0)
+    ob_sparse_drop_ratio_search_(0), similarity_threshold_(0), content_type_(VICT_TEXT)
   {
     MEMSET(endpoint_, 0, sizeof(endpoint_));
   }
@@ -210,6 +224,7 @@ struct ObVectorIndexParam //FARM COMPAT WHITELIST
     MEMSET(endpoint_, 0, sizeof(endpoint_));
     nbits_ = 0;
     similarity_threshold_ = 0;
+    content_type_ = VICT_TEXT;
   };
   int assign(const ObVectorIndexParam &other) {
     int ret = OB_SUCCESS;
@@ -237,6 +252,7 @@ struct ObVectorIndexParam //FARM COMPAT WHITELIST
     window_size_ = other.window_size_;
     ob_sparse_drop_ratio_search_ = other.ob_sparse_drop_ratio_search_;
     similarity_threshold_ = other.similarity_threshold_;
+    content_type_ = other.content_type_;
     MEMCPY(endpoint_, other.endpoint_, sizeof(endpoint_));
     return ret;
   };
@@ -268,6 +284,7 @@ struct ObVectorIndexParam //FARM COMPAT WHITELIST
   int window_size_;
   float ob_sparse_drop_ratio_search_;
   float similarity_threshold_;
+  ObVectorIndexContentType content_type_;
   OB_UNIS_VERSION(1);
 private:
   int print_hnsw_params(char *buf, int64_t buf_len, int64_t &pos) const;
@@ -315,7 +332,9 @@ static const uint64_t MAX_IVF_POST_DIST_CALC_CNT = 500000;
       is_multi_value_index_(false),
       is_spatial_index_(false),
       can_extract_range_(false),
-      with_extra_info_(false) {}
+      with_extra_info_(false),
+      strategy_(ObVecIdxQueryStrategy::RECALL_FIRST),
+      pre_filtering_timeout_(-1) {}
   inline void set_vec_idx_type(ObVecIndexType vec_idx_type) { vec_idx_type_ = vec_idx_type;}
   ObVecIndexType get_vec_idx_type() const { return vec_idx_type_; }
   inline double get_selectivity() const { return selectivity_; }
@@ -323,7 +342,10 @@ static const uint64_t MAX_IVF_POST_DIST_CALC_CNT = 500000;
   inline void set_row_count(int64_t row_count) { row_count_ = row_count;}
   inline void set_can_use_vec_pri_opt(bool can_use_vec_pri_opt) {can_use_vec_pri_opt_ = can_use_vec_pri_opt;}
   bool can_use_vec_pri_opt() const { return can_use_vec_pri_opt_; }
-
+  inline void set_query_strategy(ObVecIdxQueryStrategy strategy) { strategy_ = strategy; }
+  inline ObVecIdxQueryStrategy get_query_strategy() const { return strategy_; }
+  inline void set_pre_filtering_timeout(int64_t pre_filtering_timeout) { pre_filtering_timeout_ = pre_filtering_timeout; }
+  inline int64_t get_pre_filtering_timeout() const { return pre_filtering_timeout_; }
   inline bool is_hnsw_vec_scan() const
   {
     return vector_index_param_.type_ == ObVectorIndexAlgorithmType::VIAT_HNSW ||
@@ -363,7 +385,8 @@ static const uint64_t MAX_IVF_POST_DIST_CALC_CNT = 500000;
   }
   TO_STRING_KV(K_(vec_idx_type), K_(adaptive_try_path), K_(selectivity), K_(row_count),
   K_(can_use_vec_pri_opt), K_(is_multi_value_index), K_(is_spatial_index),
-  K_(can_extract_range), K_(with_extra_info), K_(vector_index_param));
+  K_(can_extract_range), K_(with_extra_info), K_(vector_index_param),
+  K_(strategy), K_(pre_filtering_timeout));
   ObVecIndexType vec_idx_type_;                // pre & post & adaptive
   ObVecIdxAdaTryPath adaptive_try_path_;
   double selectivity_;
@@ -374,6 +397,8 @@ static const uint64_t MAX_IVF_POST_DIST_CALC_CNT = 500000;
   bool is_spatial_index_;
   bool can_extract_range_;
   bool with_extra_info_;
+  ObVecIdxQueryStrategy strategy_;
+  int64_t pre_filtering_timeout_;
 };
 
 struct VecIndexAccessInfo
@@ -392,6 +417,16 @@ struct VecIndexAccessInfo
   bool has_vec_index() const { return inited_;}
   bool is_pre_filter() const { return inited_ && vec_extra_info_.is_pre_filter(); }
   bool is_post_filter() const { return inited_ && vec_extra_info_.is_post_filter(); }
+  int assign(const VecIndexAccessInfo &other) {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(vec_index_ids_.assign(other.vec_index_ids_))) {
+      SERVER_LOG(WARN, "failed to assign vec index ids", K(ret));
+    } else {
+      vec_extra_info_ = other.vec_extra_info_;
+      inited_ = other.inited_;
+    }
+    return ret;
+  }
   TO_STRING_KV(K_(vec_extra_info), K_(vec_index_ids), K_(inited));
 
   ObVecIdxExtraInfo vec_extra_info_;
@@ -797,7 +832,7 @@ public:
       const ObTableSchema &index_table_schema,
       const uint64_t data_table_id,
       const bool is_vec_inner_drop,
-      share::schema::ObSchemaGetterGuard &schema_guard,
+      share::schema::ObSchemaGuardWrapper &schema_guard_wrapper,
       rootserver::ObDDLOperator &ddl_operator,
       common::ObMySQLTransaction &trans,
       common::ObIArray<share::schema::ObTableSchema> &new_aux_schemas);
@@ -838,6 +873,12 @@ public:
       const uint64_t tenant_id,
       const uint64_t table_id,
       const uint64_t index_id);
+  static int check_rename_rebuild_confilt(
+      share::schema::ObSchemaGetterGuard &schema_guard,
+      common::ObMySQLTransaction &trans,
+      rootserver::ObDDLService &ddl_service,
+      const ObTableSchema &origin_table_schema,
+      const ObString &ori_index_name);
   static int add_dbms_vector_jobs(common::ObISQLClient &sql_client, const uint64_t tenant_id,
                                   const uint64_t vidx_table_id,
                                   const common::ObString &exec_env,

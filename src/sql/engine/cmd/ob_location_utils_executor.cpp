@@ -1,14 +1,7 @@
 /**
-* Copyright (c) 2021 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*/
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #define USING_LOG_PREFIX  SQL_ENG
 #include "sql/engine/cmd/ob_location_utils_executor.h"
 #include "sql/engine/ob_exec_context.h"
@@ -55,6 +48,7 @@ int ObLocationUtilsExecutor::execute(ObExecContext &ctx, ObLocationUtilsStmt &st
                                                             full_path.string(),
                                                             loc_schema->get_location_access_info_str(),
                                                             stmt.get_pattern(),
+                                                            stmt.get_pattern_type(),
                                                             regexp_vars,
                                                             ctx.get_allocator()
                                                             ));

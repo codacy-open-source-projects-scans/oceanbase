@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1932,7 +1925,21 @@ int ObTableInsertUpOp::post_all_dml_das_task(ObDMLRtCtx &dml_rtctx)
       // do nothing
     } else if (OB_SUCC(ret)) {
       if (OB_FAIL(dml_rtctx.das_ref_.execute_all_task())) {
-        LOG_WARN("execute all das task failed", K(ret));
+        // Under USE_PARTITION_SNAPSHOT_STATE the primary table and global index may sit on
+        // different log streams and each DAS task acquires its own LS snapshot. If a concurrent
+        // commit lands between those per-LS snapshots, the old_row carried by a later-snapshot
+        // task can mismatch storage's snapshot view and raise a "false" 4377 in
+        // check_old_row_legitimacy. Convert it to OB_SNAPSHOT_DISCARDED so the stmt retries.
+        // Gated on cross-LS tasks to avoid masking real defensive-check violations.
+        share::ObLSID ls_id;
+        if (OB_ERR_DEFENSIVE_CHECK == ret &&
+            gts_state_ == USE_PARTITION_SNAPSHOT_STATE &&
+            !dml_rtctx.das_ref_.check_tasks_same_ls_and_is_local(ls_id)) {
+          ret = OB_TRANSACTION_SET_VIOLATION;
+          LOG_WARN("convert 4377 to OB_TRANSACTION_SET_VIOLATION under insertup partition gts opt cross-ls", K(ret), K(gts_state_));
+        } else {
+          LOG_WARN("execute all das task failed", K(ret));
+        }
       }
     }
   }

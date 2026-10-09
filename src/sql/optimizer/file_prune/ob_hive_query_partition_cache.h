@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_OPTIMIZER_FILE_PRUNE_OB_HIVE_QUERY_PARTITION_CACHE_H
@@ -34,19 +27,7 @@ public:
   ObNewRowWrap(const common::ObNewRow &row) : row_(&row)
   {}
   ~ObNewRowWrap() {};
-  uint64_t hash(uint64_t seed) const
-  {
-    uint64_t hash_val = seed;
-    for (int64_t i = 0; i < row_->get_count(); i++) {
-      const ObObj &obj = row_->get_cell(i);
-      if (obj.is_string_type()) {
-        hash_val = common::murmurhash(obj.get_string_ptr(), obj.get_string_len(), hash_val);
-      } else {
-        hash_val = obj.hash(hash_val);
-      }
-    }
-    return hash_val;
-  }
+  int hash(uint64_t &hash_val) const;
   ObNewRowWrap& operator=(const ObNewRowWrap &other)
   {
     row_ = other.row_;

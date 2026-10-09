@@ -151,8 +151,6 @@ if(OB_BUILD_CLOSE_MODULES)
   ob_define(OB_BUILD_LABEL_SECURITY ON)
   # SPM功能
   ob_define(OB_BUILD_SPM ON)
-  # share storage
-  ob_define(OB_BUILD_SHARED_STORAGE ON)
 
   # oracle
   ob_define(OB_BUILD_ORACLE_PARSER ON)
@@ -168,8 +166,8 @@ if(OB_BUILD_CLOSE_MODULES)
   # 日志存储压缩
   ob_define(OB_BUILD_LOG_STORAGE_COMPRESS ON)
 
-  # 独立日志服务
-  ob_define(OB_BUILD_SHARED_LOG_SERVICE ON)
+  # 物化视图刷新排队调度
+  ob_define(OB_BUILD_MV_REFRESH_QUEUEING ON)
 
   # 默认使用BABASSL
   ob_define(OB_USE_BABASSL ON)
@@ -205,10 +203,6 @@ endif()
 
 if(OB_BUILD_LABEL_SECURITY)
   add_definitions(-DOB_BUILD_LABEL_SECURITY)
-endif()
-
-if(OB_BUILD_SHARED_STORAGE)
-  add_definitions(-DOB_BUILD_SHARED_STORAGE)
 endif()
 
 if(OB_BUILD_STANDALONE)
@@ -253,8 +247,8 @@ if (OB_BUILD_JNI_ODPS)
  add_definitions(-DOB_BUILD_JNI_ODPS)
 endif()
 
-if(OB_BUILD_SHARED_LOG_SERVICE)
-  add_definitions(-DOB_BUILD_SHARED_LOG_SERVICE)
+if(OB_BUILD_MV_REFRESH_QUEUEING)
+  add_definitions(-DOB_BUILD_MV_REFRESH_QUEUEING)
 endif()
 
 if(OB_BUILD_WITH_EMPTY_LOAD_SCHEMA)
@@ -327,7 +321,15 @@ if (OB_USE_CLANG)
   if (OB_USE_LLD)
     set(LD_OPT "-fuse-ld=${DEVTOOLS_DIR}/bin/ld.lld -Wno-unused-command-line-argument")
     set(REORDER_COMP_OPT "-ffunction-sections -fdata-sections -fdebug-info-for-profiling")
-    set(REORDER_LINK_OPT "-Wl,--no-rosegment,--build-id=sha1,--gc-sections ${HOTFUNC_OPT}")
+    # Enable ICF (Identical Code Folding) only for ASAN builds to shrink the
+    # heavily-instrumented binary back under the small code-model 2GB limit
+    # and avoid R_X86_64_PC32 relocation overflow at link time.
+    if (OB_USE_ASAN)
+      set(ICF_LINK_OPT "-Wl,--icf=all")
+    else()
+      set(ICF_LINK_OPT "")
+    endif()
+    set(REORDER_LINK_OPT "-Wl,--no-rosegment,--build-id=sha1,--gc-sections ${ICF_LINK_OPT} ${HOTFUNC_OPT}")
     set(OB_LD_BIN "${DEVTOOLS_DIR}/bin/ld.lld")
   endif()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --gcc-toolchain=${GCC9} -gdwarf-4 ${DEBUG_PREFIX} ${FILE_PREFIX} ${AUTO_FDO_OPT} ${THIN_LTO_OPT} -fcolor-diagnostics ${REORDER_COMP_OPT} -fmax-type-align=8 ${CMAKE_ASAN_FLAG}")
@@ -398,6 +400,7 @@ option(OB_ENABLE_AVX2 "enable AVX2 and related instruction set support for x86_6
 include(CMakeFindBinUtils)
 EXECUTE_PROCESS(COMMAND uname -m COMMAND tr -d '\n' OUTPUT_VARIABLE ARCHITECTURE )
 if( ${ARCHITECTURE} STREQUAL "x86_64" )
+    set(MARCH_CFLAGS "-march=nehalem")
     set(MTUNE_CFLAGS -mtune=core2)
     set(ARCH_LDFLAGS "")
     set(OCI_DEVEL_INC "${DEP_3RD_DIR}/usr/include/oracle/12.2/client64")

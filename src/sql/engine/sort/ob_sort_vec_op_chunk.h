@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_SORT_SORT_VEC_OP_CHUNK_H_
@@ -22,7 +15,7 @@ template <typename Store_Row, bool has_addon>
 struct ObSortVecOpChunk : public common::ObDLinkBase<ObSortVecOpChunk<Store_Row, has_addon>>
 {
   explicit ObSortVecOpChunk(const int64_t level, common::ObIAllocator &allocator) :
-    level_(level), sort_row_store_mgr_(allocator), sk_row_iter_(), addon_row_iter_(), sk_row_(nullptr), addon_row_(nullptr),
+    level_(level), chunk_idx_(0), sort_row_store_mgr_(allocator), sk_row_iter_(), addon_row_iter_(), sk_row_(nullptr), addon_row_(nullptr),
     use_inmem_data_(false), inmem_rows_(), row_idx_(0), slice_id_(0)
   {}
   void reset_row_iter()
@@ -85,6 +78,7 @@ struct ObSortVecOpChunk : public common::ObDLinkBase<ObSortVecOpChunk<Store_Row,
 
 public:
   int64_t level_;
+  int64_t chunk_idx_;
   ObSortRowStoreMgr<Store_Row, has_addon> sort_row_store_mgr_;
   ObTempRowStore::Iterator sk_row_iter_;
   ObTempRowStore::Iterator addon_row_iter_;

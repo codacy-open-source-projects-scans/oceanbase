@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -162,7 +155,7 @@ int ObRemoteTaskExecutor::build_task(ObExecContext &query_ctx,
     LOG_WARN("fail build op inputs", K(ret));
   } else if (OB_FAIL(DAS_CTX(query_ctx).get_all_lsid(ls_list))) {
     LOG_WARN("get ls ids failed.", K(ret));
-  } else if (OB_FAIL(query_ctx.get_my_session()->get_trans_result().add_touched_ls(ls_list))) {
+  } else if (OB_FAIL(query_ctx.get_trans_result().add_touched_ls(ls_list))) {
     LOG_WARN("add touched ls failed.", K(ret));
   } else {
     const ObTaskInfo::ObRangeLocation &range_loc = task_info.get_range_location();
@@ -206,9 +199,9 @@ int ObRemoteTaskExecutor::handle_tx_after_rpc(ObScanner *scanner,
         LOG_ERROR("task result is NULL", K(ret));
       } else if (OB_TRY_LOCK_ROW_CONFLICT == scanner->get_err_code()) {
         transaction::ObTxExecResult &result = scanner->get_trans_result();
-        session->get_trans_result().assign(result);
+        exec_ctx.get_trans_result().assign(result);
         LOG_TRACE("ac = 1 remote report tx result",
-                  "scanner_trans_result", session->get_trans_result());
+                  "scanner_trans_result", exec_ctx.get_trans_result());
       }
     }
   } else if (OB_ISNULL(tx_desc)) {
@@ -234,21 +227,21 @@ int ObRemoteTaskExecutor::handle_tx_after_rpc(ObScanner *scanner,
       if (exec_ctx.use_remote_sql()) {
         // ignore ret
         LOG_WARN("remote execute use sql fail with transfer_error, tx will rollback", K(ret));
-        session->get_trans_result().set_incomplete();
+        exec_ctx.get_trans_result().set_incomplete();
       } else {
         ObDASCtx &das_ctx = DAS_CTX(exec_ctx);
         share::ObLSArray ls_ids;
         int tmp_ret = OB_SUCCESS;
         if (OB_TMP_FAIL(das_ctx.get_all_lsid(ls_ids))) {
           LOG_WARN("get all ls_ids failed", K(tmp_ret));
-        } else if (OB_TMP_FAIL(session->get_trans_result().add_touched_ls(ls_ids))) {
+        } else if (OB_TMP_FAIL(exec_ctx.get_trans_result().add_touched_ls(ls_ids))) {
           LOG_WARN("add touched ls to txn failed", K(tmp_ret));
         } else {
           LOG_INFO("add touched ls succ", K(ls_ids));
         }
         if (OB_TMP_FAIL(tmp_ret)) {
           LOG_WARN("remote execute use plan fail with transfer_error and try add touched ls failed, tx will rollback", K(tmp_ret));
-          session->get_trans_result().set_incomplete();
+          exec_ctx.get_trans_result().set_incomplete();
           ret = COVER_SUCC(tmp_ret);
         }
       }

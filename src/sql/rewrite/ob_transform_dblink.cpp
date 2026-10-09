@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -574,7 +567,9 @@ int ObTransformDBlink::check_link_expr_valid(ObRawExpr *expr, bool &is_valid)
              T_FUN_SYS_ESTIMATE_NDV == expr->get_expr_type() ||
              T_OP_GET_USER_VAR == expr->get_expr_type() ||
              T_FUN_SUM_OPNSIZE == expr->get_expr_type() ||
-             T_FUN_SYS_COUNT_INROW == expr->get_expr_type()) {
+             T_FUN_SYS_COUNT_INROW == expr->get_expr_type() ||
+             T_FUN_SYS_EXT_MAX == expr->get_expr_type() ||
+             T_FUN_SYS_EXT_MIN == expr->get_expr_type()) {
     // special function is invalid
   } else if (expr->get_result_type().is_ext()) {
     // special type is invalid
@@ -1079,7 +1074,8 @@ int ObTransformDBlink::add_link_semi_info(SemiInfo *semi_info,
   for (int64_t i = 0; OB_INVALID_ID != dblink_id && NULL == helper && i < helpers.count(); ++i) {
     if ((dblink_id == helpers.at(i).dblink_id_ ||
         (is_reverse_link && helpers.at(i).is_reverse_link_)) &&
-        helpers.at(i).parent_table_ == NULL) {
+        helpers.at(i).parent_table_ == NULL &&
+        helpers.at(i).parent_semi_info_ == NULL) {
       helper = &helpers.at(i);
     }
   }
@@ -1909,6 +1905,5 @@ int ObTransformDBlink::add_flashback_query_for_dblink(ObDMLStmt *stmt)
   }
   return ret;
 }
-
 }
 }

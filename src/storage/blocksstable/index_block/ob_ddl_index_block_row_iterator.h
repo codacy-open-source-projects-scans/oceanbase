@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_OB_DDL_INDEX_BLOCK_ROW_ITERATOR_H
@@ -395,7 +388,6 @@ private:
   int prepare_slice_memtables_for_inc_major(const int64_t cg_idx,
                                             const int64_t slice_idx,
                                             ObIArray<ObDDLMemtable *> &slice_ddl_memtables);
-  int set_slice_query_param(ObSSTable *sstable, ObIndexBlockIterParam &slice_iter_param);
   int locate_slice_idx_by_key(const ObDatumRowkey &rowkey, int64_t &slice_idx);
 private:
   ObIAllocator *allocator_;
@@ -411,7 +403,8 @@ private:
   int64_t end_slice_idx_;
   int64_t cur_slice_idx_;
   bool is_iter_end_;
-  ObStorageMetaHandle slice_sstable_handle_; // for holding slice sstable
+  ObTableHandleV2 slice_table_handle_; // for holding slice table
+  ObSSTableWrapper slice_cg_sstable_wrapper_; // for holding slice cg sstable
   ObMicroBlockData slice_root_block_;
   ObStorageDatum abs_datum_offset_;
   ObDatumRowkey abs_endkey_; // absolute endkey(row offset) for normal cg

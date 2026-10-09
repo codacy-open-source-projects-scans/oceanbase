@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_TABLE_MODIFY_EXECUTOR_H
@@ -83,16 +76,9 @@ public:
   int init_related_das_rtdef(const sql::DASDMLCtDefArray &das_ctdefs,
                              sql::DASDMLRtDefArray &das_rtdefs);
   int calc_local_tablet_loc(sql::ObDASTabletLoc *&tablet_loc);
-  int calc_tablet_loc(bool is_primary_index,
-                      ObExpr *calc_part_id_expr,
+  int calc_tablet_loc(ObExpr *calc_part_id_expr,
                       ObDASTableLoc &table_loc,
                       ObDASTabletLoc *&tablet_loc);
-  // only use for replace and ttl executor
-  int calc_del_tablet_loc(ObExpr *calc_part_id_expr,
-                          bool is_primary_table,
-                          const ObExprPtrIArray &calc_dep_exprs,
-                          ObDASTableLoc &table_loc,
-                          ObDASTabletLoc *&tablet_loc);
   OB_INLINE int64_t get_affected_rows() const { return affected_rows_; }
   int get_affected_entity(ObITableEntity *&entity);
 protected:
@@ -115,9 +101,7 @@ protected:
   int delete_row_to_das(const ObTableDelCtDef &del_ctdef,
                         ObTableDelRtDef &del_rtdef);
   // for replace and ttl executor
-  int delete_row_to_das(bool is_primary_table,
-                        ObExpr *calc_part_id_expr,
-                        const ObExprPtrIArray &calc_dep_exprs,
+  int delete_row_to_das(ObExpr *calc_part_id_expr,
                         const ObTableDelCtDef &del_ctdef,
                         ObTableDelRtDef &del_rtdef);
   // for replace & insert_up & ttl executor
@@ -157,8 +141,9 @@ protected:
   // for update, insertup, ttl executor
   int gen_del_and_ins_rtdef_for_update(const ObTableUpdCtDef &upd_ctdef, ObTableUpdRtDef &upd_rtdef);
   int update_row_to_das(const ObTableUpdCtDef &upd_ctdef,
-                        ObTableUpdRtDef &upd_rtdef,
-                        ObDMLRtCtx &dml_rtctx);
+                       ObTableUpdRtDef &upd_rtdef,
+                       ObDMLRtCtx &dml_rtctx,
+                       ObExpr *old_row_calc_part_id_expr = nullptr);
 
 protected:
   sql::ObDMLRtCtx dml_rtctx_;

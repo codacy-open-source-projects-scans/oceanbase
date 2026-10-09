@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_UPGRADE_UTILS_H_
@@ -193,7 +186,7 @@ public:
              const uint64_t cluster_version,
              uint64_t &data_version);
 public:
-  static const int64_t DATA_VERSION_NUM = 45;
+  static const int64_t DATA_VERSION_NUM = 52;
   static const uint64_t UPGRADE_PATH[];
 };
 
@@ -380,9 +373,13 @@ DEF_SIMPLE_UPGRARD_PROCESSER(4, 3, 5, 4)
 
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 3, 5, 5)
 
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 3, 5, 6)
+
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 0, 0)
 
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 0, 1)
+
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 1, 1)
 
 class ObUpgradeFor4410Processor : public ObBaseUpgradeProcessor
 {
@@ -418,6 +415,10 @@ private:
 
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 2, 1)
 
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 2, 2)
+
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 4, 2, 3)
+
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 5, 0, 0)
 
 class ObUpgradeFor4510Processor : public ObBaseUpgradeProcessor
@@ -435,6 +436,7 @@ private:
   int wait_metadata_ls_leader_(common::ObAddr &leader);
   int create_tiered_metadata_tablet_(const common::ObAddr &leader);
   int post_upgrade_for_set_paralllel_target_();
+  int post_upgrade_for_optimizer_invalidation_period();
   int finish_upgrade_for_daily_maintenance_window();
   int finish_upgrade_for_grant_sys_privs();
   int grant_priv(const ObPrivSet user_priv_set,
@@ -444,6 +446,23 @@ private:
 };
 
 DEF_SIMPLE_UPGRARD_PROCESSER(4, 6, 0, 0)
+
+DEF_SIMPLE_UPGRARD_PROCESSER(4, 6, 0, 1)
+
+DEF_SIMPLE_UPGRARD_PROCESSER(5, 0, 0, 0)
+
+class ObUpgradeFor5010Processor : public ObBaseUpgradeProcessor
+{
+public:
+  ObUpgradeFor5010Processor() : ObBaseUpgradeProcessor() {}
+  virtual ~ObUpgradeFor5010Processor() {}
+  virtual int pre_upgrade() override { return common::OB_SUCCESS; }
+  virtual int post_upgrade() override;
+  virtual int finish_upgrade() override { return common::OB_SUCCESS; }
+private:
+  int post_upgrade_for_schema_history_recycle_();
+  int post_upgrade_for_inspection_jobs_();
+};
 
 /* =========== special upgrade processor end   ============= */
 

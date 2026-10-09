@@ -4,14 +4,20 @@
 #sql_unittest(ob_expr_equal_test)
 #sql_unittest(ob_expr_res_type_map_test)
 #sql_unittest(ob_expr_operator_factory_test)
+sql_unittest(test_expr_string_searcher)
 sql_unittest(ob_geo_expr_utils_test)
 sql_unittest(test_gis_dispatcher test_gis_dispatcher.cpp ob_geo_func_testx.cpp ob_geo_func_testy.cpp)
 sql_unittest(test_expr_relation_map)
 ob_unittest(test_ob_openai_utils)
 ob_unittest(test_ob_dashscope_utils)
 ob_unittest(test_ob_siliconflow_utils)
+ob_unittest(ob_expr_ai_func_utils_test)
 ob_unittest(ob_expr_ai_prompt_test)
 sql_unittest(test_expr_serialize_compat)
+sql_unittest(test_expr_trim_avx)
+sql_unittest(test_expr_trim_neon)
+sql_unittest(test_expr_simd_cmp)
+sql_unittest(ob_expr_extract_fast_path_test)
 
 # engine_expr_test_lrpad_SOURCES=engine/expr/ob_expr_lrpad_test.cpp
 #ob_postfix_expression_test_SOURCES = ob_postfix_expression_test.cpp

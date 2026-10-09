@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_EXPR_RAW_EXPR_
@@ -1900,6 +1893,7 @@ struct ObRawExprExtraInfo
                          // T_FUN_COLUMN_CONV
                          // T_FUN_SYS_ALIGN_DATE4CMP
     uint64_t autoinc_nextval_extra_; // T_FUN_SYS_AUTOINC_NEXTVAL
+    uint64_t random_part_nextval_extra_; // T_FUN_SYS_RANDOM_PART_NEXTVAL
     uint64_t res_cs_type_; // T_FUN_SYS_SOUNDEX
     uint64_t column_idx_; // T_PSEUDO_EXTERNAL_FILE_COL
                           // T_PSEUDO_PARTITION_LIST_COL
@@ -2293,6 +2287,7 @@ public:
   // extra accesstors begin
   void set_cast_mode(const uint64_t val) { extra_.cast_mode_ = val; }
   void set_autoinc_nextval_extra(const uint64_t val) { extra_.autoinc_nextval_extra_ = val; }
+  void set_random_part_nextval_extra(const uint64_t val) { extra_.random_part_nextval_extra_ = val; }
   void set_res_cs_type(const uint64_t val) { extra_.res_cs_type_ = val; }
   void set_column_idx(const uint64_t val) { extra_.column_idx_ = val; }
   void set_json_partial_update_flag(const uint64_t val) { extra_.json_partial_update_flag_ = val; }
@@ -2311,6 +2306,7 @@ public:
   void set_is_inner_split_contains_expr(const bool val) { extra_.is_inner_split_contains_expr_ = val; }
   uint64_t get_cast_mode() const { return extra_.cast_mode_; }
   uint64_t get_autoinc_nextval_extra() const { return extra_.autoinc_nextval_extra_; }
+  uint64_t get_random_part_nextval_extra() const { return extra_.random_part_nextval_extra_; }
   uint64_t get_res_cs_type() const { return extra_.res_cs_type_; }
   uint64_t get_column_idx() const { return extra_.column_idx_; }
   uint64_t get_json_partial_update_flag() const { return extra_.json_partial_update_flag_; }
@@ -2793,21 +2789,15 @@ class ObConstRawExpr :
 {
 public:
   ObConstRawExpr()
-    :is_date_unit_(false),
-     is_literal_bool_(false),
-     is_batch_stmt_parameter_(false),/*: precalc_expr_(NULL)*/
-     is_dynamic_eval_questionmark_(false),
-     orig_questionmark_type_()
+    : bool_flags_(0),
+      orig_questionmark_type_()
   {
     set_expr_class(EXPR_CONST);
     extra_.array_param_group_id_ = -1;
   }
   ObConstRawExpr(common::ObIAllocator &alloc)
     : ObTerminalRawExpr(alloc),
-      is_date_unit_(false),
-      is_literal_bool_(false),
-      is_batch_stmt_parameter_(false),
-      is_dynamic_eval_questionmark_(false),
+      bool_flags_(0),
       orig_questionmark_type_()
   {
     set_expr_class(EXPR_CONST);
@@ -2815,10 +2805,7 @@ public:
   }
   ObConstRawExpr(const oceanbase::common::ObObj &val, ObItemType expr_type = T_INVALID)
     : ObTerminalRawExpr(expr_type),
-      is_date_unit_(false),
-      is_literal_bool_(false),
-      is_batch_stmt_parameter_(false),
-      is_dynamic_eval_questionmark_(false),
+      bool_flags_(0),
       orig_questionmark_type_()
   {
     set_value(val);
@@ -2860,7 +2847,8 @@ public:
   virtual int get_expr_dep_session_vars(const ObBasicSessionInfo *session,
                                         ObLocalSessionVar &dep_vars);
   int set_dynamic_eval_questionmark(const ObRawExprResType &dst_type);
-
+  void set_is_from_overloaded_routine(bool val) { is_from_overloaded_routine_ = val; }
+  bool is_from_overloaded_routine() const { return is_from_overloaded_routine_; }
   bool is_dynamic_eval_questionmark() const { return is_dynamic_eval_questionmark_; }
   const ObRawExprResType &get_orig_qm_type() const { return orig_questionmark_type_; }
   DECLARE_VIRTUAL_TO_STRING;
@@ -2871,13 +2859,20 @@ private:
   common::ObString literal_prefix_; //仅在编译期使用, 执行期无关
   common::ObObjMeta obj_meta_;
   common::ObObj param_;
-  bool is_date_unit_;
-  // for mysql mode to distinguish tinyint and literal bool
-  bool is_literal_bool_;
-  // is_batch_stmt_parameter_ only used for array_binding batch_execution optimization
-  // Indicates that the current parameter is the batch parameter
-  bool is_batch_stmt_parameter_;
-  bool is_dynamic_eval_questionmark_;
+  union {
+    uint8_t bool_flags_;
+    struct {
+      uint8_t is_date_unit_ : 1;
+      // for mysql mode to distinguish tinyint and literal bool
+      uint8_t is_literal_bool_ : 1;
+      // is_batch_stmt_parameter_ only used for array_binding batch_execution optimization
+      // Indicates that the current parameter is the batch parameter
+      uint8_t is_batch_stmt_parameter_ : 1;
+      uint8_t is_dynamic_eval_questionmark_ : 1;
+      uint8_t is_from_overloaded_routine_ : 1; // for pl null literal parameterization
+      uint8_t reserved_ : 3; // Reserved for future use
+    };
+  };
   ObRawExprResType orig_questionmark_type_;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConstRawExpr);
@@ -4201,6 +4196,7 @@ public:
   int get_cast_type_name(char *buf, int64_t buf_len, int64_t &pos) const;
   int get_column_conv_name(char *buf, int64_t buf_len, int64_t &pos, ExplainType type) const;
   int get_autoinc_nextval_name(char *buf, int64_t buf_len, int64_t &pos) const;
+  int get_random_part_nextval_name(char *buf, int64_t buf_len, int64_t &pos) const;
   void set_op_id(int64_t operator_id) { extra_.operator_id_ = operator_id; }
   int64_t get_op_id() const { return extra_.operator_id_; }
   void set_mview_id(uint64_t mview_id) { extra_.mview_id_ = mview_id; }

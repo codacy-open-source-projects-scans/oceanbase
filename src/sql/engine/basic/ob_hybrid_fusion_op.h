@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_BASIC_OB_HYBRID_FUSION_OP_H_
@@ -96,6 +89,22 @@ private:
 
 typedef common::ObBinaryHeap<ObPathScoreEntry, ObScoreEntryCompare, 10> ObTopKHeap;
 
+struct ObHybridFusionRerankSpec
+{
+  OB_UNIS_VERSION_V(1);
+public:
+  ObHybridFusionRerankSpec()
+    : has_rerank_(false), model_key_expr_(nullptr), query_expr_(nullptr),
+      field_idx_(-1), window_size_expr_(nullptr) {}
+  bool has_rerank_;
+  ObExpr *model_key_expr_;
+  ObExpr *query_expr_;
+  int64_t field_idx_;
+  ObExpr *window_size_expr_;
+
+  TO_STRING_KV(K_(has_rerank), K_(field_idx));
+};
+
 class ObHybridFusionSpec : public ObOpSpec
 {
   OB_UNIS_VERSION_V(1);
@@ -113,6 +122,11 @@ public:
   common::ObFixedArray<ObExpr*, common::ObIAllocator> score_exprs_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> path_top_k_limit_exprs_;
   common::ObFixedArray<int64_t, common::ObIAllocator> score_expr_output_indices_;
+
+  int64_t search_index_;
+  ObFusionIterExecMode fusion_iter_exec_mode_;
+  ObHybridFusionRerankSpec rerank_spec_;
+  bool is_single_partition_;
 };
 
 class ObHybridFusionOp : public ObOperator

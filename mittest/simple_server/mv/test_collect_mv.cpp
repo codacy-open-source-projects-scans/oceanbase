@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -644,9 +637,9 @@ TEST_F(ObCollectMV, tablegroup)
   EQ(0, sql_proxy.write("alter table mv100 tablegroup=''", affected_rows));
   EQ(0, sql_proxy.write("alter table t100 tablegroup=''", affected_rows));
 
+  EQ(0, sql_proxy.write("drop materialized view mv100", affected_rows));
   EQ(0, sql_proxy.write("drop tablegroup tg100", affected_rows));
   EQ(0, sql_proxy.write("drop table t100", affected_rows));
-  EQ(0, sql_proxy.write("drop materialized view mv100", affected_rows));
 }
 
 TEST_F(ObCollectMV, new_ls)

@@ -1,13 +1,13 @@
 | class | sizeof(class) |
 | --- | --- |
-| ObLogPlan | 5392 |
+| ObLogPlan | 5440 |
 | ObLogicalOperator | 1032 |
 | ObLogGroupBy | 1640 |
 | ObLogSort | 1272 |
 | ObLogJoin | 1624 |
-| ObLogTableScan | 4672 |
+| ObLogTableScan | 3472 |
 | ObLogLimit | 1104 |
-| ObLogExchange | 1728 |
+| ObLogExchange | 1752 |
 | ObLogSubPlanScan | 1096 |
 | ObLogSubPlanFilter | 1696 |
 | ObLogInsert | 1488 |
@@ -28,7 +28,7 @@
 | ObLogSequence | 1208 |
 | ObLogMonitoringDump | 1048 |
 | ObLogFunctionTable | 1104 |
-| ObLogJsonTable | 1560 |
+| ObLogJsonTable | 1328 |
 | ObLogUnpivot | 1160 |
 | ObLogTempTableInsert | 1056 |
 | ObLogTempTableAccess | 1120 |
@@ -38,7 +38,9 @@
 | ObLogForUpdate | 1088 |
 | ObLogInsertAll | 1504 |
 | ObLogErrLog | 1168 |
-| ObLogStatCollector | 1416 |
+| ObLogStatCollector | 1120 |
 | ObLogOptimizerStatsGathering | 1184 |
 | ObLogValuesTableAccess | 1112 |
 | ObLogExpand | 1048 |
+| ObLogHybridFusion | 1080 |
+| ObLogRescan | 1040 |

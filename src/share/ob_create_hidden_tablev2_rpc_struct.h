@@ -1,14 +1,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_CREATE_HIDDEN_TABLE_RPC_OB_RPC_STRUCT_H_
 #define OCEANBASE_CREATE_HIDDEN_TABLE_RPC_OB_RPC_STRUCT_H_
@@ -137,7 +130,8 @@ public:
                K_(nls_formats),
                K_(tablet_ids),
                K_(foreign_key_checks),
-               K_(enable_partition_pruning));
+               K_(enable_partition_pruning),
+               K_(need_sync_stats_info));
   ObCreateHiddenTableArgV2() :
     ObDDLArg(),
     tenant_id_(common::OB_INVALID_ID),
@@ -151,7 +145,8 @@ public:
     nls_formats_(ObNLSFormatEnum::NLS_MAX),
     tablet_ids_(),
     foreign_key_checks_(true),
-    enable_partition_pruning_(false)
+    enable_partition_pruning_(false),
+    need_sync_stats_info_(false)
     {}
   ~ObCreateHiddenTableArgV2()
   {
@@ -171,6 +166,7 @@ public:
     tablet_ids_.reset();
     foreign_key_checks_ = true;
     enable_partition_pruning_ = false;
+    need_sync_stats_info_ = false;
   }
   int assign(const ObCreateHiddenTableArgV2 &arg);
   int assign(const ObCreateHiddenTableArg &arg);
@@ -181,7 +177,7 @@ public:
            const common::ObString &local_nls_date, const common::ObString &local_nls_timestamp,
            const common::ObString &local_nls_timestamp_tz, const ObTimeZoneInfoWrap &tz_info_wrap,
            const common::ObIArray<common::ObTabletID> &tablet_ids, const bool foreign_key_checks,
-           const bool enable_partition_pruning = false);
+           const bool enable_partition_pruning = false, const bool need_sync_stats_info = false);
   uint64_t get_tenant_id() const { return tenant_id_; }
   int64_t get_table_id() const { return table_id_; }
   int64_t get_consumer_group_id() const { return consumer_group_id_; }
@@ -198,6 +194,7 @@ public:
   const common::ObIArray<common::ObTabletID> &get_tablet_ids() const { return tablet_ids_; }
   bool get_foreign_key_checks() const { return foreign_key_checks_; }
   bool get_enable_partition_pruning() const { return enable_partition_pruning_; }
+  bool get_need_sync_stats_info() const { return need_sync_stats_info_; }
 private:
   uint64_t tenant_id_;
   int64_t table_id_;
@@ -213,6 +210,7 @@ private:
   common::ObSArray<common::ObTabletID> tablet_ids_;
   bool foreign_key_checks_;
   bool enable_partition_pruning_;
+  bool need_sync_stats_info_;
 };
 
 }// end namespace obrpc

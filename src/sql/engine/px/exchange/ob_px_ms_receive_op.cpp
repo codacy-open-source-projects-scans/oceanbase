@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -135,6 +128,9 @@ int ObPxMSReceiveOp::release_merge_inputs()
 {
   int ret = OB_SUCCESS;
   int release_merge_sort_ret = OB_SUCCESS;
+  if (merge_inputs_.count() > MAX_INPUT_NUMBER) {
+    LOG_TRACE("too much local order inputs", K(merge_inputs_.count()));
+  }
   while (0 < merge_inputs_.count()) {
     MergeSortInput *msi = NULL;
     if (OB_SUCCESS != (release_merge_sort_ret = merge_inputs_.pop_back(msi))) {
@@ -603,8 +599,6 @@ int ObPxMSReceiveOp::inner_get_next_row()
     LOG_ERROR("Get operator context failed", K(ret), K(MY_SPEC.id_));
   } else if (OB_FAIL(try_link_channel())) {
     LOG_WARN("failed to init channel", K(ret));
-  } else if (OB_FAIL(try_send_bloom_filter())) {
-    LOG_WARN("fail to send bloom filter", K(ret));
   }
   if (OB_SUCC(ret) && MY_SPEC.local_order_ && !finish_) {
     ret = get_all_rows_from_channels(phy_plan_ctx);
@@ -713,6 +707,7 @@ int ObPxMSReceiveOp::new_local_order_input(MergeSortInput *&out_msi)
     local_input->datum_store_.set_allocator(mem_context_->get_malloc_allocator());
     local_input->datum_store_.set_callback(&sql_mem_processor_);
     local_input->datum_store_.set_io_event_observer(&io_event_observer_);
+    bool push_succ = false;
     if (OB_FAIL(local_input->datum_store_.init(0,
                               ctx_.get_my_session()->get_effective_tenant_id(),
                               ObCtxIds::WORK_AREA,
@@ -723,11 +718,14 @@ int ObPxMSReceiveOp::new_local_order_input(MergeSortInput *&out_msi)
       LOG_WARN("failed to allocate dir id for chunk datum store", K(ret));
     } else if (OB_FAIL(merge_inputs_.push_back(local_input))) {
       LOG_WARN("fail push back MergeSortInput", K(ret));
+    } else {
+      push_succ = true;
+      out_msi = local_input;
+    }
+    if (OB_FAIL(ret) && !push_succ && NULL != local_input) {
       local_input->clean_row_store(ctx_);
       local_input->destroy();
       mem_context_->get_malloc_allocator().free(local_input);
-    } else {
-      out_msi = local_input;
     }
   }
   return ret;
@@ -813,10 +811,7 @@ int ObPxMSReceiveOp::get_all_rows_from_channels(
                   LOG_WARN("fail split new group", K(got_channel_idx), K(ret));
                 } else if (is_new_group) {
                   MergeSortInput *new_msi = nullptr;
-                  if (merge_inputs_.count() > MAX_INPUT_NUMBER) {
-                    ret = OB_ERR_UNEXPECTED;
-                    LOG_WARN("too much local order inputs", K(ret));
-                  } else if (OB_FAIL(new_local_order_input(new_msi))) {
+                  if (OB_FAIL(new_local_order_input(new_msi))) {
                     LOG_WARN("failed to create new local order input", K(ret));
                   } else {
                     LocalOrderInput *local_msi = static_cast<LocalOrderInput*>(new_msi);
@@ -1044,14 +1039,14 @@ int ObPxMSReceiveOp::MergeSortInput::need_dump(ObSqlMemMgrProcessor &sql_mem_pro
 {
   int ret = OB_SUCCESS;
   need_dump = false;
-  if (sql_mem_processor.get_data_size() > sql_mem_processor.get_mem_bound() 
+  if (alloc.used() > sql_mem_processor.get_mem_bound()
           && GCONF.is_sql_operator_dump_enabled()
           && OB_FAIL(sql_mem_processor.extend_max_memory_size(
             &alloc,
             [&](int64_t max_memory_size) {
-              return sql_mem_processor.get_data_size() > max_memory_size;
+              return alloc.used() > max_memory_size;
             },
-            need_dump, sql_mem_processor.get_data_size()))) {
+            need_dump, alloc.used()))) {
     LOG_WARN("failed to extend max memory size", K(ret));
   } 
   return ret;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -174,6 +167,10 @@ int ObPxMultiPartSSTableInsertVecOp::inner_get_next_batch(const int64_t max_row_
   if (OB_ISNULL(ddl_dag_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ddl dag is null", K(ret));
+  } else if (OB_ISNULL(MY_SPEC.plan_) || OB_UNLIKELY(!MY_SPEC.plan_->get_use_rich_format())) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("vec sstable insert operator must run under rich format",
+             K(ret), KP(MY_SPEC.plan_));
   } else if (ddl_dag_->is_final_status() || is_all_partition_finished_) {
     brs_.end_ = true;
     brs_.size_ = 0;
@@ -260,7 +257,7 @@ int ObPxMultiPartSSTableInsertOp::get_next_row_from_child(ObInsertMonitor *inser
   if (OB_SUCC(ret) && nullptr != insert_monitor && nullptr != ddl_dag_) {
     insert_monitor->inserted_row_cnt_++;
     if (ddl_dag_->get_ddl_table_schema().table_item_.is_column_store_) {
-      const int64_t cg_count = ddl_dag_->get_ddl_table_schema().storage_schema_->get_column_groups().count();
+      const int64_t cg_count = ddl_dag_->get_ddl_table_schema().storage_schema_->get_column_group_count();
       insert_monitor->inserted_cg_row_cnt_ += cg_count;
     }
     if (ddl_dag_->get_ddl_task_param().is_partition_local_
@@ -284,7 +281,7 @@ int ObPxMultiPartSSTableInsertOp::get_next_batch_from_child(const int64_t max_ba
   if (OB_SUCC(ret) && nullptr != insert_monitor && nullptr != ddl_dag_ && nullptr != brs) {
     insert_monitor->inserted_row_cnt_ += brs->size_;
     if (ddl_dag_->get_ddl_table_schema().table_item_.is_column_store_) {
-      const int64_t cg_count = ddl_dag_->get_ddl_table_schema().storage_schema_->get_column_groups().count();
+      const int64_t cg_count = ddl_dag_->get_ddl_table_schema().storage_schema_->get_column_group_count();
       insert_monitor->inserted_cg_row_cnt_ += brs->size_ * cg_count;
     }
     if (ddl_dag_->get_ddl_task_param().is_partition_local_
@@ -401,6 +398,11 @@ int ObPxMultiPartSSTableInsertOp::eval_current_row(ObIArray<ObDatum *> &datums, 
       LOG_WARN("expr is NULL", K(ret), K(i));
     } else if (OB_FAIL(e->eval(eval_ctx, datum))) {
       LOG_WARN("evaluate expression failed", K(ret), K(i), KPC(e));
+    } else if (i == tablet_autoinc_column_idx_) {
+      // Reset the datum ptr for the same column that the heap slice writer will
+      // overwrite later, otherwise it may alias another expr datum buffer in
+      // the single-row path.
+      datum = &e->locate_datum_for_write(eval_ctx);
     } else if (e->type_ == T_PSEUDO_HIDDEN_CLUSTERING_KEY) {
       ObDatum &datum = e->locate_datum_for_write(eval_ctx);
       if (OB_FAIL(share::ObHeapTableUtil::handle_hidden_clustering_key_column(eval_ctx.get_expr_res_alloc(), tablet_id, datum))) {
@@ -429,6 +431,10 @@ int ObPxMultiPartSSTableInsertOp::eval_current_batch(ObIArray<ObIVector *> &vect
     if (OB_ISNULL(e)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("expr is NULL", K(ret), K(i));
+    } else if (OB_UNLIKELY(UINT32_MAX == e->vector_header_off_)) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("expr has no rich format VectorHeader under vec sstable insert batch path",
+               K(ret), K(i), KPC(e));
     } else if (OB_FAIL(e->eval_vector(eval_ctx, brs))) {
       LOG_WARN("evaluate expression failed", K(ret), K(i), KPC(e));
     } else if (e->type_ == T_PSEUDO_HIDDEN_CLUSTERING_KEY) {
@@ -438,8 +444,11 @@ int ObPxMultiPartSSTableInsertOp::eval_current_batch(ObIArray<ObIVector *> &vect
 
       // Step 1: Get tablet_id_vector based on whether it's a partitioned table or not
       if (nullptr != tablet_id_expr_) {
-        // Partitioned table: eval tablet_id_expr_ to get tablet_id_vector
-        if (OB_FAIL(tablet_id_expr_->eval_vector(eval_ctx, brs))) {
+        if (OB_UNLIKELY(UINT32_MAX == tablet_id_expr_->vector_header_off_)) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("tablet_id_expr_ has no rich format VectorHeader under vec sstable insert batch path",
+                   K(ret), KPC(tablet_id_expr_));
+        } else if (OB_FAIL(tablet_id_expr_->eval_vector(eval_ctx, brs))) {
           LOG_WARN("failed to eval tablet_id_expr vector", K(ret));
         } else {
           tablet_id_vector = tablet_id_expr_->get_vector(eval_ctx);
@@ -870,12 +879,21 @@ int ObPxMultiPartSSTableInsertOp::write_ordered_slice_by_batch()
       is_all_partition_finished_ = brs->end_;
     } else if (OB_FAIL(eval_current_batch(vectors, *brs))) {
       LOG_WARN("eval current batch failed", K(ret));
+    } else if (slice_info_expr_ != nullptr
+               && OB_UNLIKELY(UINT32_MAX == slice_info_expr_->vector_header_off_)) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("slice_info_expr_ has no rich format VectorHeader, batch path is invalid",
+               K(ret), KPC(slice_info_expr_));
     } else if (slice_info_expr_ != nullptr && OB_FAIL(slice_info_expr_->eval_vector(eval_ctx, *brs))) {
       LOG_WARN("eval slice info expr failed", K(ret));
     } else if (slice_info_expr_ != nullptr && FALSE_IT(slice_info_vector = slice_info_expr_->get_vector(eval_ctx))) {
     } else if (nullptr != tablet_id_expr_) {
-      if (OB_FAIL(tablet_id_expr_->eval_vector(eval_ctx, *brs))) {
-        LOG_WARN("eval slice info expr failed", K(ret));
+      if (OB_UNLIKELY(UINT32_MAX == tablet_id_expr_->vector_header_off_)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("tablet_id_expr_ has no rich format VectorHeader, batch path is invalid",
+                 K(ret), KPC(tablet_id_expr_));
+      } else if (OB_FAIL(tablet_id_expr_->eval_vector(eval_ctx, *brs))) {
+        LOG_WARN("eval tablet_id expr failed", K(ret));
       } else {
         tablet_id_vector = tablet_id_expr_->get_vector(eval_ctx);
       }

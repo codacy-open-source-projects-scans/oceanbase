@@ -10,6 +10,7 @@ ob_set_subtarget(ob_share_extra ALONE
   vector/ob_discrete_base.cpp
   vector/ob_continuous_base.cpp
   vector/ob_uniform_const_vector.cpp
+  vector/ob_i_vector.cpp
 
   aggregate/approx_count_distinct.cpp
   aggregate/count.cpp
@@ -43,6 +44,7 @@ ob_set_subtarget(ob_share_extra ALONE
   aggregate/var_samp.cpp
   aggregate/stddev_samp.cpp
 
+  aggregate/window_funnel.cpp
 
   vector/expr_cmp_func.cpp
   vector/expr_cmp_func_parts/expr_cmp_func_part_0.cpp
@@ -92,6 +94,8 @@ ob_set_subtarget(ob_share ALONE
   ob_lonely_table_clean_rpc_struct.cpp
   ob_create_hidden_tablev2_rpc_struct.cpp
   ob_external_resource_rpc_struct.cpp
+  ob_random_partition_args.cpp
+  ob_java_policy_rpc_struct.cpp
 )
 
 file(GLOB SCHEMA_CPPS "inner_table/ob_inner_table_schema.*.cpp")
@@ -155,7 +159,6 @@ ob_set_subtarget(ob_share backup
   backup/ob_log_restore_config.cpp
   backup/ob_log_restore_struct.cpp
   backup/ob_archive_checkpoint_mgr.cpp
-  backup/ob_ss_ha_macro_block_struct.cpp
   backup/ob_backup_validate_struct.cpp
   backup/ob_backup_validate_table_operator.cpp
   backup/ob_backup_util.cpp
@@ -272,7 +275,7 @@ ob_set_subtarget(ob_share common
   ob_tenant_role.cpp
   ob_tenant_switchover_status.cpp
   ob_tenant_mem_limit_getter.cpp
-  ob_tenant_memstore_info_operator.cpp
+  ob_tenant_memory_info_operator.cpp
   ob_thread_mgr.cpp
   ob_time_utility2.cpp
   ob_time_zone_info_manager.cpp
@@ -317,6 +320,10 @@ ob_set_subtarget(ob_share common
   ob_perf_stat.cpp
   ob_flashback_standby_log_struct.cpp
   ob_flashback_log_scn_table_operator.cpp
+  ob_scheduled_recycle_schema_history.cpp
+  ob_scheduled_inspection.cpp
+  ob_inspection_service.cpp
+  ob_catalog_ext_partition_info.cpp
 )
 
 ob_set_subtarget(ob_share common_mixed
@@ -428,7 +435,9 @@ ob_set_subtarget(ob_share common_mixed
   compaction/ob_new_micro_info.cpp
   compaction/ob_schedule_daily_maintenance_window.cpp
   compaction/ob_compaction_resource_manager.cpp
+  compaction/ob_compaction_queuing_utils.cpp
   storage/ob_i_pre_warmer.cpp
+  storage/ob_ha_inflight_diag.cpp
   storage_cache_policy/ob_storage_cache_common.cpp
   storage_cache_policy/ob_storage_cache_partition_sql_helper.cpp
   partition_table/ob_partition_location.cpp
@@ -464,6 +473,7 @@ ob_set_subtarget(ob_share tablet
   tablet/ob_tablet_filter.cpp
   tablet/ob_tablet_to_table_history_operator.cpp
   tablet/ob_tenant_tablet_to_ls_map.cpp
+  tablet/ob_drop_gtt_v2_session_tablet_arg.cpp
 )
 
 ob_set_subtarget(ob_share config
@@ -579,6 +589,7 @@ ob_set_subtarget(ob_share schema
   schema/ob_schema_mgr_cache.cpp
   schema/ob_schema_printer.cpp
   schema/ob_schema_printer_external_table.cpp
+  schema/ob_schema_printer_materialized_view.cpp
   schema/ob_schema_retrieve_utils.ipp
   schema/ob_schema_service.cpp
   schema/ob_schema_service_rpc_proxy.cpp
@@ -595,6 +606,7 @@ ob_set_subtarget(ob_share schema
   schema/ob_table_iter.cpp
   schema/ob_table_param.cpp
   schema/ob_table_sql_service.cpp
+  schema/ob_column_group_helper.cpp
   schema/ob_tablegroup_sql_service.cpp
   schema/ob_tablespace_mgr.cpp
   schema/ob_tablespace_sql_service.cpp
@@ -631,10 +643,10 @@ ob_set_subtarget(ob_share schema
   schema/ob_table_schema_fts_index.cpp
   schema/ob_iceberg_table_schema.cpp
   schema/ob_latest_schema_guard.cpp
+  schema/ob_merge_engine_upper_version.cpp
   schema/ob_mlog_info.cpp
   schema/ob_mview_info.cpp
   schema/ob_mview_refresh_stats_params.cpp
-  schema/ob_mview_refresh_stats.cpp
   schema/ob_list_row_values.cpp
   schema/ob_catalog_schema_struct.cpp
   schema/ob_catalog_mgr.cpp
@@ -651,10 +663,14 @@ ob_set_subtarget(ob_share schema
   schema/ob_ccl_rule_mgr.cpp
   schema/ob_ccl_rule_sql_service.cpp
   schema/ob_schema_guard_wrapper.cpp
-
   schema/ob_sensitive_rule_mgr.cpp
   schema/ob_sensitive_rule_schema_struct.cpp
   schema/ob_sensitive_rule_sql_service.cpp
+  schema/ob_java_policy_mgr.cpp
+  schema/ob_java_policy_sql_service.cpp
+  schema/ob_schema_history_recycler.cpp
+  schema/ob_objpriv_mysql_schema_history_recycler.cpp
+  schema/ob_schema_history_recycle_service.cpp
 )
 
 ob_set_subtarget(ob_share stat
@@ -692,14 +708,32 @@ ob_set_subtarget(ob_share stat
   stat/ob_min_max_estimator.cpp
   stat/ob_column_store_refine_estimator.cpp
   stat/ob_lake_table_stat.cpp
-  stat/ob_opt_external_column_stat.cpp
-  stat/ob_opt_external_column_stat_builder.cpp
-  stat/ob_opt_external_column_stat_cache.cpp
-  stat/ob_opt_external_table_stat.cpp
-  stat/ob_opt_external_table_stat_cache.cpp
-  stat/ob_opt_external_table_stat_builder.cpp
+  stat/catalog/ob_catalog_stat_define.cpp
+  stat/catalog/ob_catalog_stat_item.cpp
+  stat/catalog/ob_catalog_min_max_estimator.cpp
+  stat/catalog/ob_catalog_incremental_stat_estimator.cpp
+  stat/catalog/ob_catalog_stats_estimator.cpp
+  stat/catalog/ob_basic_catalog_stats_estimator.cpp
+  stat/catalog/ob_catalog_topk_hist_estimator.cpp
+  stat/catalog/ob_catalog_hybrid_hist_estimator.cpp
+  stat/catalog/ob_dbms_catalog_stats_preferences.cpp
+  stat/catalog/ob_dbms_catalog_stats_executor.cpp
+  stat/catalog/ob_dbms_catalog_stats_gather.cpp
+  stat/catalog/ob_dbms_catalog_stats_lock_unlock.cpp
+  stat/catalog/ob_dbms_catalog_stats_utils.cpp
+  stat/catalog/ob_opt_catalog_column_stat.cpp
+  stat/catalog/ob_opt_catalog_column_stat_builder.cpp
+  stat/catalog/ob_opt_catalog_column_stat_cache.cpp
+  stat/catalog/ob_opt_catalog_stat_service.cpp
+  stat/catalog/ob_opt_catalog_stat_sql_service.cpp
+  stat/catalog/ob_opt_catalog_table_stat.cpp
+  stat/catalog/ob_opt_catalog_table_stat_builder.cpp
+  stat/catalog/ob_opt_catalog_table_stat_cache.cpp
+  stat/catalog/ob_catalog_stats_freshness_checker.cpp
+  stat/catalog/hms/ob_hms_catalog_stats_freshness_checker.cpp
+  stat/catalog/iceberg/ob_iceberg_stats_freshness_checker.cpp
+  stat/catalog/odps/ob_odps_catalog_stats_freshness_checker.cpp
   stat/hive/ob_hive_hll_utils.cpp
-  stat/hive/ob_hive_hll_constants.cpp
   stat/hive/ob_hive_hll.cpp
   stat/hive/ob_hive_hll_dense_register.cpp
   stat/hive/ob_hive_hll_sparse_register.cpp
@@ -728,11 +762,6 @@ ob_set_subtarget(ob_share catalog
   catalog/odps/ob_odps_catalog_utils.cpp
   catalog/odps/ob_odps_catalog.cpp
   catalog/filesystem/ob_filesystem_catalog.cpp
-  catalog/hive/thrift/gen_cpp/FacebookService.cpp
-  catalog/hive/thrift/gen_cpp/fb303_types.cpp
-  catalog/hive/thrift/gen_cpp/hive_metastore_constants.cpp
-  catalog/hive/thrift/gen_cpp/hive_metastore_types.cpp
-  catalog/hive/thrift/gen_cpp/ThriftHiveMetastore.cpp
   catalog/hive/thrift/transport/ob_t_sasl_client_transport.cpp
   catalog/hive/thrift/transport/ob_t_sasl_transport.cpp
   catalog/hive/thrift/transport/ob_t_sasl.cpp
@@ -901,6 +930,7 @@ ob_set_subtarget(ob_share ai_service
 
 ob_set_subtarget(ob_share compaction_ttl
   compaction_ttl/ob_compaction_ttl_util.cpp
+  compaction_ttl/ob_ttl_definition.cpp
 )
 
 ob_add_new_object_target(ob_share ob_share)
@@ -908,7 +938,9 @@ ob_add_new_object_target(ob_share_extra ob_share_extra)
 
 target_compile_options(ob_share PRIVATE)
 #target_compile_options(ob_share PRIVATE -Wshorten-64-to-32)
-target_link_libraries(ob_share PUBLIC ob_base)
+set(HIVE_THRIFT_LIB "${DEP_DIR}/lib/libhive_thrift.a")
+set(HIVE_HLL_LIB "${DEP_DIR}/lib/libhive_hll.a")
+target_link_libraries(ob_share PUBLIC ob_base ${HIVE_THRIFT_LIB} ${HIVE_HLL_LIB})
 target_compile_options(ob_share_extra PRIVATE)
 target_link_libraries(ob_share_extra PUBLIC ob_base_without_pass)
 

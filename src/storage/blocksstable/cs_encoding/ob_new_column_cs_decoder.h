@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENCODING_OB_NEW_COLUMN_CS_DECODER_H_
@@ -101,7 +94,7 @@ public:
       const ObColumnCSDecoderCtx &ctx,
       storage::ObGroupByCellBase &group_by_cell) const override
   {
-    return common_decoder_.read_distinct(ctx.get_col_param(), group_by_cell);
+    return common_decoder_.read_distinct(ctx.get_col_param(), *ctx.get_allocator(), group_by_cell);
   }
 
   virtual int read_reference(

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_CG_ROW_TMP_FILE_H_
@@ -33,7 +26,7 @@ public:
     is_start_iterate_(false),
     tablet_id_(),
     slice_idx_(-1),
-    cg_idx_(-1),
+    cg_iter_idx_(-1),
     column_count_(0),
     allocator_(ObMemAttr(MTL_ID(), "CGRowFile")),
     store_(),
@@ -52,7 +45,7 @@ public:
   int open(const ObIArray<ObColumnSchemaItem>  &all_column_schema_its,
            const ObTabletID &tablet_id,
            const int64_t slice_idx,
-           const int64_t cg_idx,
+           const int64_t cg_iter_idx,
            const ObStorageColumnGroupSchema &cg_schema,
            const int64_t max_batch_size,
            const int64_t memory_limit = INT64_MAX,
@@ -63,9 +56,9 @@ public:
   int dump(const bool all_dump, const int64_t target_dump_size = INT64_MAX);
   int finish_append_batch(bool need_dump);
   OB_INLINE int64_t get_mem_hold() const { return store_.get_mem_hold(); }
-  OB_INLINE int64_t get_cg_idx() const { return cg_idx_; }
+  OB_INLINE int64_t get_cg_iter_idx() const { return cg_iter_idx_; }
   OB_INLINE bool is_opened() const { return is_opened_; }
-  TO_STRING_KV(K(is_opened_), K(tablet_id_), K(slice_idx_), K(cg_idx_), K(is_start_iterate_), K(column_count_), K(brs_));
+  TO_STRING_KV(K(is_opened_), K(tablet_id_), K(slice_idx_), K(cg_iter_idx_), K(is_start_iterate_), K(column_count_), K(brs_));
 
 private:
   int begin(sql::ObTempColumnStore::Iterator &iter, const bool async = true);
@@ -76,7 +69,7 @@ private:
   bool is_start_iterate_;
   ObTabletID tablet_id_;
   int64_t slice_idx_;
-  int64_t cg_idx_;
+  int64_t cg_iter_idx_; // record the cg iter idx in column group array in storage schema
   int64_t column_count_;
   ObArenaAllocator allocator_;
   sql::ObTempColumnStore store_;

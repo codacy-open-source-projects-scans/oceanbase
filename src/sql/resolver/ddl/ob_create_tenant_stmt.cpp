@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -113,6 +106,11 @@ void ObCreateTenantStmt::set_collation_type(const common::ObCollationType type)
 int ObCreateTenantStmt::set_default_tablegroup_name(const common::ObString &tablegroup_name)
 {
   return create_tenant_arg_.tenant_schema_.set_default_tablegroup_name(tablegroup_name);
+}
+
+int ObCreateTenantStmt::set_default_tablespace_name(const common::ObString &tablespace_name)
+{
+  return create_tenant_arg_.tenant_schema_.set_default_tablespace_name(tablespace_name);
 }
 
 void ObCreateTenantStmt::set_create_standby_tenant()

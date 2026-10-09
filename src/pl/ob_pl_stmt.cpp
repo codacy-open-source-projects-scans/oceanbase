@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -323,7 +316,8 @@ int ObPLCursorTable::add_cursor(uint64_t pkg_id,
                                 ObPLCursor::CursorState state,
                                 bool has_dup_column_name,
                                 bool skip_locked,
-                                uint64_t package_body_id)
+                                uint64_t package_body_id,
+                                bool has_return_type)
 {
   int ret = OB_SUCCESS;
   // CK (OB_LIKELY(cursors_.count() < FUNC_MAX_CURSORS));
@@ -348,6 +342,7 @@ int ObPLCursorTable::add_cursor(uint64_t pkg_id,
       cursor->set_rowid_table_id(rowid_table_id);
       cursor->set_skip_locked(skip_locked);
       cursor->set_package_body_id(package_body_id);
+      cursor->set_has_return_type(has_return_type);
       if (has_dup_column_name) {
         cursor->set_dup_column();
       }
@@ -1169,7 +1164,8 @@ int ObPLBlockNS::add_cursor(const ObString &name,
                             ObPLCursor::CursorState state,
                             bool has_dup_column_name,
                             int64_t &index,
-                            bool skip_locked)
+                            bool skip_locked,
+                            bool has_return_type)
 {
   int ret = OB_SUCCESS;
   bool is_dup = false;
@@ -1202,7 +1198,9 @@ int ObPLBlockNS::add_cursor(const ObString &name,
                                                       formal_params,
                                                       state,
                                                       has_dup_column_name,
-                                                      skip_locked))) {
+                                                      skip_locked,
+                                                      0,
+                                                      has_return_type))) {
       LOG_WARN("failed to add condition to condition table", K(ret));
     } else {
       index = cursors_.at(cursors_.count() - 1);
@@ -1491,7 +1489,7 @@ int ObPLExternalNS::resolve_synonym(uint64_t object_db_id,
   const ObDatabaseSchema *db_schema = nullptr;
   ObSchemaChecker schema_checker;
   ObSchemaObjVersion obj_version;
-  if (OB_FAIL(schema_checker.init(schema_guard))) {
+  if (OB_FAIL(schema_checker.init(schema_guard, resolve_ctx_.session_info_.get_sessid_for_table()))) {
     LOG_WARN("fail to init shcema checker", K(ret));
   } else if (OB_FAIL(schema_checker.get_database_schema(tenant_id, object_db_id, db_schema))) {
     LOG_WARN("fail to get db schema", K(ret));
@@ -1627,6 +1625,39 @@ int ObPLExternalNS::resolve_synonym(uint64_t object_db_id,
         obj_version.object_id_ = routine_info->get_routine_id();
         obj_version.object_type_ = DEPENDENCY_FUNCTION;
         obj_version.version_ = routine_info->get_schema_version();
+        ADD_DEPENDENCY;
+      }
+    }
+    // Try sys Package Schema
+    if (OB_TABLE_NOT_EXIST == ret && is_oracle_sys_database_id(object_db_id)) {
+      const ObPackageInfo *package_info = nullptr;
+      if (OB_FAIL(schema_guard.get_package_info(OB_SYS_TENANT_ID, OB_SYS_DATABASE_ID, object_name,
+                                                share::schema::PACKAGE_TYPE, compatible_mode, package_info))
+          || OB_ISNULL(package_info)) {
+        ret = OB_TABLE_NOT_EXIST;
+      } else {
+        type = PKG_NS;
+        object_db_id = OB_SYS_DATABASE_ID;
+        object_id = package_info->get_package_id();
+        obj_version.object_id_ = package_info->get_package_id();
+        obj_version.version_ = package_info->get_schema_version();
+        obj_version.object_type_ = DEPENDENCY_PACKAGE;
+        ADD_DEPENDENCY;
+      }
+    }
+    // Try sys UDT Schema
+    if (OB_TABLE_NOT_EXIST == ret && is_oracle_sys_database_id(object_db_id)) {
+      const ObUDTTypeInfo *udt_info = nullptr;
+      if (OB_FAIL(schema_guard.get_udt_info(OB_SYS_TENANT_ID, OB_SYS_DATABASE_ID, OB_INVALID_ID, object_name, udt_info))
+          || OB_ISNULL(udt_info)) {
+        ret = OB_TABLE_NOT_EXIST;
+      } else {
+        object_id = udt_info->get_type_id();
+        type = UDT_NS;
+        object_db_id = OB_SYS_DATABASE_ID;
+        obj_version.object_id_ = object_id;
+        obj_version.object_type_ = DEPENDENCY_TYPE;
+        obj_version.version_ = udt_info->get_schema_version();
         ADD_DEPENDENCY;
       }
     }
@@ -1944,7 +1975,7 @@ int ObPLExternalNS::resolve_external_symbol(const common::ObString &name,
         }
 
         if (OB_SUCC(ret) && OB_INVALID_ID != db_id) {
-          OZ (schema_checker.init(schema_guard));
+          OZ (schema_checker.init(schema_guard, resolve_ctx_.session_info_.get_sessid_for_table()));
           OZ (ObResolverUtils::resolve_synonym_object_recursively(
             schema_checker, synonym_checker,
             tenant_id, db_id, name, object_db_id, object_name, exist, OB_INVALID_INDEX == parent_id));
@@ -2993,7 +3024,7 @@ int ObPLBlockNS::resolve_symbol(const ObString &var_name,
     if (OB_INVALID_INDEX == var_idx && OB_NOT_NULL(external_ns_)) {
       OZ (SMART_CALL(
         external_ns_->resolve_external_symbol(var_name, type, data_type, parent_id, var_idx)));
-      if (OB_SUCC(ret) && data_type.is_composite_type()) { // 来自外部的user_type需要在本namespace中展开
+      if (OB_SUCC(ret) && data_type.is_composite_type()) { // External user_type must be expanded in this namespace.
         const ObUserDefinedType *user_type = NULL;
         ObSEArray<ObDataType, 8> types;
         OZ (get_pl_data_type_by_id(data_type.get_user_type_id(), user_type));
@@ -3059,7 +3090,8 @@ int ObPLBlockNS::resolve_symbol(const ObString &var_name,
     for (int64_t i = 0;
          OB_SUCC(ret)
          && OB_INVALID_INDEX == var_idx
-         && OB_INVALID_INDEX == parent_id
+         && (OB_INVALID_INDEX == parent_id
+            || (parent_id == database_id_ && 0 == var_name.case_compare(get_package_name())))
          && i < get_labels().count(); ++i) {
       const ObString *label = label_table_->get_label(get_labels().at(i));
       if (OB_ISNULL(label)) {
@@ -3096,7 +3128,8 @@ int ObPLBlockNS::resolve_symbol(const ObString &var_name,
     // search to parent namespace, util to top parent, then try self and external symbol.
     if (OB_SUCC(ret)
         && OB_INVALID_INDEX == var_idx
-        && OB_INVALID_INDEX == parent_id) {
+        && (OB_INVALID_INDEX == parent_id
+            || (parent_id == database_id_ && 0 == var_name.case_compare(get_package_name())))) {
       if (OB_NOT_NULL(pre_ns_)) {
         ObPLDependencyGuard guard(external_ns_, pre_ns_->get_external_ns());
         if (OB_FAIL(SMART_CALL(pre_ns_->resolve_symbol(var_name, type, data_type, parent_id, var_idx)))) {

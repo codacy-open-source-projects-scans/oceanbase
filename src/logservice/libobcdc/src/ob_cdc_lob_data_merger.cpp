@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX OBLOG_FORMATTER
@@ -677,7 +670,9 @@ int ObCDCLobDataMerger::try_to_push_task_into_formatter_(
   IObLogFormatter *formatter = TCTX.formatter_;
 
   if (is_ddl) {
-    // is_ddl, do nothing
+    // DDL path waits for LOB callback in caller thread and does not enter formatter,
+    // so reclaim the in-flight LobDataOutRowCtxList stat here when callback is done.
+    ATOMIC_DEC(&lob_data_list_task_count_);
   } else {
     if (OB_ISNULL(formatter)) {
       ret = OB_ERR_UNEXPECTED;

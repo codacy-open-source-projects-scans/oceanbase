@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -445,6 +438,11 @@ int ObRelativeTable::get_primary_key_name(ObString &pk_name) const
   return ret;
 }
 
+ObMergeEngineType ObRelativeTable::get_merge_engine_type() const
+{
+  return schema_param_->get_merge_engine_type();
+}
+
 bool ObRelativeTable::is_index_table() const
 {
   return schema_param_->is_index_table();
@@ -468,6 +466,11 @@ bool ObRelativeTable::can_read_index() const
 bool ObRelativeTable::is_unique_index() const
 {
   return schema_param_->is_unique_index();
+}
+
+bool ObRelativeTable::is_global_unique_index() const
+{
+  return schema_param_->is_global_unique_index();
 }
 
 bool ObRelativeTable::is_domain_index() const
@@ -712,10 +715,9 @@ int ObRelativeTable::prepare_mds_filter(common::ObIAllocator &allocator,
       } else if (OB_FAIL(ObMDSFilterMgrFactory::build_mds_filter_mgr(
                      *tablet,
                      tablet_iter_.get_split_extra_tablet_handles_ptr(),
-                     read_info.get_columns_desc(),
-                     read_info.get_columns(),
+                     &read_info,
                      read_version_range,
-                     &allocator,
+                     allocator,
                      mds_filter_mgr_,
                      mds_filter_flags))) {
         LOG_WARN("failed to build mds filter mgr", K(ret), K(mds_filter_flags));

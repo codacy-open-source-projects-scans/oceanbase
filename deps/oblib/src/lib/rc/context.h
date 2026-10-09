@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef CONTEXT_H_
@@ -590,6 +583,24 @@ public:
     if (OB_LIKELY(ref_context != nullptr)) {
       abort_unless(context.seq_id_ == ref_context->seq_id_);
       destory_context(ref_context);
+    }
+  }
+  static void destory_child_context(__MemoryContext__ *context)
+  {
+    abort_unless(context->check_magic_code());
+    TreeNode *child_node = nullptr;
+    while ((child_node = context->tree_node_.child_) != nullptr) {
+      __MemoryContext__ *child = node2context(child_node);
+      destory_context(child);
+    }
+  }
+  static void destory_child_context(MemoryContext &context)
+  {
+    abort_unless(context.check_magic_code());
+    auto *ref_context = context.ref_context_;
+    if (OB_LIKELY(ref_context != nullptr)) {
+      abort_unless(context.seq_id_ == ref_context->seq_id_);
+      destory_child_context(ref_context);
     }
   }
   int64_t tree_mem_hold()

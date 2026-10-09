@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_UTILITY_H_
@@ -565,10 +558,23 @@ int get_ethernet_speed(const ObString &devname, int64_t &speed);
 inline int64_t get_cgroup_memory_limit()
 {
   int64_t cgroup_memory_limit = INT64_MAX;
-  FILE *file = fopen("/sys/fs/cgroup/memory/memory.limit_in_bytes", "r");
+  // cgroup v2: read from observer's own cgroup dir (symlink "cgroup" -> /sys/fs/cgroup/<obs_path>).
+  // Root /sys/fs/cgroup/memory.max does not exist on cgroup v2 by design.
+  FILE *file = fopen("cgroup/memory.max", "r");
   if (NULL != file) {
-    fscanf(file, "%ld", &cgroup_memory_limit);
+    char buf[64];
+    if (NULL != fgets(buf, sizeof(buf), file)) {
+      if (0 != strncmp(buf, "max", 3)) {
+        cgroup_memory_limit = strtoll(buf, NULL, 10);
+      }
+    }
     fclose(file);
+  } else {
+    file = fopen("/sys/fs/cgroup/memory/memory.limit_in_bytes", "r");
+    if (NULL != file) {
+      fscanf(file, "%ld", &cgroup_memory_limit);
+      fclose(file);
+    }
   }
   return cgroup_memory_limit;
 }
@@ -915,39 +921,32 @@ class ObTimeGuard
 public:
   explicit ObTimeGuard(const char *owner = "unknown", const int64_t warn_threshold = INT64_MAX)
   {
-    need_record_log_ = oceanbase::lib::is_trace_log_enabled();
-    if (need_record_log_) {
-      start_ts_ = common::ObTimeUtility::fast_current_time();
-      last_ts_ = start_ts_;
-      click_count_ = 0;
-      warn_threshold_ = warn_threshold;
-      owner_ = owner;
-      memset(click_, 0, sizeof(click_));
-      memset(click_str_, 0, sizeof(click_str_));
-    }
+    start_ts_ = common::ObTimeUtility::fast_current_time();
+    last_ts_ = start_ts_;
+    click_count_ = 0;
+    warn_threshold_ = warn_threshold;
+    owner_ = owner;
+    memset(click_, 0, sizeof(click_));
+    memset(click_str_, 0, sizeof(click_str_));
   }
   void click(const char *mod = NULL)
   {
-    if (need_record_log_) {
-      const int64_t cur_ts = common::ObTimeUtility::fast_current_time();
-      if (OB_LIKELY(click_count_ < MAX_CLICK_COUNT)) {
-        click_str_[click_count_] = mod;
-        click_[click_count_++] = (int32_t)(cur_ts - last_ts_);
-        last_ts_ = cur_ts;
-      }
+    const int64_t cur_ts = common::ObTimeUtility::fast_current_time();
+    if (OB_LIKELY(click_count_ < MAX_CLICK_COUNT)) {
+      click_str_[click_count_] = mod;
+      click_[click_count_++] = (int32_t)(cur_ts - last_ts_);
+      last_ts_ = cur_ts;
     }
   }
   ~ObTimeGuard()
   {
-    if (need_record_log_) {
-      if (OB_UNLIKELY(get_diff() >= warn_threshold_)) {
-        LIB_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "destruct", K(*this));
-      }
+    if (OB_UNLIKELY(get_diff() >= warn_threshold_)) {
+      LIB_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "destruct", K(*this));
     }
   }
   int64_t get_diff() const
   {
-    return need_record_log_ ? common::ObTimeUtility::fast_current_time() - start_ts_ : 0;
+    return common::ObTimeUtility::fast_current_time() - start_ts_;
   }
   int64_t to_string(char *buf, const int64_t buf_len) const;
   DECLARE_TO_YSON_KV;
@@ -960,7 +959,6 @@ private:
   int64_t warn_threshold_;
   const char *owner_;
   int32_t click_[MAX_CLICK_COUNT];
-  bool need_record_log_;
   const char *click_str_[MAX_CLICK_COUNT];
 };
 

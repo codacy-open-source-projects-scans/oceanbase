@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
  #define USING_LOG_PREFIX SQL_ENG
 #include "ob_orc_table_row_iter.h"
@@ -24,48 +17,45 @@ namespace
 {
 int normalize_position_to_include_index(const int64_t column_pos,
                                         const orc::Type &root_type,
-                                        uint64_t &field_index)
+                                        int64_t &orc_col_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(column_pos <= 0 || root_type.getKind() != orc::TypeKind::STRUCT
-                  || column_pos > static_cast<int64_t>(root_type.getSubtypeCount()))) {
+  if (OB_UNLIKELY(column_pos <= 0 || root_type.getKind() != orc::TypeKind::STRUCT)) {
     ret = OB_ERR_INVALID_COLUMN_ID;
     LOG_WARN("column position is invalid", K(ret), K(column_pos), K(root_type.getSubtypeCount()));
+  } else if (column_pos > static_cast<int64_t>(root_type.getSubtypeCount())) {
+    orc_col_id = -1;
   } else {
-    field_index = static_cast<uint64_t>(column_pos - 1);
+    orc_col_id = static_cast<int64_t>(
+        root_type.getSubtype(static_cast<uint64_t>(column_pos - 1))->getColumnId());
   }
   return ret;
 }
 
-int build_row_reader_options(const sql::ColumnIndexType column_index_type,
-                             const std::list<uint64_t> &include_columns,
+int build_row_reader_options(const std::list<uint64_t> &include_columns,
                              const orc::Type &root_type,
                              const bool is_hive_lake_table,
                              orc::RowReaderOptions &row_reader_options)
 {
   int ret = OB_SUCCESS;
-  if (column_index_type == sql::ColumnIndexType::POSITION) {
-    row_reader_options.include(include_columns);
-  } else {
-    std::list<uint64_t> filtered_type_ids;
-    const int64_t type_id_limit = static_cast<int64_t>(root_type.getMaximumColumnId()) + 1;
-    std::list<uint64_t>::const_iterator it;
-    for (it = include_columns.begin(); OB_SUCC(ret) && it != include_columns.end(); ++it) {
-      const int64_t type_id = static_cast<int64_t>(*it);
-      if (is_hive_lake_table) {
-        if (type_id >= 0 && type_id < type_id_limit) {
-          filtered_type_ids.push_back(*it);
-        }
-      } else if (OB_UNLIKELY(type_id < 0 || type_id >= type_id_limit)) {
-        ret = OB_ERR_INVALID_COLUMN_ID;
-        LOG_WARN("invalid orc type id", K(ret), K(type_id), K(type_id_limit));
-      } else {
+  std::list<uint64_t> filtered_type_ids;
+  const int64_t type_id_limit = static_cast<int64_t>(root_type.getMaximumColumnId()) + 1;
+  std::list<uint64_t>::const_iterator it;
+  for (it = include_columns.begin(); OB_SUCC(ret) && it != include_columns.end(); ++it) {
+    const int64_t type_id = static_cast<int64_t>(*it);
+    if (is_hive_lake_table) {
+      if (type_id >= 0 && type_id < type_id_limit) {
         filtered_type_ids.push_back(*it);
       }
+    } else if (OB_UNLIKELY(type_id < 0 || type_id >= type_id_limit)) {
+      ret = OB_ERR_INVALID_COLUMN_ID;
+      LOG_WARN("invalid orc type id", K(ret), K(type_id), K(type_id_limit));
+    } else {
+      filtered_type_ids.push_back(*it);
     }
-    if (OB_SUCC(ret)) {
-      row_reader_options.includeTypes(filtered_type_ids);
-    }
+  }
+  if (OB_SUCC(ret)) {
+    row_reader_options.includeTypes(filtered_type_ids);
   }
   return ret;
 }
@@ -138,19 +128,30 @@ int ObOrcTableRowIterator::compute_column_id_by_index_type(int64_t index, int64_
       if (!is_col_name_case_sensitive_) {
         ObString capitalize_str;
         OZ (ob_simple_low_to_up(allocator_, col_name, capitalize_str));
-        OZ (name_to_id_.get_refactored(capitalize_str, orc_col_id));
+        int tmp_ret = name_to_id_.get_refactored(capitalize_str, orc_col_id);
+        if (OB_HASH_NOT_EXIST == tmp_ret) {
+          orc_col_id = -1;
+        } else if (OB_SUCCESS != tmp_ret) {
+          ret = tmp_ret;
+          LOG_WARN("fail to get name to id", K(ret), K(capitalize_str));
+        }
       } else {
-        OZ (name_to_id_.get_refactored(col_name, orc_col_id));
+        int tmp_ret = name_to_id_.get_refactored(col_name, orc_col_id);
+        if (OB_HASH_NOT_EXIST == tmp_ret) {
+          orc_col_id = -1;
+        } else if (OB_SUCCESS != tmp_ret) {
+          ret = tmp_ret;
+          LOG_WARN("fail to get name to id", K(ret), K(col_name));
+        }
       }
       break;
     }
     case sql::ColumnIndexType::POSITION: {
       const int64_t column_pos = file_column_exprs_.at(index)->extra_;
-      uint64_t field_index = 0;
       const orc::Type &root_type = reader_->getType();
-      if (OB_FAIL(normalize_position_to_include_index(column_pos, root_type, field_index))) {
-      } else {
-        orc_col_id = root_type.getSubtype(field_index)->getColumnId();
+      if (OB_FAIL(normalize_position_to_include_index(column_pos,
+                                                      root_type,
+                                                      orc_col_id))) {
       }
       break;
     }
@@ -199,18 +200,16 @@ int ObOrcTableRowIterator::prepare_read_orc_file(ObEvalCtx &eval_ctx)
   for (int64_t i = 0; OB_SUCC(ret) && i < file_column_exprs_.count(); i++) {
     int64_t orc_col_id = -1;
     OZ (compute_column_id_by_index_type(i, orc_col_id));
-    CK (orc_col_id != -1);
     orc::ColumnVectorBatch *batch = nullptr;
     const orc::Type *type = nullptr;
-    ObColumnDefaultValue *default_value = is_lake_table() ?
-                                          &colid_default_value_arr_.at(i) : nullptr;
+    ObColumnDefaultValue *default_value = &colid_default_value_arr_.at(i);
 
     if (OB_SUCC(ret)) {
       int tmp_ret = column_index_type_ == sql::ColumnIndexType::ID
                         ? iceberg_id_to_type_.get_refactored(orc_col_id, type)
                         : id_to_type_.get_refactored(orc_col_id, type);
 
-      if (OB_HASH_NOT_EXIST == tmp_ret && is_lake_table()) {
+      if (OB_HASH_NOT_EXIST == tmp_ret) {
         type = nullptr;
         ret = OB_SUCCESS;
       } else if (OB_SUCCESS != tmp_ret) {
@@ -321,9 +320,10 @@ int ObOrcTableRowIterator::init_data_loader(int64_t i, int64_t orc_col_id, const
   int ret = OB_SUCCESS;
   orc::ColumnVectorBatch *batch = nullptr;
   ObExpr* column_expr = get_column_expr_by_id(i);
-  if (type == nullptr && is_lake_table()) {
-    // init data loader for iceberg table with default value
-    if (OB_FAIL(reader.data_loaders_.at(i).init(column_expr, default_value, eval_ctx))) {
+  if (type == nullptr) {
+    // Init data loader for a column absent from the current file.
+    if (OB_FAIL(reader.data_loaders_.at(i)
+                    .init(column_expr, default_value, eval_ctx, is_hive_lake_table()))) {
       LOG_WARN("fail to init data loader", K(ret), K(i));
     } else {
       CK (reader.data_loaders_.at(i).has_load_func());
@@ -334,7 +334,8 @@ int ObOrcTableRowIterator::init_data_loader(int64_t i, int64_t orc_col_id, const
   } else if (OB_FAIL(get_data_column_batch(&reader.row_reader_->getSelectedType(),
       dynamic_cast<const orc::StructVectorBatch *>(reader.orc_batch_.get()), orc_col_id, batch))) {
     LOG_WARN("fail to get data column batch", K(ret), K(i));
-  } else if (OB_FAIL(reader.data_loaders_.at(i).init(column_expr, batch, type, eval_ctx))) {
+  } else if (OB_FAIL(reader.data_loaders_.at(i)
+                         .init(column_expr, batch, type, eval_ctx, is_hive_lake_table()))) {
     LOG_WARN("fail to init data loader", K(ret), K(i));
   } else if (!reader.data_loaders_.at(i).has_load_func()) {
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
@@ -372,11 +373,19 @@ int ObOrcTableRowIterator::init(const storage::ObTableScanParam *scan_param)
     OZ (id_to_type_.create(512, mem_attr_));
     OZ (name_to_id_.create(512, mem_attr_));
     OZ (iceberg_id_to_type_.create(512, mem_attr_));
+    if (OB_SUCC(ret) && !scan_param->sample_info_.is_no_sample()) {
+      if (!scan_param->sample_info_.is_block_sample()
+          && !scan_param->sample_info_.is_row_sample()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("unable to support non-block/file sample", K(ret), K(scan_param->sample_info_));
+      }
+    }
     OZ (ObExternalTableRowIterator::init(scan_param));
     OZ (ObExternalTablePushdownFilter::init(scan_param->pd_storage_filters_,
                                             scan_param->ext_tbl_filter_pd_level_,
                                             scan_param->column_ids_,
                                             eval_ctx));
+    LOG_INFO("orc init", K(scan_param->pd_storage_flag_));
     OZ (reader_profile_.register_metrics(&reader_metrics_, READER_METRICS_LABEL));
     OZ (data_access_driver_.register_io_metrics(reader_profile_, IO_METRICS_LABEL));
     OZ (file_prebuffer_.register_metrics(reader_profile_, PREBUFFER_METRICS_LABEL));
@@ -403,9 +412,7 @@ int ObOrcTableRowIterator::init(const storage::ObTableScanParam *scan_param)
       }
     }
 
-    if (is_lake_table()) {
-      OZ(ObExternalTableRowIterator::init_default_batch(file_column_exprs_));
-    }
+    OZ(ObExternalTableRowIterator::init_default_batch(file_column_exprs_));
     if (is_iceberg_lake_table()) {
       OZ(ObExternalTableRowIterator::init_for_iceberg(&options_));
     }
@@ -685,6 +692,55 @@ int ObOrcTableRowIterator::select_row_ranges(const int64_t stripe_idx)
         state_.cur_row_range_idx_ = 0;
         state_.end_row_range_idx_ = 0;
       }
+      // block/fast sample: trim row ranges to only include the first N row groups
+      if (OB_SUCC(ret) && state_.has_row_range()
+          && OB_NOT_NULL(scan_param_)
+          && scan_param_->sample_info_.is_block_sample()) {
+        const int64_t row_index_stride = reader_->getRowIndexStride();
+        if (row_index_stride > 0) {
+          const double sample_rate = static_cast<double>(scan_param_->sample_info_.percent_) / 100.0;
+          const int64_t num_row_groups = (stripe_num_rows + row_index_stride - 1) / row_index_stride;
+          int64_t selected_rg_cnt = 0;
+          if (sample_rate <= 0.0) {
+            selected_rg_cnt = 0;
+          } else if (sample_rate >= 1.0) {
+            selected_rg_cnt = num_row_groups;
+          } else {
+            selected_rg_cnt = static_cast<int64_t>(std::ceil(num_row_groups * sample_rate));
+            if (selected_rg_cnt <= 0) {
+              selected_rg_cnt = 1;
+            }
+            if (selected_rg_cnt > num_row_groups) {
+              selected_rg_cnt = num_row_groups;
+            }
+          }
+          const int64_t selected_rows = std::min(selected_rg_cnt * row_index_stride, stripe_num_rows);
+          if (selected_rows <= 0) {
+            state_.cur_row_range_idx_ = 0;
+            state_.end_row_range_idx_ = -1;
+          } else {
+            int64_t remaining = selected_rows;
+            int64_t new_end_idx = -1;
+            for (int64_t i = state_.cur_row_range_idx_;
+                 i <= state_.end_row_range_idx_ && remaining > 0; ++i) {
+              SelectedRowRange &range = row_ranges_.at(i);
+              if (range.num_rows <= remaining) {
+                remaining -= range.num_rows;
+                new_end_idx = i;
+              } else {
+                range.num_rows = remaining;
+                remaining = 0;
+                new_end_idx = i;
+              }
+            }
+            state_.end_row_range_idx_ = new_end_idx;
+          }
+          LOG_TRACE("block/fast sample trimmed row ranges",
+                    K(stripe_num_rows), K(row_index_stride), K(num_row_groups),
+                    K(selected_rg_cnt), K(selected_rows),
+                    K(state_.cur_row_range_idx_), K(state_.end_row_range_idx_));
+        }
+      }
       if (OB_SUCC(ret) && state_.has_row_range() && options_.enable_prebuffer_) {
         if (OB_FAIL(pre_buffer(false /* row index */))) {
           LOG_WARN("fail to pre buffer data", K(ret));
@@ -835,6 +891,8 @@ int ObOrcTableRowIterator::next_file()
     do {
       if ((task_idx = state_.file_idx_++) >= scan_param_->scan_tasks_.count()) {
         ret = OB_ITER_END;
+      }
+      if (OB_FAIL(ret)) {
       } else {
         file_size = -1;
         int64_t modify_time = 0;
@@ -882,7 +940,7 @@ int ObOrcTableRowIterator::next_file()
             ObExternalFileUrlInfo file_info(scan_param_->external_file_location_,
                                             scan_param_->external_file_access_info_, url_.string(),
                                             file_content_digest, file_size, modify_time);
-            ObExternalFileCacheOptions cache_options(options_.enable_page_cache_,
+            ObExternalFileCacheOptions cache_options(options_.enable_memory_cache_,
                                                      options_.enable_disk_cache_);
             if (OB_FAIL(data_access_driver_.open(file_info, cache_options))) {
               if (OB_OBJECT_NOT_EXIST == ret || OB_HDFS_PATH_NOT_FOUND == ret) {
@@ -1001,6 +1059,16 @@ int ObOrcTableRowIterator::next_file()
           } else if (is_iceberg_lake_table() &&
                     OB_FAIL(build_delete_bitmap(state_.cur_file_url_, state_.file_idx_ - 1))) {
             LOG_WARN("fail to build delete bitmap", K(ret));
+          } else if (OB_NOT_NULL(scan_param_) && !scan_param_->sample_info_.is_no_sample()) {
+            if (scan_param_->sample_info_.is_block_sample()) {
+              // block/fast sample uses the same row-range trim path in select_row_ranges().
+              const int64_t row_index_stride = reader_->getRowIndexStride();
+              if (row_index_stride <= 0) {
+                ret = OB_NOT_SUPPORTED;
+                LOG_WARN("block/fast sample requires row index stride", K(ret), K(row_index_stride));
+                LOG_USER_ERROR(OB_NOT_SUPPORTED, "BLOCK/FAST sample without row index");
+              }
+            }
           }
         }
       } CATCH_ORC_EXCEPTIONS_FILE_ERROR
@@ -1096,18 +1164,21 @@ int ObOrcTableRowIterator::create_row_readers()
 
           uint64_t orc_col_id = 0;
           ObArray<ObString> col_names;
-          OZ(find_column_type_id_by_name(&all_row_reader_->getSelectedType(),
-                                         data_access_info->data_access_path_,
-                                         col_names,
-                                         orc_col_id));
-          if (OB_FAIL(ret)) {
-          } else if (orc_col_id == 0) {
+          if (data_access_info->data_access_path_.empty()) {
             ret = OB_INVALID_EXTERNAL_FILE_COLUMN_PATH;
             LOG_USER_ERROR(OB_INVALID_EXTERNAL_FILE_COLUMN_PATH,
                            data_access_info->data_access_path_.length(),
                            data_access_info->data_access_path_.ptr());
+          } else {
+            OZ(find_column_type_id_by_name(&all_row_reader_->getSelectedType(),
+                                           data_access_info->data_access_path_,
+                                           col_names,
+                                           orc_col_id));
           }
-          if (OB_SUCC(ret)) {
+          if (OB_FAIL(ret)) {
+          } else if (orc_col_id == 0) {
+            // column absent from this file (schema evolution)
+          } else {
             bool is_project_column = true;
             if (is_eager_column_.count() > 0 && is_eager_column_.at(i)) {
               eager_column_ids.push_back(orc_col_id);
@@ -1125,20 +1196,23 @@ int ObOrcTableRowIterator::create_row_readers()
       case sql::ColumnIndexType::POSITION: {
         for (uint64_t i = 0; OB_SUCC(ret) && i < file_column_exprs_.count(); i++) {
           bool is_project_column = true;
-          uint64_t field_index = 0;
+          int64_t pos_orc_col_id = 0;
           if (OB_FAIL(normalize_position_to_include_index(file_column_exprs_.at(i)->extra_,
                                                           reader_->getType(),
-                                                          field_index))) {
+                                                          pos_orc_col_id))) {
             LOG_WARN("invalid orc column position", K(ret), K(file_column_exprs_.at(i)->extra_));
+          } else if (pos_orc_col_id < 0) {
+            // column absent from this file (schema evolution)
           } else {
+            const uint64_t type_id = static_cast<uint64_t>(pos_orc_col_id);
             if (is_eager_column_.count() > 0 && is_eager_column_.at(i)) {
-              eager_column_ids.push_back(field_index);
+              eager_column_ids.push_back(type_id);
               if (!is_dup_project_.at(i)) {
                 is_project_column = false;
               }
             }
             if (is_project_column) {
-              project_column_ids.push_back(field_index);
+              project_column_ids.push_back(type_id);
             }
           }
         }
@@ -1189,8 +1263,7 @@ int ObOrcTableRowIterator::create_row_readers()
       int64_t capacity = MAX(1, scan_param_->op_->get_eval_ctx().max_batch_size_);
       if (project_column_ids.size() > 0) {
         orc::RowReaderOptions rowReaderOptions;
-        OZ(build_row_reader_options(column_index_type_,
-                                    project_column_ids,
+        OZ(build_row_reader_options(project_column_ids,
                                     reader_->getType(),
                                     is_hive_lake_table(),
                                     rowReaderOptions));
@@ -1198,13 +1271,14 @@ int ObOrcTableRowIterator::create_row_readers()
           project_reader_.init(capacity, rowReaderOptions, reader_.get());
         }
       } else {
+        project_reader_.row_reader_.reset();
+        project_reader_.orc_batch_.reset();
         project_reader_.row_id_ = 0;
       }
       if (sector_reader_ != nullptr) {
         if (eager_column_ids.size() > 0) {
           orc::RowReaderOptions rowReaderOptions;
-          OZ(build_row_reader_options(column_index_type_,
-                                      eager_column_ids,
+          OZ(build_row_reader_options(eager_column_ids,
                                       reader_->getType(),
                                       is_hive_lake_table(),
                                       rowReaderOptions));
@@ -1212,7 +1286,10 @@ int ObOrcTableRowIterator::create_row_readers()
             sector_reader_->get_eager_reader().init(capacity, rowReaderOptions, reader_.get());
           }
         } else {
-          sector_reader_->get_eager_reader().row_id_ = 0;
+          OrcRowReader &eager_reader = sector_reader_->get_eager_reader();
+          eager_reader.row_reader_.reset();
+          eager_reader.orc_batch_.reset();
+          eager_reader.row_id_ = 0;
         }
       }
       if (OB_FAIL(init_selected_columns())) {
@@ -1897,7 +1974,7 @@ int ObOrcTableRowIterator::load_filter_column(const common::ObIArray<uint64_t> &
   return ret;
 }
 
-static OB_INLINE int convert_integer_type_statistics(
+int ObOrcTableRowIterator::convert_integer_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const orc::Type *orc_type,
     const ObDatumMeta &col_meta,
@@ -1931,7 +2008,7 @@ static OB_INLINE int convert_integer_type_statistics(
   return ret;
 }
 
-static OB_INLINE int convert_real_type_statistics(
+int ObOrcTableRowIterator::convert_real_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const orc::Type *orc_type,
     const ObDatumMeta &col_meta,
@@ -1956,7 +2033,7 @@ static OB_INLINE int convert_real_type_statistics(
   return ret;
 }
 
-static OB_INLINE int128_t orc_int64_to_ob_int128(const int64_t orc_int)
+int128_t ObOrcTableRowIterator::orc_int64_to_ob_int128(const int64_t orc_int)
 {
   int128_t ob_int128 = 0;
   ob_int128.items_[1] = 0;
@@ -1964,7 +2041,7 @@ static OB_INLINE int128_t orc_int64_to_ob_int128(const int64_t orc_int)
   return ob_int128;
 }
 
-static OB_INLINE int128_t orc_int128_to_ob_int128(const orc::Int128 &orc_int)
+int128_t ObOrcTableRowIterator::orc_int128_to_ob_int128(const orc::Int128 &orc_int)
 {
   int128_t ob_int128 = 0;
   ob_int128.items_[1] = orc_int.getHighBits();
@@ -1972,8 +2049,8 @@ static OB_INLINE int128_t orc_int128_to_ob_int128(const orc::Int128 &orc_int)
   return ob_int128;
 }
 
-static OB_INLINE int decimal128_to_number(const int128_t &decimal_int, const ObScale scale,
-                                          ObDatum &out)
+int ObOrcTableRowIterator::decimal128_to_number(const int128_t &decimal_int, const ObScale scale,
+                                                ObDatum &out)
 {
   int ret = OB_SUCCESS;
   ObNumStackOnceAlloc tmp_alloc;
@@ -1986,7 +2063,7 @@ static OB_INLINE int decimal128_to_number(const int128_t &decimal_int, const ObS
   return ret;
 }
 
-static OB_INLINE int convert_decimal_type_statistics(
+int ObOrcTableRowIterator::convert_decimal_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const orc::Type *orc_type,
     const ObDatumMeta &col_meta,
@@ -2076,7 +2153,7 @@ static OB_INLINE int convert_decimal_type_statistics(
   return ret;
 }
 
-static OB_INLINE int convert_orc_date_to_ob_temporal_statistics(
+int ObOrcTableRowIterator::convert_orc_date_to_ob_temporal_statistics(
     const orc::ColumnStatistics *orc_stat,
     const ObDatumMeta &col_meta,
     const int64_t adjust_us,
@@ -2147,21 +2224,21 @@ static OB_INLINE int convert_orc_date_to_ob_temporal_statistics(
   return ret;
 }
 
-static OB_INLINE int64_t orc_timestamp_to_ob_timestamp(const int64_t second, const int32_t nanos,
-                                                       const int64_t adjust_us)
+int64_t ObOrcTableRowIterator::orc_timestamp_to_ob_timestamp(const int64_t second, const int32_t nanos,
+                                                             const int64_t adjust_us)
 {
   return second * USECS_PER_SEC + nanos / NSECS_PER_USEC + adjust_us;
 }
 
-static OB_INLINE int64_t orc_stat_ts_to_ob_timestamp(const int64_t utc, const int32_t nanos,
-                                                     const int64_t adjust_us)
+int64_t ObOrcTableRowIterator::orc_stat_ts_to_ob_timestamp(const int64_t utc, const int32_t nanos,
+                                                           const int64_t adjust_us)
 {
   const int64_t second = utc / NSECS_PER_USEC;
   const int32_t nano = static_cast<int32_t>((utc % NSECS_PER_USEC) * USECS_PER_SEC) + nanos;
   return orc_timestamp_to_ob_timestamp(second, nano, adjust_us);
 }
 
-static OB_INLINE int convert_orc_ts_temporal_type_statistics(
+int ObOrcTableRowIterator::convert_orc_ts_temporal_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const ObDatumMeta &col_meta,
     const int64_t adjust_us,
@@ -2228,7 +2305,7 @@ static OB_INLINE int convert_orc_ts_temporal_type_statistics(
   return ret;
 }
 
-static OB_INLINE int convert_temporal_type_statistics(
+int ObOrcTableRowIterator::convert_temporal_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const orc::Type *orc_type,
     const ObDatumMeta &col_meta,
@@ -2246,7 +2323,7 @@ static OB_INLINE int convert_temporal_type_statistics(
   return ret;
 }
 
-static OB_INLINE int convert_string_type_statistics(
+int ObOrcTableRowIterator::convert_string_type_statistics(
     const orc::ColumnStatistics *orc_stat,
     const ObColumnMeta &col_meta,
     ObIAllocator &allocator,
@@ -2376,7 +2453,8 @@ int ObOrcTableRowIterator::convert_orc_statistics(const orc::ColumnStatistics *o
 int ObOrcTableRowIterator::DataLoader::init(ObExpr *file_col_expr,
                                             const orc::ColumnVectorBatch *batch,
                                             const orc::Type *col_type,
-                                            ObEvalCtx &eval_ctx)
+                                            ObEvalCtx &eval_ctx,
+                                            const bool is_hive_lake_table)
 {
   int ret = OB_SUCCESS;
   ObCollectionTypeBase *collection_type = nullptr;
@@ -2394,6 +2472,7 @@ int ObOrcTableRowIterator::DataLoader::init(ObExpr *file_col_expr,
     batch_ = batch;
     col_type_ = col_type;
     col_def_ = nullptr;
+    is_hive_lake_table_ = is_hive_lake_table;
     load_func_ = select_load_function(file_col_expr->datum_meta_, *col_type);
   }
   return ret;
@@ -2401,7 +2480,8 @@ int ObOrcTableRowIterator::DataLoader::init(ObExpr *file_col_expr,
 
 int ObOrcTableRowIterator::DataLoader::init(ObExpr *file_col_expr,
                                             const ObColumnDefaultValue *col_def,
-                                            ObEvalCtx &eval_ctx)
+                                            ObEvalCtx &eval_ctx,
+                                            const bool is_hive_lake_table)
 {
   int ret = OB_SUCCESS;
   ObCollectionTypeBase *collection_type = nullptr;
@@ -2417,6 +2497,7 @@ int ObOrcTableRowIterator::DataLoader::init(ObExpr *file_col_expr,
     file_col_expr_ = file_col_expr;
     collection_type_ = collection_type;
     col_def_ = col_def;
+    is_hive_lake_table_ = is_hive_lake_table;
     load_func_ = &DataLoader::load_default;
   }
   return ret;
@@ -2517,7 +2598,7 @@ ObOrcTableRowIterator::DataLoader::LOAD_FUNC ObOrcTableRowIterator::DataLoader::
     }
   } else if (ob_is_year_tc(datum_type.type_) && orc::TypeKind::INT == type_kind) {
     func = &DataLoader::load_year_vec;
-  } else if (ob_is_string_tc(datum_type.type_) || ob_is_enum_or_set_type(datum_type.type_)
+  } else if (ob_is_string_type(datum_type.type_) || ob_is_enum_or_set_type(datum_type.type_)
              || ob_is_large_text(datum_type.type_)) {
     //convert orc enum/string to enum/string vector
     bool is_lob = ob_is_large_text(datum_type.type_);
@@ -2678,50 +2759,52 @@ int ObOrcTableRowIterator::get_next_rows(int64_t &count, int64_t capacity)
   const ExprFixedArray &column_conv_exprs = *(scan_param_->ext_column_dependent_exprs_);
   int64_t read_count = 0;
   ObMallocHookAttrGuard guard(mem_attr_);
-  if (sector_reader_ != nullptr && !sector_reader_->is_finished()) {
-    // sector reader is still not finished, project rows from sector bitmap,
-    // no need to move to next range.
-  } else if (OB_UNLIKELY(!state_.has_rows_in_row_range())) {
-    if (OB_FAIL(next_row_range())) {
-      if (OB_ITER_END != ret) {
-        LOG_WARN("fail to next row group", K(ret));
+  {
+    if (OB_NOT_NULL(sector_reader_) && !sector_reader_->is_finished()) {
+      // sector reader is still not finished, project rows from sector bitmap,
+      // no need to move to next range.
+    } else if (OB_UNLIKELY(!state_.has_rows_in_row_range())) {
+      if (OB_FAIL(next_row_range())) {
+        if (OB_ITER_END != ret) {
+          LOG_WARN("fail to next row group", K(ret));
+        }
+      } else if (OB_UNLIKELY(!state_.has_rows_in_row_range()) && !is_count_aggr_) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected iterator state", K(ret), K_(state));
       }
-    } else if (OB_UNLIKELY(!state_.has_rows_in_row_range()) && !is_count_aggr_) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected iterator state", K(ret), K_(state));
     }
-  }
 
-  if (OB_FAIL(ret)) {
-  } else if (is_count_aggr_) {
-    read_count = std::min(capacity, state_.remain_rows_in_range());
-    state_.cur_range_read_row_count_ += read_count;
-  } else if (OB_FAIL(next_batch(read_count, capacity))) {
-    LOG_WARN("fail to next batch", K(ret), K(capacity), K(read_count));
-  }
-  if (OB_SUCC(ret) && read_count > 0) {
-    if (!is_count_aggr_ && !is_count_aggr_with_filter_) {
-      // load vec data from orc file to file column expr
-      for (int64_t i = 0; OB_SUCC(ret) && i < project_reader_.data_loaders_.count(); ++i) {
-        DataLoader &data_loader = project_reader_.data_loaders_.at(i);
-        if (data_loader.has_load_func() && OB_FAIL(data_loader.load_data_for_col(eval_ctx))) {
-          LOG_WARN("fail to load data for col", K(ret));
+    if (OB_FAIL(ret)) {
+    } else if (is_count_aggr_) {
+      read_count = std::min(capacity, state_.remain_rows_in_range());
+      state_.cur_range_read_row_count_ += read_count;
+    } else if (OB_FAIL(next_batch(read_count, capacity))) {
+      LOG_WARN("fail to next batch", K(ret), K(capacity), K(read_count));
+    }
+    if (OB_SUCC(ret) && read_count > 0) {
+      if (!is_count_aggr_ && !is_count_aggr_with_filter_) {
+        // load vec data from orc file to file column expr
+        for (int64_t i = 0; OB_SUCC(ret) && i < project_reader_.data_loaders_.count(); ++i) {
+          DataLoader &data_loader = project_reader_.data_loaders_.at(i);
+          if (data_loader.has_load_func() && OB_FAIL(data_loader.load_data_for_col(eval_ctx))) {
+            LOG_WARN("fail to load data for col", K(ret));
+          }
         }
       }
-    }
-    //fill expr results from metadata
-    for (int64_t i = 0; OB_SUCC(ret) && i < file_meta_column_exprs_.count(); i++) {
-      OZ (fill_file_meta_column(eval_ctx, file_meta_column_exprs_.at(i), read_count));
-    }
-
-    for (int64_t i = 0; OB_SUCC(ret) && i < column_exprs_.count(); i++) {
-      //column_conv_exprs is 1-1 mapped to column_exprs
-      //calc gen column exprs
-      if (column_sel_mask_.at(i) && column_need_conv_.at(i)) {
-        OZ (project_column(eval_ctx, column_conv_exprs.at(i), column_exprs_.at(i), read_count));
+      //fill expr results from metadata
+      for (int64_t i = 0; OB_SUCC(ret) && i < file_meta_column_exprs_.count(); i++) {
+        OZ (fill_file_meta_column(eval_ctx, file_meta_column_exprs_.at(i), read_count));
       }
+
+      for (int64_t i = 0; OB_SUCC(ret) && i < column_exprs_.count(); i++) {
+        //column_conv_exprs is 1-1 mapped to column_exprs
+        //calc gen column exprs
+        if (column_sel_mask_.at(i) && column_need_conv_.at(i)) {
+          OZ (project_column(eval_ctx, column_conv_exprs.at(i), column_exprs_.at(i), read_count));
+        }
+      }
+      OZ (calc_exprs_for_rowid(read_count, state_));
     }
-    OZ (calc_exprs_for_rowid(read_count, state_));
   }
   if (OB_SUCC(ret)) {
     reader_metrics_.read_rows_count_ += read_count;
@@ -2956,6 +3039,7 @@ int ObOrcTableRowIterator::DataLoader::load_string_col(ObEvalCtx &eval_ctx)
       const bool is_oracle_mode = lib::is_oracle_mode();
       const bool is_byte_length = is_oracle_byte_length(
         is_oracle_mode, file_col_expr_->datum_meta_.length_semantics_);
+      const int64_t max_length = file_col_expr_->max_length_;
       const orc::StringVectorBatch *string_batch =
         dynamic_cast<const orc::StringVectorBatch *>(batch_);
       CK (OB_NOT_NULL(string_batch));
@@ -2969,18 +3053,22 @@ int ObOrcTableRowIterator::DataLoader::load_string_col(ObEvalCtx &eval_ctx)
           const char not_null = string_batch->notNull.data()[i];
           if (not_null == 1) {
             const int64_t length = string_batch->length[i];
+            int64_t adjusted_len = length;
             const char *data = string_batch->data[i];
             if (length == 0 && is_oracle_mode) {
-              text_vec->set_null(i);
+            text_vec->set_null(i);
+            } else if (OB_UNLIKELY(
+                           length > max_length
+                           && OB_FAIL(ObExternalTableUtils::adjust_string_length_for_external_table(
+                               data,
+                               length,
+                               max_length,
+                               is_byte_length,
+                               is_hive_lake_table_,
+                               adjusted_len)))) {
+            LOG_WARN("data too long", K(ret), K(length), K(max_length));
             } else {
-              if (OB_UNLIKELY(length > file_col_expr_->max_length_ &&
-                  (is_byte_length ||
-                     ObCharset::strlen_char(CS_TYPE_UTF8MB4_BIN, data, length) > file_col_expr_->max_length_))) {
-                ret = OB_ERR_DATA_TOO_LONG;
-                LOG_WARN("data too long", K(ret), K(length), K(file_col_expr_->max_length_));
-              } else {
-                text_vec->set_length(i, length);
-              }
+            text_vec->set_length(i, adjusted_len);
             }
           } else {
             text_vec->set_null(i);
@@ -2990,16 +3078,22 @@ int ObOrcTableRowIterator::DataLoader::load_string_col(ObEvalCtx &eval_ctx)
         text_vec->set_ptrs(const_cast<char **>(string_batch->data.data()));
         for (int64_t i = 0; OB_SUCC(ret) && i < string_batch->numElements; i++) {
           const int64_t length = string_batch->length[i];
+          int64_t adjusted_len = length;
           const char *data = string_batch->data[i];
           if (length == 0 && is_oracle_mode) {
             text_vec->set_null(i);
-          } else if (OB_UNLIKELY(length > file_col_expr_->max_length_ &&
-               (is_byte_length ||
-                 ObCharset::strlen_char(CS_TYPE_UTF8MB4_BIN, data, length) > file_col_expr_->max_length_))) {
-            ret = OB_ERR_DATA_TOO_LONG;
-            LOG_WARN("data too long", K(ret), K(length), K(file_col_expr_->max_length_));
+          } else if (OB_UNLIKELY(
+                         length > max_length
+                         && OB_FAIL(ObExternalTableUtils::adjust_string_length_for_external_table(
+                             data,
+                             length,
+                             max_length,
+                             is_byte_length,
+                             is_hive_lake_table_,
+                             adjusted_len)))) {
+            LOG_WARN("data too long", K(ret), K(length), K(max_length));
           } else {
-            text_vec->set_length(i, length);
+            text_vec->set_length(i, adjusted_len);
           }
         }
       }
@@ -3021,6 +3115,7 @@ int ObOrcTableRowIterator::DataLoader::load_lob_col(ObEvalCtx &eval_ctx)
       const bool is_oracle_mode = lib::is_oracle_mode();
       const bool is_byte_length = is_oracle_byte_length(
         is_oracle_mode, file_col_expr_->datum_meta_.length_semantics_);
+      const int64_t max_length = file_col_expr_->max_length_;
       const orc::StringVectorBatch *string_batch =
         dynamic_cast<const orc::StringVectorBatch *>(batch_);
       CK (OB_NOT_NULL(string_batch));
@@ -3033,19 +3128,26 @@ int ObOrcTableRowIterator::DataLoader::load_lob_col(ObEvalCtx &eval_ctx)
           const char not_null = string_batch->notNull.data()[i];
           if (not_null == 1) {
             const int64_t length = string_batch->length[i];
+            int64_t adjusted_len = length;
             const char *data = string_batch->data[i];
             if (length == 0 && is_oracle_mode) {
-              text_vec->set_null(i);
-            } else {
-              if (OB_UNLIKELY(length > file_col_expr_->max_length_ &&
-                  (is_byte_length ||
-                     ObCharset::strlen_char(CS_TYPE_UTF8MB4_BIN, data, length) > file_col_expr_->max_length_))) {
-                ret = OB_ERR_DATA_TOO_LONG;
-                LOG_WARN("data too long", K(ret), K(length), K(file_col_expr_->max_length_));
-              } else if (OB_FAIL(ObTextStringHelper::string_to_templob_result(*file_col_expr_, eval_ctx,
-                                                                              ObString(length, data), i))) {
-                LOG_WARN("fail to lob result", K(ret));
-              }
+            text_vec->set_null(i);
+            } else if (OB_UNLIKELY(
+                           length > max_length
+                           && OB_FAIL(ObExternalTableUtils::adjust_string_length_for_external_table(
+                               data,
+                               length,
+                               max_length,
+                               is_byte_length,
+                               is_hive_lake_table_,
+                               adjusted_len)))) {
+            LOG_WARN("data too long", K(ret), K(length), K(max_length));
+            } else if (OB_FAIL(ObTextStringHelper::string_to_templob_result(
+                           *file_col_expr_,
+                           eval_ctx,
+                           ObString(adjusted_len, data),
+                           i))) {
+            LOG_WARN("fail to lob result", K(ret));
             }
           } else {
             text_vec->set_null(i);
@@ -3054,16 +3156,25 @@ int ObOrcTableRowIterator::DataLoader::load_lob_col(ObEvalCtx &eval_ctx)
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < string_batch->numElements; i++) {
           const int64_t length = string_batch->length[i];
+          int64_t adjusted_len = length;
           const char *data = string_batch->data[i];
           if (length == 0 && is_oracle_mode) {
             text_vec->set_null(i);
-          } else if (OB_UNLIKELY(length > file_col_expr_->max_length_ &&
-               (is_byte_length ||
-                 ObCharset::strlen_char(CS_TYPE_UTF8MB4_BIN, data, length) > file_col_expr_->max_length_))) {
-            ret = OB_ERR_DATA_TOO_LONG;
-            LOG_WARN("data too long", K(ret), K(length), K(file_col_expr_->max_length_));
-          } else if (OB_FAIL(ObTextStringHelper::string_to_templob_result(*file_col_expr_, eval_ctx,
-                                                                          ObString(length, data), i))) {
+          } else if (OB_UNLIKELY(
+                         length > max_length
+                         && OB_FAIL(ObExternalTableUtils::adjust_string_length_for_external_table(
+                             data,
+                             length,
+                             max_length,
+                             is_byte_length,
+                             is_hive_lake_table_,
+                             adjusted_len)))) {
+            LOG_WARN("data too long", K(ret), K(length), K(max_length));
+          } else if (OB_FAIL(
+                         ObTextStringHelper::string_to_templob_result(*file_col_expr_,
+                                                                      eval_ctx,
+                                                                      ObString(adjusted_len, data),
+                                                                      i))) {
             LOG_WARN("fail to lob result", K(ret));
           }
         }
@@ -4188,6 +4299,26 @@ int ObOrcTableRowIterator::SectorReader::merge_bitmap_with_delete_bitmap(ObBitma
   }
 
   return ret;
+}
+
+const orc::Type* ObOrcTableRowIterator::find_orc_type_by_column_id(const orc::Type* root, uint64_t col_id)
+{
+  const orc::Type* type = root;
+  while (OB_NOT_NULL(type)) {
+    if (type->getColumnId() == col_id) {
+      return type;
+    }
+    const orc::Type* next = nullptr;
+    for (uint64_t i = 0; i < type->getSubtypeCount(); ++i) {
+      const orc::Type* sub = type->getSubtype(i);
+      if (sub->getColumnId() <= col_id && col_id <= sub->getMaximumColumnId()) {
+        next = sub;
+        break;
+      }
+    }
+    type = next;
+  }
+  return nullptr;
 }
 
 DEF_TO_STRING(ObOrcIteratorState)

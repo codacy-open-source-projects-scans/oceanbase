@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -674,14 +667,7 @@ int ObService::backup_ls_data(const obrpc::ObBackupDataArg &arg)
     LOG_WARN("get invalid args", KR(ret), K(arg));
   } else if (OB_FAIL(ObBackupStorageInfoOperator::get_backup_dest(*sql_proxy, tenant_id, arg.backup_path_, backup_dest))) {
     LOG_WARN("failed to get backup dest", KR(ret), K(arg));
-  }
-#ifdef OB_BUILD_SHARED_STORAGE
-  else if (GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_ss_backup_dag(
-      job_desc, backup_dest, tenant_id, backup_set_desc, ls_id, retry_id, start_scn, backup_data_type.is_user_backup()))) {
-    LOG_WARN("failed to schedule ss backup data dag", K(ret), K(arg));
-  }
-#endif
-  else if (!GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_backup_data_dag(job_desc,
+  } else if (!GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_backup_data_dag(job_desc,
       backup_dest, tenant_id, backup_set_desc, ls_id, turn_id, retry_id, backup_data_type))) {
     LOG_WARN("failed to schedule backup data dag", K(ret), K(arg));
   } else {
@@ -805,14 +791,7 @@ int ObService::backup_meta(const obrpc::ObBackupMetaArg &arg)
     LOG_WARN("get invalid args", KR(ret), K(arg));
   } else if (OB_FAIL(ObBackupStorageInfoOperator::get_backup_dest(*sql_proxy, tenant_id, arg.backup_path_, backup_dest))) {
     LOG_WARN("failed to get backup dest", K(ret), K(arg));
-  }
-#ifdef OB_BUILD_SHARED_STORAGE
-  else if (GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_ss_backup_dag(
-      job_desc, backup_dest, tenant_id, backup_set_desc, ls_id, retry_id, start_scn, false/*is_backup_data*/))) {
-    LOG_WARN("failed to schedule ss backup data dag", K(ret), K(arg));
-  }
-#endif
-  else if (!GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_backup_meta_dag(job_desc,
+  } else if (!GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupHandler::schedule_backup_meta_dag(job_desc,
       backup_dest, tenant_id, backup_set_desc, ls_id, turn_id, retry_id, start_scn))) {
     LOG_WARN("failed to schedule backup data dag", KR(ret), K(arg));
   } else {
@@ -1689,7 +1668,7 @@ int ObService::bootstrap(const obrpc::ObBootstrapArg &arg)
                                  *gctx_.rs_rpc_proxy_);
     ObAddr master_rs;
     bool server_empty = false;
-    if (OB_FAIL(check_server_empty(server_empty))) {
+    if (OB_FAIL(ObServerEmptyChecker::check_server_empty(server_empty))) {
       BOOTSTRAP_LOG(WARN, "check_server_empty failed", K(ret));
     } else if (!server_empty) {
       ret = OB_ERR_SYS;
@@ -1807,7 +1786,7 @@ int ObService::check_server_empty_with_result(const obrpc::ObCheckServerEmptyArg
   } else {
     bool server_empty = false;
     ObZone zone;
-    if (OB_FAIL(check_server_empty(server_empty))) {
+    if (OB_FAIL(ObServerEmptyChecker::check_server_empty(server_empty))) {
       LOG_WARN("check_server_empty failed", K(ret));
     } else if (OB_FAIL(zone.assign(GCONF.zone.str()))) {
       LOG_WARN("assign zone failed", KR(ret), K(GCONF.zone));
@@ -1864,7 +1843,6 @@ int ObService::prepare_server_for_adding_server(
       LOG_WARN("fail to get build_version", KR(ret));
     }
 
-#ifdef OB_BUILD_SHARED_STORAGE
     if (OB_FAIL(ret)) {
 #ifdef OB_BUILD_TDE_SECURITY
     } else if (arg.get_root_key_type() == RootKeyType::INVALID || arg.get_root_key().empty()) {
@@ -1878,6 +1856,7 @@ int ObService::prepare_server_for_adding_server(
       LOG_WARN("failed to set root key", KR(ret), K(arg));
 #endif
     }
+#ifdef OB_BUILD_SHARED_STORAGE
     if (OB_FAIL(ret)) {
     } else {
       const ObSArray<share::ObZoneStorageTableInfo>& storage_infos = arg.get_zone_storage_infos();
@@ -1912,7 +1891,7 @@ int ObService::prepare_server_for_adding_server(
     } else {
       // If adding server after cluster completely bootstrap,
       // need to check whether server is empty (server_id, log_dir, rootkey).
-      if (OB_FAIL(check_server_empty(server_empty))) {
+      if (OB_FAIL(ObServerEmptyChecker::check_server_empty(server_empty))) {
         LOG_WARN("check_server_empty failed", KR(ret));
       } else if (server_empty) {
         if (OB_FAIL(set_server_id_(server_id))) {
@@ -2387,45 +2366,6 @@ int ObService::wait_master_key_in_sync(
 }
 #endif
 
-int ObService::check_server_empty(bool &is_empty)
-{
-  int ret = OB_SUCCESS;
-  is_empty = true;
-  if (!inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("not init", K(ret));
-  } else {
-    uint64_t server_id_in_GCONF = GCONF.observer_id;
-    if (is_empty) {
-      if (is_valid_server_id(GCTX.get_server_id()) || is_valid_server_id(server_id_in_GCONF)) {
-        is_empty = false;
-        FLOG_WARN("[CHECK_SERVER_EMPTY] server_id exists", K(GCTX.get_server_id()), K(server_id_in_GCONF));
-      }
-    }
-    if (is_empty) {
-      if (!OBSERVER.is_log_dir_empty()) {
-        FLOG_WARN("[CHECK_SERVER_EMPTY] log dir is not empty");
-        is_empty = false;
-      }
-    }
-#ifdef OB_BUILD_TDE_SECURITY
-    if (is_empty) {
-      if (ObMasterKeyGetter::instance().is_wallet_exist()) {
-        FLOG_WARN("[CHECK_SERVER_EMPTY] master_key file exists");
-        is_empty = false;
-      }
-    }
-#endif
-    if (is_empty) {
-      if (ODV_MGR.get_file_exists_when_loading()) {
-        // ignore ret
-        FLOG_WARN("[CHECK_SERVER_EMPTY] data_version file exists");
-        is_empty = false;
-      }
-    }
-  }
-  return ret;
-}
 
 int ObService::report_replica()
 {
@@ -3856,6 +3796,48 @@ int ObService::force_set_ls_as_single_replica(
   return ret;
 }
 
+// Force remove a single log stream replica on THIS server.
+// This is an emergency O&M interface that bypasses the normal disaster-recovery
+// (member change) flow and directly removes the local replica via ObLSService::remove_ls,
+// just like ObGarbageCollector does, but without the GC gating checks.
+// ATTENTION:
+//   1. The replica is removed only on the server that receives this RPC.
+//   2. The graceful leader handling (block tx / kill tx / write offline log) done by the
+//      normal remove flow is skipped here, so prefer running it against a follower replica.
+//   3. RS may re-add the replica according to the locality afterwards; disable
+//      rereplication first if the removal needs to stay effective.
+int ObService::force_remove_ls_replica(
+    const ObForceRemoveLSReplicaArg &arg)
+{
+  int ret = OB_SUCCESS;
+  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
+  ObLSService *ls_svr = nullptr;
+  LOG_INFO("force_remove_ls_replica", K(arg));
+
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("arg is invaild", KR(ret), K(arg));
+  } else if (arg.get_tenant_id() != MTL_ID() && OB_FAIL(guard.switch_to(arg.get_tenant_id()))) {
+    LOG_WARN("switch tenant failed", KR(ret), K(arg));
+  }
+
+  if (OB_SUCC(ret)) {
+    ls_svr = MTL(ObLSService*);
+    const ObLSID ls_id = arg.get_ls_id();
+    if (OB_ISNULL(ls_svr)) {
+      ret = OB_ERR_UNEXPECTED;
+      COMMON_LOG(ERROR, "ls service should not be null", KR(ret), KP(ls_svr));
+    } else if (OB_FAIL(ls_svr->remove_ls(ls_id))) {
+      LOG_WARN("failed to remove ls", KR(ret), K(ls_id));
+    }
+  }
+  LOG_INFO("finish force_remove_ls_replica", KR(ret), K(arg));
+  return ret;
+}
+
 int ObService::force_set_server_list(const obrpc::ObForceSetServerListArg &arg, obrpc::ObForceSetServerListResult &result)
 {
   int ret = OB_SUCCESS;
@@ -4341,6 +4323,42 @@ int ObService::refresh_service_name(
   FLOG_INFO("finish refresh_service_name", KR(ret), K(arg), K(result));
   return ret;
 }
+
+int ObService::ob_admin_clear_transfer_meta_info(
+    const obrpc::ObAdminClearTransferMetaInfoOpArg &arg)
+{
+  LOG_INFO("start ob_admin_clear_transfer_meta_info", K(arg));
+  int ret = OB_SUCCESS;
+  MAKE_TENANT_SWITCH_SCOPE_GUARD(guard);
+
+  if (OB_UNLIKELY(!inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret));
+  } else if (!arg.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("arg is invaild", KR(ret), K(arg));
+  } else if (arg.tenant_id_ != MTL_ID() && OB_FAIL(guard.switch_to(arg.tenant_id_))) {
+    LOG_WARN("switch tenant failed", KR(ret), K(arg));
+  } else {
+    ObLSService *ls_service = MTL(ObLSService *);
+    ObLSHandle ls_handle;
+    ObLS *ls = nullptr;
+
+    if (OB_ISNULL(ls_service)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls service should not be NULL", K(ret), KP(ls_service));
+    } else if (OB_FAIL(ls_service->get_ls(arg.ls_id_, ls_handle, ObLSGetMod::OBSERVER_MOD))) {
+      LOG_WARN("get ls failed", K(ret), K(arg));
+    } else if (OB_ISNULL(ls = ls_handle.get_ls())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("ls should not be NULL", K(ret), K(arg), K(ls_handle));
+    } else if (OB_FAIL(ls->admin_clear_transfer_meta_info())) {
+      LOG_WARN("failed to do admin clear transfer meta info", K(ret), K(arg), KPC(ls));
+    }
+  }
+  return ret;
+}
+
 
 }// end namespace observer
 }// end namespace oceanbase

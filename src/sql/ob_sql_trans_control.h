@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_TRANS_CONTROL_
@@ -51,6 +44,8 @@ class ObIEndTransCallback;
 class ObEndTransAsyncCallback;
 class ObNullEndTransCallback;
 class ObIDASTaskOp;
+class ObOpSpec;
+class ObTableModifySpec;
 
 class TransState
 {
@@ -247,6 +242,7 @@ public:
                                    transaction::ObTransService* txs,
                                    const int64_t nested_level,
                                    const bool is_for_sslog);
+  static const ObTableModifySpec *find_main_table_dml_spec_(const ObOpSpec *op);
   static int acquire_table_lock_if_needed_(ObSQLSessionInfo *session,
                                            const ObPhysicalPlan *plan,
                                            ObExecContext &exec_ctx);
@@ -288,7 +284,7 @@ public:
                         const int64_t wait_lock_seconds,
                         const transaction::tablelock::ObTableLockPriority lock_priority =
                           transaction::tablelock::ObTableLockPriority::INVALID);
-  static void clear_xa_branch(const transaction::ObXATransID &xid, transaction::ObTxDesc *&tx_desc);
+  static void clear_xa_branch(ObExecContext &exec_ctx);
   static int check_ls_readable(const uint64_t tenant_id,
                                const share::ObLSID &ls_id,
                                const common::ObAddr &addr,

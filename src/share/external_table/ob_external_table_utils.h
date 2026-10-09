@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_EXTERNAL_TABLE_UTILS_H_
@@ -22,6 +15,8 @@
 #include "src/sql/engine/table/ob_external_file_access.h"
 #include "sql/optimizer/file_prune/ob_lake_table_file_map.h"
 #include "sql/engine/connector/ob_odps_jni_connector.h"
+#include "sql/engine/table/ob_csv_prefetch_mgr.h"
+#include "sql/engine/px/ob_granule_parallel_task_gen.h"
 
 namespace oceanbase
 {
@@ -98,6 +93,7 @@ public:
   int init(const common::ObString &location, const ObString &access_info);
   common::ObStorageType get_storage_type() { return storage_type_; }
   int get_file_list(const common::ObString &path, const common::ObString &pattern,
+                    const share::schema::ObExternalFilePatternType pattern_type,
                     const ObExprRegexpSessionVariables &regexp_vars,
                     common::ObIArray<common::ObString> &file_urls,
                     common::ObIArray<int64_t> &file_sizes, common::ObIArray<int64_t> &modify_times,
@@ -115,6 +111,11 @@ public:
       int64_t spec_level,
       common::ObIArray<common::ObString> &dir_urls,
       common::ObIArray<int64_t> &modify_times);
+  int fetch_simple_stats(const common::ObString &path,
+                         const common::ObIArray<ObString> &partition_values,
+                         ObIArray<int64_t> &file_nums,
+                         ObIArray<int64_t> &data_sizes,
+                         ObIArray<int64_t> &modify_times);
 private:
   int convert_to_full_file_urls(const common::ObString &location,
                                 const common::ObIArray<common::ObString> &file_urls,
@@ -169,21 +170,54 @@ class ObLocalFileListArrayOpWithFilter : public ObBaseDirEntryOperator
 public:
   ObLocalFileListArrayOpWithFilter(ObIArray <common::ObString> &name_array,
                                    ObIArray <int64_t>& file_size,
+                                   ObIArray<int64_t> &modify_times,
+                                   ObIArray<ObString> &content_digests,
                                    const ObString &path,
                                    const ObString &origin_path,
                                    ObExternalPathFilter *filter,
                                    ObIAllocator &array_allocator)
-    : name_array_(name_array), file_size_(file_size), path_(path), origin_path_(origin_path),
-      filter_(filter), allocator_(array_allocator) {}
+      : name_array_(name_array), file_size_(file_size), modify_times_(modify_times),
+        content_digests_(content_digests), path_(path), origin_path_(origin_path), filter_(filter),
+        allocator_(array_allocator)
+  {
+  }
   virtual bool need_get_file_meta() const override { return true; }
   int func(const dirent *entry);
+  int finish_current_dir();
 private:
   ObIArray <ObString> &name_array_;
   ObIArray <int64_t> &file_size_;
+  ObIArray <int64_t> &modify_times_;
+  ObIArray <ObString> &content_digests_;
   const ObString &path_;
   const ObString &origin_path_;
   ObExternalPathFilter *filter_;
   ObIAllocator &allocator_;
+};
+
+class ObCommonDirStatsCollectorOp : public ObBaseDirEntryOperator
+{
+public:
+  ObCommonDirStatsCollectorOp(ObIArray<int64_t> &file_nums,
+                              ObIArray<int64_t> &data_sizes,
+                              ObIArray<int64_t> &modify_times)
+      : file_nums_(file_nums), data_sizes_(data_sizes), modify_times_(modify_times),
+        cur_file_count_(0), cur_total_size_(0), cur_max_modify_time_(0)
+  {
+  }
+  virtual bool need_get_file_meta() const override
+  {
+    return true;
+  }
+  int func(const dirent *entry);
+  int finish_current_dir();
+private:
+  ObIArray<int64_t> &file_nums_;
+  ObIArray<int64_t> &data_sizes_;
+  ObIArray<int64_t> &modify_times_;
+  int64_t cur_file_count_;
+  int64_t cur_total_size_;
+  int64_t cur_max_modify_time_;
 };
 
 class ObExternalTableUtils {
@@ -198,6 +232,12 @@ public:
 
  public:
   static const char *dummy_file_name();
+  static int adjust_string_length_for_external_table(const char *data,
+                                                     const int64_t src_length,
+                                                     const int64_t max_length,
+                                                     const bool is_byte_length,
+                                                     const bool enable_hive_compat,
+                                                     int64_t &out_length);
   static int get_tenant_compat_version(schema::ObSchemaGetterGuard &schema_guard,
                                        const uint64_t tenant_id,
                                        uint64_t &compat_version);
@@ -249,6 +289,7 @@ public:
                                        common::ObIAllocator &allocator,
                                        common::ObIArray<ObIExtTblScanTask *> &scan_tasks,
                                        bool is_file_on_disk,
+                                       bool is_shared_external_files_on_disk,
                                        ObExecContext &ctx);
   static int prepare_lake_table_single_scan_task(ObExecContext &exec_ctx,
                                                 ObDASTableLoc *tab_loc,
@@ -272,6 +313,11 @@ public:
 
   static int filter_files_in_locations(common::ObIArray<share::ObExternalFileInfo> &files,
       common::ObIArray<common::ObAddr> &locations);
+  // PRECONDITION: filter_files_in_locations() must have been called first so candidates whose
+  // file_addr_ belongs to a departed observer are already removed. Otherwise the murmur hash
+  // may pick a departed observer and the file would be silently dropped downstream.
+  static int dedup_shared_local_files(common::ObIArray<share::ObExternalFileInfo> &files,
+                                      common::ObIAllocator &allocator);
 
   static int plugin_split_tasks(
       ObIAllocator &allocator,
@@ -287,6 +333,7 @@ public:
     const ObString &location,
     const ObString &access_info,
     const ObString &pattern,
+    const share::schema::ObExternalFilePatternType pattern_type,
     const ObString &properties,
     const bool &is_partitioned_table,
     const sql::ObExprRegexpSessionVariables &regexp_vars,
@@ -298,6 +345,7 @@ public:
     const uint64_t tenant_id,
     const ObString &location,
     const ObString &pattern,
+    const share::schema::ObExternalFilePatternType pattern_type,
     const sql::ObExprRegexpSessionVariables &regexp_vars,
     ObIArray<ObAddr> &all_servers,
     ObIArray<ObString> &file_urls,
@@ -313,6 +361,7 @@ public:
                                     const ObIArray<ObString> &content_digests,
                                     ObIArray<share::ObExternalTableBasicFileInfo> &basic_file_infos);
   static int get_file_list(const common::ObString &path, const common::ObString &pattern,
+                           const share::schema::ObExternalFilePatternType pattern_type,
                            const ObString &access_info,
                            const ObExprRegexpSessionVariables &regexp_vars,
                            common::ObIArray<common::ObString> &file_urls,
@@ -357,6 +406,8 @@ public:
                                           ObExtTableScanTask *scan_task);
 
   static bool is_skipped_insert_column(const schema::ObColumnSchemaV2& column);
+  // External table hidden columns (__file_id, __line_number) have no catalog column stats.
+  static bool is_hidden_external_column(const common::ObString &column_name);
   static int concat_external_file_location(const ObString &location,
                                            const ObString &sub_path,
                                            ObSqlString &full_path);
@@ -371,7 +422,8 @@ public:
   static int get_external_file_location(const ObTableSchema &table_schema,
                                         ObSchemaGetterGuard &schema_guard,
                                         ObIAllocator &allocator,
-                                        ObString &file_location);
+                                        ObString &file_location,
+                                        bool *is_shared_external_files_on_disk = nullptr);
   static int get_external_file_location_access_info(const ObTableSchema &table_schema,
                                                     ObSchemaGetterGuard &schema_guard,
                                                     ObString &access_info);
@@ -379,6 +431,7 @@ public:
                                        const ObString &location,
                                        const ObString &access_info,
                                        const ObString &pattern,
+                                       const share::schema::ObExternalFilePatternType pattern_type,
                                        const sql::ObExprRegexpSessionVariables &regexp_vars,
                                        ObIAllocator &allocator);
   static int collect_file_basic_info(const common::ObString &location, const ObString &access_info,
@@ -392,10 +445,21 @@ public:
                                                    const ObIArray<int64_t> &part_id,
                                                    const ObString &access_info,
                                                    const ObString &pattern,
+                                                   const share::schema::ObExternalFilePatternType pattern_type,
                                                    ObIAllocator &allocator,
                                                    int64_t refresh_interval_ms,
                                                    ObIArray<ObHiveFileDesc> &hive_file_desc,
                                                    ObIArray<int64_t> &part_file_count);
+
+  static int fetch_external_table_simple_stats(const ObString &location,
+                                               const ObString &access_info,
+                                               const ObIArray<ObString> &partition_values,
+                                               ObIArray<int64_t> &file_nums,
+                                               ObIArray<int64_t> &data_sizes,
+                                               ObIArray<int64_t> &modify_times);
+
+  static int get_part_col_names(const ObTableSchema &table_schema,
+                                ObIArray<ObString> &part_col_names);
 
   static int collect_partitions_info_with_cache(const ObTableSchema &table_schema,
                                                 ObSqlSchemaGuard &sql_schema_guard,
@@ -409,9 +473,18 @@ public:
                                            common::ObIAllocator &allocator,
                                            ObExternalFileUrlInfo *&file_info);
   static int get_credential_field_name(ObSqlString &str, int64_t opt);
-
+  static int generate_file_sample_indices(const int64_t total_files,
+                                          const double sample_percent,
+                                          bool &is_file_sample,
+                                          int64_t &target_count,
+                                          common::ObIArray<int64_t> &indices);
 
 private:
+  // Rewrite `sfile://<path>` to `file://<path>` in-place via allocator.
+  // Returns is_shared=true when the input used the shared prefix; false otherwise (location untouched).
+  static int normalize_shared_file_location(common::ObIAllocator &allocator,
+                                            common::ObString &location,
+                                            bool &is_shared);
   static int classification_file_basic_info(
     const ObIArray<share::ObExternalTableBasicFileInfo> &basic_file_infos,
     ObIArray<common::ObString> &file_urls, ObIArray<int64_t> *file_sizes = nullptr,
@@ -426,6 +499,7 @@ private:
                                         common::ObIAllocator &allocator,
                                         common::ObIArray<ObIExtTblScanTask *> &scan_tasks,
                                         bool is_file_on_disk,
+                                        bool is_shared_external_files_on_disk,
                                         ObExecContext &ctx);
 private:
   static bool is_left_edge(const common::ObObj &value);
@@ -898,42 +972,79 @@ public:
     int ret = OB_SUCCESS;
     ObArenaAllocator allocator_for_read;
     char *buf = nullptr;
-    int64_t buf_len = 2 * 1024 * 1024;
-    if (OB_ISNULL(buf = (char *)allocator_for_read.alloc(buf_len))) {
+    bool use_prefetch = false;
+    ObSqlString full_path;
+    omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
+    if (tenant_config.is_valid()) {
+      ObStorageType storage_type = OB_STORAGE_MAX_TYPE;
+      OZ (get_storage_type_from_path_for_external_table(external_location, storage_type));
+      use_prefetch = tenant_config->_enable_external_table_prefetch
+                     && !std::is_same<HandleFunc, GamblingFunctor>::value  // 只对全量扫描界定预取
+                     && storage_type != OB_STORAGE_FILE;
+    }
+    int64_t buf_len = use_prefetch ? OB_MALLOC_BIG_BLOCK_SIZE : 2 * 1024 * 1024;
+    if (OB_SUCC(ret) && OB_ISNULL(buf = (char *)allocator_for_read.alloc(buf_len))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("failed to alloc memory for buffer", K(ret), K(buf_len));
-    }
-    MEMSET(buf, 0, buf_len);
-    ObExternalStreamFileReader file_reader;
-    OZ (file_reader.init(external_location, external_access_info,
-                         external_file_format.csv_format_.compression_algorithm_,
-                         allocator_for_read));
-    ObSqlString full_path;
-    if (!is_abs_url(url)) {
-      OZ (full_path.append_fmt("%.*s%s%.*s", external_location.length(), external_location.ptr(),
-                                (external_location.empty() || external_location[external_location.length() - 1] == '/') ? "" : "/",
-                                url.length(), url.ptr()));
     } else {
-      OZ (full_path.assign(url));
-    }
-    OZ (file_reader.open(full_path.string()));
-    file_reader.advance(start_pos);
-    int64_t already_read_size = 0;
-    int64_t target_read_size = end_pos - start_pos;
-    while (OB_SUCC(ret)
-           && !handle_func.is_finished_
-           && already_read_size < target_read_size
-           && !file_reader.eof()) {
-      int64_t read_size = 0;
-      OZ (file_reader.read(buf, buf_len, read_size));
-      if (read_size > 0) {
-        int check_size = min(read_size, target_read_size - already_read_size);
-        OZ (handle_func(external_file_format, buf, check_size));
+      MEMSET(buf, 0, buf_len);
+      if (!is_abs_url(url)) {
+        OZ (full_path.append_fmt("%.*s%s%.*s", external_location.length(), external_location.ptr(),
+                                  (external_location.empty() || external_location[external_location.length() - 1] == '/') ? "" : "/",
+                                  url.length(), url.ptr()));
+      } else {
+        OZ (full_path.assign(url));
       }
-      already_read_size += read_size;
     }
+
+    if (OB_FAIL(ret)) {
+    } else if (!use_prefetch) {
+      ObExternalStreamFileReader file_reader;
+      OZ (file_reader.init(external_location, external_access_info,
+                          external_file_format.csv_format_.compression_algorithm_,
+                          allocator_for_read));
+      OZ (file_reader.open(full_path.string()));
+      file_reader.advance(start_pos);
+      int64_t already_read_size = 0;
+      int64_t target_read_size = end_pos - start_pos;
+      while (OB_SUCC(ret)
+            && !handle_func.is_finished_
+            && already_read_size < target_read_size
+            && !file_reader.eof()) {
+        int64_t read_size = 0;
+        OZ (file_reader.read(buf, buf_len, read_size));
+        if (read_size > 0) {
+          int check_size = min(read_size, target_read_size - already_read_size);
+          OZ (handle_func(external_file_format, buf, check_size));
+        }
+        already_read_size += read_size;
+      }
+      file_reader.close();
+    } else {
+      ObCSVPrefetchMgr prefetch_mgr;
+      OZ (prefetch_mgr.init(allocator_for_read, external_file_format.csv_format_.compression_algorithm_, THIS_WORKER.get_timeout_ts()));
+      ObExternalFileUrlInfo *file_url_info = nullptr;
+      OZ (create_external_file_url_info(external_location, external_access_info, full_path.string(), allocator_for_read, file_url_info));
+      ObExternalFileCacheOptions cache_options;  // no cache for csv prefetch
+      OZ (prefetch_mgr.open(*file_url_info, cache_options, start_pos, end_pos));
+      int64_t already_read_size = 0;
+      int64_t target_read_size = end_pos - start_pos;
+      while (OB_SUCC(ret)
+            && !handle_func.is_finished_
+            && already_read_size < target_read_size
+            && !prefetch_mgr.eof()) {
+        int64_t read_size = 0;
+        OZ (prefetch_mgr.get_buffer(buf, buf_len, read_size));
+        if (read_size > 0) {
+          int check_size = min(read_size, target_read_size - already_read_size);
+          OZ (handle_func(external_file_format, buf, check_size));
+        }
+        already_read_size += read_size;
+      }
+      prefetch_mgr.close();
+    }
+
     allocator_for_read.free(buf);
-    file_reader.close();
     return ret;
   }
 
@@ -971,7 +1082,6 @@ public:
   static int split_qc_for_odps_to_sqcs_storage_api_row(int64_t table_total_row_count,
       const ObString &session_str, const ObString &new_file_urls, ObIArray<ObPxSqcMeta> &sqcs, int parallel,
       ObIAllocator &range_allocator);
-
 
 };
 }

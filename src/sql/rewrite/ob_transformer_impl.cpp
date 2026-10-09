@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -15,7 +8,7 @@
 #include "sql/rewrite/ob_transformer_impl.h"
 #include "sql/rewrite/ob_transform_view_merge.h"
 #include "sql/rewrite/ob_transform_min_max.h"
-#include "sql/rewrite/ob_transform_where_subquery_pullup.h"
+#include "sql/rewrite/ob_transform_subquery_unnest.h"
 #include "sql/rewrite/ob_transform_eliminate_outer_join.h"
 #include "sql/rewrite/ob_transform_simplify_distinct.h"
 #include "sql/rewrite/ob_transform_simplify_expr.h"
@@ -155,9 +148,22 @@ int ObTransformerImpl::set_transformation_parameters(ObQueryCtx *query_ctx)
     if (tenant_config.is_valid()) {
       ctx_->complex_cbqt_table_num_ = tenant_config->_complex_cbqt_table_num;
       ctx_->force_subquery_unnest_ = tenant_config->_force_subquery_unnest;
+      ctx_->force_equal_semi_to_inner_ = tenant_config->_force_equal_semi_to_inner;
+      if (!ctx_->force_equal_semi_to_inner_ && session_info->get_ddl_info().is_mview_fast_refresh()) {
+        // mview fast refresh disables cost-based transforms but still needs semi to inner.
+        // Previously done via embedded hints, which break when outline is bound.
+        // Force semi to inner for fast refresh here instead.
+        ctx_->force_equal_semi_to_inner_ = true;
+      }
       ctx_->nested_loop_join_enabled_ = tenant_config->_nested_loop_join_enabled;
       if (OB_FAIL(query_ctx->get_global_hint().opt_params_.get_bool_opt_param(ObOptParamHint::NESTED_LOOP_JOIN_ENABLED,
                                                                               ctx_->nested_loop_join_enabled_))) {
+        LOG_WARN("fail to get bool opt param", K(ret));
+      } else if (OB_FAIL(query_ctx->get_global_hint().opt_params_.get_bool_opt_param(ObOptParamHint::FORCE_SUBQUERY_UNNEST,
+                                                                                    ctx_->force_subquery_unnest_))) {
+        LOG_WARN("fail to get bool opt param", K(ret));
+      } else if (OB_FAIL(query_ctx->get_global_hint().opt_params_.get_bool_opt_param(ObOptParamHint::FORCE_EQUAL_SEMI_TO_INNER,
+                                                                                    ctx_->force_equal_semi_to_inner_))) {
         LOG_WARN("fail to get bool opt param", K(ret));
       }
     }
@@ -627,7 +633,7 @@ int ObTransformerImpl::transform_rule_set_in_one_iteration(ObDMLStmt *&stmt,
     APPLY_RULE_IF_NEEDED(SIMPLIFY_SET, ObTransformSimplifySet);
     APPLY_RULE_IF_NEEDED(VIEW_MERGE, ObTransformViewMerge);
     APPLY_RULE_IF_NEEDED(COUNT_TO_EXISTS, ObTransformCountToExists);
-    APPLY_RULE_IF_NEEDED(WHERE_SQ_PULL_UP, ObWhereSubQueryPullup);
+    APPLY_RULE_IF_NEEDED(SUBQUERY_UNNEST, ObTransformSubqueryUnnest);
     APPLY_RULE_IF_NEEDED(SIMPLIFY_SUBQUERY, ObTransformSimplifySubquery);
     APPLY_RULE_IF_NEEDED(SEMI_TO_INNER, ObTransformSemiToInner);
     APPLY_RULE_IF_NEEDED(QUERY_PUSH_DOWN, ObTransformQueryPushDown);
@@ -702,19 +708,19 @@ int ObTransformerImpl::choose_rewrite_rules(ObDMLStmt *stmt, uint64_t &need_type
     LOG_WARN("failed to check stmt functions", K(ret));
   } else {
     //TODO::unpivot open @xifeng
-    if (func.contain_geometry_values_ || func.contain_vec_index_approx_ || func.contain_hybrid_search_) {
+    if (func.contain_vec_index_approx_ || func.contain_hybrid_search_) {
       disable_list = ObTransformRule::ALL_TRANSFORM_RULES;
     }
     if (func.contain_unpivot_query_) {
       uint64_t unpivot_enable_list = 0;
       ObTransformRule::add_trans_type(unpivot_enable_list, VIEW_MERGE);
-      ObTransformRule::add_trans_type(unpivot_enable_list, WHERE_SQ_PULL_UP);
+      ObTransformRule::add_trans_type(unpivot_enable_list, SUBQUERY_UNNEST);
       ObTransformRule::add_trans_type(unpivot_enable_list, AGGR_SUBQUERY);
       ObTransformRule::add_trans_type(unpivot_enable_list, QUERY_PUSH_DOWN);
       disable_list |= (~unpivot_enable_list);
     }
     if (func.contain_fulltext_search_) {
-      ObTransformRule::add_trans_type(disable_list, WHERE_SQ_PULL_UP);
+      ObTransformRule::add_trans_type(disable_list, SUBQUERY_UNNEST);
       ObTransformRule::add_trans_type(disable_list, AGGR_SUBQUERY);
       ObTransformRule::add_trans_type(disable_list, WIN_MAGIC);
       ObTransformRule::add_trans_type(disable_list, OR_EXPANSION);
@@ -738,7 +744,7 @@ int ObTransformerImpl::choose_rewrite_rules(ObDMLStmt *stmt, uint64_t &need_type
         ObTransformRule::add_trans_type(enum_set_enable_list, FASTMINMAX);
         ObTransformRule::add_trans_type(enum_set_enable_list, ELIMINATE_OJ);
         ObTransformRule::add_trans_type(enum_set_enable_list, VIEW_MERGE);
-        ObTransformRule::add_trans_type(enum_set_enable_list, WHERE_SQ_PULL_UP);
+        ObTransformRule::add_trans_type(enum_set_enable_list, SUBQUERY_UNNEST);
         ObTransformRule::add_trans_type(enum_set_enable_list, QUERY_PUSH_DOWN);
         ObTransformRule::add_trans_type(enum_set_enable_list, SIMPLIFY_SET);
         ObTransformRule::add_trans_type(enum_set_enable_list, PROJECTION_PRUNING);
@@ -751,6 +757,30 @@ int ObTransformerImpl::choose_rewrite_rules(ObDMLStmt *stmt, uint64_t &need_type
         ObTransformRule::add_trans_type(enum_set_enable_list, DISTINCT_AGGREGATE);
       }
       disable_list |= (~enum_set_enable_list);
+    }
+    if (func.contain_geometry_values_) {
+      uint64_t geometry_enable_list = 0;
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_DISTINCT);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_GROUPBY);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_WINFUNC);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_ORDERBY);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_LIMIT);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_SUBQUERY);
+      ObTransformRule::add_trans_type(geometry_enable_list, FASTMINMAX);
+      ObTransformRule::add_trans_type(geometry_enable_list, ELIMINATE_OJ);
+      ObTransformRule::add_trans_type(geometry_enable_list, VIEW_MERGE);
+      ObTransformRule::add_trans_type(geometry_enable_list, SUBQUERY_UNNEST);
+      ObTransformRule::add_trans_type(geometry_enable_list, QUERY_PUSH_DOWN);
+      ObTransformRule::add_trans_type(geometry_enable_list, SIMPLIFY_SET);
+      ObTransformRule::add_trans_type(geometry_enable_list, PROJECTION_PRUNING);
+      ObTransformRule::add_trans_type(geometry_enable_list, AGGR_SUBQUERY);
+      ObTransformRule::add_trans_type(geometry_enable_list, PREDICATE_MOVE_AROUND);
+      ObTransformRule::add_trans_type(geometry_enable_list, JOIN_LIMIT_PUSHDOWN);
+      ObTransformRule::add_trans_type(geometry_enable_list, COUNT_TO_EXISTS);
+      ObTransformRule::add_trans_type(geometry_enable_list, CONDITIONAL_AGGR_COALESCE);
+      ObTransformRule::add_trans_type(geometry_enable_list, SEMI_TO_INNER);
+      ObTransformRule::add_trans_type(geometry_enable_list, DISTINCT_AGGREGATE);
+      disable_list |= (~geometry_enable_list);
     }
     if (func.contain_dml_with_doc_id_) {
       uint64_t dml_with_doc_id_enable_list = 0;
@@ -778,14 +808,16 @@ int ObTransformerImpl::choose_rewrite_rules(ObDMLStmt *stmt, uint64_t &need_type
       // create table t (c1 varchar(10), c2 char(10))
       // select * from t where c1 = 'a' and c2 = c1;
       // => select * from t where c1 = 'a' and c2 = implicit cast('a' as varchar);
+      // PREDICATE_MOVE_AROUND needed for dblink predicate pushdown; unsafe implicit casts are guarded in PMA path.
       uint64_t dblink_enable_list = 0;
       ObTransformRule::add_trans_type(dblink_enable_list, SIMPLIFY_DISTINCT);
       ObTransformRule::add_trans_type(dblink_enable_list, SIMPLIFY_ORDERBY);
       ObTransformRule::add_trans_type(dblink_enable_list, SIMPLIFY_LIMIT);
       ObTransformRule::add_trans_type(dblink_enable_list, PROJECTION_PRUNING);
+      ObTransformRule::add_trans_type(dblink_enable_list, PREDICATE_MOVE_AROUND);
       ObTransformRule::add_trans_type(dblink_enable_list, VIEW_MERGE);
       ObTransformRule::add_trans_type(dblink_enable_list, COUNT_TO_EXISTS);
-      ObTransformRule::add_trans_type(dblink_enable_list, WHERE_SQ_PULL_UP);
+      ObTransformRule::add_trans_type(dblink_enable_list, SUBQUERY_UNNEST);
       ObTransformRule::add_trans_type(dblink_enable_list, SIMPLIFY_SUBQUERY);
       ObTransformRule::add_trans_type(dblink_enable_list, QUERY_PUSH_DOWN);
       ObTransformRule::add_trans_type(dblink_enable_list, ELIMINATE_OJ);
@@ -938,44 +970,82 @@ int ObTransformerImpl::check_stmt_functions(const ObDMLStmt *stmt, StmtFunc &fun
 int ObTransformerImpl::finalize_exec_params(ObDMLStmt *stmt)
 {
   int ret = OB_SUCCESS;
+  common::hash::ObHashSet<uint64_t> visited;
+  if (OB_FAIL(visited.create(64))) {
+    LOG_WARN("failed to create visited set", K(ret));
+  } else if (OB_FAIL(finalize_exec_params_recursive(stmt, visited))) {
+    LOG_WARN("failed to finalize exec params recursively", K(ret));
+  }
+  if (visited.created()) {
+
+    int tmp_ret = OB_SUCCESS;
+    if (OB_TMP_FAIL(visited.destroy())) {
+      LOG_WARN("failed to destroy visited set", K(tmp_ret));
+      ret = COVER_SUCC(tmp_ret);
+    }
+  }
+  return ret;
+}
+
+int ObTransformerImpl::finalize_exec_params_recursive(
+    ObDMLStmt *stmt, common::hash::ObHashSet<uint64_t> &visited)
+{
+  int ret = OB_SUCCESS;
+  bool is_visited = false;
   ObSEArray<ObSelectStmt *, 4> child_stmts;
   if (OB_ISNULL(stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt is null", K(ret));
+  } else {
+    const uint64_t key = reinterpret_cast<uint64_t>(stmt);
+    int hash_ret = visited.set_refactored(key);
+    if (OB_HASH_EXIST == hash_ret) {
+      is_visited = true;
+    } else if (OB_SUCCESS != hash_ret) {
+      ret = hash_ret;
+      LOG_WARN("failed to record visited stmt", K(ret));
+    }
+  }
+  if (OB_FAIL(ret) || is_visited) {
   } else if (OB_FAIL(stmt->get_child_stmts(child_stmts))) {
     LOG_WARN("failed to get child stmts", K(ret));
   } else {
-    ObArray<ObDMLStmt::TempTableInfo> temp_table_infos;
-    if (OB_FAIL(stmt->collect_temp_table_infos(temp_table_infos))) {
-      LOG_WARN("failed to collect temp table infos", K(ret));
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && i < temp_table_infos.count(); ++i) {
-      if (OB_FAIL(child_stmts.push_back(temp_table_infos.at(i).temp_table_query_))) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_table_size(); ++i) {
+      TableItem *table_item = stmt->get_table_item(i);
+      if (OB_ISNULL(table_item)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (!table_item->is_temp_table()) {
+        // do nothing
+      } else if (OB_ISNULL(table_item->ref_query_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("temp table ref query is null", K(ret));
+      } else if (OB_FAIL(child_stmts.push_back(table_item->ref_query_))) {
         LOG_WARN("failed to push back temp table query", K(ret));
       }
     }
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_table_items().count(); ++i) {
-    TableItem *table_item = NULL;
-    if (OB_ISNULL(table_item = stmt->get_table_items().at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected null", K(ret));
-    } else if (OB_FAIL(finalize_exec_params(stmt, table_item->exec_params_))) {
-      LOG_WARN("failed to finalize exec params", K(ret));
+    for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_table_items().count(); ++i) {
+      TableItem *table_item = NULL;
+      if (OB_ISNULL(table_item = stmt->get_table_items().at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("get unexpected null", K(ret));
+      } else if (OB_FAIL(finalize_exec_params(stmt, table_item->exec_params_))) {
+        LOG_WARN("failed to finalize exec params", K(ret));
+      }
     }
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_subquery_expr_size(); ++i) {
-    ObQueryRefRawExpr *query_ref = NULL;
-    if (OB_ISNULL(query_ref = stmt->get_subquery_exprs().at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("query ref expr is null", K(ret));
-    } else if (OB_FAIL(finalize_exec_params(stmt, query_ref->get_exec_params()))) {
-      LOG_WARN("failed to finalize exec params", K(ret));
+    for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_subquery_expr_size(); ++i) {
+      ObQueryRefRawExpr *query_ref = NULL;
+      if (OB_ISNULL(query_ref = stmt->get_subquery_exprs().at(i))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("query ref expr is null", K(ret));
+      } else if (OB_FAIL(finalize_exec_params(stmt, query_ref->get_exec_params()))) {
+        LOG_WARN("failed to finalize exec params", K(ret));
+      }
     }
-  }
-  for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
-    if (OB_FAIL(SMART_CALL(finalize_exec_params(child_stmts.at(i))))) {
-      LOG_WARN("failed to finalize exec params", K(ret));
+    for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
+      if (OB_FAIL(SMART_CALL(finalize_exec_params_recursive(child_stmts.at(i), visited)))) {
+        LOG_WARN("failed to finalize exec params", K(ret));
+      }
     }
   }
   return ret;

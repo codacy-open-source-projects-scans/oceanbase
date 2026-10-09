@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // #define DBMS_VECTOR_MOCK_TEST
@@ -38,8 +31,7 @@ int ObVectorIndexRefresher::init(sql::ObExecContext &ctx,
     ret = OB_INIT_TWICE;
     LOG_WARN("ObVectorIndexRefresher init twice", KR(ret), KP(this));
   } else if (OB_UNLIKELY(nullptr == ctx.get_my_session() ||
-                         nullptr == ctx.get_sql_proxy() ||
-                         nullptr == refresh_ctx.trans_)) {
+                         nullptr == ctx.get_sql_proxy())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid args", KR(ret), K(ctx), K(refresh_ctx));
   } else {
@@ -192,6 +184,56 @@ int ObVectorIndexRefresher::get_table_row_count(const ObString &db_name,
   return ret;
 }
 
+int ObVectorIndexRefresher::get_tablet_row_count(const ObString &db_name,
+                                                 const ObString &table_name,
+                                                 const share::SCN &scn,
+                                                 const bool is_partitioned,
+                                                 const ObString &partition_clause,
+                                                 int64_t &row_cnt) {
+  int ret = OB_SUCCESS;
+  if (!is_partitioned) {
+    if (OB_FAIL(get_table_row_count(db_name, table_name, scn, row_cnt))) {
+      LOG_WARN("fail to get non-partition table row count", KR(ret),
+               K(table_name));
+    }
+  } else if (OB_ISNULL(refresh_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("refresh ctx is null", KR(ret));
+  } else if (partition_clause.empty()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("partition clause is empty for partitioned table", KR(ret), K(table_name));
+  } else {
+    SMART_VAR(ObMySQLProxy::MySQLResult, res) {
+      common::sqlclient::ObMySQLResult *result = nullptr;
+      ObSqlString sql;
+      if (OB_FAIL(sql.assign_fmt(
+              "SELECT COUNT(*) AS CNT FROM `%.*s`.`%.*s` %.*s AS OF SNAPSHOT %ld",
+              static_cast<int>(db_name.length()), db_name.ptr(),
+              static_cast<int>(table_name.length()), table_name.ptr(),
+              static_cast<int>(partition_clause.length()),
+              partition_clause.ptr(), scn.get_val_for_tx()))) {
+        LOG_WARN("fail to assign sql", KR(ret));
+      } else if (OB_ISNULL(refresh_ctx_->trans_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("trans is null", K(ret));
+      } else if (OB_FAIL(refresh_ctx_->trans_->read(res, refresh_ctx_->tenant_id_,
+                                                    sql.ptr()))) {
+        LOG_WARN("execute sql failed", KR(ret), K(sql));
+      } else if (OB_ISNULL(result = res.get_result())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("result is null", KR(ret));
+      } else if (OB_FAIL(result->next())) {
+        LOG_WARN("fail to get count", KR(ret));
+      } else {
+        EXTRACT_INT_FIELD_MYSQL(*result, "CNT", row_cnt, int64_t);
+        LOG_INFO("############# DBMS_VECTOR ############### get tablet row cnt ",
+                  K(table_name), K(row_cnt), K(partition_clause));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObVectorIndexRefresher::get_vector_index_col_names(
     const ObTableSchema *table_schema,
     bool is_collect_col_id,
@@ -265,38 +307,6 @@ int ObVectorIndexRefresher::get_vector_index_col_names(
     } else if (!last_col && OB_FAIL(col_names.append_fmt("%.*s, ", static_cast<int>(cur_col_name.length()), cur_col_name.ptr()))) {
       LOG_WARN("fail to append str", KR(ret), K(cur_col_name));
     }
-  }
-  return ret;
-}
-
-int ObVectorIndexRefresher::lock_domain_table_for_refresh() {
-  int ret = OB_SUCCESS;
-  CK(OB_NOT_NULL(refresh_ctx_));
-  CK(OB_NOT_NULL(refresh_ctx_->trans_));
-  if (OB_SUCC(ret)) {
-    const uint64_t tenant_id = refresh_ctx_->tenant_id_;
-    const uint64_t domain_tb_id = refresh_ctx_->domain_tb_id_;
-    int64_t retries = 0;
-    while (OB_SUCC(ret) && OB_SUCC(ctx_->check_status())) {
-      if (OB_FAIL(ObVectorIndexRefresher::lock_domain_tb(
-              *(refresh_ctx_->trans_), tenant_id, domain_tb_id, true))) {
-        if (OB_UNLIKELY(OB_TRY_LOCK_ROW_CONFLICT != ret)) {
-          LOG_WARN("fail to lock delta_buf_table for refresh", KR(ret),
-                  K(tenant_id), K(domain_tb_id));
-        } else {
-          ret = OB_SUCCESS;
-          ++retries;
-          if (retries % 10 == 0) {
-            LOG_WARN("retry too many times", K(retries), K(tenant_id),
-                    K(domain_tb_id));
-          }
-          ob_usleep(100LL * 1000);
-        }
-      } else {
-        break;
-      }
-    }
-    FLOG_INFO("[VEC_INDEX][REFRESH] lock domain table for refresh", K(ret), K(retries), K(tenant_id), K(domain_tb_id));
   }
   return ret;
 }
@@ -496,6 +506,7 @@ int ObVectorIndexRefresher::do_rebuild() {
   int ret = OB_SUCCESS;
   uint64_t tenant_id = OB_INVALID_ID;
   ObSQLSessionInfo *session_info = nullptr;
+  ObMySQLProxy *sql_proxy = nullptr;
   ObSchemaGetterGuard schema_guard;
   const ObTableSchema *base_table_schema = nullptr;
   const ObTableSchema *domain_table_schema = nullptr;
@@ -511,12 +522,10 @@ int ObVectorIndexRefresher::do_rebuild() {
   // refresh_ctx_->delta_rate_threshold_ = 0; // yjl, for test
   dbms_scheduler::ObDBMSSchedJobInfo job_info;
   int64_t start_time_us = common::ObTimeUtility::fast_current_time();
+  ObVectorRefreshIdxTransaction trans;
   if (OB_ISNULL(refresh_ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("refresh_ctx is null", K(ret));
-  } else if (OB_ISNULL(refresh_ctx_->trans_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("trans is null", K(ret));
   } else if (OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("ctx is null", K(ret));
@@ -524,6 +533,12 @@ int ObVectorIndexRefresher::do_rebuild() {
   } else if (OB_ISNULL(session_info = ctx_->get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null session info", KR(ret), KPC(ctx_));
+  } else if (OB_ISNULL(sql_proxy = ctx_->get_sql_proxy())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null sql proxy", KR(ret), KPC(ctx_));
+  } else if (OB_FAIL(trans.start(session_info, sql_proxy))) {
+    LOG_WARN("fail to start trans for rebuild", KR(ret));
+  } else if (FALSE_IT(refresh_ctx_->trans_ = &trans)) {
   } else if (OB_ISNULL(GCTX.schema_service_)) {
     ret = OB_ERR_SYS;
     LOG_WARN("schema service is null", KR(ret));
@@ -531,8 +546,6 @@ int ObVectorIndexRefresher::do_rebuild() {
     LOG_WARN("fail to get tenant schema guard", KR(ret), K(tenant_id));
   } else if (OB_FAIL(ObVectorIndexRefresher::get_current_scn(refresh_ctx_->scn_))) {
     LOG_WARN("fail to get current scn", KR(ret));
-  } else {
-    DEBUG_SYNC(BEFORE_DBMS_VECTOR_REBUILD);
   }
   // 1. get base_table row count ( if need )
   // 2. get domain_table row count (if need )
@@ -637,6 +650,19 @@ int ObVectorIndexRefresher::do_rebuild() {
     LOG_WARN("no need to start rebuild", K(base_table_row_cnt), K(index_id_table_row_cnt), K(domain_table_row_cnt), K(refresh_ctx_->delta_rate_threshold_));
   }
 
+  // Prevents the transaction from being held open during wait_ddl_finish().
+  if (trans.is_started()) {
+    int tmp_ret = OB_SUCCESS;
+    if (OB_SUCCESS != (tmp_ret = trans.end(OB_SUCC(ret)))) {
+      LOG_WARN("failed to end trans before rebuild DDL", KR(ret), KR(tmp_ret));
+      ret = COVER_SUCC(tmp_ret);
+    }
+  }
+  // free trans immediately after to avoid used after commit
+  refresh_ctx_->trans_ = nullptr;
+
+  DEBUG_SYNC(BEFORE_DBMS_VECTOR_REBUILD);
+
   if (OB_FAIL(ret)) {
   } else if (domain_table_schema->is_vec_hnsw_index() &&
              !idx_parameters.empty() &&
@@ -692,7 +718,15 @@ int ObVectorIndexRefresher::do_rebuild() {
       rebuild_index_arg.vidx_refresh_info_.index_params_ = idx_parameters;
       rebuild_index_arg.rebuild_index_online_ = rebuild_index_online;
       rebuild_index_arg.rebuild_index_type_ = obrpc::ObRebuildIndexArg::RebuildIndexType::REBUILD_INDEX_TYPE_VEC;
-      if (OB_ISNULL(GCTX.rs_mgr_)) {
+
+      if (OB_FAIL(rebuild_index_arg.based_schema_object_infos_.push_back(
+              ObBasedSchemaObjectInfo(domain_table_schema->get_table_id(), TABLE_SCHEMA,
+                                      domain_table_schema->get_schema_version(), tenant_id)))) {
+        LOG_WARN("fail to push back index table based schema info", KR(ret));
+      }
+
+      if (OB_FAIL(ret)) {
+      } else if (OB_ISNULL(GCTX.rs_mgr_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("GCTX.rs_mgr is null", K(ret));
       } else if (OB_FAIL(GCTX.rs_mgr_->get_master_root_server(rs_addr))) {
@@ -968,12 +1002,17 @@ int ObVectorIndexRefresher::tablet_fast_refresh()
     LOG_WARN("set trx timeout failed", K(ret), K(init_timeout_us));
   } else if (OB_FAIL(timeout_ctx.set_timeout(init_timeout_us))) {
     LOG_WARN("set timeout failed", K(ret), K(init_timeout_us));
-  } else if (OB_FAIL(get_table_row_count(
+  } else if (domain_table_schema->is_partitioned_table() && OB_FAIL(get_partition_name(
+      tenant_id, refresh_ctx_->base_tb_id_, refresh_ctx_->domain_tb_id_,
+      refresh_ctx_->domain_tablet_id_, allocator, partition_names))) {
+    LOG_WARN("get_partition_name fail", K(ret));
+  } else if (OB_FAIL(get_tablet_row_count(
       db_schema->get_database_name_str(),
       domain_table_schema->get_table_name_str(), refresh_ctx_->scn_,
+      domain_table_schema->is_partitioned_table(), partition_names,
       domain_table_row_cnt))) {
-    LOG_WARN("fail to get delta_buf_table row count", KR(ret),
-      K(domain_table_schema->get_table_name_str()));
+    LOG_WARN("fail to get delta_buf_table tablet row count", KR(ret),
+      K(domain_table_schema->get_table_name_str()), K(partition_names));
   } else if (domain_table_row_cnt <= 0) {
     LOG_INFO("there is no new row, so no need refresh", K(domain_table_row_cnt), K(tenant_id),
       K(refresh_ctx_->scn_), K(refresh_ctx_->domain_tb_id_), K(refresh_ctx_->domain_tablet_id_));
@@ -1002,10 +1041,6 @@ int ObVectorIndexRefresher::tablet_fast_refresh()
                                                       index_id_tb_col_names))) {
           LOG_WARN("fail to get vid & type col names", KR(ret),
                   K(index_id_tb_schema->get_table_name_str()));
-        } else if (domain_table_schema->is_partitioned_table() && OB_FAIL(get_partition_name(
-              tenant_id, refresh_ctx_->base_tb_id_, refresh_ctx_->domain_tb_id_, refresh_ctx_->domain_tablet_id_,
-              allocator, partition_names))) {
-          LOG_WARN("get_partition_name fail", K(ret));
         } else if (domain_table_schema->is_partitioned_table() && OB_FAIL(insert_sel_sql.append_fmt(
                 "INSERT INTO `%.*s`.`%.*s` (%.*s) SELECT ora_rowscn, %.*s FROM "
                 "`%.*s`.`%.*s` %.*s WHERE ora_rowscn <= %lu",

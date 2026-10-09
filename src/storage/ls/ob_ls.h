@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_OB_LS_
@@ -328,7 +321,6 @@ public:
   ObSSWriterLSHandler& get_primary_sswriter_ls_handler() { return primary_sswriter_ls_handler_; }
   ObSSWriterLSHandler& get_restore_sswriter_ls_handler() { return restore_sswriter_ls_handler_; }
   ObSSCheckpointExecutor &get_ss_checkpoint_executor() { return ss_checkpoint_executor_; }
-  DELEGATE_WITH_RET(ls_migration_handler_, notify_switch_to_leader_and_wait_replace_complete, int);
 #endif
 
   // get ls info
@@ -571,6 +563,7 @@ public:
   DELEGATE_WITH_RET(ls_meta_, get_migration_and_restore_status, int);
   int set_rebuild_info(const ObLSRebuildInfo &rebuild_info)
   {
+    WRLockGuard guard(meta_rwlock_);
     return ls_meta_.set_rebuild_info(rebuild_info);
   }
   DELEGATE_WITH_RET(ls_meta_, get_rebuild_info, int);
@@ -652,6 +645,7 @@ public:
   //     const common::ObTabletID &tablet_id);
   DELEGATE_WITH_RET(ls_tablet_svr_, remove_ls_inner_tablet, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, rebuild_create_tablet, int);
+  DELEGATE_WITH_RET(ls_tablet_svr_, batch_create_or_update_migration_tablets, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, update_tablet_ha_data_status, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, ha_get_tablet, int);
   DELEGATE_WITH_RET(ls_tablet_svr_, get_tablet_without_memtables, int);
@@ -941,6 +935,8 @@ public:
   //dup table ls meta interface
   CONST_DELEGATE_WITH_RET(dup_table_ls_handler_, get_dup_table_ls_meta, int);
   DELEGATE_WITH_RET(dup_table_ls_handler_, set_dup_table_ls_meta, int);
+  DELEGATE_WITH_RET(dup_table_ls_handler_, block_dup_table_lease_for_migration, int);
+  DELEGATE_WITH_RET(dup_table_ls_handler_, clear_dup_table_lease_block_for_migration, int);
 
   DELEGATE_WITH_RET(ls_tx_svr_, filter_tx_need_transfer, int);
   // for transfer to modify active tx ctx state
@@ -1087,6 +1083,7 @@ public:
   }
   CONST_DELEGATE_WITH_RET(ls_meta_, get_transfer_meta, int);
 
+  DELEGATE_WITH_RET(ls_meta_, admin_clear_transfer_meta_info, int);
 
   int set_ls_migration_gc(bool &allow_gc);
   int inner_check_allow_read_(

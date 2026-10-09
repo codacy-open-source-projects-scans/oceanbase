@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_CG
@@ -1568,8 +1561,8 @@ int ObDmlCgService::convert_dml_column_info(ObTableID index_tid,
     }
   }
   if (OB_SUCC(ret) && !only_rowkey) {
-    ObTableSchema::const_column_iterator iter = index_schema->column_begin();
-    for (; OB_SUCC(ret) && iter != index_schema->column_end(); ++iter) {
+    ObNonRowkeyStoreColumnIterator iter(*index_schema);
+    while (OB_SUCC(ret) && OB_SUCC(iter.next()) && !iter.is_end()) {
       const ObColumnSchemaV2 *column = *iter;
       ObObjMeta column_type;
       if (!column->is_rowkey_column() && (!column->is_virtual_generated_column())) {
@@ -2591,6 +2584,7 @@ int ObDmlCgService::generate_das_dml_ctdef(ObLogDelUpd &op,
     das_dml_ctdef.is_update_pk_with_dop_ = is_update_uk_parallel;
     das_dml_ctdef.is_update_pk_ = index_dml_info.is_update_primary_key_;
     das_dml_ctdef.is_vec_hnsw_index_vid_opt_ = index_dml_info.is_vec_hnsw_index_vid_opt_;
+    das_dml_ctdef.is_compaction_ttl_table_ = index_dml_info.is_compaction_ttl_table_;
   }
 #ifdef OB_BUILD_TDE_SECURITY
   // generate encrypt_meta for table
@@ -2830,7 +2824,7 @@ int ObDmlCgService::generate_related_upd_ctdef(ObLogDelUpd &op,
                                                           related_ctdef->updated_column_ids_,
                                                           *related_ctdef))) {
       LOG_WARN("fail to check is update uk", K(ret), K(related_tid));
-    } else if (related_ctdef->updated_column_ids_.empty() && !index_dml_info.is_compaction_scn_ttl_di_table_) {
+    } else if (related_ctdef->updated_column_ids_.empty() && !index_dml_info.is_compaction_ttl_table_) {
       //ignore invalid update ctdef
     } else if (OB_FAIL(upd_ctdefs.push_back(related_ctdef))) {
       LOG_WARN("store related ctdef failed", K(ret));
@@ -3002,9 +2996,12 @@ int ObDmlCgService::fill_search_index_extra_info_on_table_param(
           common::ObArenaAllocator tmp_allocator(ObMemAttr(MTL_ID(), "SearchIdxCg"));
           common::ObSEArray<ObString, 8> column_comments;
           for (int64_t i = 0; OB_SUCC(ret) && i < included_cids.count(); ++i) {
+            int64_t col_idx = -1;
             int64_t col_id = included_cids.at(i);
-            if (OB_FAIL(included_cid_idxes.push_back(data_schema->get_column_idx(col_id)))) {
-              LOG_WARN("failed to push back included cid idx", K(ret), K(col_id));
+            if (OB_FAIL(data_schema->get_store_column_idx(col_id, col_idx))) {
+              LOG_WARN("failed to get store column idx", K(ret), K(col_id));
+            } else if (OB_FAIL(included_cid_idxes.push_back(col_idx))) {
+              LOG_WARN("failed to push back included cid idx", K(ret), K(col_id), K(col_idx));
             } else {
               const ObColumnSchemaV2 *col_schema =
                 data_schema->get_column_schema(included_cids.at(i));
@@ -3161,7 +3158,7 @@ int ObDmlCgService::check_is_heap_table_or_cluster_by_table(ObLogicalOperator &o
   } else if (OB_ISNULL(table_schema)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table schema is null", K(ret), K(table_schema));
-  } else if (table_schema->is_table_with_pk()) {
+  } else if (table_schema->is_table_with_pk() || table_schema->is_random_part()) {
     is_heap_table = false;
     is_cluster_by_table = table_schema->is_table_with_clustering_key();
   } else {
@@ -3180,6 +3177,7 @@ int ObDmlCgService::generate_dml_base_ctdef(ObLogicalOperator &op,
   int ret = OB_SUCCESS;
   dml_base_ctdef.is_primary_index_ = index_dml_info.is_primary_index_;
   dml_base_ctdef.is_vec_hnsw_index_vid_opt_ = index_dml_info.is_vec_hnsw_index_vid_opt_;
+  dml_base_ctdef.is_compaction_ttl_table_ = index_dml_info.is_compaction_ttl_table_;
   dml_base_ctdef.column_ids_.set_capacity(index_dml_info.column_exprs_.count());
   if (OB_FAIL(generate_dml_column_ids(op, index_dml_info.column_exprs_, dml_base_ctdef.column_ids_))) {
     LOG_WARN("generate dml column ids failed", K(ret));
@@ -4219,8 +4217,10 @@ int ObDmlCgService::generate_table_loc_meta(const IndexDMLInfo &index_dml_info,
     loc_meta.is_lake_table_ = (table_schema->get_lake_table_format() == share::ObLakeTableFormat::ICEBERG
                                || table_schema->get_lake_table_format() == share::ObLakeTableFormat::HIVE);
     ObString file_location;
-    OZ(ObExternalTableUtils::get_external_file_location(*table_schema, *schema_guard, cg_.phy_plan_->get_allocator(), file_location));
+    bool is_shared_external_files_on_disk = false;
+    OZ(ObExternalTableUtils::get_external_file_location(*table_schema, *schema_guard, cg_.phy_plan_->get_allocator(), file_location, &is_shared_external_files_on_disk));
     loc_meta.is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta.is_shared_external_files_on_disk_ = is_shared_external_files_on_disk;
   }
   if (OB_SUCC(ret) && index_dml_info.is_primary_index_) {
     TableLocRelInfo *rel_info = nullptr;
@@ -5174,8 +5174,10 @@ int ObDmlCgService::generate_rowkey_domain_ctdef(
     loc_meta->is_lake_table_ = (rowkey_domain_schema->get_lake_table_format() == share::ObLakeTableFormat::ICEBERG);
     ObString file_location;
     share::ObDasSemanticIndexInfo &semantic_index_info = scan_ctdef->semantic_index_info_;
-    OZ(ObExternalTableUtils::get_external_file_location(*rowkey_domain_schema, *schema_guard->get_schema_guard(), cg_.phy_plan_->get_allocator(), file_location));
+    bool is_shared_external_files_on_disk = false;
+    OZ(ObExternalTableUtils::get_external_file_location(*rowkey_domain_schema, *schema_guard->get_schema_guard(), cg_.phy_plan_->get_allocator(), file_location, &is_shared_external_files_on_disk));
     loc_meta->is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta->is_shared_external_files_on_disk_ = is_shared_external_files_on_disk;
     scan_ctdef->table_param_.get_enable_lob_locator_v2()
         = (cg_.get_cur_cluster_version() >= CLUSTER_VERSION_4_1_0_0);
     scan_ctdef->schema_version_ = rowkey_domain_schema->get_schema_version();

@@ -1,12 +1,5 @@
-//Copyright (c) 2025 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2025 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_ROOTSERVER_COMPACTION_TTL_SERVICE_H_
 #define OB_ROOTSERVER_COMPACTION_TTL_SERVICE_H_
 #include "storage/compaction_ttl/ob_ttl_filter_info.h"
@@ -129,7 +122,7 @@ private:
     // Therefore, if a delete-insert table was transformed to rowscn comapction ttl table BY ONLINE DDL,
     // we should ensure that the row before the DDL timepoint is recycled by once time to avoid inconsistent rowscn.
     return MAX(max_ddl_create_snapshot_,
-               data_table_schema.get_ttl_flag().get_being_scn_ttl_time_ns() + BEING_SCN_TTL_RECYCLE_SAFE_INTERVAL_NS);
+               data_table_schema.get_ttl_flag().get_being_compaction_ttl_time_ns() + BEING_SCN_TTL_RECYCLE_SAFE_INTERVAL_NS);
   }
 
 private:

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -92,10 +85,15 @@ int ObCheckConstraintValidationTask::process()
     ddl_info.set_dest_table_hidden(false);
     ObTimeoutCtx timeout_ctx;
     const int64_t DDL_INNER_SQL_EXECUTE_TIMEOUT = ObDDLUtil::calc_inner_sql_execute_timeout();
+    int64_t snapshot_version = 0;
+    if (OB_FAIL(ObDDLUtil::get_current_snapshot_version(tenant_id_, ObDDLUtil::get_default_ddl_rpc_timeout(), snapshot_version))) {
+      LOG_WARN("fail to get current snapshot version", K(ret), K(tenant_id_));
+    }
     SMART_VAR(ObMySQLProxy::MySQLResult, res) {
       common::sqlclient::ObMySQLResult *result = NULL;
       ObSqlString ddl_schema_hint_str;
-      if (OB_FAIL(session_param.ddl_info_.init(ddl_info, table_schema->get_session_id()))) {
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(session_param.ddl_info_.init(ddl_info, table_schema->get_session_id()))) {
         LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info), K(table_schema->get_session_id()));
       } else if (check_expr_str.empty()) {
         ret = OB_ERR_UNEXPECTED;
@@ -104,7 +102,7 @@ int ObCheckConstraintValidationTask::process()
         LOG_WARN("set trx timeout failed", K(ret));
       } else if (OB_FAIL(timeout_ctx.set_timeout(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
         LOG_WARN("set timeout failed", K(ret));
-      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(table_name, table_schema->get_schema_version(), is_oracle_mode, ddl_schema_hint_str))) {
+      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(database_name, table_name, table_schema->get_schema_version(), is_oracle_mode, ddl_schema_hint_str))) {
         LOG_WARN("failed to generate ddl schema hint str", K(ret));
       } else if (OB_FAIL(ddl_schema_hint_str.append_fmt(is_oracle_mode ?
                   " INDEX(\"%.*s\".\"%.*s\" PRIMARY)" : " INDEX(`%.*s`.`%.*s` PRIMARY)",
@@ -115,11 +113,12 @@ int ObCheckConstraintValidationTask::process()
         LOG_WARN("fail to assign index hint", K(ret));
       } else if (OB_FAIL(sql_string.assign_fmt(
           is_oracle_mode ?
-              "SELECT /*+ %.*s */ 1 FROM \"%.*s\".\"%.*s\" WHERE NOT (%.*s) AND ROWNUM = 1" // for oracle mode
-              : "SELECT /*+ %.*s */ 1 FROM `%.*s`.`%.*s` WHERE NOT (%.*s) LIMIT 1", // for mysql mode
+              "SELECT /*+ %.*s */ 1 FROM \"%.*s\".\"%.*s\" AS OF SCN %ld WHERE NOT (%.*s) AND ROWNUM = 1" // for oracle mode
+              : "SELECT /*+ %.*s */ 1 FROM `%.*s`.`%.*s` AS OF SNAPSHOT %ld WHERE NOT (%.*s) LIMIT 1", // for mysql mode
                  static_cast<int>(ddl_schema_hint_str.length()), ddl_schema_hint_str.ptr(),
                  static_cast<int>(database_name.length()), database_name.ptr(),
                  static_cast<int>(table_name.length()), table_name.ptr(),
+                 snapshot_version,
                  static_cast<int>(check_expr_str.length()), check_expr_str.ptr()))) {
         LOG_WARN("fail to assign format", K(ret));
       }
@@ -400,9 +399,9 @@ int ObForeignKeyConstraintValidationTask::check_fk_constraint_data_valid(
         LOG_WARN("set trx timeout failed", K(ret));
       } else if (OB_FAIL(timeout_ctx.set_timeout(DDL_INNER_SQL_EXECUTE_TIMEOUT))) {
         LOG_WARN("set timeout failed", K(ret));
-      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(child_table_schema.get_table_name_str(), child_table_schema.get_schema_version(), is_oracle_mode, child_ddl_schema_hint_str))) {
+      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(child_database_schema.get_database_name_str(), child_table_schema.get_table_name_str(), child_table_schema.get_schema_version(), is_oracle_mode, child_ddl_schema_hint_str))) {
         LOG_WARN("failed to generate ddl schema hint", K(ret));
-      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(parent_table_schema.get_table_name_str(), parent_table_schema.get_schema_version(), is_oracle_mode, parent_ddl_schema_hint_str))) {
+      } else if (OB_FAIL(ObDDLUtil::generate_ddl_schema_hint_str(parent_database_schema.get_database_name_str(), parent_table_schema.get_table_name_str(), parent_table_schema.get_schema_version(), is_oracle_mode, parent_ddl_schema_hint_str))) {
         LOG_WARN("failed to generate ddl schema hint", K(ret));
       } else if (OB_FAIL(child_ddl_schema_hint_str.append_fmt(is_oracle_mode ?
                   " INDEX(\"%.*s\".\"%.*s\" PRIMARY)" : " INDEX(`%.*s`.`%.*s` PRIMARY)",

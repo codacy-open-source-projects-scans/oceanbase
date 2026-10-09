@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -452,6 +445,8 @@ int ObDataAccessService::do_async_remote_das_task(ObDASRef &das_ref,
     LOG_WARN("assign snapshot fail", K(ret));
   } else if (OB_FAIL(das_ref.allocate_async_das_cb(das_async_cb, task_ops, timeout_ts))) {
     LOG_WARN("failed to allocate das async cb", K(ret));
+  } else {
+    das_async_cb->set_task_resp_addrs(task_arg.get_ctrl_svr(), task_arg.get_runner_svr());
   }
   // prepare op result in advance avoiding racing condition.
   for (int64_t i = 0; OB_SUCC(ret) && i < task_ops.count(); i++) {
@@ -512,7 +507,7 @@ int ObDataAccessService::do_async_remote_das_task(ObDASRef &das_ref,
     // RPC fail, add task's LSID to trans_result
     // indicate some transaction participant may touched
     for (int i = 0; i < task_ops.count(); i++) {
-      session->get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
+      das_ref.get_exec_ctx().get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
     }
   }
   if (OB_FAIL(ret)) {
@@ -646,7 +641,7 @@ int ObDataAccessService::do_sync_remote_das_task(
       // RPC fail, add task's LSID to trans_result
       // indicate some transaction participant may touched
       for (int i = 0; i < task_ops.count(); i++) {
-        session->get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
+        das_ref.get_exec_ctx().get_trans_result().add_touched_ls(task_ops.at(i)->get_ls_id());
       }
     }
     if (OB_FAIL(ret)) {

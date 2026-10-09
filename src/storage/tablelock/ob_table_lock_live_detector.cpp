@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TABLELOCK
@@ -27,6 +20,7 @@ namespace transaction
 {
 namespace tablelock
 {
+ERRSIM_POINT_DEF(EN_DETECT_SESSION_ALIVE_FAILED);
 int ObTableLockDetectFuncList::detect_session_alive(const uint32_t session_id, bool &is_alive)
 {
   int ret = OB_SUCCESS;
@@ -130,8 +124,15 @@ int ObTableLockDetectFuncList::batch_detect_session_alive_at_least_one(const uin
       ARRAY_FOREACH_X(proxy.get_results(), idx, cnt, OB_SUCC(ret)) {
         const obrpc::ObBatchDetectSessionAliveResult *result = proxy.get_results().at(idx);
         const ObAddr &dest_addr = proxy.get_dests().at(idx);
+#ifdef ERRSIM
+        if (OB_TMP_FAIL(EN_DETECT_SESSION_ALIVE_FAILED ? : return_code_array.at(idx))) {
+          LOG_WARN("fake batch detect session alive error", K(tmp_ret), K(return_code_array));
+        }
+#else
         tmp_ret = return_code_array.at(idx);
+#endif
         if (OB_SUCCESS != tmp_ret) {
+          ret = tmp_ret;
           LOG_WARN("fail to send rpc to detect alive session", KR(ret), KR(tmp_ret), K(dest_addr),
                                                                K(session_id_array), K(idx));
           break;

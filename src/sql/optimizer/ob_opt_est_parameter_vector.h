@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OPTIMIZER_OB_OPT_EST_PARAMETER_VECTOR_
@@ -98,6 +91,10 @@ const static double VECTOR_CMP_LOB_COST = 9.707028746051587301587301588 * DEFAUL
 const static double VECTOR_CMP_ERR_HANDLE_EXPR_COST = 1.00087103407539 * DEFAULT_CPU_SPEED; //NORMAL_CMP_INT_COST * 100
 //jinmao TODO: 系数要测算后再填
 const static double VECTOR_FUNCTIONAL_LOOKUP_PER_ROW_COST = 100.0 * DEFAULT_CPU_SPEED;
+//external table cost params
+const static double VECTOR_EXTERNAL_TABLE_CPU_PER_BYTE_COST = 0.00293 * DEFAULT_CPU_SPEED;
+const static double VECTOR_EXTERNAL_TABLE_LOCAL_IO_PER_BYTE_COST = 0.000299 * DEFAULT_DISK_SEQ_READ_SPEED;
+const static double VECTOR_EXTERNAL_TABLE_NETWORK_IO_PER_BYTE_COST = 0.007063 * DEFAULT_NETWORK_SPEED;
 const static double VECTOR_INVALID_CMP_COST = -1;
 
 //hash cost params
@@ -338,6 +335,9 @@ const static ObOptCostModelParameter cost_params_vector(
    VECTOR_CMP_LOB_COST,
    VECTOR_CMP_ERR_HANDLE_EXPR_COST,
    VECTOR_FUNCTIONAL_LOOKUP_PER_ROW_COST,
+   VECTOR_EXTERNAL_TABLE_CPU_PER_BYTE_COST,
+   VECTOR_EXTERNAL_TABLE_LOCAL_IO_PER_BYTE_COST,
+   VECTOR_EXTERNAL_TABLE_NETWORK_IO_PER_BYTE_COST,
    comparison_params_vector,
    hash_params_vector,
    project_params_vector

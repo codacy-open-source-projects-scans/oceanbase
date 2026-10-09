@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -117,7 +110,8 @@ int ObTableLoadRedefTable::create_hidden_table(const ObTableLoadRedefTableStartA
                                     session_info.get_tz_info_wrap(),
                                     arg.tablet_ids_,
                                     foreign_key_checks,
-                                    arg.enable_hidden_table_partition_pruning_))) {
+                                    arg.enable_hidden_table_partition_pruning_,
+                                    arg.need_sync_stats_info_))) {
       LOG_WARN("fail to init create hidden table arg", KR(ret));
     } else if (OB_FAIL(ObDDLServerClient::create_hidden_table(create_table_argv2, create_table_res,
         res.snapshot_version_, res.data_format_version_, session_info))) {

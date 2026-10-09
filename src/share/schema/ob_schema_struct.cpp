@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -151,6 +144,8 @@ int ObSchemaVersionGenerator::init(
                                          static_cast<uint64_t>(start_version),
                                          static_cast<uint64_t>(end_version)))) {
     LOG_WARN("fail to init id generator", KR(ret), K(start_version), K(end_version));
+  } else {
+    wasted_cnt_ = 0;
   }
   return ret;
 }
@@ -198,7 +193,7 @@ int ObSchemaVersionGenerator::get_end_version(int64_t &end_version) const
   if (OB_FAIL(ObIDGenerator::get_end_id(id))) {
     LOG_WARN("fail to get end id", KR(ret));
   } else {
-    end_version = static_cast<int64_t>(id);
+    end_version = static_cast<int64_t>(id) - wasted_cnt_ * SCHEMA_VERSION_INC_STEP;
   }
   return ret;
 }
@@ -210,7 +205,7 @@ int ObSchemaVersionGenerator::get_version_cnt(int64_t &version_cnt) const
   if (OB_FAIL(ObIDGenerator::get_id_cnt(id_cnt))) {
     LOG_WARN("fail to get id cnt", KR(ret));
   } else {
-    version_cnt = static_cast<int64_t>(id_cnt);
+    version_cnt = static_cast<int64_t>(id_cnt) - wasted_cnt_;
   }
   return ret;
 }
@@ -1890,6 +1885,7 @@ ObTenantSchema& ObTenantSchema::operator =(const ObTenantSchema &src_schema)
     set_charset_type(src_schema.get_charset_type());
     set_name_case_mode(src_schema.name_case_mode_);
     set_default_tablegroup_id(src_schema.default_tablegroup_id_);
+    set_default_tablespace_id(src_schema.default_tablespace_id_);
     set_compatibility_mode(src_schema.compatibility_mode_);
     set_drop_tenant_time(src_schema.drop_tenant_time_);
     set_status(src_schema.status_);
@@ -1913,6 +1909,8 @@ ObTenantSchema& ObTenantSchema::operator =(const ObTenantSchema &src_schema)
       LOG_WARN("fail to set previous locality", K(ret));
     } else if (OB_FAIL(set_default_tablegroup_name(src_schema.default_tablegroup_name_))) {
       LOG_WARN("set default tablegroup name failed", K(ret));
+    } else if (OB_FAIL(set_default_tablespace_name(src_schema.default_tablespace_name_))) {
+      LOG_WARN("set default tablespace name failed", K(ret));
     }
     if (OB_FAIL(ret)) {
       error_ret_ = ret;
@@ -1947,6 +1945,8 @@ void ObTenantSchema::reset()
   reset_string(comment_);
   default_tablegroup_id_ = OB_INVALID_ID;
   reset_string(default_tablegroup_name_);
+  default_tablespace_id_ = OB_INVALID_ID;
+  reset_string(default_tablespace_name_);
   compatibility_mode_ = ObCompatibilityMode::OCEANBASE_MODE;
   drop_tenant_time_ = OB_INVALID_TIMESTAMP;
   status_ = TENANT_STATUS_NORMAL;
@@ -1988,6 +1988,8 @@ void ObTenantSchema::reset_alter_tenant_attributes()
   reset_string(comment_);
   default_tablegroup_id_ = OB_INVALID_ID;
   reset_string(default_tablegroup_name_);
+  default_tablespace_id_ = OB_INVALID_ID;
+  reset_string(default_tablespace_name_);
   reset_physical_location_info();
 }
 
@@ -2013,6 +2015,7 @@ int64_t ObTenantSchema::get_convert_size() const
   }
   convert_size += previous_locality_str_.length() + 1;
   convert_size += default_tablegroup_name_.length() + 1;
+  convert_size += default_tablespace_name_.length() + 1;
   return convert_size;
 }
 
@@ -2344,7 +2347,9 @@ OB_DEF_SERIALIZE(ObTenantSchema)
               drop_tenant_time_,
               status_,
               in_recyclebin_,
-              arbitration_service_status_);
+              arbitration_service_status_,
+              default_tablespace_id_,
+              default_tablespace_name_);
 
   LOG_INFO("serialize schema",
            K_(tenant_id), K_(schema_version), K_(tenant_name),
@@ -2374,7 +2379,9 @@ OB_DEF_DESERIALIZE(ObTenantSchema)
               drop_tenant_time_,
               status_,
               in_recyclebin_,
-              arbitration_service_status_);
+              arbitration_service_status_,
+              default_tablespace_id_,
+              default_tablespace_name_);
 
   if (OB_FAIL(ret)) {
     LOG_WARN("Fail to deserialize data", K(ret));
@@ -2388,6 +2395,8 @@ OB_DEF_DESERIALIZE(ObTenantSchema)
     LOG_WARN("set_locality failed", K(ret));
   } else if (OB_FAIL(set_default_tablegroup_name(default_tablegroup_name_))) {
     LOG_WARN("set default_tablegroup_name failed", K(ret));
+  } else if (OB_FAIL(set_default_tablespace_name(default_tablespace_name_))) {
+    LOG_WARN("set default_tablespace_name failed", K(ret));
   } else if (OB_FAIL(set_previous_locality(previous_locality_str_))) {
     // parse and set zone and region replica num array
     if (locality_str_.length() > 0 && zone_list_.count() > 0) {
@@ -2429,7 +2438,8 @@ OB_DEF_SERIALIZE_SIZE(ObTenantSchema)
               primary_zone_, locked_, comment_, charset_type_, collation_type_, name_case_mode_,
               read_only_, locality_str_, previous_locality_str_,
               default_tablegroup_id_, default_tablegroup_name_,
-              compatibility_mode_, drop_tenant_time_, status_, in_recyclebin_, arbitration_service_status_);
+              compatibility_mode_, drop_tenant_time_, status_, in_recyclebin_, arbitration_service_status_,
+              default_tablespace_id_, default_tablespace_name_);
   len += get_string_array_serialize_size(zone_list_);
   return len;
 }
@@ -2657,6 +2667,7 @@ ObDatabaseSchema &ObDatabaseSchema::operator =(const ObDatabaseSchema &src_schem
     set_name_case_mode(src_schema.name_case_mode_);
     set_read_only(src_schema.read_only_);
     set_default_tablegroup_id(src_schema.default_tablegroup_id_);
+    set_default_tablespace_id(src_schema.default_tablespace_id_);
     set_in_recyclebin(src_schema.is_in_recyclebin());
 
     if (OB_FAIL(set_database_name(src_schema.database_name_))) {
@@ -2665,6 +2676,8 @@ ObDatabaseSchema &ObDatabaseSchema::operator =(const ObDatabaseSchema &src_schem
       LOG_WARN("set_comment failed", K(ret));
     } else if (OB_FAIL(set_default_tablegroup_name(src_schema.default_tablegroup_name_))) {
       LOG_WARN("set_comment failed", K(ret));
+    } else if (OB_FAIL(set_default_tablespace_name(src_schema.default_tablespace_name_))) {
+      LOG_WARN("set default tablespace name failed", K(ret));
     } else {} // no more to do
 
     if (OB_FAIL(ret)) {
@@ -2686,6 +2699,7 @@ int64_t ObDatabaseSchema::get_convert_size() const
   int64_t convert_size = sizeof(*this);
   convert_size += database_name_.length() + 1;
   convert_size += comment_.length() + 1;
+  convert_size += default_tablespace_name_.length() + 1;
   return convert_size;
 }
 
@@ -2709,6 +2723,8 @@ void ObDatabaseSchema::reset()
   read_only_ = false;
   default_tablegroup_id_ = OB_INVALID_ID;
   reset_string(default_tablegroup_name_);
+  default_tablespace_id_ = OB_INVALID_ID;
+  reset_string(default_tablespace_name_);
   in_recyclebin_ = false;
   ObSchema::reset();
 }
@@ -2790,7 +2806,8 @@ OB_DEF_SERIALIZE(ObDatabaseSchema)
   LST_DO_CODE(OB_UNIS_ENCODE, tenant_id_,
               database_id_, schema_version_, database_name_,
               comment_, charset_type_, collation_type_, name_case_mode_, read_only_,
-              default_tablegroup_id_, default_tablegroup_name_, in_recyclebin_);
+              default_tablegroup_id_, default_tablegroup_name_, in_recyclebin_,
+              default_tablespace_id_, default_tablespace_name_);
   if (OB_FAIL(ret)) {
     LOG_WARN("func_SERIALIZE failed", K(ret));
   } else {} // no more to do
@@ -2803,10 +2820,12 @@ OB_DEF_DESERIALIZE(ObDatabaseSchema)
   ObString database_name;
   ObString comment;
   ObString default_tablegroup_name;
+  ObString default_tablespace_name;
   LST_DO_CODE(OB_UNIS_DECODE, tenant_id_,
               database_id_, schema_version_, database_name,
               comment, charset_type_, collation_type_, name_case_mode_, read_only_,
-              default_tablegroup_id_, default_tablegroup_name, in_recyclebin_);
+              default_tablegroup_id_, default_tablegroup_name, in_recyclebin_,
+              default_tablespace_id_, default_tablespace_name);
   if (OB_FAIL(ret)) {
     LOG_WARN("Fail to deserialize data", K(ret));
   } else if (OB_FAIL(set_database_name(database_name))) {
@@ -2815,6 +2834,8 @@ OB_DEF_DESERIALIZE(ObDatabaseSchema)
     LOG_WARN("set_comment failed", K(ret));
   } else if (OB_FAIL(set_default_tablegroup_name(default_tablegroup_name))) {
     LOG_WARN("set_comment failed", K(ret));
+  } else if (OB_FAIL(set_default_tablespace_name(default_tablespace_name))) {
+    LOG_WARN("set default tablespace name failed", K(ret));
   } else {} // no more to do
   return ret;
 }
@@ -2827,7 +2848,8 @@ OB_DEF_SERIALIZE_SIZE(ObDatabaseSchema)
               database_name_,
               comment_, charset_type_, collation_type_,
               name_case_mode_, read_only_, default_tablegroup_id_,
-              default_tablegroup_name_, in_recyclebin_);
+              default_tablegroup_name_, in_recyclebin_,
+              default_tablespace_id_, default_tablespace_name_);
 
   return len;
 }
@@ -5019,7 +5041,7 @@ ObTablegroupSchema &ObTablegroupSchema::operator =(const ObTablegroupSchema &src
       } else if (OB_FAIL(deep_copy_str(src_schema.sharding_, sharding_))) {
         LOG_WARN("fail to deep copy split partition name", K(ret));
       } else if (OB_FAIL(deep_copy_str(src_schema.scope_, scope_))) {
-        LOG_WARN("fail to deep copy scope", K(ret));
+        LOG_WARN("fail to deep copy tablegroup scope", K(ret));
       } else if (OB_FAIL(src_schema.split_high_bound_val_.deep_copy(split_high_bound_val_, *get_allocator()))) {
         LOG_WARN("fail to deep copy split row key", K(ret));
       } else if (OB_FAIL(src_schema.split_list_row_values_.deep_copy(split_list_row_values_, *get_allocator()))) {
@@ -5664,6 +5686,18 @@ void ObPartitionOption::forbid_auto_partition(const bool is_partitioned_table)
   }
   auto_part_ = false;
   auto_part_size_ = -1;
+}
+
+int ObPartitionOption::enable_random_partition(const int64_t auto_random_size)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(enable_auto_partition_(auto_random_size))) {
+    LOG_WARN("fail to enable auto_partition", KR(ret), K(auto_random_size));
+  } else {
+    part_func_type_ = PARTITION_FUNC_TYPE_RANDOM;
+  }
+
+  return ret;
 }
 
 OB_DEF_SERIALIZE(ObPartitionOption)
@@ -6906,7 +6940,7 @@ int ObPartitionUtils::get_tablet_and_part_id(
         LOG_WARN("fail to fill hash tablet_id and part_id",
                  KR(ret), K(range), K(table_id));
       }
-    } else if (table_schema.is_range_part()) {
+    } else if (table_schema.is_range_or_random_part()) {
       if (OB_FAIL(ObPartitionUtils::get_range_tablet_and_part_id_(
                   range, part_array, part_num, partition_indexes))) {
         LOG_WARN("fail to fill range tablet_id and part_id",
@@ -6968,7 +7002,7 @@ int ObPartitionUtils::get_tablet_and_part_id(
         LOG_WARN("fail to fill hash tablet_id and part_id",
                  KR(ret), K(row), K(table_id));
       }
-    } else if (table_schema.is_range_part()) {
+    } else if (table_schema.is_range_or_random_part()) {
       if (OB_FAIL(ObPartitionUtils::get_range_tablet_and_part_id_(
                   row, part_array, part_num, partition_indexes))) {
         LOG_WARN("fail to fill range tablet_id and part_id",
@@ -8067,6 +8101,120 @@ bool ObPartitionUtils::is_types_equal_for_partition_check(
   return is_equal;
 }
 
+int ObPartitionUtils::check_global_index_match_primary_subpart(
+    const share::schema::ObSimpleTableSchemaV2 &index_schema,
+    const share::schema::ObSimpleTableSchemaV2 &primary_table_schema,
+    bool &is_matched)
+{
+  // compare global index's level-one partition with primary table's level-two (sub) partition
+  // same as ObSimpleTableSchemaV2::compare_partition_option
+  int ret = OB_SUCCESS;
+  is_matched = true;
+  bool index_oracle_mode = false;
+  bool primary_table_oracle_mode = false;
+  const schema::ObPartition *first_partition = NULL;
+  const schema::ObPartitionOption &index_part_option = index_schema.get_part_option();
+  const schema::ObPartitionOption &sub_part_option = primary_table_schema.get_sub_part_option();
+  schema::ObPartitionFuncType index_part_func_type = index_part_option.get_part_func_type();
+  schema::ObPartitionFuncType sub_part_func_type = sub_part_option.get_part_func_type();
+  if (OB_FAIL(index_schema.check_if_oracle_compat_mode(index_oracle_mode))) {
+    LOG_WARN("fail to get index mode", KR(ret), K(index_schema));
+  } else if (OB_FAIL(primary_table_schema.check_if_oracle_compat_mode(primary_table_oracle_mode))) {
+    LOG_WARN("fail to get primary table mode", KR(ret), K(primary_table_schema));
+  } else if (index_oracle_mode != primary_table_oracle_mode) {
+    is_matched = false;
+    LOG_INFO("table compatibilty mode not match", K(index_oracle_mode), K(primary_table_oracle_mode));
+  } else if (schema::PARTITION_LEVEL_ONE != index_schema.get_part_level()
+          || schema::PARTITION_LEVEL_TWO != primary_table_schema.get_part_level()) {
+    is_matched = false;
+    LOG_INFO("global index or primary table part level not matched",
+        K(index_schema.get_part_level()), K(primary_table_schema.get_part_level()));
+  } else if (index_part_func_type != sub_part_func_type
+          && (!is_key_part(index_part_func_type) || !is_key_part(sub_part_func_type))) {
+    is_matched = false;
+    LOG_INFO("partition func type not matched", K(index_part_func_type), K(sub_part_func_type));
+  } else if (OB_FAIL(primary_table_schema.get_partition_by_partition_index(0, CHECK_PARTITION_MODE_NORMAL, first_partition))) {
+    LOG_WARN("fail to get first partition of primary table", KR(ret));
+  } else if (OB_ISNULL(first_partition)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("first partition is null", KR(ret));
+  } else if (index_schema.get_partition_num() != first_partition->get_subpartition_num()) {
+    is_matched = false;
+    LOG_INFO("partition num not matched", K(index_schema.get_partition_num()), K(first_partition->get_subpartition_num()));
+  } else if (OB_FAIL(compare_partition_value_array(
+                  index_oracle_mode,
+                  index_schema.get_part_array(),
+                  first_partition->get_subpart_array(),
+                  index_schema.get_partition_num(),
+                  index_part_func_type,
+                  is_matched,
+                  NULL/*user_error*/))) {
+    LOG_WARN("fail to compare partition value array", KR(ret));
+  }
+  return ret;
+}
+
+int ObPartitionUtils::check_subpart_matched_within_table(
+    const share::schema::ObSimpleTableSchemaV2 &table_schema,
+    bool &is_matched)
+{
+  // check if all partitions within a single table have matched subpartition definition
+  // (same subpartition count and same subpartition values for range/list)
+  int ret = OB_SUCCESS;
+  is_matched = true;
+  bool is_oracle_mode = false;
+  const schema::ObPartition *first_partition = NULL;
+  if (OB_UNLIKELY(schema::PARTITION_LEVEL_TWO != table_schema.get_part_level())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("table is not two-level partition table, cannot check subpart matched within table", KR(ret), K(table_schema));
+  } else if (table_schema.get_partition_num() <= 1) {
+    // only one partition, no need to compare
+    is_matched = true;
+  } else if (OB_FAIL(table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("fail to get oracle mode", KR(ret), K(table_schema));
+  } else if (OB_FAIL(table_schema.get_partition_by_partition_index(0, CHECK_PARTITION_MODE_NORMAL, first_partition))) {
+    LOG_WARN("fail to get first partition", KR(ret));
+  } else if (OB_ISNULL(first_partition)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("first partition is null", KR(ret));
+  } else {
+    const int64_t first_subpart_num = first_partition->get_subpartition_num();
+    const schema::ObPartitionFuncType subpart_func_type = table_schema.get_sub_part_option().get_part_func_type();
+    // compare each partition's subpartitions with first partition's subpartitions
+    for (int64_t i = 1; OB_SUCC(ret) && i < table_schema.get_partition_num() && is_matched; i++) {
+      const schema::ObPartition *cur_partition = NULL;
+      if (OB_FAIL(table_schema.get_partition_by_partition_index(i, CHECK_PARTITION_MODE_NORMAL, cur_partition))) {
+        LOG_WARN("fail to get partition", KR(ret), K(i));
+      } else if (OB_ISNULL(cur_partition)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("partition is null", KR(ret), K(i));
+      } else if (first_subpart_num != cur_partition->get_subpartition_num()) {
+        is_matched = false;
+        LOG_INFO("subpartition num not aligned within table",
+            "table_id", table_schema.get_table_id(),
+            "first_part_subpart_num", first_subpart_num,
+            "cur_part_idx", i,
+            "cur_part_subpart_num", cur_partition->get_subpartition_num());
+      } else if (OB_FAIL(compare_partition_value_array(
+                      is_oracle_mode,
+                      first_partition->get_subpart_array(),
+                      cur_partition->get_subpart_array(),
+                      first_subpart_num,
+                      subpart_func_type,
+                      is_matched,
+                      NULL/*user_error*/))) {
+        LOG_WARN("fail to compare subpartition value array", KR(ret), K(i));
+      } else if (!is_matched) {
+        LOG_INFO("subpartition value not matched within table",
+            "table_id", table_schema.get_table_id(),
+            "first_part_idx", 0,
+            "cur_part_idx", i);
+      }
+    }
+  }
+  return ret;
+}
+
 int ObPartitionUtils::convert_rows_to_sql_literal(
     const bool is_oracle_mode,
     const common::ObIArray<common::ObNewRow>& rows,
@@ -8805,6 +8953,9 @@ DEF_TO_STRING(ObPrintPrivSet)
   }
   if ((priv_set_ & OB_PRIV_PLAINACCESS) && OB_SUCCESS == ret) {
     ret = BUF_PRINTF(" PLAINACCESS,");
+  }
+  if ((priv_set_ & OB_PRIV_APPLICATION_PASSWORD_ADMIN) && OB_SUCCESS == ret) {
+    ret = BUF_PRINTF(" APPLICATION_PASSWORD_ADMIN,");
   }
 
   if (OB_SUCCESS == ret && pos > 1) {
@@ -10116,6 +10267,7 @@ int ObNeedPriv::deep_copy(const ObNeedPriv &other, common::ObIAllocator &allocat
   int ret = OB_SUCCESS;
   priv_level_ = other.priv_level_;
   priv_set_ = other.priv_set_;
+  grantee_id_ = other.grantee_id_;
   is_sys_table_ = other.is_sys_table_;
   is_for_update_ = other.is_for_update_;
   priv_check_type_ = other.priv_check_type_;
@@ -10268,6 +10420,7 @@ const char *PART_TYPE_STR[PARTITION_FUNC_TYPE_MAX + 1] =
   "list",
   "list columns",
   "range",
+  "random",
   "unknown"
 };
 
@@ -10456,6 +10609,7 @@ bool is_index_table(const ObTableType table_type)
   return ObTableType::USER_INDEX == table_type;
 }
 
+
 bool is_aux_lob_meta_table(const ObTableType table_type)
 {
   return ObTableType::AUX_LOB_META == table_type;
@@ -10475,6 +10629,7 @@ bool is_mlog_table(const ObTableType table_type)
 {
   return (ObTableType::MATERIALIZED_VIEW_LOG == table_type);
 }
+
 
 bool is_support_split_index_type(const ObIndexType index_type)
 {
@@ -11351,6 +11506,8 @@ ObOutlineInfo &ObOutlineInfo::operator=(const ObOutlineInfo &src_info)
       LOG_WARN("Fail to deep copy owner", K(ret));
     } else if (OB_FAIL(deep_copy_str(src_info.version_, version_))) {
       LOG_WARN("Fail to deep copy version", K(ret));
+    } else if (OB_FAIL(deep_copy_str(src_info.pattern_rules_, pattern_rules_))) {
+      LOG_WARN("Fail to deep copy pattern_rules", K(ret));
     } else if (OB_ISNULL(allocator_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("allocator is NULL", K(ret));
@@ -11391,6 +11548,7 @@ void ObOutlineInfo::reset()
   format_outline_ = false;
   outline_params_wrapper_.destroy();
   format_outline_ = false;
+  reset_string(pattern_rules_);
   ObSchema::reset();
 }
 
@@ -11472,6 +11630,7 @@ int64_t ObOutlineInfo::get_convert_size() const
   convert_size += owner_.length() + 1;
   convert_size += version_.length() + 1;
   convert_size += outline_params_wrapper_.get_convert_size();
+  convert_size += pattern_rules_.length() + 1;
   return convert_size;
 }
 
@@ -11580,7 +11739,8 @@ OB_DEF_SERIALIZE(ObOutlineInfo)
   LST_DO_CODE(OB_UNIS_ENCODE, tenant_id_, database_id_, outline_id_, schema_version_,
               name_, signature_, outline_content_, sql_text_, outline_target_, owner_,
               used_, version_, compatible_, enabled_, format_, outline_params_wrapper_,
-              sql_id_, owner_id_, format_sql_text_, format_sql_id_, format_outline_);
+              sql_id_, owner_id_, format_sql_text_, format_sql_id_, format_outline_,
+              pattern_rules_);
   return ret;
 }
 
@@ -11598,6 +11758,7 @@ OB_DEF_DESERIALIZE(ObOutlineInfo)
   ObString version;
   ObString format_sql_id;
   ObString format_sql_text;
+  ObString pattern_rules;
 
   LST_DO_CODE(OB_UNIS_DECODE, tenant_id_, database_id_, outline_id_, schema_version_,
               name, signature, outline_content, sql_text, outline_target, owner, used_,
@@ -11639,6 +11800,13 @@ OB_DEF_DESERIALIZE(ObOutlineInfo)
             LOG_WARN("Fail to deep copy sql_text", K(ret));
           } else if (OB_FAIL(deep_copy_str(format_sql_id, format_sql_id_))) {
             LOG_WARN("Fail to deep copy sql_id", K(ret));
+          } else if (pos < data_len) {
+            LST_DO_CODE(OB_UNIS_DECODE, pattern_rules);
+            if (OB_FAIL(ret)) {
+              // backward compatibility - do nothing
+            } else if (OB_FAIL(deep_copy_str(pattern_rules, pattern_rules_))) {
+              LOG_WARN("Fail to deep copy pattern_rules", K(ret));
+            }
           }
         } else {
           owner_id_ = OB_INVALID_ID;
@@ -11656,7 +11824,7 @@ OB_DEF_SERIALIZE_SIZE(ObOutlineInfo)
   LST_DO_CODE(OB_UNIS_ADD_LEN, tenant_id_, database_id_, outline_id_, schema_version_,
               name_, signature_, sql_id_, outline_content_, sql_text_, outline_target_, owner_,
               used_, version_, compatible_, enabled_, format_, outline_params_wrapper_, owner_id_,
-              format_sql_text_, format_sql_id_, format_outline_);
+              format_sql_text_, format_sql_id_, format_outline_, pattern_rules_);
   return len;
 }
 
@@ -13336,31 +13504,6 @@ int ObProfileSchema::set_value(const int64_t type, const int64_t value)
   return ret;
 }
 
-int ObProfileSchema::set_default_value(const int64_t type)
-{
-  int ret = OB_SUCCESS;
-  if (type < 0 || type >= MAX_PARAMS) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unknown type", K(type));
-  } else if (type == PASSWORD_VERIFY_FUNCTION) {
-    password_verify_function_.reset();
-  } else if (OB_FAIL(set_value(type, DEFAULT_PARAM_VALUES[type]))) {
-    LOG_WARN("fail to set schema default value", K(ret));
-  }
-  return ret;
-}
-
-int ObProfileSchema::set_default_values()
-{
-  int ret = OB_SUCCESS;
-  for (int64_t i = 0; OB_SUCC(ret) && i < MAX_PARAMS; ++i) {
-    if (i != PASSWORD_VERIFY_FUNCTION && OB_FAIL(set_value(i, DEFAULT_PARAM_VALUES[i]))) {
-      LOG_WARN("fail to set schema value", K(ret));
-    }
-  }
-  return ret;
-}
-
 int ObProfileSchema::set_default_values_v2()
 {
   int ret = OB_SUCCESS;
@@ -13385,26 +13528,6 @@ int ObProfileSchema::set_invalid_values()
   return ret;
 }
 
-int ObProfileSchema::get_default_value(const int64_t type, int64_t &value)
-{
-  int ret = OB_SUCCESS;
-  if (type < 0 || type >= MAX_PARAMS || type == PASSWORD_VERIFY_FUNCTION) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unknown type", K(type));
-  } else {
-    value = DEFAULT_PARAM_VALUES[type];
-  }
-  return ret;
-}
-
-const int64_t ObProfileSchema::DEFAULT_PARAM_VALUES[] = {
-  10,                   //times
-  USECS_PER_DAY,        //1 day
-  -1,                   //nouse
-  180 * USECS_PER_DAY,  //180 day
-  7 * USECS_PER_DAY,    //7 day
-  0,                    //no rollover window by default
-};
 const int64_t ObProfileSchema::INVALID_PARAM_VALUES[] = {
   -1,        //times
   -1,        //1 day
@@ -13413,7 +13536,6 @@ const int64_t ObProfileSchema::INVALID_PARAM_VALUES[] = {
   -1,        //1 day
   -1,        //invalid rollover time
 };
-static_assert(ARRAYSIZEOF(ObProfileSchema::DEFAULT_PARAM_VALUES) == ObProfileSchema::MAX_PARAMS, "array size");
 static_assert(ARRAYSIZEOF(ObProfileSchema::INVALID_PARAM_VALUES) == ObProfileSchema::MAX_PARAMS, "array size");
 
 const char* ObProfileSchema::PARAM_VALUE_NAMES[] = {
@@ -13858,7 +13980,9 @@ const char *OB_OBJECT_TYPE_STR[] =
   "CATALOG",
   "LOCATION",
   "AI_MODEL",
-  "SENSITIVE_RULE"
+  "SENSITIVE_RULE",
+  "AI_PROVIDER",
+  "AI_GATEWAY"
 };
 static_assert(ARRAYSIZEOF(OB_OBJECT_TYPE_STR) == static_cast<int64_t>(ObObjectType::MAX_TYPE),
               "array size mismatch");

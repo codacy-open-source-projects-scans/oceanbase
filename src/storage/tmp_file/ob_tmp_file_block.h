@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TMP_FILE_OB_TMP_FILE_BLOCK_H_
@@ -27,6 +20,7 @@ class ObTmpFileBlockPageBitmap;
 class ObTmpFileBlockManager;
 class ObTmpFileBlock;
 class ObTmpFileBlockFlushingPageIterator;
+class ObTmpFileBlockHandleList;
 
 class ObTmpFileBlockPageBitmap
 {
@@ -82,7 +76,9 @@ public:
                     free_page_num_(0), prealloc_blk_node_(*this), flush_blk_node_(*this),
                     alloc_page_bitmap_(),
                     flushed_page_bitmap_(), flushing_page_bitmap_(),
-                    flushing_page_list_() {}
+                    flushing_page_list_(),
+                    full_page_cnt_in_flushing_list_(0),
+                    flush_level_(BlockFlushLevel::INVALID) {}
   ~ObTmpFileBlock();
 
   int destroy();
@@ -94,13 +90,20 @@ public:
 
 public:
   int reinsert_into_flush_prio_mgr();
-  int insert_page_into_flushing_list(ObTmpFilePageHandle &page_handle);
+  int insert_page_into_flushing_list(ObTmpFilePageHandle &page_handle,
+                                     const bool is_full = false);
   int insert_pages_into_flushing_list(ObIArray<ObTmpFilePageHandle> &page_arr);
   int init_flushing_page_iterator(ObTmpFileBlockFlushingPageIterator &iter,
                                   int64_t &flushing_page_num);
-  int set_flushing_status(bool &lock_succ);
+  // Atomically claim this block for a flush cycle and detach its flush_blk_node_
+  // from the given flush priority list under the block write lock.
+  int try_pick_for_flushing(ObTmpFileBlockHandleList &list, bool &lock_succ);
   int flush_pages_succ(const int64_t begin_page_id, const int64_t page_num);
   int is_page_flushed(const ObTmpFilePageId &page_id, bool &is_flushed) const;
+  OB_INLINE bool is_all_incomplete_flushing() const
+  {
+    return flushing_page_list_.get_size() > 0 && 0 == full_page_cnt_in_flushing_list_;
+  }
 public:
   bool is_deleting() const;
   bool is_valid() const;
@@ -127,6 +130,8 @@ public:
                KP(&prealloc_blk_node_), KP(prealloc_blk_node_.get_prev()), KP(prealloc_blk_node_.get_next()),
                KP(&flush_blk_node_), KP(flush_blk_node_.get_prev()), KP(flush_blk_node_.get_next()),
                K(flushing_page_list_.get_size()),
+               K(full_page_cnt_in_flushing_list_),
+               K(flush_level_),
                K(alloc_page_bitmap_),
                K(flushed_page_bitmap_), K(flushing_page_bitmap_),
                KP(tmp_file_blk_mgr_));
@@ -136,7 +141,7 @@ private:
   int remove_page_from_flushing_status_(const int64_t page_id);
   int insert_page_into_flushing_list_(ObTmpFilePageHandle &page_handle);
   int reinsert_into_flush_prio_mgr_();
-  int update_block_flush_level_(const int64_t old_flushing_page_num);
+  int update_block_flush_level_();
 private:
   int32_t magic_code_;
   common::SpinRWLock lock_;
@@ -156,6 +161,8 @@ private:
   ObTmpFileBlockPageBitmap flushed_page_bitmap_; // records the usage of pages which have been flushed
   ObTmpFileBlockPageBitmap flushing_page_bitmap_; // records the pages which are in flushing list
   PageList flushing_page_list_;
+  int64_t full_page_cnt_in_flushing_list_;
+  BlockFlushLevel flush_level_;
   DISALLOW_COPY_AND_ASSIGN(ObTmpFileBlock);
 };
 

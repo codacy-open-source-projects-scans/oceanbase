@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TMP_FILE_OB_TMP_FILE_BLOCK_MANAGER_H_
@@ -62,9 +55,11 @@ public:
   int insert_block_into_alloc_priority_mgr(const int64_t free_page_num, ObTmpFileBlock &block);
   int remove_block_from_alloc_priority_mgr(const int64_t free_page_num, ObTmpFileBlock &block);
   int adjust_block_alloc_priority(const int64_t old_free_page_num, const int64_t free_page_num, ObTmpFileBlock &block);
-  int insert_block_into_flush_priority_mgr(const int64_t flushing_page_num, ObTmpFileBlock &block);
-  int remove_block_from_flush_priority_mgr(const int64_t flushing_page_num, ObTmpFileBlock &block);
-  int adjust_block_flush_priority(const int64_t old_flushing_page_num, const int64_t flushing_page_num, ObTmpFileBlock &block);
+  int insert_block_into_flush_priority_mgr(const BlockFlushLevel level, ObTmpFileBlock &block);
+  int remove_block_from_flush_priority_mgr(const BlockFlushLevel level, ObTmpFileBlock &block);
+  int adjust_block_flush_priority(const BlockFlushLevel old_level,
+                                  const BlockFlushLevel new_level,
+                                  ObTmpFileBlock &block);
 
 public:
   int get_tmp_file_block_handle(const int64_t block_index, ObTmpFileBlockHandle &handle);

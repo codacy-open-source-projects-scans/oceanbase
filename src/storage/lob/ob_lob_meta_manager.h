@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_OB_LOB_META_MANAGER_
@@ -18,6 +11,7 @@
 #include "storage/lob/ob_lob_access_param.h"
 #include "storage/blocksstable/ob_datum_row_iterator.h"
 #include "storage/lob/ob_lob_persistent_adaptor.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 
 namespace oceanbase
 {
@@ -57,8 +51,8 @@ public:
 
   int open(ObLobAccessParam &param, ObLobMetaSingleGetter* getter);
   int getlength(ObLobAccessParam &param, uint64_t &char_len);
-  int get_table_param(const ObTableParam *&table_param);
-  int get_table_dml_param(const ObTableDMLParam *&table_dml_param);
+  int get_table_param(ObTTLFilterColType ttl_type, const ObTableParam *&table_param);
+  int get_table_dml_param(ObTTLFilterColType ttl_type, const ObTableDMLParam *&table_dml_param);
   TO_STRING_KV("[LOB]", "meta mngr");
 
 private:

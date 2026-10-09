@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -72,7 +65,7 @@ public:
   ObMockWhiteFilterExecutor(common::ObIAllocator &alloc,
                             ObPushdownWhiteFilterNode &filter,
                             ObPushdownOperator &op)
-      : ObWhiteFilterExecutor(alloc, filter, op) {}
+      : ObWhiteFilterExecutor(alloc, filter, &op) {}
 
   virtual int init_evaluated_datums(bool &is_valid) override {
     UNUSED(is_valid);
@@ -140,7 +133,7 @@ public:
   ObStoreCtx store_ctx_;
   ObTabletMergeExecuteDag merge_dag_;
   ObTableAccessParam access_param_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   ObTableReadInfo read_info_;
   ObFixedArray<int32_t, ObIAllocator> output_cols_project_;
   ObFixedArray<share::schema::ObColumnParam *, ObIAllocator> cols_param_;
@@ -365,7 +358,7 @@ void TestScanBasic::prepare_get_param(
 {
   context_.reset();
   access_param_.reset();
-  get_table_param_.reset();
+  tablet_read_tables_.reset();
   read_info_.reset();
   output_cols_project_.reset();
   cols_param_.reset();
@@ -383,13 +376,13 @@ void TestScanBasic::prepare_get_param(
   ASSERT_EQ(OB_SUCCESS,
             ls_handle.get_ls()->get_tablet(tablet_id, tablet_handle));
 
-  get_table_param_.frozen_version_ = -1;
-  get_table_param_.refreshed_merge_ = nullptr;
-  get_table_param_.need_split_dst_table_ = false;
-  get_table_param_.tablet_iter_.tablet_handle_.assign(tablet_handle);
-  get_table_param_.tablet_iter_.table_store_iter_.assign(table_store_iter);
-  get_table_param_.tablet_iter_.transfer_src_handle_ = nullptr;
-  get_table_param_.tablet_iter_.split_extra_tablet_handles_.reset();
+  tablet_read_tables_.frozen_version_ = -1;
+  tablet_read_tables_.refreshed_merge_ = nullptr;
+  tablet_read_tables_.need_split_dst_table_ = false;
+  tablet_read_tables_.tablet_iter_.tablet_handle_.assign(tablet_handle);
+  tablet_read_tables_.tablet_iter_.table_store_iter_.assign(table_store_iter);
+  tablet_read_tables_.tablet_iter_.transfer_src_handle_ = nullptr;
+  tablet_read_tables_.tablet_iter_.split_extra_tablet_handles_.reset();
 
   int64_t schema_column_count = full_read_info_.get_schema_column_count();
   int64_t schema_rowkey_count = full_read_info_.get_schema_rowkey_count();
@@ -451,7 +444,7 @@ void TestScanBasic::prepare_scan_param(
 {
   context_.reset();
   access_param_.reset();
-  get_table_param_.reset();
+  tablet_read_tables_.reset();
   read_info_.reset();
   output_cols_project_.reset();
   cols_param_.reset();
@@ -470,13 +463,13 @@ void TestScanBasic::prepare_scan_param(
   ASSERT_EQ(OB_SUCCESS,
             ls_handle.get_ls()->get_tablet(tablet_id, tablet_handle));
 
-  get_table_param_.frozen_version_ = -1;
-  get_table_param_.refreshed_merge_ = nullptr;
-  get_table_param_.need_split_dst_table_ = false;
-  get_table_param_.tablet_iter_.tablet_handle_.assign(tablet_handle);
-  get_table_param_.tablet_iter_.table_store_iter_.assign(table_store_iter);
-  get_table_param_.tablet_iter_.transfer_src_handle_ = nullptr;
-  get_table_param_.tablet_iter_.split_extra_tablet_handles_.reset();
+  tablet_read_tables_.frozen_version_ = -1;
+  tablet_read_tables_.refreshed_merge_ = nullptr;
+  tablet_read_tables_.need_split_dst_table_ = false;
+  tablet_read_tables_.tablet_iter_.tablet_handle_.assign(tablet_handle);
+  tablet_read_tables_.tablet_iter_.table_store_iter_.assign(table_store_iter);
+  tablet_read_tables_.tablet_iter_.transfer_src_handle_ = nullptr;
+  tablet_read_tables_.tablet_iter_.split_extra_tablet_handles_.reset();
 
   int64_t schema_column_count = full_read_info_.get_schema_column_count();
   int64_t schema_rowkey_count = full_read_info_.get_schema_rowkey_count();
@@ -723,8 +716,8 @@ void TestScanBasic::refresh_iter(ObMultipleMerge &merge)
 {
   OK(merge.refresh_tablet_iter());
   OK(merge.prepare_read_tables(false/*refresh*/));
-  OK(merge.switch_param(access_param_, context_, get_table_param_));
-  LOG_INFO("refresh iter", K(merge.get_table_param_->tablet_iter_.table_store_iter_));
+  OK(merge.switch_param(access_param_, context_, tablet_read_tables_));
+  LOG_INFO("refresh iter", K(merge.tablet_read_tables_->tablet_iter_.table_store_iter_));
 }
 
 void TestScanBasic::reset_tablet_table_store()
@@ -770,7 +763,7 @@ int TestScanBasic::refresh_table(ObMultipleMerge &merge,
   int ret = OB_SUCCESS;
   memstore_retired_ = true;
   table_store_iter.memstore_retired_ = &memstore_retired_;
-  get_table_param_.frozen_version_ = -1;
+  tablet_read_tables_.frozen_version_ = -1;
   if (OB_FAIL(merge.refresh_table_on_demand())) {
     STORAGE_LOG(WARN, "fail to refresh table on demand", K(ret));
   }

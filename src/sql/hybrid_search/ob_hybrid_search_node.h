@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_HYBRID_SEARCH_NODE_H
@@ -174,7 +167,7 @@ public:
     VecIndexScanParams() : access_exprs_(), table_id_(OB_INVALID_ID), scan_type_(ObTSCIRScanType::OB_IR_INV_IDX_SCAN) {}
     virtual ~VecIndexScanParams() {}
 
-    common::ObSEArray<ObRawExpr*, 2, common::ModulePageAllocator, true> access_exprs_;
+    common::ObSEArray<ObRawExpr*, 2> access_exprs_;
     ObTableID table_id_;
     ObTSCIRScanType scan_type_;
   };
@@ -227,7 +220,19 @@ public:
                               ObIArray<ObRawExpr*> &table_filters,
                               bool &ingore_normal_access_path);
   int move_bool_nodes_to_children(ObIndexMergeNode* node);
+  int extract_partition_filters_from_tree(
+      ObIndexMergeNode *node,
+      const common::ObIArray<uint64_t> &part_col_ids,
+      common::ObIArray<ObRawExpr*> &partition_filters);
 private:
+  static int extract_partition_related_filters(
+      const common::ObIArray<ObRawExpr*> &filters,
+      const common::ObIArray<uint64_t> &part_col_ids,
+      common::ObIArray<ObRawExpr*> &partition_filters);
+  int build_or_partition_filter(
+      const common::ObIArray<ObRawExpr*> &left_filters,
+      const common::ObIArray<ObRawExpr*> &right_filters,
+      common::ObIArray<ObRawExpr*> &result);
   int generate_node(const ObDSLQuery *query, ObIndexMergeNode *&node);
   int generate_boolean_node(const ObDSLBoolQuery *dsl_query, ObBooleanQueryNode *&bool_node);
   int generate_scalar_node(ObRawExpr *filter, ObScalarQueryNode *&scalar_node);
@@ -235,22 +240,29 @@ private:
   int generate_knn_node(const ObDSLKnnQuery *knn_query, ObVecSearchNode *&knn_node);
   int try_merge_nodes(const ObDSLQuery *query, ObIArray<ObIndexMergeNode*> &nodes, bool &merge_happened);
   int check_filter_has_index(ObRawExpr *filter, bool &has_index, uint64_t &target_index_id);
-  int check_filter_has_search_index(ObRawExpr *filter, bool &has_search_index);
+  int get_search_index_cons_encode_type(ObRawExpr *filter,
+                                        bool &has_search_index,
+                                        uint8_t &cons_encode_type);
   int init_fusion_node(const ObDSLQueryInfo *query_info, ObFusionNode *fusion_node);
   int get_vector_index_tid_from_expr(ObColumnRefRawExpr *field, uint64_t& vec_index_tid);
+  int init_fusion_iter_exec_mode(const ObDSLQueryInfo *query_info, ObFusionNode *fusion_node);
   bool is_search_subquery(ObIndexMergeNode *node) const;
   bool is_knn_subquery(ObIndexMergeNode *node) const;
-  int collect_child_boost_and_update_flags(ObFusionNode *fusion_node,
+  int collect_child_boost_and_update_flags(const ObDSLQueryInfo *dsl_info,
+                                           ObFusionNode *fusion_node,
                                            ObIndexMergeNode *sub_node,
                                            ObConstRawExpr *one_boost_expr,
                                            int64_t child_idx);
   int deal_child_node(ObIndexMergeNode *node, bool &prune_happened, double &sel);
   int recurse_count_index_nodes(const ObIndexMergeNode *node, int64_t &index_scan_count,
                                 bool &ingore_normal_access_path) const;
+  int collect_unprecise_index_filters(const ObIndexMergeNode *node,
+                                      ObIArray<ObRawExpr*> &unprecise_filters) const;
   int split_domain_contains_node(const ObDSLScalarQuery *scalar_query,
                                  ObIndexMergeNode *&split_node);
   int split_json_contains(const ObDSLScalarQuery *scalar_query,
                           ObRawExpr *filter_expr,
+                          uint8_t cons_encode_type,
                           ObIndexMergeNode *&split_node);
   int split_array_contains_all(const ObDSLScalarQuery *scalar_query,
                                ObRawExpr *filter_expr,

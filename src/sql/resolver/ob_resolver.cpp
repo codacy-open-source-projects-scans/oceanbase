@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -29,6 +22,7 @@
 #include "sql/resolver/ddl/ob_truncate_table_resolver.h"
 #include "sql/resolver/ddl/ob_create_table_like_resolver.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
+#include "sql/resolver/ddl/ob_alter_view_resolver.h"
 #include "sql/resolver/ddl/ob_drop_table_resolver.h"
 #include "sql/resolver/ddl/ob_create_index_resolver.h"
 #include "sql/resolver/ddl/ob_create_mlog_resolver.h"
@@ -364,17 +358,7 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
         break;
       }
       case T_ALTER_VIEW: {
-#if 0
-        ObAlterViewResolver stmt_resolver(params_);
-        if (OB_FAIL(stmt_resolver.resolve(*node))) {
-          LOG_WARN("execute alter view resolver failed", K(ret));
-        }
-
-        stmt = stmt_resolver.get_basic_stmt();
-#endif
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("not support to alter view");
-	      LOG_USER_ERROR(OB_NOT_SUPPORTED, "alter view");
+        REGISTER_STMT_RESOLVER(AlterView);
         break;
       }
       case T_DROP_VIEW:
@@ -546,6 +530,10 @@ int ObResolver::resolve(IsPrepared if_prepared, const ParseNode &parse_tree, ObS
       }
       case T_REFRESH_MEMORY_STAT: {
         REGISTER_STMT_RESOLVER(RefreshMemStat);
+        break;
+      }
+      case T_REFRESH_FULLTEXT_DICT: {
+        REGISTER_STMT_RESOLVER(RefreshFulltextDict);
         break;
       }
       case T_WASH_MEMORY_FRAGMENTATION: {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_EXTERNAL_TABLE_FILE_MANAGER_H_
@@ -22,6 +15,7 @@
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "src/sql/resolver/ob_stmt_resolver.h"
+#include "sql/engine/table/ob_odps_table_row_iter.h"
 
 namespace oceanbase {
 namespace sql {
@@ -91,12 +85,18 @@ struct ObExternalFileInfo
 
 struct ObExternalPathFilter {
   ObExternalPathFilter(sql::ObExprRegexContext &regex_ctx, common::ObIAllocator &allocator)
-    : regex_ctx_(regex_ctx), allocator_(allocator) {}
-  int init(const common::ObString &pattern, const sql::ObExprRegexpSessionVariables &regexp_vars);
+    : regex_ctx_(regex_ctx), allocator_(allocator), pattern_(),
+      pattern_type_(share::schema::REGEXP_EXTERNAL_FILE_PATTERN), is_inited_(false) {}
+  int init(const common::ObString &pattern,
+           const share::schema::ObExternalFilePatternType pattern_type,
+           const sql::ObExprRegexpSessionVariables &regexp_vars);
   bool is_inited();
   int is_filtered(const common::ObString &path, bool &is_filtered);
   sql::ObExprRegexContext &regex_ctx_;
   common::ObIAllocator &allocator_;
+  common::ObString pattern_;
+  share::schema::ObExternalFilePatternType pattern_type_;
+  bool is_inited_;
   common::ObArenaAllocator temp_allocator_;
 };
 
@@ -130,7 +130,9 @@ public:
 class ObExternalTableFileListKey : public ObIKVCacheKey
 {
 public:
-  ObExternalTableFileListKey() : tenant_id_(OB_INVALID_ID), path_(nullptr), pattern_(nullptr)
+  ObExternalTableFileListKey()
+    : tenant_id_(OB_INVALID_ID), path_(nullptr), pattern_(nullptr),
+      pattern_type_(share::schema::REGEXP_EXTERNAL_FILE_PATTERN)
   {
   }
   virtual ~ObExternalTableFileListKey() = default;
@@ -140,7 +142,8 @@ public:
         = reinterpret_cast<const ObExternalTableFileListKey &>(other);
     return this->tenant_id_ == other_key.tenant_id_
            && this->path_.case_compare(other_key.path_) == 0
-           && this->pattern_.case_compare(other_key.pattern_) == 0;
+           && this->pattern_.case_compare(other_key.pattern_) == 0
+           && this->pattern_type_ == other_key.pattern_type_;
   }
   uint64_t hash() const override;
   uint64_t get_tenant_id() const override
@@ -152,12 +155,13 @@ public:
     return sizeof(*this) + path_.length() + 1 + pattern_.length() + 1;
   }
   int deep_copy(char *buf, const int64_t buf_len, ObIKVCacheKey *&key) const override;
-  TO_STRING_KV(K(tenant_id_), K(path_), K(pattern_));
+  TO_STRING_KV(K(tenant_id_), K(path_), K(pattern_), K(pattern_type_));
 
 public:
   uint64_t tenant_id_;
   ObString path_;
   ObString pattern_;
+  share::schema::ObExternalFilePatternType pattern_type_;
 };
 
 class ObExternalTablePartitionsKey : public ObIKVCacheKey
@@ -198,7 +202,7 @@ public:
   int64_t size() const override
   {
     int64_t size = sizeof(ObExternalTablePartitions);
-    for (int i = 0; i < partition_infos_.count(); ++i) {
+    for (int64_t i = 0; i < partition_infos_.count(); ++i) {
       size += partition_infos_.at(i).get_size();
     }
 
@@ -343,10 +347,15 @@ public:
       const uint64_t part_id);
 
   int update_inner_table_file_list(
-    sql::ObExecContext &exec_ctx, const uint64_t tenant_id, const uint64_t table_id,
-    common::ObArray<share::ObExternalTableBasicFileInfo> &basic_file_infos,
-    common::ObIArray<uint64_t> &updated_part_ids, bool &has_partition_changed,
-    const uint64_t part_id = -1, bool collect_statistic = true);
+      sql::ObExecContext &exec_ctx,
+      share::schema::ObSchemaGetterGuard &schema_guard,
+      const uint64_t tenant_id,
+      const uint64_t table_id,
+      common::ObArray<share::ObExternalTableBasicFileInfo> &basic_file_infos,
+      common::ObIArray<uint64_t> &updated_part_ids,
+      bool &has_partition_changed,
+      const uint64_t part_id = -1,
+      bool collect_statistic = true);
 
   int get_all_records_from_inner_table(ObIAllocator &allocator,
                                     int64_t tenant_id,
@@ -390,6 +399,7 @@ public:
       const uint64_t tenant_id,
       const ObIArray<int64_t> &part_id,
       const common::ObString &pattern,
+      const share::schema::ObExternalFilePatternType pattern_type,
       const common::ObString &access_info,
       common::ObIAllocator &allocator,
       int64_t refresh_interval_ms,
@@ -399,6 +409,7 @@ public:
   int get_external_file_list_on_device(const ObString &location,
                                        const uint64_t modify_ts,
                                        const ObString &pattern,
+                                       const share::schema::ObExternalFilePatternType pattern_type,
                                        const ObExprRegexpSessionVariables &regexp_vars,
                                        const ObString &access_info,
                                        ObIAllocator &allocator,
@@ -414,6 +425,8 @@ public:
                           ObSqlSchemaGuard &sql_schema_guard,
                           common::ObIAllocator &allocator,
                           ObExternalTablePartitions &pts);
+
+  int get_part_col_names(const ObTableSchema &table_schema, ObIArray<ObString> &part_col_names);
 
   int flush_external_file_cache(
     const uint64_t tenant_id,
@@ -440,6 +453,7 @@ public:
                                           ObIAllocator &allocator);
   static int get_external_file_list_on_device(const common::ObString &location,
                                               const common::ObString &pattern,
+                                              const share::schema::ObExternalFilePatternType pattern_type,
                                               const sql::ObExprRegexpSessionVariables &regexp_vars,
                                               common::ObIArray<common::ObString> &file_urls,
                                               common::ObIArray<int64_t> &file_sizes,
@@ -452,6 +466,12 @@ public:
                                           const common::ObIArray<common::ObString> &file_urls,
                                           common::ObIAllocator &allocator,
                                           common::ObIArray<ObString> &content_digests);
+  static int get_external_table_simple_stats(const ObString &location,
+                                             const ObString &access_info,
+                                             const ObIArray<ObString> &partition_values,
+                                             ObIArray<int64_t> &file_nums,
+                                             ObIArray<int64_t> &data_sizes,
+                                             ObIArray<int64_t> &modify_times);
 
 private:
   int fill_single_file_info(ObIAllocator &allocator,
@@ -460,7 +480,8 @@ private:
                             int64_t file_id, const bool is_local_file_on_disk,
                             ObIArray<ObExternalFileInfo> &external_files);
 
-  int collect_odps_table_statistics(const bool collect_statistic,
+  int collect_odps_table_statistics(share::schema::ObSchemaGetterGuard &schema_guard,
+                                    const bool collect_statistic,
                                     const uint64_t tenant_id,
                                     const uint64_t table_id,
                                     ObIArray<uint64_t> &updated_part_ids,
@@ -468,6 +489,7 @@ private:
   int delete_auto_refresh_job(ObExecContext &exec_ctx, ObMySQLTransaction &trans);
   int create_auto_refresh_job(ObExecContext &ctx, const int64_t interval, ObMySQLTransaction &trans);
   int update_inner_table_files_list_by_part(
+      share::schema::ObSchemaGetterGuard &schema_guard,
       ObMySQLTransaction &trans,
       const uint64_t tenant_id,
       const uint64_t table_id,
@@ -477,6 +499,7 @@ private:
 
   int update_inner_table_files_list_by_table(
     sql::ObExecContext &exec_ctx,
+    share::schema::ObSchemaGetterGuard &schema_guard,
     ObMySQLTransaction &trans,
     const uint64_t tenant_id,
     const uint64_t table_id,
@@ -605,6 +628,7 @@ private:
                                          uint64_t tenant_id,
                                          const ObIArray<ObString> &location,
                                          const ObString &pattern,
+                                         const share::schema::ObExternalFilePatternType pattern_type,
                                          const ObString &access_info,
                                          ObIAllocator &allocator,
                                          ObIArray<ObExternalTableFiles *> &files,
@@ -622,6 +646,7 @@ private:
                                   const uint64_t tenant_id,
                                   const int64_t &modify_ts,
                                   const common::ObString &pattern,
+                                  const share::schema::ObExternalFilePatternType pattern_type,
                                   ObIAllocator &allocator,
                                   ObIArray<ObExternalTableFiles *> &external_table_files,
                                   int64_t refresh_interval_ms);
@@ -629,6 +654,7 @@ private:
   int insert_one_location_to_cache(int64_t tenant_id,
                                    ObString location,
                                    const common::ObString &pattern,
+                                   const share::schema::ObExternalFilePatternType pattern_type,
                                    ObExternalTableFiles &file_list);
 
 private:

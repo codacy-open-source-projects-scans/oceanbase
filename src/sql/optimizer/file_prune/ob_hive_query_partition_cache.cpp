@@ -1,15 +1,9 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL_OPT
+#include <algorithm>
 #include "lib/oblog/ob_log_module.h"
 #include "lib/container/ob_iarray.h"
 #include "sql/optimizer/file_prune/ob_hive_query_partition_cache.h"
@@ -19,6 +13,20 @@ namespace oceanbase
 using namespace common;
 namespace sql
 {
+
+int ObNewRowWrap::hash(uint64_t &hash_val) const
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < row_->get_count(); ++i) {
+    const ObObj &obj = row_->get_cell(i);
+    if (obj.is_string_type()) {
+      hash_val = murmurhash(obj.get_string_ptr(), obj.get_string_len(), hash_val);
+    } else if (OB_FAIL(obj.hash(hash_val))) {
+      LOG_WARN("failed to calculate obj hash");
+    }
+  }
+  return ret;
+}
 
 void HiveTableFileCache::reset()
 {
@@ -39,9 +47,11 @@ int HiveTableFileCache::init_partition_info(ObIArray<HivePartitionInfo*> &partit
     LOG_WARN("hive table file cache init twice");
   } else if (OB_FAIL(partition_infos_.assign(partition_infos))) {
     LOG_WARN("failed to assign partition infos");
-  } else if (!partition_map_.created() &&
-             OB_FAIL(partition_map_.create(partition_infos.count(), "HivePartMap"))) {
-    LOG_WARN("failed to create hive part map");
+  } else if (!partition_map_.created()) {
+    int64_t bucket_cnt = std::max(static_cast<int64_t>(16), partition_infos.count());
+    if (OB_FAIL(partition_map_.create(bucket_cnt, "HivePartMap"))) {
+      LOG_WARN("failed to create hive part map");
+    }
   }
   return ret;
 }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -46,12 +39,12 @@ static int get_ls_handle(const uint64_t tenant_id, const share::ObLSID &ls_id, s
 }
 
 int ObMemberListLockUtils::batch_lock_ls_member_and_learner_list(const uint64_t tenant_id, const int64_t task_id,
-    const common::ObArray<share::ObLSID> &lock_ls_list, const common::ObMemberList &member_list,
+    const common::ObIArray<share::ObLSID> &lock_ls_list, const common::ObMemberList &member_list,
     const common::GlobalLearnerList &learner_list, const ObTransferLockStatus &status,
     const int32_t group_id, const share::ObLSID &unlock_check_ls_id, common::ObMySQLProxy &sql_proxy)
 {
   int ret = OB_SUCCESS;
-  ObArray<share::ObLSID> sorted_ls_list;
+  ObSEArray<share::ObLSID, 2> sorted_ls_list;
   if (OB_FAIL(sorted_ls_list.assign(lock_ls_list))) {
     LOG_WARN("failed to assign ls list", K(ret));
   } else {

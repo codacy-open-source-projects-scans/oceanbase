@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -22,6 +15,7 @@
 #include "share/vector_index/ob_vector_index_util.h"
 #include "share/external_table/ob_external_table_utils.h"
 #include "share/domain_id/ob_domain_id.h"
+#include "rootserver/ob_random_partition_helper.h"
 
 namespace oceanbase
 {
@@ -657,7 +651,7 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("session_info_ is null", K(ret));
     } else if (OB_FAIL(schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(),
-        table_item->get_base_table_item().ref_id_, table_schema, table_item->is_link_table()))) {
+        table_item->get_base_table_item().ref_id_, table_schema, table_item->get_base_table_item().is_link_table()))) {
       LOG_WARN("fail to get table schema", K(ret), KPC(table_item));
     } else if (OB_ISNULL(table_schema)) {
       ret = OB_ERR_UNEXPECTED;
@@ -879,9 +873,36 @@ int ObDelUpdResolver::add_assignment(common::ObIArray<ObTableAssignment> &assign
       // do nothing
     } else {
       for (int64_t i = 0; OB_SUCC(ret) && !found && i < table_assign->assignments_.count(); ++i) {
-        if (assign.column_expr_ == table_assign->assignments_.at(i).column_expr_) {
+        ObColumnRefRawExpr *existing_col_expr = table_assign->assignments_.at(i).column_expr_;
+        const bool ptr_equal = (assign.column_expr_ == existing_col_expr);
+        bool base_col_equal = false;
+        // For updatable views, the same base column may be referenced via different
+        // view-column ObColumnRefRawExpr objects. Pointer compare misses that case,
+        // so also compare via (base_tid_, base_cid_) on ColumnItem. View-alias case is
+        // last-write-wins only and is NOT marked as is_duplicated_, since each view
+        // column is a syntactically distinct column to the user (matches Oracle, which
+        // does not raise ORA-00957 for this).
+        // Skip base-column dedup under INSTEAD OF trigger: the trigger sees view columns as
+        // syntactically distinct, and base column id is not maintained for those view columns
+        // (see resolve_assign_columns where get_base_column is also skipped for triggers).
+        if (!ptr_equal && col != NULL && existing_col_expr != NULL
+            && !get_stmt()->has_instead_of_trigger()
+            && col->base_tid_ != OB_INVALID_ID
+            && col->base_cid_ != OB_INVALID_ID) {
+          const ColumnItem *existing_ci = get_stmt()->get_column_item_by_id(
+              existing_col_expr->get_table_id(), existing_col_expr->get_column_id());
+          if (existing_ci != NULL
+              && existing_ci->base_tid_ == col->base_tid_
+              && existing_ci->base_cid_ == col->base_cid_) {
+            base_col_equal = true;
+          }
+        }
+        if (ptr_equal) {
           table_assign->assignments_.at(i) = assign;
           table_assign->assignments_.at(i).is_duplicated_ = true; //this column was updated repeatedly
+          found = true;
+        } else if (base_col_equal) {
+          table_assign->assignments_.at(i) = assign;
           found = true;
         }
       }
@@ -1045,6 +1066,8 @@ int ObDelUpdResolver::set_base_table_for_updatable_view(TableItem &table_item,
           } else if (new_table_item->is_json_table()) {
             ret = is_mysql_mode() ? OB_ERR_NON_INSERTABLE_TABLE : OB_ERR_VIRTUAL_COL_NOT_ALLOWED;
             LOG_WARN("json table can not be insert", K(ret));
+          } else if (new_table_item->is_link_table()) {
+            // dblink table, view_base_item_ already set above, no extra check needed
           } else {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("column is not updatable", K(ret), K(col_ref));
@@ -3411,7 +3434,7 @@ int ObDelUpdResolver::build_column_conv_function_with_default_expr(ObInsertTable
       LOG_WARN("unexpected null column item", K(ret), K(column_item));
     } else if (!table_info.is_link_table_ && OB_FAIL(schema_checker_->get_column_schema(
                                                      session_info_->get_effective_tenant_id(),
-                                                     table_info.ref_table_id_,
+                                                     OB_INVALID_ID == column_item->base_cid_ || OB_INVALID_ID == column_item->base_tid_ ? table_info.ref_table_id_ : column_item->base_tid_,
                                                      OB_INVALID_ID == column_item->base_cid_ ? column_item->column_id_ : column_item->base_cid_,
                                                      col_schema,
                                                      true/*get_hidden*/))) {
@@ -3637,10 +3660,13 @@ int ObDelUpdResolver::generate_autoinc_params(ObInsertTableInfo &table_info)
     for (ObTableSchema::const_column_iterator iter = table_schema->column_begin();
          OB_SUCCESS == ret && iter != table_schema->column_end(); ++iter) {
       ObColumnSchemaV2 *column_schema = *iter;
+      bool is_random_partkey = false;
       if (OB_ISNULL(column_schema)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_ERROR("invalid column schema", K(column_schema));
-      } else if (column_schema->is_autoincrement()) {
+      } else if (OB_FAIL(rootserver::ObRandomPartitionHelper::check_is_random_partkey(*table_schema, column_schema->get_column_id(), is_random_partkey))) {
+        LOG_WARN("failed to check is random partkey", K(ret), K(column_schema->get_column_id()), KPC(table_schema));
+      } else if (column_schema->is_autoincrement() || is_random_partkey) {
         const ObTableSchema *t_schema = table_schema;
         uint64_t table_id = table_info.ref_table_id_;
         AutoincParam param;
@@ -4366,7 +4392,8 @@ int ObDelUpdResolver::build_hidden_pk_assignment(ObTableAssignment &ta,
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get column schema fail", K(column_schema));
     } else if (column_schema->get_column_id() != OB_HIDDEN_PK_INCREMENT_COLUMN_ID &&
-              !column_schema->is_hidden_clustering_key_column()) {
+              !column_schema->is_hidden_clustering_key_column() &&
+              !table_schema->is_random_part()) {
       //do nothing
     } else {
       is_end_loop = true;

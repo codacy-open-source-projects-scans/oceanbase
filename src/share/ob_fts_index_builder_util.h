@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_FTS_INDEX_BUILDER_UTIL_H_
@@ -26,8 +19,19 @@ namespace rootserver
 class ObDDLService;
 } // namespace rootserver
 
+namespace storage
+{
+class ObFTParserJsonProps;
+} // namespace storage
+
 namespace share
 {
+enum ObFTDictType : uint64_t {
+  OB_FT_DICT_TYPE_MAIN = 1,
+  OB_FT_DICT_TYPE_STOPWORD = 2,
+  OB_FT_DICT_TYPE_QUANTIFIER = 3,
+};
+
 class ObMulValueIndexBuilderUtil;
 
 static constexpr int64_t MIN_DATA_VERSION_FOR_DOC_ID_OPT = DATA_VERSION_4_4_1_0;
@@ -183,10 +187,27 @@ public:
       const share::schema::ObTableSchema &data_schema,
       obrpc::ObCreateIndexArg &arg,
       ObIAllocator *allocator);
+  // Record dictionary table dependency relationships for FTS index
+  static int record_fts_dict_table_dependencies(
+      const share::schema::ObTableSchema &index_schema,
+      const obrpc::ObIndexOption &index_option,
+      common::ObMySQLTransaction &trans);
+  static int check_fulltext_dict_schema(
+      const share::schema::ObTableSchema &table,
+      const uint64_t tenant_id,
+      const int64_t inline_index_cnt = 0);
+  // Check if dictionary table can be dropped
+  static int check_can_drop_dict_table(
+      uint64_t tenant_id,
+      uint64_t dict_table_id,
+      common::ObMySQLTransaction &trans);
   static int check_need_to_load_dic(
       const uint64_t tenant_id,
       const ObString &parser_name,
       bool &need_to_load_dic);
+  static int get_dict_table_ids(
+      const ObString &parser_properties,
+      ObIArray<uint64_t> &dict_table_ids);
   static int try_load_and_lock_dictionary_tables(
       const ObTableSchema &index_schema,
       ObMySQLTransaction &trans);
@@ -221,27 +242,6 @@ public:
         const uint64_t col_id,
         ObTableSchema &data_schema, // not const since will add column to data schema
         ObColumnSchemaV2 *&doc_id_col);
-  // Generate skip index attributes for FTS auxiliary table non-rowkey columns
-  // FTS auxiliary table has 4 fixed columns:
-  //   - doc_id (rowkey)
-  //   - word_segment (rowkey)
-  //   - word_count (stored, non-rowkey)
-  //   - doc_length (stored, non-rowkey)
-  // This method only generates skip index attributes for the last 2 columns (non-rowkey)
-  // @param[in] skip_idx_attrs  skip index attribute array
-  // @param[in] column_types    column types array
-  // @param[in] start_idx      start index in skip_idx_attrs array (points to first FTS column)
-  // @param[out] attr_idx      updated index pointer after processing
-  // @return OB_SUCCESS on success, other error codes on failure
-  static int generate_fts_aux_skip_index_attrs(
-      common::ObIArray<share::schema::ObSkipIndexColumnAttr> &skip_idx_attrs,
-      common::ObSEArray<common::ObObjMeta, 16> *column_types,
-      int64_t &attr_idx);
-  // generate non-rowkey column descs for FTS auxiliary table
-  // - word_count
-  // - doc_length
-  static int generate_fts_aux_non_rowkey_column_descs(
-      common::ObIArray<ObColDesc> &column_descs, const int64_t start_column_id);
 
 private:
   static int build_fts_aux_index_name(
@@ -365,6 +365,12 @@ private:
       obrpc::ObCreateIndexArg &arg,
       ObIAllocator &allocator);
   static int add_skip_index_for_index_column(schema::ObColumnSchemaV2 &column_schema);
+  static int process_dict_table(
+      const storage::ObFTParserJsonProps &props,
+      const uint64_t property,
+      const share::schema::ObTableSchema &index_schema,
+      int (storage::ObFTParserJsonProps::*get_func)(uint64_t &) const,
+      common::ObArray<share::schema::ObDependencyInfo> &dep_infos);
 
 private:
   enum class FTSColumnType {

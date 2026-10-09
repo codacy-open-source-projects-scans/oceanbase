@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/blocksstable/ob_datum_row.h"
@@ -762,6 +755,7 @@ int ObMicroBlockReader<EnableNewFlatFormat>::get_multi_version_info(
     multi_version_info.dml_row_flag_ = row_header->get_row_flag();
     multi_version_info.mvcc_row_flag_ = row_header->get_row_multi_version_flag();
     multi_version_info.trans_id_ = row_header->get_trans_id();
+    multi_version_info.merge_engine_type_ = row_header->get_merge_engine_type();
   }
   return ret;
 }
@@ -937,17 +931,18 @@ int ObMicroBlockReader<EnableNewFlatFormat>::filter_pushdown_single_column_mds_f
     LOG_WARN("Invalid argument", K(ret), K(row_count_), K(pd_filter_info.start_), K(pd_filter_info.count_), K(filter));
   } else {
     ObIMDSFilterExecutor *mds_executor = nullptr;
-    if (OB_ISNULL(mds_executor = ObIMDSFilterExecutor::cast(&filter)) || OB_UNLIKELY(mds_executor->get_col_idx() < 0)) {
+
+    if (OB_ISNULL(mds_executor = ObIMDSFilterExecutor::cast(&filter)) || OB_UNLIKELY(mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_) < 0)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected mds executor", K(ret), K(filter));
     } else {
       ObStorageDatum datum_buf[1];
-      const int64_t col_idx = mds_executor->get_col_idx();
+      const int64_t col_idx = read_info_->get_columns_index().at(mds_executor->get_col_offset(pd_filter_info.is_pd_to_cg_));
       const bool is_trans_version_column = micro_header_->is_trans_version_column_idx(col_idx);
-      int64_t row_idx = 0;
       for (int64_t offset = 0; OB_SUCC(ret) && offset < pd_filter_info.count_; ++offset) {
-        row_idx = offset + pd_filter_info.start_;
+        const int64_t row_idx = offset + pd_filter_info.start_;
         bool filtered = false;
+
         if (OB_FAIL(this->read_column(row_idx, col_idx, datum_buf[0]))) {
           LOG_WARN("fail to read column", K(ret), K(col_idx), K(row_idx), KPC_(micro_header));
         } else if (OB_UNLIKELY(is_trans_version_column)) {

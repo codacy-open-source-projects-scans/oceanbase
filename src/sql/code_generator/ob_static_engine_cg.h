@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_OB_STATIC_ENGINE_CG_H_
 #define OCEANBASE_SRC_OB_STATIC_ENGINE_CG_H_
 
 #include "sql/optimizer/ob_logical_operator.h"
+#include "share/vector/ob_vector_define.h"
 #include "sql/code_generator/ob_dml_cg_service.h"
 #include "sql/code_generator/ob_tsc_cg_service.h"
 #include "sql/engine/ob_operator.h"
@@ -81,6 +75,7 @@ class ObGranuleIteratorSpec;
 class ObPxReceiveSpec;
 class ObPxTransmitSpec;
 class ObPxFifoReceiveSpec;
+class ObPxOrderedReceiveSpec;
 class ObPxMSReceiveSpec;
 class ObPxMSReceiveVecSpec;
 class ObPxDistTransmitSpec;
@@ -204,7 +199,8 @@ public:
       opt_ctx_(nullptr),
       dml_cg_service_(*this),
       tsc_cg_service_(*this),
-      cur_cluster_version_(cur_cluster_version)
+      cur_cluster_version_(cur_cluster_version),
+      vec_hash_algo_(common::VEC_HASH_ALGO_MURMUR)
   {
   }
   // generate physical plan
@@ -473,6 +469,7 @@ private:
   int generate_dml_tsc_ids(const ObOpSpec &spec, const ObLogicalOperator &op,
                            ObIArray<int64_t> &dml_tsc_op_ids, ObIArray<int64_t> &dml_tsc_ref_ids);
   int generate_spec(ObLogExchange &op, ObPxFifoReceiveSpec &spec, const bool in_root_job);
+  int generate_spec(ObLogExchange &op, ObPxOrderedReceiveSpec &spec, const bool in_root_job);
   int generate_spec(ObLogExchange &op, ObPxMSReceiveSpec &spec, const bool in_root_job);
   int generate_spec(ObLogExchange &op, ObPxMSReceiveVecSpec &spec, const bool in_root_job);
   int generate_spec(ObLogExchange &op, ObPxDistTransmitSpec &spec, const bool in_root_job);
@@ -495,6 +492,8 @@ private:
   int generate_spec(ObLogTableScan &op, ObRowSampleScanSpec &spec, const bool in_root_job);
   int generate_spec(ObLogTableScan &op, ObBlockSampleScanSpec &spec, const bool in_root_job);
   int generate_spec(ObLogTableScan &op, ObDDLBlockSampleScanSpec &spec, const bool);
+  int generate_spec(ObLogTableScan &op, ObExternalRowSampleScanSpec &spec, const bool in_root_job);
+  int generate_spec(ObLogTableScan &op, ObExternalBlockSampleScanSpec &spec, const bool in_root_job);
 
   int generate_spec(ObLogTableScan &op, ObTableScanWithIndexBackSpec &spec,
                                     const bool in_root_job);
@@ -686,6 +685,9 @@ private:
                                          ObSQLSessionInfo &session,
                                          const ObDMLStmt *dml_stmt);
   int generate_disable_rich_format_flags(int64_t &flags);
+  static int resolve_vec_hash_algo(const ObSQLSessionInfo *session,
+                                   uint64_t min_cluster_ver,
+                                   common::ObVecHashAlgo &algo);
   int set_das_ctdef_false_range_flag(ObDASBaseCtDef &ctdef,
                                      bool enable_new_false_range);
   int generate_index_data_gen_table_spec(ObLogJsonTable &op, ObJsonTableSpec &spec);
@@ -725,6 +727,7 @@ private:
   ObDmlCgService dml_cg_service_;
   ObTscCgService tsc_cg_service_;
   uint64_t cur_cluster_version_;
+  common::ObVecHashAlgo vec_hash_algo_;
   common::ObSEArray<BatchExecParamCache, 8> batch_exec_param_caches_;
   common::ObSEArray<uint64_t, 4> mview_ids_;
 

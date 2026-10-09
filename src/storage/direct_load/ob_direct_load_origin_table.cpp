@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -32,6 +25,7 @@ using namespace observer;
 
 ObDirectLoadOriginTableCreateParam::ObDirectLoadOriginTableCreateParam()
   : table_id_(OB_INVALID_ID),
+    snapshot_version_(0),
     rowkey_column_num_(0),
     col_descs_(nullptr)
 {
@@ -44,7 +38,7 @@ ObDirectLoadOriginTableCreateParam::~ObDirectLoadOriginTableCreateParam()
 bool ObDirectLoadOriginTableCreateParam::is_valid() const
 {
   return OB_INVALID_ID != table_id_ && tablet_id_.is_valid() && ls_id_.is_valid() &&
-         0 < rowkey_column_num_ && nullptr != col_descs_;
+         snapshot_version_ > 0 && rowkey_column_num_ > 0 && nullptr != col_descs_;
 }
 
 /**
@@ -52,7 +46,7 @@ bool ObDirectLoadOriginTableCreateParam::is_valid() const
  */
 
 ObDirectLoadOriginTableMeta::ObDirectLoadOriginTableMeta()
-  : table_id_(OB_INVALID_ID), rowkey_column_num_(0), col_descs_(nullptr)
+  : table_id_(OB_INVALID_ID), snapshot_version_(0), rowkey_column_num_(0), col_descs_(nullptr)
 {
 }
 
@@ -67,6 +61,7 @@ void ObDirectLoadOriginTableMeta::reset()
   ls_id_.reset();
   tx_id_.reset();
   tx_seq_.reset();
+  snapshot_version_ = 0;
   rowkey_column_num_ = 0;
   col_descs_ = nullptr;
 }
@@ -105,6 +100,7 @@ int ObDirectLoadOriginTable::init(const ObDirectLoadOriginTableCreateParam &para
     meta_.tablet_id_ = param.tablet_id_;
     meta_.tx_id_ = param.tx_id_;
     meta_.tx_seq_ = param.tx_seq_;
+    meta_.snapshot_version_ = param.snapshot_version_;
     meta_.rowkey_column_num_ = param.rowkey_column_num_;
     meta_.col_descs_ = param.col_descs_;
     is_inited_ = true;
@@ -143,24 +139,24 @@ int ObDirectLoadOriginTable::get_tablet_handle(ObTabletHandle &tablet_handle) co
 }
 
 int ObDirectLoadOriginTable::get_major_and_ddl_sstable(
-  ObTabletHandle &tablet_handle, blocksstable::ObSSTable *&major_sstable,
+  ObTabletTableIterator &tablet_table_iter, blocksstable::ObSSTable *&major_sstable,
   common::ObIArray<blocksstable::ObSSTable *> &ddl_sstables) const
 {
   int ret = OB_SUCCESS;
   major_sstable = nullptr;
   ObITable *table = nullptr;
-  ObTabletTableIterator table_iter;
+  ObTabletHandle tablet_handle;
   if (OB_FAIL(get_tablet_handle(tablet_handle))) {
     LOG_WARN("fail to get tablet handle", KR(ret));
-  } else if (OB_FAIL(table_iter.set_tablet_handle(tablet_handle))) {
+  } else if (OB_FAIL(tablet_table_iter.set_tablet_handle(tablet_handle))) {
     LOG_WARN("fail to set tablet handle", KR(ret));
-  } else if (OB_FAIL(table_iter.refresh_read_tables_from_tablet(
+  } else if (OB_FAIL(tablet_table_iter.refresh_read_tables_from_tablet(
                INT64_MAX, false /*allow_not_ready*/, false /*major_sstable_only*/,
                false /*need_split_src_table*/, false /*need_split_dst_table*/))) {
     LOG_WARN("fail to refresh read tables", KR(ret));
   }
   while (OB_SUCC(ret)) {
-    if (OB_FAIL(table_iter.table_iter()->get_next(table))) {
+    if (OB_FAIL(tablet_table_iter.table_iter()->get_next(table))) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
         LOG_WARN("fail to get next table", KR(ret));
       } else {
@@ -392,7 +388,7 @@ int ObDirectLoadOriginTableAccessor::init_table_access_ctx(bool skip_read_lob)
   const ObTabletID &tablet_id = origin_table_->get_meta().tablet_id_;
   const ObTransID &tx_id = origin_table_->get_meta().tx_id_;
   const ObTxSEQ &tx_seq = origin_table_->get_meta().tx_seq_;
-  const int64_t snapshot_version = ObTimeUtil::current_time_ns();
+  const int64_t snapshot_version = origin_table_->get_meta().snapshot_version_;
   ObQueryFlag query_flag(ObQueryFlag::Forward,
                          false /*daily_merge*/,
                          true /*optimize*/,
@@ -434,9 +430,9 @@ int ObDirectLoadOriginTableAccessor::init_table_access_ctx(bool skip_read_lob)
 int ObDirectLoadOriginTableAccessor::init_get_table_param()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(get_table_param_.tablet_iter_.set_tablet_handle(tablet_handle_))) {
+  if (OB_FAIL(tablet_read_tables_.tablet_iter_.set_tablet_handle(tablet_handle_))) {
     LOG_WARN("Failed to set tablet handle to tablet table iter", K(ret));
-  } else if (OB_FAIL(get_table_param_.tablet_iter_.refresh_read_tables_from_tablet(INT64_MAX,
+  } else if (OB_FAIL(tablet_read_tables_.tablet_iter_.refresh_read_tables_from_tablet(INT64_MAX,
                                                                                    false /*allow_not_ready*/,
                                                                                    false /*major_sstable_only*/,
                                                                                    false /*need_split_src_table*/,
@@ -451,7 +447,7 @@ void ObDirectLoadOriginTableAccessor::reset()
   tablet_handle_.reset();
   tablet_handle_refresh_time_ = 0;
   datum_row_.reset();
-  get_table_param_.reset();
+  tablet_read_tables_.reset();
   table_access_ctx_.reset();
   store_ctx_.reset();
   table_access_param_.reset();
@@ -475,7 +471,7 @@ int ObDirectLoadOriginTableScanner::init(ObDirectLoadOriginTable *origin_table, 
     LOG_WARN("ObDirectLoadOriginTableScanner init twice", KR(ret), KP(this));
   } else if (OB_FAIL(inner_init(origin_table, skip_read_lob))) {
     LOG_WARN("fail to inner init", KR(ret));
-  } else if (OB_FAIL(scan_merge_.init(table_access_param_, table_access_ctx_, get_table_param_))) {
+  } else if (OB_FAIL(scan_merge_.init(table_access_param_, table_access_ctx_, tablet_read_tables_))) {
     LOG_WARN("fail to init scan merge", KR(ret));
   } else {
     if (!skip_del_row) {
@@ -584,7 +580,7 @@ int ObDirectLoadOriginTableGetter::init(ObDirectLoadOriginTable *origin_table, b
   } else if (OB_FAIL(inner_init(origin_table, skip_read_lob))) {
     LOG_WARN("fail to inner init", KR(ret));
   } else if (OB_FAIL(
-               single_merge_.init(table_access_param_, table_access_ctx_, get_table_param_))) {
+               single_merge_.init(table_access_param_, table_access_ctx_, tablet_read_tables_))) {
     LOG_WARN("fail to init multi merge", KR(ret));
   } else {
     is_inited_ = true;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_PL_SQL_AUDIT_GUARD_OB_PL_H_
@@ -61,7 +54,7 @@ public:
   int64_t get_run_timestamp() const { return get_send_timestamp(); }
   int64_t get_process_timestamp() const { return get_send_timestamp(); }
   int64_t get_single_process_timestamp() const { return get_send_timestamp(); }
-  int64_t get_exec_start_timestamp() const { return get_send_timestamp(); }
+  int64_t get_exec_start_timestamp() const { return 0 == exec_start_timestamp_ ? get_send_timestamp() : exec_start_timestamp_; }
   int64_t get_exec_end_timestamp() const { return exec_end_timestamp_; }
 
 public:
@@ -105,6 +98,8 @@ public:
                     ObPLCursorInfo *cursor = nullptr);
 
   ~ObPLSqlAuditGuard();
+
+  void set_exec_start_timestamp();
 
 private:
   bool enable_perf_event_;

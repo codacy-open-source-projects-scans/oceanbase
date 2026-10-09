@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_TABLE_SESS_POOL_H_
@@ -17,6 +10,7 @@
 #include "share/table/ob_table.h" // for ObTableApiCredential
 #include "observer/table/group/ob_table_group_factory.h"
 #include "share/table/ob_table_rpc_struct.h"
+#include "sql/engine/ob_exec_context.h"
 
 namespace oceanbase
 {
@@ -218,7 +212,6 @@ public:
   {
     if (OB_NOT_NULL(sess_node_val_)) {
       int ret = OB_SUCCESS;
-      sess_node_val_->get_sess_info().get_trans_result().reset();
       sess_node_val_->reset_tx_desc();
       if (OB_FAIL(sess_node_val_->push_back_to_queue())) {
         COMMON_LOG(WARN, "fail to push back session to queue", K(ret));

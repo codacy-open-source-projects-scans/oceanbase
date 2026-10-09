@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_UNIT_OB_UNIT_RESOURCE_H_
@@ -16,6 +9,7 @@
 #include "lib/utility/ob_print_utils.h"       // DECLARE_TO_STRING
 #include "lib/utility/ob_unify_serialize.h"   // OB_UNIS_VERSION
 #include "lib/utility/utility.h"              // max() / min()
+#include "share/ob_cluster_version.h"         // GET_MIN_CLUSTER_VERSION(), CLUSTER_VERSION_*
 
 namespace oceanbase
 {
@@ -98,6 +92,7 @@ public:
   static const int64_t META_TENANT_DATA_DISK_SIZE_PERCENTAGE = 10;
   static const int64_t HIDDEN_SYS_TENANT_MIN_DATA_DISK_SIZE = 2LL * GB;  // 2G
   static const int64_t META_TENANT_MIN_DATA_DISK_SIZE = 1LL * GB;  // 1G
+  static const int64_t META_TENANT_MAX_DATA_DISK_SIZE = 16LL * GB;  // 16G
   static const int64_t USER_TENANT_MIN_DATA_DISK_SIZE = 1LL * GB;  // 1G
   static const int64_t UNIT_MIN_DATA_DISK_SIZE = META_TENANT_MIN_DATA_DISK_SIZE + USER_TENANT_MIN_DATA_DISK_SIZE;  // 2G
   // default factor of mapping MEMORY_SIZE and CPU to DATA_DISK_SIZE
@@ -397,7 +392,12 @@ public:
       meta_data_disk = 0;
     } else {
       meta_data_disk = unit_data_disk * META_TENANT_DATA_DISK_SIZE_PERCENTAGE / 100;
-      meta_data_disk = max(meta_data_disk, META_TENANT_MIN_DATA_DISK_SIZE); // remove the 16G limit for meta tenants in shared-storage mode
+      meta_data_disk = max(meta_data_disk, META_TENANT_MIN_DATA_DISK_SIZE);
+      // Upgrade compatibility defense:
+      // Keep the 16GB upper bound before 4.6.0 to avoid rollback issues.
+      if (GET_MIN_CLUSTER_VERSION() < CLUSTER_VERSION_4_6_0_0) {
+        meta_data_disk = MIN(meta_data_disk, META_TENANT_MAX_DATA_DISK_SIZE);
+      }
     }
     return meta_data_disk;
   }

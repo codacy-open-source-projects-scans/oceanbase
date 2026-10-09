@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -91,6 +84,8 @@ int ObTableLoadInstance::init(ObTableLoadParam &param,
 
     int64_t db_id = -1;
     ObString query_sql;
+    ObArray<ObTabletID> cur_tablet_ids;
+    const ObIArray<ObTabletID> *exec_tablet_ids = &tablet_ids;
     if (execute_ctx_ != nullptr) {
       ObSQLSessionInfo *session = execute_ctx_->get_session_info();
       if (session != nullptr) {
@@ -113,8 +108,32 @@ int ObTableLoadInstance::init(ObTableLoadParam &param,
     else if (OB_FAIL(ObTableLoadService::check_tenant())) {
       LOG_WARN("fail to check tenant", KR(ret), K(param.tenant_id_));
     }
+    // increment load only need to lock current partitions to allow random partitioned table to extend partitions
+    else if (ObDirectLoadMethod::is_incremental(param.method_) && tablet_ids.empty()) {
+      ObSchemaGetterGuard schema_guard;
+      const ObTableSchema *table_schema = nullptr;
+      if (OB_FAIL(ObTableLoadSchema::get_schema_guard(param.tenant_id_, schema_guard))) {
+        LOG_WARN("fail to get schema guard", KR(ret));
+      } else if (OB_FAIL(ObTableLoadSchema::get_table_schema(schema_guard,
+                                                             param.tenant_id_,
+                                                             param.table_id_,
+                                                             table_schema))) {
+        LOG_WARN("fail to get table schema", KR(ret), K(param.tenant_id_), K(param.table_id_));
+      } else if (OB_ISNULL(table_schema)) {
+        ret = OB_TABLE_NOT_EXIST;
+        LOG_WARN("table schema is nullptr", KR(ret), K(param.table_id_));
+      } else if (table_schema->is_random_part()) {
+        // only partitioned table can lock tablets because transfer only lock table for non-partitioned table
+        if (OB_FAIL(table_schema->get_tablet_ids(cur_tablet_ids))) {
+          LOG_WARN("failed to get tablet ids", K(ret));
+        } else {
+          exec_tablet_ids = &cur_tablet_ids;
+        }
+      }
+    }
+    if (OB_FAIL(ret)) {}
     // start stmt
-    else if (OB_FAIL(start_stmt(param, tablet_ids))) {
+    else if (OB_FAIL(start_stmt(param, *exec_tablet_ids))) {
       LOG_WARN("fail to start stmt", KR(ret), K(param), K(tablet_ids));
     }
     // double check support for concurrency of direct load and ddl
@@ -532,6 +551,7 @@ int ObTableLoadInstance::start_redef_table(
   start_arg.parallelism_ = param.parallel_;
   start_arg.is_load_data_ = !param.px_mode_;
   start_arg.is_insert_overwrite_ = ObDirectLoadMode::is_insert_overwrite(param.load_mode_);
+  start_arg.need_sync_stats_info_ = !param.online_opt_stat_gather_;
   if ((ObDirectLoadLevel::PARTITION == param.load_level_)
       && OB_FAIL(start_arg.tablet_ids_.assign(tablet_ids))) {
     LOG_WARN("failed to assign tablet ids", KR(ret), K(param.load_level_), K(tablet_ids));

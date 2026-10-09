@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_DTL_CHANNEL_AGENT_H_
@@ -20,6 +13,8 @@
 #include "sql/dtl/ob_dtl_rpc_channel.h"
 #include "lib/allocator/page_arena.h"
 #include "share/ob_cluster_version.h"
+#include "lib/container/ob_se_array.h"
+#include "lib/net/ob_addr.h"
 
 namespace oceanbase {
 namespace common {
@@ -30,6 +25,27 @@ namespace dtl {
 
 class ObDtlRpcChannel;
 class ObDtlLocalChannel;
+
+// Server channel group for batch send (per-worker-thread aggregation)
+// Groups RPC channels targeting the same destination server.
+// All channels in one group belong to the SAME worker thread (no cross-thread access).
+struct ObDtlServerChannelGroup
+{
+  ObDtlServerChannelGroup()
+    : server_addr_(), basic_channels_(), channel_indexes_(), tenant_id_(0),
+      pending_buffer_count_(0), total_buffer_cnt_(0), batch_send_cnt_(0), has_rpc_channel_(false) {}
+  ::oceanbase::common::ObAddr server_addr_;
+  ::oceanbase::common::ObSEArray<ObDtlBasicChannel *, 16> basic_channels_;
+  ::oceanbase::common::ObSEArray<int64_t, 16> channel_indexes_;  // index of each channel in task_channels_
+  uint64_t tenant_id_;
+  // Count of buffers sitting in channels' send_lists (deferred, not yet sent)
+  int64_t pending_buffer_count_;
+  int64_t total_buffer_cnt_;
+  int64_t batch_send_cnt_;
+  bool has_rpc_channel_;
+  TO_STRING_KV(K_(server_addr), K(basic_channels_.count()), K_(pending_buffer_count),
+               K_(total_buffer_cnt), K_(batch_send_cnt), K_(has_rpc_channel));
+};
 
 class ObDtlBufEncoder
 {
@@ -98,8 +114,8 @@ private:
 class ObDtlBcastService
 {
 public:
-  ObDtlBcastService(int64_t tenant_id, bool send_by_tenant) : server_addr_(), bcast_buf_(nullptr), send_count_(0), bcast_ch_count_(0),
-              ch_infos_(), resps_(), peer_ids_(), active_chs_count_(0), tenant_id_(tenant_id), send_by_tenant_(send_by_tenant) {}
+  ObDtlBcastService(int64_t tenant_id) : server_addr_(), bcast_buf_(nullptr), send_count_(0), bcast_ch_count_(0),
+              ch_infos_(), resps_(), peer_ids_(), active_chs_count_(0), tenant_id_(tenant_id) {}
   virtual ~ObDtlBcastService() {}
   int send_message(ObDtlLinkedBuffer *&bcast_buf, bool drain);
   void set_bcast_ch_count(int64_t ch_count) { bcast_ch_count_ = ch_count; }
@@ -122,7 +138,6 @@ public:
   // active channel count, some of channel in this group may by drained.
   int64_t active_chs_count_;
   uint64_t tenant_id_;
-  bool send_by_tenant_;
 };
 
 class ObDtlChanAgent
@@ -154,6 +169,12 @@ public:
   void set_plan_min_cluster_version(uint64_t plan_min_cluster_version) {
     dtl_buf_encoder_.set_plan_min_cluster_version(plan_min_cluster_version);
   }
+  // Initialize server channel groups for batch send (non-broadcast channels)
+  static int init_server_groups(common::ObIArray<ObDtlChannel *> &channels,
+    common::ObArenaAllocator &allocator,
+    uint64_t tenant_id,
+    common::ObIArray<ObDtlServerChannelGroup *> &server_groups);
+  static void destroy_server_groups(common::ObIArray<ObDtlServerChannelGroup *> &server_groups);
 private:
   int switch_buffer(int64_t need_size);
   int send_last_buffer(ObDtlLinkedBuffer *&last_buffer);

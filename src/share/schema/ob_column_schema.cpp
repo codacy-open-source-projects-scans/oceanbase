@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -126,6 +119,7 @@ int ObColumnSchemaV2::assign(const ObColumnSchemaV2 &src_schema)
     is_zero_fill_ = src_schema.is_zero_fill_;
     is_autoincrement_ = src_schema.is_autoincrement_;
     is_hidden_ = src_schema.is_hidden_;
+    has_used_as_ttl_ = src_schema.has_used_as_ttl_;
     charset_type_ = src_schema.charset_type_;
     is_binary_collation_ = src_schema.is_binary_collation_;
     on_update_current_timestamp_ = src_schema.on_update_current_timestamp_;
@@ -252,6 +246,7 @@ void ObColumnSchemaV2::reset()
   is_zero_fill_ = false;
   is_autoincrement_ = false;
   is_hidden_ = false;
+  has_used_as_ttl_ = false;
   charset_type_ = ObCharset::get_default_charset();
   is_binary_collation_ = false;
   on_update_current_timestamp_ = false;
@@ -323,7 +318,8 @@ OB_DEF_SERIALIZE(ObColumnSchemaV2)
                 sub_type_,
                 skip_index_attr_,
                 lob_chunk_size_,
-                local_session_vars_);
+                local_session_vars_,
+                has_used_as_ttl_);
   }
 
   return ret;
@@ -392,7 +388,8 @@ OB_DEF_DESERIALIZE(ObColumnSchemaV2)
                 sub_type_,
                 skip_index_attr_,
                 lob_chunk_size_,
-                local_session_vars_);
+                local_session_vars_,
+                has_used_as_ttl_);
   }
   return ret;
 }
@@ -439,7 +436,8 @@ OB_DEF_SERIALIZE_SIZE(ObColumnSchemaV2)
               sub_type_,
               skip_index_attr_,
               lob_chunk_size_,
-              local_session_vars_);
+              local_session_vars_,
+              has_used_as_ttl_);
   return len;
 }
 
@@ -536,7 +534,8 @@ int64_t ObColumnSchemaV2::to_string(char *buf, const int64_t buf_len) const
     K_(skip_index_attr),
     K_(lob_chunk_size),
     KPC_(column_ref_idxs),
-    K(local_session_vars_));
+    K(local_session_vars_),
+    K_(has_used_as_ttl));
   J_OBJ_END();
   return pos;
 }
@@ -593,7 +592,10 @@ int ObColumnSchemaV2::alloc_column_ref_set()
 int ObColumnSchemaV2::add_cascaded_column_id(uint64_t column_id)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(column_ref_idxs_)) {
+  if (OB_UNLIKELY(column_id < OB_APP_MIN_COLUMN_ID || OB_INVALID_ID == column_id)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid column id", K(ret), K(column_id));
+  } else if (OB_ISNULL(column_ref_idxs_)) {
     if (OB_FAIL(alloc_column_ref_set())) {
       LOG_WARN("alloc column ref set failed", K(ret));
     }
@@ -853,6 +855,65 @@ bool ObColumnSchemaV2::is_minimal_mode_related_time_column() const
          meta_type.is_date() ||
          meta_type.is_otimestamp_type() ||
          meta_type.is_mysql_date();
+}
+
+/**
+ * @brief This is only used for online ddl path!
+ */
+bool ObColumnSchemaV2::need_progressive_merge_if_modify_to(const ObColumnSchemaV2 &after_modify_column) const
+{
+  bool need_progressive_merge = false;
+
+  // ignore tenant_id
+  // ignore table_id
+  // ignore column_id
+  // ignore schema_version
+  // ignore rowkey_position
+  // ignore index_position
+  // ignore tbl_part_key_pos_
+
+  // ignore meta_type (in online ddl path, the data must can be explained by new schema)
+  // ignore order_in_rowkey_ (can't modify primary key)
+  // ignore accuracy (in online ddl path, the data must can be explained by new schema)
+
+  // ignore is_nullable
+  // ignore is_zero_fill
+  // ignore is_autoincrement
+  // ignore is_hidden
+  // ignore has_used_as_ttl
+  // ignore is_binary_collation
+  // ignore on_update_current_timestamp_
+
+  // ignore column_ref_idxs_ (alter generated column or rebuild prefix index/fts/vec index is offline ddl)
+
+  // ignore charset_type_ (if changed, it is offline ddl)
+
+  // ignore orig_default_value_
+  // ignore cur_default_value_
+
+  // ignore column_name_
+  // ignore comment_
+
+  // ignore extended_type_info_ (if changed, it is offline ddl)
+
+  // ignore prev_column_id_
+  // ignore next_column_id_
+
+  // ignore sequence_id_ (used in oracle, which means increment column)
+  // ignore encoding_type_
+  // ignore lob_chunk_size_
+
+  if (column_flags_ != after_modify_column.get_column_flags()
+      || srs_id_ != after_modify_column.get_srs_id()
+      || geo_col_id_ != after_modify_column.get_geo_col_id()
+      || udt_set_id_ != after_modify_column.get_udt_set_id()
+      || sub_type_ != after_modify_column.get_sub_data_type()
+      || skip_index_attr_.get_packed_value() != after_modify_column.get_skip_index_attr().get_packed_value()
+      || !(local_session_vars_ == after_modify_column.get_local_session_var())) {
+    need_progressive_merge = true;
+  }
+
+  return need_progressive_merge;
 }
 
 } //end of namespace schema

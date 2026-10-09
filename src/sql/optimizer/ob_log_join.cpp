@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -213,6 +206,14 @@ int ObLogJoin::get_plan_item_info(PlanText &plan_text,
       } else if (OB_FAIL(BUF_PRINTF(", "))) {
         LOG_WARN("BUF_PRINTF fails", K(ret));
       } else if (OB_FAIL(BUF_PRINTF("use_batch=%s", can_use_batch_nlj_? "true" : "false"))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else { /* Do nothing */ }
+      if (OB_FAIL(ret) || (plan_text.type_ != EXPLAIN_EXTENDED && plan_text.type_ != EXPLAIN_EXTENDED_NOADDR)) {
+      } else if (NULL == get_child(second_child) || !get_child(second_child)->is_exchange_allocated()) {
+        /* only print px_batch when right child has exchange operator */
+      } else if (OB_FAIL(BUF_PRINTF(", "))) {
+        LOG_WARN("BUF_PRINTF fails", K(ret));
+      } else if (OB_FAIL(BUF_PRINTF("px_batch=%s", enable_px_batch_rescan_ ? "true" : "false"))){
         LOG_WARN("BUF_PRINTF fails", K(ret));
       } else { /* Do nothing */ }
     } else if (HASH_JOIN == get_join_algo()) {

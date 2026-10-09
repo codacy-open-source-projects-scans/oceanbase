@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -26,7 +19,7 @@ namespace sql
 {
 struct InListRewriteInfo {
   bool is_valid_as_values_table_;
-  bool is_question_mark_;
+  bool is_question_mark_; // true if all exprs in the inlist are question marks
   // the start_param_idx_ and end_param_idx_ are valid only if is_question_mark_ == true
   // the start_param_idx_ is the start index of question marks in inlist
   int64_t start_param_idx_;
@@ -38,13 +31,13 @@ struct InListRewriteInfo {
   ObSEArray<DistinctObjMeta, 4> param_types_; // for each column
 
   InListRewriteInfo(): is_valid_as_values_table_(true),
-                       is_question_mark_(false),
+                       is_question_mark_(true),
                        start_param_idx_(-1),
                        end_param_idx_(-1) {}
 
   void reset() {
     is_valid_as_values_table_ = true;
-    is_question_mark_ = false;
+    is_question_mark_ = true;
     start_param_idx_ = -1;
     end_param_idx_ = -1;
     param_types_.reuse();
@@ -232,7 +225,11 @@ int ObInListResolver::get_inlist_rewrite_info(const ParseNode &in_list,
         if (OB_ISNULL(node)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("get unexpected param", K(ret));
-        } else if (FALSE_IT(rewrite_info.is_question_mark_ = T_QUESTIONMARK == node->type_)) {
+        } else if (FALSE_IT(rewrite_info.is_question_mark_ &= (T_QUESTIONMARK == node->type_))) {
+        } else if (OB_UNLIKELY(!rewrite_info.is_question_mark_ && -1 != rewrite_info.start_param_idx_)) {
+          // mixing question marks with non-parameterized literals
+          // (e.g. `c1 in (?, '1', '2')`) cannot be represented as a values table
+          rewrite_info.is_valid_as_values_table_ = false;
         } else if (rewrite_info.is_question_mark_) {
           // check if param indexes are continuous for values table
           if (-1 == rewrite_info.start_param_idx_
@@ -496,12 +493,15 @@ int ObInListResolver::resolve_access_obj_values_table(const ParseNode &in_list,
   const ParseNode *row_node = NULL;
   bool enable_decimal_int = false;
   ObCompatType compat_type = COMPAT_MYSQL57;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   bool enable_mysql_compatible_dates = false;
   if (OB_ISNULL(allocator) || OB_ISNULL(session_info)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("got unexpected NULL ptr", K(ret));
   } else if (OB_FAIL(session_info->get_compatibility_control(compat_type))) {
     LOG_WARN("failed to get compat type", K(ret));
+  } else if (OB_FAIL(session_info->get_charset_compat_type(charset_compat_type))) {
+    LOG_WARN("fail to get charset compat type", K(ret));
   } else if (OB_FAIL(session_info->get_collation_connection(coll_type))) {
     LOG_WARN("fail to get collation_connection", K(ret));
   } else if (is_oracle_mode && OB_FAIL(session_info->get_sys_variable(
@@ -544,7 +544,9 @@ int ObInListResolver::resolve_access_obj_values_table(const ParseNode &in_list,
                                                  enable_mysql_compatible_dates,
                                                  session_info->get_min_const_integer_precision(),
                                                  session_info->get_exec_min_cluster_version(),
-                                                 is_from_pl))) {
+                                                 is_from_pl,
+                                                 false,
+                                                 charset_compat_type))) {
         LOG_WARN("failed to resolve const", K(ret));
       } else if (OB_FAIL(table_def.access_objs_.push_back(obj_param))) {
         LOG_WARN("failed to push back", K(ret));

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -660,7 +653,7 @@ int ObVecIdxSnapTableLobDelIter::init(ObLobAccessParam *param, ObLobMetaIterator
   if (OB_ISNULL(param) || OB_ISNULL(scan_iter)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("param or scan_iter is null", K(ret), KP(param), KP(scan_iter));
-  } else if (OB_FAIL(datum_row_.init(ObLobMetaUtil::LOB_META_COLUMN_CNT))) {
+  } else if (OB_FAIL(datum_row_.init(ObLobMetaUtil::get_lob_meta_column_cnt(param->has_hidden_ttl_column())))) {
     LOG_WARN("init new datum row failed", K(ret));
   } else if (OB_FAIL(prepare_seq_no(*param))) {
     LOG_WARN("prepare seq no", K(ret));
@@ -694,6 +687,7 @@ int ObVecIdxSnapTableLobDelIter::get_next_row(blocksstable::ObDatumRow *&row)
       }
     } else if (info_.lob_id_.tablet_id_ != tablet_id_) {// skip
     } else if (OB_FALSE_IT(param_->used_seq_cnt_ = 0)) {
+    } else if (OB_FAIL(prepare_seq_no(*param_))) {
       LOG_WARN("prepare seq no", K(ret));
     } else if (OB_FAIL(update_seq_no())) {
       LOG_WARN("update_seq_no fail", K(ret));

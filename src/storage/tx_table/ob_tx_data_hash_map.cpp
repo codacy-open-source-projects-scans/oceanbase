@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_tx_data_hash_map.h"
@@ -104,16 +97,21 @@ int ObTxDataHashMap::get(const transaction::ObTransID &key, ObTxDataGuard &guard
     STORAGE_LOG(WARN, "invalid argument", K(key));
   } else {
     const int64_t pos = get_pos(key);
-    ObTxData *cache_val = buckets_[pos].hot_cache_val_;
+    ObTxData *cache_val = ATOMIC_LOAD(&buckets_[pos].hot_cache_val_);
     if (OB_NOT_NULL(cache_val) && cache_val->contain(key)) {
       value = cache_val;
     } else {
-      ObTxData *tmp_value = nullptr;
-      tmp_value = buckets_[pos].next_;
+      ObTxData *tmp_value = ATOMIC_LOAD(&buckets_[pos].next_);
       while (OB_NOT_NULL(tmp_value)) {
         if (tmp_value->contain(key)) {
           value = tmp_value;
-          buckets_[pos].hot_cache_val_ = value;
+          // Only cache decided tx_data. RUNNING is by definition transient and
+          // can be superseded by a later COMMIT/ABORT insert on the same tx_id;
+          // caching it would freeze a stale view of the bucket and mislead
+          // strict readers like get_tx_state_with_scn().
+          if (ObTxData::RUNNING != ATOMIC_LOAD(&tmp_value->state_)) {
+            ATOMIC_STORE(&buckets_[pos].hot_cache_val_, value);
+          }
           break;
         } else {
           tmp_value = tmp_value->hash_node_.next_;

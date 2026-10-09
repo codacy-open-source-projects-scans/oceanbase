@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_OBSERVER_OB_MOCK_PLUGIN_VECTOR_INDEX_UTILS_DEFINE_H_
 #define OCEANBASE_OBSERVER_OB_MOCK_PLUGIN_VECTOR_INDEX_UTILS_DEFINE_H_
@@ -205,6 +198,7 @@ public:
                                       ObVectorQueryAdaptorResultContext &ada_ctx);
   static int get_tenant_vector_index_ids(const uint64_t tenant_id, bool &has_ivf_index, common::ObIArray<uint64_t> &table_id_array);
   static int get_current_read_scn(share::SCN &current_scn);
+  static int get_lob_tablet_id(const ObLSID &ls_id, const ObTabletID &data_tablet_id, ObTabletID &lob_meta_tablet_id, ObTabletID &lob_piece_tablet_id);
 
 private:
   static const int EMBEDDED_TABLE_BASE_COLUMN_CNT = 2;

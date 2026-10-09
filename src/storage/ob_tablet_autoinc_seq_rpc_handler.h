@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_TABLET_AUTOINC_SEQ_RPC_HANDLER_H_
@@ -28,12 +21,15 @@ namespace mds
 {
 struct BufferCtx;
 }
+class ObTablet;
+class ObLSSwitchChecker;
 
 class ObSyncTabletSeqReplayExecutor final : public logservice::ObTabletReplayExecutor
 {
 public:
   ObSyncTabletSeqReplayExecutor();
   int init(const uint64_t autoinc_seq,
+      const uint64_t autoinc_seq_end,
       const bool is_tablet_creating,
       const share::SCN &replay_scn);
 
@@ -61,6 +57,7 @@ protected:
 
 private:
   uint64_t seq_;
+  uint64_t seq_end_;
   bool is_tablet_creating_;
   share::SCN scn_;
 };
@@ -110,6 +107,7 @@ public:
       const ObLS *ls,
       const ObTabletID &tablet_id,
       const uint64_t autoinc_seq,
+      const uint64_t autoinc_seq_end,
       const bool is_tablet_creating,
       const share::SCN &replay_scn);
   int batch_set_tablet_autoinc_seq_in_trans(
@@ -126,6 +124,18 @@ private:
       const share::ObTabletAutoincSeq &data,
       const share::SCN &replay_scn,
       mds::BufferCtx &ctx);
+  int fetch_tablet_autoinc_seq_cache(
+      ObTablet &tablet,
+      const ObLSSwitchChecker &ls_switch_checker,
+      const uint64_t cache_size,
+      const uint64_t sync_value,
+      share::ObTabletAutoincInterval &result);
+  int update_tablet_autoinc_seq(
+      ObTablet &tablet,
+      const ObLSSwitchChecker &ls_switch_checker,
+      const uint64_t autoinc_seq,
+      const uint64_t autoinc_seq_end,
+      const bool is_tablet_creating);
 private:
   static const int64_t BUCKET_LOCK_BUCKET_CNT = 10243L;
   bool is_inited_;

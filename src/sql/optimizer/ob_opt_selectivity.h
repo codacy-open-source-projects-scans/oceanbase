@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OPTIMIZER_OB_OPT_SELECTIVITY_
@@ -770,13 +763,15 @@ public:
                                    ObIArray<ObSelEstimator *> &sel_estimators,
                                    double &selectivity,
                                    common::ObIArray<ObExprSelPair> &all_predicate_sel,
-                                   bool record_range_sel = false);
+                                   bool record_range_sel = false,
+                                   bool *is_complex_filter_out = nullptr);
 
   static int calculate_selectivity(const OptTableMetas &table_metas,
                                    const OptSelectivityCtx &ctx,
                                    const common::ObIArray<ObRawExpr*> &quals,
                                    double &selectivity,
-                                   common::ObIArray<ObExprSelPair> &all_predicate_sel);
+                                   common::ObIArray<ObExprSelPair> &all_predicate_sel,
+                                   bool *is_complex_filter_out = nullptr);
 
   static int calculate_conditional_selectivity(const OptTableMetas &table_metas,
                                                const OptSelectivityCtx &ctx,
@@ -791,7 +786,8 @@ public:
                                         const common::ObIArray<ObRawExpr*> &quals,
                                         double &selectivity,
                                         common::ObIArray<ObExprSelPair> &all_predicate_sel,
-                                        bool is_outerjoin_filter = false);
+                                        bool is_outerjoin_filter = false,
+                                        bool *is_complex_join = nullptr);
 
   static int calculate_qual_selectivity(const OptTableMetas &table_metas,
                                         const OptSelectivityCtx &ctx,

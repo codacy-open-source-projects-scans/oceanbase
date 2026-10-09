@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_SHARE_OB_COMPATIBILITY_CONTROL_H_
 #define OCEABASE_SHARE_OB_COMPATIBILITY_CONTROL_H_
 
+#include "lib/charset/ob_charset.h"
 #include "lib/container/ob_se_array.h"
 #include "lib/utility/ob_macro_utils.h"
 
@@ -81,6 +75,8 @@ public:
   static int get_version_str(uint64_t version, common::ObString &str, ObIAllocator &allocator);
   static void get_compat_feature_infos(const ObICompatInfo **&infos, int64_t &len)
   { infos = infos_; len = ObCompatFeatureType::MAX_TYPE; }
+  static int get_charset_compat_type(const ObCompatType compat_type,
+                                     common::ObCharsetCompatType &charset_compat_type);
   static int check_feature_enable(const uint64_t compat_version,
                                   const ObCompatFeatureType feature_type,
                                   bool &is_enable);

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_COMPACTION_OB_SCHEDULE_DAG_FUNC_H_
@@ -43,12 +36,6 @@ struct ObTabletMergeDagParam;
 struct ObCOMergeDagParam;
 struct ObTabletSchedulePair;
 struct ObBatchFreezeTabletsParam;
-#ifdef OB_BUILD_SHARED_STORAGE
-struct ObTabletsRefreshSSTableParam;
-struct ObVerifyCkmParam;
-struct ObUpdateSkipMajorParam;
-struct ObTabletSSMinorMergeDagParam;
-#endif
 
 class ObScheduleDagFunc final
 {
@@ -83,10 +70,6 @@ public:
       const bool is_emergency = false);
   static int schedule_batch_freeze_dag(
     const ObBatchFreezeTabletsParam &freeze_param);
-#ifdef OB_BUILD_SHARED_STORAGE
-  static int schedule_ss_attach_major_dag(
-    ObTabletMergeDagParam &param);
-#endif
 };
 
 class ObDagParamFunc final

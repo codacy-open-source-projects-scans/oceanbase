@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains tests for ObSearchIndexEncoder.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -339,7 +331,7 @@ TEST_F(TestSearchIndexEncoder, test_json_row_generator_empty_object)
   ObSEArray<ObIndexRow, 16> rows;
   ret = generator.generate_rows(0, datum, rows);
   ASSERT_EQ(OB_SUCCESS, ret);
-  ASSERT_EQ(0, rows.count()) << "Expected 0 search index rows for empty object";
+  ASSERT_EQ(1, rows.count()) << "Expected 1 search index row for empty object";
 }
 
 // Test ObSearchIndexRowGenerator with null datum

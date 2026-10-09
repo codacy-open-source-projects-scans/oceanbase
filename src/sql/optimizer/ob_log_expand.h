@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOG_EXPAND_H_
@@ -44,6 +37,7 @@ public:
   inline void set_grouping_set_info(ObGroupingSetInfo *grouping_set_info) { grouping_set_info_ = grouping_set_info; }
 
   ObGroupingSetInfo *get_grouping_set_info() { return grouping_set_info_; }
+  int replace_op_replaced_exprs(ObRawExprReplacer &replacer);
 
   virtual int is_my_fixed_expr(const ObRawExpr *expr, bool &is_fixed) override;
 
@@ -84,7 +78,8 @@ private:
   static int create_aggr_with_dup_params(ObRawExprFactory &factory, ObAggFunRawExpr *aggr_item,
                                          ObSQLSessionInfo *sess, const bool use_exist_dup,
                                          ObIArray<DupRawExprPair> &dup_expr_pairs,
-                                         ObAggFunRawExpr *&new_agg);
+                                         ObAggFunRawExpr *&new_agg,
+                                         const bool dup_const = false);
   static int create_aggr_with_exist_dup(ObRawExprFactory &factory, ObAggFunRawExpr *aggr_item,ObAggFunRawExpr *exist_dupped_aggr,
                                         ObSQLSessionInfo *sess, ObIArray<DupRawExprPair> &dup_expr_pairs, ObAggFunRawExpr *&new_agg);
   static int find_expr_within_aggr_item(ObAggFunRawExpr *aggr_item, const ObRawExpr *expected,

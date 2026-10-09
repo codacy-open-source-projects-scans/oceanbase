@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_LOCK_MEMTABLE_
@@ -146,7 +139,8 @@ public:
   // try to lock a object.
   int lock(const ObLockParam &param,
            storage::ObStoreCtx &ctx,
-           ObTableLockOp &lock_op);
+           ObTableLockOp &lock_op,
+           ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int unlock(storage::ObStoreCtx &ctx,
              const ObTableLockOp &unlock_op,
              const bool is_try_lock = true,
@@ -310,7 +304,8 @@ private:
 private:
   int lock_(const ObLockParam &param,
             storage::ObStoreCtx &ctx,
-            ObTableLockOp &lock_op);
+            ObTableLockOp &lock_op,
+            ObIArray<ObTableLockHolderInfo> *holder_info = nullptr);
   int unlock_(storage::ObStoreCtx &ctx,
               const ObTableLockOp &unlock_op,
               const bool is_try_lock = true,

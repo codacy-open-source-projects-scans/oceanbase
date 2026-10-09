@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -34,6 +27,8 @@ void ObPhyPlanHint::reset()
   parallel_ = -1;
   monitor_ = false;
   table_lock_mode_ = 0;
+  max_execution_time_ = -1;
+  lookup_batch_rpc_flag_ = LOOKUP_BATCH_RPC_FLAG_DEFAULT;
 }
 
 OB_SERIALIZE_MEMBER(ObPhyPlanHint,
@@ -45,7 +40,8 @@ OB_SERIALIZE_MEMBER(ObPhyPlanHint,
                     parallel_,
                     monitor_,
                     table_lock_mode_,
-		    max_execution_time_);
+		                max_execution_time_,
+                    lookup_batch_rpc_flag_);
 
 int ObPhyPlanHint::deep_copy(const ObPhyPlanHint &other, ObIAllocator &allocator)
 {
@@ -57,6 +53,8 @@ int ObPhyPlanHint::deep_copy(const ObPhyPlanHint &other, ObIAllocator &allocator
   parallel_ = other.parallel_;
   monitor_ = other.monitor_;
   table_lock_mode_ = other.table_lock_mode_;
+  max_execution_time_ = other.max_execution_time_;
+  lookup_batch_rpc_flag_ = other.lookup_batch_rpc_flag_;
   if (OB_FAIL(ob_write_string(allocator, other.log_level_, log_level_))) {
     LOG_WARN("Failed to deep copy log level", K(ret));
   }
@@ -163,6 +161,21 @@ void ObGlobalHint::merge_query_timeout_hint(int64_t hint_time)
       query_timeout_ = hint_time;
     } else {
       query_timeout_ = std::min(hint_time, query_timeout_);
+    }
+  }
+}
+
+void ObGlobalHint::merge_max_execution_time_hint(int64_t hint_time)
+{
+  if (hint_time > UNSET_MAX_EXECUTION_TIME) {
+    if (OB_UNLIKELY(hint_time > MAX_EXECUTION_TIME_MAX)) {
+      LOG_USER_WARN(OB_ERR_MAX_EXECUTION_TIME_TRUNCATED);
+      hint_time = std::min(MAX_EXECUTION_TIME_MAX, hint_time);
+    }
+    if (max_execution_time_ <= 0) {
+      max_execution_time_ = hint_time;
+    } else {
+      max_execution_time_ = std::min(hint_time, max_execution_time_);
     }
   }
 }
@@ -389,6 +402,7 @@ void ObGlobalHint::reset()
   topk_precision_ = -1;
   sharding_minimum_row_count_ = 0;
   query_timeout_ = UNSET_QUERY_TIMEOUT;
+  max_execution_time_ = UNSET_MAX_EXECUTION_TIME;
   read_consistency_ = common::INVALID_CONSISTENCY;
   plan_cache_policy_ = OB_USE_PLAN_CACHE_INVALID;
   force_trace_log_ = false;
@@ -430,6 +444,7 @@ int ObGlobalHint::merge_global_hint(const ObGlobalHint &other)
   merge_read_consistency_hint(other.read_consistency_, other.frozen_version_);
   merge_topk_hint(other.topk_precision_, other.sharding_minimum_row_count_);
   merge_query_timeout_hint(other.query_timeout_);
+  merge_max_execution_time_hint(other.max_execution_time_);
   enable_lock_early_release_ |= other.enable_lock_early_release_;
   merge_log_level_hint(other.log_level_);
   enable_lock_early_release_ |= other.enable_lock_early_release_;
@@ -539,6 +554,9 @@ int ObGlobalHint::print_global_hint(PlanText &plan_text) const
   if (OB_SUCC(ret) && UNSET_QUERY_TIMEOUT != query_timeout_) { //QUERY_TIMEOUT
     PRINT_GLOBAL_HINT_NUM("QUERY_TIMEOUT", query_timeout_);
   }
+  if (OB_SUCC(ret) && UNSET_MAX_EXECUTION_TIME != max_execution_time_) { //MAX_EXECUTION_TIME
+    PRINT_GLOBAL_HINT_NUM("MAX_EXECUTION_TIME", max_execution_time_);
+  }
   if (OB_SUCC(ret) && OB_FAIL(dblink_hints_.print(buf, buf_len, pos, outline_indent))) { // DBLINK_INFO
     LOG_WARN("failed to print dblink hints", K(ret), K(dblink_hints_));
   }
@@ -617,10 +635,10 @@ int ObGlobalHint::print_global_hint(PlanText &plan_text) const
   // OPTIMIZER_FEATURES_ENABLE
   if (OB_SUCC(ret) && (has_valid_opt_features_version())) {
     int64_t cur_pos = 0;
-    // if enabled trace point outline valid check tp_no = 551 and opt_features_version_ is LASTED_COMPAT_VERSION,
-    // just print OPTIMIZER_FEATURES_ENABLE('') to avoid mysqltest changed repeatedly after upgrade LASTED_COMPAT_VERSION
+    // if enabled trace point outline valid check tp_no = 551 and opt_features_version_ is LATEST_COMPAT_VERSION,
+    // just print OPTIMIZER_FEATURES_ENABLE('') to avoid mysqltest changed repeatedly after upgrade LATEST_COMPAT_VERSION
     const bool print_empty_str = (OB_SUCCESS != (OB_E(EventTable::EN_EXPLAIN_GENERATE_PLAN_WITH_OUTLINE) OB_SUCCESS)
-                                 && LASTED_COMPAT_VERSION == opt_features_version_);
+                                  && LATEST_COMPAT_VERSION == opt_features_version_);
     if (OB_FAIL(BUF_PRINTF("%s%s(\'", outline_indent, "OPTIMIZER_FEATURES_ENABLE"))) {
       LOG_WARN("failed to print hint", K(ret));
     } else if (!print_empty_str &&
@@ -906,6 +924,19 @@ int ObOptParamHint::remove_opt_param(const OptParamType param_type)
   return ret;
 }
 
+bool ObOptParamHint::varchar_to_double(const ObObj &val, double &dval)
+{
+  bool succ = false;
+  if (val.is_varchar()) {
+    ObString str = val.get_varchar();
+    char *endptr = NULL;
+    int err = 0;
+    dval = ObCharset::strntod(str.ptr(), str.length(), &endptr, &err);
+    succ = (err == 0 && endptr == str.ptr() + str.length());
+  }
+  return succ;
+}
+
 bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObObj &val)
 {
   bool is_valid = false;
@@ -913,6 +944,8 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
     case HIDDEN_COLUMN_VISIBLE:
     case ROWSETS_ENABLED:
     case ENABLE_NEWSORT:
+    case ENABLE_PARTITION_SORT:
+    case ENABLE_ADAPTIVE_AUTO_DOP:
     case USE_PART_SORT_MGB:
     case USE_DEFAULT_OPT_STAT:
     case ENABLE_IN_RANGE_OPTIMIZATION:
@@ -929,6 +962,7 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
     case OPTIMIZER_BETTER_INLIST_COSTING:
     case OPTIMIZER_GROUP_BY_PLACEMENT:
     case ENABLE_SPF_BATCH_RESCAN:
+    case ENABLE_SEPARATE_SPF_FOR_SELECT_ITEMS:
     case NLJ_BATCHING_ENABLED:
     case ENABLE_PX_ORDERED_COORD:
     case ENABLE_WINDOW_FUNCTION_STREAMING_PROCESS:
@@ -942,8 +976,11 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
     case EXTENDED_SQL_PLAN_MONITOR_METRICS:
     case ENABLE_DELETE_INSERT_SCAN:
     case ENABLE_FAST_REFRESH_WITH_CUR_TIME:
+    case ENABLE_FAST_REFRESH_WITHOUT_ONLY_FULL_GROUP_BY:
+    case ENABLE_FAST_REFRESH_SIMPLIFY_AGGR_DEP:
     case DISABLE_SHARED_EXPR_EXTRACTION:
     case ENABLE_MERGE_INTO:
+    case ENABLE_PLAN_EXPIRATION_BY_EXEC_FEEDBACK:
     case PRESERVE_ORDER_FOR_GROUPBY: {
       is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
                                       || 0 == val.get_varchar().case_compare("false"));
@@ -951,6 +988,10 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
     }
     case ROWSETS_MAX_ROWS: {
       is_valid = val.is_int() && (0 <= val.get_int() && 65535 >= val.get_int());
+      break;
+    }
+    case ODPS_JDK_STORAGE_BATCH_SIZE: {
+      is_valid = val.is_int() && (0 < val.get_int() && 65535 >= val.get_int());
       break;
     }
     case OPTIMIZER_INDEX_COST_ADJ:
@@ -1034,6 +1075,26 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
       break;
     }
     case _PUSH_JOIN_PREDICATE: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
+    case _OB_JAVA_ODPS_DATA_TRANSFER_MODE: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("arrowTable")
+                                      || 0 == val.get_varchar().case_compare("offHeapTable"));
+      break;
+    }
+    case _USE_ODPS_JNI_CONNECTOR: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
+    case FORCE_EQUAL_SEMI_TO_INNER: {
+      is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
+                                      || 0 == val.get_varchar().case_compare("false"));
+      break;
+    }
+    case FORCE_SUBQUERY_UNNEST: {
       is_valid = val.is_varchar() && (0 == val.get_varchar().case_compare("true")
                                       || 0 == val.get_varchar().case_compare("false"));
       break;
@@ -1146,10 +1207,22 @@ bool ObOptParamHint::is_param_val_valid(const OptParamType param_type, const ObO
       is_valid = val.is_int() && (0 <= val.get_int());
       break;
     }
-    default: {
-      LOG_TRACE("invalid opt param val", K(param_type), K(val));
+    case CACHE_AWARE_ROW_NUM: {
+      is_valid = val.is_int() && val.get_int() >= 1;
       break;
     }
+    case UDF_COST_FACTOR: {
+      is_valid = val.is_int() && val.get_int() >= 1 && val.get_int() <= 10000000;
+      break;
+    }
+    case UDF_SELECTIVITY: {
+      double dval = 0.0;
+      is_valid = varchar_to_double(val, dval) && dval >= 0.0 && dval <= 1.0;
+      break;
+    }
+    default:
+      LOG_TRACE("invalid opt param val", K(param_type), K(val));
+      break;
   }
   return is_valid;
 }
@@ -1248,6 +1321,24 @@ int ObOptParamHint::get_integer_opt_param(const OptParamType param_type, uint64_
   int64_t int_val = 0;
   int ret = get_integer_opt_param(param_type, int_val, is_exists);
   val = static_cast<uint64_t>(int_val);
+  return ret;
+}
+
+int ObOptParamHint::get_double_opt_param(const OptParamType param_type, double &val) const
+{
+  int ret = OB_SUCCESS;
+  ObObj obj;
+  if (OB_FAIL(get_opt_param(param_type, obj))) {
+    LOG_WARN("failed to get opt param", K(ret));
+  } else if (obj.is_nop_value()) {
+    // not set, keep default
+  } else if (!obj.is_varchar()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("param obj is invalid", K(ret), K(obj));
+  } else if (!varchar_to_double(obj, val)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("param obj is invalid", K(ret), K(obj));
+  }
   return ret;
 }
 
@@ -1499,6 +1590,7 @@ ObItemType ObHint::get_hint_type(ObItemType type)
     case T_NO_USE_MERGE:        return T_USE_MERGE;
     case T_NO_USE_HASH:         return T_USE_HASH;
     case T_NO_USE_NL:           return T_USE_NL;
+    case T_NOCACHE_HINT:         return T_CACHE_HINT;
     case T_NO_USE_NL_MATERIALIZATION:  return T_USE_NL_MATERIALIZATION;
     case T_NO_PX_JOIN_FILTER:   return T_PX_JOIN_FILTER;
     case T_NO_PX_PART_JOIN_FILTER:      return T_PX_PART_JOIN_FILTER;
@@ -1570,6 +1662,7 @@ const char* ObHint::get_hint_name(ObItemType type, bool is_enable_hint /* defaul
     case T_USE_MERGE:           return is_enable_hint ? "USE_MERGE" : "NO_USE_MERGE";
     case T_USE_HASH:            return is_enable_hint ? "USE_HASH" : "NO_USE_HASH";
     case T_USE_NL:              return is_enable_hint ? "USE_NL" : "NO_USE_NL";
+    case T_CACHE_HINT:           return is_enable_hint ? "CACHE" : "NOCACHE";
     case T_USE_NL_MATERIALIZATION:     return is_enable_hint ? "USE_NL_MATERIALIZATION"
                                                              : "NO_USE_NL_MATERIALIZATION";
     case T_PX_JOIN_FILTER:      return is_enable_hint ? "PX_JOIN_FILTER" : "NO_PX_JOIN_FILTER";
@@ -2571,6 +2664,7 @@ int ObTableParallelHint::print_hint_desc(PlanText &plan_text) const
 }
 
 const ObString ObIndexHint::PRIMARY_KEY = "primary";
+const ObString ObIndexHint::KEY = "key";
 
 int ObIndexHint::assign(const ObIndexHint &other)
 {
@@ -4014,6 +4108,26 @@ int TriggerHint::merge_trigger_hint(const TriggerHint &other)
     }
     return ret;
   }
+
+int ObCacheHint::assign(const ObCacheHint &other)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(table_.assign(other.table_))) {
+    LOG_WARN("fail to assign table", K(ret));
+  } else if (OB_FAIL(ObOptHint::assign(other))) {
+    LOG_WARN("fail to assign hint", K(ret));
+  }
+  return ret;
+}
+
+int ObCacheHint::print_hint_desc(PlanText &plan_text) const
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(table_.print_table_in_hint(plan_text))) {
+    LOG_WARN("fail to print table in hint", K(ret));
+  }
+  return ret;
+}
 
 }//end of namespace sql
 }//end of namespace oceanbase

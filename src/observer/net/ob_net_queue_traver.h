@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_RPC_OB_NET_QUEUE_TRAVER_H
 #define OCEANBASE_RPC_OB_NET_QUEUE_TRAVER_H
@@ -83,7 +76,7 @@ public:
   int traverse(ObINetTraverProcess &process);
   int traverse_one_tenant(oceanbase::omt::ObTenant *tenant_ptr, ObINetTraverProcess &process);
 private:
-  typedef oceanbase::common::ObPriorityQueue2<0, 1> TenantReqQueue;
+  typedef oceanbase::omt::ReqQueue TenantReqQueue;
   int traverse_one_tenant_queue(oceanbase::omt::ReqQueue &tenant_req_queue, oceanbase::omt::ObMultiLevelQueue *tenant_multi_level_queue, int32_t group_id, ObINetTraverProcess &process);
   int traverse_one_tenant_group_queue(TenantReqQueue &tenant_group_queue,oceanbase::omt::ObMultiLevelQueue *tenant_multi_level_queue, int32_t group_id, ObINetTraverProcess &process);
   int traverse_one_tenant_one_link_queue(ObLinkQueue *link_queue, int32_t group_id, ObINetTraverProcess &process);

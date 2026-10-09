@@ -1,16 +1,9 @@
-// owner: zhanghuidong.zhd
+// owner: dengzhi.ldz
 // owner group: storage
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -82,7 +75,7 @@ public:
                              ObTabletMergeCtx &merge_context)
   {
     return TestMergeBasic::prepare_merge_context(
-      merge_type, is_full_merge, trans_version_range, &merge_dag_, merge_context, true/*is_delete_insert_merge*/);
+      merge_type, is_full_merge, trans_version_range, &merge_dag_, merge_context, ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT);
   }
   void prepare_query_param(const ObVersionRange &version_range);
   void build_sstable(ObTabletMergeCtx &ctx, ObSSTable *&merged_sstable);

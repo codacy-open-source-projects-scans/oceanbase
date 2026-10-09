@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TABLE_PARAM_H_
@@ -283,7 +276,6 @@ private:
 typedef common::ObFixedArray<ObColumnParam *, common::ObIAllocator> Columns;
 typedef common::ObFixedArray<int32_t, common::ObIAllocator> Projector;
 
-
 class ObTableSchema;
 class ObColumnSchemaV2;
 class ObTableParam
@@ -341,6 +333,8 @@ public:
   inline void set_is_enable_semistruct_encoding(const bool v) { is_enable_semistruct_encoding_ = v; }
   inline void set_plan_enable_rich_format(const bool enable) { plan_enable_rich_format_ = enable; }
   inline bool plan_enable_rich_format() const { return plan_enable_rich_format_; }
+  int set_merge_engine_upper_version(const ObMergeEngineUpperVersion &merge_engine_upper_version);
+  inline const ObMergeEngineUpperVersion &get_merge_engine_upper_version() const { return merge_engine_upper_version_; }
   inline const common::ObIArray<int32_t> &get_rowid_projector() const { return rowid_projector_; }
   inline const common::ObIArray<int32_t> &get_output_projector() const { return output_projector_; }
   inline const common::ObIArray<int32_t> &get_aggregate_projector() const { return aggregate_projector_; }
@@ -454,6 +448,7 @@ private:
   bool plan_enable_rich_format_;
   ObTableType table_type_;
   ObMergeEngineType merge_engine_type_;
+  ObMergeEngineUpperVersion merge_engine_upper_version_;
 };
 } //namespace schema
 } //namespace share

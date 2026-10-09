@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
 #include "observer/virtual_table/ob_show_create_catalog.h"
 
 #include "share/schema/ob_schema_getter_guard.h"
+#include "sql/engine/cmd/ob_load_data_parser.h"
 #include "share/schema/ob_schema_printer.h"
 #include "sql/session/ob_sql_session_info.h"
 
@@ -368,15 +362,54 @@ int ObShowCreateCatalog::print_odps_catalog_definition(const ObODPSCatalogProper
                  odps.compression_code_.length(),
                  odps.compression_code_.ptr()))) {
     LOG_WARN("failed to print ODPS_INFO", K(ret));
-  } else if (databuff_printf(buf,
+  } else if (OB_FAIL(databuff_printf(buf,
                              buf_len,
                              pos,
                              "\n  %s = '%.*s',",
                              ObODPSCatalogProperties::OPTION_NAMES[static_cast<size_t>(
                                  ObODPSCatalogProperties::ObOdpsCatalogOptions::REGION)],
                              odps.region_.length(),
-                             odps.region_.ptr())) {
+                             odps.region_.ptr()))) {
     LOG_WARN("failed to print ODPS_INFO", K(ret));
+  } else if (odps.api_mode_ == sql::ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
+    if (OB_FAIL(databuff_printf(buf,
+                                buf_len,
+                                pos,
+                                "\n  %s = '%.*s',",
+                                ObODPSCatalogProperties::OPTION_NAMES[static_cast<size_t>(
+                                    ObODPSCatalogProperties::ObOdpsCatalogOptions::API_MODE)],
+                                sql::ObODPSGeneralFormatParam::TUNNEL_API.length(),
+                                sql::ObODPSGeneralFormatParam::TUNNEL_API.ptr()))) {
+      LOG_WARN("failed to print API_MODE", K(ret));
+    }
+  } else if (odps.api_mode_ == sql::ObODPSGeneralFormat::ApiMode::BYTE) {
+    if (OB_FAIL(databuff_printf(buf,
+                                buf_len,
+                                pos,
+                                "\n  %s = '%.*s',\n  %s = '%.*s',",
+                                ObODPSCatalogProperties::OPTION_NAMES[static_cast<size_t>(
+                                    ObODPSCatalogProperties::ObOdpsCatalogOptions::API_MODE)],
+                                sql::ObODPSGeneralFormatParam::STORAGE_API.length(),
+                                sql::ObODPSGeneralFormatParam::STORAGE_API.ptr(),
+                                "SPLIT",
+                                sql::ObODPSGeneralFormatParam::BYTE.length(),
+                                sql::ObODPSGeneralFormatParam::BYTE.ptr()))) {
+      LOG_WARN("failed to print API_MODE and SPLIT", K(ret));
+    }
+  } else if (odps.api_mode_ == sql::ObODPSGeneralFormat::ApiMode::ROW) {
+    if (OB_FAIL(databuff_printf(buf,
+                                buf_len,
+                                pos,
+                                "\n  %s = '%.*s',\n  %s = '%.*s',",
+                                ObODPSCatalogProperties::OPTION_NAMES[static_cast<size_t>(
+                                    ObODPSCatalogProperties::ObOdpsCatalogOptions::API_MODE)],
+                                sql::ObODPSGeneralFormatParam::STORAGE_API.length(),
+                                sql::ObODPSGeneralFormatParam::STORAGE_API.ptr(),
+                                "SPLIT",
+                                sql::ObODPSGeneralFormatParam::ROW.length(),
+                                sql::ObODPSGeneralFormatParam::ROW.ptr()))) {
+      LOG_WARN("failed to print API_MODE and SPLIT", K(ret));
+    }
   }
   if (OB_SUCC(ret)) {
     --pos;
@@ -471,6 +504,20 @@ int ObShowCreateCatalog::print_hive_catalog_definition(
               ObHMSCatalogProperties::OPTION_NAMES[ObHMSCatalogProperties::KRB5CONF],
               hms.krb5conf_.length(),
               hms.krb5conf_.ptr()))) {
+        LOG_WARN("failed to print HMS_INFO", K(ret));
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (hms.service_principal_.length() > 0) {
+      if (OB_FAIL(databuff_printf(
+              buf,
+              buf_len,
+              pos,
+              "\n  %s = '%.*s',",
+              ObHMSCatalogProperties::OPTION_NAMES[ObHMSCatalogProperties::HMS_PRINCIPAL],
+              hms.service_principal_.length(),
+              hms.service_principal_.ptr()))) {
         LOG_WARN("failed to print HMS_INFO", K(ret));
       }
     }

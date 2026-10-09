@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_VEC_INDEX_SCAN_ITER_H_
@@ -66,7 +59,7 @@ struct ObVecIndexBitmap
   int init(int64_t min_vid, int64_t max_vid, uint64_t capacity);
   int add_vid(int64_t vid);
   bool test(int64_t vid);
-  int get_valid_cnt() { return valid_cnt_; }
+  int64_t get_valid_cnt() const { return static_cast<int64_t>(valid_cnt_); }
   int64_t *get_vids() { return (type_ == VIDS) ? vids_ : nullptr; }
   void reset();
 
@@ -246,6 +239,7 @@ public:
   void set_bitmap(ObVecIndexBitmap *bitmap) { bitmap_ = bitmap; }
 
   ObVecIndexType get_index_type() const { return vec_index_type_; }
+  bool is_brute_force() const { return go_brute_force_; }
   void set_vec_index_type(ObVecIndexType vec_index_type, ObVecIdxAdaTryPath vec_idx_try_path, bool go_brute_force) {
     vec_index_type_ = vec_index_type;
     vec_idx_try_path_ = vec_idx_try_path;

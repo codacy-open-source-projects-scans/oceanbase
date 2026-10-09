@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_storage_oss_base.h"
@@ -569,7 +562,7 @@ int ObOssEnvIniter::global_init()
 
   common::SpinWLockGuard guard(lock_);
   apr_thread_mutex_t *mutex = nullptr;
-  OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "OSS_GLOBAL_INIT", IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "OSS_GLOBAL_INIT", IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (is_global_inited_) {
     ret = OB_INIT_TWICE;
@@ -629,7 +622,7 @@ void ObOssEnvIniter::global_destroy()
   int ret = OB_SUCCESS;
   common::SpinWLockGuard guard(lock_);
   if (is_global_inited_) {
-    OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "OSS_GLOBAL_DESTROY", IO_HANDLED_SIZE_ZERO);
+    OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "OSS_GLOBAL_DESTROY", IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
     if (OB_NOT_NULL(OSS_GLOBAL_APR_POOL)) {
       // After successful initialization,
       // the owner of OSS_GLOBAL_APR_ALLOCATOR is set to OSS_GLOBAL_APR_POOL.

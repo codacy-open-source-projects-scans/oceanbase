@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENCODING_OB_ICOLUMN_DECODER_H_
@@ -140,6 +133,10 @@ struct ObVectorDecodeCtx
 
   VectorFormat get_format() const { return vec_header_.get_format(); }
   ObIVector *get_vector() { return vec_header_.get_vector(); }
+  bool is_null_at(const int64_t row_idx);
+  int fill_from_default_datum();
+  int fill_default_datum_at(const int64_t row_idx);
+  int set_default_datum_to_vector(const int64_t vec_idx);
 
   TO_STRING_KV(KP_(ptr_arr), KP_(len_arr), KP_(row_ids), K_(row_cap), K_(vec_offset), KPC_(default_datum));
 
@@ -418,6 +415,11 @@ public:
   virtual int update_pointer(const char *, const char *) { return common::OB_SUCCESS; }
 
   virtual bool can_vectorized() const override { return false; }
+
+  virtual int decode_vector(
+      const ObColumnDecoderCtx &decoder_ctx,
+      const ObIRowIndex *row_index,
+      ObVectorDecodeCtx &vector_ctx) const override;
 };
 
 // Read row data offset and row length from row index

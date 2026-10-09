@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_OCEANBASE_SCHEMA_OB_SCHEMA_GETTER_GUARD_H_
@@ -31,6 +24,7 @@
 #include "share/schema/ob_ccl_schema_struct.h"
 #include "share/schema/ob_ccl_rule_mgr.h"
 #include "share/schema/ob_sensitive_rule_schema_struct.h"
+#include "share/schema/ob_java_policy_mgr.h"
 
 namespace oceanbase
 {
@@ -66,6 +60,7 @@ class ObSimpleSysVariableSchema;
 class ObSimpleTablegroupSchema;
 class ObSimpleTenantSchema;
 class ObSimpleTriggerSchema;
+class ObSimpleJavaPolicySchema;
 class ObSimpleMockFKParentTableSchema;
 class ObMockFKParentTableSchema;
 class ObTablegroupSchema;
@@ -485,6 +480,12 @@ public:
                         common::ObIArray<uint64_t> &enable_role_id_array,
                         SSL *ssl_st,
                         const ObUserInfo *&sel_user_info);
+  int try_caching_sha2_fast_auth_verify(
+      const ObUserLoginInfo &login_info,
+      const common::ObString &host_name,
+      uint64_t tenant_id,
+      int64_t password_last_changed_timestamp,
+      bool &fast_auth_success_flag);
   int check_catalog_access(const ObSessionPrivInfo &session_priv,
                            const common::ObIArray<uint64_t> &enable_role_id_array,
                            const common::ObString &catalog_name);
@@ -494,11 +495,13 @@ public:
   int check_catalog_db_access(const ObSessionPrivInfo &session_priv,
                               const common::ObIArray<uint64_t> &enable_role_id_array,
                               const common::ObString &catalog_name,
-                              const common::ObString &database_name);
+                              const common::ObString &database_name,
+                              ObPrivSet &db_priv_set);
   int check_catalog_db_access(const ObSessionPrivInfo &session_priv,
                               const common::ObIArray<uint64_t> &enable_role_id_array,
                               const uint64_t catalog_id,
-                              const common::ObString &database_name);
+                              const common::ObString &database_name,
+                              ObPrivSet &db_priv_set);
   int check_catalog_show(const ObSessionPrivInfo &session_priv,
                          const common::ObIArray<uint64_t> &enable_role_id_array,
                          const common::ObString &catalog_name,
@@ -675,7 +678,10 @@ public:
       const uint64_t tenant_id,
       const uint64_t tablegroup_id,
       bool &not_empty);
-
+  int check_database_exists_in_tablespace(
+      const uint64_t tenant_id,
+      const uint64_t tablespace_id,
+      bool &not_empty);
   // xiyu: just return pointer to save my life.
   const ObUserInfo *get_user_info(const uint64_t tenant_id, const uint64_t user_id);
   const ObTablegroupSchema *get_tablegroup_schema(const uint64_t tenant_id, const uint64_t tablegroup_id);
@@ -882,6 +888,27 @@ public:
                    const ObUDF *&udf_info,
                    bool &exist);
 
+  // java policy
+  int get_java_policy_schema(const uint64_t tenant_id,
+                             const uint64_t key,
+                             const ObSimpleJavaPolicySchema *&schema);
+
+  int get_java_policy_schemas_in_tenant(const uint64_t tenant_id,
+                                        common::ObIArray<const ObSimpleJavaPolicySchema *> &schemas);
+
+  int get_java_policy_schemas_of_grantee(const uint64_t tenant_id,
+                                         const uint64_t grantee_id,
+                                         common::ObIArray<const ObSimpleJavaPolicySchema *> &schemas);
+
+  int check_java_policy_exist(const uint64_t tenant_id,
+                              const ObSimpleJavaPolicySchema::JavaPolicyKind kind,
+                              const uint64_t grantee,
+                              const uint64_t type_schema,
+                              const common::ObString &type_name,
+                              const common::ObString &name,
+                              const common::ObString &action,
+                              bool &is_exist);
+
   // udt
   int check_udt_exist(uint64_t tenant_id, uint64_t database_id,
                       uint64_t package_id, share::schema::ObUDTTypeCode type_code,
@@ -1015,6 +1042,9 @@ public:
                                      int64_t &password_last_change,
                                      int64_t &password_life_time,
                                      int64_t &password_grace_time);
+  int get_user_password_rollover_time(const uint64_t tenant_id,
+                                      const uint64_t user_id,
+                                      int64_t &password_rollover_time);
   int get_user_profile_function_name(const uint64_t tenant_id,
                                      const uint64_t profile_id,
                                      common::ObString &function_name);
@@ -1298,6 +1328,12 @@ public:
   int get_ccl_rule_count(const uint64_t tenant_id, uint64_t & count);
 
 private:
+  int verify_user_password_authentication(
+      const ObUserInfo *user_info,
+      const ObUserLoginInfo &login_info,
+      lib::Worker::CompatMode compat_mode,
+      uint64_t tenant_id,
+      bool &is_found);
   int check_ssl_access(const ObUserInfo &user_info,
                        SSL *ssl_st);
   int check_catalog_priv(const ObSessionPrivInfo &session_priv,
@@ -1412,6 +1448,8 @@ private:
       const uint64_t user_id,
       bool print_warn,
       const ObIArray<uint64_t> &role_id_array);
+  int check_ora_restricted_session(const ObSessionPrivInfo &s_priv,
+                                   const common::ObIArray<uint64_t> &enable_role_id_array);
   bool ignore_tenant_not_exist_error(const uint64_t tenant_id);
 
   int check_priv_db_or_(const ObSessionPrivInfo &session_priv,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -419,21 +412,18 @@ int ObUnpivotV2Op::next_vector(const int64_t max_row_cnt)
         }
       }
     } else {
-      brs_.size_ = common::min(brs_.size_, child_brs_->size_ - offset_);
+      brs_.size_ = common::min(batch_size, child_brs_->size_ - offset_);
       if (OB_FAIL(vec_holder_->restore())) {
         LOG_WARN("failed to restore child vector", K(ret));
       } else {
-        brs_.set_all_rows_active(true);
+        brs_.reset_skip(brs_.size_);
         for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; ++i) {
           if (child_brs_->skip_->at(i + offset_)) {
             brs_.set_skip(i);
-            brs_.set_all_rows_active(false);
-          } else {
-            brs_.reset_skip(i);
           }
         }
       }
-      if (OB_FAIL(project_vector_with_offset())) {
+      if (OB_SUCC(ret) && OB_FAIL(project_vector_with_offset())) {
         LOG_WARN("failed to do batch copy", K(ret));
       }
     }
@@ -555,9 +545,13 @@ int ObUnpivotV2Op::project_vector_with_offset()
   for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.value_exprs_.count(); ++ i) {
     ObExpr *expr = MY_SPEC.value_exprs_.at(i);
     ObExpr *arg_expr = expr->args_[cur_part_idx_];
+    VectorFormat expr_format = VEC_INVALID;
     if (OB_FAIL(arg_expr->eval_vector(eval_ctx_, *child_brs_))) {
       LOG_WARN("failed to eval batch for arg expr", K(ret));
-    } else if (OB_FAIL(expr->init_vector(eval_ctx_, arg_expr->get_format(eval_ctx_), brs_.size_))) {
+    } else if (FALSE_IT(expr_format = arg_expr->get_format(eval_ctx_) == VEC_CONTINUOUS
+                                      ? VEC_DISCRETE : arg_expr->get_format(eval_ctx_))) {
+      // continuous format is difficult to handle, just turn to discrete
+    } else if (OB_FAIL(expr->init_vector(eval_ctx_, expr_format, brs_.size_))) {
       LOG_WARN("failed to init vector", K(ret));
     } else {
       ObIVector *vec = expr->get_vector(eval_ctx_);
@@ -621,7 +615,7 @@ int ObUnpivotV2Op::next_batch(const int64_t max_row_cnt)
         }
       }
     } else {
-      brs_.size_ = common::min(brs_.size_, child_brs_->size_ - offset_);
+      brs_.size_ = common::min(batch_size, child_brs_->size_ - offset_);
       if (OB_FAIL(batch_copy_data())) {
         LOG_WARN("failed to do batch copy", K(ret));
       }
@@ -704,13 +698,10 @@ int ObUnpivotV2Op::batch_copy_data()
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;
-  brs_.set_all_rows_active(true);
+  brs_.reset_skip(brs_.size_);
   for (int64_t i = 0; OB_SUCC(ret) && i < brs_.size_; ++i) {
     if (child_brs_->skip_->at(i + offset_)) {
       brs_.set_skip(i);
-      brs_.set_all_rows_active(false);
-    } else {
-      brs_.reset_skip(i);
     }
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.origin_exprs_.count(); ++ i) {

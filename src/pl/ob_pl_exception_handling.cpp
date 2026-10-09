@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -147,6 +140,9 @@ ObUnwindException *ObPLEH::eh_create_exception(int64_t pl_context,
   if (NULL != value) {
     int ret = OB_SUCCESS;
     ObPLContext *pl_ctx = reinterpret_cast<ObPLContext *>(pl_context);
+    if (OB_NOT_NULL(pl_ctx)) {
+      pl_ctx->register_stack_frames();
+    }
     ObPLExecState *frame = NULL;
     ObIAllocator *pl_allocator = NULL;
     CK (OB_NOT_NULL(pl_ctx));

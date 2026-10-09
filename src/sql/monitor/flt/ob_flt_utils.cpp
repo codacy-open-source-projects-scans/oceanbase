@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -443,7 +436,7 @@ namespace sql
       con.print_sample_pct_ = ((double)(sess.get_tenant_print_sample_ppm()))/1000000;
       ObRandom r;
       double rand_num = (1.0 * r.rand(0, RAND_MAX)/RAND_MAX);
-      if (rand_num < con.sample_pct_) {
+      if (sess.is_use_trace_log() || rand_num < con.sample_pct_) {
         sess.set_trace_enable(true);
       } else {
         sess.set_trace_enable(false);

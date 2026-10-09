@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -60,6 +53,19 @@ public:
                                  const ObString &parameters,
                                  const ObString &plugin_name,
                                  ObExternalDataEngine *&data_engine) = 0;
+
+  /**
+   * Lazily discover and register data-source sub-plugins (e.g. odps, jdbc) on first use.
+   * @details For plugins backed by an external runtime (such as the JVM), enumerating the
+   * available data sources is expensive and may require starting that runtime. So it is
+   * deferred until the first external table lookup misses, rather than done at startup.
+   * Default no-op for plugins that have no sub-plugins. Implementations must be thread-safe
+   * and run the actual discovery at most once.
+   */
+  virtual int discover_sub_plugins(ObPluginParam *param)
+  {
+    return OB_SUCCESS;
+  }
 };
 
 class ObExternalDataEngine

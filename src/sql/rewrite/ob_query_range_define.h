@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SQL_REWRITE_OB_QUERY_RANGE_DEFINE_H_
 #define OCEANBASE_SQL_REWRITE_OB_QUERY_RANGE_DEFINE_H_
@@ -254,8 +247,10 @@ public:
 struct ObSearchIndexRangeCtx
 {
 public:
-  ObSearchIndexRangeCtx() : column_meta_(), column_idx_(OB_INVALID_INDEX), need_constraint_(false),
-    path_prefix_(), pick_type_(T_NULL), json_filter_(nullptr) {}
+  ObSearchIndexRangeCtx() :
+    column_meta_(), column_idx_(OB_INVALID_INDEX), need_constraint_(false), path_prefix_(),
+    array_type_path_(), pick_type_(T_NULL), json_filter_(nullptr), cons_encode_type_(0)
+  {}
 
   ~ObSearchIndexRangeCtx();
 
@@ -266,18 +261,23 @@ public:
   uint64_t column_id() const { return column_meta_.column_id_; }
   ObRangeColumnMeta *column_meta() { return &column_meta_; }
   inline bool has_pick() const { return pick_type_ != T_NULL; }
+  inline ObItemType get_pick_type() const { return pick_type_; }
   inline bool need_constraint() const { return need_constraint_; }
   const share::ObSearchIndexConfigFilter *get_json_filter() const { return json_filter_; }
+  uint8_t get_cons_encode_type() const { return cons_encode_type_; }
 
-  TO_STRING_KV(K_(column_meta), K_(column_idx), K_(path_prefix), K_(pick_type), KP_(json_filter));
+  TO_STRING_KV(K_(column_meta), K_(column_idx), K_(path_prefix), K_(array_type_path), K_(pick_type),
+               KP_(json_filter), K_(cons_encode_type));
 
   // selected column info
   ObRangeColumnMeta column_meta_;  // column meta used to extract search index range.
   int64_t column_idx_;             // column index in search index table.
   bool need_constraint_;           // constraint to check string length
-  ObString path_prefix_;           // current literal path string.
+  ObString path_prefix_;           // current literal path string (JSON path).
+  ObString array_type_path_;       // for array column: type string e.g. "ARRAY(INT)" used as path in index.
   ObItemType pick_type_;           // current pick type
   share::ObSearchIndexConfigFilter *json_filter_; // json path and type filter
+  uint8_t cons_encode_type_; // INCLUDE_TYPES mask from index config, for scalar/array type check
 };
 
 struct ObQueryRangeCtx

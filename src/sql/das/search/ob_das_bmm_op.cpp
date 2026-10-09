@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -212,6 +205,13 @@ int ObDASBMMOp::do_advance_to(const ObDASRowID &target, ObDASRowID &curr_id, dou
     ret = OB_NOT_INIT;
     LOG_WARN("not initialized", K(ret));
   } else {
+    if (0 == min_competitive_score_ && query_optional_) {
+      // otherwise, merge iters must be involved, which are advanced below
+      ObDASRowID temp_id;
+      if (OB_FAIL(advance_filter_to(target, curr_filter_id_))) {
+        LOG_WARN("failed to advance filter op", K(ret), K(target));
+      }
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < merge_iters_.count(); ++i) {
       if (OB_ISNULL(merge_iters_[i])) {
         ret = OB_ERR_UNEXPECTED;
@@ -454,7 +454,11 @@ int ObDASBMMOp::try_update_essential_dims()
 
   if (FAILEDx(row_merger_->reuse_with_selected_iters(
       sorted_iter_idxes_, true, non_essential_dim_count_, sorted_iter_idxes_.count() - 1))) {
-    LOG_WARN("failed to reuse with selected iters", K(ret));
+    if (OB_UNLIKELY(OB_ITER_END != ret)) {
+      LOG_WARN("failed to reuse with selected iters", K(ret));
+    } else {
+      ret = OB_SUCCESS;
+    }
   }
 
   LOG_DEBUG("[Sparse Retrieval] try update essential dims", K(ret), K(non_essential_dim_count_), K(non_essential_dim_max_score_),
@@ -550,7 +554,11 @@ int ObDASBMMOp::evaluate_pivot(const ObDASRowID &pivot_id, const double &essenti
     } else if (iter->iter_end()) {
       // skip
     } else if (OB_FAIL(iter->advance_to(pivot_id))) {
-      LOG_WARN("failed to advance to pivot id", K(ret), K(iter_idx));
+      if (OB_UNLIKELY(OB_ITER_END != ret)) {
+        LOG_WARN("failed to advance to pivot id", K(ret), K(iter_idx));
+      } else {
+        ret = OB_SUCCESS;
+      }
     } else if (OB_FAIL(iter->get_curr_score(score))) {
       LOG_WARN("failed to get curr score", K(ret), K(iter_idx));
     } else if (OB_FAIL(iter->get_curr_id(curr_id))) {

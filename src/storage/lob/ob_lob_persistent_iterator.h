@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_OB_LOB_PERSISTENT_ITERATOR_
@@ -15,6 +8,7 @@
 #include "storage/blocksstable/ob_datum_row_iterator.h"
 #include "storage/lob/ob_lob_util.h"
 #include "storage/lob/ob_lob_meta.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 
 #include "common/row/ob_row_iterator.h"
 #include "storage/lob/ob_lob_util.h"
@@ -39,7 +33,8 @@ protected:
     seq_id_local_buf_(0),
     scan_param_(),
     row_iter_(nullptr),
-    adaptor_(nullptr)
+    adaptor_(nullptr),
+    has_ttl_column_(false)
   {}
 
   virtual ~ObLobMetaBaseIterator() {}
@@ -65,7 +60,8 @@ public:
       K_(lob_piece_tablet_id),
       K_(seq_id_local_buf),
       KP_(row_iter),
-      KPC_(row_iter));
+      KPC_(row_iter),
+      K_(has_ttl_column));
 
 protected:
   // tablet id of main table
@@ -86,6 +82,8 @@ protected:
   ObNewRowIterator *row_iter_;
   ObPersistentLobApator *adaptor_;
 
+  // Whether Lob meta table has ttl column
+  bool has_ttl_column_;
 };
 
 class ObLobMetaIterator : public ObLobMetaBaseIterator
@@ -101,7 +99,8 @@ public:
 
   int reset();
   int open(ObLobAccessParam &param, ObPersistentLobApator* adaptor, ObIAllocator *scan_allocator);
-  int open(ObTabletID &main_tablet_id, ObTabletID &lob_piece_tablet_id);
+  int open(ObTabletID &main_tablet_id, ObTabletID &lob_piece_tablet_id,
+           ObTTLFilterColType ttl_type = ObTTLFilterColType::INVALID);
   int rescan(ObLobAccessParam &param);
   int rescan(ObNewRange &range);
   int get_next_row(ObLobMetaInfo &row);

@@ -1,13 +1,6 @@
 /**
- * Copyright (c) 2021, 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_TRANSACTION_OB_TS_MGR_
@@ -420,6 +413,7 @@ private:
   static const int64_t TS_SOURCE_INFO_OBSOLETE_TIME = 120 * 1000 * 1000;
   static const int64_t TS_SOURCE_INFO_CACHE_NUM = 4096;
 private:
+  int64_t get_refresh_gts_interval_() const;
   int get_ts_source_info_opt_(const uint64_t tenant_id, ObTsSourceInfoGuard &guard,
       const bool need_create_tenant, const bool need_update_access_ts);
   int get_ts_source_info_(const uint64_t tenant_id, ObTsSourceInfoGuard &guard,

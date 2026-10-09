@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX RS
 #include "rootserver/parallel_ddl/ob_table_helper.h"
@@ -104,14 +97,15 @@ int ObCreateTableLikeHelper::check_schema_valid_(const ObTableSchema *&orig_tabl
     LOG_USER_ERROR(OB_ERR_WRONG_OBJECT, helper.convert(arg_.origin_db_name_),
                                         helper.convert(arg_.origin_table_name_),
                    "BASE TABLE");
-  } else if (orig_table_schema->has_mlog_table()) {
+  } else if ((orig_table_schema->is_partitioned_table()
+              || orig_table_schema->is_auto_partitioned_table()) && TMP_TABLE == arg_.table_type_) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN(
-        "create table like on table with materialized view log is not supported",
+        "create temporary table like on table with partition not supported",
         KR(ret));
     LOG_USER_ERROR(OB_NOT_SUPPORTED,
-                   "create table like on table with materialized view log is");
-  } else if (orig_table_schema->table_referenced_by_fast_lsm_mv()) {
+                   "create temporary table like on table with partition is");
+  } else if (orig_table_schema->required_by_mv_fast_refresh()) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN(
         "create table like on table required by materialized view is not supported", KR(ret));
@@ -181,6 +175,7 @@ int ObCreateTableLikeHelper::generate_table_schema_()
       new_table_schema.set_define_user_id(arg_.define_user_id_);
       new_table_schema.reset_foreign_key_infos();
       new_table_schema.reset_trigger_list();
+      new_table_schema.reset_progressive_merge();
       if (new_table_schema.has_constraint()) {
         ObTableSchema::const_constraint_iterator iter = new_table_schema.constraint_begin();
         ObTableSchema::const_constraint_iterator iter_last = iter;
@@ -317,6 +312,8 @@ int ObCreateTableLikeHelper::generate_aux_table_schemas_()
           new_index_schema.set_database_id(new_database_id);
           //create table like, index always is valid
           new_index_schema.set_index_status(INDEX_STATUS_AVAILABLE);
+          // create table like, index no need to progressive merge
+          new_index_schema.reset_progressive_merge();
           const ObIndexType index_type = new_index_schema.get_index_type();
           if (new_index_schema.is_rowkey_doc_id() ||
               new_index_schema.is_doc_id_rowkey() ||

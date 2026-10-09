@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -31,6 +24,8 @@ ObTableLoadPartitionCalc::ObTableLoadPartitionCalc()
     cast_mode_(CM_NONE),
     is_partition_with_autoinc_(false),
     partition_with_autoinc_idx_(OB_INVALID_INDEX),
+    is_partition_with_random_part_(false),
+    partition_with_random_part_idx_(OB_INVALID_INDEX),
     param_(nullptr),
     is_partitioned_(false),
     allocator_("TLD_PartCalc"),
@@ -47,6 +42,7 @@ ObTableLoadPartitionCalc::~ObTableLoadPartitionCalc()
 }
 
 int ObTableLoadPartitionCalc::init(const ObTableLoadParam &param,
+                                   const ObTableLoadSchema &schema,
                                    sql::ObSQLSessionInfo *session_info,
                                    const ObIArray<ObTabletID> &tablet_ids)
 {
@@ -83,7 +79,7 @@ int ObTableLoadPartitionCalc::init(const ObTableLoadParam &param,
           LOG_WARN("fail to init table location", KR(ret));
         }
         // 获取part_key_obj_index_
-        else if (OB_FAIL(init_part_key_index(table_schema, allocator_))) {
+        else if (OB_FAIL(init_part_key_index(table_schema, schema, allocator_))) {
           LOG_WARN("fail to get rowkey index", KR(ret));
         } else if (ObDirectLoadLevel::PARTITION == param.load_level_) {
           ObMemAttr attr(MTL_ID(), "TLD_TABLETID");
@@ -110,6 +106,7 @@ int ObTableLoadPartitionCalc::init(const ObTableLoadParam &param,
 }
 
 int ObTableLoadPartitionCalc::init_part_key_index(const ObTableSchema *table_schema,
+                                                  const ObTableLoadSchema &schema,
                                                 ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
@@ -148,13 +145,18 @@ int ObTableLoadPartitionCalc::init_part_key_index(const ObTableSchema *table_sch
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected rowkey position", KR(ret), KPC(column_schema), K(pos));
       } else {
-        if (table_schema->is_table_without_pk()) {
+        if (table_schema->is_table_without_pk() && !table_schema->is_random_part()) {
           abort_unless(i > 0);
           part_key_obj_index_[pos - 1].index_ = i - 1;
         } else {
           part_key_obj_index_[pos - 1].index_ = i;
         }
-        if (column_schema->is_identity_column() || column_schema->is_autoincrement()) {
+        bool is_random_partkey = column_schema->get_column_id() == schema.random_partkey_column_id_;
+        if (is_random_partkey) {
+          is_partition_with_random_part_ = true;
+          partition_with_random_part_idx_ = pos - 1;
+        } else if (column_schema->is_identity_column() || column_schema->is_autoincrement()) {
+          // 不包括有主键自增列的随机分布表
           is_partition_with_autoinc_ = true;
           partition_with_autoinc_idx_ = pos - 1;
         }

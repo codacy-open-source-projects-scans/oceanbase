@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_EXPR_DATE_FORMAT_H_
@@ -26,7 +19,7 @@
   YearType year, MonthType month, DateType dt_yday, DateType dt_mday, DateType dt_wday,            \
     int32_t hour, int32_t minute, int32_t sec, int32_t fsec, WeekType &week_sunday,                \
     WeekType &week_monday, int8_t &delta_sunday, int8_t &delta_monday, char *res_buf,              \
-    int16_t &len, bool &res_null, bool no_null, const char *const *day_name,                       \
+    int32_t &len, bool &res_null, bool no_null, const char *const *day_name,                       \
     const char *const *ab_day_name, const char *const *month_name,                                 \
     const char *const *ab_month_name
 
@@ -34,6 +27,16 @@ namespace oceanbase
 {
 namespace sql
 {
+
+// Fast format pattern enum for common date formats
+enum class DateFormatPattern : int8_t {
+  UNKNOWN = 0,
+  Y_m_d,      // %Y-%m-%d (10 chars)
+  Y_m_01,     // %Y-%m-01 (10 chars, same as DATE_TRUNC('month'))
+  Y_m,        // %Y-%m (7 chars)
+  Ymd,        // %Y%m%d (8 chars)
+};
+
 class ObExprDateFormat : public ObStringExprOperator
 {
 public:
@@ -108,6 +111,21 @@ private:
   static int calc_year_week(COMMON_PART_FORMAT_FUNC_ARG_DECL);
   template <typename ArgVec, typename IN_TYPE>
   static int calc_year_month_week(COMMON_PART_FORMAT_FUNC_ARG_DECL);
+
+  // Fast format path functions
+  static DateFormatPattern recognize_format_pattern(const ObString &format);
+  template <typename ArgVec, typename ResVec, typename IN_TYPE>
+  static int format_y_m_01_vector(const ObExpr &expr, ObEvalCtx &ctx,
+                                   const ObBitVector &skip, const EvalBound &bound);
+  template <typename ArgVec, typename ResVec, typename IN_TYPE>
+  static int format_y_m_d_vector(const ObExpr &expr, ObEvalCtx &ctx,
+                                  const ObBitVector &skip, const EvalBound &bound);
+  template <typename ArgVec, typename ResVec, typename IN_TYPE>
+  static int format_y_m_vector(const ObExpr &expr, ObEvalCtx &ctx,
+                                const ObBitVector &skip, const EvalBound &bound);
+  template <typename ArgVec, typename ResVec, typename IN_TYPE>
+  static int format_ymd_vector(const ObExpr &expr, ObEvalCtx &ctx,
+                                const ObBitVector &skip, const EvalBound &bound);
 };
 
 inline int ObExprDateFormat::calc_result_type2(ObExprResType &type,

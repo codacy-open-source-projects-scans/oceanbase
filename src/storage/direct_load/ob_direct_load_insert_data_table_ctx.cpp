@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -654,6 +647,7 @@ int ObDirectLoadInsertDataTableContext::init_dag(
   init_param.ddl_task_param_.target_table_id_ = param_.table_id_;
   init_param.ddl_task_param_.schema_version_ = param_.schema_version_;
   init_param.ddl_task_param_.is_no_logging_ = param_.is_no_logging_;
+  init_param.ddl_task_param_.max_batch_size_ = param_.max_batch_size_;
   init_param.is_inc_major_log_ = param_.is_inc_major_log_;
   if (!param_.is_incremental_) {
     init_param.ddl_task_param_.snapshot_version_ = param_.snapshot_version_;

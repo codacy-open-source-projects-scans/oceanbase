@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -72,7 +65,10 @@ public:
                                const common::ObString &job_action,
                                const common::ObObj &start_date,
                                const common::ObString &repeat_interval,
-                               const common::ObString &exec_env);
+                               const common::ObString &exec_env,
+                               const common::ObString *job_owner = NULL,
+                               const uint64_t job_owner_id = common::OB_INVALID_ID,
+                               const int64_t preserved_max_run_duration_sec = -1);
   static int create_mview_scheduler_job(common::ObISQLClient &sql_client,
                                         const uint64_t tenant_id,
                                         const uint64_t mview_id,
@@ -83,7 +79,8 @@ public:
                                         const common::ObString &exec_env,
                                         const share::schema::ObMVNestedRefreshMode nested_refresh_mode,
                                         ObArenaAllocator &allocator,
-                                        common::ObString &job_name);
+                                        common::ObString &job_name,
+                                        const int64_t preserved_max_run_duration_sec = -1);
   static int create_mlog_scheduler_job(common::ObISQLClient &sql_client,
                                        const uint64_t tenant_id,
                                        const uint64_t mlog_id,
@@ -93,7 +90,8 @@ public:
                                        const common::ObString &repeat_interval,
                                        const common::ObString &exec_env,
                                        ObArenaAllocator &allocator,
-                                       common::ObString &job_name);
+                                       common::ObString &job_name,
+                                       const int64_t preserved_max_run_duration_sec = -1);
 
   static int add_mview_info_and_refresh_job(common::ObISQLClient &sql_client,
                                             const uint64_t tenant_id,
@@ -139,9 +137,31 @@ public:
   static int disable_and_stop_job(const uint64_t tenant_id,
                                   const uint64_t mview_id);
 
+  // Parallel to disable_and_stop_job: kill any new-framework in-flight refresh
+  // tasks of the given mview. Used by DDL (drop materialized view / drop
+  // database) so any refresh transaction holding the OBJ_TYPE_MATERIALIZED_VIEW
+  // EXCLUSIVE in-trans lock is killed and rolled back before DDL tries to take
+  // that lock. Goes through MTL -> pending_task_manager which routes a single
+  // RPC carrying mview_id to the SYS_LS leader for batch cancellation.
+  static int kill_mview_refreshes(const uint64_t tenant_id,
+                                  const uint64_t mview_id,
+                                  const bool is_drop);
+
+
+  static int set_mview_refresh_params(const uint64_t tenant_id,
+                                      const uint64_t mview_id,
+                                      const common::ObString &parameter_name,
+                                      const common::ObString &parameter_value);
+
 private:
   static int acquire_major_refresh_mv_merge_scn_(common::ObISQLClient &trans,
                                                  const uint64_t tenant_id);
+  static int get_owner_name_from_table_id_(common::ObISQLClient &sql_client,
+                                           const uint64_t tenant_id,
+                                           const uint64_t table_id,
+                                           common::ObIAllocator &allocator,
+                                           common::ObString &owner_name,
+                                           uint64_t &owner_user_id);
 };
 } // namespace storage
 } // namespace oceanbase

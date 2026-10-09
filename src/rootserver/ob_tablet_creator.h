@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TABLET_CREATOR_H
@@ -81,6 +74,7 @@ public:
     : batch_arg_(),
       table_schemas_map_(),
       auto_part_size_arr_(),
+      auto_random_size_arr_(),
       result_(common::OB_NOT_MASTER),
       next_(NULL)
   {}
@@ -100,6 +94,7 @@ public:
     batch_arg_.reset();
     table_schemas_map_.clear();
     auto_part_size_arr_.reset();
+    auto_random_size_arr_.reset();
     result_ = common::OB_NOT_MASTER;
   }
   DECLARE_TO_STRING;
@@ -108,6 +103,9 @@ public:
   common::hash::ObHashMap<int64_t, int64_t> table_schemas_map_;
   // if non-empty, auto_part_size_arr_[i] = auto_part_size of batch_arg_.table_schemas_[i]
   ObArray<int64_t> auto_part_size_arr_;
+  // if non-empty, auto_random_size_arr_[i] = auto_random_size of batch_arg_.table_schemas_[i]
+  ObArray<int64_t> auto_random_size_arr_;
+
   //the result of create tablet
   int result_;
   ObBatchCreateTabletHelper *next_;

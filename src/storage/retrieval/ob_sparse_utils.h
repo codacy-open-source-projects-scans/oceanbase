@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_SPARSE_UTILS_H_
@@ -37,6 +30,7 @@ struct ObSRDaaTRelevanceCollector
     return get_result(relevance, is_valid);
   }
   virtual int set_norm(const double max_score) { return OB_NOT_IMPLEMENT; }
+  virtual bool is_pure_additive() const { return false; }
 protected:
   bool is_inited_;
 };
@@ -52,6 +46,7 @@ struct ObSRDaaTInnerProductRelevanceCollector : ObSRDaaTRelevanceCollector
   virtual void reuse() override;
   virtual int collect_one_dim(const int64_t dim_idx, const double relevance) override;
   virtual int get_result(double &relevance, bool &is_valid) override;
+  virtual bool is_pure_additive() const override { return true; }
 private:
   double total_relevance_;
 };

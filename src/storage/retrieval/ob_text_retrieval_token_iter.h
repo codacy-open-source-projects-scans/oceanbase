@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TEXT_RETRIEVAL_TOKEN_ITER_H_
@@ -252,6 +245,7 @@ private:
   const ObBlockMaxScoreIterParam *block_max_iter_param_;
   ObTableScanParam *block_max_scan_param_;
   ObBlockMaxBM25RankingParam ranking_param_;
+  ObDomainIdCmp domain_id_cmp_;
   const ObDatum *curr_id_;
   const ObMaxScoreTuple *max_score_tuple_;
   double dim_max_score_;

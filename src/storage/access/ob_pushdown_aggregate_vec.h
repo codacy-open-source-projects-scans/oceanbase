@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_PUSHDOWN_AGGREGATE_VEC_H_
@@ -120,6 +113,7 @@ public:
   OB_INLINE int64_t get_agg_row_id() const { return agg_row_id_; }
   OB_INLINE bool is_aggr_with_expr() const { return aggr_with_expr_; }
   OB_INLINE void reset_agg_row_id() { agg_row_id_ = OB_INVALID_CS_ROW_ID; }
+  OB_INLINE bool is_param_null_prop() const { return !aggr_with_expr_; }
   OB_INLINE sql::ObExpr *get_agg_expr() const
   {
     const sql::ObAggrInfo &agg_info = basic_info_.agg_ctx_.aggr_infos_.at(agg_idx_);

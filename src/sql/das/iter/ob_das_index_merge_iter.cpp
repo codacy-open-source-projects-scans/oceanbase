@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
 #include "sql/das/iter/ob_das_index_merge_iter.h"
 #include "src/sql/das/ob_das_attach_define.h"
+#include "sql/engine/table/ob_table_scan_op.h"
 namespace oceanbase
 {
 using namespace common;
@@ -20,6 +14,7 @@ namespace sql
 {
 
 int ObDASIndexMergeIter::IndexMergeRowStore::init(common::ObIAllocator &allocator,
+                                                  common::ObIAllocator &row_store_allocator,
                                                   const common::ObIArray<ObExpr*> *exprs,
                                                   ObEvalCtx *eval_ctx,
                                                   int64_t max_size,
@@ -53,7 +48,7 @@ int ObDASIndexMergeIter::IndexMergeRowStore::init(common::ObIAllocator &allocato
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate memory", K(max_size), K(ret));
   } else {
-    row_store_->set_allocator(allocator);
+    row_store_->set_allocator(row_store_allocator);
     count_ = 0;
     idx_ = 0;
     mock_skip_ = mock_skip;
@@ -360,7 +355,7 @@ int ObDASIndexMergeIter::inner_init(ObDASIterParam &param)
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("invalid child iter", K(i), K(child), K(ret));
           } else if (OB_FAIL(row_store.init(
-              alloc, child->get_output(), eval_ctx_, max_size_, is_reverse_, rowkey_is_uint64_, mock_skip_))) {
+              alloc, mem_ctx_->get_malloc_allocator(), child->get_output(), eval_ctx_, max_size_, is_reverse_, rowkey_is_uint64_, mock_skip_))) {
             LOG_WARN("failed to init row store", K(ret));
           } else if (child_scan_rtdef != nullptr) {
             // need to prepare scan param for normal scan node
@@ -465,9 +460,51 @@ int ObDASIndexMergeIter::prepare_scan_ranges(ObTableScanParam &scan_param, const
     LOG_WARN("failed to assign ss key ranges", K(ret));
   } else if (OB_FAIL(scan_param.mbr_filters_.assign(rtdef->mbr_filters_))) {
     LOG_WARN("failed to assign mbr filters", K(ret));
+  } else if (OB_FAIL(transform_physical_rowid_ranges(scan_param, rtdef))) {
+    LOG_WARN("failed to transform physical rowid ranges", K(ret));
   }
 
   LOG_TRACE("index merge iter prepare scan ranges", K(scan_param), KPC(rtdef), K(ret));
+  return ret;
+}
+
+int ObDASIndexMergeIter::transform_physical_rowid_ranges(ObTableScanParam &scan_param,
+                                                         const ObDASScanRtDef *rtdef) const
+{
+  int ret = OB_SUCCESS;
+
+  const ObDASScanCtDef *scan_ctdef = nullptr;
+
+  if (OB_ISNULL(rtdef) || OB_ISNULL(scan_ctdef = static_cast<const ObDASScanCtDef*>(rtdef->ctdef_))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected nullptr scan ctdef", K(ret), KPC(rtdef));
+  } else if (OB_ISNULL(mem_ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected nullptr mem ctx", K(ret));
+  } else {
+    const storage::ObTableReadInfo &read_info = scan_ctdef->table_param_.get_read_info();
+    common::ObIAllocator &range_allocator = mem_ctx_->get_arena_allocator();
+    for (int64_t i = 0; OB_SUCC(ret) && i < scan_param.key_ranges_.count(); ++i) {
+      ObNewRange &scan_range = scan_param.key_ranges_.at(i);
+      if (!scan_range.is_physical_rowid_range_) {
+        // do nothing
+      } else if (OB_UNLIKELY(read_info.get_columns_desc().count() < 1)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected empty columns desc", K(ret), K(read_info));
+      } else {
+        ObArrayWrap<ObColDesc> rowkey_descs(read_info.get_columns_desc().get_data(),
+                                            read_info.get_schema_rowkey_count());
+        if (OB_FAIL(ObTableScanOp::transform_physical_rowid(range_allocator,
+                                                            scan_param.tablet_id_,
+                                                            rowkey_descs,
+                                                            scan_range))) {
+          LOG_WARN("transform physical rowid for range failed",
+                   K(ret), K(scan_range), K(scan_param.tablet_id_));
+        }
+      }
+    }
+  }
+
   return ret;
 }
 
@@ -706,9 +743,6 @@ int ObDASIndexMergeIter::compare(IndexMergeRowStore &cur_store, IndexMergeRowSto
       if (OB_ISNULL(cur_datums) || OB_ISNULL(cmp_datums)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected nullptr", K(ret), K(cur_datums), K(cmp_datums));
-      } else if (OB_UNLIKELY(cur_datums->is_null() || cmp_datums->is_null())) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null datum", K(ret), KPC(cur_datums), KPC(cmp_datums));
       } else {
         ObObj cur_obj;
         ObObj cmp_obj;

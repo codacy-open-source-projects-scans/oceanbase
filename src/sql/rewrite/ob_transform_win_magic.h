@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_WIN_MAGIC_H
@@ -164,6 +157,19 @@ private:
   int get_reverse_map(ObIArray<int64_t> &map, ObIArray<int64_t> &reverse_map, int64_t size);
 
   int check_mode_and_agg_type(ObSelectStmt *stmt, bool &is_valid);
+
+  // Reject WIN_MAGIC when two grouping positions would merge after column replacement.
+  int check_grouping_sets_no_collapse(ObSelectStmt *stmt,
+                                      const common::ObIArray<ObRawExpr *> &replace_from,
+                                      const common::ObIArray<ObRawExpr *> &replace_to,
+                                      bool &is_valid);
+  // helper function only for `check_grouping_sets_no_collapse`
+  int build_column_replace_map(ObDMLStmt *stmt,
+                               TableItem *rewrite_table,
+                               ObSelectStmt *rewrite_view,
+                               ObStmtMapInfo &map_info,
+                               common::ObIArray<ObRawExpr *> &replace_from,
+                               common::ObIArray<ObRawExpr *> &replace_to);
 
   int construct_trans_table(const ObDMLStmt *stmt,
                             const TableItem *table,

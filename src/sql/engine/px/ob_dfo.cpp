@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -993,4 +986,36 @@ bool ObDfo::check_root_valid()
     invalid = IS_PX_COORD(root_op_spec_->type_);
   }
   return invalid;
+}
+
+int ObDfo::append_in_slave_mapping_child(const SlaveMappingType v, const int64_t slave_mapping_id) {
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(in_slave_mapping_types_.push_back(v))) {
+    SQL_LOG(WARN, "failed to push back in_slave_mapping_types_", K(ret), K(v));
+  } else if (OB_FAIL(in_slave_mapping_ids_.push_back(slave_mapping_id))) {
+    SQL_LOG(WARN, "failed to push back in_slave_mapping_ids_", K(ret), K(slave_mapping_id));
+  }
+  return ret;
+}
+
+bool ObDfo::has_reference_child() const {
+  bool has_reference_child = false;
+  for (int64_t i = 0; i < in_slave_mapping_types_.count(); ++i) {
+    if (IS_HASH_SLAVE_MAPPING(in_slave_mapping_types_.at(i))) {
+      has_reference_child = true;
+      break;
+    }
+  }
+  return has_reference_child;
+}
+
+int64_t ObDfo::get_first_ref_child_sm_id() const {
+  int64_t reference_child_id = 0;
+  for (int64_t i = 0; i < in_slave_mapping_types_.count(); ++i) {
+    if (IS_HASH_SLAVE_MAPPING(in_slave_mapping_types_.at(i))) {
+      reference_child_id = in_slave_mapping_ids_.at(i);
+      break;
+    }
+  }
+  return reference_child_id;
 }

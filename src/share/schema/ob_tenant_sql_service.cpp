@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -271,6 +264,15 @@ int ObTenantSqlService::replace_tenant(
                  KR(ret), K(tenant_schema));
       }
 #endif
+      if (OB_SUCC(ret)) {
+        uint64_t data_version = 0;
+        if (OB_FAIL(GET_MIN_DATA_VERSION(OB_SYS_TENANT_ID, data_version))) {
+          LOG_WARN("fail to get data version", KR(ret));
+        } else if (data_version >= DATA_VERSION_4_6_1_0 &&
+                   OB_FAIL(dml.add_column("default_tablespace_id", tenant_schema.get_default_tablespace_id()))) {
+          LOG_WARN("fail to add default_tablespace_id column", KR(ret), K(tenant_schema));
+        }
+      }
     }
     // insert into __all_tenant
     if (OB_SUCC(ret)) {

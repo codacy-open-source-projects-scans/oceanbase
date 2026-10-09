@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef LIB_UTILITY_OB_PRINT_UTILS_
@@ -554,6 +547,21 @@ template<typename T1, typename T2>
   } else if (OB_FAIL(databuff_print_obj(buf, buf_len, pos, obj.first))) {
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
   } else if (OB_FAIL(databuff_print_obj(buf, buf_len, pos, obj.second))) {
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "]"))) {
+  } else {}
+  return ret;
+}
+
+template<typename T1, typename T2, typename T3>
+    inline int databuff_print_obj(char *buf, const int64_t buf_len, int64_t &pos, const std::tuple<T1, T2, T3> &obj)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(databuff_printf(buf, buf_len, pos, "["))) {
+  } else if (OB_FAIL(databuff_print_obj(buf, buf_len, pos, std::get<0>(obj)))) {
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
+  } else if (OB_FAIL(databuff_print_obj(buf, buf_len, pos, std::get<1>(obj)))) {
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, ", "))) {
+  } else if (OB_FAIL(databuff_print_obj(buf, buf_len, pos, std::get<2>(obj)))) {
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "]"))) {
   } else {}
   return ret;

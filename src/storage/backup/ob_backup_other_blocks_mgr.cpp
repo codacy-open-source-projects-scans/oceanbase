@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -127,9 +120,9 @@ int ObBackupOtherBlocksMgr::init(const uint64_t tenant_id, const common::ObTable
   } else if (OB_INVALID_ID == tenant_id || !tablet_id.is_valid() || !table_key.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid args", K(ret), K(tenant_id), K(tablet_id), K(table_key));
-  } else if (!GCTX.is_shared_storage_mode() && !table_key.is_ddl_dump_sstable()) {
+  } else if (!table_key.is_ddl_dump_sstable()) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("only ddl dump in ss mode allowed here", K(ret), K(table_key));
+    LOG_WARN("only ddl dump sstable allowed here", K(ret), K(table_key));
   } else if (OB_FAIL(get_total_other_block_count_(tablet_id, sstable, total_other_block_count))) {
     LOG_WARN("failed to get total other block count", K(ret), K(tablet_id), K(sstable));
   } else {

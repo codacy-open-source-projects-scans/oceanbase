@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OPT_STAT_SQL_SERVICE_H_
@@ -73,6 +66,31 @@ struct ObOptKeyColumnStat
   TO_STRING_KV(KPC_(key),
                KPC_(stat),
                K(only_histogram_stat_));
+};
+
+struct ObEvictTableKey
+{
+  ObEvictTableKey() : ObEvictTableKey(common::OB_INVALID_ID,
+                                      0,
+                                      -1)
+    {}
+  ObEvictTableKey(int64_t table_id,
+                  int64_t gmt_modified,
+                  int64_t plan_expired_before)
+    : table_id_(table_id),
+      gmt_modified_(gmt_modified),
+      plan_expired_before_(plan_expired_before) {}
+  ObEvictTableKey(const ObEvictTableKey& other)
+  {
+    table_id_ = other.table_id_;
+    gmt_modified_ = other.gmt_modified_;
+    plan_expired_before_ = other.plan_expired_before_;
+  }
+  TO_STRING_KV(K_(table_id), K_(gmt_modified),
+               K_(plan_expired_before));
+  int64_t table_id_;
+  int64_t gmt_modified_;
+  int64_t plan_expired_before_;
 };
 
 enum ObOptStatCompressType
@@ -216,6 +234,7 @@ public:
 
   int update_opt_stat_gather_stat(const ObOptStatGatherStat &gather_stat);
   int update_opt_stat_task_stat(const ObOptStatTaskInfo &task_info);
+  int insert_cache_invalidate_event(const ObOptStatGatherStat &gather_stat);
 
   int update_system_stats(const uint64_t tenant_id,
                         const ObOptSystemStat *system_stat);
@@ -225,6 +244,14 @@ public:
                        ObOptSystemStat &stat);
 
   int delete_system_stats(const uint64_t tenant_id);
+
+public:
+
+  int get_recent_updated_stats(const uint64_t tenant_id,
+                               const int64_t last_gmt_modified,
+                               const uint64_t max_table_count,
+                               ObIArray<ObEvictTableKey> &keys);
+
 private:
   int get_table_stat_sql(const uint64_t tenant_id,
                          const ObOptTableStat &stat,
@@ -308,6 +335,9 @@ private:
 
   int get_gather_stat_task_value(const ObOptStatTaskInfo &task_info,
                                  ObSqlString &values_str);
+
+  int get_cache_invalidate_value(const ObOptStatGatherStat &gather_stat,
+                                 ObSqlString &values_ptr);
 
   int get_system_stat_sql(const uint64_t tenant_id,
                          const ObOptSystemStat &stat,

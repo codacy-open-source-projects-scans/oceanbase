@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -103,6 +96,7 @@ public:
   int append_row(const ObTabletID &tablet_id, const ObDirectLoadDatumRow &datum_row) override;
   int append_batch(common::ObIVector *tablet_id_vector,
                    const storage::ObDirectLoadBatchRows &batch_rows) override;
+  int push_batch() override { return push_chunk(); }
   int close(ObTableLoadStoreTrans *trans, const int32_t session_id) override;
 
 private:

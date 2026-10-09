@@ -1,4 +1,4 @@
-#owner: dachuan.sdc
+# owner: wenkai.cwk
 #tags: optimizer
 
 --result_format 4
@@ -121,3 +121,12 @@ select c1, --c1 from tt;
 select c1, ---c1 from tt;
 
 --sleep 2
+
+# bugfix: github#2203
+--disable_warnings
+drop view if exists v1;
+--enable_warnings
+SELECT (- (CAST(NULL AS SIGNED))) < (- (CAST(0.7646335288457784 AS TIME)));
+create view v1 as SELECT (- (CAST(NULL AS SIGNED))), (- (CAST(0.7646335288457784 AS TIME))), (- (CAST(NULL AS SIGNED))) < (- (CAST(0.7646335288457784 AS TIME)));
+desc v1;
+drop view v1;

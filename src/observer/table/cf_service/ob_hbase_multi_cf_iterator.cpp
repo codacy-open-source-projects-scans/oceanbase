@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -176,6 +169,7 @@ int ObHbaseMultiCFIterator::init_cf_queries(ObTableExecCtx &exec_ctx, const ObHb
             LOG_WARN("fail to update tablet id by part ids", K(ret));
           }
         } else {
+          const_cast<ObHbaseQuery &>(cf_query->get_hbase_query()).set_use_for_delete(hbase_query.use_for_delete());
           cf_query->set_table_id(table_schema->get_table_id());
           // set correct table name
           cf_query->set_table_name(table_schema->get_table_name());

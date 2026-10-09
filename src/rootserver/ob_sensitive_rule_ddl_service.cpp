@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -15,6 +8,7 @@
 #include "rootserver/ob_sensitive_rule_ddl_operator.h"
 #include "rootserver/ob_ddl_service.h"
 #include "rootserver/ob_ddl_sql_generator.h"
+#include "share/schema/ob_schema_guard_wrapper.h"
 
 namespace oceanbase
 {
@@ -160,7 +154,10 @@ int ObSensitiveRuleDDLService::handle_sensitive_rule_ddl(const ObSensitiveRuleDD
     // 2. start DDL transaction
     ObDDLSQLTransaction trans(&ddl_service_->get_schema_service());
     ObSensitiveRuleDDLOperator ddl_operator(ddl_service_->get_schema_service(), ddl_service_->get_sql_proxy());
-    if (OB_FAIL(trans.start(&ddl_service_->get_sql_proxy(), tenant_id, refreshed_schema_version))) {
+    share::schema::ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, &ddl_service_->get_schema_service());
+    if (OB_FAIL(schema_guard_wrapper.init(schema_guard))) {
+      LOG_WARN("fail to init schema guard wrapper", KR(ret));
+    } else if (OB_FAIL(trans.start(&ddl_service_->get_sql_proxy(), tenant_id, refreshed_schema_version))) {
       LOG_WARN("start transaction failed", K(ret), K(refreshed_schema_version), K(tenant_id));
     // 3. check resolver result
     } else if (OB_FAIL(ddl_validation_check(arg.ddl_type_, schema, schema_guard))) {
@@ -171,7 +168,7 @@ int ObSensitiveRuleDDLService::handle_sensitive_rule_ddl(const ObSensitiveRuleDD
                                                                    arg.ddl_type_,
                                                                    arg.ddl_stmt_str_,
                                                                    tenant_id,
-                                                                   schema_guard,
+                                                                   schema_guard_wrapper,
                                                                    arg.user_id_))) {
       LOG_WARN("handle sensitive rule function failed", K(ret));
     }
@@ -301,7 +298,7 @@ int ObSensitiveRuleDDLService::grant_revoke_sensitive_rule(const ObSensitiveRule
 }
 
 int ObSensitiveRuleDDLService::drop_sensitive_column_caused_by_drop_column_online(
-  share::schema::ObSchemaGetterGuard &schema_guard,
+  share::schema::ObSchemaGuardWrapper &schema_guard,
   const share::schema::ObTableSchema &origin_table_schema,
   const common::ObIArray<uint64_t> &drop_cols_id_arr,
   common::ObMySQLTransaction &trans)
@@ -336,7 +333,9 @@ int ObSensitiveRuleDDLService::rebuild_hidden_table_sensitive_columns(
   const uint64_t tenant_id = orig_table_schema.get_tenant_id();
   ObSEArray<const ObSensitiveRuleSchema *, 4> sensitive_rules;
   ObColumnNameMap col_name_map;
-  if (OB_ISNULL(ddl_service_)) {
+  if (OB_UNLIKELY(orig_table_schema.get_tenant_id() != hidden_table_schema.get_tenant_id())) {
+    // only possible in cross-tenant table recovery, DO NOT rebuild sensitive rule in such scenario for now
+  } else if (OB_ISNULL(ddl_service_)) {
     ret = OB_NOT_INIT;
     LOG_WARN("ddl service is null", K(ret));
   } else if (OB_FAIL(ddl_service_->check_inner_stat())) {
@@ -348,6 +347,10 @@ int ObSensitiveRuleDDLService::rebuild_hidden_table_sensitive_columns(
   } else {
     ObSensitiveRuleDDLOperator sensitive_rule_ddl_operator(ddl_service_->get_schema_service(),
                                                            ddl_service_->get_sql_proxy());
+    share::schema::ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, &ddl_service_->get_schema_service());
+    if (OB_FAIL(schema_guard_wrapper.init(schema_guard))) {
+      LOG_WARN("fail to init schema guard wrapper", KR(ret));
+    }
     for (int64_t i = 0; OB_SUCC(ret) && i < sensitive_rules.count(); i++) {
       const ObSensitiveRuleSchema *sensitive_rule = sensitive_rules.at(i);
       ObSensitiveRuleSchema rebuild_schema;
@@ -391,7 +394,7 @@ int ObSensitiveRuleDDLService::rebuild_hidden_table_sensitive_columns(
                                                       rebuild_schema, trans,
                                                       OB_DDL_ALTER_SENSITIVE_RULE_ADD_COLUMN,
                                                       empty_ddl_stmt, tenant_id,
-                                                      schema_guard, OB_INVALID_ID))) {
+                                                      schema_guard_wrapper, OB_INVALID_ID))) {
         LOG_WARN("failed to rebuild column for sensitive rule after creating hidden table",
                   KR(ret), K(rebuild_schema));
       }

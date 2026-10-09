@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -406,7 +399,7 @@ int ObRemoteBaseExecuteP<T>::auto_end_phy_trans(bool is_rollback)
     if (OB_SUCCESS != get_ret) {
       LOG_WARN_RET(get_ret, "failed to get trans result",
                K(get_ret),
-               "scanner_trans_result", my_session->get_trans_result(),
+               "scanner_trans_result", exec_ctx_.get_trans_result(),
                "tx_desc", *my_session->get_tx_desc());
       ret = (OB_SUCCESS == ret) ? get_ret : ret;
     }
@@ -422,7 +415,7 @@ int ObRemoteBaseExecuteP<T>::auto_end_phy_trans(bool is_rollback)
       ret = (OB_SUCCESS == ret) ? end_ret : ret;
       LOG_WARN("fail end implicit trans", K(is_rollback), K(ret), K_(exec_ctx));
     }
-    my_session->get_trans_result().assign(tx_result);
+    exec_ctx_.get_trans_result().assign(tx_result);
   }
   trans_state_.reset();
   return ret;
@@ -813,7 +806,7 @@ int ObRemoteBaseExecuteP<T>::execute_with_sql(ObRemoteTask &task)
     if (enable_sqlstat && OB_NOT_NULL(exec_ctx_.get_sql_ctx())) {
       sqlstat_record.record_sqlstat_end_value();
       sqlstat_record.set_is_plan_cache_hit(exec_ctx_.get_sql_ctx()->plan_cache_hit_);
-      sqlstat_record.set_is_muti_query(session->get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+      sqlstat_record.set_is_muti_query(exec_ctx_.get_sql_ctx()->multi_stmt_item_.is_part_of_multi_stmt());
       if (OB_NOT_NULL(exec_ctx_.get_sql_ctx()) && OB_NOT_NULL(exec_ctx_.get_sql_ctx())) {
         sqlstat_record.set_is_muti_query_batch(exec_ctx_.get_sql_ctx()->multi_stmt_item_.is_batched_multi_stmt());
       }
@@ -856,7 +849,7 @@ int ObRemoteBaseExecuteP<T>::base_before_response(common::ObScanner &scanner)
         ->get_tx_exec_result(*session->get_tx_desc(), scanner.get_trans_result());
     } else {
       // ac=1 remote execution
-      tmp_ret = scanner.get_trans_result().assign(session->get_trans_result());
+      tmp_ret = scanner.get_trans_result().assign(exec_ctx_.get_trans_result());
     }
     if (OB_SUCCESS != tmp_ret) {
       LOG_WARN_RET(tmp_ret, "failed to get trans result",
@@ -870,7 +863,7 @@ int ObRemoteBaseExecuteP<T>::base_before_response(common::ObScanner &scanner)
                 "scanner_trans_result", scanner.get_trans_result(),
                 "tx_desc", *session->get_tx_desc());
     }
-    session->get_trans_result().reset();
+    exec_ctx_.get_trans_result().reset();
   }
   if (OB_SUCCESS == exec_errcode_ && is_execute_remote_plan()) {
     ObExecFeedbackInfo &fb_info = scanner.get_feedback_info();
@@ -1147,7 +1140,7 @@ int ObRpcRemoteExecuteP::process()
     if (enable_sqlstat && OB_NOT_NULL(exec_ctx_.get_sql_ctx())) {
       sqlstat_record.record_sqlstat_end_value();
       sqlstat_record.set_is_plan_cache_hit(exec_ctx_.get_sql_ctx()->plan_cache_hit_);
-      sqlstat_record.set_is_muti_query(session->get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+      sqlstat_record.set_is_muti_query(exec_ctx_.get_sql_ctx()->multi_stmt_item_.is_part_of_multi_stmt());
       if (OB_NOT_NULL(exec_ctx_.get_sql_ctx()) && OB_NOT_NULL(exec_ctx_.get_sql_ctx())) {
         sqlstat_record.set_is_muti_query_batch(exec_ctx_.get_sql_ctx()->multi_stmt_item_.is_batched_multi_stmt());
       }

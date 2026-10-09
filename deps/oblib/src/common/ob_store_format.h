@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_OB_STORE_FORMAT_H_
@@ -64,7 +57,7 @@ enum ObTableStoreType : uint8_t
   OB_TABLE_STORE_INVALID = 0,
   OB_TABLE_STORE_ROW = 1,
   OB_TABLE_STORE_COLUMN = 2,
-  OB_TABLE_STORE_ROW_WITH_COLUMN= 3,
+  OB_TABLE_STORE_ROW_WITH_COLUMN = 3,
   OB_TABLE_STORE_MAX
 };
 
@@ -256,6 +249,10 @@ public:
            type == ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT ||
            type == ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY;
   }
+  static inline bool is_merge_engine_valid_with_unknown(const ObMergeEngineType type)
+  {
+    return is_merge_engine_valid(type) || type == ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN;
+  }
   static OB_INLINE bool is_default_merge_engine(const ObMergeEngineType type)
   {
     return type == ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE;
@@ -270,12 +267,15 @@ public:
   static OB_INLINE ObMergeEngineType get_lob_aux_inherit_merge_engine_type(const ObMergeEngineType type)
   {
     // LOB_AUX can't inherit delete-insert merge engine because of the dependency of sql_seq in OBCDC
+    ObMergeEngineType inherit_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
     switch (type) {
       case ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY:
-        return ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY;
+        inherit_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY;
+        break;
       default:
-        return ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE;
+        inherit_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE;
     }
+    return inherit_merge_engine_type;
   }
 
   static OB_INLINE const char *get_merge_engine_type_name(const ObMergeEngineType merge_engine_type)
@@ -293,6 +293,10 @@ public:
       }
       case ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY: {
         str = "APPEND_ONLY";
+        break;
+      }
+      case ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN: {
+        str = "UNKNOWN";
         break;
       }
       case ObMergeEngineType::OB_MERGE_ENGINE_MAX:

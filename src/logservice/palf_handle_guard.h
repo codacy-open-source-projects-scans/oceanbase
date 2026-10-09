@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LOGSERVICE_PALF_HANDLE_GUARD_
@@ -27,18 +20,24 @@ public:
   PalfHandleGuard() : palf_handle_(nullptr), palf_env_(nullptr)
   {
   }
+  PalfHandleGuard(const PalfHandleGuard &) = delete;
+  PalfHandleGuard &operator=(const PalfHandleGuard &) = delete;
+  PalfHandleGuard(PalfHandleGuard &&) = delete;
+  PalfHandleGuard &operator=(PalfHandleGuard &&) = delete;
   ~PalfHandleGuard()
   {
     reset();
   }
   void reset()
   {
-    if (OB_NOT_NULL(palf_env_) && OB_NOT_NULL(palf_handle_))
-    {
-      palf_env_->close(palf_handle_);
-    }
-    palf_env_ = nullptr;
+    ipalf::IPalfHandle *palf_handle = palf_handle_;
+    ipalf::IPalfEnv *palf_env = palf_env_;
     palf_handle_ = nullptr;
+    palf_env_ = nullptr;
+    if (OB_NOT_NULL(palf_env) && OB_NOT_NULL(palf_handle))
+    {
+      palf_env->close(palf_handle);
+    }
   }
 
   bool is_valid() const
@@ -50,8 +49,20 @@ public:
 
   void set(ipalf::IPalfHandle *palf_handle, ipalf::IPalfEnv *palf_env)
   {
-    palf_handle_ = palf_handle;
-    palf_env_ = palf_env;
+    int ret = OB_SUCCESS;
+    if (palf_handle_ == palf_handle && palf_env_ == palf_env) { // identity function, do nothing
+    } else if (FALSE_IT(reset())) {
+    } else if (OB_ISNULL(palf_handle) || OB_ISNULL(palf_env)) {
+      ret = OB_INVALID_ARGUMENT;
+      CLOG_LOG(WARN, "invalid argument", KR(ret), KP(palf_handle), KP(palf_env));
+    } else if (palf_handle_ == palf_handle && palf_env_ != palf_env) {
+      ret = OB_ERR_UNEXPECTED;
+      CLOG_LOG(ERROR, "palf_handle_ and palf_env_ lifecycle mismatch", KR(ret),
+        KP(palf_handle_), KP(palf_env_), KP(palf_handle), KP(palf_env));
+    } else {
+      palf_handle_ = palf_handle;
+      palf_env_ = palf_env;
+    }
   }
   // @brief set the initial member list of paxos group
   // @param[in] ObMemberList, the initial member list

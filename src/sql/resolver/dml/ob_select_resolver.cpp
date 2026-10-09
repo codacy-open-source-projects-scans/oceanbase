@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -245,6 +238,7 @@ int ObSelectResolver::do_resolve_set_query_in_recursive_cte(const ParseNode &par
       ObSelectResolver child_resolver(params_);
       child_resolver.set_current_level(current_level_);
       child_resolver.set_current_view_level(current_view_level_);
+      child_resolver.set_view_ref_id(view_ref_id_);
       child_resolver.set_in_set_query(true);
       child_resolver.set_parent_namespace_resolver(parent_namespace_resolver_);
       child_resolver.set_calc_found_rows(i == 0 ? has_calc_found_rows_ : false);
@@ -603,6 +597,7 @@ int ObSelectResolver::do_resolve_set_query(const ParseNode &parse_tree,
 
   child_resolver.set_current_level(current_level_);
   child_resolver.set_current_view_level(current_view_level_);
+  child_resolver.set_view_ref_id(view_ref_id_);
   child_resolver.set_in_set_query(true);
   child_resolver.set_parent_namespace_resolver(parent_namespace_resolver_);
   child_resolver.set_calc_found_rows(is_left_child && has_calc_found_rows_);
@@ -1685,27 +1680,166 @@ int ObSelectResolver::set_for_update_mysql(ObSelectStmt &stmt, const int64_t wai
   return ret;
 }
 
-int ObSelectResolver::get_cursor_for_update_table(ObSelectStmt *select_stmt, int64_t &for_update_cnt, TableItem *&add_rowid_table_item, uint64_t &base_table_id)
+int ObSelectResolver::resolve_rowid_and_add_to_stmt(ObSelectStmt *stmt, const TableItem &table_item, ObRawExpr *&rowid_expr)
+{
+  int ret = OB_SUCCESS;
+  rowid_expr = NULL;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("stmt is null", K(ret));
+  } else if (OB_FAIL(resolve_rowid_expr(stmt, table_item, rowid_expr))) {
+    LOG_WARN("resolve rowid expr failed", K(ret));
+  } else {
+    SelectItem rowid_item;
+    rowid_item.expr_name_ = ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME);
+    rowid_item.alias_name_ = ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME);
+    rowid_item.expr_ = rowid_expr;
+    rowid_item.is_hidden_rowid_ = true;
+    if (OB_FAIL(stmt->add_select_item(rowid_item))) {
+      LOG_WARN("add rowid select item failed", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObSelectResolver::project_update_table_rowid_from_view(TableItem *view_table, ObSelectStmt *current_stmt, ObRawExpr *rowid_expr, uint64_t inner_rowid_column_id)
+{
+  int ret = OB_SUCCESS;
+  ObColumnRefRawExpr *col_expr = NULL;
+  SelectItem current_level_rowid_item;
+  if (OB_ISNULL(view_table) || OB_ISNULL(current_stmt) ||
+      OB_ISNULL(rowid_expr) || OB_UNLIKELY(!view_table->is_generated_table())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid view table or ref_query", K(ret));
+  } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_REF_COLUMN, col_expr))) {
+    LOG_WARN("create column ref expr failed", K(ret));
+  } else if (OB_ISNULL(col_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("col_expr is null", K(ret));
+  } else {
+    col_expr->set_ref_id(view_table->table_id_, inner_rowid_column_id);
+    col_expr->set_result_type(rowid_expr->get_result_type());
+    col_expr->set_column_attr(view_table->alias_name_, ObString(OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME));
+    ColumnItem col_item;
+    col_item.expr_ = col_expr;
+    col_item.table_id_ = col_expr->get_table_id();
+    col_item.column_id_ = col_expr->get_column_id();
+    col_item.column_name_ = col_expr->get_column_name();
+    if (OB_FAIL(col_expr->extract_info())) {
+      LOG_WARN("extract column expr info failed", K(ret));
+    } else if (OB_FAIL(current_stmt->add_column_item(col_item))) {
+      LOG_WARN("add column item failed", K(ret));
+    } else {
+      current_level_rowid_item.expr_name_ = ObString(OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME);
+      current_level_rowid_item.alias_name_ = ObString(OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME);
+      current_level_rowid_item.expr_ = col_item.expr_;
+      current_level_rowid_item.is_hidden_rowid_ = true;
+      if (OB_FAIL(current_stmt->add_select_item(current_level_rowid_item))) {
+        LOG_WARN("add select item failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObSelectResolver::recursive_add_update_table_rowid(ObSelectStmt *select_stmt, TableItem *target_base_table_item, ObRawExpr *&rowid_expr, uint64_t &rowid_column_id)
+{
+  int ret = OB_SUCCESS;
+  TableItem *table_item = NULL;
+  if (OB_ISNULL(select_stmt) || OB_ISNULL(target_base_table_item)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get unexpected null", K(ret));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_table_size(); i++) {
+    if (OB_ISNULL(table_item = select_stmt->get_table_item(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table item is null", K(ret));
+    } else if (!table_item->for_update_) {
+      // do nothing
+    } else if (table_item->is_generated_table()) {
+      if (OB_ISNULL(table_item->ref_query_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ref query is null", K(ret));
+      } else if (table_item->ref_query_->has_distinct()
+                 || table_item->ref_query_->has_group_by()) {
+        ret = OB_ROWID_VIEW_HAS_DISTINCT_ETC;
+        LOG_WARN("cannot select ROWID from a view with DISTINCT, GROUP BY, etc",
+                 K(ret), K(table_item->table_name_),
+                 K(table_item->ref_query_->has_distinct()),
+                 K(table_item->ref_query_->has_group_by()));
+        LOG_USER_ERROR(OB_ROWID_VIEW_HAS_DISTINCT_ETC);
+      } else if (OB_FAIL(SMART_CALL(recursive_add_update_table_rowid(table_item->ref_query_, target_base_table_item, rowid_expr, rowid_column_id)))) {
+        LOG_WARN("recursively get cursor for update table failed", K(ret));
+      } else if (rowid_column_id != OB_INVALID_ID &&
+                 OB_FAIL(project_update_table_rowid_from_view(table_item, select_stmt, rowid_expr, rowid_column_id))) {
+        LOG_WARN("project rowid from inner to current failed", K(ret));
+      } else {
+        // update to the column_id of the newly added column in the current stmt
+        rowid_column_id = static_cast<uint64_t>(
+            select_stmt->get_select_item_size() - 1 + common::OB_APP_MIN_COLUMN_ID);
+      }
+    } else if (target_base_table_item == table_item) {
+      if (OB_FAIL(resolve_rowid_and_add_to_stmt(select_stmt, *table_item, rowid_expr))) {
+        LOG_WARN("resolve rowid and add to stmt failed", K(ret));
+      } else {
+        rowid_column_id = static_cast<uint64_t>(select_stmt->get_select_item_size() - 1 + common::OB_APP_MIN_COLUMN_ID);
+      }
+    }
+  }
+  return ret;
+}
+
+int ObSelectResolver::remove_empty_update_table_rowid(ObSelectStmt *select_stmt, bool &has_real_rowid)
+{
+  int ret = OB_SUCCESS;
+  ObColumnRefRawExpr *col = NULL;
+  has_real_rowid = false;
+  for (int64_t i = select_stmt->get_select_item_size() - 1; OB_SUCC(ret) && !has_real_rowid && i >= 0; --i) {
+    const SelectItem &item = select_stmt->get_select_item(i);
+    if (OB_ISNULL(item.expr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("expr is null", K(ret));
+    } else if (item.expr_->has_flag(IS_ROWID)) {
+      has_real_rowid = true;
+    } else if (!item.expr_->is_column_ref_expr()) {
+      // do nothing
+    } else if (OB_ISNULL(col = static_cast<ObColumnRefRawExpr*>(item.expr_))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("col is null", K(ret));
+    } else if (ObCharset::case_insensitive_equal(OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME, col->get_column_name()) &&
+               OB_FAIL(select_stmt->get_select_items().remove(i))) {
+      LOG_WARN("failed to remove empty rowid", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObSelectResolver::get_cursor_for_update_base_table(ObSelectStmt *select_stmt, int64_t &for_update_cnt, TableItem *&target_base_table_item, uint64_t &base_table_id)
 {
   int ret = OB_SUCCESS;
   TableItem *table_item = NULL;
   CK (OB_NOT_NULL(select_stmt));
   for (int64_t i = 0; OB_SUCC(ret) && for_update_cnt <= 1 && i < select_stmt->get_table_size(); i++) {
-    CK (OB_NOT_NULL(table_item = select_stmt->get_table_item(i)));
-    if (OB_SUCC(ret) && table_item->for_update_) {
-      if (table_item->is_generated_table()) { //generated_table need to find the base table id
-        OX (add_rowid_table_item = (for_update_cnt > 1) ? NULL : table_item);
-        CK (OB_NOT_NULL(table_item->ref_query_));
-        OZ (get_cursor_for_update_table(table_item->ref_query_, for_update_cnt, add_rowid_table_item, base_table_id));
-      } else {
-        for_update_cnt++;
-        if (for_update_cnt > 1) {
-          add_rowid_table_item = NULL;
-        } else {
-          add_rowid_table_item = (add_rowid_table_item == NULL) ? table_item : add_rowid_table_item;
-          base_table_id = table_item->ref_id_;
-        }
+    if (OB_ISNULL(table_item = select_stmt->get_table_item(i))) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table item is null", K(ret));
+    } else if (!table_item->for_update_) {
+      // do nothing
+    } else if (table_item->is_generated_table()) {
+      if (OB_ISNULL(table_item->ref_query_)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ref query is null", K(ret));
+      } else if (OB_FAIL(SMART_CALL(get_cursor_for_update_base_table(table_item->ref_query_, for_update_cnt, target_base_table_item, base_table_id)))) {
+        LOG_WARN("get cursor for update table failed", K(ret));
       }
+    } else if (OB_FALSE_IT(for_update_cnt++)) {
+    } else if (for_update_cnt == 1) {
+      target_base_table_item = table_item;
+      base_table_id = table_item->ref_id_;
+    } else {
+      // More than one update base table, do not add update table rowid.
+      target_base_table_item = NULL;
+      base_table_id = OB_INVALID_ID;
     }
   }
   return ret;
@@ -1807,38 +1941,44 @@ int ObSelectResolver::resolve_for_update_clause_oracle(const ParseNode &node)
     }
   }
 
-  //如果是PL里的可更新游标，增加rowid属性
+  // for updatable cursors in PL, add the rowid attribute
+  // PREPARE phase: add a placeholder rowid; OPEN phase: remove the placeholder rowid
+  //   and replace it with the real rowid
+  // Condition 3: in the OPEN phase, check whether the stmt's select items already contain
+  //   UPDATE_TABLE_ROWID; if so, a hidden rowid was added during the PREPARE phase and
+  //   the ColumnItem needs to be re-registered
+  bool stmt_has_update_table_rowid = false;
+  for (int64_t i = 0; !stmt_has_update_table_rowid
+       && i < stmt->get_select_item_size(); i++) {
+    const SelectItem &item = stmt->get_select_item(i);
+    stmt_has_update_table_rowid = (0 == item.alias_name_.case_compare(
+        OB_HIDDEN_UPDATE_TABLE_ROWID_COLUMN_NAME));
+  }
   if (OB_SUCC(ret) && ((NULL != params_.secondary_namespace_ && params_.is_cursor_)
                        || (session_info_->is_client_return_rowid()
                            && NULL == params_.secondary_namespace_
-                           && NULL == session_info_->get_pl_context()))) {
-    SelectItem rowid_item;
+                           && NULL == session_info_->get_pl_context())
+                       || stmt_has_update_table_rowid)) {
     ObSelectStmt *select_stmt = stmt;
-    TableItem *add_rowid_table_item = NULL;
+    TableItem *target_base_table_item = NULL;
+    ObRawExpr *rowid_expr = NULL;
+    ObColumnRefRawExpr *col = NULL;
     uint64_t base_table_id = OB_INVALID_ID;
-    const ObTableSchema *table_schema = NULL;
+    uint64_t rowid_column_id = OB_INVALID_ID;
     int64_t for_update_cnt = 0;
-    CK (OB_NOT_NULL(params_.schema_checker_));
-    OZ (get_cursor_for_update_table(select_stmt, for_update_cnt, add_rowid_table_item, base_table_id));
-    if (OB_SUCC(ret) && add_rowid_table_item != NULL) {
-      ObRawExpr *rowid_expr = NULL;
-      OZ (params_.schema_checker_->get_table_schema(session_info_->get_effective_tenant_id(), 
-                                                    add_rowid_table_item->ref_id_,
-                                                    table_schema,
-                                                    add_rowid_table_item->is_link_table()));
-      if (OB_SUCC(ret)) {
-        if (add_rowid_table_item->is_generated_table()) {
-          OZ (ObRawExprUtils::build_empty_rowid_expr(*params_.expr_factory_, *add_rowid_table_item, rowid_expr));
-        } else {
-          OZ (resolve_rowid_expr(select_stmt, *add_rowid_table_item, rowid_expr));
-        }
-        OX (rowid_item.expr_name_ = ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME));
-        OX (rowid_item.alias_name_ = ObString(OB_HIDDEN_LOGICAL_ROWID_COLUMN_NAME));
-        OX (rowid_item.expr_ = rowid_expr);
-        OX (rowid_item.is_hidden_rowid_ = true);
-        OZ (set_select_item(rowid_item, false/* is_auto_gen*/));
-        OX (select_stmt->set_for_update_cursor_table_id(base_table_id));
-      }
+    bool has_real_rowid = false;
+    if (OB_FAIL(get_cursor_for_update_base_table(select_stmt, for_update_cnt, target_base_table_item, base_table_id))) {
+      LOG_WARN("failed to get cursor for update table", K(ret));
+    } else if (OB_INVALID_ID == base_table_id) {
+      // do nothing
+    } else if (!params_.is_prepare_stage_ && OB_FAIL(remove_empty_update_table_rowid(select_stmt, has_real_rowid))) {
+      LOG_WARN("failed to check and remove empty rowid", K(ret));
+    } else if (has_real_rowid) {
+      // do nothing
+    } else if (OB_FAIL(recursive_add_update_table_rowid(select_stmt, target_base_table_item, rowid_expr, rowid_column_id))) {
+      LOG_WARN("recursive add rowid of update table failed", K(ret));
+    } else {
+      select_stmt->set_for_update_cursor_table_id(base_table_id);
     }
   }
 
@@ -2967,6 +3107,20 @@ int ObSelectResolver::get_real_cte_column_expr(
     if (OB_FAIL(select_stmt->get_child_stmts(child_stmts))) {
       LOG_WARN("failed to get child stmts", K(ret));
     }
+    // get_child_stmts() only descends through generated/lateral tables and subquery refs.
+    // CTE table items (TEMP_TABLE) are not included, so we add them explicitly to support
+    // CTEs that reference another (recursive) CTE through one or more non-recursive CTEs.
+    for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_table_size(); ++i) {
+      const TableItem *temp_table_item = select_stmt->get_table_item(i);
+      if (OB_ISNULL(temp_table_item)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null table item", K(ret));
+      } else if (temp_table_item->is_temp_table() && OB_NOT_NULL(temp_table_item->ref_query_)) {
+        if (OB_FAIL(add_var_to_array_no_dup(child_stmts, temp_table_item->ref_query_))) {
+          LOG_WARN("failed to add temp table ref query", K(ret));
+        }
+      }
+    }
     for (int64_t i = 0; OB_SUCC(ret) && NULL == real_cte_col_expr && i < child_stmts.count(); ++i) {
       ObSelectStmt *child_stmt = child_stmts.at(i);
       if (OB_ISNULL(child_stmt)) {
@@ -3263,12 +3417,17 @@ int ObSelectResolver::expand_target_list(
                  K(i), K(table_item.ref_query_->get_select_item_size()));
       } else {
         const SelectItem &select_item = table_item.ref_query_->get_select_item(i);
-        tmp_select_item.questions_pos_ = select_item.questions_pos_;
-        tmp_select_item.params_idx_ = select_item.params_idx_;
-        tmp_select_item.neg_param_idx_ = select_item.neg_param_idx_;
-        tmp_select_item.esc_str_flag_ = select_item.esc_str_flag_;
-        tmp_select_item.paramed_alias_name_ = select_item.paramed_alias_name_;
-        tmp_select_item.need_check_dup_name_ = select_item.need_check_dup_name_;
+        if (OB_FAIL(tmp_select_item.questions_pos_.assign(select_item.questions_pos_))) {
+          LOG_WARN("failed to assign questions_pos_", K(ret));
+        } else if (OB_FAIL(tmp_select_item.params_idx_.assign(select_item.params_idx_))) {
+          LOG_WARN("failed to assign params_idx_", K(ret));
+        } else if (OB_FAIL(tmp_select_item.neg_param_idx_.assign(select_item.neg_param_idx_))) {
+          LOG_WARN("failed to assign neg_param_idx_", K(ret));
+        } else {
+          tmp_select_item.esc_str_flag_ = select_item.esc_str_flag_;
+          tmp_select_item.paramed_alias_name_ = select_item.paramed_alias_name_;
+          tmp_select_item.need_check_dup_name_ = select_item.need_check_dup_name_;
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -3309,7 +3468,8 @@ int ObSelectResolver::set_select_item(SelectItem &select_item, bool is_auto_gen)
   } else if (OB_FAIL(session_info_->get_collation_connection(cs_type))) {
     LOG_WARN("fail to get collation_connection", K(ret));
   } else if (!select_item.expr_->is_column_ref_expr()) {
-    if (NULL != params_.secondary_namespace_ && !select_item.is_real_alias_ && is_auto_gen
+    const bool is_alias_for_dynamic_sql = params_.is_dynamic_sql_ && params_.is_prepare_stage_ && params_.is_from_pl_;
+    if ((NULL != params_.secondary_namespace_ || is_alias_for_dynamic_sql) && !select_item.is_real_alias_ && is_auto_gen
         && select_item.alias_name_.length() > static_cast<size_t>(OB_MAX_COLUMN_NAME_LENGTH)) {
       ObString tmp_col_name;
       ObString col_name;
@@ -5869,16 +6029,32 @@ int ObSelectResolver::resolve_into_file_name_node(const ParseNode *node, ObObj &
 
       share::schema::ObSchemaGetterGuard *schema_guard = schema_checker_->get_schema_guard();
       ObString full_path_str;
+      ObString access_info;
       if (OB_ISNULL(schema_guard)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("schema guard is null", K(ret));
       } else if (OB_FAIL(ObExternalTableUtils::resolve_location_for_load_and_select_into(
                                 *schema_guard, *session_info_, *allocator_,
-                                location_name, sub_path, full_path_str))) {
+                                location_name, sub_path, full_path_str, &access_info))) {
         LOG_WARN("failed to resolve location object", K(ret), K(location_name), K(sub_path));
       } else {
-        obj.set_varchar(full_path_str);
-        obj.set_collation_type(session_info_->get_local_collation_connection());
+        if (!access_info.empty()) {
+          ObSqlString final_path;
+          if (OB_FAIL(final_path.append(full_path_str))) {
+            LOG_WARN("failed to append full path", K(ret), K(full_path_str));
+          } else if (OB_FAIL(final_path.append("?"))) {
+            LOG_WARN("failed to append access info separator", K(ret));
+          } else if (OB_FAIL(final_path.append(access_info))) {
+            LOG_WARN("failed to append access info", K(ret), K(access_info));
+          } else if (OB_FAIL(ob_write_string(*allocator_, final_path.string(), full_path_str, true))) {
+            LOG_WARN("failed to write full path with access info", K(ret), K(final_path));
+          }
+        }
+        if (OB_SUCC(ret)) {
+          obj.set_varchar(full_path_str);
+          obj.set_collation_type(session_info_->get_local_collation_connection());
+          params_.global_hint_.merge_plan_cache_hint(OB_USE_PLAN_CACHE_NONE);
+        }
       }
     }
   } else if (T_EXTERNAL_FILE_LOCATION == node->type_) {
@@ -6339,7 +6515,9 @@ int ObSelectResolver::resolve_alias_column_ref(
       // first loop, find the matched alias column with expr
       for (int32_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); ++i) {
         cur_item = &select_stmt->get_select_item(i);
-        if (ObCharset::case_insensitive_equal(q_name.col_name_, cur_item->alias_name_)) {
+        bool match = (is_oracle_mode() && q_name.col_name_ == cur_item->alias_name_) ||
+          (!is_oracle_mode() && ObCharset::case_insensitive_equal(q_name.col_name_, cur_item->alias_name_));
+        if (match) {
           /*
            * for oracle mode, column uniqueness is checked among all tables
            * for mysql mode, column uniqueness is only checked among select items
@@ -6709,6 +6887,7 @@ int ObSelectResolver::resolve_subquery_info(const ObIArray<ObSubQueryInfo> &subq
     const ObSubQueryInfo &info = subquery_info.at(i);
     ObSelectResolver subquery_resolver(params_);
     subquery_resolver.set_current_level(current_level_ + 1);
+    subquery_resolver.set_view_ref_id(view_ref_id_);
     subquery_resolver.set_is_sub_stmt(true);
     subquery_resolver.set_parent_namespace_resolver(this);
     subquery_resolver.set_current_view_level(current_view_level_);
@@ -6763,6 +6942,11 @@ int ObSelectResolver::resolve_column_ref_for_subquery(
         }
       }
     }
+  } else if (GCONF._enable_pseudo_partition_id
+             && GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_2
+             && q_name.tbl_name_.empty()
+             && ObResolverUtils::is_pseudo_partition_column_name(q_name.col_name_)) {
+    ret = OB_ERR_BAD_FIELD_ERROR;
   } else if (OB_FAIL(resolve_table_column_ref(q_name, real_ref_expr))) {
     LOG_WARN_IGNORE_COL_NOTFOUND(ret, "resolve table column failed", K(ret), K(q_name));
   }
@@ -7646,7 +7830,8 @@ int ObSelectResolver::check_ntile_validity(const ObRawExpr *expr,
              expr->is_aggr_expr() ||
              expr->is_win_func_expr() ||
              expr->get_expr_type() == T_FUN_SYS_RANDOM ||
-             expr->get_expr_type() == T_FUN_SYS_RAND) {
+             expr->get_expr_type() == T_FUN_SYS_RAND ||
+             expr->get_expr_type() == T_FUN_CK_RAND_CANONICAL) {
     is_valid = false;
   } else if (expr->is_exec_param_expr()) {
     if (OB_FAIL(SMART_CALL(check_ntile_validity(static_cast<const ObExecParamRawExpr *>(expr)->get_ref_expr(),
@@ -8595,27 +8780,23 @@ int ObSelectResolver::check_audit_log_stmt(ObSelectStmt *select_stmt)
   if (OB_ISNULL(select_stmt)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret));
-  } else if (lib::is_mysql_mode()) {
-    for (int64_t i = 0; OB_SUCC(ret) && !is_contain && i < select_stmt->get_select_item_size(); i++) {
-      ObRawExpr *expr = select_stmt->get_select_item(i).expr_;
-      if (OB_ISNULL(expr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get unexpected null", K(ret));
-      } else if (T_FUN_SYS_AUDIT_LOG_SET_FILTER == expr->get_expr_type() ||
-                 T_FUN_SYS_AUDIT_LOG_REMOVE_FILTER == expr->get_expr_type() ||
-                 T_FUN_SYS_AUDIT_LOG_SET_USER == expr->get_expr_type() ||
-                 T_FUN_SYS_AUDIT_LOG_REMOVE_USER == expr->get_expr_type()) {
-        is_contain = true;
-      }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && !is_contain && i < select_stmt->get_select_item_size(); i++) {
+    ObRawExpr *expr = select_stmt->get_select_item(i).expr_;
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected null", K(ret));
+    } else if (ObRawExprUtils::is_audit_log_expr(expr)) {
+      is_contain = true;
     }
-    if (OB_SUCC(ret) && is_contain) {
-      if (current_level_ > 0 || is_substmt() || select_stmt->get_table_size() > 0 ||
-          select_stmt->get_condition_size() > 0 || select_stmt->has_group_by() ||
-          select_stmt->has_having() || select_stmt->get_select_item_size() > 1 ||
-          select_stmt->has_order_by() || select_stmt->has_limit()) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "use audit log function in complex query");
-      }
+  }
+  if (OB_SUCC(ret) && is_contain) {
+    if (current_level_ > 0 || is_substmt() || select_stmt->get_table_size() > 0 ||
+        select_stmt->get_condition_size() > 0 || select_stmt->has_group_by() ||
+        select_stmt->has_having() || select_stmt->get_select_item_size() > 1 ||
+        select_stmt->has_order_by() || select_stmt->has_limit()) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "use audit log function in complex query");
     }
   }
   return ret;

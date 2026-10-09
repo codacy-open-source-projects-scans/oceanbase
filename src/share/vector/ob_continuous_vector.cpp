@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -42,6 +35,14 @@ int ObContinuousVector<BasicOp>::murmur_hash_v3(BATCH_EVAL_HASH_ARGS) const
 }
 
 template<typename BasicOp>
+int ObContinuousVector<BasicOp>::crc_hash_v3(BATCH_EVAL_HASH_ARGS) const
+{
+  BatchHashResIter hash_iter(hash_values);
+  return VecOpUtil::template hash_dispatch<ObCrcHash, true, BatchHashResIter>(
+    hash_iter, expr.obj_meta_, *this, skip, bound, seeds, is_batch_seed);
+}
+
+template<typename BasicOp>
 int ObContinuousVector<BasicOp>::murmur_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const
 {
   RowHashResIter hash_iter(&hash_value);
@@ -49,6 +50,17 @@ int ObContinuousVector<BasicOp>::murmur_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_R
   int64_t mock_skip_data = 0;
   sql::ObBitVector &skip = *sql::to_bit_vector(&mock_skip_data);
   return VecOpUtil::template hash_dispatch<ObMurmurHash, true, RowHashResIter>(
+    hash_iter, expr.obj_meta_, *this, skip, bound, &seed, false);
+}
+
+template<typename BasicOp>
+int ObContinuousVector<BasicOp>::crc_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const
+{
+  RowHashResIter hash_iter(&hash_value);
+  sql::EvalBound bound(batch_size, batch_idx, batch_idx + 1, true);
+  int64_t mock_skip_data = 0;
+  sql::ObBitVector &skip = *sql::to_bit_vector(&mock_skip_data);
+  return VecOpUtil::template hash_dispatch<ObCrcHash, true, RowHashResIter>(
     hash_iter, expr.obj_meta_, *this, skip, bound, &seed, false);
 }
 

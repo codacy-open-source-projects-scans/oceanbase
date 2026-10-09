@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -274,6 +267,12 @@ int ObTableApiScanExecutor::prepare_das_task()
   } else if (OB_ISNULL(tablet_loc)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("not found tablet loc", K(ret), K(tsc_rtdef_), K(tb_ctx_.get_index_tablet_id()));
+  } else if (tb_ctx_.is_global_index_scan() && tablet_loc->server_ != GCONF.self_addr_) {
+    ret = OB_NOT_MASTER;
+    LOG_WARN("current is global index scan but scan target is not self, expect routing to index node",
+              K(ret), "index_tablet_id", tb_ctx_.get_index_tablet_id(),
+              "target_server", tablet_loc->server_,
+              "self_addr", GCONF.self_addr_);
   } else if (OB_FAIL(das_ref_.create_das_task(tablet_loc, DAS_OP_TABLE_SCAN, task_op))) {
     LOG_WARN("fail to prepare das task", K(ret));
   } else {
@@ -732,6 +731,7 @@ int ObTableApiScanRowIterator::open(ObTableApiScanExecutor *executor)
 int ObTableApiScanRowIterator::get_next_row(ObNewRow *&row)
 {
   int ret = OB_SUCCESS;
+  row = nullptr;
   ObNewRow *tmp_row = nullptr;
   char *row_buf = nullptr;
   ObObj *cells = nullptr;
@@ -845,6 +845,7 @@ int ObTableApiScanRowIterator::adjust_output_obj_type(ObObj &obj)
 int ObTableApiScanRowIterator::get_next_row(ObNewRow *&row, common::ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
+  row = nullptr;
   ObNewRow *inner_row = nullptr;
   if (OB_FAIL(get_next_row(inner_row))) {
     if (OB_ITER_END != ret) {

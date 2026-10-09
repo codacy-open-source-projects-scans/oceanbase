@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -1069,6 +1062,12 @@ int ObShowGrants::print_privs_to_buff(
         if ((priv_set & OB_PRIV_ACCESS_AI_MODEL) && OB_SUCCESS == ret) {
           ret = BUF_PRINTF(" ACCESS AI MODEL,");
         }
+        if ((priv_set & OB_PRIV_CREATE_LOCATION) && OB_SUCCESS == ret) {
+          ret = BUF_PRINTF(" CREATE LOCATION,");
+        }
+        if ((priv_set & OB_PRIV_APPLICATION_PASSWORD_ADMIN) && OB_SUCCESS == ret) {
+          ret = BUF_PRINTF(" APPLICATION_PASSWORD_ADMIN,");
+        }
         if (OB_SUCCESS == ret && pos > 0) {
           pos--; //Delete last ','
         }
@@ -1243,11 +1242,8 @@ int ObShowGrants::calc_show_user_id(uint64_t &show_user_id, ObIArray<uint64_t> &
               show_user_id = start_key_obj_ptr[0].get_int();
             }
           } else {
-            ret = OB_ERR_UNEXPECTED;
-            SERVER_LOG(WARN, "Start key and end key obj type should be ObIntType",
-                K(ret),
-                "start type", start_key_obj_ptr[0].get_type(),
-                "end type", end_key_obj_ptr[0].get_type());
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "show grants requires an exact user_id value");
           }
         }
       }

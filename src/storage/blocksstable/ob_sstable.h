@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_OB_SSTABLE_H
@@ -88,7 +81,8 @@ public:
   int64_t get_serialize_size(const int64_t data_version) const;
   TO_STRING_KV(K_(version), K_(has_multi_version_row), K_(status), K_(data_macro_block_count), K_(nested_size), K_(nested_offset),
         K_(total_macro_block_count), K_(total_use_old_macro_block_count), K_(row_count), K_(occupy_size), K_(data_checksum),
-        K_(max_merged_trans_version), K_(min_merged_trans_version), K_(upper_trans_version), K_(filled_tx_scn), K_(contain_uncommitted_row));
+        K_(max_merged_trans_version), K_(min_merged_trans_version), K_(upper_trans_version), K_(filled_tx_scn), K_(contain_uncommitted_row),
+        K_(has_hidden_rowkey_cg));
 public:
   union {
     uint32_t header_;
@@ -116,6 +110,7 @@ public:
   share::SCN rec_scn_;
   int32_t length_; //serialize length after SSTABLE_META_CACHE_VERSION_V3
   int64_t min_merged_trans_version_;
+  bool has_hidden_rowkey_cg_;
   // add new variables here, no need to inc version
 };
 

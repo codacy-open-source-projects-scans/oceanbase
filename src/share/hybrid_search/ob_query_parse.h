@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_QUERY_PARSE_H_
@@ -53,6 +46,7 @@ enum ObEsQueryItem : int8_t {
   QUERY_ITEM_ARRAY_CONTAINS,
   QUERY_ITEM_ARRAY_CONTAINS_ALL,
   QUERY_ITEM_ARRAY_OVERLAPS,
+  QUERY_ITEM_WILDCARD, // FARM COMPAT WHITELIST
 };
 
 #define IS_QUERY_ITEM_BOOL(query_item) (query_item == QUERY_ITEM_BOOL)
@@ -68,6 +62,22 @@ enum ObFusionMethod
   RRF,
   MINMAX_NORMALIZER,
 };
+
+/*
+ * ObFusionIterExecMode is used to control the execution mode of the fusion iterator.
+ * It is used to determine the execution mode of the fusion iterator.
+ * - SKIP_FUSION_ITER: skip the fusion iterator.
+ * - ROWKEY_DISTINCT_ONLY: only collect the distinct rowkey.
+ * - ROWKEY_SCORE_FULL_RECALL: collect the rowkey and score.
+ * - SCORE_TOP_K_QUERY_HITS: collect the score and top k hits.
+ */
+ enum class ObFusionIterExecMode
+ {
+   SKIP_FUSION_ITER = 0,
+   ROWKEY_DISTINCT_ONLY,
+   ROWKEY_SCORE_FULL_RECALL,
+   SCORE_TOP_K_QUERY_HITS,
+ };
 
 enum ObMsmApplyType : int8_t {
   MSM_NOT_APPLY = 0,
@@ -282,7 +292,7 @@ public :
     alloc_(alloc), source_cols_(), need_json_wrap_(need_json_wrap), table_name_(*table_name), database_name_(*database_name), index_name_map_(),
     user_cols_(), part_cols_(), part_aliases_(), out_cols_(nullptr), enable_es_mode_(enable_es_mode), fusion_config_(), default_size_(nullptr) {}
   virtual ~ObESQueryParser() {}
-  int parse(const common::ObString &req_str, ObQueryReqFromJson *&query_req);
+  int parse(const common::ObString &req_str, ObQueryReqFromJson *&query_req, sql::ObSQLSessionInfo *session = nullptr);
   inline ColumnIndexNameMap &get_index_name_map() { return index_name_map_; }
   inline ObIArray<ObString> &get_user_column_names() { return user_cols_; }
   inline ObIArray<ObReqColumnExpr*> &get_partition_column_exprs() { return part_cols_; }

@@ -1,12 +1,5 @@
-//Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2021 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_STORAGE_CO_MERGE_CTX_H_
 #define OB_STORAGE_CO_MERGE_CTX_H_
 #include "storage/compaction/ob_tablet_merge_ctx.h"
@@ -115,17 +108,20 @@ struct ObCOTabletMergeCtx : public ObBasicTabletMergeCtx
   int inner_add_cg_sstables(const ObSSTable *&new_sstable);
   int validate_column_checksums(
       int64_t *all_column_cksums,
-      const int64_t all_column_cnt,
-      const common::ObIArray<ObStorageColumnGroupSchema> &cg_schemas);
+      const int64_t all_column_cnt);
   int check_convert_co_checksum(const ObSSTable *new_sstable);
   int push_table_handle(ObTableHandleV2 &table_handle, int64_t &count);
   int collect_cg_running_info(const int64_t cg_idx);
 
   /* UTILITY FUNC */
+  OB_INLINE bool need_mock_row_store_table_read_info() const
+  {
+    return (is_build_all_cg_from_each_cg() || (enable_vectorized_batch_merge() && contain_each_cg_sstable() && static_param_.is_full_merge_));
+  }
   const ObITableReadInfo *get_full_read_info() const
   {
     const ObITableReadInfo *ret_info = NULL;
-    if (is_build_all_cg_from_each_cg()) {
+    if (need_mock_row_store_table_read_info()) {
       ret_info = &mocked_row_store_table_read_info_;
     } else {
       ret_info = &read_info_;
@@ -141,21 +137,31 @@ struct ObCOTabletMergeCtx : public ObBasicTabletMergeCtx
     return static_param_.co_static_param_.contain_each_cg_sstable_ &&
       (is_build_all_cg_only() || get_schema()->has_all_column_group() || only_use_row_store());
   }
-  int get_cg_schema_for_merge(const int64_t idx, const ObStorageColumnGroupSchema *&cg_schema_ptr);
+  int get_cg_schema_for_merge(const int64_t column_group_idx, const ObStorageColumnGroupSchema *&cg_schema_ptr);
+  int prepare_cg_layout_params();
+  int get_cg_layout_param(const int64_t cg_idx, const ObMergeVectorStoreLayoutParam *&layout_param) const;
   virtual ObSSTableMergeHistory &get_merge_history() override { return dag_net_merge_history_; }
   void destroy_merge_info(const uint32_t cg_idx, const bool release_mem_flag);
   OB_INLINE bool contain_each_cg_sstable() const { return static_param_.co_static_param_.contain_each_cg_sstable_; }
-  OB_INLINE bool is_using_column_tmp_file() { return MergeLogStorage::COLUMN_TMP_FILE == merge_log_storage_; }
-  OB_INLINE bool is_using_row_tmp_file() { return MergeLogStorage::ROW_TMP_FILE == merge_log_storage_; }
-  OB_INLINE bool is_using_tmp_file()
+  OB_INLINE bool is_using_column_tmp_file() const { return MergeLogStorage::COLUMN_TMP_FILE == merge_log_storage_; }
+  OB_INLINE bool is_using_row_tmp_file() const { return MergeLogStorage::ROW_TMP_FILE == merge_log_storage_; }
+  OB_INLINE bool is_using_tmp_file() const
   {
     return MergeLogStorage::COLUMN_TMP_FILE == merge_log_storage_ ||
            MergeLogStorage::ROW_TMP_FILE == merge_log_storage_;
   }
+  virtual bool enable_vectorized_batch_merge() const override
+  {
+    return get_compaction_batch_size() > 1
+        && !is_using_tmp_file() // TODO: add batch path for tmp file
+        && nullptr != get_schema()
+        && !get_schema()->has_all_column_group()
+        && !is_build_all_cg_only();
+  }
   int get_merge_log_mgr(const int64_t idx, ObCOMergeLogFileMgr *&mgr);
 
   INHERIT_TO_STRING_KV("ObCOTabletMergeCtx", ObBasicTabletMergeCtx,
-      K_(merge_flag), K_(array_count), K_(retry_cnt), K_(prefer_reuse_macro_block), K_(base_rowkey_cg_idx));
+      K_(need_replay_base_directly), K_(merge_log_storage), K_(array_count), K_(retry_cnt), K_(prefer_reuse_macro_block), K_(base_rowkey_cg_idx));
 
   /* STATIC CONST */
   static const int64_t PREFER_REUSE_MACRO_BLOCKS_RAITO = 2;
@@ -194,6 +200,7 @@ struct ObCOTabletMergeCtx : public ObBasicTabletMergeCtx
   ObTableReadInfo mocked_row_store_table_read_info_; // read info for merge from col store to row store
   ObSSTableMergeHistory dag_net_merge_history_; // record info for dag net
   ObCOMergeTwoStageCtx *two_stage_ctx_;
+  ObMergeVectorStoreLayoutParam **cg_layout_params_;
 };
 
 } // namespace compaction

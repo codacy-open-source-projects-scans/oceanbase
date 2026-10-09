@@ -1,17 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
 #include "share/search_index/ob_search_index_builder_util.h"
+#include "share/schema/ob_schema_guard_wrapper.h"
 #include "share/search_index/ob_search_index_encoder.h"
 #include "share/ob_index_builder_util.h"
 #include "share/ob_server_struct.h"
@@ -92,31 +86,44 @@ int ObSearchIndexBuilderUtil::set_search_index_table_columns(
   } else {
     int64_t rowkey_pos = 0;
     const int64_t tenant_id = data_schema.get_tenant_id();
+    const int64_t ts_suffix = ObTimeUtility::current_time();
     struct ColumnDef {
-      const char *name;
+      const char *name_prefix;
       ObObjType type;
       int64_t length;
       bool is_binary;
       bool is_rowkey;
     } columns[] = {
-      {"COL_IDX",    ObIntType,     0,                          false, true},
-      {"PATH",       ObVarcharType, SEARCH_INDEX_PATH_LENGTH,   true, true},
-      {"VALUE",      ObVarcharType, SEARCH_INDEX_VALUE_LENGTH,  true,  true},
-      {"DOC_ID",     ObUInt64Type,  0,                          false, true},
+      {"COL_IDX",    ObIntType,     0,                         false, true},
+      {"PATH",       ObVarcharType, SEARCH_INDEX_PATH_LENGTH,  true,  true},
+      {"VALUE",      ObVarcharType, SEARCH_INDEX_VALUE_LENGTH, true,  true},
+      {"DOC_ID",     ObUInt64Type,  0,                         false, true},
     };
     const int64_t column_cnt = static_cast<int64_t>(sizeof(columns) / sizeof(columns[0]));
     for (int64_t i = 0; OB_SUCC(ret) && i < column_cnt; ++i) {
       const ColumnDef &c = columns[i];
-      if (OB_FAIL(add_search_index_column(data_schema,
-                                          index_schema,
-                                          tenant_id,
-                                          c.name,
-                                          c.type,
-                                          c.length,
-                                          c.is_binary,
-                                          c.is_rowkey,
-                                          rowkey_pos))) {
-        LOG_WARN("failed to add search column", K(ret), K(i), K(c.name));
+      char generated_name[OB_MAX_COLUMN_NAME_LENGTH] = {'\0'};
+      int64_t name_pos = 0;
+      if (OB_FAIL(databuff_printf(generated_name,
+                                  OB_MAX_COLUMN_NAME_LENGTH,
+                                  name_pos,
+                                  "__%s_%ld",
+                                  c.name_prefix,
+                                  ts_suffix))) {
+        LOG_WARN("failed to generate search column name", K(ret), K(i), K(c.name_prefix), K(ts_suffix));
+      } else if (name_pos <= 0) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected generated search column name", K(ret), K(i), K(c.name_prefix), K(ts_suffix));
+      } else if (OB_FAIL(add_search_index_column(data_schema,
+                                                 index_schema,
+                                                 tenant_id,
+                                                 generated_name,
+                                                 c.type,
+                                                 c.length,
+                                                 c.is_binary,
+                                                 c.is_rowkey,
+                                                 rowkey_pos))) {
+        LOG_WARN("failed to add search column", K(ret), K(i), K(generated_name));
       }
     }
     if (OB_SUCC(ret)) {
@@ -210,10 +217,10 @@ int ObSearchIndexBuilderUtil::add_search_index_column(
 int ObSearchIndexBuilderUtil::get_dropping_search_data_index_invisiable_index_schema(
     const uint64_t tenant_id,
     const ObTableSchema &index_table_schema,
-    share::schema::ObSchemaGetterGuard &schema_guard,
-    common::ObIArray<share::schema::ObTableSchema> &new_aux_schemas)
+    share::schema::ObSchemaGuardWrapper &schema_guard_wrapper,    common::ObIArray<share::schema::ObTableSchema> &new_aux_schemas)
 {
   int ret = OB_SUCCESS;
+  UNUSED(tenant_id);
   if (index_table_schema.is_search_def_index()) {
     const ObIArray<share::schema::ObAuxTableMetaInfo> &indexs = index_table_schema.get_simple_index_infos();
     for (int64_t i = 0; OB_SUCC(ret) && i < indexs.count(); ++i) {
@@ -222,9 +229,8 @@ int ObSearchIndexBuilderUtil::get_dropping_search_data_index_invisiable_index_sc
       if (!share::schema::is_search_data_index(info.index_type_)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("expect data search index", KR(ret), K(info.index_type_));
-      } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id,
-                                                       info.table_id_,
-                                                       data_index_schema))) {
+      } else if (OB_FAIL(schema_guard_wrapper.get_table_schema(info.table_id_,
+                                                               data_index_schema))) {
         LOG_WARN("fail to get search data index schema", K(ret),
                   "data_index_table_id", info.table_id_);
       } else if (OB_ISNULL(data_index_schema)) {

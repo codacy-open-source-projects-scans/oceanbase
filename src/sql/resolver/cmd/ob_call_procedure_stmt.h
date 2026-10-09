@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SQL_RESOLVER_DDL_OB_CALL_PROCEDURE_STMT_H_
@@ -86,6 +79,7 @@ public:
     }
     return idx != OB_INVALID_INDEX ? out_mode_.at(idx) : ObRoutineParamInOut::SP_PARAM_INVALID;
   }
+  inline const ObIArray<int64_t> &get_question_mark_idx() const { return question_mark_idx_; }
   int add_out_param(int64_t i,
                     int64_t mode,
                     const ObString &name,
@@ -191,6 +185,7 @@ public:
     call_proc_info_ = info;
   }
   ObCallProcedureInfo *get_call_proc_info() { return call_proc_info_; }
+  const ObCallProcedureInfo *get_call_proc_info() const { return call_proc_info_; }
   ObCacheObjGuard &get_cacheobj_guard() { return cache_call_info_guard_; }
   void set_dblink_routine_info(const ObRoutineInfo *routine_info) { dblink_routine_info_ = routine_info; }
   const ObRoutineInfo *get_dblink_routine_info() const { return dblink_routine_info_; }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -322,7 +315,7 @@ int ObIndexTreePrefetcher::last_handle_hit(const ObMicroIndexInfo &block_info,
       EVENT_INC(ObStatEventIds::DATA_BLOCK_CACHE_HIT);
       hit = true;
     }
-  } else if (micro_handle.match(macro_id, offset, size)) {
+  } else if (micro_handle.in_block_state() && micro_handle.match(macro_id, offset, size)) {
     EVENT_INC(ObStatEventIds::INDEX_BLOCK_CACHE_HIT);
     hit = true;
   }
@@ -1371,6 +1364,7 @@ int ObIndexTreeMultiPassPrefetcher<DATA_PREFETCH_DEPTH, INDEX_PREFETCH_DEPTH>::p
             LOG_WARN("Fail to check if can skip prefetch", K(ret), K(block_info));
           } else if (block_info.can_skip_fetch()) {
             update_table_store_stat(access_ctx_->table_store_stat_, block_info);
+            LOG_TRACE("[SKIP INDEX] skip block index", K(sstable_->get_key()), K(block_info));
             continue;
           } else if (nullptr != agg_store_ && OB_FAIL(agg_store_->can_use_index_info(block_info, can_agg))) {
             LOG_WARN("Fail to judge can aggregate micro index", K(ret));
@@ -1762,7 +1756,15 @@ int ObIndexTreeMultiPassPrefetcher<DATA_PREFETCH_DEPTH, INDEX_PREFETCH_DEPTH>::r
       }
     }
   }
-  if (OB_SUCC(ret) && can_blockscan_) {
+  if (OB_FAIL(ret)) {
+  } else if (!can_blockscan_) {
+    for (int16_t level = 0; level < index_tree_height_; level++) {
+      if (tree_handles_[level].can_blockscan_) {
+        LOG_INFO("[BLOCKSCAN] unexpected state, tree handle can_blockscan_ is true", K(level), K(border_rowkey));
+        tree_handles_[level].can_blockscan_ = false;
+      }
+    }
+  } else {
     // 2. update blockscan status in the TreeLevelHandle
     for (int16_t level = 0; OB_SUCC(ret) && level < index_tree_height_; level++) {
       tree_handles_[level].can_blockscan_ = true;
@@ -1924,6 +1926,7 @@ int ObIndexTreeMultiPassPrefetcher<DATA_PREFETCH_DEPTH, INDEX_PREFETCH_DEPTH>::O
         LOG_WARN("Fail to check if can skip prefetch", K(ret), K(index_info));
       } else if (index_info.can_skip_fetch()) {
         prefetcher.update_table_store_stat(prefetcher.access_ctx_->table_store_stat_, index_info);
+        LOG_TRACE("[SKIP INDEX] skip block index", K(prefetcher.sstable_->get_key()), K(index_info));
       } else if (nullptr != prefetcher.agg_store_ && OB_FAIL(prefetcher.agg_store_->can_use_index_info(index_info, can_agg))) {
         LOG_WARN("Fail to judge can aggregate index info", K(ret), KPC(prefetcher.agg_store_));
       } else if (can_agg) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_partition_parallel_merge_ctx.h"
@@ -15,9 +8,6 @@
 #include "ob_tablet_merge_ctx.h"
 #include "storage/compaction/ob_compaction_dag_ranker.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/incremental/ob_ss_tablet_merge_helper.h"
-#endif
 
 namespace oceanbase
 {
@@ -29,7 +19,6 @@ using namespace compaction;
 
 namespace storage
 {
-
 ObParallelMergeCtx::ObParallelMergeCtx(common::ObIAllocator &allocator)
   : allocator_(allocator),
     range_array_(OB_MALLOC_NORMAL_BLOCK_SIZE, allocator_),
@@ -469,11 +458,6 @@ void ObParallelMergeCtx::calc_adaptive_parallel_degree(
     STORAGE_LOG(INFO, "[ADAPTIVE_SCHED] calc adaptive parallel degree", K(prio), K(tenant_free_mem_byte), K(mem_per_thread),
                 K(dag_worker_limit), K(origin_degree), K(mem_allow_max_thread_cnt), K(parallel_degree));
   }
-#ifdef OB_BUILD_SHARED_STORAGE
-  if (GCTX.is_shared_storage_mode()) {
-    ObSSTabletMergeHelper::refine_parallel_degree(merge_type, parallel_degree);
-  }
-#endif
 }
 
 

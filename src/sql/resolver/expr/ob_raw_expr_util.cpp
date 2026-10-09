@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -1183,7 +1176,8 @@ int ObRawExprUtils::resolve_udf_param_exprs(ObResolverParams &params,
                                                         obj_access->get_var_indexs().at(0),
                                                         obj_access->get_access_idxs(),
                                                         *(params.session_info_),
-                                                        *(params.schema_checker_->get_schema_guard())));
+                                                        *(params.schema_checker_->get_schema_guard()),
+                                                        params.secondary_namespace_->is_for_trigger_package()));
             }
           }
 #define GET_CONST_EXPR_VALUE(expr, val)                                         \
@@ -2726,10 +2720,9 @@ int ObRawExprUtils::try_modify_udt_col_expr_for_gen_col_recursively(const ObSQLS
       CK (OB_NOT_NULL(child_expr));
       OZ (SMART_CALL(try_modify_udt_col_expr_for_gen_col_recursively(session, table_schema, resolved_cols, expr_factory, child_expr)));
       if (OB_SUCC(ret) && (tmp_expr != child_expr)) {
-        ObSysFunRawExpr *sys_func_expr = NULL;
-        // replace happened
-        CK (OB_NOT_NULL(sys_func_expr = dynamic_cast<ObSysFunRawExpr *>(expr)));
-        OZ (sys_func_expr->replace_param_expr(i, child_expr));
+        // replace happened, use get_param_expr reference to replace child directly,
+        // which works for all expr types (ObOpRawExpr, ObCaseOpRawExpr, etc.)
+        expr->get_param_expr(i) = child_expr;
       }
     }
   }
@@ -7411,6 +7404,9 @@ int ObRawExprUtils::is_expr_comparable(const ObRawExpr *expr, bool &can_be)
             || ob_is_lob_tc(expr->get_data_type())
             || ob_is_json_tc(expr->get_data_type())
             || ob_is_geometry_tc(expr->get_data_type())
+            || ob_is_collection_sql_type(expr->get_data_type())
+            || ob_is_roaringbitmap(expr->get_data_type())
+            || ob_is_user_defined_sql_type(expr->get_data_type())
             || ob_is_extend(expr->get_data_type())) {
     can_be = false;
   }
@@ -7441,6 +7437,9 @@ uint32_t ObRawExprUtils::calc_column_result_flag(const ObColumnSchemaV2 &column_
 
   if (column_schema.is_not_null_for_read()) {
     flag |= NOT_NULL_FLAG;
+    if (!column_schema.is_autoincrement() && column_schema.get_cur_default_value().is_null()) {
+      flag |= NO_DEFAULT_VALUE_FLAG;
+    }
   }
   if (column_schema.is_not_null_for_write()) {
     flag |= NOT_NULL_WRITE_FLAG;
@@ -8655,6 +8654,36 @@ int ObRawExprUtils::build_pseudo_ddl_slice_id(ObRawExprFactory &factory,
   return ret;
 }
 
+int ObRawExprUtils::build_pseudo_columns_for_window_funnel(ObRawExprFactory &factory,
+                                                            const ObSQLSessionInfo &session_info,
+                                                            ObRawExpr *timestamp_expr,
+                                                            ObRawExpr *&pseudo_time,
+                                                            ObRawExpr *&pseudo_event_idx)
+{
+  int ret = OB_SUCCESS;
+  ObOpPseudoColumnRawExpr *pseudo_time_expr = NULL;
+  ObOpPseudoColumnRawExpr *pseudo_event_idx_expr = NULL;
+  ObRawExprResType res_type;
+  res_type.set_int();
+  res_type.set_precision(ObAccuracy::DDL_DEFAULT_ACCURACY[ObIntType].precision_);
+  res_type.set_scale(DEFAULT_SCALE_FOR_INTEGER);
+  OZ(build_op_pseudo_column_expr(factory, T_PSEUDO_WINDOW_FUNNEL_TIME, "WINDOW_FUNNEL_TIME",
+                                 res_type, pseudo_time_expr));
+  OZ(pseudo_time_expr->formalize(&session_info));
+  OZ(pseudo_time_expr->add_flag(IS_INNER_ADDED_EXPR));
+  OZ(build_op_pseudo_column_expr(factory, T_PSEUDO_WINDOW_FUNNEL_EVENT_IDX, "WINDOW_FUNNEL_EVENT_IDX",
+                                 res_type, pseudo_event_idx_expr));
+  OZ(pseudo_event_idx_expr->formalize(&session_info));
+  OZ(pseudo_event_idx_expr->add_flag(IS_INNER_ADDED_EXPR));
+  if (OB_SUCC(ret)) {
+    pseudo_time = pseudo_time_expr;
+    pseudo_event_idx = pseudo_event_idx_expr;
+    LOG_DEBUG("debug build pseudo for window funnel", K(ret), K(lbt()), K(pseudo_time_expr), K(pseudo_event_idx_expr));
+  }
+  return ret;
+}
+
+
 int ObRawExprUtils::build_pseudo_random(ObRawExprFactory &factory,
                                         const ObSQLSessionInfo &session_info,
                                         ObRawExpr *&out)
@@ -8784,7 +8813,8 @@ bool ObRawExprUtils::is_pseudo_column_like_expr(const ObRawExpr &expr)
   bool bret = false;
   if (ObRawExpr::EXPR_PSEUDO_COLUMN == expr.get_expr_class() ||
       T_FUN_SYS_ROWNUM == expr.get_expr_type() ||
-      T_FUN_SYS_SEQ_NEXTVAL == expr.get_expr_type()) {
+      T_FUN_SYS_SEQ_NEXTVAL == expr.get_expr_type() ||
+      T_FUN_SYS_CALC_UROWID == expr.get_expr_type()) {
     bret = true;
   }
   return bret;
@@ -9280,7 +9310,8 @@ int ObRawExprUtils::build_common_aggr_expr(ObRawExprFactory &expr_factory,
                                            ObSQLSessionInfo *session_info,
                                            const ObItemType expect_op_type,
                                            ObRawExpr *param_expr,
-                                           ObAggFunRawExpr *&aggr_expr)
+                                           ObAggFunRawExpr *&aggr_expr,
+                                           bool keep_sum_precision)
 {
   int ret = OB_SUCCESS;
   aggr_expr = NULL;
@@ -9296,6 +9327,7 @@ int ObRawExprUtils::build_common_aggr_expr(ObRawExprFactory &expr_factory,
     LOG_WARN("failed to add flag", K(ret));
   } else if (OB_FAIL(aggr_expr->add_real_param_expr(param_expr))) {
     LOG_WARN("failed to add param expr to agg expr", K(ret));
+  } else if (FALSE_IT(aggr_expr->set_is_keep_sum_precision(keep_sum_precision))) {
   } else if (OB_FAIL(aggr_expr->formalize(session_info))) {
     LOG_WARN("failed to extract info", K(ret));
   } else {/*do nothing */}
@@ -10953,7 +10985,22 @@ bool ObRawExprUtils::is_invalid_type_for_compare(const ObRawExprResType &type)
           (is_oracle_mode() && ObJsonType == type.get_type()) ||
           ObRoaringBitmapType == type.get_type() ||
           ObCollectionSQLType == type.get_type() ||
-          ObExtendType == type.get_type();
+          ObExtendType == type.get_type() ||
+          (is_oracle_mode() && ObGeometryType == type.get_type());
+}
+
+bool ObRawExprUtils::is_audit_log_expr(const ObRawExpr *expr)
+{
+  bool bret = false;
+  if (OB_NOT_NULL(expr)) {
+    bret = T_FUN_SYS_AUDIT_LOG_SET_FILTER == expr->get_expr_type() ||
+           T_FUN_SYS_AUDIT_LOG_REMOVE_FILTER == expr->get_expr_type() ||
+           T_FUN_SYS_AUDIT_LOG_SET_USER == expr->get_expr_type() ||
+           T_FUN_SYS_AUDIT_LOG_REMOVE_USER == expr->get_expr_type() ||
+           T_FUN_SYS_AUDIT_LOG_PASSWORD_SET == expr->get_expr_type() ||
+           T_FUN_SYS_AUDIT_LOG_PASSWORD_GET == expr->get_expr_type();
+  }
+  return bret;
 }
 
 int ObRawExprUtils::build_json_member_of_expr(ObRawExprFactory &expr_factory,

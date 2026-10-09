@@ -1,20 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_VECTOR_OB_I_VECTOR_H_
 #define OCEANBASE_SHARE_VECTOR_OB_I_VECTOR_H_
 
 #include "share/datum/ob_datum.h"
-#include "share/vector/type_traits.h"
+#include "share/vector/ob_vector_define.h"
 #include "share/vector/static_check_utils.h"
 #include "lib/rowid/ob_urowid.h"
 #include "common/object/ob_object.h"
@@ -31,6 +24,11 @@ namespace sql {
 
 namespace common
 {
+// 前向声明
+class ObFixedLengthBase;
+class ObDiscreteBase;
+class ObContinuousBase;
+class ObUniformBase;
 
 #define BATCH_EVAL_HASH_ARGS      const sql::ObExpr &expr,      \
                                   uint64_t *hash_values,        \
@@ -523,6 +521,17 @@ public:
 
   virtual int default_hash(BATCH_EVAL_HASH_ARGS) const = 0;
   virtual int murmur_hash(BATCH_EVAL_HASH_ARGS) const = 0;
+  // The current hash algorithms implemented are
+  // - 'default hash'
+  // - 'murmur hash'
+  // - 'murmur_hash_v3'
+  // - 'crc_hash_v3'
+
+  // When calling hash_v3 or hash_v3_for_one_row, the corresponding hash algorithm is selected based on the plan.
+  // NOTE: where compatibility needs to be maintained, it is recommended to call the specific hash algorithm interface.
+  int hash(BATCH_EVAL_HASH_ARGS) const;
+  int hash_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const;
+
   // In vectorization 1.0, hash value (calculated by murmur_hash_v2) of null is inconsistent for different types.
   // For example, null hash value of ObFixedDouble is equal to `seed`, null hash vlaue of int to equal to `murmur_hash_v2(nullptr, 0, seed)`
   // In vectorization 2.0, null hash value (calculated by `murmur_hash_v3`)to equal to `seed` for all types (including null type)
@@ -530,6 +539,9 @@ public:
   virtual int murmur_hash_v3(BATCH_EVAL_HASH_ARGS) const = 0;
   // used for one row calculation
   virtual int murmur_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const = 0;
+  // crc hash v3 uses crc_hash_64 for better performance on modern CPUs with CRC instructions
+  virtual int crc_hash_v3(BATCH_EVAL_HASH_ARGS) const = 0;
+  virtual int crc_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const = 0;
   // compare n-th value in vector with other value,
   // the type of other value must be same as this vector
   virtual int null_first_cmp(VECTOR_ONE_COMPARE_ARGS) const = 0;
@@ -590,6 +602,69 @@ public:
   }
   DEF_VEC_READ_INTERFACES(ObIVector);
   DEF_VEC_WRITE_INTERFACES(ObIVector);
+
+public:
+  // Batch copy interface: shallow copy data from source vector to current vector
+  // src_vec: source vector
+  // skip: rows to skip (can be nullptr, means no rows to skip)
+  // start: start position of copy
+  // end: end position of copy (exclusive)
+  // Design: use from_vector_ivector as entry point, distinguish by function name to avoid virtual function issues
+  OB_INLINE int from_vector_shallow(const ObIVector *src_vec,
+                                     const sql::ObBitVector *skip,
+                                     const int64_t start,
+                                     const int64_t end)
+  {
+    int ret = OB_SUCCESS;
+    if (OB_ISNULL(src_vec)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      const VectorFormat src_format = src_vec->get_format();
+      switch (src_format) {
+        case VEC_FIXED:
+          ret = from_vector_fixed(reinterpret_cast<const ObFixedLengthBase *>(src_vec), skip, start, end);
+          break;
+        case VEC_UNIFORM:
+        case VEC_UNIFORM_CONST:
+          ret = from_vector_uniform(reinterpret_cast<const ObUniformBase *>(src_vec), src_format, skip, start, end);
+          break;
+        case VEC_DISCRETE:
+          ret = from_vector_discrete(reinterpret_cast<const ObDiscreteBase *>(src_vec), skip, start, end);
+          break;
+        case VEC_CONTINUOUS:
+          ret = from_vector_continuous(reinterpret_cast<const ObContinuousBase *>(src_vec), skip, start, end);
+          break;
+        default:
+          ret = OB_ERR_UNEXPECTED;
+          break;
+      }
+    }
+    return ret;
+  }
+
+protected:
+  // Four pure virtual functions: copy from different formats, implemented by each format
+  // New naming: from_vector_xxx, avoid confusion with from_vector_shallow
+  virtual int from_vector_fixed(const ObFixedLengthBase *src_fixed,
+                                 const sql::ObBitVector *skip,
+                                 const int64_t start,
+                                 const int64_t end) = 0;
+
+  virtual int from_vector_uniform(const ObUniformBase *src_uniform,
+                                  VectorFormat src_format,
+                                  const sql::ObBitVector *skip,
+                                  const int64_t start,
+                                  const int64_t end) = 0;
+
+  virtual int from_vector_discrete(const ObDiscreteBase *src_discrete,
+                                   const sql::ObBitVector *skip,
+                                   const int64_t start,
+                                   const int64_t end) = 0;
+
+  virtual int from_vector_continuous(const ObContinuousBase *src_continuous,
+                                      const sql::ObBitVector *skip,
+                                      const int64_t start,
+                                      const int64_t end) = 0;
 };
 
 using IVectorPtrs = common::ObIArray<ObIVector *>;

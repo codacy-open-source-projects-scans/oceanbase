@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_TABLET_CREATE_SSTABLE_PARAM
@@ -21,6 +14,7 @@
 #include "share/scn.h"
 #include "storage/ddl/ob_ddl_struct.h"
 #include "storage/blocksstable/ob_table_flag.h"
+#include "storage/blocksstable/ob_sstable_skip_index.h"
 #include "storage/compaction/ob_compaction_util.h"
 #include "storage/compaction/ob_uncommit_tx_info.h"
 
@@ -163,7 +157,8 @@ public:
                                        const int64_t column_group_cnt,
                                        const int64_t rowkey_column_cnt,
                                        const int64_t column_cnt,
-                                       const int64_t row_cnt);
+                                       const int64_t row_cnt,
+                                       const bool has_hidden_rowkey_cg);
 
   inline const ObITable::TableKey& table_key() const { return table_key_; }
   inline const share::SCN& rec_scn() const { return rec_scn_; };
@@ -179,6 +174,8 @@ public:
   // TODO: delete this interface
   // ObTabletMergeInfo::record_start_tx_scn_for_tx_data
   inline void set_filled_tx_scn(const share::SCN &scn) { filled_tx_scn_ = scn; }
+
+  int set_min_merged_trans_version_with_check(const int64_t min_merged_trans_version);
 
   TO_STRING_KV(K_(table_key),
       K_(sstable_logic_seq),
@@ -232,7 +229,9 @@ public:
       K_(uncommit_tx_info),
       K_(rec_scn),
       K_(upper_trans_version),
-      K_(min_merged_trans_version));
+      K_(min_merged_trans_version),
+      K_(has_hidden_rowkey_cg),
+      K_(sstable_skip_index));
 private:
   static const int64_t DEFAULT_MACRO_BLOCK_CNT = 64;
   int inner_init_with_merge_res(const blocksstable::ObSSTableMergeRes &res);
@@ -267,7 +266,7 @@ public:
   int64_t micro_block_cnt_;
   int64_t use_old_macro_block_count_;
   int64_t row_count_;
-  int64_t column_group_cnt_; // only used for column_store
+  int64_t column_group_cnt_; // only used for column_store, including hidden rowkey cg!
   int32_t co_base_type_; // used for co sstable
   int64_t rowkey_column_cnt_;
   int64_t column_cnt_;
@@ -301,6 +300,9 @@ public:
   share::SCN rec_scn_;
   int64_t upper_trans_version_;
   int64_t min_merged_trans_version_;
+  bool has_hidden_rowkey_cg_;
+  // SSTable level skip index row (aggregated from all macro blocks)
+  blocksstable::ObSSTableMetaSkipIndex sstable_skip_index_;
 };
 
 } // namespace storage

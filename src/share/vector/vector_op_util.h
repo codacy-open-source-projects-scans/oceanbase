@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_VECTOR_VECTOR_OP_UTIL_H_
@@ -108,11 +101,8 @@ private:
   {
     int ret = OB_SUCCESS;
     if (!has_null && all_active) {
-      for (int64_t i = bound.start(); OB_SUCC(ret) && i < bound.end(); i++) {
-        ret = Op::template hash<HashMethod, hash_v2>(meta, vec.get_payload(i),
-                                                     vec.get_length(i), seed_vec[i],
-                                                     hash_values[i]);
-      }
+      ret = Op::template batch_hash<HashMethod, hash_v2, true>(hash_values, meta, vec,
+                                                               bound.start(), bound.end(), seed_vec, skip);
     } else if (has_null && all_active) {
       uint64_t v = 0;
       for (int64_t i = bound.start(); OB_SUCC(ret) && i < bound.end(); i++) {
@@ -124,11 +114,8 @@ private:
         }
       }
     } else if (!has_null && !all_active) {
-      auto op = [&](const int64_t i) __attribute__((always_inline)) {
-        return Op::template hash<HashMethod, hash_v2>(meta, vec.get_payload(i),
-                                          vec.get_length(i), seed_vec[i], hash_values[i]);
-      };
-      ret = sql::ObBitVector::flip_foreach(skip, bound, op);
+      ret = Op::template batch_hash<HashMethod, hash_v2, false>(hash_values, meta, vec,
+                                                                bound.start(), bound.end(), seed_vec, skip);
     } else { /*has_null && !all_active*/
       auto op = [&](const int64_t i) __attribute__((always_inline)) {
         int ret = OB_SUCCESS;

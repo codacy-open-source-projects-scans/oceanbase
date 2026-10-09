@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_RAW_EXPR_UTIL_H
@@ -1132,6 +1125,11 @@ public:
   static int build_pseudo_random(ObRawExprFactory &factory,
                                  const ObSQLSessionInfo &session_info,
                                  ObRawExpr *&out);
+  static int build_pseudo_columns_for_window_funnel(ObRawExprFactory &factory,
+                                                    const ObSQLSessionInfo &session_info,
+                                                    ObRawExpr *timestamp_expr,
+                                                    ObRawExpr *&pseudo_time,
+                                                    ObRawExpr *&pseudo_event_idx);
   static int build_grouping_id(ObRawExprFactory &factory, const ObSQLSessionInfo &session_info,
                                ObOpPseudoColumnRawExpr *&out, bool is_three_stage_grouping_id = false);
 
@@ -1198,7 +1196,8 @@ public:
                                     ObSQLSessionInfo *session_info,
                                     const ObItemType expect_op_type,
                                     ObRawExpr *param_expr,
-                                    ObAggFunRawExpr *&aggr_expr);
+                                    ObAggFunRawExpr *&aggr_expr,
+                                    bool keep_sum_precision = false);
 
   //专用于limit_expr/offset_expr中，用于构造case when limit_expr < 0 then 0 else limit_expr end
   static int build_case_when_expr_for_limit(ObRawExprFactory &expr_factory,
@@ -1459,6 +1458,7 @@ public:
       common::ObIArray<sql::ObQualifiedName> &q_name,
       bool nullable);
   static bool is_invalid_type_for_compare(const ObRawExprResType &type);
+  static bool is_audit_log_expr(const ObRawExpr *expr);
   static int build_json_member_of_expr(ObRawExprFactory &expr_factory,
                                        const ObSQLSessionInfo &session,
                                        ObRawExpr *json_val,

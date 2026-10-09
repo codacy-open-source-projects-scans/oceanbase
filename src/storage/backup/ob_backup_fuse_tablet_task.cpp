@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -319,13 +312,11 @@ int ObStartBackupTabletGroupFuseTask::check_need_fuse_tablet_(bool &need_fuse)
 int ObStartBackupTabletGroupFuseTask::generate_tablet_fuse_dag_()
 {
   int ret = OB_SUCCESS;
-  ObTenantDagScheduler *scheduler = NULL;
   ObIDagNet *dag_net = NULL;
   ObIDag *parent = this->get_dag();
   ObStartBackupTabletGroupFuseDag *group_fuse_dag = NULL;
   ObBackupTabletFuseDag *tablet_fuse_dag = NULL;
   ObBackupTabletFuseItem fuse_item;
-  ObInitBackupTabletFuseParam param;
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -339,9 +330,6 @@ int ObStartBackupTabletGroupFuseTask::generate_tablet_fuse_dag_()
   } else if (OB_ISNULL(dag_net = group_fuse_dag->get_dag_net())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("group fuse dag net should not be NULL", K(ret), KP(dag_net));
-  } else if (OB_ISNULL(scheduler = MTL(ObTenantDagScheduler*))) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("failed to get ObTenantDagScheduler from MTL", K(ret));
   } else if (OB_FAIL(group_ctx_->get_next_tablet_item(fuse_item))) {
     if (OB_ITER_END == ret) {
       ret = OB_SUCCESS;
@@ -349,34 +337,13 @@ int ObStartBackupTabletGroupFuseTask::generate_tablet_fuse_dag_()
     } else {
       LOG_WARN("failed to get next tablet id", K(ret), KPC(group_ctx_));
     }
+  } else if (OB_FAIL(storage::ObStorageHADagUtils::alloc_and_schedule_dag(
+      dag_net, parent/*parent_dag*/, finish_dag_/*child_dag*/,
+      ObDagPrio::DAG_PRIO_MAX, false/*emergency*/, tablet_fuse_dag,
+      group_ctx_->param_, fuse_item, *group_ctx_))) {
+    LOG_WARN("failed to alloc and schedule tablet fuse dag", K(ret), KPC_(group_ctx));
   } else {
-    if (OB_FAIL(scheduler->alloc_dag(tablet_fuse_dag, true/*is_ha_dag*/))) {
-      LOG_WARN("failed to alloc tablet fuse dag ", K(ret));
-    } else if (OB_FAIL(tablet_fuse_dag->init(group_ctx_->param_, fuse_item, *group_ctx_))) {
-      LOG_WARN("failed to init tablet fuse dag", K(ret), "param", group_ctx_->param_, K(fuse_item));
-    } else if (OB_FAIL(dag_net->add_dag_into_dag_net(*tablet_fuse_dag))) {
-      LOG_WARN("failed to add dag into dag net", K(ret), KPC_(group_ctx));
-    } else if (OB_FAIL(parent->add_child_without_inheritance(*tablet_fuse_dag))) {
-      LOG_WARN("failed to add child dag", K(ret), KPC_(group_ctx));
-    } else if (OB_FAIL(tablet_fuse_dag->create_first_task())) {
-      LOG_WARN("failed to create first task", K(ret), KPC_(group_ctx));
-    } else if (OB_FAIL(tablet_fuse_dag->add_child_without_inheritance(*finish_dag_))) {
-      LOG_WARN("failed to add finish dag as child", K(ret), KPC_(group_ctx));
-    } else if (OB_FAIL(scheduler->add_dag(tablet_fuse_dag))) {
-      LOG_WARN("failed to add tablet fuse dag", K(ret), K(*tablet_fuse_dag));
-      if (OB_SIZE_OVERFLOW != ret && OB_EAGAIN != ret) {
-        LOG_WARN("Fail to add task", K(ret));
-        ret = OB_EAGAIN;
-      }
-    } else {
-      LOG_INFO("succeed to schedule tablet fuse dag", K(*tablet_fuse_dag));
-      tablet_fuse_dag = NULL;
-    }
-  }
-
-  if (OB_NOT_NULL(tablet_fuse_dag)) {
-    scheduler->free_dag(*tablet_fuse_dag);
-    tablet_fuse_dag = NULL;
+    LOG_INFO("succeed to schedule tablet fuse dag", K(*tablet_fuse_dag));
   }
   return ret;
 }

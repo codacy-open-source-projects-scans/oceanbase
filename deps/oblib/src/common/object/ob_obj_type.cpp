@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -563,6 +556,27 @@ int ob_collection_str(const ObObjType &type, const common::ObIArray<ObString> &t
   return ret;
 }
 
+int ob_append_quoted_str(char *buff, int64_t buff_length, int64_t &pos, const ObString &str)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(databuff_printf(buff, buff_length, pos, "'"))) {
+    // do nothing
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < str.length(); ++i) {
+      const char ch = str.ptr()[i];
+      if ('\'' == ch) {
+        ret = databuff_printf(buff, buff_length, pos, "''");
+      } else {
+        ret = databuff_printf(buff, buff_length, pos, "%c", ch);
+      }
+    }
+    if (OB_SUCC(ret)) {
+      ret = databuff_printf(buff, buff_length, pos, "'");
+    }
+  }
+  return ret;
+}
+
 int ob_enum_or_set_str(const ObObjMeta &obj_meta, const common::ObIArray<ObString> &type_info, char *buff, int64_t buff_length, int64_t &pos)
 {
   int ret = OB_SUCCESS;
@@ -587,7 +601,7 @@ int ob_enum_or_set_str(const ObObjMeta &obj_meta, const common::ObIArray<ObStrin
                                            cur_str))) {
       LOG_WARN("convert string to system collation failed",
                K(ret), K(obj_meta), K(cur_str));
-    } else if (OB_FAIL(databuff_printf(buff, buff_length, pos, "'%.*s'", cur_str.length(), cur_str.ptr()))) {
+    } else if (OB_FAIL(ob_append_quoted_str(buff, buff_length, pos, cur_str))) {
       LOG_WARN("fail to print buffer", K(ret), K(buff_length), K(pos), K(i));
     } else if (i == type_info.count() - 1) {
       if (OB_FAIL(databuff_printf(buff, buff_length, pos, ")"))) {
@@ -722,13 +736,14 @@ int ob_sql_type_str_with_coll(char *buff,
     ObCollationType coll_type,
     const common::ObIArray<ObString> &type_info,
     const uint64_t sub_type/* common::ObGeoType::GEOTYPEMAX */,
-    const bool is_string_lob/* false */)
+    const bool is_string_lob/* false */,
+    ObCharsetCompatType compat_type/* CHARSET_COMPAT_MYSQL57 */)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ob_sql_type_str(buff, buff_length, pos, type, length, precision, scale, coll_type, type_info, sub_type, is_string_lob))) {
     LOG_WARN("fail to get data type str", K(ret), K(sub_type), K(buff), K(buff_length), K(pos));
   } else if (lib::is_mysql_mode() && ob_is_string_type(type) && CS_TYPE_BINARY != coll_type) {
-      if (ObCharset::is_default_collation(coll_type)) {
+      if (ObCharset::is_default_collation(coll_type, compat_type)) {
         if (OB_FAIL(databuff_printf(buff, buff_length, pos, " CHARSET %s", ObCharset::charset_name(coll_type)))) {
           LOG_WARN("fail to concat charset str", K(ret), K(sub_type), K(buff), K(buff_length), K(pos));
         }

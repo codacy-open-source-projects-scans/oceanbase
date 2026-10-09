@@ -1,15 +1,10 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "object/ob_obj_type.h"
+#include "objit/common/ob_item_type.h"
 #define USING_LOG_PREFIX SHARE
 
 #include "agg_reuse_cell.h"
@@ -29,6 +24,7 @@ int ReuseAggCellMgr::init(RuntimeContext &agg_ctx)
       ret = OB_ALLOCATE_MEMORY_FAILED;                                                             \
       LOG_WARN("allocate memory failed", K(ret));                                                  \
     }                                                                                              \
+    need_reuse_ = true;                                                                            \
   } while (false)
 
   int ret = OB_SUCCESS;
@@ -39,6 +35,8 @@ int ReuseAggCellMgr::init(RuntimeContext &agg_ctx)
   } else {
     for (int i = 0; OB_SUCC(ret) && i < agg_ctx.aggr_infos_.count(); i++) {
       ObExprOperatorType expr_type = agg_ctx.aggr_infos_.at(i).get_expr_type();
+      // if any of the aggregate functions has extra info, we need to reuse the cell
+      need_reuse_ = need_reuse_ || helper::has_extra_info(agg_ctx.aggr_infos_.at(i));
       switch (expr_type) {
       case T_FUN_MAX:
       case T_FUN_MIN: {
@@ -66,6 +64,20 @@ int ReuseAggCellMgr::init(RuntimeContext &agg_ctx)
       }
       }
     }
+    if (OB_FAIL(ret)) {
+    } else if (!need_reuse_) {
+      simple_reuse_ = true;
+      for (int i = 0; simple_reuse_ && i < agg_ctx.aggr_infos_.count(); i++) {
+        VecValueTypeClass res_tc = agg_ctx.aggr_infos_.at(i).expr_->get_vec_value_tc();
+        if (res_tc == VEC_TC_FLOAT || res_tc == common::VEC_TC_DOUBLE || res_tc == common::VEC_TC_FIXED_DOUBLE) {
+          simple_reuse_ = false;
+        }
+        ObExprOperatorType expr_type = agg_ctx.aggr_infos_.at(i).get_expr_type();
+        if (res_tc == common::VEC_TC_INTEGER && expr_type != T_FUN_COUNT && expr_type != T_FUN_SUM_OPNSIZE) {
+          simple_reuse_ = false;
+        }
+      }
+    }
   }
   return ret;
 
@@ -86,7 +98,7 @@ int ReuseAggCellMgr::save(RuntimeContext &agg_ctx, const char *agg_row)
   } while (false)
 
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(agg_ctx.aggr_infos_.count() <= 0)) {
+  if (OB_UNLIKELY(agg_ctx.aggr_infos_.count() <= 0) || !need_reuse_) {
     // do nothing
   } else {
     for (int i = 0; OB_SUCC(ret) && i < agg_ctx.aggr_infos_.count(); i++) {
@@ -120,7 +132,7 @@ int ReuseAggCellMgr::save(RuntimeContext &agg_ctx, const char *agg_row)
       }
     }
   }
-  if (OB_SUCC(ret) && OB_FAIL(save_extra_stores(agg_ctx, agg_row))) {
+  if (OB_SUCC(ret) && need_reuse_ && OB_FAIL(save_extra_stores(agg_ctx, agg_row))) {
     LOG_WARN("save extra stores failed", K(ret));
   }
   return ret;
@@ -142,7 +154,7 @@ int ReuseAggCellMgr::restore(RuntimeContext &agg_ctx, char *agg_row)
   } while (false)
 
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(agg_ctx.aggr_infos_.count() <= 0)) {
+  if (OB_UNLIKELY(agg_ctx.aggr_infos_.count() <= 0) || !need_reuse_) {
     // do nothing
   } else {
     for (int i = 0; OB_SUCC(ret) && i < agg_ctx.aggr_infos_.count(); i++) {
@@ -176,7 +188,7 @@ int ReuseAggCellMgr::restore(RuntimeContext &agg_ctx, char *agg_row)
       }
     }
   }
-  if (OB_SUCC(ret) && OB_FAIL(restore_extra_stores(agg_ctx, agg_row))) {
+  if (OB_SUCC(ret) && need_reuse_ && OB_FAIL(restore_extra_stores(agg_ctx, agg_row))) {
     LOG_WARN("restore extra stores failed", K(ret));
   }
   return ret;

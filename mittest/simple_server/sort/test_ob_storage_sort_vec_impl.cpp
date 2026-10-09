@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // 只测试 ObStorageVecSortImpl 的 add_batch 接口，让内部自行触发 before_add_row / do_dump 等逻辑，
@@ -394,6 +387,12 @@ public:
     return OB_SUCCESS;
   }
 
+  virtual int crc_hash_v3(BATCH_EVAL_HASH_ARGS) const override { return OB_SUCCESS; }
+  virtual int crc_hash_v3_for_one_row(EVAL_HASH_ARGS_FOR_ROW) const override
+  {
+    return OB_SUCCESS;
+  }
+
   virtual int null_first_cmp(VECTOR_ONE_COMPARE_ARGS) const override { return OB_SUCCESS; }
   virtual int null_last_cmp(VECTOR_ONE_COMPARE_ARGS) const override { return OB_SUCCESS; }
   virtual int no_null_cmp(VECTOR_NOT_NULL_COMPARE_ARGS) const override { return OB_SUCCESS; }
@@ -475,6 +474,35 @@ public:
                      const int64_t /*remain_size*/,
                      const bool /*is_fixed_length_data*/,
                      int64_t &/*row_size*/) const override
+  {
+    return OB_SUCCESS;
+  }
+  virtual int from_vector_fixed(const ObFixedLengthBase * /*src_fixed*/,
+                                const sql::ObBitVector * /*skip*/,
+                                const int64_t /*start*/,
+                                const int64_t /*end*/) override
+  {
+    return OB_SUCCESS;
+  }
+  virtual int from_vector_uniform(const ObUniformBase * /*src_uniform*/,
+                                  VectorFormat /*src_format*/,
+                                  const sql::ObBitVector * /*skip*/,
+                                  const int64_t /*start*/,
+                                  const int64_t /*end*/) override
+  {
+    return OB_SUCCESS;
+  }
+  virtual int from_vector_discrete(const ObDiscreteBase * /*src_discrete*/,
+                                   const sql::ObBitVector * /*skip*/,
+                                   const int64_t /*start*/,
+                                   const int64_t /*end*/) override
+  {
+    return OB_SUCCESS;
+  }
+  virtual int from_vector_continuous(const ObContinuousBase * /*src_continuous*/,
+                                     const sql::ObBitVector * /*skip*/,
+                                     const int64_t /*start*/,
+                                     const int64_t /*end*/) override
   {
     return OB_SUCCESS;
   }

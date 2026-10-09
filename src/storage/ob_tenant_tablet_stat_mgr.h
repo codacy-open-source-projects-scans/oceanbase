@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TENANT_TABLET_STAT_MGR_H_
@@ -85,7 +78,7 @@ public:
   TO_STRING_KV(K_(ls_id), K_(tablet_id), K_(query_cnt), K_(merge_cnt), K_(scan_logical_row_cnt),
                K_(scan_physical_row_cnt), K_(scan_micro_block_cnt), K_(pushdown_micro_block_cnt),
                K_(exist_row_total_table_cnt), K_(exist_row_read_table_cnt), K_(insert_row_cnt),
-               K_(update_row_cnt), K_(delete_row_cnt));
+               K_(update_row_cnt), K_(delete_row_cnt), K_(is_clear_mark));
 public:
   static constexpr int64_t MERGE_MIN_ROW_CNT = 1000;
   static constexpr int64_t QUERY_MIN_SCAN_ROW_CNT = 10000;
@@ -104,6 +97,7 @@ public:
   uint64_t insert_row_cnt_;
   uint64_t update_row_cnt_;
   uint64_t delete_row_cnt_;
+  bool is_clear_mark_;
 };
 
 class ObTableQueuingModeCfg
@@ -295,7 +289,7 @@ private:
 struct DynamicTableOptions {
   DynamicTableOptions()
     : mode_(share::schema::ObTableModeFlag::TABLE_MODE_NORMAL),
-      minor_row_store_type_(ObStoreFormat::DEFAULT_MINOR_ROW_STORE_TYPE)
+      minor_row_store_type_(ObRowStoreType::MAX_ROW_STORE)
   {}
   void refresh(const share::schema::ObSimpleTableSchemaV2 &table_schema);
   share::schema::ObTableModeFlag mode_;
@@ -404,16 +398,16 @@ public:
   int report_stat(
       const ObTabletStat &stat,
       bool &succ_report);
+  int report_clear_tablet_stat(
+      const int64_t ls_id,
+      const uint64_t tablet_id,
+      bool &succ_report);
   int get_latest_tablet_stat(
       const share::ObLSID &ls_id,
       const common::ObTabletID &tablet_id,
       ObTabletStat &tablet_stat,
       ObTabletStat &total_tablet_stat,
       share::schema::ObTableModeFlag &mode);
-  int get_history_tablet_stats(
-      const share::ObLSID &ls_id,
-      const common::ObTabletID &tablet_id,
-      common::ObIArray<ObTabletStat> &tablet_stats);
   int get_all_tablet_stats(
       common::ObIArray<ObTabletStat> &tablet_stats);
   int get_all_tablet_analyzers(
@@ -482,7 +476,6 @@ private:
   static constexpr int32_t DEFAULT_UP_LIMIT_STREAM_CNT = 20000;
   static constexpr int32_t DEFAULT_BUCKET_NUM = 1543; // should be a prime to guarantee the bucket nums of hashmap and bucketlock are equal
   static constexpr int32_t DEFAULT_MAX_PENDING_CNT = 40000;
-  static constexpr int32_t MAX_REPORT_RETRY_CNT = 5;
   static constexpr int32_t MAX_SCHEMA_GUARD_REFRESH_CNT = 100;
 
   TabletStatUpdater report_stat_task_;

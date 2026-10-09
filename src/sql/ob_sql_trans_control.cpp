@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -23,6 +16,7 @@
 #include "share/inner_table/ob_tiered_metadata_store_schema.h"
 #include "storage/lock_wait_mgr/ob_lock_wait_mgr.h"
 #include "sql/engine/dml/ob_table_modify_op.h"
+#include "observer/mysql/obmp_utils.h"
 
 #ifdef CHECK_SESSION
 #error "redefine macro CHECK_SESSION"
@@ -272,7 +266,9 @@ int ObSqlTransControl::end_trans(ObSQLSessionInfo *session,
       bool can_async_commit = !session->get_has_temp_table_flag()
                           && !session->has_tx_level_temp_table()
                           && session->partition_hit().get_bool()
-                          && session->is_in_transaction();
+                          && session->is_in_transaction()
+                          && OB_ISNULL(session->get_pl_profiler())
+                          && OB_ISNULL(session->get_pl_code_coverage());
       if (can_async_commit) {
         callback = &session->get_end_trans_cb();
         LOG_TRACE("[PL_ASYNC_COMMIT] Using async commit callback", K(ret));
@@ -347,6 +343,14 @@ int ObSqlTransControl::end_trans(ObSQLSessionInfo *session,
     LOG_INFO("explicit end trans with hint",
              "trans_id", tx_id, "action", (is_rollback ? "ROLLBACK" : "COMMIT"),
              K(ret), K(hint), "session_id", session->get_server_sid());
+  }
+  // for statistics
+  if (is_explicit && OB_NOT_NULL(session) && session->is_user_session()) {
+    if (is_rollback) {
+      EVENT_ADD(TRANSACTION_ROLLBACK_STMT_TOTAL_COUNT, 1);
+    } else {
+      EVENT_ADD(TRANSACTION_COMMIT_STMT_TOTAL_COUNT, 1);
+    }
   }
   FLT_SET_TAG(trans_id, tx_id);
   return ret;
@@ -644,7 +648,11 @@ int ObSqlTransControl::do_end_trans_(ObSQLSessionInfo *session,
     } else if (is_rollback) {
       ret = txs->rollback_tx(*tx_ptr);
     } else if (callback) {
-      if (OB_FAIL(inc_session_ref(session))) {
+      // if dml run async commit, try to serialize package var first which may cause package compile action, compile action will generate inner sql traction
+      if (OB_NOT_NULL(session->get_cur_exec_ctx()) &&
+          OB_FAIL(observer::ObMPUtils::try_add_changed_package_info(*session, *session->get_cur_exec_ctx()))) {
+        LOG_WARN("failed to add changed package info", K(ret));
+      } else if (OB_FAIL(inc_session_ref(session))) {
         LOG_WARN("fail to inc session ref", K(ret));
       } else {
         callback->handout();
@@ -732,7 +740,7 @@ int ObSqlTransControl::start_stmt(ObExecContext &exec_ctx)
     OZ (session->get_pl_end_trans_cb().check_dependency_has_modified_tables(plan, session));
   }
   OX (tenant_id = session->get_effective_tenant_id());
-  OX (session->get_trans_result().reset());
+  OX (exec_ctx.get_trans_result().reset());
   OZ (get_tx_service(session, txs), tenant_id);
   OZ (acquire_tx_if_need_(txs, *session));
   OZ (stmt_sanity_check_(session, plan, plan_ctx));
@@ -758,6 +766,16 @@ int ObSqlTransControl::start_stmt(ObExecContext &exec_ctx)
   OX (is_plain_select = plan->is_plain_select());
   OX (tx_desc->clear_interrupt());
   OX (tx_desc->reset_conflict_info_array());
+  if (OB_SUCC(ret)
+      && GCONF.enable_record_trace_id) {
+    // if app_trace_id is empty, then set empty
+    int tmp_ret = OB_SUCCESS;
+    if (OB_SUCCESS != (tmp_ret = txs->set_app_trace_id(*tx_desc,
+            session->get_app_trace_id(), is_plain_select))) {
+      LOG_WARN("set app trace id failed", K(tmp_ret));
+    }
+  }
+
   if (OB_SUCC(ret) && !is_plain_select) {
     OZ (stmt_setup_savepoint_(session, das_ctx, plan_ctx, txs, nested_level, is_for_sslog), session_id, *tx_desc);
   }
@@ -811,9 +829,9 @@ int ObSqlTransControl::start_stmt(ObExecContext &exec_ctx)
     session->set_reserved_snapshot_version(das_ctx.get_snapshot().core_.version_);
   }
 
-bool print_log = false;
+  bool print_log = false;
 #ifndef NDEBUG
- print_log = true;
+  print_log = true;
 #else
  if (OB_FAIL(ret)) { print_log = true; }
 #endif
@@ -824,7 +842,7 @@ bool print_log = false;
     stmt::StmtType stmt_type = plan->get_stmt_type();
     bool has_for_update = plan->has_for_update();
     bool use_das = plan->use_das();
-    ObTxExecResult &trans_result = session->get_trans_result();
+    ObTxExecResult &trans_result = exec_ctx.get_trans_result();
     int64_t query_start_time = session->get_query_start_time();
     ObTxReadSnapshot &snapshot = das_ctx.get_snapshot();
     ObTxSEQ savepoint = das_ctx.get_savepoint();
@@ -1005,6 +1023,7 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
                                             ObExecContext &exec_ctx)
 {
   int ret = OB_SUCCESS;
+  ObExecContext *parent_ctx = exec_ctx.get_parent_ctx();
   ObConsistencyLevel cl = plan_ctx->get_consistency_level();
   ObTxReadSnapshot &snapshot = das_ctx.get_snapshot();
   bool can_plain_insert = false;
@@ -1031,6 +1050,19 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
     snapshot.init_none_read();
     snapshot.core_.tx_id_ = tx_desc.get_tx_id();
     snapshot.core_.scn_ = tx_desc.get_tx_seq();
+  } else if (session->enable_foreign_key_gts_opt() &&
+             ObSQLUtils::is_fk_nested_sql(&exec_ctx) &&
+             nullptr != parent_ctx &&
+             parent_ctx->get_das_ctx().get_snapshot().is_valid()) {
+    if (OB_ISNULL(session) || OB_ISNULL(session->get_tx_desc())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null ptr", K(ret), KP(session), KP(session->get_tx_desc()));
+    } else if (OB_FAIL(snapshot.assign(parent_ctx->get_das_ctx().get_snapshot()))) {
+      LOG_WARN("assign snapshot failed", K(ret));
+    } else {
+      snapshot.core_.scn_ = session->get_tx_desc()->get_tx_seq();
+      LOG_TRACE("assign snapshot from parent context", K(ret), K(snapshot));
+    }
   } else {
     ObTxDesc &tx_desc = *session->get_tx_desc();
     int64_t stmt_expire_ts = get_stmt_expire_ts(plan_ctx, *session);
@@ -1113,10 +1145,16 @@ int ObSqlTransControl::set_fk_check_snapshot(ObExecContext &exec_ctx)
   ObDASCtx &das_ctx = DAS_CTX(exec_ctx);
   ObPhysicalPlanCtx *plan_ctx = GET_PHY_PLAN_CTX(exec_ctx);
   const ObPhysicalPlan *plan = plan_ctx->get_phy_plan();
-  // insert stmt does not set snapshot by default, set snapshopt for foreign key check induced by insert heres
-  if (plan->is_plain_insert()) {
+  ObTxReadSnapshot &snapshot = das_ctx.get_snapshot();
+  // insert stmt does not set snapshot by default, set snapshot for foreign key check induced by insert here.
+  // 1. If snapshot is already acquired (is_none_read() is false), which means it is acquired in stmt_setup_snapshot_
+  //    (e.g. serial execution caused by foreign key) or previous fk check, we should skip acquiring it again.
+  // 2. For multiple foreign keys, snapshot is acquired only once.
+  if (OB_ISNULL(session) || OB_ISNULL(plan) || OB_ISNULL(session->get_tx_desc())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ptr", K(ret), KPC(session), KPC(plan), KPC(session->get_tx_desc()));
+  } else if (plan->is_plain_insert() && (!session->enable_foreign_key_gts_opt() || snapshot.is_none_read())) {
     ObTransService *txs = NULL;
-    ObTxReadSnapshot &snapshot = das_ctx.get_snapshot();
     ObTxDesc &tx_desc = *session->get_tx_desc();
     int64_t stmt_expire_ts = get_stmt_expire_ts(plan_ctx, *session);
     share::ObLSID local_ls_id;
@@ -1143,6 +1181,8 @@ int ObSqlTransControl::set_fk_check_snapshot(ObExecContext &exec_ctx)
         LOG_WARN("fail to get snapshot", K(ret), K(local_ls_id), KPC(session));
       }
     }
+  } else {
+    LOG_TRACE("skip fk check snapshot", K(plan->is_plain_insert()), K(session->enable_foreign_key_gts_opt()), K(snapshot.is_none_read()));
   }
   return ret;
 }
@@ -1246,6 +1286,27 @@ int ObSqlTransControl::stmt_setup_savepoint_(ObSQLSessionInfo *session,
   return ret;
 }
 
+// Recursively find the first DML operator that is not a PDML index maintenance operator.
+// In PDML plans with indexes, there are separate DML operators for the main table and
+// index tables. Index maintenance operators have is_pdml_index_maintain_ set to true.
+// By skipping them, we ensure we get the table_id of the main table.
+const ObTableModifySpec *ObSqlTransControl::find_main_table_dml_spec_(const ObOpSpec *op)
+{
+  const ObTableModifySpec *result = nullptr;
+  if (OB_NOT_NULL(op)) {
+    if (op->is_dml_operator()) {
+      const ObTableModifySpec *modify_spec = static_cast<const ObTableModifySpec *>(op);
+      if (!modify_spec->is_pdml_index_maintain_) {
+        result = modify_spec;
+      }
+    }
+    for (uint32_t i = 0; OB_ISNULL(result) && i < op->get_child_cnt(); ++i) {
+      result = find_main_table_dml_spec_(op->get_child(i));
+    }
+  }
+  return result;
+}
+
 int ObSqlTransControl::acquire_table_lock_if_needed_(ObSQLSessionInfo *session,
                                                      const ObPhysicalPlan *plan,
                                                      ObExecContext &exec_ctx)
@@ -1256,37 +1317,63 @@ int ObSqlTransControl::acquire_table_lock_if_needed_(ObSQLSessionInfo *session,
   if (OB_NOT_NULL(plan)) {
     const int64_t table_lock_mode = plan->get_phy_plan_hint().table_lock_mode_;
     if (table_lock_mode != 0) {
-      // First, try to get from root operator's das_ctdef (most reliable for Insert/Update operations)
-      // This directly accesses das_base_ctdef_.index_tid_ which contains the actual table_id
-      // Reference: get_single_table_loc_id in ob_table_modify_op.h
-      const ObOpSpec *root_op = plan->get_root_op_spec();
-      if (OB_NOT_NULL(root_op) && root_op->is_dml_operator()) {
-        const ObTableModifySpec *modify_spec = static_cast<const ObTableModifySpec *>(root_op);
-        ObTableID table_loc_id = OB_INVALID_ID;
-        ObTableID ref_table_id = OB_INVALID_ID;
-        if (OB_SUCC(modify_spec->get_single_table_loc_id(table_loc_id, ref_table_id))) {
-          table_id = ref_table_id;
-          LOG_DEBUG("get table_id from modify_spec", K(table_id));
+      // Find the main table DML operator by traversing the operator tree.
+      // Skip PDML index maintenance operators (is_pdml_index_maintain_ = true)
+      // to ensure we always lock the main table, not an index table.
+      if (OB_SUCC(ret)) {
+        const ObOpSpec *root_op = plan->get_root_op_spec();
+        const ObTableModifySpec *modify_spec = find_main_table_dml_spec_(root_op);
+        if (OB_NOT_NULL(modify_spec)) {
+          ObTableID table_loc_id = OB_INVALID_ID;
+          ObTableID ref_table_id = OB_INVALID_ID;
+          // Use a temporary variable instead of OB_SUCC to avoid polluting ret,
+          // because get_single_table_loc_id may legitimately fail for multi-ctdef
+          // operators (e.g., self-join FOR UPDATE with multiple lock_ctdefs).
+          if (OB_FAIL(modify_spec->get_single_table_loc_id(table_loc_id, ref_table_id))) {
+            LOG_WARN("get table_id from main table dml spec", K(table_id));
+          } else {
+            table_id = ref_table_id;
+          }
         }
       }
 
-      // If no valid table_id from root operator, try to get from plan's table locations
+      // Fallback: try to get from plan's DAS table locations
       if (OB_SUCC(ret) && OB_INVALID_ID == table_id) {
         const ObIArray<ObTableLocation> &das_locations = plan->get_das_table_locations();
         if (das_locations.count() > 0) {
-          // Get the first table ID as target table ID
-          // For most DML operations, there is usually only one main table
           table_id = das_locations.at(0).get_ref_table_id();
           LOG_DEBUG("get table_id from das_locations", K(table_id));
         }
       }
 
-      // If no DAS locations, try to get from normal table locations
+      // Fallback: try to get from normal table locations
       if (OB_SUCC(ret) && OB_INVALID_ID == table_id) {
         const ObIArray<ObTableLocation> &normal_locations = plan->get_table_locations();
         if (normal_locations.count() > 0) {
           table_id = normal_locations.at(0).get_ref_table_id();
           LOG_DEBUG("get table_id from normal_locations", K(table_id));
+        }
+      }
+
+      // Defense: table lock hint only supports user tables.
+      if (OB_SUCC(ret) && OB_INVALID_ID != table_id) {
+        ObSchemaGetterGuard schema_guard;
+        const uint64_t tenant_id = session->get_effective_tenant_id();
+        const ObTableSchema *table_schema = nullptr;
+        if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
+          LOG_WARN("failed to get schema guard", K(ret), K(tenant_id));
+        } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, table_id, table_schema))) {
+          LOG_WARN("failed to get table schema", K(ret), K(tenant_id), K(table_id));
+        } else if (OB_ISNULL(table_schema)) {
+          ret = OB_TABLE_NOT_EXIST;
+          LOG_WARN("table schema is null", K(ret), K(table_id));
+        } else if (!table_schema->is_user_table()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("table lock hint is not supported for non-user table",
+                   K(ret),
+                   K(table_id),
+                   "table_type",
+                   table_schema->get_table_type());
         }
       }
 
@@ -1647,7 +1734,7 @@ int ObSqlTransControl::end_stmt(ObExecContext &exec_ctx, const bool rollback, co
       && (session->enable_enhanced_cursor_validation() || session->is_pl_async_commit())) {
       OZ (tx_desc->add_modified_tables(plan->get_dml_table_ids()), plan->get_dml_table_ids());
     }
-    ObTxExecResult &tx_result = session->get_trans_result();
+    ObTxExecResult &tx_result = exec_ctx.get_trans_result();
     if (OB_E(EventTable::EN_TX_RESULT_INCOMPLETE, session->get_server_sid()) tx_result.is_incomplete()) {
       if (!rollback) {
         LOG_ERROR("trans result incomplete, but rollback not issued");
@@ -1766,14 +1853,14 @@ int ObSqlTransControl::end_stmt(ObExecContext &exec_ctx, const bool rollback, co
              "stmt_type", stmt_type,
              K(savepoint),
              "tx_desc", PC(session->get_tx_desc()),
-             "trans_result", session->get_trans_result(),
+             "trans_result", exec_ctx.get_trans_result(),
              K(rollback),
              K(need_rollback),
              KPC(session),
              K(exec_ctx.get_errcode()));
   }
   if (OB_NOT_NULL(session)) {
-    session->get_trans_result().reset();
+    exec_ctx.get_trans_result().reset();
   }
   return ret;
 }
@@ -1859,7 +1946,7 @@ int ObSqlTransControl::get_trans_result(ObExecContext &exec_ctx, ObTxExecResult 
 
 int ObSqlTransControl::get_trans_result(ObExecContext &exec_ctx)
 {
-  return get_trans_result(exec_ctx, exec_ctx.get_my_session()->get_trans_result());
+  return get_trans_result(exec_ctx, exec_ctx.get_trans_result());
 }
 
 int ObSqlTransControl::reset_session_tx_state(ObBasicSessionInfo *session,
@@ -1889,7 +1976,9 @@ int ObSqlTransControl::reset_session_tx_state(ObBasicSessionInfo *session,
       }
     }
   }
-  session->get_trans_result().reset();
+  if (OB_NOT_NULL(static_cast<ObSQLSessionInfo*>(session)->get_cur_exec_ctx())) {
+    static_cast<ObSQLSessionInfo*>(session)->get_cur_exec_ctx()->get_trans_result().reset();
+  }
   session->reset_tx_variable(reset_trans_variable);
   return ret;
 }
@@ -2040,9 +2129,19 @@ int ObSqlTransControl::lock_table(ObExecContext &exec_ctx,
   return ret;
 }
 
-void ObSqlTransControl::clear_xa_branch(const ObXATransID &xid, ObTxDesc *&tx_desc)
+void ObSqlTransControl::clear_xa_branch(ObExecContext &exec_ctx)
 {
-  MTL(ObXAService *)->clear_xa_branch(xid, tx_desc);
+  int ret = OB_SUCCESS;
+  ObSQLSessionInfo *my_session = GET_MY_SESSION(exec_ctx);
+  if (OB_ISNULL(my_session)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_ERROR("invalid param", K(ret), KP(my_session));
+  } else {
+    ObSQLSessionInfo::LockGuard data_lock_guard(my_session->get_thread_data_lock());
+    MTL(ObXAService *)->clear_xa_branch(my_session->get_xid(), my_session->get_tx_desc());
+    my_session->reset_tx_variable();
+    my_session->disassociate_xa();
+  }
 }
 
 

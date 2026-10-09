@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -217,7 +210,8 @@ int ObTableLoadStoreTransPXWriter::init_batch_ctx(const bool is_vectorized,
                                                    store_ctx_->ctx_->schema_.col_nullables_,
                                                    row_flag,
                                                    max_batch_size,
-                                                   store_ctx_->enable_dag_))) {
+                                                   store_ctx_->enable_dag_,
+                                                   store_ctx_->ctx_->schema_.is_random_part_))) {
       LOG_WARN("fail to init batch rows", KR(ret));
     } else if (OB_ISNULL(batch_ctx_->selector_ = static_cast<uint16_t *>(
                            allocator_.alloc(sizeof(uint16_t) * max_batch_size)))) {

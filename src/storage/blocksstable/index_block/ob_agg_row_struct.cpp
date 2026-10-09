@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -482,6 +475,57 @@ int ObAggRowReader::read_cell(
   return ret;
 }
 
+
+//============================= ObAggRowCachedReader //=============================
+
+int ObAggRowCachedReader::init(const char *buf, const int64_t buf_size)
+{
+  cached_count_ = 0;
+  return reader_.init(buf, buf_size);
+}
+
+void ObAggRowCachedReader::reset()
+{
+  reader_.reset();
+  cached_count_ = 0;
+}
+
+int ObAggRowCachedReader::read(const ObSkipIndexColMeta &meta, ObDatum &datum, bool &is_prefix)
+{
+  int ret = OB_SUCCESS;
+
+  bool found = false;
+
+  // If reader is not inited, just return null datum, which is used for mock some column's value
+  // when there is not skip-index buffer. We don't mock the value here because the cache reader
+  // shouldn't know which column should mock. It just do cache work.
+  if (!is_inited()) {
+    datum.set_null();
+    is_prefix = false;
+    found = true;
+  }
+
+  #pragma unroll(4)
+  for (int64_t i = 0; !found && i < cached_count_; i++) {
+    if (cached_entries_[i].meta_.pack_ == meta.pack_) {
+      datum = cached_entries_[i].datum_;
+      is_prefix = cached_entries_[i].is_prefix_;
+      found = true;
+    }
+  }
+
+  if (found) {
+  } else if (OB_FAIL(reader_.read(meta, datum, is_prefix))) {
+    LOG_WARN("failed to read from agg row reader", K(ret), K(meta));
+  } else if (cached_count_ < MAX_CACHED_COUNT) {
+    CachedEntry &entry = cached_entries_[cached_count_++];
+    entry.meta_ = meta;
+    entry.datum_ = datum;
+    entry.is_prefix_ = is_prefix;
+  }
+
+  return ret;
+}
 
 } // end namespace blocksstable
 } // end namespace oceanbase

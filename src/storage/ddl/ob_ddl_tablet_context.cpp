@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/ddl/ob_ddl_tablet_context.h"
@@ -471,6 +464,9 @@ int ObDDLTabletContext::init(
       if (OB_FAIL(init_vector_index_context(snapshot_version, ddl_task_id, ddl_table_schema))) {
         LOG_WARN("init vector index context failed", K(ret));
       } else {
+        if (is_full_direct_load(direct_load_type)) {
+          start_scn_.convert_for_tx(SS_DDL_START_SCN_VAL);
+        }
         is_inited_ = true;
         LOG_INFO("[CS-Replica] init tablet context", K(tablet_id), K(direct_load_type), K(tablet_param_));
       }
@@ -524,6 +520,7 @@ void ObDDLTabletContext::reset()
     }
   }
   slice_map_.destroy();
+  start_scn_.reset();
 
   if (OB_NOT_NULL(macro_meta_store_mgr_)) {
     macro_meta_store_mgr_->~ObMacroMetaStoreManager();

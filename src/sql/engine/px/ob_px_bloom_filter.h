@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "rpc/obrpc/ob_rpc_proxy.h"
@@ -24,7 +17,9 @@
 #if OB_USE_MULTITARGET_CODE
 #include <emmintrin.h>
 #include <immintrin.h>
-#endif
+#elif OB_ARM_USE_MULTITARGET_CODE
+#include <arm_neon.h>
+#endif /* OB_USE_MULTITARGET_CODE */
 
 #ifndef __SQL_ENG_PX_BLOOM_FILTER_H__
 #define __SQL_ENG_PX_BLOOM_FILTER_H__
@@ -62,6 +57,54 @@ struct BloomFilterIndex
   TO_STRING_KV(K_(begin_idx), K_(end_idx), K_(channel_id), K_(channel_ids));
 };
 
+// Concrete helper that splits a large MEMSET into slices for cooperative zeroing.
+// A single instance serves both the init path (shared by PX workers idle-spinning
+// in wait_constructed) and the regenerate path (shared by RPC threads waiting in
+// atomic_merge). Owners hold it by value (SharedJoinFilterConstructor) or pointer
+// (ObRFBloomFilterMsg, lazily allocated); no inheritance required.
+class ObPxBfMemsetHelper
+{
+public:
+  ObPxBfMemsetHelper() : buf_(nullptr), total_size_(0), slice_count_(0),
+                         claimed_(0), done_(0), old_bits_array_(nullptr),
+                         old_bits_array_length_(0), old_begin_idx_(0) {}
+  ~ObPxBfMemsetHelper() = default;
+
+  // Leader entry: publish memset task, participate in drain, spin until every slice
+  // is done, then retract. size < PARALLEL_MEMSET_THRESHOLD falls back to direct MEMSET
+  // (no publish). Returns with [buf, buf+size) fully zeroed.
+  void publish_slice_info(void *buf, int64_t size);
+  void leader_memset();
+
+  // Follower entry: if a task is currently published, drain one round of slices (non-blocking).
+  // No-op if no task published. Callers should poll this from their wait loop.
+  inline void follower_help() { drain_slices(); }
+
+  void backup_old_bits_array(int64_t *bits_array, int64_t bits_array_length,
+                             int64_t begin_idx);
+  void copy_old_bits_array_to_new_bits_array();
+  static const int64_t PARALLEL_MEMSET_THRESHOLD;
+  static const int64_t PARALLEL_MEMSET_SLICE_BYTES;
+
+private:
+  void drain_slices();
+
+  // Leader uses ATOMIC_STORE(&buf_, buf) to publish (release); followers
+  // ATOMIC_LOAD(&buf_) to acquire. Fields behind buf_ are stable after publish.
+  void    *buf_;
+  int64_t  total_size_;
+  int64_t  slice_count_;
+  int64_t  claimed_;   // ATOMIC_FAA, next slice to claim
+  int64_t  done_;      // ATOMIC_FAA, slices completed
+
+  // for copy old bits array to new bits array after cooperative memset
+  int64_t *old_bits_array_;
+  int64_t old_bits_array_length_;
+  int64_t old_begin_idx_;
+
+  DISALLOW_COPY_AND_ASSIGN(ObPxBfMemsetHelper);
+} CACHE_ALIGNED;
+
 class ObPxBloomFilter
 {
 OB_UNIS_VERSION_V(1);
@@ -69,7 +112,8 @@ public:
   ObPxBloomFilter();
   virtual ~ObPxBloomFilter() {};
   int init(int64_t data_length, common::ObIAllocator &allocator, int64_t tenant_id,
-           double fpp = 0.01, int64_t max_filter_size = 2147483648 /*2G*/);
+           double fpp = 0.01, int64_t max_filter_size = 2147483648 /*2G*/,
+           ObPxBfMemsetHelper *memset_helper = nullptr);
   int init(const ObPxBloomFilter *filter);
   inline bool is_inited() { return is_inited_; }
   // both reset_filter && reset_for_rescan are use in partition wise hash join scene
@@ -82,25 +126,15 @@ public:
     return (this->*might_contain_)(hash, is_match);
   }
   int might_contain_vector(const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &skip,
-                           const EvalBound &bound, uint64_t *hash_values, int64_t &total_count,
-                           int64_t &filter_count);
+                           const EvalBound &bound, uint64_t *hash_values, uint16_t *selector,
+                           int64_t &total_count, int64_t &filter_count);
   int put(uint64_t hash);
   int put_batch(ObPxBFHashArray &hash_val_array);
   int put_batch(uint64_t *batch_hash_values, const EvalBound &bound, const ObBitVector &skip, bool &is_empty);
   int merge_filter(ObPxBloomFilter *filter);
-  int64_t get_value_true_count() const { return true_count_; };
+  void set_ser_version(int64_t version) { ser_version_ = version; }
   void dump_filter();      //for debug
-  bool check_ready();
-  int process_recieve_count(int64_t whole_expect_size, int64_t cur_buf_size = 1);
-  int process_first_phase_recieve_count(
-      int64_t whole_expect_size,
-      int64_t phase_expect_size,
-      int64_t begin_idx,
-      bool &first_phase_end);
   int64_t *get_bits_array() { return bits_array_; }
-  void inc_merge_filter_count() { ATOMIC_INC(&px_bf_merge_filter_count_); }
-  void dec_merge_filter_count() { ATOMIC_DEC(&px_bf_merge_filter_count_); }
-  bool is_merge_filter_finish() const { return 0 == px_bf_merge_filter_count_; }
   int64_t get_bits_array_length() const { return bits_array_length_; }
   bool fit_l3_cache() { return fit_l3_cache_; }
   int64_t get_bits_count() const { return bits_count_; }
@@ -108,20 +142,24 @@ public:
   void set_end_idx(int64_t idx) { end_idx_ = idx; }
   int64_t get_begin_idx() const { return begin_idx_; }
   int64_t get_end_idx() const { return end_idx_; }
+  // Prefetch distance: approximately 8 cache lines latency
+  // This allows prefetch to complete while processing earlier elements
+  static constexpr int64_t PREFETCH_DISTANCE = 8;
+
   inline void prefetch_bits_block(uint64_t hash)
   {
     uint64_t block_begin = (hash & block_mask_) << LOG_HASH_COUNT;
-    __builtin_prefetch(&bits_array_[block_begin], 0);
+    // Prefetch with high locality (3) for read access (0)
+    __builtin_prefetch(&bits_array_[block_begin], 0, 3);
   }
   typedef int (ObPxBloomFilter::*GetFunc)(uint64_t hash, bool &is_match);
-  int generate_receive_count_array(int64_t piece_size);
   void reset();
   int assign(const ObPxBloomFilter &filter, int64_t tenant_id);
-  int regenerate();
+  int regenerate(ObPxBfMemsetHelper *memset_helper = nullptr);
   void set_allocator_attr(int64_t tenant_id);
   int might_contain_nonsimd(uint64_t hash, bool &is_match);
   TO_STRING_KV(K_(data_length), K_(bits_count), K_(fpp), K_(hash_func_count), K_(is_inited),
-      K_(bits_array_length), K_(true_count));
+      K_(bits_array_length), K_(ser_version));
 private:
   bool get(uint64_t pos, uint64_t index) { return (bits_array_[pos] & index) != 0; }
   bool set(uint64_t block_begin, uint64_t index);
@@ -143,7 +181,10 @@ private:
   bool is_inited_;                //是否初始化
   int64_t bits_array_length_;    //数组长度
   int64_t *bits_array_;          //8字节位数组
-  int64_t true_count_;           //`1`数量
+  union {
+    int64_t ser_version_;          // 序列化版本号，由 init() 置为当前版本号
+    int64_t true_count_;          // true count, 不再使用，为了兼容序列化保存
+  };
   int64_t begin_idx_;            // join filter begin position
   int64_t end_idx_;              // join filter end position
   bool fit_l3_cache_;           // whether the bloom filter fits l3 cache
@@ -152,10 +193,6 @@ public:
   common::ObArenaAllocator allocator_;
 public:
   //无需序列化
-   int64_t px_bf_recieve_count_;  // 当前收到bloom filter的个数
-   int64_t px_bf_recieve_size_;   // 预期应该收到的个数
-   volatile int64_t px_bf_merge_filter_count_; // 当前持有filter, 做merge filter操作的线程个数
-   ObArray<BloomFilterReceiveCount> receive_count_array_;
    int64_t block_mask_;          // for locating block
 DISALLOW_COPY_AND_ASSIGN(ObPxBloomFilter);
 };
@@ -190,158 +227,11 @@ public:
   ObLogJoinFilter *log_join_filter_create_op_; // not need to serialize, only used in optimizor
 };
 
-class ObPXBloomFilterHashWrapper
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObPXBloomFilterHashWrapper() : tenant_id_(common::OB_INVALID_TENANT_ID),
-     filter_id_(common::OB_INVALID_ID), server_id_(common::OB_INVALID_ID),
-     px_sequence_id_(common::OB_INVALID_ID), task_id_(common::OB_INVALID_ID) {}
-  explicit ObPXBloomFilterHashWrapper(int64_t tenant_id, int64_t filter_id,
-      int64_t server_id, int64_t px_sequence_id, int64_t task_id) :
-      tenant_id_(tenant_id), filter_id_(filter_id),
-      server_id_(server_id), px_sequence_id_(px_sequence_id), task_id_(task_id)   {}
-  ~ObPXBloomFilterHashWrapper(){}
-  void init(int64_t tenant_id, int64_t filter_id,
-      int64_t server_id, int64_t px_sequence_id, int64_t task_id = 0)
-  {
-    tenant_id_ = tenant_id;
-    filter_id_ = filter_id;
-    server_id_ = server_id;
-    px_sequence_id_ = px_sequence_id;
-    task_id_ = task_id;
-  }
-  inline bool operator==(const ObPXBloomFilterHashWrapper &other) const
-  {
-    return (tenant_id_ == other.tenant_id_ &&
-            filter_id_ == other.filter_id_ &&
-            server_id_ == other.server_id_ &&
-            px_sequence_id_ == other.px_sequence_id_ &&
-            task_id_ == other.task_id_);
-  }
-  inline uint64_t hash() const;
-  inline int hash(uint64_t &hash_ret) const;
-  int64_t tenant_id_;
-  int64_t filter_id_;
-  int64_t server_id_;
-  int64_t px_sequence_id_;
-  int64_t task_id_;
-  TO_STRING_KV(K_(tenant_id), K_(filter_id), K_(server_id), K_(px_sequence_id), K_(task_id))
-};
-
-
-
-inline uint64_t ObPXBloomFilterHashWrapper::hash() const
-{
-  uint64_t hash_ret = 0;
-  hash_ret = common::murmurhash(&tenant_id_, sizeof(uint64_t), 0);
-  hash_ret = common::murmurhash(&filter_id_, sizeof(uint64_t), hash_ret);
-  hash_ret = common::murmurhash(&server_id_, sizeof(uint64_t), hash_ret);
-  hash_ret = common::murmurhash(&px_sequence_id_, sizeof(uint64_t), hash_ret);
-  hash_ret = common::murmurhash(&task_id_, sizeof(uint64_t), hash_ret);
-  return hash_ret;
-}
-inline int ObPXBloomFilterHashWrapper::hash(uint64_t &hash_ret) const
-{
-  hash_ret = hash();
-  return OB_SUCCESS;
-}
-
-class ObPxReadAtomicGetBFCall
-{
-public:
-  ObPxReadAtomicGetBFCall() : bloom_filter_(NULL) {}
-  ~ObPxReadAtomicGetBFCall() = default;
-  void operator() (common::hash::HashMapPair<ObPXBloomFilterHashWrapper,
-      ObPxBloomFilter *> &entry);
-  ObPxBloomFilter *bloom_filter_;
-};
-class ObPxBloomFilterManager
-{
-public:
-  static ObPxBloomFilterManager &instance();
-  int init();
-  int get_px_bloom_filter(ObPXBloomFilterHashWrapper &key, ObPxBloomFilter *&filter);
-  // 这个get接口仅给merge filter定制.
-  int get_px_bf_for_merge_filter(ObPXBloomFilterHashWrapper &key, ObPxBloomFilter *&filter);
-  int set_px_bloom_filter(ObPXBloomFilterHashWrapper &key, ObPxBloomFilter *filter);
-  int erase_px_bloom_filter(ObPXBloomFilterHashWrapper &key, ObPxBloomFilter *&filter);
-  void destroy();
-  static int init_px_bloom_filter(int64_t filter_size, common::ObIAllocator &allocator,
-    ObPxBloomFilter *&filter);
-private:
-  typedef common::hash::ObHashMap<ObPXBloomFilterHashWrapper, ObPxBloomFilter *> MAP;
-  static const int64_t DEFAULT_HASH_MAP_BUCKETS_COUNT = 100000; //10w
-  static const int64_t BUCKET_NUM = DEFAULT_HASH_MAP_BUCKETS_COUNT;
-private:
-  MAP map_;
-  bool is_inited_;
-private:
-  ObPxBloomFilterManager();
-  ~ObPxBloomFilterManager();
-  DISALLOW_COPY_AND_ASSIGN(ObPxBloomFilterManager);
-};
-
-typedef common::ObSEArray<ObPXBloomFilterHashWrapper, 2> ObPxBFSEArray;
-
-
-enum ObSendBFPhase
-{
-  FIRST_LEVEL,
-  SECOND_LEVEL
-};
-struct ObPxBFSendBloomFilterArgs
-{
-  OB_UNIS_VERSION(1);
-public:
-  ObPxBFSendBloomFilterArgs() : bf_key_(), bloom_filter_(), next_peer_addrs_(),
-      expect_bloom_filter_count_(0), current_bloom_filter_count_(0),
-      expect_phase_count_(0), phase_(FIRST_LEVEL), timeout_timestamp_(0) {}
-  bool is_first_phase() { return FIRST_LEVEL == phase_; }
-  ObPXBloomFilterHashWrapper bf_key_;
-  ObPxBloomFilter bloom_filter_;
-  common::ObSArray<common::ObAddr> next_peer_addrs_;
-  int64_t expect_bloom_filter_count_;
-  int64_t current_bloom_filter_count_;
-  int64_t expect_phase_count_;
-  ObSendBFPhase phase_;
-  int64_t timeout_timestamp_;
-};
-
 } //end sql
-
-namespace obrpc {
-
-class ObPxBFProxy
-    : public obrpc::ObRpcProxy
-{
-public:
-  DEFINE_TO(ObPxBFProxy);
-  RPC_AP(PR1 send_bloom_filter, OB_PX_SEND_BLOOM_FILTER, (sql::ObPxBFSendBloomFilterArgs));
-};
-
-}
-
-namespace sql {
-
-class ObSendBloomFilterP
-    : public obrpc::ObRpcProcessor<obrpc::ObPxBFProxy::ObRpc<obrpc::OB_PX_SEND_BLOOM_FILTER> >
-{
-public:
-  ObSendBloomFilterP() {}
-  virtual ~ObSendBloomFilterP() = default;
-  virtual int init() final;
-  virtual void destroy() final;
-  virtual int process() final;
-private:
-  int process_px_bloom_filter_data();
-};
-
-} // namespace sql
 
 namespace common
 {
-OB_DECLARE_AVX512_SPECIFIC_CODE(OB_INLINE void inline_might_contain_simd(
+OB_DECLARE_AVX512_SPECIFIC_CODE(OB_INLINE void might_contain_simd(
     int64_t *bits_array, int64_t block_mask, uint64_t hash, bool &is_match) {
   static const __m256i HASH_VALUES_MASK = _mm256_set_epi64x(24, 16, 8, 0);
   uint32_t hash_high = (uint32_t)(hash >> 32);
@@ -360,11 +250,40 @@ OB_DECLARE_AVX512_SPECIFIC_CODE(void might_contain_batch_simd(
     const int64_t &batch_size) {
   bool is_match;
   for (int64_t i = 0; i < batch_size; ++i) {
-    common::specific::avx512::inline_might_contain_simd(bits_array, block_mask, hash_values[i],
+    common::specific::avx512::might_contain_simd(bits_array, block_mask, hash_values[i],
                                                         is_match);
   }
 })
 #endif
+
+OB_DECLARE_NEON_SPECIFIC_CODE(OB_INLINE void might_contain_simd(
+    int64_t *bits_array, int64_t block_mask, uint64_t hash, bool &is_match) {
+  uint32_t hash_high = (uint32_t)(hash >> 32) & 0x3F3F3F3F;
+  uint64_t block_begin = (hash & block_mask) << LOG_HASH_COUNT;
+
+  // The 4 6-bit shift amounts reside in byte[0..3] of hash_high:
+  //   lane 0..1 -> shift {0,  -8}   (right-shift by 0,  8 then keep low 6 bits)
+  //   lane 2..3 -> shift {-16, -24} (right-shift by 16, 24 then keep low 6 bits)
+  uint64x2_t bit_ones = vdupq_n_u64(1);
+  uint64x2_t hh = vdupq_n_u64(hash_high);
+  int64x2_t shift_lo = {0, -8};
+  int64x2_t shift_hi = {-16, -24};
+  uint64x2_t s_lo = vshlq_u64(hh, shift_lo);
+  uint64x2_t s_hi = vshlq_u64(hh, shift_hi);
+  uint64x2_t m_lo = vshlq_u64(bit_ones, vreinterpretq_s64_u64(s_lo));
+  uint64x2_t m_hi = vshlq_u64(bit_ones, vreinterpretq_s64_u64(s_hi));
+
+  uint64x2x2_t bf = vld1q_u64_x2(
+      reinterpret_cast<uint64_t *>(&bits_array[block_begin]));
+  // (mask & ~bf): any non-zero lane -> that hash bit is not set in bf -> not match
+  uint64x2_t t_lo = vbicq_u64(m_lo, bf.val[0]);
+  uint64x2_t t_hi = vbicq_u64(m_hi, bf.val[1]);
+  uint64x2_t combined = vorrq_u64(t_lo, t_hi);
+  // Note: ARMv8 NEON's UMAXV does not support 64-bit lanes (no vmaxvq_u64),
+  // so reinterpret the 2-lane uint64 as 4-lane uint32 and then horizontal max:
+  // "all 4 u32 lanes are zero" is equivalent to "both u64 lanes are zero".
+  is_match = (vmaxvq_u32(vreinterpretq_u32_u64(combined)) == 0);
+})
 } // namespace common
 
 namespace sql {

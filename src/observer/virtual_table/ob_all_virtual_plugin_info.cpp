@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -20,6 +13,7 @@
 #include "plugin/sys/ob_plugin_entry_handle.h"
 #include "plugin/sys/ob_plugin_utils.h"
 #include "plugin/sys/ob_plugin_mgr.h"
+#include "plugin/sys/ob_plugin_helper.h"
 #include "plugin/adaptor/ob_plugin_adaptor.h"
 
 using namespace oceanbase::plugin;
@@ -57,6 +51,11 @@ int ObAllVirtualPluginInfo::inner_open()
 {
   int ret = OB_SUCCESS;
   ObMemAttr mem_attr(MTL_ID(), "Plugin");
+
+  int tmp_ret = plugin::ObPluginHelper::discover_external_sub_plugins();
+  if (OB_SUCCESS != tmp_ret) {
+    SERVER_LOG(WARN, "failed to discover external sub plugins, continue listing", K(tmp_ret));
+  }
 
   if (FALSE_IT(plugin_entries_.set_attr(mem_attr))) {
   } else if (OB_FAIL(GCTX.plugin_mgr_->list_all_plugin_entries(plugin_entries_))) {

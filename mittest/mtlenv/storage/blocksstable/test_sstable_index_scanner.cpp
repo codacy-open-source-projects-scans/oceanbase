@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -295,6 +288,104 @@ TEST_F(TestSSTableIndexScanner, test_range_with_advance)
   ASSERT_EQ(OB_ITER_END, index_scanner.get_next(index_row));
 }
 
+// Regression test: when last_prefetch_key_ carries extra multi-version columns but
+// advance_to receives the business prefix key, the scanner should treat prefix-equal
+// keys as "not found in prefetched queue, continue on non-prefetch path" instead of
+// throwing "block contains advanced key already prefetched but not found".
+//
+// Before the fix, compare_datum_cnt=true makes the 6-col prefetched key compare greater
+// than the 2-col advance key, which enters the prefetched branch and ends with
+// OB_ERR_UNEXPECTED after the queue is exhausted. After the fix, this call should succeed.
+TEST_F(TestSSTableIndexScanner, test_advance_to_prefix_key_should_not_throw_unexpected)
+{
+  ObArenaAllocator tmp_arena;
+  ObDatumRange range;
+  generate_range(min_row_seed_, max_row_seed_, range);
+  ObSSTableIndexScanParam scan_param;
+  ObFixedArray<ObSkipIndexColMeta, ObIAllocator> proj;
+  prepare_scan_param(false, scan_param, proj);
+
+  ObSSTableIndexScanner index_scanner;
+  ASSERT_EQ(OB_SUCCESS, index_scanner.init(range, scan_param, sstable_, tmp_arena));
+  const ObSSTableIndexRow *index_row = nullptr;
+  ASSERT_EQ(OB_SUCCESS, index_scanner.get_next(index_row));
+  ASSERT_TRUE(nullptr != index_row);
+
+  ObSSTableIndexBlockLevelScanner *leaf =
+      index_scanner.level_scanners_.at(index_scanner.level_scanners_.count() - 1);
+  ASSERT_TRUE(nullptr != leaf);
+  ASSERT_FALSE(leaf->is_root_block_);
+
+  ASSERT_EQ(OB_SUCCESS, row_generate_.get_next_row(max_row_seed_, rowkey_buf_));
+  ObStorageDatum mv_datums[6];
+  for (int i = 0; i < 2; ++i) {
+    mv_datums[i] = rowkey_buf_.storage_datums_[i];
+  }
+  mv_datums[2].set_int(-100);
+  mv_datums[3].set_int(0);
+  mv_datums[4].set_int(-200);
+  mv_datums[5].set_int(0);
+  ObDatumRowkey mv_rowkey;
+  mv_rowkey.assign(mv_datums, 6);
+  leaf->last_prefetch_key_.set_compact_rowkey(&mv_rowkey);
+
+  ObDatumRowkey advance_key;
+  advance_key.assign(rowkey_buf_.storage_datums_, 2);
+
+  int ret = leaf->advance_to(advance_key, true);
+  ASSERT_EQ(OB_SUCCESS, ret);
+}
+
+// Regression test: when advance_to enters the non-prefetched else branch (advance key is
+// beyond last_prefetch_key_), query_range_.start_key_ must be updated. Otherwise subsequent
+// open/get_next still scan from the stale range start.
+TEST_F(TestSSTableIndexScanner, test_advance_to_non_prefetched_path_should_update_query_range)
+{
+  ObArenaAllocator tmp_arena;
+  ObDatumRange range;
+  generate_range(min_row_seed_, max_row_seed_, range);
+  ObSSTableIndexScanParam scan_param;
+  ObFixedArray<ObSkipIndexColMeta, ObIAllocator> proj;
+  prepare_scan_param(false, scan_param, proj);
+
+  ObSSTableIndexScanner index_scanner;
+  ASSERT_EQ(OB_SUCCESS, index_scanner.init(range, scan_param, sstable_, tmp_arena));
+  const ObSSTableIndexRow *index_row = nullptr;
+  ASSERT_EQ(OB_SUCCESS, index_scanner.get_next(index_row));
+  ASSERT_TRUE(nullptr != index_row);
+
+  ObSSTableIndexBlockLevelScanner *leaf =
+      index_scanner.level_scanners_.at(index_scanner.level_scanners_.count() - 1);
+  ASSERT_TRUE(nullptr != leaf);
+  ASSERT_FALSE(leaf->is_root_block_);
+
+  ObDatumRowkey small_prefetch_key;
+  ASSERT_EQ(OB_SUCCESS, row_generate_.get_next_row(min_row_seed_, start_key_buf_));
+  small_prefetch_key.assign(start_key_buf_.storage_datums_, TEST_ROWKEY_COLUMN_CNT);
+  leaf->last_prefetch_key_.set_compact_rowkey(&small_prefetch_key);
+
+  ObDatumRowkey advance_key;
+  ASSERT_EQ(OB_SUCCESS, row_generate_.get_next_row(max_row_seed_ / 2, rowkey_buf_));
+  advance_key.assign(rowkey_buf_.storage_datums_, TEST_ROWKEY_COLUMN_CNT);
+
+  int cmp_ret = 0;
+  const ObStorageDatumUtils &datum_utils = read_info_.get_datum_utils();
+  ASSERT_EQ(OB_SUCCESS, leaf->last_prefetch_key_.compare(advance_key, datum_utils, cmp_ret, false));
+  ASSERT_LT(cmp_ret, 0);
+
+  ASSERT_EQ(OB_SUCCESS, index_scanner.advance_to(advance_key, true));
+
+  cmp_ret = 0;
+  ASSERT_EQ(OB_SUCCESS, leaf->query_range_.start_key_.compare(advance_key, datum_utils, cmp_ret));
+  ASSERT_EQ(0, cmp_ret);
+  ASSERT_TRUE(leaf->query_range_.get_border_flag().inclusive_start());
+
+  ASSERT_EQ(OB_SUCCESS, index_scanner.get_next(index_row));
+  ASSERT_TRUE(nullptr != index_row);
+  cmp_ret = 0;
+  ASSERT_EQ(OB_SUCCESS, index_row->endkey_->compare(advance_key, datum_utils, cmp_ret));
+  ASSERT_TRUE(cmp_ret >= 0);
+}
 
 } // namespace blocksstable
 } // namespace oceanbase

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -86,7 +79,15 @@ int ObCreateMLogResolver::resolve(const ParseNode &parse_tree)
 
   if (OB_SUCC(ret)) {
     if (1 == parse_node.reserved_) {
-      if (OB_UNLIKELY(compat_version < MOCK_DATA_VERSION_4_3_5_3
+      bool disable_replace_mlog = false;
+      if (OB_FAIL(session_info_->check_feature_enable(
+              share::ObCompatFeatureType::DISABLE_CREATE_OR_REPLACE_MLOG, disable_replace_mlog))) {
+        LOG_WARN("failed to check feature enable", KR(ret));
+      } else if (disable_replace_mlog) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("create or replace materialized view log is not supported", KR(ret));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "create or replace materialized view log is");
+      } else if (OB_UNLIKELY(compat_version < MOCK_DATA_VERSION_4_3_5_3
                       || (compat_version >= DATA_VERSION_4_4_0_0 && compat_version < MOCK_DATA_VERSION_4_4_2_0)
                       || (compat_version >= DATA_VERSION_4_5_0_0 && compat_version < DATA_VERSION_4_5_1_0))) {
         ret = OB_NOT_SUPPORTED;

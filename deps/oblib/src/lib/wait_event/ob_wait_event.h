@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef WAIT_EVENT_DEF
@@ -211,6 +204,9 @@ WAIT_EVENT_DEF(GI_TASK_REBALANCER_COND_WAIT, 18264, "gi task rebalancer cond wai
 WAIT_EVENT_DEF(PX_SQC_ASYNC_PROXY_COND_WAIT, 18265, "px sqc async proxy cond wait", "address", "", "", CONCURRENCY, true, true)
 WAIT_EVENT_DEF(ODPS_PARTITION_DOWNLOADER_COND_WAIT, 18266, "odps partition downloader cond wait", "address", "", "", CONCURRENCY, true, true)
 WAIT_EVENT_DEF(GI_PARALLEL_TASK_STAGE_COND, 18267, "gi parallel task stage cond", "address", "", "", CONCURRENCY, true, true)
+WAIT_EVENT_DEF(GI_STAGE_COND_WAIT, 18268, "gi stage cond wait", "address", "", "", CONCURRENCY, true, true)
+WAIT_EVENT_DEF(UDF_PROCESS_EXECUTE_WAIT, 18269, "wait udf process execute", "pid", "timeout_us", "", CONCURRENCY, true, false)
+WAIT_EVENT_DEF(LAKE_TABLE_TASK_GROUP_COND_WAIT, 18270, "lake table task group cond wait", "address", "", "", CONCURRENCY, true, true)
 
 //sleep
 WAIT_EVENT_DEF(BANDWIDTH_THROTTLE_SLEEP, 20000, "sleep: bandwidth throttle sleep wait", "sleep_interval", "", "", NETWORK, true, true)
@@ -270,6 +266,8 @@ WAIT_EVENT_DEF(LOCATION_RETRY_WAIT, 32003, "retry: wait location cache load", "e
 WAIT_EVENT_DEF(OTHER_RETRY_WAIT, 32004, "retry: other retry wait", "error", "", "", CLUSTER, true, true)
 WAIT_EVENT_DEF(TX_PENDING_LOG_OVERFLOW_RETRY_WAIT, 32005, "retry: wait for the pending log synchronization", "error code", "ls_id", "", CLUSTER, true, true)
 WAIT_EVENT_DEF(UNITEST_COND_WAIT, 32006, "unitest condition wait", "address", "", "", CONCURRENCY, true, true)
+WAIT_EVENT_DEF(OB_DAS_FUSION_BITMAP_BARRIER_COND_WAIT, 32007, "ob das fusion bitmap barrier cond wait", "address", "", "", CONCURRENCY, true, true)
+WAIT_EVENT_DEF(OB_DAS_FUSION_COORDINATOR_COND_WAIT, 32008, "ob das fusion coordinator cond wait", "address", "", "", CONCURRENCY, true, true)
 
 // END. DO NOT MODIFY.
 WAIT_EVENT_DEF(WAIT_EVENT_DEF_END, 99999, "event end", "", "", "", OTHER, false, true)

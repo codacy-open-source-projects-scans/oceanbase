@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -153,6 +146,22 @@ int ObMPQuery::process()
       } else if (FALSE_IT(session.set_txn_free_route(pkt.txn_free_route()))) {
       } else if (OB_FAIL(process_extra_info(session, pkt, need_response_error))) {
         LOG_WARN("fail get process extra info", K(ret));
+      } else if (OB_FAIL(check_proxy_db_resource_group(session))) {
+        if (OB_NEED_SWITCH_CONSUMER_GROUP == ret && THIS_WORKER.can_retry()) {
+          THIS_WORKER.set_need_retry();
+          retry_ctrl_.set_packet_retry(ret);
+          session.get_retry_info_for_update().set_last_query_retry_err(ret);
+          session.get_retry_info_for_update().inc_retry_cnt();
+          need_response_error = false;
+          LOG_TRACE("retry query by proxy specified database group", K(ret));
+        } else if (OB_NEED_SWITCH_CONSUMER_GROUP == ret) {
+          // Let PlanCache/Resolver stage fall back to the existing local retry path
+          // when packet retry is not available for this request.
+          session.set_expect_group_id(sql::ISOLATION_DB, OB_INVALID_ID);
+          ret = OB_SUCCESS;
+        } else {
+          LOG_WARN("fail to check proxy database resource group", K(ret));
+        }
       } else if (FALSE_IT(session.post_sync_session_info())) {
       } else if (OB_UNLIKELY(packet_len > session.get_max_packet_size())) {
         //packet size check with session variable max_allowd_packet or net_buffer_length
@@ -348,22 +357,7 @@ int ObMPQuery::process()
     }
   }
 
-  /* Function setup_user_resource_group cause performance regression.
-      No need to setup group_id here,
-      Only setup group_id in MPConnect
-  */
   if (is_conn_valid()) {
-    // int tmp_ret = OB_SUCCESS;
-    // // Call setup_user_resource_group no matter OB_SUCC or OB_FAIL
-    // // because we have to reset conn.group_id_ according to user_name.
-    // // Otherwise, suppose we execute a query with a mapping rule on the column in the query at first,
-    // // we switch to the defined consumer group, batch_group for example,
-    // // and after that, the next query will also be executed with batch_group.
-    // if (OB_UNLIKELY(OB_SUCCESS !=
-    //         (tmp_ret = setup_user_resource_group(*conn, sess->get_effective_tenant_id(), sess)))) {
-    //   LOG_WARN("fail setup user resource group", K(tmp_ret), K(ret));
-    //   ret = OB_SUCC(ret) ? tmp_ret : ret;
-    // }
     set_request_expect_group_id(sess);
   }
   if (OB_FAIL(ret) && need_response_error && is_conn_valid()) {
@@ -606,7 +600,12 @@ int ObMPQuery::do_process_single_stmt(const ObMultiStmtItem &multi_stmt_item,
                                          need_disconnect);
         }
         //set session retry state
-        session.set_session_in_retry(retry_ctrl_.need_retry());
+        if (OB_BATCHED_MULTI_STMT_ROLLBACK == ret) {
+          // Preserve is_in_retry so the sequential fallback retains retry context
+          // (e.g., send-plan-directly for remote plans).
+        } else {
+          session.set_session_in_retry(retry_ctrl_.need_retry());
+        }
       } while (RETRY_TYPE_LOCAL == retry_ctrl_.get_retry_type());
       //@notice: after the async packet is responsed,
       //the easy_buf_ hold by the sql string may have been released.
@@ -831,6 +830,7 @@ OB_INLINE int ObMPQuery::do_process_trans_ctrl(ObSQLSessionInfo &session,
     }
     session.set_retry_wait_event_begin_time();
     ctx_.enable_sql_resource_manage_ = true;
+    ctx_.enable_database_isolation_mode_ = session.is_enable_database_isolation_mode();
     if (OB_FAIL(set_session_active(sql, session, single_process_timestamp_))) {
       LOG_WARN("fail to set session active", K(ret));
     } else {
@@ -966,7 +966,7 @@ OB_INLINE int ObMPQuery::do_process_trans_ctrl(ObSQLSessionInfo &session,
     audit_record.is_executor_rpc_ = false;
     audit_record.is_inner_sql_ = false;
     audit_record.is_hit_plan_cache_ = false;
-    audit_record.is_multi_stmt_ = session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS;
+    audit_record.is_multi_stmt_ = ctx_.multi_stmt_item_.is_part_of_multi_stmt();
     audit_record.is_batched_multi_stmt_ = ctx_.multi_stmt_item_.is_batched_multi_stmt();
     if (audit_record.params_value_ == nullptr) {
       audit_record.params_value_ = params_value_;
@@ -1151,6 +1151,7 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
       task_ctx.set_min_cluster_version(GET_MIN_CLUSTER_VERSION());
       ctx_.retry_times_ = retry_ctrl_.get_retry_times();
       ctx_.enable_sql_resource_manage_ = true;
+      ctx_.enable_database_isolation_mode_ = session.is_enable_database_isolation_mode();
       //storage::ObPartitionService* ps = static_cast<storage::ObPartitionService *> (GCTX.par_ser_);
       //bool is_read_only = false;
       if (OB_FAIL(ret)) {
@@ -1226,6 +1227,16 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
             if (OB_TRANSACTION_SET_VIOLATION != ret && OB_REPLICA_NOT_READABLE != ret) {
               LOG_WARN("execute query fail", K(ret), "timeout_timestamp",
                        plan_ctx->get_timeout_timestamp());
+            }
+          }
+        }
+        if (OB_SUCC(ret) && stmt::T_USE_DATABASE == result.get_stmt_type() && is_conn_valid()) {
+          ObSMConnection *conn = get_conn();
+          if (OB_NOT_NULL(conn)) {
+            int tmp_ret = setup_user_resource_group(*conn, session.get_effective_tenant_id(), &session);
+            if (OB_SUCCESS != tmp_ret) {
+              LOG_WARN("fail setup user resource group after use database",
+                       K(tmp_ret), K(session.get_database_name()));
             }
           }
         }
@@ -1332,7 +1343,7 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
       sqlstat_record.set_partition_cnt(result.get_exec_context().get_das_ctx().get_related_tablet_cnt());
       sqlstat_record.set_is_route_miss(result.get_session().partition_hit().get_bool()? 0 : 1);
       sqlstat_record.set_is_plan_cache_hit(ctx_.plan_cache_hit_);
-      sqlstat_record.set_is_muti_query(session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+      sqlstat_record.set_is_muti_query(ctx_.multi_stmt_item_.is_part_of_multi_stmt());
       sqlstat_record.set_is_muti_query_batch(ctx_.multi_stmt_item_.is_batched_multi_stmt());
       if (OB_NOT_NULL(result.get_physical_plan())) {
         sqlstat_record.set_is_full_table_scan(result.get_physical_plan()->contain_table_scan());
@@ -1395,7 +1406,7 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
       audit_record.is_executor_rpc_ = false;
       audit_record.is_inner_sql_ = false;
       audit_record.is_hit_plan_cache_ = result.get_is_from_plan_cache() && !ctx_.self_add_plan_;
-      audit_record.is_multi_stmt_ = session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS;
+      audit_record.is_multi_stmt_ = ctx_.multi_stmt_item_.is_part_of_multi_stmt();
       audit_record.is_batched_multi_stmt_ = ctx_.multi_stmt_item_.is_batched_multi_stmt();
 
       if (audit_record.params_value_ == nullptr) {
@@ -1471,7 +1482,7 @@ OB_INLINE int ObMPQuery::do_process(ObSQLSessionInfo &session,
     bool is_need_retry = THIS_THWORKER.need_retry() ||
         RETRY_TYPE_NONE != retry_ctrl_.get_retry_type();
     (void)ObSQLUtils::handle_audit_record(is_need_retry, EXECUTE_LOCAL, session,
-        ctx_.is_sensitive_);
+        ctx_.is_sensitive_, ctx_.cur_stmt_, &result, ctx_.schema_guard_);
 #ifdef OB_BUILD_AUDIT_SECURITY
     // 对于触发重试的语句不需要进行审计，以免一条语句被审计多次
     if (!retry_ctrl_.need_retry() && !async_resp_used) {

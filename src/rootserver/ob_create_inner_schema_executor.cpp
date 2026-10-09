@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -405,6 +398,7 @@ int ObCreateInnerSchemaExecutor::check_and_create_default_profile(ObSchemaGetter
     profile_schema.set_password_lock_time(USECS_PER_DAY);
     profile_schema.set_password_life_time(ObProfileSchema::UNLIMITED_VALUE);
     profile_schema.set_password_grace_time(ObProfileSchema::UNLIMITED_VALUE);
+    profile_schema.set_password_rollover_time(0);
     profile_schema.set_failed_login_attempts(ObProfileSchema::UNLIMITED_VALUE);
     profile_schema.set_password_verify_function("NULL");
     profile_schema.set_profile_name("DEFAULT");

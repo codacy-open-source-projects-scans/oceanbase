@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -20,6 +13,7 @@
 #include "share/resource_manager/ob_resource_manager.h"
 #include "observer/mysql/obmp_utils.h"
 #include "observer/mysql/ob_query_driver.h"
+#include "sql/ob_sql_utils.h"
 #include "sql/session/ob_sess_info_verify.h"
 #include "sql/engine/expr/ob_expr_xml_func_helper.h"
 #include "rpc/obmysql/packet/ompk_auth_switch.h"
@@ -31,6 +25,7 @@
 #include "lib/encrypt/ob_rsa_getter.h"
 #include "common/ob_version_def.h"
 #include "lib/net/ob_net_util.h"
+#include "share/ob_get_compat_mode.h"
 namespace oceanbase
 {
 using namespace share;
@@ -357,6 +352,7 @@ int ObMPBase::init_process_var(sql::ObSqlCtx &ctx,
     }
 #ifdef OB_BUILD_SPM
     ctx.spm_ctx_.baseline_plan_hash_array_.set_allocator(&CURRENT_CONTEXT->get_arena_allocator());
+    ctx.spm_ctx_.receive_ts_ = get_receive_timestamp();
 #endif
     // construct sql context
     ctx.multi_stmt_item_ = multi_stmt_item;
@@ -437,17 +433,19 @@ int ObMPBase::record_flt_trace(sql::ObSQLSessionInfo &session) const
 
 void ObMPBase::set_request_expect_group_id(sql::ObSQLSessionInfo *session)
 {
-  if (OB_INVALID_ID != session->get_expect_group_id()) {
-    // Session->expected_group_id_ is set when hit plan cache or resolve a query, and find that
-    // expcted group is consistent with current group.
-    // Set group_id of req_ so that the req_ will be put in the corresponding queue when do packet retry.
+  // SQL level takes precedence over DB level
+  int64_t group_id = OB_INVALID_ID;
+  if (OB_INVALID_ID != session->get_expect_group_id(sql::ISOLATION_SQL)) {
+    group_id = session->get_expect_group_id(sql::ISOLATION_SQL);
+    session->set_expect_group_id(sql::ISOLATION_SQL, OB_INVALID_ID);
+  } else if (OB_INVALID_ID != session->get_expect_group_id(sql::ISOLATION_DB)) {
+    group_id = session->get_expect_group_id(sql::ISOLATION_DB);
+    session->set_expect_group_id(sql::ISOLATION_DB, OB_INVALID_ID);
+  }
+  if (OB_INVALID_ID != group_id) {
     if (NULL != req_) {
-      req_->set_group_id(session->get_expect_group_id());
+      req_->set_group_id(group_id);
     }
-    // also set conn.group_id_. It means use current consumer group when execute next query for first time.
-    // conn.group_id_ = session->get_expect_group_id();
-    // reset to invalid because session.expected_group_id is single_use.
-    session->set_expect_group_id(OB_INVALID_ID);
   }
 }
 
@@ -459,6 +457,15 @@ int ObMPBase::setup_user_resource_group(
   int ret = OB_SUCCESS;
   uint64_t group_id = 0;
   uint64_t user_id = session->get_user_id();
+  // Priority: proxy_specified_db_name > session database_name
+  const ObString &proxy_db_name = session->get_proxy_specified_db_name();
+  const ObString &session_db_name = session->get_database_name();
+  ObString effective_db_name;
+  if (!proxy_db_name.empty()) {
+    effective_db_name = proxy_db_name;
+  } else {
+    effective_db_name = session_db_name;
+  }
   if (OB_INVALID_ID != session->get_expect_group_id()) {
     set_request_expect_group_id(session);
   } else if (!is_valid_tenant_id(tenant_id)) {
@@ -466,14 +473,37 @@ int ObMPBase::setup_user_resource_group(
     LOG_WARN("Invalid tenant", K(tenant_id), K(ret));
   } else if (conn.group_id_ == OBCG_DIAG_TENANT) {
     // OBCG_DIAG_TENANT was set in check_update_tenant_id, DO NOT overlap it.
-  } else if (OB_FAIL(G_RES_MGR.get_mapping_rule_mgr().get_group_id_by_user(
-              tenant_id, user_id, group_id))) {
-    LOG_WARN("fail get group id by user", K(user_id), K(tenant_id), K(ret));
   } else {
+    // Priority order: database > user
+    // Note: Oracle mode does not support database-level mapping (user and database are not distinguished)
+    const bool database_isolation_enabled = session->is_enable_database_isolation_mode();
+    if (database_isolation_enabled
+        && !session->is_oracle_compatible()) {
+      if (!effective_db_name.empty()) {
+        uint64_t db_group_id = OB_INVALID_ID;
+        if (OB_FAIL(G_RES_MGR.get_mapping_rule_mgr().get_group_id_by_database(
+              tenant_id, effective_db_name, db_group_id))) {
+          LOG_WARN("fail get group id by database", K(effective_db_name), K(tenant_id), K(ret));
+        } else if (0 != db_group_id) {
+          group_id = db_group_id;
+          LOG_TRACE("get group id by database", K(effective_db_name), K(tenant_id), K(group_id));
+        }
+      }
+    }
+    // If database mapping not found, try user mapping
+    if (OB_SUCC(ret) && 0 == group_id) {
+      if (OB_FAIL(G_RES_MGR.get_mapping_rule_mgr().get_group_id_by_user(
+            tenant_id, user_id, group_id))) {
+        LOG_WARN("fail get group id by user", K(user_id), K(effective_db_name), K(tenant_id), K(ret));
+      }
+    }
+    if (OB_SUCC(ret)) {
     // 将 group id 设置到调度层，之后这个 session 上的所有请求都是用这个 cgroup 的资源
-    conn.group_id_ = group_id;
+      conn.group_id_ = group_id;
+    }
   }
-  LOG_TRACE("setup user resource group", K(user_id), K(tenant_id), K(ret));
+  LOG_TRACE("setup user resource group", K(user_id), K(proxy_db_name), K(session_db_name),
+            K(effective_db_name), K(tenant_id), K(group_id), K(ret));
   return ret;
 }
 
@@ -642,6 +672,47 @@ int ObMPBase::process_extra_info(sql::ObSQLSessionInfo &session,
               OB_FAIL(ObSessInfoVerify::verify_session_info(session,
               sess_info_verification))) {
     LOG_WARN("fail to verify sess info", K(ret));
+  }
+  // Proxy specified database is per-request state.  If this packet does not
+  // carry PROXY_ONE_WAY_SYNC_INFO, do not inherit database info from older SQL.
+  if (OB_SUCC(ret) && !pkt.get_extra_info().get_sql_database().empty()) {
+    session.set_proxy_specified_db_name(pkt.get_extra_info().get_sql_database());
+    LOG_TRACE("received proxy specified database for resource isolation",
+              K(pkt.get_extra_info().get_sql_database()));
+  } else if (OB_SUCC(ret)) {
+    session.reset_proxy_specified_db_name();
+  }
+  return ret;
+}
+
+int ObMPBase::check_proxy_db_resource_group(sql::ObSQLSessionInfo &session)
+{
+  int ret = OB_SUCCESS;
+  const uint64_t tenant_id = session.get_effective_tenant_id();
+  const ObString &proxy_db_name = session.get_proxy_specified_db_name();
+  const bool database_isolation_enabled = session.is_enable_database_isolation_mode();
+  if (!database_isolation_enabled
+      || session.is_oracle_compatible()
+      || proxy_db_name.empty()) {
+    // no database level isolation for this request
+  } else {
+    uint64_t db_group_id = OB_INVALID_ID;
+    if (OB_FAIL(G_RES_MGR.get_mapping_rule_mgr().get_group_id_by_database(
+          tenant_id, proxy_db_name, db_group_id))) {
+      LOG_WARN("fail get group id by proxy specified database",
+               K(ret), K(tenant_id), K(proxy_db_name));
+    } else if (0 == db_group_id || db_group_id == THIS_WORKER.get_group_id()) {
+      // no mapping or already in expected group
+    } else if (session.get_is_in_retry()
+               && OB_NEED_SWITCH_CONSUMER_GROUP == session.get_retry_info().get_last_query_retry_err()) {
+      LOG_ERROR("use unexpected group when retry by proxy specified database",
+                K(db_group_id), K(THIS_WORKER.get_group_id()), K(proxy_db_name));
+    } else {
+      session.set_expect_group_id(sql::ISOLATION_DB, db_group_id);
+      ret = OB_NEED_SWITCH_CONSUMER_GROUP;
+      LOG_TRACE("need switch consumer group by proxy specified database",
+                K(tenant_id), K(proxy_db_name), K(db_group_id), K(ret));
+    }
   }
   return ret;
 }
@@ -843,18 +914,27 @@ int ObMPBase::handle_auth_switch_if_needed(
 {
   int ret = OB_SUCCESS;
   bool is_empty_passwd = false;
+  ObString client_plugin = ObEncryptedHelper::convert_plugin_name_from_client(hsr.get_auth_plugin_name());
+  // When the client's auth plugin is caching_sha2_password, force auth switch to send a new scramble.
+  // Most clients (mysql8, obclient, etc.) do not use the scramble from the initial handshake
+  // to generate the password hash for caching_sha2_password; they require an explicit auth switch.
+  // This applies uniformly to all connections (direct and proxy).
+  bool force_auth_switch = ObEncryptedHelper::is_caching_sha2_password_plugin(client_plugin);
   if (OB_FAIL(schema_guard.is_user_empty_passwd(login_info, is_empty_passwd))) {
     LOG_WARN("failed to check if user account has empty password", K(ret), K(login_info.passwd_));
-  } else if (conn->is_proxy_ && ObEncryptedHelper::is_caching_sha2_password_plugin(required_plugin)) {
+  } else if (conn->is_proxy_
+             && ObEncryptedHelper::is_caching_sha2_password_plugin(required_plugin)
+             && conn->proxy_version_ < PROXY_VERSION_4_4_0_0) {
     ret = OB_NOT_SUPPORTED;
-    LOG_WARN("caching_sha2_password is not supported in current proxy version", K(ret));
-  } else if (!is_empty_passwd &&
+    LOG_WARN("caching_sha2_password is not supported below 4.4.0 proxy version",
+             K(ret), K(conn->proxy_version_));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "caching_sha2_password is not supported below 4.4.0 proxy version");
+  } else if ((!is_empty_passwd || force_auth_switch) &&
              GCONF._enable_auth_switch &&
              !hsr.get_auth_plugin_name().empty() && // keep compatibility with old clients, empty plugin name means mysql_native_password
              (!conn->is_proxy_ || conn->proxy_version_ >= PROXY_VERSION_4_3_3_0)) {
-    ObString client_plugin = ObEncryptedHelper::convert_plugin_name_from_client(hsr.get_auth_plugin_name());
     // If client plugin does not match user's required plugin, send AuthSwitchRequest
-    if (ObEncryptedHelper::is_same_auth_plugin(client_plugin, required_plugin)) {
+    if (ObEncryptedHelper::is_same_auth_plugin(client_plugin, required_plugin) && !force_auth_switch) {
       // do nothing
     } else if (!support_auth_switch) {
       ret = OB_NOT_SUPPORTED;
@@ -954,11 +1034,17 @@ int ObMPBase::receive_auth_switch_response(
     }
 
     if (OB_FAIL(ret)) {
-    } else if (expected_auth_data_len != auth_data_len) {
+    } else if (expected_auth_data_len != auth_data_len
+               && 0 != auth_data_len
+               && 1 != auth_data_len) {
       ret = OB_PASSWORD_WRONG;
       LOG_WARN("invalid length of authentication response data",
                K(ret), K(auth_data_len), K(expected_auth_data_len),
                K(required_plugin), K(ObString(auth_data_len, auth_data)));
+    } else if (0 == auth_data_len || 1 == auth_data_len) {
+      // Empty password: client sends 0-byte (empty packet) or 1-byte (\0 terminator)
+      login_info.scramble_str_.assign_ptr(conn->scramble_result_buf_, ObSMConnection::SCRAMBLE_BUF_SIZE);
+      login_info.passwd_ = ObString::make_empty_string();
     } else {
       void *auth_buf = mem_pool.alloc(auth_data_len);
       if (OB_ISNULL(auth_buf)) {
@@ -998,19 +1084,18 @@ int ObMPBase::handle_caching_sha2_authentication_if_need(
   } else {
     bool need_full_auth = false;
     if (login_info.passwd_.length() == 0) {
-      // Empty password case
       need_full_auth = false;
     } else if (login_info.passwd_.length() != OB_SHA256_DIGEST_LENGTH) {
       // Unexpected length, need full auth
       need_full_auth = true;
-      LOG_TRACE("caching_sha2_password: unexpected auth data length, need full auth",
+      LOG_WARN("caching_sha2_password: unexpected auth data length, need full auth",
                 K(login_info.passwd_.length()));
     } else if (OB_FAIL(try_caching_sha2_fast_auth(login_info, conn, session,
                                                   matched_user_info, need_full_auth))) {
       LOG_WARN("failed to try fast auth", K(ret));
     }
     // Perform full authentication if needed
-    if (OB_SUCC(ret) && need_full_auth && login_info.passwd_.length() > 0) {
+    if (OB_SUCC(ret) && need_full_auth) {
       if (OB_FAIL(perform_caching_sha2_full_auth(login_info, conn, session, ssl_st, mem_pool))) {
         LOG_WARN("failed to perform full auth", K(ret));
       }
@@ -1019,75 +1104,79 @@ int ObMPBase::handle_caching_sha2_authentication_if_need(
   return ret;
 }
 
-int ObMPBase::try_caching_sha2_fast_auth(
-    ObUserLoginInfo &login_info,
-    ObSMConnection *conn,
-    ObSQLSessionInfo &session,
-    const ObUserInfo *matched_user_info,
-    bool &need_full_auth)
+int ObMPBase::try_caching_sha2_fast_auth(ObUserLoginInfo &login_info,
+                                         ObSMConnection *conn,
+                                         ObSQLSessionInfo &session,
+                                         const ObUserInfo *matched_user_info,
+                                         bool &need_full_auth)
 {
   int ret = OB_SUCCESS;
   need_full_auth = false;
-
+  ObSchemaGetterGuard schema_guard;
   // Check if user info is provided
-  if (OB_ISNULL(matched_user_info)) {
+  if (OB_ISNULL(matched_user_info) || OB_ISNULL(gctx_.schema_service_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("user not found in pre-check", K(ret));
+  } else if (OB_FAIL(gctx_.schema_service_->get_tenant_schema_guard(conn->tenant_id_, schema_guard))) {
+    LOG_WARN("fail to get schema guard", K(ret), K(conn->tenant_id_));
   } else {
-    ObCachingSha2Handle cache_handle;
     ObString user_name = login_info.user_name_;
     ObString host_name = matched_user_info->get_host_name_str();
     int64_t password_last_changed_timestamp = matched_user_info->get_password_last_changed();
-    int cache_ret = ObCachingSha2CacheMgr::get_instance().get_digest(user_name,
-                                                                     host_name,
-                                                                     conn->tenant_id_,
-                                                                     password_last_changed_timestamp,
-                                                                     cache_handle);
-    if (OB_SUCCESS == cache_ret && OB_NOT_NULL(cache_handle.digest_)) {
-      // Cache hit, try fast auth
-      LOG_TRACE("caching_sha2_password: cache hit, attempting fast auth",
-                K(user_name), K(host_name));
-
-      ObString cached_digest(cache_handle.digest_->get_digest_len(),
-                             cache_handle.digest_->get_digest());
-      bool fast_auth_success_flag = false;
-
-      int verify_ret = ObSha256Crypt::verify_fast_auth_scramble(
-                        login_info.passwd_,
-                        ObString(ObSMConnection::SCRAMBLE_BUF_SIZE, login_info.scramble_str_.ptr()),
-                        cached_digest,
-                        fast_auth_success_flag);
-
-      if (OB_SUCCESS != verify_ret) {
-        LOG_WARN("Failed to verify fast auth scramble", K(verify_ret), K(login_info));
-        fast_auth_success_flag = false;
-        need_full_auth = true;
-      } else if (fast_auth_success_flag) {
-        // Fast auth succeeded, send FAST_AUTH_SUCCESS flag
-        need_full_auth = false;
-        LOG_TRACE("caching_sha2_password: fast auth succeeded, sending fast_auth_success",
-                  K(user_name), K(host_name));
-        OMPKCachingSha2Response fast_auth_response(FAST_AUTH_SUCCESS);
-        if (OB_FAIL(packet_sender_.response_packet(fast_auth_response, &session))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("failed to send fast_auth_success flag", K(ret));
-        } else if (OB_FAIL(packet_sender_.flush_buffer(false))) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("failed to flush fast_auth_success flag", K(ret));
-        } else {
-          LOG_INFO("sent fast_auth_success flag (0x03), fast auth completed");
-        }
+    int64_t old_password_start_time = matched_user_info->get_old_password_start_time();
+    int64_t password_rollover_time = 0;
+    bool fast_auth_success_flag = false;
+    bool is_oracle_mode = false;
+    bool need_try_old_password = false;
+    uint64_t user_id = matched_user_info->get_user_id();
+    if (OB_FAIL(ObCompatModeGetter::check_is_oracle_mode_with_tenant_id(conn->tenant_id_, is_oracle_mode))) {
+      LOG_WARN("fail to check compat mode", K(ret), K(conn->tenant_id_));
+    } else if (OB_FAIL(schema_guard.try_caching_sha2_fast_auth_verify(login_info,
+                                                                      host_name,
+                                                                      conn->tenant_id_,
+                                                                      password_last_changed_timestamp,
+                                                                      fast_auth_success_flag))) {
+      LOG_WARN("Failed to verify fast auth", K(ret), K(login_info));
+    } else if (!fast_auth_success_flag && old_password_start_time != OB_INVALID_TIMESTAMP) {
+      // try to check dual password
+      if (!is_oracle_mode) {
+        need_try_old_password = true;
+      } else if (OB_FAIL(schema_guard.get_user_password_rollover_time(conn->tenant_id_,
+                                                                      user_id,
+                                                                      password_rollover_time))) {
+        LOG_WARN("fail to get password rollover time", K(ret), K(conn->tenant_id_), K(user_id));
+      } else if (password_rollover_time > 0) {
+        int64_t expire_ts = old_password_start_time + password_rollover_time;
+        expire_ts = (expire_ts < old_password_start_time) ? INT64_MAX : expire_ts;
+        need_try_old_password = (ObTimeUtility::current_time() < expire_ts);
+      }
+      if (OB_SUCC(ret) && need_try_old_password
+          && OB_FAIL(schema_guard.try_caching_sha2_fast_auth_verify(login_info,
+                                                                    host_name,
+                                                                    conn->tenant_id_,
+                                                                    old_password_start_time,
+                                                                    fast_auth_success_flag))) {
+        LOG_WARN("Failed to verify fast auth", K(ret), K(login_info));
+      }
+    }
+    if (OB_SUCC(ret) && fast_auth_success_flag) {
+      // Fast auth succeeded, send FAST_AUTH_SUCCESS flag
+      need_full_auth = false;
+      LOG_TRACE("caching_sha2_password: fast auth succeeded, sending fast_auth_success", K(user_name), K(host_name));
+      OMPKCachingSha2Response fast_auth_response(FAST_AUTH_SUCCESS);
+      if (OB_FAIL(packet_sender_.response_packet(fast_auth_response, &session))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to send fast_auth_success flag", K(ret));
+      } else if (OB_FAIL(packet_sender_.flush_buffer(false))) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to flush fast_auth_success flag", K(ret));
       } else {
-        // Fast auth failed (password mismatch)
-        need_full_auth = true;
-        LOG_TRACE("caching_sha2_password: fast auth password mismatch, need full auth",
-                  K(user_name), K(host_name));
+        LOG_INFO("sent fast_auth_success flag (0x03), fast auth completed");
       }
     } else {
-      // Cache miss
+      // Fast auth failed (password mismatch) or cache miss
       need_full_auth = true;
-      LOG_TRACE("caching_sha2_password: cache miss, need full auth",
-                K(cache_ret), K(user_name), K(host_name));
+      LOG_TRACE("caching_sha2_password: fast auth failed or cache miss, need full auth", K(user_name), K(host_name));
     }
   }
   return ret;
@@ -1100,37 +1189,41 @@ int ObMPBase::perform_caching_sha2_full_auth(
   SSL *ssl_st,
   obmysql::ObICSMemPool &mem_pool)
 {
-int ret = OB_SUCCESS;
-bool is_secure = (conn->is_in_ssl_connect_phase() || OB_NOT_NULL(ssl_st));
-// Send perform_full_authentication flag (0x04)
-OMPKCachingSha2Response full_auth_response(PERFORM_FULL_AUTHENTICATION);
-if (OB_FAIL(packet_sender_.response_packet(full_auth_response, &session))) {
-  ret = OB_ERR_UNEXPECTED;
-  LOG_WARN("failed to send perform_full_authentication flag", K(ret));
-} else if (OB_FAIL(packet_sender_.flush_buffer(false))) {
-  ret = OB_ERR_UNEXPECTED;
-  LOG_WARN("failed to flush perform_full_authentication flag", K(ret));
-} else {
-  // Set connection to auth_switch phase before reading client response
+  int ret = OB_SUCCESS;
+  bool is_secure = (conn->is_in_ssl_connect_phase() || OB_NOT_NULL(ssl_st));
+  // Send perform_full_authentication flag (0x04)
+  OMPKCachingSha2Response full_auth_response(PERFORM_FULL_AUTHENTICATION);
+  // Set auth_switch phase BEFORE flush so that flush_buffer's compensation mechanism
+  // sets OB_IS_LAST_PACKET=true in OB 2.0 protocol, while keeping is_last=false
+  // to allow continued packet reading via EASY_AGAIN in the transport layer.
   conn->set_auth_switch_phase();
-  // Choose different authentication paths based on connection security
-  if (is_secure) {
-    LOG_INFO("caching_sha2_password: performing SSL full authentication");
-    // SSL/TLS secure connection: receive plaintext password
-    if (OB_FAIL(perform_ssl_full_auth(login_info, mem_pool))) {
-      LOG_WARN("failed to perform SSL full authentication", K(ret));
-    }
+  if (OB_FAIL(packet_sender_.response_packet(full_auth_response, &session))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to send perform_full_authentication flag", K(ret));
+  } else if (OB_FAIL(packet_sender_.flush_buffer(false))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("failed to flush perform_full_authentication flag", K(ret));
   } else {
-    // Insecure connection: use RSA encrypted authentication
-    LOG_INFO("caching_sha2_password: performing RSA full authentication");
-    if (OB_FAIL(perform_rsa_full_auth(login_info, session, mem_pool))) {
-      LOG_WARN("failed to perform RSA full authentication", K(ret));
+    // Choose different authentication paths based on connection security
+    if (is_secure) {
+      LOG_INFO("caching_sha2_password: performing SSL full authentication");
+      // SSL/TLS secure connection: receive plaintext password
+      if (OB_FAIL(perform_ssl_full_auth(login_info, mem_pool))) {
+        LOG_WARN("failed to perform SSL full authentication", K(ret));
+      }
+    } else {
+      // Insecure connection: use RSA encrypted authentication
+      LOG_INFO("caching_sha2_password: performing RSA full authentication");
+      if (OB_FAIL(perform_rsa_full_auth(login_info, session, mem_pool))) {
+        LOG_WARN("failed to perform RSA full authentication", K(ret));
+      }
     }
   }
-  // Reset connection state to auth phase
+  // Restore auth phase after all intermediate packet exchanges are done.
+  // This ensures send_error_packet takes the authed_phase branch which
+  // composes error+ok correctly for proxy via send_ok_packet.
   conn->set_auth_phase();
-}
-return ret;
+  return ret;
 }
 
 int ObMPBase::perform_ssl_full_auth(
@@ -1373,26 +1466,18 @@ int ObMPBase::decrypt_rsa_password(
   int ret = OB_SUCCESS;
   unsigned char decrypted_pwd[OB_RSA_MAX_DECRYPT_SIZE];
   int64_t decrypted_len = 0;
-  if (OB_FAIL(ObRsaGetter::instance().decrypt_with_private_key(
-          reinterpret_cast<const unsigned char*>(client_data),
-          client_data_len,
-          decrypted_pwd,
-          decrypted_len,
-          sizeof(decrypted_pwd)))) {
-    // 打印 client_data 的 hex 串
-    char hex_buf[OB_RSA_MAX_DECRYPT_SIZE * 2 + 1] = {0};
-    int hex_pos = 0;
-    for (int64_t i = 0; i < client_data_len && hex_pos < static_cast<int64_t>(sizeof(hex_buf)) - 2; ++i) {
-      hex_pos += snprintf(hex_buf + hex_pos, sizeof(hex_buf) - hex_pos, "%02x", static_cast<unsigned char>(client_data[i]));
-    }
+  if (OB_FAIL(ObRsaGetter::instance().decrypt_with_private_key(reinterpret_cast<const unsigned char *>(client_data),
+                                                               client_data_len,
+                                                               decrypted_pwd,
+                                                               decrypted_len,
+                                                               sizeof(decrypted_pwd)))) {
     LOG_WARN("failed to decrypt password with RSA private key",
              K(ret),
-             K(hex_buf),
              K(client_data_len),
              K(decrypted_len),
              K(login_info.user_name_),
-             "is_passwd_plaintext", login_info.is_passwd_plaintext_,
-             "padding", "RSA_PKCS1_OAEP_PADDING");
+             "is_passwd_plaintext",
+             login_info.is_passwd_plaintext_);
   } else {
     // XOR with scramble to get plaintext password
     const char *scramble = login_info.scramble_str_.ptr();

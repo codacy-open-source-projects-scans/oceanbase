@@ -1,15 +1,6 @@
-/*
- *  Copyright (c) 2022 OceanBase
- *  OceanBase is licensed under Mulan PubL v2.
- *  You can use this software according to the terms and conditions of the Mulan PubL v2.
- *  You may obtain a copy of Mulan PubL v2 at:
- *           http://license.coscl.org.cn/MulanPubL-2.0
- *  THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- *  EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- *  MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- *  See the Mulan PubL v2 for more details.
- *  Authors:
- *
+/**
+ * Copyright (c) 2022 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -1391,7 +1382,7 @@ int ObDeviceCredentialMgr::connect_to_sts(
     ResponseAndAllocator &res_and_allocator)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "ObDeviceCredentialMgr::connect_to_sts", IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(nullptr/*storage_info*/, "ObDeviceCredentialMgr::connect_to_sts", IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   CURL *curl = nullptr;
   char json_data[OB_MAX_ASSUME_ROLE_JSON_DATA_LENGTH] = {0};
 

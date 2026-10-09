@@ -1,13 +1,6 @@
-/** 
- * Copyright (c) 2021 OceanBase 
- * OceanBase CE is licensed under Mulan PubL v2. 
- * You can use this software according to the terms and conditions of the Mulan PubL v2. 
- * You may obtain a copy of Mulan PubL v2 at: 
- *          http://license.coscl.org.cn/MulanPubL-2.0 
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, 
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, 
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE. 
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */ 
 
 /*first: declare*/
@@ -612,10 +605,10 @@ Timestamp{whitespace}?\"[^\"]*\" {
 }
 
 {identifer} {
-  int32_t token = mysql_sql_reserved_keyword_lookup(yytext);
+  int32_t token = mysql_sql_reserved_keyword_lookup_for_pl(yytext);
   if (token < 0) {
     const NonReservedKeyword *word = NULL;
-    if (NULL == (word = mysql_pl_non_reserved_keyword_lookup(yytext)))
+    if (NULL == (word = mysql_pl_keyword_lookup(yytext)))
     {
       token = IDENT;
       ParseNode *node = NULL;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -557,7 +550,7 @@ int ObTableLoadService::check_support_direct_load(ObSchemaGetterGuard &schema_gu
       LOG_WARN("fail to check support direct load for default value", KR(ret), K(column_ids));
     }
     // check for append_only merge engine
-    else if (OB_FAIL(check_support_direct_load_for_append_only(schema_guard, *table_schema, dup_action))) {
+    else if (OB_FAIL(check_support_direct_load_for_append_only(schema_guard, *table_schema, dup_action, insert_mode))) {
       LOG_WARN("fail to check support direct load for append_only merge engine", KR(ret));
     }
     // check for partition level
@@ -645,6 +638,17 @@ int ObTableLoadService::check_support_direct_load(ObSchemaGetterGuard &schema_gu
                                "incremental direct-load does only support "
                                "normal local index or "
                                "single local unique index in heap table");
+      } else if (has_non_normal_local_index && table_schema->is_random_part()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN(
+          "unsupported index type exists, "
+          "incremental direct-load does only support "
+          "normal local index in random-partitioned table",
+          KR(ret));
+        FORWARD_USER_ERROR_MSG(ret,
+                               "unsupported index type exists, "
+                               "incremental direct-load does only support "
+                               "normal local index in random-partitioned table");
       } else if (table_schema->get_foreign_key_infos().count() > 0) {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("incremental direct-load does not support table with foreign keys", KR(ret));
@@ -831,7 +835,8 @@ int ObTableLoadService::check_support_direct_load_for_fts_index(
 
 int ObTableLoadService::check_support_direct_load_for_append_only(ObSchemaGetterGuard &schema_guard,
                                                                   const ObTableSchema &table_schema,
-                                                                  const sql::ObLoadDupActionType dup_action)
+                                                                  const sql::ObLoadDupActionType dup_action,
+                                                                  const ObDirectLoadInsertMode::Type insert_mode)
 {
   int ret = OB_SUCCESS;
   bool has_unique_index = false;
@@ -850,6 +855,10 @@ int ObTableLoadService::check_support_direct_load_for_append_only(ObSchemaGetter
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("direct-load does not support append_only merge engine with ignore dup action", KR(ret), K(dup_action), K(table_schema));
     FORWARD_USER_ERROR_MSG(ret, "direct-load does not support append_only merge engine with ignore dup action");
+  } else if (ObDirectLoadInsertMode::OVERWRITE == insert_mode) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("direct-load does not support append_only merge engine with overwrite insert mode", KR(ret), K(insert_mode), K(table_schema));
+    FORWARD_USER_ERROR_MSG(ret, "direct-load does not support append_only merge engine with overwrite insert mode");
   }
   return ret;
 }

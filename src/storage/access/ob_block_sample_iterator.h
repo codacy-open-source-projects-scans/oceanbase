@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_BLOCK_SAMPLE_ITERATOR_H
@@ -22,6 +15,7 @@ namespace oceanbase
 {
 namespace storage
 {
+struct ObTabletReadTables;
 
 class ObBlockSampleSSTableEndkeyIterator final
 {
@@ -79,7 +73,7 @@ public:
   ~ObBlockSampleRangeIterator();
   void reset();
   int open(
-    ObGetTableParam &get_table_param,
+    ObTabletReadTables &tablet_read_tables,
     const blocksstable::ObDatumRange &range,
     ObIAllocator &allocator,
     const double percent,
@@ -127,7 +121,7 @@ private:
   };
 
 private:
-  int init_and_push_endkey_iterator(ObGetTableParam &get_table_param,
+  int init_and_push_endkey_iterator(ObTabletReadTables &tablet_read_tables,
                                     const SampleInfo::SampleMethod sample_method);
   int calculate_level_and_batch_size(const double percent,
                                      const SampleInfo::SampleMethod sample_method);
@@ -165,7 +159,7 @@ public:
   int open(ObMultipleScanMerge &scan_merge,
            ObTableAccessContext &access_ctx,
            const blocksstable::ObDatumRange &range,
-           ObGetTableParam &get_table_param,
+           ObTabletReadTables &tablet_read_tables,
            const bool is_reverse_scan);
   virtual int get_next_row(blocksstable::ObDatumRow *&row) override;
   virtual int get_next_rows(int64_t &count, int64_t capacity) override;

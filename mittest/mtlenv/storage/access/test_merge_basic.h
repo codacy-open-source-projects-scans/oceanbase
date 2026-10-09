@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *      http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OB_TEST_MERGE_BASIC_H_
 #define OB_TEST_MERGE_BASIC_H_
@@ -17,6 +10,8 @@
 #include "storage/blocksstable/ob_multi_version_sstable_test.h"
 #include "storage/compaction/ob_tablet_merge_ctx.h"
 #include "storage/test_tablet_helper.h"
+#define private public
+#define protected public
 #include "storage/compaction/filter/ob_mds_info_compaction_filter.h"
 #include "storage/compaction_ttl/ob_ttl_filter.h"
 #include "storage/compaction_ttl/ob_ttl_filter_info_array.h"
@@ -25,6 +20,7 @@
 #include "storage/column_store/ob_co_merge_ctx.h"
 #include "storage/column_store/ob_column_oriented_merger.h"
 #include "storage/column_store/ob_co_merge_dag.h"
+#include "test_co_merge.h"
 
 namespace oceanbase
 {
@@ -79,14 +75,14 @@ public:
     const ObVersionRange &trans_version_range,
     ObTabletMergeDag *merge_dag,
     T &merge_context,
-    const bool is_delete_insert_merge = false);
+    const ObMergeEngineType merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
   void prepare_co_major_merge_context(
       const ObMergeType &merge_type,
       const bool is_full_merge,
       const ObVersionRange &trans_version_range,
       ObTabletMergeDag *merge_dag,
       ObCOTabletMergeCtx &merge_context,
-      const bool is_delete_insert_merge = false);
+      const ObMergeEngineType merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
   void get_tx_table_guard(ObTxTableGuard &tx_table_guard);
   void insert_tx_data(
     const int64_t tx_id,
@@ -106,7 +102,7 @@ public:
     ObTabletMergeCtx &merge_context);
   static void co_major_merge(
     ObLocalArena &allocator,
-    const ObCOMergeTestType type,
+    const ObCOMergeTestConfig &config,
     ObCOTabletMergeCtx &merge_context,
     const int64_t task_id,
     const int64_t start_cg_idx,
@@ -127,6 +123,11 @@ public:
     LOG_INFO("create cg sstable", K(ret), K(start_cg_idx), K(end_cg_idx));
     return ret;
   }
+  static int prepare_ttl_filter(
+    const int64_t filter_max_version,
+    const int64_t filter_col_idx,
+    const int64_t schema_rowkey_cnt,
+    ObBasicTabletMergeCtx &merge_context);
   ObStorageSchema table_merge_schema_;
   ObStoreCtx store_ctx_;
 };
@@ -177,13 +178,14 @@ void TestMergeBasic::prepare_merge_context(
   const ObVersionRange &trans_version_range,
   ObTabletMergeDag *merge_dag,
   T &merge_context,
-  const bool is_delete_insert_merge)
+  const ObMergeEngineType merge_engine_type)
 {
   TestMergeBasic::prepare_merge_context(merge_type, is_full_merge, trans_version_range, merge_context);
   bool unused_flag = false;
-  merge_context.static_param_.is_delete_insert_merge_ = is_delete_insert_merge;
+  merge_context.static_param_.original_merge_engine_type_ = merge_engine_type;
   merge_context.merge_dag_ = merge_dag;
   merge_context.static_param_.for_unittest_ = true;
+  merge_context.static_param_.need_parallel_minor_merge_ = false;
   ASSERT_EQ(OB_SUCCESS, merge_context.build_ctx_after_init(unused_flag));
 }
 
@@ -193,10 +195,10 @@ void TestMergeBasic::prepare_co_major_merge_context(
   const ObVersionRange &trans_version_range,
   ObTabletMergeDag *merge_dag,
   ObCOTabletMergeCtx &merge_context,
-  const bool is_delete_insert_merge)
+  const ObMergeEngineType merge_engine_type)
 {
   merge_context.static_param_.co_static_param_.co_major_merge_strategy_.set(false/*build_all_cg_only*/, false/*only_use_row_store*/);
-  TestMergeBasic::prepare_merge_context(merge_type, is_full_merge, trans_version_range, merge_dag, merge_context, is_delete_insert_merge);
+  TestMergeBasic::prepare_merge_context(merge_type, is_full_merge, trans_version_range, merge_dag, merge_context, merge_engine_type);
   ObCOMergeDagParam *dag_param = static_cast<ObCOMergeDagParam *>(&merge_context.static_param_.dag_param_);
   dag_param->compat_mode_ = lib::Worker::CompatMode::MYSQL;
   int32_t base_cg_idx = -1;
@@ -314,6 +316,7 @@ void TestMergeBasic::create_tablet()
   ObTabletID tablet_id(tablet_id_);
   ObLSHandle ls_handle;
   ObLSService *ls_svr = MTL(ObLSService*);
+  ASSERT_NE(nullptr, ls_svr);
   ASSERT_EQ(OB_SUCCESS, ls_svr->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD));
   MERGE_SCHEDULER_PTR->resume_major_merge();
 
@@ -346,7 +349,7 @@ int TestMergeBasic::prepare_rowscn_filter(
 
 void TestMergeBasic::co_major_merge(
   ObLocalArena &allocator,
-  const ObCOMergeTestType type,
+  const ObCOMergeTestConfig &config,
   ObCOTabletMergeCtx &merge_context,
   const int64_t task_id,
   const int64_t start_cg_idx,
@@ -357,19 +360,34 @@ void TestMergeBasic::co_major_merge(
   const bool onle_use_row_store/* = false*/)
 {
   OK(merge_context.prepare_index_builder(start_cg_idx, end_cg_idx));
-  if (need_replay_base(type)) {
+  if (config.need_replay_base()) {
     merge_context.need_replay_base_directly_ = 1;
   }
-  if (ObCOMergeTestType::NORMAL == type || ObCOMergeTestType::NORMAL_WITH_BASE_REPLAY == type) {
+  if (config.is_normal_test_type()) {
     merge_context.merge_log_storage_ = 0;
-    ObCOMergeLogReplayer replayer(allocator, merge_context.static_param_, start_cg_idx, end_cg_idx);
-    ASSERT_EQ(OB_SUCCESS, replayer.init(merge_context, task_id));
-    ASSERT_EQ(OB_SUCCESS, replayer.replay_merge_log());
-    replayer.reset();
+    if (config.is_batch_merge_test_type()) {
+      merge_context.static_param_.compaction_batch_size_ = config.compaction_batch_size_;
+      // build_ctx_after_init() already ran in prepare_merge_context() while compaction_batch_size_ was
+      // still default 0, so prepare_row_store_layout_param / prepare_cg_layout_params were skipped.
+      // Batch replay needs them; prepare here after applying the test config batch size.
+      ASSERT_EQ(OB_SUCCESS, merge_context.prepare_row_store_layout_param());
+      if (is_major_merge_type(merge_context.get_merge_type())) {
+        ASSERT_EQ(OB_SUCCESS, merge_context.prepare_cg_layout_params());
+      }
+      ObCOBatchMergeLogReplayer replayer(allocator, merge_context.static_param_, start_cg_idx, end_cg_idx);
+      ASSERT_EQ(OB_SUCCESS, replayer.init(merge_context, task_id));
+      ASSERT_EQ(OB_SUCCESS, replayer.replay_merge_log());
+      replayer.reset();
+    } else {
+      ObCOMergeLogReplayer replayer(allocator, merge_context.static_param_, start_cg_idx, end_cg_idx);
+      ASSERT_EQ(OB_SUCCESS, replayer.init(merge_context, task_id));
+      ASSERT_EQ(OB_SUCCESS, replayer.replay_merge_log());
+      replayer.reset();
+    }
   } else {
     if (need_prepare_two_stage_ctx) {
       merge_context.merge_log_storage_ = 1;
-      if (!no_column_store && is_column_tmp_file_test_type(type)) {
+      if (!no_column_store && config.is_column_tmp_file_test_type()) {
         merge_context.merge_log_storage_ = 2;
       }
       ASSERT_EQ(OB_SUCCESS, merge_context.prepare_two_stage_ctx());
@@ -397,6 +415,51 @@ void TestMergeBasic::co_major_merge(
   if (create_sstable) {
     OK(create_cg_sstables(merge_context, start_cg_idx, end_cg_idx));
   }
+}
+
+int TestMergeBasic::prepare_ttl_filter(
+  const int64_t filter_max_version,
+  const int64_t filter_col_idx,
+  const int64_t schema_rowkey_cnt,
+  ObBasicTabletMergeCtx &merge_context) {
+
+  int ret = OB_SUCCESS;
+  const ObTTLFilterColType col_type =
+    (filter_col_idx == schema_rowkey_cnt) ? ObTTLFilterColType::ROWSCN : ObTTLFilterColType::INT64;
+  std::stringstream ss;
+  ss << "tx_id    commit_ver  filter_type   filter_value   filter_col\n";
+  ss << "1 " << 100 << " "<<static_cast<int>(col_type)
+    <<" " << filter_max_version << " "<<filter_col_idx<<"\n";
+  std::string micro_str = ss.str();
+  ObMdsInfoDistinctMgr mds_info_mgr;
+  ObTTLFilterInfoDistinctMgr &ttl_mgr = mds_info_mgr.ttl_filter_info_distinct_mgr_;
+  ObTTLFilterInfoArray &mock_array = ttl_mgr.array_;
+
+  TTLFilterInfoHelper::batch_mock_ttl_filter_info_without_sort(allocator_, micro_str.c_str(), mock_array);
+
+  if (OB_UNLIKELY(mock_array.count() != 1
+      || !mock_array.at(0)->is_valid()
+      || mock_array.at(0)->ttl_filter_value_ != filter_max_version)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected ttl filter info array count", KR(ret), K(mock_array));
+  } else if (OB_FAIL(ttl_mgr.distinct_array_.push_back(mock_array.at(0)))) {
+    LOG_WARN("unexpected ttl filter info array count", KR(ret), K(mock_array));
+  } else {
+    ttl_mgr.is_inited_ = true;
+    ObTabletID tablet_id(tablet_id_);
+    if (OB_FAIL(ObCompactionFilterFactory::alloc_compaction_filter<ObMdsInfoCompactionFilter>(
+      allocator_,
+      merge_context.filter_ctx_.compaction_filter_,
+      allocator_,
+      tablet_id,
+      merge_context.get_schema(),
+      schema_rowkey_cnt,
+      merge_context.static_param_.multi_version_column_descs_,
+      mds_info_mgr))) {
+      LOG_WARN("failed to build compaction filter", KR(ret), K(merge_context));
+    }
+  }
+  return ret;
 }
 
 ObSEArray<ObTxData, 8> TX_DATA_ARR;

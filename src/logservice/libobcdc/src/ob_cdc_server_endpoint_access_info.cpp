@@ -1,15 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- *
- * ObCDCServerEndpiontAccessInfo Impl
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX OBLOG
@@ -44,19 +35,19 @@ int ObCDCEndpoint::init(const char *tenant_endpoint)
       // Supports IPv6: [ipv6_address]:port
       // Supports hostname: hostname.example.com:2881
       const char *host_str = nullptr;
-      const char *port_str = nullptr;
-      const char *unused_port2 = nullptr;
+      int32_t port1 = -1;
+      int32_t unused_port2 = -1;
+      char addr_buf[256];
 
-      if (OB_FAIL(parse_addr_with_port(tenant_endpoint, host_str, port_str, unused_port2))) {
+      if (OB_FAIL(parse_addr_with_port(tenant_endpoint, addr_buf, sizeof(addr_buf), host_str, port1, unused_port2))) {
         LOG_ERROR("parse tenant_endpoint_str failed", KR(ret),
             KCSTRING(tenant_endpoint));
-      } else if (OB_ISNULL(host_str) || OB_ISNULL(port_str)) {
+      } else if (OB_ISNULL(host_str) || port1 <= 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_ERROR("split res content not as expected",
-            KCSTRING(tenant_endpoint), KP(host_str), KP(port_str));
-      } else if (OB_FAIL(c_str_to_int(port_str, port_))) {
-        LOG_ERROR("convert port_str to port failed", KR(ret), KCSTRING(tenant_endpoint), K(port_str), K_(port));
+            KCSTRING(tenant_endpoint), KP(host_str), K(port1));
       } else {
+        port_ = port1;
         const int host_len = strlen(host_str);
         if (OB_UNLIKELY(MAX_HOSTNAME_LEN < host_len)) {
           ret = OB_INVALID_ARGUMENT;

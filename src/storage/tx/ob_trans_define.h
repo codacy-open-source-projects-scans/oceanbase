@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_TRANSACTION_OB_TRANS_DEFINE_
@@ -614,6 +607,8 @@ public:
   const common::ObString &get_app_trace_info() const { return app_trace_info_; }
   //app trace id
   int set_app_trace_id(const common::ObString &app_trace_id);
+  int set_app_trace_id_without_confirm(const common::ObString &app_trace_id);
+  void set_app_trace_id_confirm();
   const common::ObString &get_app_trace_id() const { return app_trace_id_; }
   common::ObString &get_app_trace_id() { return app_trace_id_; }
   TO_STRING_KV(K_(app_trace_info), K_(app_trace_id), K_(app_trace_id_confirmed));

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -124,7 +117,7 @@ int ObDSLBoolQuery::create(ObIAllocator &alloc, ObDSLBoolQuery *&bool_query,
                            ObEsQueryItem outer_query_type, ObDSLQuery *parent_query)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(bool_query = OB_NEWx(ObDSLBoolQuery, &alloc, outer_query_type, parent_query))) {
+  if (OB_ISNULL(bool_query = OB_NEWx(ObDSLBoolQuery, &alloc, alloc, outer_query_type, parent_query))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate memory for ObDSLBoolQuery", K(ret));
   }
@@ -134,7 +127,7 @@ int ObDSLBoolQuery::create(ObIAllocator &alloc, ObDSLBoolQuery *&bool_query,
 int ObDSLKnnQuery::create(ObIAllocator &alloc, ObDSLKnnQuery *&knn_query, ObEsQueryItem outer_query_type)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(knn_query = OB_NEWx(ObDSLKnnQuery, &alloc, outer_query_type))) {
+  if (OB_ISNULL(knn_query = OB_NEWx(ObDSLKnnQuery, &alloc, alloc, outer_query_type))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("failed to allocate memory for ObDSLKnnQuery", K(ret));
   }
@@ -184,6 +177,8 @@ int ObDSLQueryInfo::deep_copy(const ObDSLQueryInfo& src, ObIRawExprCopier &expr_
     LOG_WARN("failed to copy size expr", K(ret));
   } else if (OB_FAIL(expr_copier.copy(src.min_score_, min_score_))) {
     LOG_WARN("failed to copy min score expr", K(ret));
+  } else if (OB_FAIL(expr_copier.copy(src.query_top_level_boost_, query_top_level_boost_))) {
+    LOG_WARN("failed to copy query top level boost expr", K(ret));
   } else if (OB_FAIL(expr_copier.copy(src.rowkey_cols_, rowkey_cols_))) {
     LOG_WARN("failed to copy rowkey cols", K(ret));
   } else if (OB_FAIL(expr_copier.copy(src.dsl_cols, dsl_cols))) {
@@ -278,10 +273,10 @@ int ObDSLQueryInfo::deep_copy_query_bool(const ObDSLBoolQuery *src, ObDSLBoolQue
                                          ObIRawExprCopier &expr_copier, ObIAllocator* allocator, ObDSLQuery *parent)
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> must;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> should;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> filter;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> must_not;
+  ObSEArray<ObDSLQuery*, 4> must;
+  ObSEArray<ObDSLQuery*, 4> should;
+  ObSEArray<ObDSLQuery*, 4> filter;
+  ObSEArray<ObDSLQuery*, 4> must_not;
   if (OB_ISNULL(src) || OB_ISNULL(allocator)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null param", K(ret), KP(src), KP(allocator));
@@ -343,7 +338,7 @@ int ObDSLQueryInfo::deep_copy_query_knn(const ObDSLKnnQuery *src, ObDSLKnnQuery 
                                         ObIRawExprCopier &expr_copier, ObIAllocator* allocator)
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> filter;
+  ObSEArray<ObDSLQuery*, 4> filter;
   ObRawExpr *field_expr = nullptr;
   ObRawExpr *k_expr = nullptr;
   ObRawExpr *query_vector_expr = nullptr;
@@ -451,6 +446,7 @@ int ObDSLQueryInfo::init_default_params(ObRawExprFactory &expr_factory, bool is_
   } else {
     one_const_expr_ = one_const_expr;
     is_top_k_query_ = is_top_k_query;
+    query_top_level_boost_ = one_const_expr_;
   }
   return ret;
 }
@@ -555,7 +551,9 @@ int ObDSLResolver::check_fields_parsers(const ObIArray<ObColumnRefRawExpr*> &fie
   for (int64_t i = 0; OB_SUCC(ret) && i < fields.count(); ++i) {
     ObString col_name = fields.at(i)->get_column_name();
     const ObTableSchema *index_schema = nullptr;
-    if (OB_FAIL(get_fulltext_index_schema(col_name, index_schema))) {
+    if (OB_FAIL(ObCharset::tolower(CS_TYPE_UTF8MB4_GENERAL_CI, col_name, col_name, *allocator_))) {
+      LOG_WARN("fail to lower column name", K(ret), K(col_name));
+    } else if (OB_FAIL(get_fulltext_index_schema(col_name, index_schema))) {
       LOG_WARN("fail to get fulltext index schema", K(ret), K(col_name));
     } else if (0 == i) {
       parser_name = index_schema->get_parser_name_str();
@@ -585,6 +583,9 @@ int ObDSLResolver::collect_exprs()
     LOG_WARN("fail to add rank_const expr", K(ret));
   } else if (OB_FAIL(add_dsl_expr(dsl_query_info_->one_const_expr_))) {
     LOG_WARN("fail to add one const expr", K(ret));
+  } else if (OB_NOT_NULL(dsl_query_info_->query_top_level_boost_) &&
+             OB_FAIL(add_dsl_expr(dsl_query_info_->query_top_level_boost_))) {
+    LOG_WARN("fail to add query top level boost expr", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < dsl_query_info_->queries_.count(); i++) {
       if (OB_FAIL(add_dsl_expr_recursive(dsl_query_info_->queries_.at(i)))) {
@@ -892,18 +893,30 @@ int ObDSLResolver::formalize_exprs()
   return ret;
 }
 
+int ObDSLResolver::get_col_idx_info(const ObString &col_name, ObColumnIndexInfo *&idx_info)
+{
+  int ret = OB_SUCCESS;
+  idx_info = nullptr;
+  if (!col_idx_map_.created()) {
+    // do nothing
+  } else if (OB_FAIL(col_idx_map_.get_refactored(col_name, idx_info))) {
+    if (OB_HASH_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+    } else {
+      LOG_WARN("fail to get col idx info", K(ret), K(col_name));
+    }
+  }
+  return ret;
+}
+
 int ObDSLResolver::get_dist_algo_type(ObColumnRefRawExpr *field_expr, ObVectorIndexDistAlgorithm &algo_type)
 {
   int ret = OB_SUCCESS;
   ObColumnIndexInfo *idx_info = nullptr;
-  if (!col_idx_map_.created()) {
+  if (OB_FAIL(get_col_idx_info(field_expr->get_column_name(), idx_info))) {
+    LOG_WARN("fail to get col idx info", K(ret), K(field_expr->get_column_name()));
+  } else if (OB_ISNULL(idx_info)) {
     // do nothing
-  } else if (OB_FAIL(col_idx_map_.get_refactored(field_expr->get_column_name(), idx_info))) {
-    if (ret == OB_HASH_NOT_EXIST) {
-      ret = OB_SUCCESS;
-    } else {
-      LOG_WARN("fail to get col idx info", K(ret));
-    }
   } else if (!is_local_vec_hnsw_index(idx_info->index_type_)) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "knn search for vector column for non-hnsw index");
@@ -963,18 +976,13 @@ int ObDSLResolver::get_fulltext_index_schema(const ObString &col_name, const ObT
 {
   int ret = OB_SUCCESS;
   ObColumnIndexInfo *idx_info = nullptr;
-  index_schema = nullptr;
-  if (!col_idx_map_.created()) {
-  } else if (OB_FAIL(col_idx_map_.get_refactored(col_name, idx_info))) {
-    if (OB_HASH_NOT_EXIST == ret) {
-      ret = OB_SUCCESS;
-    } else {
-      LOG_WARN("fail to get col idx info", K(col_name), K(ret));
-    }
+  if (OB_FAIL(get_col_idx_info(col_name, idx_info))) {
+  } else if (OB_ISNULL(idx_info)) {
+    // do nothing
   } else if (OB_ISNULL(idx_info->index_schema_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("index schema is null", K(ret), K(col_name));
-  } else if (!share::schema::is_fts_index_aux(idx_info->index_schema_->get_index_type())) {
+  } else if (!idx_info->index_schema_->is_fts_index_aux()) {
   } else {
     index_schema = idx_info->index_schema_;
   }
@@ -1022,7 +1030,7 @@ int ObDSLResolver::get_json_string_from_node(const ParseNode *node, ObString &js
   return ret;
 }
 
-int ObDSLResolver::get_user_column_expr(const ObString &col_name, ObColumnRefRawExpr *&col_expr)
+int ObDSLResolver::get_user_column_expr(ObString &col_name, ObColumnRefRawExpr *&col_expr)
 {
   int ret = OB_SUCCESS;
   ObRawExprFactory *expr_factory = params_.expr_factory_;
@@ -1031,6 +1039,8 @@ int ObDSLResolver::get_user_column_expr(const ObString &col_name, ObColumnRefRaw
   if (col_name.empty()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("column name is empty", K(ret));
+  } else if (OB_FAIL(ObCharset::tolower(CS_TYPE_UTF8MB4_GENERAL_CI, col_name, col_name, *allocator_))) {
+    LOG_WARN("fail to lower column name", K(ret), K(col_name));
   } else if (OB_NOT_NULL(existing_col_item = stmt_->get_column_item(table_item_.table_id_, col_name))) {
     col_expr = existing_col_item->expr_;
   } else if (OB_FAIL(col_schema_map_.get_refactored(col_name, col_schema))) {
@@ -1117,7 +1127,7 @@ int ObDSLResolver::init_bool_info(ObIJsonBase &req_node, int32_t &msm, ObConstRa
 int ObDSLResolver::init_col_idx_map()
 {
   int ret = OB_SUCCESS;
-  ObSEArray<ObAuxTableMetaInfo, 4, ModulePageAllocator, true> simple_index_infos;
+  ObSEArray<ObAuxTableMetaInfo, 4> simple_index_infos;
   if (col_idx_map_.created()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("col idx map already initialized, should not call init again", K(ret));
@@ -1142,7 +1152,7 @@ int ObDSLResolver::init_col_idx_map()
         for (int64_t j = 0; OB_SUCC(ret) && j < rowkey_info.get_size(); j++) {
           const ObRowkeyColumn *rowkey_column = nullptr;
           const ObColumnSchemaV2 *col_schema = nullptr;
-          ObSEArray<uint64_t, 4, ModulePageAllocator, true> cascaded_column_ids;
+          ObSEArray<uint64_t, 4> cascaded_column_ids;
           const ObColumnSchemaV2 *table_column = nullptr;
           if (OB_ISNULL(rowkey_column = rowkey_info.get_column(j))) {
             ret = OB_ERR_UNEXPECTED;
@@ -1160,19 +1170,32 @@ int ObDSLResolver::init_col_idx_map()
           } else if (OB_FAIL(table_column->get_cascaded_column_ids(cascaded_column_ids))) {
             LOG_WARN("failed to get cascaded_column_ids", K(ret));
           } else {
+            ObSEArray<uint64_t, 4> user_column_ids;
+            bool is_multi_column_index = false;
             for (int64_t k = 0; OB_SUCC(ret) && k < cascaded_column_ids.count(); k++) {
+              const ObColumnSchemaV2 *cascaded_column = table_schema_->get_column_schema(cascaded_column_ids.at(k));
+              if (cascaded_column->is_hidden() ||
+                  cascaded_column->is_unused() ||
+                  cascaded_column->is_invisible_column() ||
+                  cascaded_column->is_shadow_column()) {
+                // ignore these columns
+              } else if (OB_FAIL(user_column_ids.push_back(cascaded_column->get_column_id()))) {
+                LOG_WARN("fail to push back visible column id", K(ret), K(cascaded_column->get_column_id()));
+              }
+            }
+            if (OB_SUCC(ret) && index_schema->is_fts_index_aux() && user_column_ids.count() > 1) {
+              is_multi_column_index = true;
+            }
+            for (int64_t k = 0; OB_SUCC(ret) && !is_multi_column_index && k < user_column_ids.count(); k++) {
               const ObColumnSchemaV2 *cascaded_column = nullptr;
               ObString column_name;
               ObColumnIndexInfo *existing_idx_info = nullptr;
-              if (OB_ISNULL(cascaded_column = table_schema_->get_column_schema(cascaded_column_ids.at(k)))) {
+              if (OB_ISNULL(cascaded_column = table_schema_->get_column_schema(user_column_ids.at(k)))) {
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("unexpected cascaded column", K(ret));
-              } else if (cascaded_column->is_hidden() ||
-                         cascaded_column->is_unused() ||
-                         cascaded_column->is_invisible_column() ||
-                         cascaded_column->is_shadow_column()) {
-                // do nothing
               } else if (OB_FALSE_IT(column_name = cascaded_column->get_column_name_str())) {
+              } else if (OB_FAIL(ObCharset::tolower(CS_TYPE_UTF8MB4_GENERAL_CI, column_name, column_name, *allocator_))) {
+                LOG_WARN("fail to lower column name", K(ret), K(column_name));
               } else if (OB_FAIL(col_idx_map_.get_refactored(column_name, existing_idx_info))) {
                 if (ret == OB_HASH_NOT_EXIST) {
                   ret = OB_SUCCESS;
@@ -1244,6 +1267,8 @@ int ObDSLResolver::init_col_schema_map()
                  column_schema->is_shadow_column()) {
         continue;
       } else if (OB_FALSE_IT(col_name = column_schema->get_column_name_str())) {
+      } else if (OB_FAIL(ObCharset::tolower(CS_TYPE_UTF8MB4_GENERAL_CI, col_name, col_name, *allocator_))) {
+        LOG_WARN("fail to lower column name", K(ret), K(col_name));
       } else if (OB_FAIL(col_schema_map_.set_refactored(col_name, column_schema))) {
         LOG_WARN("fail to set column schema in hash map", K(ret), K(col_name));
       }
@@ -1282,7 +1307,7 @@ int ObDSLResolver::init_resolver()
   } else if (OB_NOT_NULL(dsl_query_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("dsl_query_info_ already initialized", K(ret));
-  } else if (OB_ISNULL(dsl_query_info_ = OB_NEWx(ObDSLQueryInfo, allocator_))) {
+  } else if (OB_ISNULL(dsl_query_info_ = OB_NEWx(ObDSLQueryInfo, allocator_, *allocator_))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("fail to create dsl query info", K(ret));
   } else if (OB_FAIL(dsl_query_info_->init_default_params(*params_.expr_factory_))) {
@@ -1388,7 +1413,7 @@ int ObDSLResolver::resolve(const ParseNode &parse_tree)
   uint64_t err_offset = 0;
   ObString req_str;
   ParseNode *raw_text = parse_tree.children_[0];
-  uint32_t parse_flag = ObJsonParser::JSN_RELAXED_FLAG | ObJsonParser::JSN_UNIQUE_FLAG;
+  uint32_t parse_flag = ObJsonParser::JSN_UNIQUE_FLAG;
   if (OB_FAIL(init_resolver())) {
     LOG_WARN("fail to init resolver", K(ret));
   } else if (OB_FAIL(get_json_string_from_node(raw_text, req_str))) {
@@ -1691,7 +1716,7 @@ int ObDSLResolver::resolve_knn(ObIJsonBase &req_node, ObDSLQuery *&query)
   ObRawExpr *k_expr = nullptr;
   ObRawExpr *query_vector_expr = nullptr;
   ObRawExpr *distance_expr = nullptr;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> filter_queries;
+  ObSEArray<ObDSLQuery*, 4> filter_queries;
   ObConstRawExpr *boost_expr = nullptr;
   ObDSLKnnQuery::SearchOption *search_option = nullptr;
   ObDSLKnnQuery *knn_query = nullptr;
@@ -1827,10 +1852,10 @@ int ObDSLResolver::resolve_bool(ObIJsonBase &req_node, ObDSLQuery *&query, ObDSL
 {
   int ret = OB_SUCCESS;
   uint64_t count = 0;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> must;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> should;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> filter;
-  ObSEArray<ObDSLQuery*, 4, ModulePageAllocator, true> must_not;
+  ObSEArray<ObDSLQuery*, 4> must;
+  ObSEArray<ObDSLQuery*, 4> should;
+  ObSEArray<ObDSLQuery*, 4> filter;
+  ObSEArray<ObDSLQuery*, 4> must_not;
   int64_t must_cnt = -1;
   int64_t should_cnt = -1;
   int64_t filter_cnt = -1;
@@ -1969,7 +1994,7 @@ int ObDSLResolver::resolve_bool_clause(ObIJsonBase &req_node, ObIArray<ObDSLQuer
 // J_DOUBLE                |   false  | true  |  true  |  true   |  false  |   false  |   false
 // J_ARRAY                 |   true   | false |  false |  false  |  true   |   true   |   false
 // J_OBJECT                |   true   | false |  false |  false  |  false  |   true   |   false
-// J_BOOLEAN               |   false  | false |  false |  false  |  false  |   false  |   true
+// J_BOOLEAN               |   true   | false |  false |  false  |  false  |   false  |   true
 int ObDSLResolver::resolve_const(ObIJsonBase &req_node, ObRawExpr *&expr, ObJsonNodeType target_type, ObEsQueryItem query_type/*=QUERY_ITEM_UNKNOWN*/)
 {
   int ret = OB_SUCCESS;
@@ -2011,6 +2036,11 @@ int ObDSLResolver::resolve_const(ObIJsonBase &req_node, ObRawExpr *&expr, ObJson
       } else if (OB_FAIL(j_buffer.get_result_string(str_val))) {
         LOG_WARN("fail to get result string", K(ret));
       }
+    } else if (json_type == ObJsonNodeType::J_BOOLEAN) {
+      const ObString literal = req_node.get_boolean() ? ObString::make_string("true") : ObString::make_string("false");
+      if (OB_FAIL(ob_write_string(*allocator_, literal, str_val))) {
+        LOG_WARN("fail to materialize json boolean literal", K(ret));
+      }
     }
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(construct_string_expr(str_val, expr))) {
@@ -2048,6 +2078,12 @@ int ObDSLResolver::resolve_const(ObIJsonBase &req_node, ObRawExpr *&expr, ObJson
     } else if (target_type == ObJsonNodeType::J_INT || target_type == ObJsonNodeType::J_UINT) {
       if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*expr_factory, ObIntType, static_cast<int64_t>(num_value), const_expr))) {
         LOG_WARN("fail to create const int expr", K(ret));
+      } else {
+        expr = const_expr;
+      }
+    } else if (IS_QUERY_ITEM_ARRAY(query_type) && !ObArithExprOperator::is_float_out_of_range(static_cast<float>(num_value))) {
+      if (OB_FAIL(ObRawExprUtils::build_const_float_expr(*expr_factory, ObFloatType, static_cast<float>(num_value), const_expr))) {
+        LOG_WARN("fail to create const float expr", K(ret), K(target_type));
       } else {
         expr = const_expr;
       }
@@ -2179,7 +2215,7 @@ int ObDSLResolver::resolve_default_params(ObIJsonBase &req_node)
     LOG_WARN("fail to resolve rank", K(ret));
   }
 
-  bool has_rank_window_size = false;
+  bool has_rank_window_size = dsl_query_info_->rank_info_.window_size_ != nullptr;
   // 1) Set size and rank_window_size (defaults where not provided).
   if (OB_SUCC(ret)) {
     if (OB_ISNULL(dsl_query_info_->size_) && OB_ISNULL(dsl_query_info_->rank_info_.window_size_)) {
@@ -2192,7 +2228,6 @@ int ObDSLResolver::resolve_default_params(ObIJsonBase &req_node)
       }
     } else if (OB_ISNULL(dsl_query_info_->size_) && OB_NOT_NULL(dsl_query_info_->rank_info_.window_size_)) {
       dsl_query_info_->size_ = dsl_query_info_->rank_info_.window_size_;
-      has_rank_window_size = true;
     } else if (OB_NOT_NULL(dsl_query_info_->size_) && OB_ISNULL(dsl_query_info_->rank_info_.window_size_)) {
       if (OB_FAIL(set_default_rank_window_size())) {
         LOG_WARN("fail to set default rank_window_size", K(ret));
@@ -2371,7 +2406,11 @@ int ObDSLResolver::resolve_json_expr(ObIJsonBase &req_node, ObDSLQuery *&query, 
         LOG_WARN("fail to get value", K(ret), K(i));
       } else if (key.case_compare("candidate") == 0) {
         ObJsonNodeType candidate_type = ObJsonNodeType::J_STRING;
-        if (query_type == QUERY_ITEM_JSON_MEMBER_OF) {
+        if (query_type == QUERY_ITEM_JSON_MEMBER_OF ||
+            (query_type == QUERY_ITEM_JSON_CONTAINS &&
+             sub_node->json_type() != ObJsonNodeType::J_STRING &&
+             sub_node->json_type() != ObJsonNodeType::J_OBJECT &&
+             sub_node->json_type() != ObJsonNodeType::J_ARRAY)) {
           candidate_type = sub_node->json_type();
         }
         if (OB_FAIL(resolve_const(*sub_node, candidate_expr, candidate_type, query_type))) {
@@ -2634,10 +2673,16 @@ int ObDSLResolver::resolve_single_term(ObIJsonBase &req_node, ObDSLQuery *&query
     LOG_WARN("not supported syntax in query", K(ret), K(key));
   }
   if (OB_FAIL(ret)) {
-  } else if (outer_query_type == QUERY_ITEM_QUERY && OB_FAIL(setup_top_level_score(query))) {
-    LOG_WARN("fail to setup top level score", K(ret));
-  } else if (outer_query_type == QUERY_ITEM_QUERY && OB_FAIL(try_push_nested_boost_to_leaf_query(query, 1.0))) {
-    LOG_WARN("fail to push nested boost to leaf query", K(ret));
+  } else if (outer_query_type == QUERY_ITEM_QUERY) {
+    if (OB_FAIL(setup_top_level_score(query))) {
+      LOG_WARN("fail to setup top level score", K(ret));
+    } else {
+      dsl_query_info_->query_top_level_boost_ = query->boost_;
+      query->boost_ = static_cast<ObConstRawExpr *>(dsl_query_info_->one_const_expr_);
+      if (OB_FAIL(try_push_nested_boost_to_leaf_query(query, 1.0))) {
+        LOG_WARN("fail to push nested boost to leaf query", K(ret));
+      }
+    }
   }
   return ret;
 }
@@ -2658,7 +2703,12 @@ int ObDSLResolver::resolve_slop(ObIJsonBase &req_node, int32_t &slop)
 {
   int ret = OB_SUCCESS;
   double slop_double = 0.0;
-  if (OB_FAIL(req_node.to_double(slop_double))) {
+  ObJsonNodeType json_type = req_node.json_type();
+  if (!ObIJsonBase::is_json_number_type(json_type) && json_type != ObJsonNodeType::J_STRING) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "slop, should be number or string type");
+    LOG_WARN("slop should be number or string type", K(ret), K(json_type));
+  } else if (OB_FAIL(req_node.to_double(slop_double))) {
     LOG_WARN("fail to get double value from slop", K(ret));
   } else if (slop_double < 0.0 || slop_double != static_cast<int64_t>(slop_double)) {
     ret = OB_INVALID_ARGUMENT;
@@ -2690,7 +2740,7 @@ int ObDSLResolver::resolve_minimum_should_match(ObIJsonBase &req_node, int32_t &
   double msm_double = 0.0;
   if (req_node.json_type() != ObJsonNodeType::J_INT && req_node.json_type() != ObJsonNodeType::J_STRING) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "minimum_should_match, should be int or string type");
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "minimum_should_match, it accepts an integer or a string representing an integer");
     LOG_WARN("minimum_should_match should be int type", K(ret), K(req_node.json_type()));
   } else if (OB_FAIL(req_node.to_double(msm_double))) {
     if (req_node.json_type() == ObJsonNodeType::J_STRING) {
@@ -2698,6 +2748,10 @@ int ObDSLResolver::resolve_minimum_should_match(ObIJsonBase &req_node, int32_t &
       LOG_USER_ERROR(OB_INVALID_ARGUMENT, "minimum_should_match, it accepts an integer or a string representing an integer");
     }
     LOG_WARN("fail to get double value from minimum_should_match", K(ret));
+  } else if (req_node.json_type() == ObJsonNodeType::J_STRING && msm_double != static_cast<int64_t>(msm_double)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "minimum_should_match, it accepts an integer or a string representing an integer");
+    LOG_WARN("minimum_should_match is not an integer", K(ret), K(msm_double));
   } else if (msm_double < 0.0 || msm_double > INT32_MAX) {
     ret = OB_INVALID_ARGUMENT;
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "minimum_should_match, should be in range [0, 2147483647]");
@@ -2822,8 +2876,8 @@ int ObDSLResolver::resolve_multi_fields_query_param(
 {
   int ret = OB_SUCCESS;
 
-  ObSEArray<ObColumnRefRawExpr*, 4, ModulePageAllocator, true> fields;
-  ObSEArray<ObConstRawExpr*, 4, ModulePageAllocator, true> field_boosts;
+  ObSEArray<ObColumnRefRawExpr*, 4> fields;
+  ObSEArray<ObConstRawExpr*, 4> field_boosts;
   ObMatchFieldsType type = ObDSLFullTextMultiFieldQueryParam::DEFAULT_FIELD_TYPE;
   ObMatchOperator opr = ObDSLFullTextQuery::DEFAULT_OPERATOR;
   int32_t minimum_should_match = ObDSLFullTextQuery::DEFAULT_MINIMUM_SHOULD_MATCH;
@@ -3157,7 +3211,7 @@ int ObDSLResolver::resolve_range(ObIJsonBase &req_node, ObDSLQuery *&query, ObDS
   ObSysFunRawExpr *json_extract_expr = nullptr;
   ObRawExpr *field_expr = nullptr;
   ObRawExpr *scalar_expr = nullptr;
-  ObSEArray<ObRawExpr*, 4, ModulePageAllocator, true> condition_exprs;
+  ObSEArray<ObRawExpr*, 4> condition_exprs;
   ObDSLScalarQuery *range_query = nullptr;
   if (ObDSLQuery::check_need_cal_score_in_bool(outer_query_type, parent_query)) {
     ret = OB_NOT_SUPPORTED;
@@ -3314,6 +3368,7 @@ int ObDSLResolver::resolve_rrf(ObIJsonBase &req_node)
         LOG_WARN("fail to get rank constant value", K(ret), K(i));
       } else if (value < 1) {
         ret = OB_INVALID_ARGUMENT;
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "rank_constant, rank_constant value should be greater than 0");
         LOG_WARN("invalid rank constant value", K(ret), K(value));
       } else {
         dsl_query_info_->rank_info_.rank_const_ = const_expr;
@@ -3377,6 +3432,11 @@ int ObDSLResolver::resolve_term(ObIJsonBase &req_node, ObDSLQuery *&query, ObDSL
   } else if (is_scalar_json_type(col_para->json_type())) {
     value_node = col_para;
   } else if (col_para->json_type() == ObJsonNodeType::J_OBJECT) {
+    if (col_para->element_count() == 0) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, "param of term, should not be empty");
+      LOG_WARN("param of term should not be empty", K(ret));
+    }
     for (uint64_t i = 0; OB_SUCC(ret) && i < col_para->element_count(); i++) {
       ObString key;
       ObIJsonBase *sub_node = nullptr;
@@ -3454,7 +3514,7 @@ int ObDSLResolver::resolve_terms(ObIJsonBase &req_node, ObDSLQuery *&query, ObDS
   ObRawExpr *path_expr = nullptr;
   ObSysFunRawExpr *json_extract_expr = nullptr;
   ObRawExpr *field_expr = nullptr;
-  ObSEArray<ObRawExpr*, 4, ModulePageAllocator, true> value_exprs;
+  ObSEArray<ObRawExpr*, 4> value_exprs;
   ObRawExpr *in_expr = nullptr;
   ObDSLScalarQuery *terms_query = nullptr;
   if (ObDSLQuery::check_need_cal_score_in_bool(outer_query_type, parent_query)) {

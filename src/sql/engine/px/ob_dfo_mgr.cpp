@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -734,7 +727,12 @@ int ObDfoMgr::do_split(ObExecContext &exec_ctx,
         dfo->set_dist_method(transmit->dist_method_);
         if (transmit->is_slave_mapping()) {
           dfo->set_out_slave_mapping_type(transmit->get_slave_mapping_type());
-          parent_dfo->set_in_slave_mapping_type(transmit->get_slave_mapping_type());
+          dfo->set_out_slave_mapping_id(transmit->get_slave_mapping_id());
+          if (OB_FAIL(parent_dfo->append_in_slave_mapping_child(
+                  transmit->get_slave_mapping_type(),
+                  transmit->get_slave_mapping_id()))) {
+            LOG_WARN("failed to append slave mapping child", K(ret));
+          }
         }
         if (ObPQDistributeMethod::PARTITION_HASH == transmit->dist_method_) {
           const ObPxTransmitSpec *px_transmit = reinterpret_cast<const ObPxTransmitSpec *>(transmit);
@@ -742,7 +740,8 @@ int ObDfoMgr::do_split(ObExecContext &exec_ctx,
         }
         dfo->set_pkey_table_loc_id(
           (reinterpret_cast<const ObPxTransmitSpec *>(transmit))->repartition_table_id_);
-        if (OB_ISNULL(parent_dfo)) {
+        if (OB_FAIL(ret)) {
+        } else if (OB_ISNULL(parent_dfo)) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("parent dfo should not be null", K(ret));
         } else if (transmit->get_px_dop() <= 0) {

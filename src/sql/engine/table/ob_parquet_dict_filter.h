@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_TABLE_OB_PARQUET_DICT_FILTER_H_
@@ -186,6 +179,16 @@ private:
                            const ObIArray<int32_t> &indices,
                            int64_t indices_count,
                            common::ObBitmap &result_bitmap);
+  static int build_datum(common::ObIVector *col_vector,
+                         const int64_t idx,
+                         const bool need_lob_convert,
+                         const ObObjType lob_type,
+                         const bool has_lob_header,
+                         const bool need_pad,
+                         const common::ObObjMeta &col_obj_meta,
+                         const common::ObAccuracy &accuracy,
+                         ObIAllocator &allocator,
+                         blocksstable::ObStorageDatum &datum);
 
   int has_non_dict_filter_for_column(
       ObPushdownFilterExecutor *filter_executor,

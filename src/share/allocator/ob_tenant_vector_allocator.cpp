@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -34,7 +27,6 @@ void ObTenantVectorAllocator::init_throttle_config(int64_t &resource_limit, int6
 
 int64_t ObTenantVectorAllocator::get_vector_mem_limit_percentage(omt::ObTenantConfigGuard &tenant_config, uint64_t tenant_id /*default is MTL_ID()*/)
 {
-  const int64_t SMALL_TENANT_MEMORY_LIMIT = 8 * 1024 * 1024 * 1024L; // 8G
   const int64_t SMALL_VECTOR_LIMIT_PERCENTAGE = 40;
   const int64_t LARGE_VECTOR_LIMIT_PERCENTAGE = 50;
   const int64_t tenant_memory = lib::get_tenant_memory_limit(tenant_id);
@@ -47,7 +39,7 @@ int64_t ObTenantVectorAllocator::get_vector_mem_limit_percentage(omt::ObTenantCo
     percent = tenant_memstore_limit_percent;
   } else {
     // both is default value, adjust automatically
-    if (tenant_memory <= SMALL_TENANT_MEMORY_LIMIT) {
+    if (tenant_memory <= SMALL_TENANT_MEMORY_LIMIT_BYTES) {
       percent = SMALL_VECTOR_LIMIT_PERCENTAGE;
     } else {
       percent = LARGE_VECTOR_LIMIT_PERCENTAGE;

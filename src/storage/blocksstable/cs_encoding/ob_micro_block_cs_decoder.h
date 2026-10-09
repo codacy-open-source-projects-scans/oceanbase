@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_BLOCKSSTABLE_CS_ENCODING_OB_MICRO_BLOCK_CS_DECODER_H_
@@ -30,7 +23,7 @@ namespace blocksstable
 struct ObBlockCachedCSDecoderHeader;
 struct ObCSDecoderCtxArray;
 class ObIColumnCSDecoder;
-class ObCSRowHeader;
+class ObCSRowMultiVersionHeader;
 
 struct ObColumnCSDecoder final
 {
@@ -403,7 +396,8 @@ private:
     const int32_t col_offset, const share::schema::ObColumnParam *col_param,
     ObStorageDatum &decoded_datum, common::ObBitmap &result_bitmap);
   int get_col_datums(int32_t col_id, const int32_t *row_ids, const int64_t row_cap, common::ObDatum *col_datums);
-  int get_col_data(int32_t col_id, ObVectorDecodeCtx &ctx);
+  virtual int get_col_data(const int32_t col_id, ObVectorDecodeCtx &vector_ctx, const bool need_reverse_trans_version = true) override;
+  virtual int fill_default_for_nop(const int32_t col_id, ObVectorDecodeCtx &vector_ctx) override;
   virtual const ObMicroBlockHeader* get_micro_header() const override final
   {
     return transform_helper_.get_micro_block_header();
@@ -466,7 +460,6 @@ private:
   //
   // See add_decoders_for_multi_version_cols for more details
   bool read_info_not_contain_multi_version_cols_;
-  int32_t request_cnt_;  // request column count
   const ObBlockCachedCSDecoderHeader *cached_decoder_;
   ObColumnCSDecoder *decoders_;
   ObCSMicroBlockTransformHelper transform_helper_;
@@ -475,7 +468,6 @@ private:
   static ObNoneExistColumnCSDecoder none_exist_column_decoder_;
   static ObColumnCSDecoderCtx none_exist_column_decoder_ctx_;
   static ObNewColumnCSDecoder new_column_decoder_;
-  ObBlockReaderAllocator decoder_allocator_;
   common::ObArenaAllocator transform_allocator_;
   common::ObArenaAllocator buf_allocator_;
   char *allocated_decoders_buf_;

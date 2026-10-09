@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OB_SQL_PX_SQC_CTX_H__ 
@@ -120,8 +113,6 @@ public:
   bool all_tasks_finish_;
   bool interrupted_; // 标记当前 SQC 是否被 QC 中断
   common::ObSEArray<ObPxTabletInfo, 8> px_tablets_info_;
-  ObPxBloomfilterChProvider bf_ch_provider_;
-  ObPxCreateBloomFilterChannelMsgP px_bloom_filter_msg_proc_;
   ObOptStatsGatherWholeMsgP opt_stats_gather_whole_msg_proc_;
   // 用于 datahub 中保存 whole msg provider，一般情况下一个子计划里不会
   // 超过一个算子会使用 datahub，所以大小默认为 1 即可

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_STORAGE_DDL_OB_LOB_MACRO_BLOCK_WRITER_
@@ -43,7 +36,7 @@ public:
   int init(const ObWriteMacroParam &param,
            const ObTabletID &data_tablet_id,
            const blocksstable::ObMacroDataSeq &start_sequence);
-  int write(const ObColumnSchemaItem &column_schema, ObIAllocator &row_allocator, blocksstable::ObStorageDatum &datum);
+  int write(const ObColumnSchemaItem &column_schema, ObIAllocator &row_allocator, blocksstable::ObStorageDatum &datum, const blocksstable::ObStorageDatum *ttl_datum);
   int close();
   TO_STRING_KV(K(is_inited_), K(lob_meta_tablet_id_), K(slice_idx_), K(macro_seq_),
       K(lob_id_cache_), K(lob_column_count_), K(lob_id_generator_), K(lob_meta_row_), KP(macro_block_writer_));

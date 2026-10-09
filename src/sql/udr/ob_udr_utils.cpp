@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_QRR
@@ -142,7 +135,7 @@ int ObUDRUtils::cons_udr_param_store(const DynamicParamInfoArray& dynamic_param_
     if (OB_ISNULL(pc_ctx.sql_ctx_.session_info_)) {
       ret = OB_INVALID_ARGUMENT;
       LOG_WARN("invalid argument", K(ret), K(pc_ctx.sql_ctx_.session_info_));
-    } else if (PC_PS_MODE == pc_ctx.mode_) {
+    } else if (PC_PS_MODE == pc_ctx.mode_ || pc_ctx.sql_ctx_.is_ps_cursor_) {
       ObSQLMode sql_mode = pc_ctx.sql_ctx_.session_info_->get_sql_mode();
       ObCharsets4Parser charsets4parser = pc_ctx.sql_ctx_.session_info_->get_charsets4parser();
       FPContext fp_ctx(charsets4parser);
@@ -182,12 +175,15 @@ int ObUDRUtils::clac_dynamic_param_store(const DynamicParamInfoArray& dynamic_pa
   ObPhysicalPlanCtx *phy_ctx = pc_ctx.exec_ctx_.get_physical_plan_ctx();
   bool enable_decimal_int = false;
   ObCompatType compat_type = COMPAT_MYSQL57;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   bool enable_mysql_compatible_dates = false;
   if (OB_ISNULL(session) || OB_ISNULL(phy_ctx)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret), KP(session), KP(phy_ctx));
   } else if (OB_FAIL(session->get_compatibility_control(compat_type))) {
     LOG_WARN("failed to get compat type", K(ret));
+  } else if (OB_FAIL(session->get_charset_compat_type(charset_compat_type))) {
+    LOG_WARN("fail to get charset compat type", K(ret));
   } else if (OB_FAIL(param_store.reserve(dynamic_param_list.count()))) {
     LOG_WARN("failed to reserve array", K(ret), K(dynamic_param_list.count()));
   } else if (lib::is_oracle_mode() && OB_FAIL(
@@ -215,7 +211,8 @@ int ObUDRUtils::clac_dynamic_param_store(const DynamicParamInfoArray& dynamic_pa
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("node is null", K(ret));
       } else if (T_QUESTIONMARK == raw_param->type_) {
-        if (pc_ctx.mode_ != PC_PS_MODE || raw_param->value_ >= pc_ctx.fp_result_.parameterized_params_.count()) {
+        if ((pc_ctx.mode_ != PC_PS_MODE && !pc_ctx.sql_ctx_.is_ps_cursor_)
+            || raw_param->value_ >= pc_ctx.fp_result_.parameterized_params_.count()) {
           ret = OB_ERR_PARSER_SYNTAX;
           LOG_WARN("invalid argument", K(ret), K(raw_param->value_), K(dynamic_param_info.raw_param_idx_),
           K(pc_ctx.mode_), K(pc_ctx.fp_result_.parameterized_params_.count()));
@@ -244,7 +241,10 @@ int ObUDRUtils::clac_dynamic_param_store(const DynamicParamInfoArray& dynamic_pa
                                                         compat_type,
                                                         enable_mysql_compatible_dates,
                                                         session->get_min_const_integer_precision(),
-                                                        session->get_exec_min_cluster_version()))) {
+                                                        session->get_exec_min_cluster_version(),
+                                                        false,
+                                                        false,
+                                                        charset_compat_type))) {
         LOG_WARN("fail to resolve const", K(ret));
       } else if (OB_FAIL(add_param_to_param_store(value, param_store))) {
         LOG_WARN("failed to add param to param store", K(ret), K(value), K(param_store));
@@ -274,7 +274,9 @@ int ObUDRUtils::match_udr_and_refill_ctx(const ObString &pattern,
   ObSQLSessionInfo &session = result.get_session();
   ObExecContext &ectx = result.get_exec_context();
   if (session.enable_udr()
-      && !(pc_ctx.is_arraybinding_ || pc_ctx.is_inner_sql() || PC_PL_MODE == pc_ctx.mode_)) {
+      && !pc_ctx.is_arraybinding_
+      && (pc_ctx.sql_ctx_.is_ps_cursor_
+          || (!pc_ctx.is_inner_sql() && PC_PL_MODE != pc_ctx.mode_))) {
     ObIAllocator &allocator = result.get_mem_pool();
     PatternConstConsList cst_cons_list;
     if (OB_FAIL(match_udr_item(pattern, session, ectx, allocator, item_guard, &cst_cons_list))) {

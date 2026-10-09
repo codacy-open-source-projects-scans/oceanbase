@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef DEV_SRC_SQL_DAS_OB_DAS_CONTEXT_H_
@@ -84,6 +77,7 @@ public:
     need_check_server_ = 1;
     same_server_ = 1;
     iter_uncommitted_row_ = 0;
+    is_fk_check_parent_ = 0;
   }
   ~ObDASCtx()
   {
@@ -215,7 +209,8 @@ public:
       uint64_t iter_uncommitted_row_            : 1; //iter uncommitted row in fk_checker
       uint64_t in_das_group_scan_               : 1; //the current execution in das group scan
       uint64_t in_ignore_cascading_             : 1; //is an ignore stmt when cascading
-      uint64_t reserved_                        : 58;
+      uint64_t is_fk_check_parent_              : 1; //child->parent fk existence check (subset of is_fk_cascading_)
+      uint64_t reserved_                        : 57;
     };
   };
 };

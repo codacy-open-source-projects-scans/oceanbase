@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL_OPT
 
@@ -350,7 +343,7 @@ int ObLogExpand::dup_and_replace_params_for_distinct_agg(ObRawExprFactory &facto
         }
       } else if (OB_FAIL(create_aggr_with_dup_params(factory, aggr_items.at(i), sess,
                                               false,
-                                              dup_expr_pairs, new_agg))) {
+                                              dup_expr_pairs, new_agg, true))) {
         LOG_WARN("create aggr failed", K(ret));
       }
       if (OB_FAIL(ret)) {
@@ -388,7 +381,22 @@ int ObLogExpand::find_expr_within_aggr_item(ObAggFunRawExpr *aggr_item, const Ob
   }
   return ret;
 }
-
+int ObLogExpand::replace_op_replaced_exprs(ObRawExprReplacer &replacer)
+{
+  int ret = OB_SUCCESS;
+  if (grouping_set_info_ != NULL) {
+    for (int i = 0; OB_SUCC(ret) && i < grouping_set_info_->replaced_agg_pairs_.count(); i++) {
+      ObRawExpr *&org_agg = grouping_set_info_->replaced_agg_pairs_.at(i).element<0>();
+      ObRawExpr *&new_agg = grouping_set_info_->replaced_agg_pairs_.at(i).element<1>();
+      if (OB_FAIL(replace_expr_action(replacer, org_agg))) {
+        LOG_WARN("replace org agg failed", K(ret));
+      } else if (OB_FAIL(replace_expr_action(replacer, new_agg))) {
+        LOG_WARN("replace new agg failed", K(ret));
+      }
+    }
+  }
+  return ret;
+}
 int ObLogExpand::inner_replace_op_exprs(ObRawExprReplacer &replacer)
 {
   int ret = OB_SUCCESS;
@@ -530,7 +538,8 @@ int ObLogExpand::create_aggr_with_dup_params(ObRawExprFactory &factory, ObAggFun
                                              ObSQLSessionInfo *sess,
                                              const bool use_exist_dup,
                                              ObIArray<DupRawExprPair> &dup_expr_pairs,
-                                             ObAggFunRawExpr *&new_agg)
+                                             ObAggFunRawExpr *&new_agg,
+                                             const bool dup_const /*false*/)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(factory.create_raw_expr(aggr_item->get_expr_type(), new_agg))) {
@@ -551,7 +560,12 @@ int ObLogExpand::create_aggr_with_dup_params(ObRawExprFactory &factory, ObAggFun
         // do nothing
         continue;
       }
-      if (real_param_exprs.at(i)->is_const_expr()) {
+      if (real_param_exprs.at(i)->is_const_expr() && !dup_const) {
+        continue;
+      }
+      if (real_param_exprs.at(i)->get_expr_type() == T_PSEUDO_WINDOW_FUNNEL_TIME ||
+          real_param_exprs.at(i)->get_expr_type() == T_PSEUDO_WINDOW_FUNNEL_EVENT_IDX) {
+        // Skip window_funnel pseudo columns
         continue;
       }
       if (OB_FAIL(build_dup_expr(factory, sess, use_exist_dup, real_param_exprs.at(i), dup_expr_pairs, dup_expr))) {

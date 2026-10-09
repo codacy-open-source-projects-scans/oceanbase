@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SQL_ENGINE_EXPR_OB_EXPR_INSTR_H_
@@ -23,11 +16,25 @@ public:
   ObExprInstr();
   explicit  ObExprInstr(common::ObIAllocator &alloc);
   virtual ~ObExprInstr();
+  // 支持MySQL模式下INSTR函数的第3、4个参数
+  virtual int calc_result_typeN(ObExprResType &type,
+                                ObExprResType *type_array,
+                                int64_t param_num,
+                                common::ObExprTypeCtx &type_ctx) const;
   virtual int cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
                                ObExpr &rt_expr) const;
   static int calc_mysql_instr_expr(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
   static int calc_mysql_instr_expr_vector(VECTOR_EVAL_FUNC_ARG_DECL);
 private:
+  // 提取INSTR函数参数的辅助函数
+  static int calc_mysql_instr_arg(const ObExpr &expr, ObEvalCtx &ctx,
+                                  bool &is_null,
+                                  common::ObDatum *&haystack,
+                                  common::ObDatum *&needle,
+                                  int64_t &pos_int,
+                                  int64_t &occ_int,
+                                  common::ObCollationType &calc_cs_type);
+
   template <typename HaystackVec, typename NeedleVec, typename ResVec>
   static int vector_mysql_instr(const ObExpr &expr,
                          ObEvalCtx &ctx,

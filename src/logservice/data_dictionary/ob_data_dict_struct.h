@@ -1,23 +1,7 @@
 /**
-* Copyright (c) 2022 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*
-* Data Dict Struct Define
-* This file defines Struct of Data Dict
-*
-* NOTICE:
-* Invoker of DataDictStruct should:
-*   - construct DataDictStruct with an allocator
-*     and make sure won't reset the allocator while the dict_struct is in use.
-*   - initialize dict_struct by invoke init interface of each DictStruct
-*/
+ * Copyright (c) 2022 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #ifndef  OCEANBASE_DICT_SERVICE_META_DICT_STRUCT_
 #define  OCEANBASE_DICT_SERVICE_META_DICT_STRUCT_
@@ -41,6 +25,7 @@ namespace oceanbase
 namespace common
 {
 class ObRowkeyInfo;
+class ObISQLClient;
 }
 namespace share
 {
@@ -406,7 +391,8 @@ public:
   bool operator==(const ObDictTableMeta &other) const;
 
 public:
-  int init(const share::schema::ObTableSchema &table_schema, const int64_t schema_version = OB_INVALID_VERSION);
+  int init(const share::schema::ObTableSchema &table_schema, const int64_t schema_version = OB_INVALID_VERSION,
+      common::ObISQLClient *sql_client = nullptr);
   int assign(const ObDictTableMeta &src_table_meta);
 
 public:

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -77,16 +70,6 @@ int ObPxSubCoordMsgProc::on_interrupted(const ObInterruptCode &ic) const
   // 抛出错误码到主处理路程，结束 SQC
   ret = ic.code_;
   LOG_TRACE("sqc received a interrupt and throw out of msg proc", K(ic));
-  return ret;
-}
-
-int ObPxSubCoordMsgProc::on_create_filter_ch_msg(
-    const ObPxCreateBloomFilterChannelMsg &pkt) const
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(sqc_ctx_.bf_ch_provider_.add_msg(pkt))) {
-    LOG_WARN("fail set transmit channel msg to ch provider", K(ret));
-  }
   return ret;
 }
 

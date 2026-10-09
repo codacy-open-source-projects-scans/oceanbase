@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_PC
@@ -532,6 +525,8 @@ int ObConfigInfoInPC::load_influence_plan_config()
     enable_index_merge_ = tenant_config->_enable_index_merge;
     enable_hyperscan_regexp_engine_ =
         (0 == ObString::make_string("Hyperscan").case_compare(tenant_config->_regex_engine.str()));
+    enable_re2_regexp_engine_ =
+        (0 == ObString::make_string("re2").case_compare(tenant_config->_regex_engine.str()));
     enable_parallel_das_dml_ = tenant_config->_enable_parallel_das_dml;
     direct_load_allow_fallback_ = tenant_config->direct_load_allow_fallback;
     default_load_mode_ = ObDefaultLoadMode::get_type_value(tenant_config->default_load_mode.get_value_string());
@@ -548,6 +543,7 @@ int ObConfigInfoInPC::load_influence_plan_config()
     enable_mysql_compatible_dates_ = tenant_config->_enable_mysql_compatible_dates;
     enable_insertup_column_store_opt_ = tenant_config->_enable_insertup_column_store_opt;
     enable_px_task_rebalance_ = tenant_config->_enable_px_task_rebalance;
+    enable_nested_sql_local_optimize_ = tenant_config->_enable_nested_sql_local_optimize;
   }
 
   return ret;
@@ -610,6 +606,9 @@ int ObConfigInfoInPC::serialize_configs(char *buf, int buf_len, int64_t &pos)
                                "%d,", enable_hyperscan_regexp_engine_))) {
     SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(enable_hyperscan_regexp_engine_));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos,
+                               "%d,", enable_re2_regexp_engine_))) {
+    SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(enable_re2_regexp_engine_));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos,
                                "%d,", realistic_runtime_bloom_filter_size_))) {
     SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(realistic_runtime_bloom_filter_size_));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos,
@@ -649,6 +648,8 @@ int ObConfigInfoInPC::serialize_configs(char *buf, int buf_len, int64_t &pos)
     SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(extend_sql_plan_monitor_metrics_));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%d,", enable_px_task_rebalance_))) {
     SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(enable_px_task_rebalance_));
+  } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%d,", enable_nested_sql_local_optimize_))) {
+    SQL_PC_LOG(WARN, "failed to databuff_printf", K(ret), K(enable_nested_sql_local_optimize_));
   } else {
     // do nothing
   }

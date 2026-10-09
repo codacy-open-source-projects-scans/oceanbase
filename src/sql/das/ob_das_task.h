@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_OB_DAS_TASK_H_
@@ -316,7 +309,8 @@ protected:
     {
       /*the first 16 bits are static flags*/
       uint16_t can_part_retry_   : 1;
-      uint16_t flag_reserved_    : 15;
+      uint16_t global_lookup_generated_task_ : 1;// FARM COMPAT WHITELIST
+      uint16_t flag_reserved_    : 14;// FARM COMPAT WHITELIST
       /*the last 16 bits are status masks*/
       uint16_t task_started_     : 1;
       uint16_t in_part_retry_    : 1;

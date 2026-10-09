@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -134,14 +127,14 @@ int ObRenameTableResolver::resolve_rename_action(const ParseNode &rename_action_
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("rename materialized view log is not supported", KR(ret));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "rename materialized view log is");
-        } else if (table_schema->has_mlog_table()) {
-          ret = OB_NOT_SUPPORTED;
-          LOG_WARN("rename table required with materialized view log is not supported", KR(ret));
-          LOG_USER_ERROR(OB_NOT_SUPPORTED, "rename table with materialized view log is");
-        } else if (table_schema->table_referenced_by_fast_lsm_mv()) {
+        } else if (table_schema->required_by_mv_refresh()) {
           ret = OB_NOT_SUPPORTED;
           LOG_WARN("rename table required by materialized view is not supported", KR(ret));
           LOG_USER_ERROR(OB_NOT_SUPPORTED, "rename table required by materialized view is");
+        } else if (table_schema->is_fulltext_dict()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("rename fulltext dictionary table is not supported", KR(ret));
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "rename fulltext dictionary table is");
         }
       }
     }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -96,13 +89,13 @@ int ObDirectLoadMacroBlockEndKeyIterator::init(ObSSTableSecMetaIterator *macro_m
 }
 
 int ObDirectLoadMacroBlockEndKeyIterator::init(ObSSTableSecMetaIterator *macro_meta_iter,
-                                               const ObTabletHandle &tablet_handle)
+                                               const ObTabletTableIterator &tablet_table_iter)
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(init(macro_meta_iter))) {
     LOG_WARN("fail to init macro block end key iterator", KR(ret));
-  } else if (OB_FAIL(tablet_handle_.assign(tablet_handle))) {
-    LOG_WARN("fail to assign tablet handle", KR(ret), K(tablet_handle));
+  } else if (OB_FAIL(tablet_table_iter_.assign(tablet_table_iter))) {
+    LOG_WARN("fail to assign tablet table iterator", KR(ret), K(tablet_table_iter));
   }
   return ret;
 }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -130,7 +123,7 @@ private:
                   ObTableLoadCoordinatorTrans *&trans);
   int init_column_idxs(const common::ObIArray<uint64_t> &column_ids);
   int init_session_ctx_array();
-  int generate_autoinc_params(share::AutoincParam &autoinc_param);
+  int generate_autoinc_params(const uint64_t column_id, share::AutoincParam &autoinc_param);
   int init_sequence();
   void add_to_all_server_event(int ret_code);
   int init_partition_ids(const ObIArray<ObTabletID> &tablet_ids);
@@ -158,6 +151,7 @@ public:
     SessionContext() {}
     ~SessionContext() {}
     share::AutoincParam autoinc_param_;
+    share::AutoincParam random_part_param_;
   };
   SessionContext *session_ctx_array_;
   struct StoreInfo

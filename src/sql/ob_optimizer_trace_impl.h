@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OPTIMIZER_TRACE_IMPL_H
@@ -359,7 +352,7 @@ public:
   int append_format(const char *format, const ARGS&... args);
   int append_lower(const char* msg);
   int append_ptr(const void *ptr);
-  int append(const void *ptr) { return append_ptr(ptr); }
+  int append(const void *ptr);
   int append();
   int append(const bool &value);
   int append(const char* msg);

@@ -1,18 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 
 #include "observer/ob_srv_xlator.h"
-
+#include "observer/ob_rpc_processor_simple.h"
 
 #include "src/observer/table/ob_table_filter.h"
 
@@ -76,10 +69,6 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcBackupLSCleanP, gctx_);
     RPC_PROCESSOR(ObRpcBackupMetaP, gctx_);
     RPC_PROCESSOR(ObRpcBackupFuseTabletMetaP, gctx_);
-#ifdef OB_BUILD_SHARED_STORAGE
-    RPC_PROCESSOR(ObRpcSSHACopyMacroBlocksP, gctx_);
-    RPC_PROCESSOR(ObRpcSSHADeleteMacroBlocksP, gctx_);
-#endif
     RPC_PROCESSOR(ObRpcBackupLSDataResP, gctx_);
     RPC_PROCESSOR(ObRpcBackupCleanLSResP, gctx_);
     RPC_PROCESSOR(ObRpcNotifyArchiveP, gctx_);
@@ -174,6 +163,7 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcGetSSGCDetectInfosP, gctx_);
     RPC_PROCESSOR(ObRpcGetSSGCStartScnItemsP, gctx_);
 #endif
+    RPC_PROCESSOR(ObRpcRefreshFulltextDictP, gctx_);
     RPC_PROCESSOR(ObRebuildTabletP, gctx_);
     RPC_PROCESSOR(ObNotifySharedStorageInfoP, gctx_);
     RPC_PROCESSOR(ObNotifyLogServiceAccessPointP, gctx_);
@@ -185,10 +175,12 @@ void oceanbase::observer::init_srv_xlator_for_storage(ObSrvRpcXlator *xlator) {
     RPC_PROCESSOR(ObRpcStartArchiveP, gctx_);
     RPC_PROCESSOR(ObCheckSysTableSchemaP, gctx_);
     RPC_PROCESSOR(ObWriteInnerTabletP, gctx_);
+    RPC_PROCESSOR(ObRpcBatchGetTabletRandomP, gctx_);
     RPC_PROCESSOR(ObRpcCheckBackupDestRWConsistencyP, gctx_);
     RPC_PROCESSOR(ObRpcCheckBackupDestVaildityP, gctx_);
     RPC_PROCESSOR(ObRpcWriteBackupDestFormatFileP, gctx_);
     RPC_PROCESSOR(ObRpcFetchTabletPhysicalRowCntP, gctx_);
     RPC_PROCESSOR(ObRpcBackupLSValidateP, gctx_);
     RPC_PROCESSOR(ObRpcBackupValidateLSResP, gctx_);
+    RPC_PROCESSOR(ObRpcSyncTabletAutoincSeqCacheP, gctx_);
 }

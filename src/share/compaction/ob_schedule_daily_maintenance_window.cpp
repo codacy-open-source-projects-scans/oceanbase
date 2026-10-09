@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -414,6 +407,30 @@ int ObScheduleDailyMaintenanceWindow::set_thread_count(
       LOG_WARN_RET(trans_ret, "failed to commit trans", KR(ret), K(trans_ret));
       ret = COVER_SUCC(trans_ret);
     }
+  }
+  return ret;
+}
+
+int ObScheduleDailyMaintenanceWindow::set_repeat_interval(
+    ObExecContext &ctx,
+    const uint64_t tenant_id,
+    const common::ObString &repeat_interval_str)
+{
+  int ret = OB_SUCCESS;
+  dbms_scheduler::ObDBMSSchedJobInfo job_info;
+  common::ObObj repeat_interval_obj;
+
+  if (OB_UNLIKELY(!ctx.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(ctx));
+  } else if (OB_FAIL(get_daily_maintenance_window_job_info(ctx, job_info))) {
+    LOG_WARN("failed to get daily maintenance window job info", KR(ret), K(tenant_id));
+  } else if (FALSE_IT(repeat_interval_obj.set_string(ObVarcharType, repeat_interval_str))) {
+  } else if (OB_FAIL(dbms_scheduler::ObDBMSSchedJobUtils::update_dbms_sched_job_info(
+                *ctx.get_sql_proxy(), job_info, ObString("repeat_interval"), repeat_interval_obj))) {
+    LOG_WARN("failed to update repeat_interval", KR(ret), K(tenant_id), K(repeat_interval_str), K(repeat_interval_obj));
+  } else {
+    LOG_INFO("succeed to alter repeat_interval for DAILY_MAINTENANCE_WINDOW", KR(ret), K(tenant_id), K(repeat_interval_str));
   }
   return ret;
 }

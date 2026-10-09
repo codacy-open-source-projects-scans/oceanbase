@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_mock_tx_ctx.h"
@@ -314,7 +307,8 @@ int MockObTxCtx::handle(const ObMail<ObTxMsg>& mail)
                  MonotonicTs::current_time(),
                  msg->expire_ts_,
                  msg->app_trace_info_,
-                 msg->request_id_);
+                 msg->request_id_,
+                 msg->app_trace_id_);
     break;
   }
   case TX_2PC_PREPARE_REQ: {

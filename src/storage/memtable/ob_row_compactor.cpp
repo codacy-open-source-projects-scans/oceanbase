@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_row_compactor.h"
@@ -70,7 +63,7 @@ int ObMemtableRowCompactor::compact(const SCN snapshot_version,
   if (!is_inited_) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(!snapshot_version.is_valid() || SCN::max_scn() == snapshot_version ||
-                         nullptr == memtable_ || memtable_->is_delete_insert_table())) {
+                         nullptr == memtable_)) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(ERROR, "unexpected compact info", K(ret), K(snapshot_version),
                 KPC_(memtable));
@@ -257,7 +250,17 @@ ObMvccTransNode *ObMemtableRowCompactor::construct_compact_node_(const SCN snaps
       } else if (OB_ISNULL(row_header)) {
         ret = OB_ERR_UNEXPECTED;
         STORAGE_LOG(WARN, "Unexpected null row header", K(ret));
-      } else {
+      } else if (memtable_->is_user_tablet()) {
+        bool is_delete_insert = false;
+        ObMergeEngineType row_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN == row_header->get_merge_engine_type() ?
+          memtable_->get_original_merge_engine_type() : row_header->get_merge_engine_type();
+        if (OB_FAIL(check_is_delete_insert_merge(row_merge_engine_type, is_delete_insert))) {
+          STORAGE_LOG(WARN, "failed to check is delete insert merge", K(ret), KPC(row_header));
+        } else if (is_delete_insert) {
+          ret = OB_ITER_END;
+        }
+      }
+      if (OB_SUCC(ret)) {
         rowkey_cnt = row_header->get_rowkey_count();
         compact_datum_row.count_ = rowkey_cnt;
       }
@@ -291,6 +294,7 @@ ObMvccTransNode *ObMemtableRowCompactor::construct_compact_node_(const SCN snaps
           STORAGE_LOG(WARN, "Failed to reserve datum row", K(ret), KPC(datum_row));
       } else {
         compact_datum_row.count_ = MAX(datum_row->get_column_count(), compact_datum_row.count_);
+        compact_datum_row.fuse_merge_engine_type(datum_row->merge_engine_type_);
         if (ObDmlFlag::DF_NOT_EXIST == dml_flag) {
           dml_flag = mtd->dml_flag_;
           compact_datum_row.row_flag_.set_flag(dml_flag);

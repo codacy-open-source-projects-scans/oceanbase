@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the geometry utils abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_GEO_OB_GEO_UTILS_
@@ -46,6 +38,7 @@ enum ObGeoBuildFlag: uint8_t {
   GEO_CHECK_RANGE = 0x10,
   GEO_RESERVE_3D = 0x20, // do not convert 3D Geometry to 2D
   GEO_NOT_COPY_WKB = 0x40, // copy input wkb str to output geo data
+  GEO_CHECK_FINITE = 0x80, // reject NaN/inf coordinates in linestring/ring, only needed when wkb enters OB
   GEO_DEFAULT = GEO_NORMALIZE | GEO_CORRECT | GEO_CHECK_RANGE,
   GEO_ALLOW_3D_DEFAULT = GEO_DEFAULT | GEO_ALLOW_3D,
   GEO_CARTESIAN = GEO_CORRECT,

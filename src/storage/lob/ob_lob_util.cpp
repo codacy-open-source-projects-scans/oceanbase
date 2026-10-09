@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -89,9 +82,10 @@ int ObInsertLobColumnHelper::end_trans(transaction::ObTxDesc *tx_desc,
         LOG_WARN("fail commit trans", K(ret), KPC(tx_desc), K(timeout_ts));
       }
     }
+    transaction::ObTransID tx_id = tx_desc->get_tx_id();
     if (OB_SUCCESS != (tmp_ret = txs->release_tx(*tx_desc))) {
       ret = tmp_ret;
-      LOG_WARN("release tx failed", K(ret), KPC(tx_desc));
+      LOG_WARN("release tx failed", K(ret), K(tx_id));
     }
   }
   return ret;
@@ -178,10 +172,15 @@ int ObInsertLobColumnHelper::insert_lob_column(ObIAllocator &allocator,
           datum.set_lob_data(*lob_param.lob_common_, lob_param.handle_size_);
         }
       }
+      transaction::ObTransID tx_id;
+      if (OB_NOT_NULL(tx_desc)) {
+        tx_id = tx_desc->get_tx_id();
+      }
       if (OB_SUCCESS != (tmp_ret = end_trans(tx_desc, OB_SUCCESS != ret, timeout_ts))) {
         ret = tmp_ret;
-        LOG_WARN("fail to end trans", K(ret), KPC(tx_desc));
+        LOG_WARN("fail to end trans", K(ret), K(tx_id));
       }
+      tx_desc = nullptr;
     }
   }
   return ret;
@@ -219,6 +218,8 @@ int ObInsertLobColumnHelper::insert_lob_column(ObIAllocator &allocator,
                                                const int64_t timeout_ts,
                                                const bool has_lob_header,
                                                const uint64_t src_tenant_id,
+                                               const blocksstable::ObStorageDatum *ttl_datum,
+                                               const ObTTLFilterColType ttl_col_type,
                                                ObLobMetaWriteIter &iter)
 {
   int ret = OB_SUCCESS;
@@ -284,6 +285,9 @@ int ObInsertLobColumnHelper::insert_lob_column(ObIAllocator &allocator,
       lob_param.main_table_rowkey_col_ = !lob_storage_param.is_index_table_ && lob_storage_param.is_rowkey_col_;
       lob_param.src_tenant_id_ = src_tenant_id;
       lob_param.set_tmp_allocator(&lob_allocator);
+      if (ttl_datum != nullptr) {
+        lob_param.lob_ttl_column_info_.init_by_local_datum(*ttl_datum, ttl_col_type);
+      }
       if (!src.is_valid()) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("invalid src lob locator.", K(ret));

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_COMPACTION_TTL_OB_BASE_VERSION_FILTER_H_
@@ -24,8 +17,8 @@ namespace storage
 class ObBaseVersionFilter
 {
 public:
-  ObBaseVersionFilter(ObMDSFilterMgr &mds_filter_mgr)
-      : mds_filter_mgr_(mds_filter_mgr),
+  ObBaseVersionFilter(ObArenaAllocator &filter_allocator)
+      : filter_allocator_(filter_allocator),
         base_version_filter_node_(nullptr),
         base_version_filter_executor_(nullptr),
         schema_rowkey_cnt_(-1),
@@ -41,9 +34,6 @@ public:
   // for query reuse
   void reuse();
   int switch_info(ObTablet &tablet, const ObVersionRange &read_version_range);
-
-  // for destory self
-  OB_INLINE ObMDSFilterMgr &get_mds_filter_mgr() const { return mds_filter_mgr_; }
 
   int filter(const blocksstable::ObDatumRow &row, bool &filtered) const;
 
@@ -62,7 +52,7 @@ private:
                                             const int64_t base_version);
 
 private:
-  ObMDSFilterMgr &mds_filter_mgr_;
+  ObArenaAllocator &filter_allocator_;
 
   // base version filter node and executor
   sql::ObBaseVersionFilterNode *base_version_filter_node_;
@@ -77,10 +67,8 @@ class ObBaseVersionFilterFactory
 public:
   static int build_base_version_filter(ObTablet &tablet,
                                        const common::ObVersionRange &read_version_range,
-                                       ObMDSFilterMgr &mds_filter_mgr,
+                                       ObArenaAllocator &filter_allocator,
                                        ObBaseVersionFilter *&base_version_filter);
-
-  static void destroy_base_version_filter(ObBaseVersionFilter *&base_version_filter);
 };
 
 }

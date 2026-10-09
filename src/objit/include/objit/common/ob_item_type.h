@@ -1,13 +1,6 @@
 	/**
-	 * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_ITEM_TYPE_H_
@@ -993,7 +986,7 @@ typedef enum ObItemType
   T_FUN_CK_RAND_CANONICAL = 1940,
   T_FUN_SYS_LOAD_FILE = 1941,
   T_FUN_SYS_AI_PARSE_DOCUMENT = 1942,
-  T_FUN_SYS_SEARCH_INDEX_INNER_PATH = 1943,
+T_FUN_SYS_SEARCH_INDEX_INNER_PATH = 1943,
   T_FUN_SYS_SEARCH_INDEX_INNER_VALUE = 1944,
   T_FUN_CK_TO_TYPE_NAME = 1945,
   T_FUN_SYS_TO_FLOAT64_OR_NULL = 1946,
@@ -1001,6 +994,11 @@ typedef enum ObItemType
   T_FUN_SYS_NLS_CHARSET_ID = 1948,
   T_FUN_SYS_AUDIT_LOG_PASSWORD_SET = 1949,
   T_FUN_SYS_AUDIT_LOG_PASSWORD_GET = 1950,
+  T_FUN_SYS_RANDOM_PART_NEXTVAL = 1951,
+  T_FUN_SYS_GET_ROUTINE_PARAM_TYPE_STR = 1952,
+  T_FUN_SYS_TO_MONDAY = 1953,
+  T_FUN_SYS_NCHR = 1954,
+  T_FUN_SYS_SPLIT_BY_STRING = 1955,
 
   ///< @note add new sys function type before this line
   T_FUN_SYS_END = 2000,
@@ -1101,7 +1099,9 @@ typedef enum ObItemType
   T_FUN_SYS_INNER_COLLATION_TYPE_TO_CHARSET = 2103,
   T_FUN_SYS_INNER_COLLATION_TYPE_TO_COLLATION = 2104,
   T_FUN_SYS_IMAGE_TYPE = 2105,
-
+  T_FUN_AVG_WEIGHTED = 2106,
+  T_FUN_STRING_AGG = 2107,
+  T_FUN_RETENTION = 2108, // FARM COMPAT WHITELIST
   T_MAX_OP = 3000,
 
   //pseudo column, to mark the group iterator id
@@ -1124,6 +1124,7 @@ typedef enum ObItemType
   T_PSEUDO_RELEVANCE_SCORE = 3042, // relecance score for sparse retireval
   T_PSEUDO_EXTERNAL_FILE_URL = 3043,
   T_PSEUDO_DDL_SLICE_ID = 3044,
+
   T_PSEUDO_HIDDEN_CLUSTERING_KEY = 3045,
   T_PSEUDO_WINDOW_FUNNEL_TIME = 3046,
   T_PSEUDO_WINDOW_FUNNEL_EVENT_IDX = 3047,
@@ -3070,6 +3071,29 @@ typedef enum ObItemType
   T_SEARCH_INDEX_INCLUDE_PATHS = 4974,
   T_SEARCH_INDEX_EXCLUDE_PATHS = 4975,
   T_SEARCH_INDEX_INCLUDE_TYPES = 4976,
+  T_SET_STORAGE_CACHE_POLICY_STATUS = 4977,
+
+  T_EXTERNAL_LANGUAGE = 4978,  // for Oracle external language parse node
+  T_ALTER_SUBPARTITION_REORGANIZE = 4979,
+  T_ALTER_SUBPARTITION_SPLIT = 4980,
+
+  T_FULLTEXT_DICT = 4981,
+  T_REFRESH_FULLTEXT_DICT = 4982,
+  T_SET_RETURNING_FUNCTION = 4983,
+
+  // outline binding rule
+  T_BINDING_RULE_CLAUSE = 4984,
+  T_BINDING_RULE_SCOPE = 4985,
+  T_BINDING_RULE_MAP = 4986,
+  T_BINDING_RULE_MAP_ITEM = 4987,
+  T_PARSER_ANALYSIS = 4988,  // for fulltext index WITH PARSER analyzer analysis JSON
+  T_VERIFY_NOWAIT = 4989,
+  T_EXTERNAL_FILE_GLOB_PATTERN = 4990,
+  T_EXPORT_CSV_HEADER = 4991,
+
+  // HMS SERVICE PRINCIPAL
+  T_HMS_PRINCIPAL = 4992,
+  T_SP_ASYNC_COMMIT = 4993,
 
   T_MAX //Attention: add a new type before T_MAX
 } ObItemType;
@@ -3240,6 +3264,8 @@ extern const char *get_type_name(int type);
                          (op) == T_FUN_SYS_RB_OR_CARDINALITY_AGG ||\
                          (op) == T_FUN_SYS_RB_AND_CARDINALITY_AGG ||\
                          (op) == T_FUNC_SYS_ARRAY_AGG ||\
+                         (op) == T_FUN_SYS_EXT_MIN ||\
+                         (op) == T_FUN_SYS_EXT_MAX ||\
                          ((op) >= T_FUN_SYS_BIT_AND && (op) <= T_FUN_SYS_BIT_XOR) || \
                          (op) == T_FUN_INNER_PREFIX_MAX || \
                          (op) == T_FUN_INNER_PREFIX_MIN || \
@@ -3247,7 +3273,9 @@ extern const char *get_type_name(int type);
                          ((op) >= T_FUN_ARG_MIN && (op) <= T_FUN_ARG_MAX) || \
                          (op) == T_FUN_ANY || \
                          (op) == T_FUN_ARBITRARY || \
+                         (op) == T_FUN_AVG_WEIGHTED || \
                          (op) == T_FUN_SYS_COUNT_INROW || \
+                         (op) == T_FUN_STRING_AGG || \
                          ((op) >= T_FUN_CK_GROUPCONCAT && (op) <= T_FUN_CK_UNIQ) || \
                          (op) == T_FUN_WINDOW_FUNNEL || \
                          (op) == T_FUN_SYS_EXT_MIN || \

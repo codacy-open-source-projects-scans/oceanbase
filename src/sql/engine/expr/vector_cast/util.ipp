@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include "sql/engine/expr/ob_datum_cast.h"
 
@@ -158,7 +151,7 @@ struct DecintRangeChecker
           int &cast_ret = CM_IS_ERROR_ON_FAIL(expr.extra_) ? ret : warning;
           const ResType val = *reinterpret_cast<const ResType *>(res_vec_->get_payload(idx));
           int cmp_min = val >= min_v_ ? 1 : -1;
-          int cmp_max = val >= max_v_ ? 1 : -1;
+          int cmp_max = val > max_v_ ? 1 : -1;
           if (cmp_min >= 0 && cmp_max <= 0) {
             // do nothing
           } else if (lib::is_oracle_mode()) {

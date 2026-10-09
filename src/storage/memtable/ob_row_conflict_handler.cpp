@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX TRANS
 #include "storage/tx/ob_trans_define.h"
@@ -43,6 +36,9 @@ int ObRowConflictHandler::check_row_locked(const storage::ObTableIterParam &para
       if ((by_myself && lock_state.lock_trans_id_ == my_tx_id)
           || (!by_myself && lock_state.lock_trans_id_ != my_tx_id)) {
         ret = OB_TRY_LOCK_ROW_CONFLICT;
+        if (REACH_TIME_INTERVAL(1000 * 1000)) {
+          TRANS_LOG(WARN, "meet lock conflict on check_row_locked", K(ret), K(my_tx_id), K(lock_state));
+        }
         if (post_lock) {
           post_row_read_conflict(acc_ctx,
                                  rowkey.get_store_rowkey(),
@@ -56,6 +52,9 @@ int ObRowConflictHandler::check_row_locked(const storage::ObTableIterParam &para
       }
     } else if (max_trans_version > snapshot_version) {
       ret = OB_TRANSACTION_SET_VIOLATION;
+      if (REACH_TIME_INTERVAL(1000 * 1000)) {
+        TRANS_LOG(WARN, "meet tsc on check_row_locked", K(ret), K(my_tx_id), K(max_trans_version), K(snapshot_version));
+      }
     }
   }
   return ret;
@@ -205,7 +204,7 @@ int ObRowConflictHandler::check_foreign_key_constraint_for_memtable(ObMvccAccess
     } else if (!lock_state.is_locked_ && lock_state.trans_version_ > snapshot_version) {
       ret = OB_TRANSACTION_SET_VIOLATION;
       if (REACH_TIME_INTERVAL(1000 * 1000)) {
-        TRANS_LOG(WARN, "meet tsc on memtable", K(ret), K(lock_state.trans_version_), K(snapshot_version));
+        TRANS_LOG(WARN, "meet tsc on memtable", K(ret), K(my_tx_id), K(lock_state.trans_version_), K(snapshot_version));
       }
     }
   }
@@ -226,7 +225,7 @@ int ObRowConflictHandler::check_foreign_key_constraint_for_sstable(ObTxTableGuar
   if (!data_trans_id.is_valid()) {
     if (trans_version > snapshot_version) {
       ret = OB_TRANSACTION_SET_VIOLATION;
-      TRANS_LOG(WARN, "meet tsc on sstable", K(ret), K(trans_version), K(snapshot_version));
+      TRANS_LOG(WARN, "meet tsc on sstable", K(ret), K(read_trans_id), K(trans_version), K(snapshot_version));
     }
   } else {
     ObTxTable *tx_table = nullptr;
@@ -245,7 +244,7 @@ int ObRowConflictHandler::check_foreign_key_constraint_for_sstable(ObTxTableGuar
     } else if (!lock_state.is_locked_ && lock_state.trans_version_.get_val_for_tx() > snapshot_version) {
       ret = OB_TRANSACTION_SET_VIOLATION;
       if (REACH_TIME_INTERVAL(1000 * 1000)) {
-        TRANS_LOG(WARN, "meet tsc on sstable", K(ret), K(lock_state.trans_version_), K(snapshot_version));
+        TRANS_LOG(WARN, "meet tsc on sstable", K(ret), K(read_trans_id), K(lock_state.trans_version_), K(snapshot_version));
       }
     }
   }

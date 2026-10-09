@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_DDL_REPLAY_EXECUTOR_H
@@ -143,6 +136,15 @@ private:
       const ObDDLMacroBlockRedoInfo &redo_info,
       const ObTabletHandle &tablet_handle,
       bool &can_skip);
+  // Pre-check the downstream container capacity (ddl kv slot for inc major, memtable
+  // slot for inc minor) before writing a macro block on disk during replay. If the
+  // downstream is full, fail fast with OB_EAGAIN so the macro block is not allocated.
+  // Otherwise each replay retry would write a macro block that the downstream cannot
+  // accept, exhausting datafile until the 30s background block GC catches up.
+  // See workitem 2026033000115020192.
+  int precheck_inc_ddl_capacity_(
+      ObTabletHandle &tablet_handle,
+      const ObDirectLoadType direct_load_type);
 private:
   const ObDDLRedoLog *log_;
 };
@@ -258,10 +260,8 @@ protected:
   // @return other error codes, failed to replay.
   int do_replay_(ObTabletHandle &handle) override;
 private:
-  int update_tablet_meta_for_cs_replica_(ObTabletHandle &tablet_handle,
-                                         ObCSReplicaDDLReplayStatus &updated_ddl_replay_status);
   int update_storage_schema_to_tablet(ObTabletHandle &tablet_handle,
-                                      const ObCSReplicaDDLReplayStatus &ddl_replay_status);
+                                      const share::SCN &inc_major_replay_scn);
 
 private:
   common::ObTabletID tablet_id_;
@@ -284,7 +284,8 @@ public:
            const uint64_t data_format_version,
            const bool is_rollback,
            const bool is_co_sstable,
-           const ObString &inc_major_buffer);
+           const ObString &inc_major_buffer,
+           const share::SCN &start_scn);
 
 protected:
   // replay to the tablet
@@ -307,6 +308,7 @@ private:
   bool is_rollback_;
   bool is_co_sstable_;
   ObString inc_major_buffer_;
+  share::SCN start_scn_;
 };
 
 class ObSplitStartReplayExecutor final : public ObDDLReplayExecutor
@@ -349,13 +351,6 @@ protected:
   virtual int do_replay_(ObTabletHandle &handle) override;
 
 private:
-  int check_need_wait_split_finished(
-      const share::ObLSID &ls_id,
-      const ObTabletHandle &handle,
-      const ObIArray<ObTabletID> &dest_tablets_id,
-      bool &need_wait_split_finished);
-
-private:
   const ObTabletSplitStartLog *log_;
 };
 
@@ -382,7 +377,6 @@ private:
       const ObIArray<ObTabletID> &dest_tablet_ids,
       const ObTabletHandle &src_tablet_handle,
       ObLS* ls);
-private:
   const ObTabletSplitFinishLog *log_;
 };
 

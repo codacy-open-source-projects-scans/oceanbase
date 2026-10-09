@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 int create_ls(const share::ObLSID &ls_id,
@@ -207,6 +200,11 @@ int handle_ask_tx_state_for_4377(const ObAskTxStateFor4377Msg &msg,
                                  bool &is_alive);
 
 int check_ls_status(const share::ObLSID &ls_id);
+// Check whether the ObLSTxCtxMgr of ls_id still exists in the global map.
+// Used to detect an old ls incarnation whose ObLS::destroy() (which removes the
+// tx ctx mgr by ls_id) has not finished yet, so that a re-create of the same
+// ls_id can keep waiting instead of racing with the trailing teardown.
+int check_ls_tx_ctx_mgr_exist(const share::ObLSID &ls_id, bool &exist);
 int tx_sanity_check(ObTxDesc &tx);
 
 // for dblink tx promotion
@@ -331,7 +329,8 @@ int local_ls_commit_tx_(const ObTransID &tx_id,
                         const share::SCN commit_start_scn,
                         const int64_t epoch,
                         share::SCN &commit_version,
-                        const common::ObAddr &caller);
+                        const common::ObAddr &caller,
+                        const common::ObString &app_trace_id);
 int get_tx_state_from_tx_table_(const share::ObLSID &lsid,
                                 const ObTransID &tx_id,
                                 int64_t &state,
@@ -357,7 +356,8 @@ int sub_prepare_local_ls_(const ObTransID &tx_id,
                           const int64_t &expire_ts,
                           const common::ObString & app_trace_info,
                           const int64_t &request_id,
-                          const ObXATransID &xid);
+                          const ObXATransID &xid,
+                          const common::ObString &app_trace_id);
 int handle_sub_prepare_timeout_(ObTxDesc &tx, const int64_t delay);
 int handle_sub_rollback_timeout_(ObTxDesc &tx, const int64_t delay);
 int handle_sub_commit_timeout_(ObTxDesc &tx, const int64_t delay);

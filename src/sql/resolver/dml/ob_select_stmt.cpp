@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -25,14 +18,17 @@ int SelectItem::deep_copy(ObIRawExprCopier &expr_copier,
   int ret = OB_SUCCESS;
   if (OB_FAIL(expr_copier.copy(other.expr_, expr_))) {
     LOG_WARN("failed to copy expr", K(ret));
+  } else if (OB_FAIL(questions_pos_.assign(other.questions_pos_))){
+    LOG_WARN("failed to assign questions_pos_", K(ret));
+  } else if (OB_FAIL(params_idx_.assign(other.params_idx_))){
+    LOG_WARN("failed to assign params_idx_", K(ret));
+  } else if (OB_FAIL(neg_param_idx_.assign(other.neg_param_idx_))){
+    LOG_WARN("failed to assign neg_param_idx_", K(ret));
   } else {
     is_real_alias_ = other.is_real_alias_;
     alias_name_ = other.alias_name_;
     paramed_alias_name_ = other.paramed_alias_name_;
     expr_name_ = other.expr_name_;
-    questions_pos_ = other.questions_pos_;
-    params_idx_ = other.params_idx_;
-    neg_param_idx_ = other.neg_param_idx_;
     esc_str_flag_ = other.esc_str_flag_;
     need_check_dup_name_ = other.need_check_dup_name_;
     implicit_filled_ = other.implicit_filled_;
@@ -147,7 +143,9 @@ bool ObSelectStmt::has_concat_agg() const
             T_FUN_JSON_OBJECTAGG == aggr->get_expr_type() ||
             T_FUN_ORA_JSON_OBJECTAGG == aggr->get_expr_type() ||
             T_FUN_ORA_XMLAGG == aggr->get_expr_type() ||
-            T_FUNC_SYS_ARRAY_AGG == aggr->get_expr_type();
+            T_FUNC_SYS_ARRAY_AGG == aggr->get_expr_type() ||
+            T_FUN_WINDOW_FUNNEL == aggr->get_expr_type();
+
     }
   }
   return has;

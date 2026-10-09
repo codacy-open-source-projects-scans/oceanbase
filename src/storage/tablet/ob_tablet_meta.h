@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TABLET_OB_TABLET_META
@@ -182,7 +175,8 @@ public:
                K_(ddl_replay_status),
                K_(split_info),
                K_(has_merged_with_mds_info),
-               K_(inc_major_snapshot));
+               K_(inc_major_snapshot),
+               K_(inc_major_replay_scn));
 
 public:
   int32_t version_; // alignment: 4B, size: 4B
@@ -239,7 +233,7 @@ public:
   // | TRUE                 | FALSE                            | CS_REPLICA_VISIBLE_AND_REPLAY_ROW    |
   // | TRUE                 | TRUE                             | CS_REPLICA_VISIBLE_AND_REPLAY_COLUMN |
   // + -------------------- + --------------------------------- + ----------------------------------- +
-  ObCSReplicaDDLReplayStatus ddl_replay_status_;
+  ObCSReplicaDDLReplayStatus ddl_replay_status_; // only used for full direct load and ddl load
   //ATTENTION : Add a new variable need consider ObMigrationTabletParam
   // and tablet meta init interface for migration.
   // yuque :
@@ -251,6 +245,7 @@ public:
   bool has_merged_with_mds_info_; // be True after first major with mds info
   int64_t inc_major_snapshot_; // recording the latest inc major merge snapshot
   int32_t min_ss_flush_op_id_; // the min referenced flush op id in local tablet
+  share::SCN inc_major_replay_scn_; // alignment: 8B, size: 8B, only used for inc major direct load
 private:
   void update_extra_medium_info(
       const compaction::ObMergeType merge_type,
@@ -346,7 +341,10 @@ public:
                K_(split_info),
                K_(has_merged_with_mds_info),
                K_(min_ss_tablet_version),
-               K_(inc_major_snapshot));
+               K_(inc_major_snapshot),
+               K_(inc_major_replay_scn),
+               K_(mock_rowkey_cg_schema),
+               K_(mock_single_cg_schema));
 private:
   int deserialize_v2_v3(const char *buf, const int64_t len, int64_t &pos);
   int deserialize_v1(const char *buf, const int64_t len, int64_t &pos);
@@ -407,8 +405,16 @@ public:
 
   share::SCN min_ss_tablet_version_;
   int64_t inc_major_snapshot_; // recording the latest inc major merge snapshot
+  share::SCN inc_major_replay_scn_;
+  // used for online row col switch
+  ObStorageColumnGroupSchema mock_rowkey_cg_schema_;
+  ObStorageColumnGroupSchema mock_single_cg_schema_;
   // Add new serialization member before this line, below members won't serialize
   common::ObArenaAllocator allocator_; // for storage schema
+private:
+  int serialize_mock_cg_schemas_(char *buf, const int64_t buf_len, int64_t &pos) const;
+  int deserialize_mock_cg_schemas_(const char *buf, const int64_t data_len, int64_t &pos);
+  int64_t get_mock_cg_schemas_serialize_size_() const;
 };
 
 } // namespace storage

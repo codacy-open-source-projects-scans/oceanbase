@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RPC_OBMYSQL
@@ -368,7 +361,17 @@ int Ob20ProtocolProcessor::decode_new_extra_info(const Ob20ProtocolHeader &hdr,
         } else if (FALSE_IT(pos -= sizeof(int16_t))) {
           // do nothing, reset pos to original
         } else if (extra_id <= OBP20_PROXY_MAX_TYPE || extra_id >= OBP20_SVR_END) {
-          // invalid extra_id, skip it
+          // unknown extra_id, skip type + len + value to avoid infinite loop
+          int32_t skip_len = 0;
+          if (OB_FAIL(ObProtoTransUtil::resolve_type_and_len(buf, len, pos, extra_id, skip_len))) {
+            LOG_WARN("failed to skip unknown extra info", K(ret), K(extra_id));
+          } else if (skip_len < 0 || pos + skip_len > len) {
+            ret = OB_SIZE_OVERFLOW;
+            LOG_WARN("invalid skip_len for unknown extra info", K(ret), K(extra_id), K(skip_len), K(pos), K(len));
+          } else {
+            pos += skip_len;
+            LOG_DEBUG("skip unknown extra info type", K(extra_id), K(skip_len));
+          }
         } else if (OB_ISNULL(svr_decoders_[extra_id-OBP20_PROXY_MAX_TYPE-1])) {
           ret = OB_ERR_UNEXPECTED;
           LOG_ERROR("get a null encoder", K(extra_id), K(extra_id-OBP20_PROXY_MAX_TYPE-1), K(ret));

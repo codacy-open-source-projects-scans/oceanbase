@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
 
 #include "share/schema/ob_table_dml_param.h"
 #include "storage/access/ob_multiple_scan_merge.h"
 #include "storage/access/ob_single_merge.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "storage/direct_load/ob_direct_load_datum_row.h"
 #include "storage/direct_load/ob_direct_load_row_iterator.h"
 #include "storage/direct_load/ob_direct_load_struct.h"
@@ -24,6 +18,7 @@ namespace storage
 {
 class ObDirectLoadOriginTableScanner;
 class ObDirectLoadOriginTableGetter;
+class ObTabletTableIterator;
 
 struct ObDirectLoadOriginTableCreateParam
 {
@@ -36,6 +31,7 @@ public:
                K_(ls_id),
                K_(tx_id),
                K_(tx_seq),
+               K_(snapshot_version),
                K_(rowkey_column_num),
                KP_(col_descs));
 public:
@@ -44,6 +40,7 @@ public:
   share::ObLSID ls_id_;
   transaction::ObTransID tx_id_;
   transaction::ObTxSEQ tx_seq_;
+  int64_t snapshot_version_;
   int64_t rowkey_column_num_;
   const common::ObIArray<share::schema::ObColDesc> *col_descs_;
 };
@@ -59,6 +56,7 @@ public:
                K_(ls_id),
                K_(tx_id),
                K_(tx_seq),
+               K_(snapshot_version),
                K_(rowkey_column_num),
                KP_(col_descs));
 public:
@@ -67,6 +65,7 @@ public:
   share::ObLSID ls_id_;
   transaction::ObTransID tx_id_;
   transaction::ObTxSEQ tx_seq_;
+  int64_t snapshot_version_;
   int64_t rowkey_column_num_;
   const common::ObIArray<share::schema::ObColDesc> *col_descs_;
 };
@@ -90,7 +89,7 @@ public:
   bool is_valid() const { return is_inited_; }
   const ObDirectLoadOriginTableMeta &get_meta() const {return meta_; }
   int get_tablet_handle(ObTabletHandle &tablet_handle) const;
-  int get_major_and_ddl_sstable(ObTabletHandle &tablet_handle,
+  int get_major_and_ddl_sstable(ObTabletTableIterator &tablet_table_iter,
     blocksstable::ObSSTable *&major_sstable,
     common::ObIArray<blocksstable::ObSSTable *> &ddl_sstables) const;
 
@@ -123,7 +122,7 @@ protected:
   ObTableAccessParam table_access_param_;
   ObStoreCtx store_ctx_;
   ObTableAccessContext table_access_ctx_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   ObDirectLoadDatumRow datum_row_;
   static const int64_t TABLET_HANDLE_REFRESH_INTERVAL = 10LL * 60LL * 1000LL * 1000LL; // 10min
   int64_t tablet_handle_refresh_time_;

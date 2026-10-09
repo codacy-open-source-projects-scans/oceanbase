@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -203,6 +196,7 @@ ObSqlCtx::ObSqlCtx()
     flashback_query_expr_(nullptr),
     is_execute_call_stmt_(false),
     enable_sql_resource_manage_(false),
+    enable_database_isolation_mode_(false),
     resource_map_rule_(),
     is_text_ps_mode_(false),
     first_plan_hash_(0),
@@ -258,6 +252,7 @@ void ObSqlCtx::reset()
   can_reroute_sql_ = false;
   is_sensitive_ = false;
   enable_sql_resource_manage_ = false;
+  enable_database_isolation_mode_ = false;
   resource_map_rule_.reset();
   is_protocol_weak_read_ = false;
   first_plan_hash_ = 0;
@@ -278,6 +273,8 @@ void ObSqlCtx::reset()
   is_text_ps_mode_ = false;
   enable_strict_defensive_check_ = false;
   enable_user_defined_rewrite_ = false;
+  is_from_pl_ = false;
+  is_ps_cursor_ = false;
   is_bulk_ = false;
   ins_opt_ctx_.reset();
   ccl_rule_id_ = 0;
@@ -393,7 +390,7 @@ int ObSqlSchemaGuard::get_table_schema(uint64_t dblink_id,
   int ret = OB_SUCCESS;
   int64_t schema_count = table_schemas_.count();
   table_schema = NULL;
-  const uint64_t tenant_id = MTL_ID();
+  const uint64_t tenant_id = get_tenant_id();
   for (int64_t i = 0; OB_SUCC(ret) && OB_ISNULL(table_schema) && i < schema_count; i++) {
     // database_name和table_name直接调用compare接口，使用memcmp语义比较，避免多字符集导致各种问题。
     const ObTableSchema *tmp_schema = table_schemas_.at(i);
@@ -652,7 +649,7 @@ int ObSqlSchemaGuard::get_table_schema(uint64_t table_id,
       LOG_WARN("failed to get mocked table schema", K(table_id), K(ret));
     }
   } else {
-    const uint64_t tenant_id = MTL_ID();
+    const uint64_t tenant_id = get_tenant_id();
     OV (OB_NOT_NULL(schema_guard_));
     OZ (schema_guard_->get_table_schema(tenant_id, table_id, table_schema), table_id, is_link);
   }
@@ -713,7 +710,7 @@ int ObSqlSchemaGuard::get_database_schema(const uint64_t database_id,
                                           const ObDatabaseSchema *&database_schema)
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = MTL_ID();
+  const uint64_t tenant_id = get_tenant_id();
   if (OB_FAIL(get_database_schema(tenant_id, database_id, database_schema))) {
     LOG_WARN("failed to get database schema", K(ret), K(tenant_id), K(database_id));
   }
@@ -962,7 +959,7 @@ int ObSqlSchemaGuard::get_column_schema(uint64_t table_id, const ObString &colum
     }
   } else {
     // first get table_schema, than try mock column_schema for part id
-    const uint64_t tenant_id = MTL_ID();
+    const uint64_t tenant_id = get_tenant_id();
     const ObTableSchema *table_schema = NULL;
     OV (OB_NOT_NULL(schema_guard_));
     OV ((OB_INVALID_ID != table_id && !column_name.empty()));
@@ -993,7 +990,7 @@ int ObSqlSchemaGuard::get_column_schema(uint64_t table_id, uint64_t column_id,
     }
   } else {
     // first get table_schema, than try mock column_schema for part id
-    const uint64_t tenant_id = MTL_ID();
+    const uint64_t tenant_id = get_tenant_id();
     const ObTableSchema *table_schema = NULL;
     OV (OB_NOT_NULL(schema_guard_));
     OV ((OB_INVALID_ID != table_id && OB_INVALID_ID != column_id));
@@ -1012,7 +1009,7 @@ int ObSqlSchemaGuard::get_table_schema_version(const uint64_t table_id,
                                                int64_t &schema_version) const
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = MTL_ID();
+  const uint64_t tenant_id = get_tenant_id();
   OV (OB_NOT_NULL(schema_guard_));
   OZ (schema_guard_->get_schema_version(TABLE_SCHEMA, tenant_id, table_id, schema_version), table_id);
   return ret;
@@ -1028,7 +1025,7 @@ int ObSqlSchemaGuard::get_can_read_index_array(uint64_t table_id,
                                                  bool with_vector_index)
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = MTL_ID();
+  const uint64_t tenant_id = get_tenant_id();
   if (is_external_object_id(table_id)) {
     size = 0;
   } else {
@@ -1045,7 +1042,7 @@ int ObSqlSchemaGuard::get_table_mlog_schema(const uint64_t table_id,
                                             const ObTableSchema *&mlog_schema)
 {
   int ret = OB_SUCCESS;
-  const uint64_t tenant_id = MTL_ID();
+  const uint64_t tenant_id = get_tenant_id();
   OV (OB_NOT_NULL(schema_guard_));
   OZ (schema_guard_->get_table_mlog_schema(tenant_id, table_id, mlog_schema));
   return ret;
@@ -1182,6 +1179,17 @@ int ObSqlSchemaGuard::get_lake_table_metadata(const uint64_t tenant_id,
     LOG_WARN("get null lake_table_metadata", K(ret));
   }
   return ret;
+}
+
+uint64_t ObSqlSchemaGuard::get_tenant_id() const
+{
+  uint64_t tenant_id = MTL_ID();
+  if (OB_INVALID_TENANT_ID != tenant_id) {
+    // do nothing
+  } else if (NULL != schema_guard_) {
+    tenant_id = schema_guard_->get_tenant_id();
+  }
+  return tenant_id;
 }
 
 int ObSqlCtx::set_partition_infos(const ObTablePartitionInfoArray &info, ObIAllocator &allocator)

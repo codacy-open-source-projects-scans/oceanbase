@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ALLOCATOR_OB_TENANT_VECTOR_ALLOCATOR_H_
@@ -65,6 +58,8 @@ public:
   int64_t get_left_pre_alloc_size();
   int64_t get_pre_alloc_mem_size() const { return pre_alloc_mem_size_; }
 
+  /// Tenant total memory threshold for small vs large default percentage split in get_vector_mem_limit_percentage().
+  static constexpr int64_t SMALL_TENANT_MEMORY_LIMIT_BYTES = 8LL * 1024 * 1024 * 1024;
   static void get_vector_mem_config(int64_t &resource_limit, int64_t &max_duration);
   static int64_t get_vector_mem_limit_percentage(omt::ObTenantConfigGuard &tenant_config, uint64_t tenant_id = MTL_ID());
   TO_STRING_KV(K(is_inited_), KP(throttle_tool_), KP(memory_context_.ref_context()), K_(pre_alloc_mem_size));

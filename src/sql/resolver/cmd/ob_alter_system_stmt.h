@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_RESOLVER_CMD_OB_ALTER_SYSTEM_STMT_
@@ -427,6 +420,25 @@ public:
   TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(rpc_arg));
 private:
   obrpc::ObAdminRefreshSchemaArg rpc_arg_;
+};
+
+class ObRefreshFulltextDictStmt : public ObSystemCmdStmt
+{
+public:
+  ObRefreshFulltextDictStmt() : ObSystemCmdStmt(stmt::T_REFRESH_FULLTEXT_DICT),
+                                 database_name_(),
+                                 table_name_() {}
+  virtual ~ObRefreshFulltextDictStmt() {}
+
+  const ObString &get_database_name() const { return database_name_; }
+  const ObString &get_table_name() const { return table_name_; }
+  void set_database_name(const ObString &database_name) { database_name_ = database_name; }
+  void set_table_name(const ObString &table_name) { table_name_ = table_name; }
+
+  TO_STRING_KV(N_STMT_TYPE, ((int)stmt_type_), K_(database_name), K_(table_name));
+private:
+  ObString database_name_;
+  ObString table_name_;
 };
 
 class ObRefreshMemStatStmt : public ObSystemCmdStmt

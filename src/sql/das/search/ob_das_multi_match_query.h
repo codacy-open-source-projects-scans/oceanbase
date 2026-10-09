@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_DAS_MULTI_MATCH_QUERY_H_
@@ -36,7 +29,8 @@ public:
       minimum_should_match_(nullptr),
       type_(nullptr),
       field_boosts_(alloc),
-      ir_ctdef_indices_(alloc)
+      ir_ctdef_indices_(alloc),
+      is_msm_unresolved_expr_(false)
   {
     set_is_scoring(true);
   }
@@ -48,7 +42,8 @@ public:
       KPC_(minimum_should_match),
       KPC_(type),
       K_(ir_ctdef_indices),
-      K_(field_boosts));
+      K_(field_boosts),
+      K_(is_msm_unresolved_expr));
 
   ObDASIRScanCtDef *get_ir_ctdef(const int64_t idx) const
   {
@@ -65,6 +60,7 @@ public:
   ObExpr *type_;
   ExprFixedArray field_boosts_;
   ObFixedArray<int64_t, ObIAllocator> ir_ctdef_indices_;
+  bool is_msm_unresolved_expr_;
 };
 
 struct ObDASMultiMatchRtDef : ObIDASSearchRtDef

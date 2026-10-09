@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_MULTIPLE_MERGE_
@@ -25,7 +18,6 @@
 #include "storage/tablet/ob_table_store_util.h"
 #include "lib/stat/ob_diagnose_info.h"
 #include "ob_table_access_context.h"
-#include "storage/meta_mem/ob_tablet_handle.h"
 #include "storage/lob/ob_lob_data_reader.h"
 #include "storage/access/ob_di_base_sstable_row_scanner.h"
 
@@ -34,6 +26,7 @@ namespace oceanbase
 namespace storage
 {
 class ObBlockRowStore;
+struct ObTabletReadTables;
 class ObMultipleMerge : public ObQueryRowIterator
 {
 public:
@@ -52,15 +45,15 @@ public:
   virtual int init(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param);
+      ObTabletReadTables &tablet_read_tables);
   virtual int switch_param(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param);
+      ObTabletReadTables &tablet_read_tables);
   virtual int switch_table(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param);
+      ObTabletReadTables &tablet_read_tables);
   virtual int get_next_row(blocksstable::ObDatumRow *&row);
   virtual int get_next_rows(int64_t &count, int64_t capacity) override;
   virtual void reset();
@@ -77,6 +70,7 @@ public:
   void disable_output_row_with_nop() { need_output_row_with_nop_ = false; }
   OB_INLINE bool is_inited() { return inited_; }
   OB_INLINE bool is_read_memtable_only() const { return read_memtable_only_; }
+  OB_INLINE bool exist_ddl_kv() const { return exist_ddl_kv_; }
   OB_INLINE const common::ObIArray<share::schema::ObColDesc> &get_out_project_cells() { return out_project_cols_; }
   OB_INLINE ObNopPos &get_nop_pos() { return nop_pos_; }
   OB_INLINE void set_iter_del_row(const bool iter_del_row) { iter_del_row_ = iter_del_row; }
@@ -88,7 +82,7 @@ public:
                        K_(need_padding), K_(need_fill_default),
                        K_(need_output_row_with_nop), K_(inited),
                        K_(iter_del_row), K_(read_memtable_only),
-                       K_(is_unprojected_row_valid), K_(scan_state));
+                       K_(is_unprojected_row_valid), K_(scan_state), K_(exist_ddl_kv));
 
 protected:
   int open();
@@ -148,8 +142,7 @@ private:
   // project to output expressions
   int project2output_exprs(blocksstable::ObDatumRow &unprojected_row, blocksstable::ObDatumRow &cur_row);
   int prepare_read_tables(bool refresh = false);
-  int prepare_mds_tables(bool refresh);
-  OB_INLINE int init_major_version(ObTableStoreIterator &table_iter);
+  int init_major_version(ObTableStoreIterator &table_iter);
   int prepare_tables_from_iterator(ObTableStoreIterator &table_iter, const bool has_split_extra_tables, const common::SampleInfo *sample_info = nullptr);
   int refresh_table_on_demand();
   int refresh_tablet_iter();
@@ -198,8 +191,9 @@ protected:
   bool inited_;
   bool iter_del_row_;
   bool read_memtable_only_;
+  bool exist_ddl_kv_; // whether there is a ddl kv(direct load memtable) in read tables, fuse row cache is disabled if true
   bool is_unprojected_row_valid_; // whether unprojected_row_ is ready for refresh_table_on_demand currently
-  ObGetTableParam *get_table_param_;
+  ObTabletReadTables *tablet_read_tables_;
   ObBlockRowStore *block_row_store_;
   ObGroupByCellBase *group_by_cell_;
   sql::ObBitVector *skip_bit_;
@@ -214,71 +208,6 @@ private:
   // disallow copy
   DISALLOW_COPY_AND_ASSIGN(ObMultipleMerge);
 };
-
-OB_INLINE int ObMultipleMerge::check_need_refresh_table(bool &need_refresh, bool &need_retry)
-{
-  int ret = OB_SUCCESS;
-  int tmp_ret = OB_SUCCESS;
-#ifdef ERRSIM
-  tmp_ret = OB_E(EventTable::EN_FORCE_REFRESH_TABLE) OB_SUCCESS;
-#endif
-  need_refresh = false;
-  need_retry = false;
-  if (get_table_param_->sample_info_.is_block_sample() ||
-      get_table_param_->sample_info_.is_ddl_block_sample() ||
-      (nullptr != block_row_store_ && !block_row_store_->can_refresh())) {
-    // TODO : @yuanzhe refactor block sample for table refresh
-    STORAGE_LOG(DEBUG, "skip refresh table for block sample, aggregated in prefetch or group by pushdown",
-        K(get_table_param_->sample_info_.is_block_sample()), K(get_table_param_->sample_info_.is_ddl_block_sample()), KPC(block_row_store_));
-  } else if (access_param_->iter_param_.is_mds_query_) {
-    // skip refresh table for mds query
-  } else if (get_table_param_->tablet_iter_.table_iter()->check_store_expire() || OB_SUCCESS != tmp_ret) {
-    if (type_ == T_LEVEL_ORDER_SCAN || type_ == T_LEVEL_ORDER_MULTI_SCAN || get_di_base_iter_cnt() > 1) {
-      // TODO: zhanghuidong.zhd, support refresh table for multiple di base tables
-      // TODO: LEVEL_ORDER_SCAN and LEVEL_ORDER_MULTI_SCAN are not supported for refresh table on demand yet.
-      if (0 == start_time_ns_) {
-        start_time_ns_ = common::ObTimeUtility::current_time_ns();
-      } else if (common::ObTimeUtility::current_time_ns() - start_time_ns_ > RETRY_QUERY_THRESHOLD_NS) {
-        need_retry = true;
-      }
-    } else if (ScanState::NONE == scan_state_) {
-      STORAGE_LOG(DEBUG, "skip refresh table");
-    } else if (ScanState::SINGLE_ROW == scan_state_) {
-      if (is_unprojected_row_valid_) {
-        need_refresh = true;
-      }
-    } else if (ScanState::BATCH == scan_state_) {
-      STORAGE_LOG(TRACE, "in vectorize batch scan, do refresh at next time",
-                  "tablet_id", access_param_->iter_param_.tablet_id_);
-      if (OB_NOT_NULL(block_row_store_)) {
-        block_row_store_->disable();
-      }
-    } else if (ScanState::DI_BASE == scan_state_) {
-      need_refresh = true;
-    } else {
-      ret = OB_ERR_UNSUPPORTED_TYPE;
-      STORAGE_LOG(WARN, "unsupported scan state", K(ret), K(scan_state_));
-    }
-  }
-
-  return ret;
-}
-
-int ObMultipleMerge::init_major_version(ObTableStoreIterator &table_iter)
-{
-  int ret = OB_SUCCESS;
-
-  ObITable *table_ptr = nullptr;
-  if (OB_FAIL(table_iter.get_boundary_table(/* is_last */ false, table_ptr))) {
-    STORAGE_LOG(WARN, "failed to get boundary table", K(ret), K(table_iter));
-  } else {
-    major_table_version_ = table_ptr != nullptr && table_ptr->is_major_sstable()
-                               ? table_ptr->get_snapshot_version()
-                               : 0;
-  }
-
-  return ret;
-}
 
 }
 }

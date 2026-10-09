@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "common/object/ob_object.h"
@@ -28,7 +21,8 @@ enum class ObLakeTableFormat
   INVALID = 0,
   ICEBERG,
   HIVE,
-  ODPS
+  ODPS,
+  PAIMON
 };
 
 enum class ObURISelectionMode
@@ -166,6 +160,7 @@ public:
     SOCKET_TIMEOUT,
     CACHE_REFRESH_INTERVAL_SEC,
     HMS_CATALOG_NAME, // FARM COMPAT WHITELIST
+    HMS_PRINCIPAL,
     MAX_OPTIONS
   };
   ObHMSCatalogProperties() :
@@ -193,13 +188,15 @@ public:
     "MAX_CLIENT_POOL_SIZE",
     "SOCKET_TIMEOUT",
     "CACHE_REFRESH_INTERVAL_SEC",
-    "HMS_CATALOG_NAME"
+    "HMS_CATALOG_NAME",
+    "HMS_PRINCIPAL",
   };
   common::ObString uri_;
   common::ObString principal_;
   common::ObString keytab_;
   common::ObString krb5conf_;
   common::ObString hms_catalog_name_;
+  common::ObString service_principal_;
   int64_t max_client_pool_size_;
   int64_t socket_timeout_;   // us
   int64_t cache_refresh_interval_sec_;

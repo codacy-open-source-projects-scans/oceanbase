@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_VERSION_DEF_H_
@@ -151,17 +144,27 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define MOCK_CLUSTER_VERSION_4_3_5_3 (oceanbase::common::cal_version(4, 3, 5, 3))
 #define MOCK_CLUSTER_VERSION_4_3_5_4 (oceanbase::common::cal_version(4, 3, 5, 4))
 #define MOCK_CLUSTER_VERSION_4_3_5_5 (oceanbase::common::cal_version(4, 3, 5, 5))
+#define MOCK_CLUSTER_VERSION_4_3_5_6 (oceanbase::common::cal_version(4, 3, 5, 6))
+
 #define CLUSTER_VERSION_4_4_0_0 (oceanbase::common::cal_version(4, 4, 0, 0))
 #define MOCK_CLUSTER_VERSION_4_4_0_1 (oceanbase::common::cal_version(4, 4, 0, 1))
 #define CLUSTER_VERSION_4_4_1_0 (oceanbase::common::cal_version(4, 4, 1, 0))
+#define MOCK_CLUSTER_VERSION_4_4_1_1 (oceanbase::common::cal_version(4, 4, 1, 1))
 #define MOCK_CLUSTER_VERSION_4_4_2_0 (oceanbase::common::cal_version(4, 4, 2, 0))
 #define MOCK_CLUSTER_VERSION_4_4_2_1 (oceanbase::common::cal_version(4, 4, 2, 1))
+#define MOCK_CLUSTER_VERSION_4_4_2_2 (oceanbase::common::cal_version(4, 4, 2, 2))
+#define MOCK_CLUSTER_VERSION_4_4_2_3 (oceanbase::common::cal_version(4, 4, 2, 3))
 #define CLUSTER_VERSION_4_5_0_0 (oceanbase::common::cal_version(4, 5, 0, 0))
 #define CLUSTER_VERSION_4_5_1_0 (oceanbase::common::cal_version(4, 5, 1, 0))
 #define CLUSTER_VERSION_4_6_0_0 (oceanbase::common::cal_version(4, 6, 0, 0))
+#define MOCK_CLUSTER_VERSION_4_6_0_1 (oceanbase::common::cal_version(4, 6, 0, 1))
+#define CLUSTER_VERSION_5_0_0_0 (oceanbase::common::cal_version(5, 0, 0, 0))
+#define CLUSTER_VERSION_5_0_1_0 (oceanbase::common::cal_version(5, 0, 1, 0))
+// 4.6.1 was not released. Keep old feature gates on the 5.0.1 boundary.
+#define CLUSTER_VERSION_4_6_1_0 CLUSTER_VERSION_5_0_1_0
 //!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 //TODO: If you update the above version, please update CLUSTER_CURRENT_VERSION.
-#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_4_6_0_0
+#define CLUSTER_CURRENT_VERSION CLUSTER_VERSION_5_0_1_0
 
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // 1. After 4.0, each cluster_version is corresponed to a data version.
@@ -211,15 +214,24 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define MOCK_DATA_VERSION_4_3_5_3 (oceanbase::common::cal_version(4, 3, 5, 3))
 #define MOCK_DATA_VERSION_4_3_5_4 (oceanbase::common::cal_version(4, 3, 5, 4))
 #define MOCK_DATA_VERSION_4_3_5_5 (oceanbase::common::cal_version(4, 3, 5, 5))
+#define MOCK_DATA_VERSION_4_3_5_6 (oceanbase::common::cal_version(4, 3, 5, 6))
 #define DATA_VERSION_4_4_0_0 (oceanbase::common::cal_version(4, 4, 0, 0))
 #define MOCK_DATA_VERSION_4_4_0_1 (oceanbase::common::cal_version(4, 4, 0, 1))
 #define DATA_VERSION_4_4_1_0 (oceanbase::common::cal_version(4, 4, 1, 0))
+#define MOCK_DATA_VERSION_4_4_1_1 (oceanbase::common::cal_version(4, 4, 1, 1))
 #define MOCK_DATA_VERSION_4_4_2_0 (oceanbase::common::cal_version(4, 4, 2, 0))
 #define MOCK_DATA_VERSION_4_4_2_1 (oceanbase::common::cal_version(4, 4, 2, 1))
+#define MOCK_DATA_VERSION_4_4_2_2 (oceanbase::common::cal_version(4, 4, 2, 2))
+#define MOCK_DATA_VERSION_4_4_2_3 (oceanbase::common::cal_version(4, 4, 2, 3))
 #define DATA_VERSION_4_5_0_0 (oceanbase::common::cal_version(4, 5, 0, 0))
 #define DATA_VERSION_4_5_1_0 (oceanbase::common::cal_version(4, 5, 1, 0))
 #define DATA_VERSION_4_6_0_0 (oceanbase::common::cal_version(4, 6, 0, 0))
-#define DATA_CURRENT_VERSION DATA_VERSION_4_6_0_0
+#define MOCK_DATA_VERSION_4_6_0_1 (oceanbase::common::cal_version(4, 6, 0, 1))
+#define DATA_VERSION_5_0_0_0 (oceanbase::common::cal_version(5, 0, 0, 0))
+#define DATA_VERSION_5_0_1_0 (oceanbase::common::cal_version(5, 0, 1, 0))
+// 4.6.1 was not released. Keep old feature gates on the 5.0.1 boundary.
+#define DATA_VERSION_4_6_1_0 DATA_VERSION_5_0_1_0
+#define DATA_CURRENT_VERSION DATA_VERSION_5_0_1_0
 // ATTENSION !!!!!!!!!!!!!!!!!!!!!!!!!!!
 // LAST_BARRIER_DATA_VERSION should be the latest barrier data version before DATA_CURRENT_VERSION
 #define LAST_BARRIER_DATA_VERSION DATA_VERSION_4_2_1_0
@@ -227,6 +239,7 @@ cal_version(const uint64_t major, const uint64_t minor, const uint64_t major_pat
 #define PROXY_VERSION_4_2_3_0 (oceanbase::common::cal_version(4, 2, 3, 0))
 #define PROXY_VERSION_4_3_0_0 (oceanbase::common::cal_version(4, 3, 0, 0))
 #define PROXY_VERSION_4_3_3_0 (oceanbase::common::cal_version(4, 3, 3, 0))
+#define PROXY_VERSION_4_4_0_0 (oceanbase::common::cal_version(4, 4, 0, 0))
 
 class VersionUtil
 {

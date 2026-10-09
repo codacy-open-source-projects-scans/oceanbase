@@ -1,20 +1,17 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_DDL_PL_OPERATOR_H_
 #define OCEANBASE_ROOTSERVER_OB_DDL_PL_OPERATOR_H_
 
+#include <optional>
+
 #include "rootserver/ob_ddl_operator.h"
 #include "share/ob_external_resource_rpc_struct.h"
+#include "share/ob_java_policy_rpc_struct.h"
+#include "share/schema/ob_java_policy_mgr.h"
 
 namespace oceanbase
 {
@@ -49,6 +46,7 @@ public:
   int drop_routine(const share::schema::ObRoutineInfo &routine_info,
                     common::ObMySQLTransaction &trans,
                      share::schema::ObErrorInfo &error_info,
+                     share::schema::ObSchemaGetterGuard &schema_guard,
                      const common::ObString *ddl_stmt_str/*=NULL*/);
   //----End of functions for managing routine----
 
@@ -167,8 +165,31 @@ public:
                                ObMySQLTransaction &trans);
   int drop_external_resource(ObSimpleExternalResourceSchema &new_schema,
                              const ObString &ddl_stmt,
-                             ObMySQLTransaction &trans);
+                             ObMySQLTransaction &trans,
+                             const std::optional<std::pair<ObString, ObString>> &extra_cond = std::nullopt);
+  int ora_upload_jar_external_resource(const obrpc::ObOraUploadJarArg &arg,
+                                       obrpc::ObOraUploadJarRes &result,
+                                       share::schema::ObSchemaGetterGuard &schema_guard,
+                                       ObMySQLTransaction &trans);
+  int ora_drop_jar_external_resource(ObSimpleExternalResourceSchema &schema,
+                                     const obrpc::ObOraDropJarArg &arg,
+                                     obrpc::ObOraDropJarRes &result,
+                                     share::schema::ObSchemaGetterGuard &schema_guard,
+                                     ObMySQLTransaction &trans);
+
 //----End of functions for managing external resource----
+
+//----Functions for managing java policy----
+  int create_java_policy(const obrpc::ObCreateJavaPolicyArg &arg,
+                         share::schema::ObSimpleJavaPolicySchema &new_schema,
+                         common::ObMySQLTransaction &trans);
+  int drop_java_policy(share::schema::ObSimpleJavaPolicySchema &new_schema,
+                             const common::ObString &ddl_stmt,
+                             common::ObMySQLTransaction &trans);
+  int modify_java_policy(const obrpc::ObModifyJavaPolicyArg &arg,
+                         share::schema::ObSimpleJavaPolicySchema &new_schema,
+                         common::ObMySQLTransaction &trans);
+//----End of functions for managing java policy----
 private:
   int del_routines_in_package(const share::schema::ObPackageInfo &package_info,
                               common::ObMySQLTransaction &trans,

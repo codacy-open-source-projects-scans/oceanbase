@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -15,6 +8,7 @@
 #include "sql/engine/expr/ob_expr_calc_odps_size.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/table/ob_odps_jni_table_row_iter.h"
+#include "sql/ob_sql_utils.h"
 #include "share/external_table/ob_external_table_utils.h"
 
 namespace oceanbase
@@ -107,6 +101,7 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   ObDatum *file_url_datum = NULL;
   int ret_file_url = expr.args_[0]->eval(ctx, file_url_datum);
   ObString property;
+  bool use_odps_jni_connector = true;
   int64_t rowcount_0_size_1_option = -1; //  0 get row count, 1 get size, -1 is not set
 
   ObString file_url;
@@ -146,6 +141,11 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("unexpected get size or row count", K(ret), K(rowcount_0_size_1_option));
       }
+      int8_t unused_mode = 0;
+      if (OB_FAIL(ret)) {
+      } else if (!property.empty() && OB_FAIL(ObSQLUtils::parse_odps_jni_params_from_format_str(property, use_odps_jni_connector, unused_mode))) {
+        LOG_WARN("failed to parse odps jni params from property", K(ret), K(property));
+      }
     }
   } else if (expr.arg_cnt_ == 2) {
     ObDatum *table_id_datum = NULL;
@@ -183,6 +183,7 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
       } else {
         property = table_schema->get_external_properties();
         rowcount_0_size_1_option = 1; // 统计size
+        use_odps_jni_connector = GCONF._use_odps_jni_connector;
       }
     }
   } else {
@@ -200,7 +201,7 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
   }
 
   if (OB_SUCC(ret)) {
-    if (!GCONF._use_odps_jni_connector) {
+      if (!use_odps_jni_connector) {
 #if defined(OB_BUILD_CPP_ODPS)
       ret = fetch_size_or_row_count_wrapper<sql::ObODPSTableRowIterator,
                                             sql::ObOdpsPartitionDownloaderMgr>(
@@ -213,7 +214,7 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
       }
 #else
       ret = OB_NOT_SUPPORTED;
-      LOG_WARN("not support odps cpp connector", K(ret), K(GCONF._use_odps_jni_connector));
+      LOG_WARN("not support odps cpp connector", K(ret), K(use_odps_jni_connector));
 #endif
     } else {
 #if defined(OB_BUILD_JNI_ODPS)
@@ -238,7 +239,7 @@ int ObExprCalcOdpsSize::calc_odps_size(const ObExpr &expr, ObEvalCtx &ctx, ObDat
       }
 #else
       ret = OB_NOT_SUPPORTED;
-      LOG_WARN("not support odps jni connector", K(ret), K(GCONF._use_odps_jni_connector));
+      LOG_WARN("not support odps jni connector", K(ret), K(use_odps_jni_connector));
 #endif
     }
   }

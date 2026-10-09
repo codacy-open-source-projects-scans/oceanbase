@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -936,6 +929,10 @@ int ObLSMeta::set_rebuild_info(const ObLSRebuildInfo &rebuild_info)
     LOG_WARN("invalid rebuild info", K(ret), K(rebuild_info_), K(rebuild_info));
   } else if (rebuild_info_ == rebuild_info) {
     //do nothing
+  } else if (ObMigrationStatus::OB_MIGRATION_STATUS_GC == migration_status_) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_WARN("migration status is gc, cannot set rebuild info", K(ret),
+        K(rebuild_info), K(migration_status_), KPC(this));
   } else if (ObLSRebuildStatus::CLEANUP == rebuild_info.status_
       && ObMigrationStatus::OB_MIGRATION_STATUS_NONE != migration_status_
       && ObMigrationStatus::OB_MIGRATION_STATUS_REBUILD_FAIL != migration_status_) {
@@ -1118,6 +1115,28 @@ int ObLSMeta::cleanup_transfer_meta_info(const share::SCN &replay_scn)
   return ret;
 }
 
+int ObLSMeta::admin_clear_transfer_meta_info()
+{
+  int ret = OB_SUCCESS;
+  bool need_update = true;
+  ObReentrantWLockGuard update_guard(update_lock_);
+  if (OB_FAIL(check_can_update_())) {
+    LOG_WARN("ls meta cannot update", K(ret), K(*this));
+  } else if (!transfer_meta_info_.is_in_trans()) {
+    FLOG_INFO("transfer meta info is not in trans, no need clear", KPC(this));
+  } else if (need_update) {
+    ObLSMeta tmp(*this);
+    if (OB_FAIL(tmp.transfer_meta_info_.cleanup_transfer_info())) {
+      LOG_WARN("failed to set transfer meta info", K(ret), K(tmp));
+    } else if (OB_FAIL(write_slog_(tmp))) {
+      LOG_WARN("rebuild_info write slog failed", K(ret));
+    } else {
+      transfer_meta_info_ = tmp.transfer_meta_info_;
+      FLOG_INFO("admin clear transfer meta info success", K(transfer_meta_info_), KPC(this));
+    }
+  }
+  return ret;
+}
 
 int ObLSMeta::check_ls_need_online(bool &need_online) const
 {

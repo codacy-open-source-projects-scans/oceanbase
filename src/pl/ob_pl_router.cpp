@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -233,7 +226,9 @@ int ObPLRouter::simple_resolve(ObPLFunctionAST &func_ast)
     if (OB_FAIL(ObSQLUtils::convert_sql_text_from_schema_for_resolve(
                   inner_allocator_, session_info_.get_dtc_params(), body))) {
       LOG_WARN("fail to get routine body", K(ret));
-    } else if (OB_FAIL(parser.parse_routine_body(body, parse_tree, session_info_.is_for_trigger_package(), is_wrap))) {
+    } else if (OB_FAIL(parser.parse_routine_body(body, parse_tree,
+                    TgTimingEvent::TG_TIMING_EVENT_INVALID != routine_info_.get_tg_timing_event(),
+                    is_wrap))) {
       LOG_WARN("parse routine body failed", K(ret), K(body));
     }
   }
@@ -471,6 +466,8 @@ int ObPLRouter::check_expr_sql_transpiler_eligible(const ObRawExpr &expr, bool &
   int ret = OB_SUCCESS;
 
   if (expr.has_flag(IS_PL_UDF) || expr.has_flag(CNT_PL_UDF)) {
+    eligible = false;
+  } else if (expr.has_flag(CNT_SEQ_EXPR)) {
     eligible = false;
   } else if (ObRawExpr::EXPR_PL_QUERY_REF == expr.get_expr_class()) {
     eligible = false;

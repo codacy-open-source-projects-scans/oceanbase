@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef DEV_SRC_SQL_DAS_SEARCH_OB_DAS_BOOLEAN_QUERY_H_
@@ -53,7 +46,14 @@ struct ObDASBooleanQueryCtDef : ObIDASSearchCtDef {
 
 public:
   ObDASBooleanQueryCtDef(common::ObIAllocator &alloc)
-      : ObIDASSearchCtDef(alloc, DAS_OP_BOOLEAN_QUERY), must_(), filter_(), should_(), must_not_(), min_should_match_(0) {}
+      : ObIDASSearchCtDef(alloc, DAS_OP_BOOLEAN_QUERY),
+        min_should_match_expr_(nullptr),
+        is_msm_unresolved_expr_(false),
+        must_(),
+        filter_(),
+        should_(),
+        must_not_(),
+        min_should_match_(0) {}
   virtual ~ObDASBooleanQueryCtDef() {}
   int must(ObBooleanSubClause<ObIDASSearchCtDef> &clause) const;
   int filter(ObBooleanSubClause<ObIDASSearchCtDef> &clause) const;
@@ -65,6 +65,9 @@ public:
   void set_should(int64_t offset, int64_t count) { should_ = SubClauseInfo(true, offset, count); }
   void set_must_not(int64_t offset, int64_t count) { must_not_ = SubClauseInfo(true, offset, count); }
   void set_min_should_match(int64_t val) { min_should_match_ = val; }
+
+  ObExpr *min_should_match_expr_;
+  bool is_msm_unresolved_expr_;
 
 private:
   struct SubClauseInfo {

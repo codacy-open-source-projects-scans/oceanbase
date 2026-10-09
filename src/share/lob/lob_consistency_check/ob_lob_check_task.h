@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_LOB_OB_LOB_CHECK_TASK_H_
@@ -21,6 +14,7 @@
 #include "share/scheduler/ob_tenant_dag_scheduler.h"
 #include "storage/access/ob_table_scan_iterator.h"
 #include "storage/ob_value_row_iterator.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 #include "share/lob/lob_consistency_check/ob_lob_task_info.h"
 
 namespace oceanbase {
@@ -170,6 +164,8 @@ private:
   common::ObArenaAllocator aux_allocator_;
   common::ObArenaAllocator allocator_;
   bool is_repair_task_;
+  bool is_lob_meta_has_ttl_column_;
+  storage::ObTTLFilterColType lob_meta_ttl_column_type_;
 
   // 扫描相关
   storage::ObTableScanIterator *main_table_iter_;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -147,7 +140,8 @@ int ObSharedObjectsWriteCtx::assign(const ObSharedObjectsWriteCtx &other)
 int ObSharedObjectsWriteCtx::advance_data_seq()
 {
   int ret = OB_SUCCESS;
-  if (ObStorageObjectType::SHARED_MAJOR_META_MACRO == next_opt_.object_type_) {
+  if (ObStorageObjectType::SHARED_MAJOR_META_MACRO == next_opt_.object_type_
+      || ObStorageObjectType::SHARED_INC_MAJOR_META_MACRO == next_opt_.object_type_) {
     next_opt_.ss_share_opt_.data_seq_++;
   } else if (ObStorageObjectType::SHARED_TABLET_SUB_META == next_opt_.object_type_) {
     if (UINT32_MAX == next_opt_.ss_tablet_sub_meta_opt_.data_seq_) {

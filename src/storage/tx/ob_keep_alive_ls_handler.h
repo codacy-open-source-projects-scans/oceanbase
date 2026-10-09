@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_TRANSACTION_KEEP_ALIVE_LS_HANDLER
@@ -180,9 +173,9 @@ public:
   void set_sys_ls_end_scn(const share::SCN &sys_ls_end_scn) { sys_ls_end_scn_.inc_update(sys_ls_end_scn);}
 
 private:
-  bool check_gts_();
+  bool check_gts_and_get_ref_scn_(share::SCN &ref_scn) const;
   int serialize_keep_alive_log_(const share::SCN &min_start_scn, MinStartScnStatus status);
-  share::SCN get_ref_scn_();
+  share::SCN get_ref_scn_(const share::SCN &gts, const share::SCN &current_ts_scn) const;
 private :
   SpinRWLock lock_;
 
@@ -197,7 +190,6 @@ private :
   int64_t submit_buf_len_;
   int64_t submit_buf_pos_;
 
-  share::SCN last_gts_;
   share::SCN sys_ls_end_scn_;
 
   KeepAliveLsInfo tmp_keep_alive_info_;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -26,6 +19,7 @@ void ObBatchDatumRows::reset()
   trans_id_.reset();
   vectors_.reset();
   row_count_ = 0;
+  merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
 }
 
 int ObBatchDatumRows::to_datum_row(int64_t idx, ObDatumRow &datum_row) const {
@@ -40,6 +34,7 @@ int ObBatchDatumRows::to_datum_row(int64_t idx, ObDatumRow &datum_row) const {
     datum_row.row_flag_ = row_flag_;
     datum_row.mvcc_row_flag_ = mvcc_row_flag_;
     datum_row.trans_id_ = trans_id_;
+    datum_row.merge_engine_type_ = merge_engine_type_;
   }
 
   const char *pay_load = nullptr;
@@ -70,6 +65,7 @@ int ObBatchDatumRows::shadow_copy(const ObBatchDatumRows &other)
   mvcc_row_flag_ = other.mvcc_row_flag_;
   trans_id_ = other.trans_id_;
   row_count_ = other.row_count_;
+  merge_engine_type_ = other.merge_engine_type_;
   vectors_.reuse();
   if (OB_FAIL(vectors_.prepare_allocate(other.vectors_.count()))) {
     LOG_WARN("failed to prepare allocate", KR(ret));

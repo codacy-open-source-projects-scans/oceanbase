@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_VEC_INDEX_HNSW_SCAN_ITER_H_
@@ -23,6 +16,7 @@
 #include "share/vector_index/ob_plugin_vector_index_adaptor.h"
 #include "sql/das/iter/ob_das_hnsw_scan_iter.h"
 #include "sql/das/iter/ob_das_vec_index_scan_iter.h"
+#include "share/diagnosis/ob_runtime_profile.h"
 
 namespace oceanbase
 {
@@ -122,13 +116,16 @@ public:
       sort_expr_(nullptr),
       search_vec_(nullptr),
       distance_calc_(nullptr),
-      only_complete_data_(false),
       distance_threshold_(FLT_MAX),
       adaptor_(nullptr),
       ada_ctx_(MTL_ID(), 0, &vec_op_alloc_, nullptr),
-      first_post_filter_search_(true) {}
+      first_post_filter_search_(true),
+      profile_(nullptr) {}
 
   virtual ~ObDASVecIndexHNSWScanIter() {}
+
+  virtual int do_table_scan() override;
+  virtual int rescan() override;
 
   virtual void set_adaptor(share::ObPluginVectorIndexAdaptor *adaptor) { adaptor_ = adaptor; }
   virtual void set_vector_query_condition(ObVectorQueryConditions *query_cond) { query_cond_ = query_cond; }
@@ -176,13 +173,13 @@ private:
   int process_adaptor_state_brute_force(ObIAllocator &allocator, bool is_vectorized);
   int process_adaptor_state_pre_filter(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor, bool is_vectorized);
   int process_adaptor_state_pre_filter_brute_force(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor,
-                                                    int64_t *&brute_vids, int& brute_cnt, bool& need_complete_data,
+                                                    int64_t *&brute_vids, int64_t& brute_cnt, bool& need_complete_data,
                                                     bool check_need_complete_data = true);
   int process_adaptor_state_pre_filter_brute_force_not_bq(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor,
-                                                    int64_t *&brute_vids, int& brute_cnt, bool& need_complete_data,
+                                                    int64_t *&brute_vids, int64_t& brute_cnt, bool& need_complete_data,
                                                     bool check_need_complete_data = true);
   int process_adaptor_state_pre_filter_brute_force_bq(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor,
-                                                    int64_t *&brute_vids, int& brute_cnt, bool& need_complete_data,
+                                                    int64_t *&brute_vids, int64_t& brute_cnt, bool& need_complete_data,
                                                     bool check_need_complete_data = true);
   int process_adaptor_state_post_filter(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor, bool is_vectorized);
   int process_adaptor_state_post_filter_once(ObVectorQueryAdaptorResultContext *ada_ctx, ObPluginVectorIndexAdaptor* adaptor);
@@ -243,11 +240,11 @@ private:
   int query_brute_force_distances(ObPluginVectorIndexAdaptor* adaptor,
                                   const ObString& search_vec,
                                   int64_t* brute_vids,
-                                  int brute_cnt,
+                                  int64_t brute_cnt,
                                   ObVecIdxQueryResult& dist_result);
   int merge_and_sort_brute_force_results_bq(const ObVecIdxQueryResult& dist_result,
                                             int64_t* brute_vids,
-                                            int brute_cnt,
+                                            int64_t brute_cnt,
                                             ObSimpleMaxHeap& snap_heap,
                                             ObSimpleMaxHeap& incr_heap,
                                             bool& need_complete_data,
@@ -301,6 +298,8 @@ private:
   share::ObPluginVectorIndexAdaptor* adaptor_;
   ObVectorQueryAdaptorResultContext ada_ctx_;
   bool first_post_filter_search_;
+
+  common::ObOpProfile<common::ObMetric> *profile_;
 };
 
 }  // namespace sql

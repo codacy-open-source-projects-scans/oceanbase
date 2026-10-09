@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // 测试 ObStorageVecSortImpl (MergeSortOp) 的功能
@@ -22,21 +15,23 @@
 #include <numeric>
 #include <vector>
 
+#define private public
+#define protected public
+
 #include "lib/container/ob_fixed_array.h"
 #include "share/vector/type_traits.h"
 #include "share/vector/ob_continuous_base.h"
 #include "storage/direct_load/ob_direct_load_vector_utils.h"
 #include "test_ddl_pipeline_base.h"
-#define private public
-#define protected public
 #include "sql/engine/sort/ob_storage_sort_vec_impl.h"
-#undef private
-#undef protected
 #include "sql/engine/sort/ob_sort_key_vec_op.h"
 #include "sql/engine/sort/ob_sort_vec_op_chunk.h"
 #include "sql/engine/sort/ob_sort_basic_info.h"
 #include "sql/engine/sort/ob_sort_compare_vec_op.h"
 #include "storage/ddl/test_batch_rows_generater.h"
+
+#undef private
+#undef protected
 
 using namespace oceanbase;
 using namespace oceanbase::common;

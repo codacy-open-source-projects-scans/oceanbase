@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -16,6 +9,9 @@
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include "core/ob_pl_ir_compiler.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
+
+extern "C" void __register_frame(void *);
+extern "C" void __deregister_frame(void *);
 
 using namespace llvm;
 using namespace llvm::orc;
@@ -44,8 +40,46 @@ ObOrcJit::ObOrcJit(common::ObIAllocator &Allocator)
     ObTM(EngineBuilder().selectTarget()),
     ObDL(ObTM->createDataLayout()),
     ObEngineBuilder(),
-    ObJitEngine()
+    ObJitEngine(),
+    register_lock_(common::ObLatchIds::OB_ORC_JIT_LOCK)
 { }
+
+ObOrcJit::~ObOrcJit() {
+  common::ObSpinLockGuard lock(register_lock_);
+  // The deregistration in the destructor serves as a fallback mechanism, so that ref_count_ should be 0.
+  if (ref_count_ > 0 && eh_frame_) {
+    __deregister_frame(const_cast<void*>(eh_frame_));
+    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "unexpected ref_count in destructor", K(ref_count_));
+  }
+}
+
+void ObOrcJit::set_eh_frame_info(const uint8_t* addr, size_t size) {
+  if (OB_NOT_NULL(eh_frame_)) {
+    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "unexpected not null eh_frame", KP(eh_frame_), KP(addr));
+  }
+  eh_frame_ = addr;
+}
+
+void ObOrcJit::ensure_registered() {
+  common::ObSpinLockGuard lock(register_lock_);
+  ref_count_++;
+
+  if (1 == ref_count_ && eh_frame_) {
+    __register_frame(const_cast<void*>(eh_frame_));
+  }
+}
+
+void ObOrcJit::unregister_eh_frame() {
+  common::ObSpinLockGuard lock(register_lock_);
+  ref_count_--;
+  if (ref_count_ < 0) {
+    LOG_ERROR_RET(OB_ERR_UNEXPECTED, "unexpected ref_count", K(ref_count_));
+    // self healing
+    ref_count_ = 0;
+  } else if (0 == ref_count_ && eh_frame_) {
+    __deregister_frame(const_cast<void*>(eh_frame_));
+  }
+}
 
 int ObOrcJit::init()
 {
@@ -57,7 +91,10 @@ int ObOrcJit::init()
           std::make_unique<RTDyldObjectLinkingLayer>(
             ES,
             [&]() {
-              return std::make_unique<ObJitMemoryManager>(JITAllocator);
+              return std::make_unique<ObJitMemoryManager>(JITAllocator,
+                [this](const uint8_t* addr, size_t size) {
+                  this->set_eh_frame_info(addr, size);
+                });
           });
 
       ObjLinkingLayer->registerJITEventListener(NotifyLoaded);

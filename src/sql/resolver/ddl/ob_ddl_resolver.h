@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_DDL_OB_DDL_RESOLVER_H_
@@ -26,6 +19,7 @@
 #include "sql/resolver/ddl/ob_alter_table_stmt.h"
 #include "sql/resolver/ddl/ob_create_index_stmt.h"
 #include "sql/resolver/ddl/ob_create_table_stmt.h"
+#include "sql/resolver/ddl/ob_alter_view_stmt.h"
 #include "share/storage_cache_policy/ob_storage_cache_common.h"
 #include "share/compaction_ttl/ob_compaction_ttl_util.h"
 
@@ -242,11 +236,17 @@ public:
   static int check_and_fill_column_charset_info(
       share::schema::ObColumnSchemaV2 &column,
       const common::ObCharsetType table_charset_type,
-      const common::ObCollationType table_collation_type);
+      const common::ObCollationType table_collation_type,
+      common::ObCharsetCompatType charset_compat_type = common::CHARSET_COMPAT_MYSQL57);
   static int check_string_column_length(
       const share::schema::ObColumnSchemaV2 &column,
       const bool is_oracle_mode,
       const bool is_prepare_stage=false);
+  // Column comment length: Oracle mode 4000, MySQL mode 1024. Aligns with COMMENT ON COLUMN path.
+  static int check_column_comment_length(
+      ObSQLSessionInfo *session_info,
+      char *str,
+      int64_t *str_len);
   static int check_raw_column_length(
       const share::schema::ObColumnSchemaV2 &column);
   static int check_urowid_column_length(
@@ -494,7 +494,8 @@ public:
                                           bool is_external_table,
                                           common::ObIAllocator &allocator,
                                           const ObSQLSessionInfo *session_info,
-                                          ObString &pattern);
+                                          ObString &pattern,
+                                          share::schema::ObExternalFilePatternType &pattern_type);
 
   static int resolve_external_file_location(ObResolverParams &params,
                                             ObTableSchema &table_schema,
@@ -676,6 +677,9 @@ protected:
   int resolve_table_option(
       const ParseNode *node,
       const bool is_index_option);
+  int build_dynamic_partition_policy_string_(
+      const ParseNode *option_node,
+      common::ObString &dynamic_partition_policy);
   int resolve_column_definition_ref(
       share::schema::ObColumnSchemaV2 &column,
       ParseNode *node,
@@ -786,6 +790,22 @@ protected:
                                        ObTableSchema &table_schema);
   int check_only_modify_auto_partition_attr(ObPartitionedStmt *stmt, ParseNode *node,
                                             ObTableSchema &table_schema, bool &is_only_modify_auto_part_attr);
+  int check_only_modify_auto_random_attr(ObPartitionedStmt *stmt, ParseNode *node,
+                                         bool &is_only_modify_auto_random_attr);
+
+  static int resolve_interval_node(
+      ObResolverParams &params,
+      ParseNode *interval_node,
+      common::ColumnType &col_dt,
+      int64_t precision,
+      int64_t scale,
+      ObRawExpr *&interval_value_expr_out);
+  static int resolve_interval_expr_low(
+      ObResolverParams &params,
+      ParseNode *interval_node,
+      const share::schema::ObTableSchema &table_schema,
+      ObRawExpr *transition_expr,
+      ObRawExpr *&interval_value);
   int resolve_partition_list(
       ObPartitionedStmt *stmt,
       ParseNode *node,
@@ -946,6 +966,10 @@ protected:
   {
     return T_LIST_PARTITION == type || T_LIST_COLUMNS_PARTITION == type;
   }
+  inline bool is_random_type_partition(ObItemType type) const
+  {
+    return T_RANDOM_PARTITION == type;
+  }
 
   int resolve_individual_subpartition(ObPartitionedStmt *stmt,
                                       ParseNode *part_node,
@@ -1076,13 +1100,13 @@ protected:
                                     ObPartitionNameSet &partition_name_set);
   int deep_copy_string_in_part_expr(ObPartitionedStmt* stmt);
   int deep_copy_column_expr_name(common::ObIAllocator &allocator, ObIArray<ObRawExpr*> &exprs);
-  int check_ttl_definition(
-    const ParseNode *node,
-    const uint64_t tenant_data_version);
-  int check_ttl_expr(const ParseNode *ttl_expr_node,
-                     const share::schema::ObTableSchema *tbl_schema,
-                     const uint64_t tenant_data_version,
-                     const share::ObTTLDefinition::ObTTLType &ttl_type);
+  int check_ttl_definition(const ParseNode *node, const uint64_t tenant_data_version);
+  int check_deleting_ttl_expr(const ParseNode *ttl_expr_node,
+                              const ObTableSchema *tbl_schema,
+                              const uint64_t tenant_data_version);
+  int check_compaction_ttl_expr(const ParseNode *ttl_expr_node,
+                                const ObTableSchema *tbl_schema,
+                                const uint64_t tenant_data_version);
   int resolve_kv_attributes_option(uint64_t tenant_id, const ParseNode *option_node, bool is_index_option);
   int check_column_is_first_part_key(const ObPartitionKeyInfo &part_key_info, const uint64_t column_id);
 
@@ -1185,6 +1209,7 @@ protected:
   share::ObDuplicateScope duplicate_scope_;
   share::ObDuplicateReadConsistency duplicate_read_consistency_;
   bool enable_row_movement_;
+  bool user_specified_table_mode_;
   share::schema::ObTableMode table_mode_;
   common::ObString encryption_;
   int64_t tablespace_id_;
@@ -1208,7 +1233,6 @@ protected:
   common::ObBitSet<> mocked_external_table_column_ids_;
   common::ObString index_params_;
   ObTableOrganizationType table_organization_;
-  int64_t mv_refresh_dop_;
   common::ObString vec_column_name_;
   ObIndexType vec_index_type_;
   bool enable_macro_block_bloom_filter_;

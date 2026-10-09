@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -468,6 +461,44 @@ int ObPartitionId::decode(ObObj &obj)
     LOG_WARN("failed to get num distinct", K(ret));
   } else {
     tab_stat_->set_partition_id(partition_id);
+  }
+  return ret;
+}
+
+int ObPartitionValue::gen_expr(char *buf, const int64_t buf_len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  if (!calc_partition_value_str_.empty()) {
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, "%.*s",
+                                calc_partition_value_str_.length(),
+                                calc_partition_value_str_.ptr()))) {
+      LOG_WARN("failed to print partition value expr", K(ret));
+    }
+  } else {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("calc_partition_value_str_ is empty", K(ret));
+  }
+  return ret;
+}
+
+int ObPartitionValue::decode(ObObj &obj, ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(tab_stat_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("table stat is not set", K(ret), K(tab_stat_));
+  } else {
+    // Decode method is only used to verify data format, no need to store partition_value.
+    // partition_value should be passed as a parameter, not stored in class member variable.
+    ObObj dest_obj;
+    ObArenaAllocator calc_buffer(ObModIds::OB_BUFFER);
+    ObCastCtx cast_ctx(&calc_buffer, NULL, CM_NONE, ObCharset::get_system_collation());
+    if (OB_FAIL(ObObjCaster::to_type(ObVarcharType, cast_ctx, obj, dest_obj))) {
+      LOG_WARN("cast to varchar value failed", K(ret), K(obj));
+    } else if (!dest_obj.is_null()) {
+      ObString tmp_str = dest_obj.get_string();
+      LOG_TRACE("decoded partition value", K(tmp_str));
+    }
   }
   return ret;
 }

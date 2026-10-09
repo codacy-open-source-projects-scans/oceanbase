@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SQL_OB_SQL_STAT_MANAGER_H_
 #define OCEANBASE_SQL_OB_SQL_STAT_MANAGER_H_
@@ -36,7 +29,7 @@ class ObSqlStatRecordNodeAlloc
 {
 public:
   ObSqlStatRecordNodeAlloc(ObIAllocator *allocator, int64_t alloc_limit)
-      : alloc_count_(0), alloc_limit_(alloc_limit), allocator_(allocator)
+      : alloc_count_(0), alloc_node_count_(0), alloc_limit_(alloc_limit), allocator_(allocator)
   {}
   ~ObSqlStatRecordNodeAlloc()
   {}
@@ -81,6 +74,7 @@ public:
       COMMON_LOG(WARN, "sql stat record node is null", K(node));
     } else {
       allocator_->free(node);
+      ATOMIC_DEC(&alloc_node_count_);
     }
   }
 
@@ -95,14 +89,17 @@ public:
     } else {
       node = new (buf) common::LinkHashNode<N>();
       node->hash_val_ = value;
+      ATOMIC_INC(&alloc_node_count_);
     }
     return node;
   }
 
   int64_t get_alloc_count() const { return alloc_count_; }
+  int64_t get_alloc_node_count() const { return alloc_node_count_; }
 
 private:
   int64_t alloc_count_;
+  int64_t alloc_node_count_;
   int64_t alloc_limit_;
   ObIAllocator *allocator_;
 };

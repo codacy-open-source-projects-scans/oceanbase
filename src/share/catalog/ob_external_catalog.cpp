@@ -1,21 +1,14 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
 #include "share/catalog/ob_external_catalog.h"
 
 #include "share/schema/ob_column_schema.h"
-#include "share/stat/ob_opt_external_table_stat.h"
-#include "share/stat/ob_opt_external_column_stat.h"
+#include "share/stat/catalog/ob_opt_catalog_table_stat.h"
+#include "share/stat/catalog/ob_opt_catalog_column_stat.h"
 #include "sql/ob_sql_context.h"
 namespace oceanbase
 {
@@ -129,15 +122,8 @@ int ObIExternalCatalog::fetch_table_statistics(
     const ObILakeTableMetadata *table_metadata,
     const ObIArray<ObString> &partition_values,
     const ObIArray<ObString> &column_names,
-    ObOptExternalTableStat *&external_table_stat,
-    ObIArray<ObOptExternalColumnStat *> &external_table_column_stats)
-{
-  return OB_NOT_SUPPORTED;
-}
-
-int ObIExternalCatalog::fetch_partitions(ObIAllocator &allocator,
-                                         const ObILakeTableMetadata *table_metadata,
-                                         Partitions &partitions)
+    common::ObIArray<share::ObOptCatalogTableStat *> &catalog_table_stats,
+    common::ObIArray<share::ObOptCatalogColumnStat *> &catalog_table_column_stats)
 {
   return OB_NOT_SUPPORTED;
 }

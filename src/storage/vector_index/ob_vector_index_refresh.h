@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -36,7 +29,7 @@ public:
   bool is_valid() const {
     return OB_INVALID_TENANT_ID != tenant_id_ &&
            OB_INVALID_ID != domain_tb_id_ && OB_INVALID_ID != base_tb_id_ &&
-           OB_INVALID_ID != index_id_tb_id_ && OB_NOT_NULL(trans_) &&
+           OB_INVALID_ID != index_id_tb_id_ &&
            share::schema::ObVectorRefreshMethod::MAX != refresh_method_ &&
            (! is_tablet_level_ || domain_tablet_id_.is_valid());
   }
@@ -95,11 +88,13 @@ private:
                                const bool try_lock = false);
   int get_table_row_count(const ObString &db_name, const ObString &table_name,
                           const share::SCN &scn, int64_t &row_cnt);
+  int get_tablet_row_count(const ObString &db_name, const ObString &table_name,
+                           const share::SCN &scn, const bool is_partitioned,
+                           const ObString &partition_clause, int64_t &row_cnt);
   static int get_vector_index_col_names(const ObTableSchema *table_schema,
                                  bool is_collect_col_id,
                                  ObIArray<uint64_t>& col_ids,
                                  ObSqlString &col_names);
-  int lock_domain_table_for_refresh();
   int do_refresh();
   int do_rebuild();
 

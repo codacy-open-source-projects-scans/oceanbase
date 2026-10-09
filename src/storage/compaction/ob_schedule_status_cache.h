@@ -1,12 +1,5 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_STORAGE_COMPACTION_SCHEDULE_STATUS_CACHE_H_
 #define OB_STORAGE_COMPACTION_SCHEDULE_STATUS_CACHE_H_
 #include "share/scn.h"
@@ -76,15 +69,16 @@ struct ObLSStatusCache final
 struct ObTabletStatusCache
 {
 public:
-  enum TabletExecuteState : uint8_t
+  enum TabletExecuteState : uint8_t //FARM COMPAT WHITELIST
   {
     CAN_MERGE = 0,
     DATA_NOT_COMPLETE,
     NO_MAJOR_SSTABLE,
-    INVALID_LS_STATE, // for ss
     TENANT_SKIP_MERGE,
     RESTORE_STATUS_NOT_READY, //FARM COMPAT WHITELIST
     EMERGENCY_MERGE_REQUIRED, //FARM COMPAT WHITELIST
+    MV_CHECK_FAILED,                 // check_is_mv_major_refresh_tablet returned error
+    MEDIUM_LIST_LOAD_FAILED,         // read_medium_info_list failed during init
     EXECUTE_STATE_MAX,
   };
   static const char *tablet_execute_state_to_str(const TabletExecuteState &state);

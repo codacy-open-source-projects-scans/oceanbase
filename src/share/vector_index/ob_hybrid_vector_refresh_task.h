@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
  #ifndef OCEANBASE_OBSERVER_TABLE_OB_HYBRID_VECTOR_REFRESH_TASK_H_
@@ -100,6 +93,7 @@ public:
   ObSEArray<uint64_t, 4> embedded_table_update_ids_;
   omt::ObAiServiceGuard ai_service_;
   const ObAiModelEndpointInfo *endpoint_;
+  ObString request_model_name_;
   ObPluginVectorIndexAdapterGuard adp_guard_;
   bool task_started_;
   uint32_t part_key_num_; // is part key but rowkey

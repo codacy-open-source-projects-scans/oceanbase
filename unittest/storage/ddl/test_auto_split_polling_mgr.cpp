@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -105,11 +98,12 @@ TEST_F(TestSplitTaskScheduler, simple_push_and_pop)
   ObArray<ObAutoSplitTask> task_array;
   ObArray<ObArray<ObAutoSplitTask>> tenants_task_array;
   ObArenaAllocator arena;
+  ObArray<ObTabletID> empty_tablet_ids;
 
   ObArray<uint64_t> ids;
-  ObAutoSplitTask task_a(TEST_TENANT_A_ID, ls_id, ObTabletID(1)/*tablet_id*/, 1/*auto_split_size*/, 2/*used_disk_size*/, 0);
-  ObAutoSplitTask task_b(TEST_TENANT_A_ID, ls_id, ObTabletID(2)/*tablet_id*/, 1/*auto_split_size*/, 3/*used_disk_size*/, 0);
-  ObAutoSplitTask task_c(TEST_TENANT_B_ID, ls_id, ObTabletID(3)/*tablet_id*/, 1/*auto_split_size*/, 4/*used_disk_size*/, 0);
+  ObAutoSplitTask task_a(TEST_TENANT_A_ID, ls_id, ObTabletID(1)/*tablet_id*/, 1/*auto_split_size*/, 2/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
+  ObAutoSplitTask task_b(TEST_TENANT_A_ID, ls_id, ObTabletID(2)/*tablet_id*/, 1/*auto_split_size*/, 3/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
+  ObAutoSplitTask task_c(TEST_TENANT_B_ID, ls_id, ObTabletID(3)/*tablet_id*/, 1/*auto_split_size*/, 4/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
   ASSERT_OK(task_array.push_back(task_a));
   ASSERT_OK(tenants_task_array.push_back(task_array));
   push(tenants_task_array, polling_mgr_);
@@ -164,10 +158,11 @@ TEST_F(TestSplitTaskScheduler, test_reset)
   ObArray<ObArray<ObAutoSplitTask>> tenants_task_array;
   ObArenaAllocator arena;
   ObArray<ObSEArray<ObSplitTask*, 10>> tmp_tenants_task_array;
+  ObArray<ObTabletID> empty_tablet_ids;
 
 
-  ObAutoSplitTask task_a(TEST_TENANT_A_ID, ls_id, ObTabletID(1)/*tablet_id*/, 1/*auto_split_size*/, 2/*used_disk_size*/, 0);
-  ObAutoSplitTask task_b(TEST_TENANT_A_ID, ls_id, ObTabletID(2)/*tablet_id*/, 1/*auto_split_size*/, 3/*used_disk_size*/, 0);
+  ObAutoSplitTask task_a(TEST_TENANT_A_ID, ls_id, ObTabletID(1)/*tablet_id*/, 1/*auto_split_size*/, 2/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
+  ObAutoSplitTask task_b(TEST_TENANT_A_ID, ls_id, ObTabletID(2)/*tablet_id*/, 1/*auto_split_size*/, 3/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
   ASSERT_OK(task_array.push_back(task_a));
   ASSERT_OK(tenants_task_array.push_back(task_array));
   push(tenants_task_array, polling_mgr_);
@@ -204,8 +199,9 @@ TEST_F(TestSplitTaskScheduler, single_tenant_hard_push_and_pop)
   ObArenaAllocator arena;
   ObArray<ObSEArray<ObSplitTask*, 10>> tmp_tenants_task_array;
   ObArray<ObArray<ObAutoSplitTask>> tenants_task_array;
+  ObArray<ObTabletID> empty_tablet_ids;
 
-  ObAutoSplitTask task_high_prio(TEST_TENANT_A_ID, ls_id, ObTabletID(1000)/*tablet_id*/, 1/*auto_split_size*/, 1000/*used_disk_size*/, 0);
+  ObAutoSplitTask task_high_prio(TEST_TENANT_A_ID, ls_id, ObTabletID(1000)/*tablet_id*/, 1/*auto_split_size*/, 1000/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/);
   ASSERT_OK(task_array.push_back(task_high_prio));
   ASSERT_OK(tenants_task_array.push_back(task_array));
   push(tenants_task_array, polling_mgr_);
@@ -213,7 +209,7 @@ TEST_F(TestSplitTaskScheduler, single_tenant_hard_push_and_pop)
   tenants_task_array.reuse();
 
   for (int64_t i = 2; i < ObAutoSplitTaskCache::CACHE_MAX_CAPACITY + 10; ++i ) {
-    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(i/*tablet_id*/), 1/*auto_split_size*/, i/*used_disk_size*/, 0)));
+    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(i/*tablet_id*/), 1/*auto_split_size*/, i/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(tenants_task_array.push_back(task_array));
     push(tenants_task_array, polling_mgr_);
     task_array.reuse();
@@ -259,6 +255,7 @@ TEST_F(TestSplitTaskScheduler, mutiple_tenants_hard_push_and_pop)
   ObArray<ObAutoSplitTask> task_array;
   ObArray<ObArray<ObAutoSplitTask>> tenants_task_array;
   ObArenaAllocator arena;
+  ObArray<ObTabletID> empty_tablet_ids;
 
   ObArray<int64_t> nums;
   for (int64_t i = 2; i < 102; ++i) {
@@ -268,20 +265,20 @@ TEST_F(TestSplitTaskScheduler, mutiple_tenants_hard_push_and_pop)
   for (int64_t i = 0; i < nums.count(); ++i ) {
     int64_t num = nums.at(i);
 
-    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0)));
+    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(tenants_task_array.push_back(task_array));
     push(tenants_task_array, polling_mgr_);
     tenants_task_array.reuse();
     task_array.reuse();
 
-    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_B_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0)));
+    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_B_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(tenants_task_array.push_back(task_array));
     push(tenants_task_array, polling_mgr_);
     task_array.reuse();
     tenants_task_array.reuse();
 
 
-    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_C_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0)));
+    ASSERT_OK(task_array.push_back(ObAutoSplitTask(TEST_TENANT_C_ID, ls_id, ObTabletID(num)/*tablet_id*/, 1/*auto_split_size*/, num/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(tenants_task_array.push_back(task_array));
     push(tenants_task_array, polling_mgr_);
     task_array.reuse();
@@ -342,6 +339,7 @@ TEST_F(TestSplitTaskScheduler, parallel_push_and_pop)
   ObArray<ObArray<ObAutoSplitTask>> task_array_2;
   ObArray<int64_t> nums_1;
   ObArray<int64_t> nums_2;
+  ObArray<ObTabletID> empty_tablet_ids;
   for (int64_t i = 2; i < 50000; ++i) {
     if (i%2 == 0) {
       ASSERT_OK(nums_1.push_back(i));
@@ -354,11 +352,11 @@ TEST_F(TestSplitTaskScheduler, parallel_push_and_pop)
   for (int64_t i = 0; i < nums_1.count(); ++i ) {
     tmp_array.reuse();
     int64_t num_1 = nums_1.at(i);
-    ASSERT_OK(tmp_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num_1)/*tablet_id*/, 1/*auto_split_size*/, num_1/*used_disk_size*/, 0)));
+    ASSERT_OK(tmp_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num_1)/*tablet_id*/, 1/*auto_split_size*/, num_1/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(task_array_1.push_back(tmp_array));
     tmp_array.reuse();
     int64_t num_2 = nums_2.at(i);
-    ASSERT_OK(tmp_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num_2)/*tablet_id*/, 1/*auto_split_size*/, num_2/*used_disk_size*/, 0)));
+    ASSERT_OK(tmp_array.push_back(ObAutoSplitTask(TEST_TENANT_A_ID, ls_id, ObTabletID(num_2)/*tablet_id*/, 1/*auto_split_size*/, num_2/*used_disk_size*/, 0, false/*is_random_part*/, OB_INVALID_ID/*table_id*/, empty_tablet_ids/*inactive_tablet_ids*/)));
     ASSERT_OK(task_array_2.push_back(tmp_array));
   }
 

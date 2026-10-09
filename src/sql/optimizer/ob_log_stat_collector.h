@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOG_STAT_COLLECTOR_H_
@@ -30,7 +23,7 @@ public:
   ObLogStatCollector(ObLogPlan &plan)
       : ObLogicalOperator(plan),
         sort_keys_(plan.get_allocator()),
-        inverted_sort_keys_(),
+        inverted_sort_keys_(plan.get_allocator()),
         is_none_partition_(),
         type_(ObStatCollectorType::NOT_INIT_TYPE)
         {}
@@ -49,7 +42,7 @@ public:
   virtual int inner_replace_op_exprs(ObRawExprReplacer &replacer) override;
 private:
   ObSqlArray<OrderItem> sort_keys_;
-  common::ObSEArray<OrderItem, 8, common::ModulePageAllocator, true> inverted_sort_keys_;
+  ObSqlArray<OrderItem> inverted_sort_keys_;
   bool is_none_partition_;
   ObStatCollectorType type_;
 };

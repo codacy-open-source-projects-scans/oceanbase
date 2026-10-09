@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -1051,13 +1044,9 @@ int ObTriggerResolver::resolve_trigger_body(const ParseNode &parse_node,
     if (OB_SUCC(ret)) {
       params_.tg_timing_event_ = static_cast<int64_t>(trigger_info.get_timing_event());
       HEAP_VAR(ObCreateProcedureResolver, resolver, params_) {
-        bool saved_trigger_flag = session_info_->is_for_trigger_package();
-        session_info_->set_for_trigger_package(true);
         if (OB_FAIL(resolver.resolve(*parse_tree->children_[0]))) {
           LOG_WARN("resolve trigger procedure failed", K(parse_tree->children_[0]->type_), K(ret));
         }
-        //无论是否执行成功都要恢复该变量原值
-        session_info_->set_for_trigger_package(saved_trigger_flag);
       }
     }
   }

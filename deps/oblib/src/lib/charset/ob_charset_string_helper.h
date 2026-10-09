@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_CHARSET_STRING_HELPER_H
@@ -16,25 +9,25 @@
 
 #include "lib/charset/ob_charset.h"
 #include "lib/charset/mb_wc.h"
-#include "lib/charset/ob_ctype_gbk_tab.h"
-#include "lib/charset/ob_ctype_gb18030_tab.h"
-#include "lib/charset/ob_ctype_latin1_tab.h"
-#include "lib/charset/ob_ctype_ascii_tab.h"
-#include "lib/charset/ob_ctype_tis620_tab.h"
-#include "lib/charset/ob_ctype_sjis_tab.h"
-#include "lib/charset/ob_ctype_big5_tab.h"
-#include "lib/charset/ob_ctype_hkscs_tab.h"
-#include "lib/charset/ob_ctype_hkscs31_tab.h"
-#include "lib/charset/ob_ctype_dec8_tab.h"
-#include "lib/charset/ob_ctype_gb2312_tab.h"
-#include "lib/charset/ob_ctype_ujis_tab.h"
-#include "lib/charset/ob_ctype_euckr_tab.h"
-#include "lib/charset/ob_ctype_eucjpms_tab.h"
-#include "lib/charset/ob_ctype_cp932_tab.h"
-#include "lib/charset/ob_ctype_cp850_tab.h"
-#include "lib/charset/ob_ctype_hp8_tab.h"
-#include "lib/charset/ob_ctype_macroman_tab.h"
-#include "lib/charset/ob_ctype_swe7_tab.h"
+#include "obcharset/ob_ctype_gbk_tab.h"
+#include "obcharset/ob_ctype_gb18030_tab.h"
+#include "obcharset/ob_ctype_latin1_tab.h"
+#include "obcharset/ob_ctype_ascii_tab.h"
+#include "obcharset/ob_ctype_tis620_tab.h"
+#include "obcharset/ob_ctype_sjis_tab.h"
+#include "obcharset/ob_ctype_big5_tab.h"
+#include "obcharset/ob_ctype_hkscs_tab.h"
+#include "obcharset/ob_ctype_hkscs31_tab.h"
+#include "obcharset/ob_ctype_dec8_tab.h"
+#include "obcharset/ob_ctype_gb2312_tab.h"
+#include "obcharset/ob_ctype_ujis_tab.h"
+#include "obcharset/ob_ctype_euckr_tab.h"
+#include "obcharset/ob_ctype_eucjpms_tab.h"
+#include "obcharset/ob_ctype_cp932_tab.h"
+#include "obcharset/ob_ctype_cp850_tab.h"
+#include "obcharset/ob_ctype_hp8_tab.h"
+#include "obcharset/ob_ctype_macroman_tab.h"
+#include "obcharset/ob_ctype_swe7_tab.h"
 
 
 namespace oceanbase

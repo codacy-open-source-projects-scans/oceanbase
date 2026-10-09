@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_LOG_STREAM_BACKUP_UTILS_H_
@@ -68,7 +61,9 @@ public:
       const share::ObTaskId &dag_id, const int64_t result, ObBackupReportCtx &report_ctx);
   static int check_ls_validity(const uint64_t tenant_id, const share::ObLSID &ls_id);
   static int check_ls_valid_for_backup(const uint64_t tenant_id, const share::ObLSID &ls_id, const int64_t local_rebuild_seq);
-  static int calc_start_replay_scn(const share::ObBackupSetTaskAttr &set_task_attr,
+  static int calc_start_replay_scn(const uint64_t tenant_id,
+      common::ObISQLClient &sql_client,
+      const share::ObBackupSetTaskAttr &set_task_attr,
       const storage::ObBackupLSMetaInfosDesc &ls_meta_infos, const share::ObTenantArchiveRoundAttr &round_attr,
       share::SCN &start_replay_scn);
   static int check_tenant_backup_dest_exists(const uint64_t tenant_id, bool &exists, common::ObISQLClient &sql_proxy);

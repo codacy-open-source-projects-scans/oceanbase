@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -236,6 +229,20 @@ int ObMergeGroupByOp::init_group_rows()
   return ret;
 }
 
+int ObMergeGroupByOp::init_brs_holder()
+{
+  int ret = OB_SUCCESS;
+  const common::ObIArray<ObExpr *> *backup_exprs = &MY_SPEC.backup_exprs_;
+  if (MY_SPEC.backup_exprs_.empty()) {
+    backup_exprs = &child_->get_spec().output_;
+  }
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(brs_holder_.init(*backup_exprs, eval_ctx_))) {
+    LOG_WARN("failed to initialize brs_holder_", K(ret));
+  }
+  return ret;
+}
+
 // only init in inner_open
 int ObMergeGroupByOp::init()
 {
@@ -254,7 +261,7 @@ int ObMergeGroupByOp::init()
       LOG_WARN("failed to init rollup distributor", K(ret));
     }
   } else {
-    if (OB_FAIL(brs_holder_.init(child_->get_spec().output_, eval_ctx_))) {
+    if (OB_FAIL(init_brs_holder())) {
       LOG_WARN("failed to initialize brs_holder_", K(ret));
     } else if (OB_FAIL(init_rollup_distributor())) {
       LOG_WARN("failed to init rollup distributor", K(ret));
@@ -927,7 +934,6 @@ int ObMergeGroupByOp::advance_collect_result(int64_t group_id)
   } else if (OB_FAIL(brs_holder_.restore())) {
     LOG_WARN("failed to restore child exprs", K(ret));
   }
-  clear_evaluated_flag();
   return ret;
 }
 
@@ -1340,6 +1346,9 @@ int ObMergeGroupByOp::process_batch(const ObBatchRows &brs)
 
   if (OB_FAIL(aggr_processor_.eval_aggr_param_batch(brs))) {
     LOG_WARN("failed to eval_aggr_param_batch");
+  } else if (aggr_processor_.get_need_advance_collect() &&
+    OB_FAIL(brs_holder_.save(MY_SPEC.max_batch_size_))) {
+    LOG_WARN("failed to backup child exprs", K(ret));
   }
 
   ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);

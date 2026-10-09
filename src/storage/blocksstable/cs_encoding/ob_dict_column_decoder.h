@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENCODING_OB_DICT_COLUMN_DECODER_H_
@@ -297,22 +290,6 @@ protected:
     const uint64_t *datums_val, const int64_t dict_val_cnt, const char *buf,
     const sql::ObWhiteFilterOperatorType &op_type,
     int64_t &matched_ref_cnt, sql::ObBitVector *ref_bitset);
-
-  // if the row is null, set it as false in @result_bitmap; if the row's ref is set in @ref_bitset,
-  // set it as @flag in @result_bitmap, default is true.
-  static int set_bitmap_with_bitset(const uint32_t ref_width_size, const char *ref_buf, sql::ObBitVector *ref_bitset,
-    const int64_t row_start, const int64_t row_cnt, const bool has_null, const uint64_t null_replaced_val,
-    const sql::ObPushdownFilterExecutor *parent, ObBitmap &result_bitmap, const bool flag = true);
-  // mainly used for dict_const decoder
-  static int set_bitmap_with_bitset_const(const uint32_t ref_width_size, const char *exception_row_id_buf,
-    const char *exception_ref_buf, sql::ObBitVector *ref_bitset, const int64_t exception_cnt,
-    const int64_t row_start, const int64_t row_cnt, const bool has_null, const uint64_t null_replaced_val,
-    ObBitmap &result_bitmap, const bool flag = true);
-  // if the row's ref is not set in @ref_bitset and the row is not null, set it in @result_bitmap.
-  static int set_bitmap_with_bitset_conversely(const uint32_t ref_width_size, const char *ref_buf,
-    sql::ObBitVector *ref_bitset, const int64_t row_start, const int64_t row_cnt,
-    const bool has_null, const uint64_t null_replaced_val, const sql::ObPushdownFilterExecutor *parent,
-    ObBitmap &result_bitmap);
 
   static int set_res_with_bitmap(const ObDictEncodingMeta &dict_meta, const char *ref_buf,
     const uint32_t ref_width_size, const common::ObBitmap *ref_bitmap,

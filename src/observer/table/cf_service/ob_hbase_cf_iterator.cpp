@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -433,7 +426,7 @@ int ObHbaseRowIterator::init(ScannerContext &scanner_context, const ObHBaseParam
     if (desc.get_time_to_live() > 0) {
       time_to_live_ = desc.get_time_to_live();
     }
-    if (desc.get_max_version() > 0) {
+    if (desc.get_max_version() > 0 && !hbase_query_.use_for_delete()) {
       max_version_ = desc.get_max_version();
     }
     if ((select_columns.empty() ||
@@ -622,7 +615,7 @@ int ObHbaseRowIterator::get_next_row_internal(ResultType *&result)
       if (time_to_live_ > 0) {
         column_tracker_->set_ttl(time_to_live_);
       }
-      if (max_version_ > 0) {
+      if (max_version_ > 0 && !hbase_query_.use_for_delete()) {
         int32_t real_max_version = std::min(column_tracker_->get_max_version(), max_version_);
         column_tracker_->set_max_version(real_max_version);
       }

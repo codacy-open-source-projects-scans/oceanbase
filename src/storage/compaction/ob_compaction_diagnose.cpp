@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -1671,8 +1664,10 @@ int ObCompactionDiagnoseMgr::diagnose_column_store_dag(
     }
   } else if (OB_NOT_NULL(snap_ptr)) {
     const int64_t now = ObTimeUtility::fast_current_time();
+    // now / start_time_ are microseconds; TOLERATE_MEDIUM_SCHEDULE_INTERVAL is nanoseconds -> convert to us
+    static const int64_t TOLERATE_MEDIUM_SCHEDULE_INTERVAL_US = TOLERATE_MEDIUM_SCHEDULE_INTERVAL / 1000L;
     if (snap_ptr->progress_list_.empty()
-        && (now - snap_ptr->start_time_) > TOLERATE_MEDIUM_SCHEDULE_INTERVAL) {
+        && (now - snap_ptr->start_time_) > TOLERATE_MEDIUM_SCHEDULE_INTERVAL_US) {
       ADD_DIAGNOSE_INFO_FOR_TABLET(
           merge_type,
           ObCompactionDiagnoseInfo::DIA_STATUS_RUNNING,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -448,12 +441,27 @@ int ObTxDataTable::check_tx_data_with_cache_once_(const transaction::ObTransID t
     if (find) {
       if (ObTxData::RUNNING == tx_data_guard.tx_data()->state_ &&
           !fn.may_exist_undecided_state_in_tx_data_table()) {
-        ret = OB_ERR_UNEXPECTED;
-        STORAGE_LOG(ERROR,
-                    "read a running state tx data from tx data table",
-                    KR(ret),
-                    K(tx_data_guard),
-                    KPC(tx_data_guard.tx_data()));
+        // Double check: memtables_cache_ may have lagged the memtable_mgr (for
+        // example a freeze racing with the read between the ACTIVE check and
+        // get_tx_data in get_tx_data_from_cache_). When that happens a newer
+        // COMMIT/ABORT version of this tx_id may live in a memtable not yet
+        // visible to memtables_cache_. Re-validate freshness before raising
+        // OB_ERR_UNEXPECTED so we retry instead of producing a false alarm.
+        int64_t mgr_head = -1;
+        int64_t mgr_tail = -1;
+        if (OB_FAIL(get_memtable_mgr_()->get_memtable_range(mgr_head, mgr_tail))) {
+          STORAGE_LOG(WARN, "get memtable range failed", KR(ret));
+        } else if (mgr_head != memtables_cache_.memtable_head_ ||
+                   mgr_tail != memtables_cache_.memtable_tail_) {
+          ret = OB_EAGAIN;
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          STORAGE_LOG(ERROR,
+                      "read a running state tx data from tx data table",
+                      KR(ret),
+                      K(tx_data_guard),
+                      KPC(tx_data_guard.tx_data()));
+        }
       } else {
         EVENT_INC(ObStatEventIds::TX_DATA_READ_TX_DATA_MEMTABLE_COUNT);
         ret = fn(*tx_data_guard.tx_data());

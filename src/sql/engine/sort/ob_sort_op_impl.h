@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_SORT_SORT_OP_IMPL_H_
@@ -405,6 +398,14 @@ public:
   void set_input_width(int64_t input_width) { input_width_ = input_width; }
   void set_operator_type(ObPhyOperatorType op_type) { op_type_ = op_type; }
   void set_operator_id(uint64_t op_id) { op_id_ = op_id; }
+  OB_INLINE int64_t get_rows_count()
+  {
+    int64_t ret = 0;
+    if (OB_NOT_NULL(rows_)) {
+      ret = rows_->count();
+    }
+    return ret;
+  }
   void collect_memory_dump_info(ObMonitorNode &info)
   {
     info.otherstat_1_id_ = op_monitor_info_->otherstat_1_id_;
@@ -734,9 +735,11 @@ protected:
   int64_t get_partition_sort_ht_bucket_size() // calculate partition sort hash table needed size
   {
     int64_t row_cnt = datum_store_.get_row_cnt();
+    int64_t bucket_cnt = next_pow2(std::max(16L, row_cnt));
+    int64_t hash_table_size = bucket_cnt * FIXED_PART_BKT_SIZE;
     return ((part_cnt_ == 0) ? 0 :
           (row_cnt * FIXED_PART_NODE_SIZE * 2) +                          // size of(part_hash_nodes_)
-          (next_pow2(std::max(16L, row_cnt)) * FIXED_PART_BKT_SIZE * 2)); // size of(buckets_)
+          ObHashMemSmoothUtil::calc_extra_hashtable_size(row_cnt, bucket_cnt, hash_table_size, 1.0)); // smooth extra size of(buckets_)
   }
 
   int64_t get_partition_topn_ht_bucket_size() // calculate partition topn sort hash table needed size

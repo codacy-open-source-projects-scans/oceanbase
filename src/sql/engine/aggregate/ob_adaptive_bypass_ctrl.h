@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SQL_ENGINE_ADAPTIVE_BYPASS_CTRL_H_
@@ -28,6 +21,40 @@ const int64_t MAX_L3_CACHE_SIZE = 50 *1024 *1024; //50M
 const uint64_t FORCE_GPD = 0x100;
 const int64_t MAX_REBUILD_TIMES = 5;
 constexpr const double MIN_RATIO_FOR_L3 = 0.80;
+
+struct LlcEstimate
+{
+public:
+  LlcEstimate()
+    : avg_group_mem_(0), llc_map_(), est_cnt_(0), last_est_cnt_(0), enabled_(false),
+      sample_batch_cnt_(0), sample_interval_(1), est_cnt_at_bypass_start_(0),
+      last_downsample_est_(0)
+  {}
+  int init(common::ObIAllocator &allocator, bool enabled);
+  int reset();
+  void add_value(uint64_t hash_value);
+  void set_avg_group_mem(int64_t row_cnt, int64_t mem_used);
+  inline bool should_sample() const {
+    return enabled_ && ((sample_batch_cnt_ % sample_interval_) == 0);
+  }
+private:
+  int init_llc_map(common::ObIAllocator &allocator);
+public:
+  double avg_group_mem_;
+  ObString llc_map_;
+  uint64_t est_cnt_;
+  uint64_t last_est_cnt_;
+  bool enabled_;
+  int64_t sample_batch_cnt_;
+  int64_t sample_interval_;
+  uint64_t est_cnt_at_bypass_start_;
+  uint64_t last_downsample_est_;
+  static const int64_t ESTIMATE_MOD_NUM = 4096;
+  static constexpr const int64_t LLC_SAMPLE_INTERVAL_CAP = 16;
+  static constexpr const double LLC_NDV_RATIO = 0.3;
+  static constexpr const double GLOBAL_BOUND_RATIO = 0.8;
+};
+
 class ObAdaptiveByPassCtrl {
 public:
   typedef enum {
@@ -59,6 +86,7 @@ public:
     need_resize_hash_table_ = false;
     need_become_l2_insert_5x_ = false;
     last_round_processed_cnt_ = 0;
+    llc_est_.reset();
   }
   inline void reset_state() {
     state_ = (scaled_llc_est_ndv_ ? STATE_MAX_MEM_INSERT :
@@ -75,7 +103,7 @@ public:
   {
     return 0 != small_row_cnt_ ? (row_cnt < small_row_cnt_) : (mem_size < mem_bound);
   }
-  void gby_process_state(int64_t probe_cnt, int64_t row_cnt, int64_t mem_size);
+  void process_state(int64_t probe_cnt, int64_t row_cnt, int64_t mem_size);
   inline void inc_processed_cnt(int64_t new_processed_cnt) { processed_cnt_ += new_processed_cnt; }
   inline void inc_probe_cnt_() { ++probe_cnt_; }
   inline void inc_rebuild_times() { ++rebuild_times_; }
@@ -85,13 +113,21 @@ public:
   inline void start_by_pass() { by_pass_ = true; }
   inline void stop_by_pass() { by_pass_ = false; }
   inline void reset_rebuild_times() { rebuild_times_ = 0; }
-  inline void bypass_rebackto_insert(uint64_t llc_est_ndv) { scaled_llc_est_ndv_ = llc_est_ndv / 2 * 3; stop_by_pass(); start_process_ht(); reset_rebuild_times(); round_times_ = 0; need_resize_hash_table_ = false; }
+  inline void bypass_rebackto_insert(uint64_t llc_est_ndv) { scaled_llc_est_ndv_ = llc_est_ndv / 2 * 3; stop_by_pass(); start_process_ht(); reset_rebuild_times(); round_times_ = 0; need_resize_hash_table_ = true; }
   inline bool rebuild_times_exceeded() { return rebuild_times_ >= MAX_REBUILD_TIMES; }
   inline void set_max_rebuild_times() { rebuild_times_ = MAX_REBUILD_TIMES + 1; }
   inline void open_by_pass_ctrl() { by_pass_ctrl_enabled_ = true; }
   inline void set_op_id(int64_t op_id) { op_id_ = op_id; }
   inline void set_small_row_cnt(int64_t row_cnt) { small_row_cnt_ = row_cnt; }
   inline int64_t get_small_row_cnt() const { return small_row_cnt_; }
+
+  int llc_add_batch_and_check(const uint64_t *hash_vals,
+                              const ObBitVector *skip,
+                              int64_t size,
+                              bool ready_to_check);
+  int check_llc_ndv();
+  void llc_try_increase_sample_interval();
+
   bool by_pass_;
   int64_t processed_cnt_;
   ByPassState state_;
@@ -110,6 +146,7 @@ public:
   uint64_t scaled_llc_est_ndv_;
   int64_t last_round_processed_cnt_;
   bool need_become_l2_insert_5x_;
+  LlcEstimate llc_est_;
 };
 
 } // end namespace sql

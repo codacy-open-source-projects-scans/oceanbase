@@ -1,15 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- *
- * OBCDC Instance
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX OBLOG
@@ -3519,6 +3510,15 @@ bool ObLogInstance::need_pause_redo_dispatch() const
     }
   }
   return current_need_pause;
+}
+
+void ObLogInstance::get_memory_usage_status(bool &touch_memory_warn_limit, bool &memory_overused) const
+{
+  int64_t memory_hold = get_memory_hold_();
+  int64_t memory_limit = CDC_CFG_MGR.get_memory_limit();
+  int64_t memory_warn_usage = memory_limit * TCONF.memory_usage_warn_threshold / 100.0;
+  touch_memory_warn_limit = (memory_hold > memory_warn_usage);
+  memory_overused = (memory_hold > memory_limit);
 }
 
 }

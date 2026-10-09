@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -225,6 +218,24 @@ int ObShareUtil::check_compat_version_for_columnstore_replica(
 {
   return check_compat_data_version_(DATA_VERSION_4_3_3_0, true/*check_meta*/, false/*check_user*/,
                                     tenant_id, is_compatible);
+}
+
+int ObShareUtil::check_compat_version_for_subpartition_sharding(
+    const uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  uint64_t data_version = 0;
+  if (OB_UNLIKELY(OB_INVALID_TENANT_ID == tenant_id)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid tenant id", KR(ret), K(tenant_id));
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
+    LOG_WARN("fail to get tenant data version", KR(ret), K(tenant_id));
+  } else if (data_version < DATA_VERSION_4_6_1_0) {
+    ret = OB_OP_NOT_ALLOW;
+    LOG_WARN("subpartition sharding is not supported in this version", KR(ret), K(data_version));
+    LOG_USER_ERROR(OB_OP_NOT_ALLOW, "Data version does not match, subpartition sharding is");
+  }
+  return ret;
 }
 
 bool ObShareUtil::check_compat_version_for_hetero_zone(

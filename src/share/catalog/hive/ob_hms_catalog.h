@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef _SHARE_CATALOG_HIVE_OB_HIVE_CATALOG_H
 #define _SHARE_CATALOG_HIVE_OB_HIVE_CATALOG_H
@@ -62,12 +55,13 @@ public:
                              const ObILakeTableMetadata *table_metadata,
                              const ObIArray<ObString> &partition_values,
                              const ObIArray<ObString> &column_names,
-                             ObOptExternalTableStat *&external_table_stat,
-                             ObIArray<ObOptExternalColumnStat *> &external_table_column_stats) override;
+                             ObIArray<ObOptCatalogTableStat *> &catalog_table_stats,
+                             ObIArray<ObOptCatalogColumnStat *> &catalog_table_column_stats) override;
 
   int fetch_partitions(ObIAllocator &allocator,
                        const ObILakeTableMetadata *table_metadata,
-                       Partitions &partitions) override;
+                       const ObIArray<ObString> &part_col_names,
+                       ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos) override;
 
   virtual int fetch_latest_table_schema_version(const common::ObString &ns_name,
                                                 const common::ObString &tbl_name,
@@ -78,15 +72,15 @@ public:
                                   const ObILakeTableMetadata *table_metadata,
                                   const ObIArray<ObString> &partition_values,
                                   const ObIArray<ObString> &column_names,
-                                  ObOptExternalTableStat *&external_table_stat,
-                                  ObIArray<ObOptExternalColumnStat *> &external_table_column_stats);
+                                  ObIArray<ObOptCatalogTableStat *> &catalog_table_stats,
+                                  ObIArray<ObOptCatalogColumnStat *> &catalog_table_column_stats);
 
   int fetch_iceberg_table_statistics(ObIAllocator &allocator,
                                      const ObILakeTableMetadata *table_metadata,
                                      const ObIArray<ObString> &partition_values,
                                      const ObIArray<ObString> &column_names,
-                                     ObOptExternalTableStat *&external_table_stat,
-                                     ObIArray<ObOptExternalColumnStat *> &external_table_column_stats);
+                                     ObOptCatalogTableStat *&catalog_table_stat,
+                                     ObIArray<ObOptCatalogColumnStat *> &catalog_table_column_stats);
 
   int alter_table_with_lock(const ObString &db_name,
                             const ObString &tb_name,
@@ -95,10 +89,19 @@ public:
   static constexpr const char *ICEBERG_METADATA_LOCATION = "metadata_location";
   static constexpr const char *TABLE_TYPE = "table_type";
 
-
   int get_cache_refresh_interval_sec(int64_t &sec);
 
 private:
+  int handle_ddl_time(String &time_str, int64_t &ddl_time);
+  int fetch_hive_table_partitions(ObIAllocator &allocator,
+                                  const ObILakeTableMetadata *table_metadata,
+                                  const ObIArray<ObString> &part_col_names,
+                                  ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos);
+  int fill_partition_stats(const ObILakeTableMetadata *table_metadata,
+                           const ObString &location,
+                           const ObString &access_info,
+                           ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos);
+
   virtual int do_init(const common::ObString &properties) override;
 
   static int deduce_lake_table_format(ObIAllocator &allocator,

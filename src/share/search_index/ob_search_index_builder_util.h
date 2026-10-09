@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_GIN_INDEX_BUILDER_UTIL_H_
@@ -20,6 +13,8 @@
 
 namespace oceanbase
 {
+namespace share { namespace schema { class ObSchemaGuardWrapper; }}
+
 namespace rootserver
 {
 class ObDDLService;
@@ -48,8 +43,7 @@ public:
     static int get_dropping_search_data_index_invisiable_index_schema(
         const uint64_t tenant_id,
         const ObTableSchema &index_table_schema,
-        share::schema::ObSchemaGetterGuard &schema_guard,
-        common::ObIArray<share::schema::ObTableSchema> &new_aux_schemas);
+        share::schema::ObSchemaGuardWrapper &schema_guard_wrapper,        common::ObIArray<share::schema::ObTableSchema> &new_aux_schemas);
     static int get_search_index_column_name(
         const ObTableSchema &data_table_schema,
         const ObTableSchema &index_table_schema,

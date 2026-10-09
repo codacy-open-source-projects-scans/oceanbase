@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef _SHARE_CATALOG_HIVE_OB_HIVE_METASTORE_H
 #define _SHARE_CATALOG_HIVE_OB_HIVE_METASTORE_H
@@ -17,7 +10,7 @@
 #include "lib/string/ob_string.h"
 #include "share/catalog/ob_catalog_properties.h"
 #include "share/schema/ob_schema_struct.h"
-#include "share/catalog/hive/thrift/gen_cpp/ThriftHiveMetastore.h"
+#include <ThriftHiveMetastore.h>
 
 #include <memory>
 #include <thrift/protocol/TBinaryProtocol.h>
@@ -54,7 +47,7 @@ using PartitionValuesRows = std::vector<ApacheHive::PartitionValuesRow>;
 static const int MAX_HIVE_METASTORE_CLIENT_RETRY = 3;
 
 const char *const LAST_DDL_TIME = "transient_lastDdlTime";
-
+const char *const LAST_MODIFIED_TIME = "last_modified_time";
 // Kerberos related.
 static constexpr int64_t DEFAULT_KINIT_TIMEOUT_US = 10LL * 60LL * 1000LL * 1000LL; // 10 min
 static constexpr int64_t OB_MAX_ACCESS_INFO_LENGTH = 1600;
@@ -554,10 +547,6 @@ public:
   int list_table_names(const ObString &db_name,
                        ObIAllocator &allocator,
                        ObIArray<ObString> &tb_names);
-  int get_latest_schema_version(const ObString &ns_name,
-                                const ObString &tb_name,
-                                const ObNameCaseMode case_mode,
-                                int64_t &schema_version);
   int get_table(const ObString &ns_name,
                 const ObString &tb_name,
                 const ObNameCaseMode case_mode,
@@ -629,7 +618,6 @@ public:
 
 private:
   static int extract_host_and_port(const ObString &uri, char *host, int &port);
-  static int64_t handle_ddl_time(String &time_str);
   static void extract_basic_stats_from_parameters(const std::map<std::string, std::string> &parameters,
                                                   ObHiveBasicStats &basic_stats);
 
@@ -666,6 +654,7 @@ private:
   ObString hms_principal_;
   ObString hms_krb5conf_;
   ObString hms_default_catalog_;
+  ObString hms_service_principal_;
   ObString service_;
   ObString server_FQDN_;
 

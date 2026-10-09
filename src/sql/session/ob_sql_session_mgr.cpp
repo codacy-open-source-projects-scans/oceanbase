@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -582,16 +575,20 @@ int ObSQLSessionMgr::free_session(const ObFreeSessionCtx &ctx)
   if (NULL != sess_info) {
 #ifdef OB_BUILD_AUDIT_SECURITY
     if (!sess_info->get_is_deserialized()) {
-      ObString empty_comment_text;
+      ObString empty_str;
       sess_info->update_alive_time_stat();
       int64_t cur_timeout_backup = THIS_WORKER.get_timeout_ts();
       THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + OB_MAX_USER_SPECIFIED_TIMEOUT);
-      ObSecurityAuditUtils::handle_security_audit(*sess_info,
-                                                  stmt::T_LOGOFF,
-                                                  ObString::make_string("DISCONNECT"),
-                                                  empty_comment_text,
-                                                  ret);
-      ObAuditLogUtils::hanlde_connect_audit_log(*sess_info, "LOGOFF");
+      ObSecurityAuditUtils::handle_connect_security_audit(*sess_info,
+                                                          stmt::T_LOGOFF,
+                                                          ObString::make_string("DISCONNECT"),
+                                                          empty_str,
+                                                          empty_str,
+                                                          empty_str,
+                                                          empty_str,
+                                                          GCONF.self_addr_,
+                                                          ret);
+      ObAuditLogUtils::handle_connect_audit_log(*sess_info, "LOGOFF");
       THIS_WORKER.set_timeout_ts(cur_timeout_backup);
     }
 #endif

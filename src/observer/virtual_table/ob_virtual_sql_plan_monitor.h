@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_OB_VIRTUAL_SQL_PLAN_MONITOR_H
@@ -150,6 +143,8 @@ private:
   int64_t rt_start_idx_;
   int64_t rt_end_idx_;
   bool fetch_profile_;
+  // column RAW_PROFILE is changed from varbinary to longblob, we use this flag to handle the conversion in upgrade window
+  bool raw_profile_as_lob_;
   ObArenaAllocator profile_allocator_;
   bool enable_filter_pushdown_;
   sql::ObMonitorNode *cur_monitor_node_;

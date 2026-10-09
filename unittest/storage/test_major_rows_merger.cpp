@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -117,7 +110,7 @@ void ObMajorRowsMergerTest::prepare_merge_context(const ObMergeType &merge_type,
                                                   ObTabletMergeCtx &merge_context)
 {
   TestMergeBasic::prepare_merge_context(
-      merge_type, is_full_merge, trans_version_range, &merge_dag_, merge_context, false/*is_delete_insert_merge*/);
+      merge_type, is_full_merge, trans_version_range, &merge_dag_, merge_context);
   if (is_schema_changed_in_medium_info && merge_context.static_param_.major_merge_sstable_status_array_.count() > 0) {
     merge_context.static_param_.major_merge_sstable_status_array_.at(0).is_schema_changed_ = true;
   }
@@ -245,14 +238,14 @@ TEST_F(ObMajorRowsMergerTest, test_compare_func)
   ASSERT_EQ((long)ObPartitionMergeLoserTreeCmp::RIGHT_RANGE_NEED_OPEN, cmp_ret);
 
   //compare rowkey and range
-  OK(item_0.iter_->open_curr_range(false));
+  OK(item_0.iter_->open_curr_range(false, false));
   OK(cmp.compare(item_0, item_1, cmp_ret));
   ASSERT_EQ((long)ObPartitionMergeLoserTreeCmp::RIGHT_RANGE_NEED_OPEN, cmp_ret);
   OK(cmp.compare(item_1, item_0, cmp_ret));
   ASSERT_EQ((long)ObPartitionMergeLoserTreeCmp::LEFT_RANGE_NEED_OPEN, cmp_ret);
 
   //compare both rowkey
-  OK(item_1.iter_->open_curr_range(false));
+  OK(item_1.iter_->open_curr_range(false, false));
   OK(cmp.compare(item_0, item_1, cmp_ret));
   ASSERT_EQ(-1, cmp_ret);
 

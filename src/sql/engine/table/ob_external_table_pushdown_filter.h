@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -149,7 +142,8 @@ public:
   };
 
   ObExternalTablePushdownFilter() : is_eager_column_(allocator_), is_dup_project_(allocator_),
-    eager_columns_(), lazy_columns_(), skip_filter_executor_(), skipping_filter_nodes_(),
+    eager_columns_(), lazy_columns_(), meta_filter_col_ids_(),
+    skip_filter_executor_(), skipping_filter_nodes_(),
     file_filter_col_ids_(allocator_), file_filter_col_metas_(allocator_),
     pd_storage_filters_(nullptr), ext_tbl_filter_pd_level_(0),
     column_ids_(nullptr), filter_enabled_(false), bloom_filter_enabled_(false) {}
@@ -249,6 +243,7 @@ protected:
 
   ObArray<uint64_t> eager_columns_;
   ObArray<uint64_t> lazy_columns_;
+  ObArray<uint64_t> meta_filter_col_ids_;
 private:
   ObArenaAllocator allocator_;
   blocksstable::ObSkipIndexFilterExecutor skip_filter_executor_;

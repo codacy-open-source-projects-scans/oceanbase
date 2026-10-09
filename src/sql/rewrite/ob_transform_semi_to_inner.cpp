@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -429,7 +422,7 @@ int ObTransformSemiToInner::split_join_condition(ObDMLStmt& stmt,
         if (OB_FAIL(other_conds.push_back(expr))) {
           LOG_WARN("failed to push back expr", K(ret));
         }
-      } else if (T_OP_EQ != expr->get_expr_type()) {
+      } else if (T_OP_EQ != expr->get_expr_type() && T_OP_NSEQ != expr->get_expr_type()) {
         bool less_or_greater = is_less_or_greater_expr(expr->get_expr_type());
         if (less_or_greater && OB_FAIL(cmp_join_conds.push_back(expr))) {
           LOG_WARN("failed to push back expr", K(ret));
@@ -582,6 +575,9 @@ int ObTransformSemiToInner::check_basic_validity(ObDMLStmt *root_stmt,
       OPT_TRACE("stmt is insensitive to result of subquery has duplicated values");
       LOG_TRACE("stmt is insensitive to result of subquery has duplicated values");
     }
+    if (OB_SUCC(ret) && ctx_->force_equal_semi_to_inner_) {
+      need_check_cost = false;
+    }
   } else if (invalid_conds_count > 0) {
     // do nothing
   } else if (cmp_join_conds_count < 2 && OB_FAIL(check_can_add_deduplication(left_exprs, right_exprs, can_add_deduplication))) {
@@ -593,7 +589,8 @@ int ObTransformSemiToInner::check_basic_validity(ObDMLStmt *root_stmt,
                                                       semi_info.semi_conditions_,
                                                       condition_match_index))) {
     LOG_WARN("failed to check join condition match index", K(ret));
-  } else if (!ctx.is_multi_join_cond_ && !condition_match_index) {
+  } else if (!ctx.is_multi_join_cond_ && !condition_match_index &&
+             !ctx_->force_equal_semi_to_inner_) {
     // do nothing
     OPT_TRACE("semi condition not match index and is not multi join , will not transform");
   } else if (cmp_join_conds_count == 0 && other_conds_count == 0 && can_add_deduplication) {
@@ -612,6 +609,12 @@ int ObTransformSemiToInner::check_basic_validity(ObDMLStmt *root_stmt,
     } else if (query_from_dual) {
       need_check_cost = false;
     }
+    if (OB_SUCC(ret) && ctx_->force_equal_semi_to_inner_) {
+      need_check_cost = false;
+    }
+  } else if (!ctx.is_multi_join_cond_ && !condition_match_index) {
+    // do nothing
+    OPT_TRACE("semi condition not match index and is not multi join , will not transform");
   } else if (cmp_join_conds_count == 1 && other_conds_count == 0 && can_add_deduplication) {
     // TO_AGGR_INNER : for cases when there is one and only one compare-join-condition
     is_valid = true;

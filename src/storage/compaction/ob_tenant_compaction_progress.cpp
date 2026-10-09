@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -250,9 +243,10 @@ int ObTenantCompactionProgressMgr::init_progress(const int64_t major_snapshot_ve
     LOG_WARN("failed to get sstable info", K(ret));
   } else {
     SpinWLockGuard guard(lock_);
-    if (OB_UNLIKELY(array_[pos].merge_version_ != major_snapshot_version)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected progress", K(ret), K(major_snapshot_version), K(pos), K(array_[pos]));
+    // re-resolve pos under lock: unlocked loop_major_sstable_ window may have
+    // advanced the ring buffer and overwritten the original slot.
+    if (OB_FAIL(get_pos_(major_snapshot_version, pos))) {
+      LOG_WARN("failed to locate progress slot", K(ret), K(major_snapshot_version));
     } else if (share::ObIDag::DAG_STATUS_FINISH != array_[pos].status_) {
       array_[pos].is_inited_ = true;
       array_[pos].total_tablet_cnt_ = total_tablet_cnt;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "sql/engine/cmd/ob_set_names_executor.h"
@@ -38,9 +31,12 @@ int ObSetNamesExecutor::execute(ObExecContext &ctx, ObSetNamesStmt &stmt)
       ObString collation = stmt.get_collation();
       ObCollationType collation_type = CS_TYPE_INVALID;
       ObCharsetType cs_type = ObCharset::charset_type(charset);
+      ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
       if (CHARSET_INVALID == cs_type) {
         ret = OB_ERR_UNKNOWN_CHARSET;
         LOG_USER_ERROR(OB_ERR_UNKNOWN_CHARSET, charset.length(), charset.ptr());
+      } else if (OB_FAIL(session->get_charset_compat_type(charset_compat_type))) {
+        SQL_ENG_LOG(WARN, "fail to get charset compat type", K(ret));
       } else {
         charset = ObString::make_string(ObCharset::charset_name(cs_type));
         if (stmt.is_default_collation() || !collation.empty()) {
@@ -57,7 +53,7 @@ int ObSetNamesExecutor::execute(ObExecContext &ctx, ObSetNamesStmt &stmt)
           }
         } else {
           // the use default collation of this charset
-          collation_type = ObCharset::get_default_collation(cs_type);
+          collation_type = ObCharset::get_default_collation(cs_type, charset_compat_type);
           collation = ObString::make_string(ObCharset::collation_name(collation_type));
         }
       }
@@ -72,7 +68,8 @@ int ObSetNamesExecutor::execute(ObExecContext &ctx, ObSetNamesStmt &stmt)
       if (OB_SUCC(ret)) {
         if (stmt.is_set_names()) {
           // SET NAMES
-          ObCollationType cs_coll_type = ObCharset::get_default_collation(ObCharset::charset_type(charset));
+          ObCollationType cs_coll_type = ObCharset::get_default_collation(
+            ObCharset::charset_type(charset), charset_compat_type);
           ObCollationType coll_type = ObCharset::collation_type(collation);
           if (CS_TYPE_INVALID == cs_coll_type || CS_TYPE_INVALID == coll_type) {
             ret = OB_ERR_UNEXPECTED;
@@ -97,7 +94,8 @@ int ObSetNamesExecutor::execute(ObExecContext &ctx, ObSetNamesStmt &stmt)
           // SET CHARACTER SET
           ObObj database_charset;
           ObObj database_collation;
-          ObCollationType cs_coll_type = ObCharset::get_default_collation(ObCharset::charset_type(charset));
+          ObCollationType cs_coll_type = ObCharset::get_default_collation(
+            ObCharset::charset_type(charset), charset_compat_type);
           if (OB_FAIL(sql::ObSQLUtils::is_charset_data_version_valid(ObCharset::charset_type(charset),
                                                                      session->get_effective_tenant_id()))) {
             SQL_EXE_LOG(WARN, "failed to check charset data version valid", K(ret));

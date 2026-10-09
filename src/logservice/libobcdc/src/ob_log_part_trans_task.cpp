@@ -1,15 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- *
- * Transaction Structures
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX OBLOG
@@ -649,6 +640,14 @@ int MutatorRow::parse_columns_(
           column_offset = OB_MAX_EXTRA_ROWKEY_COLUMN_NUMBER;
         }
       }
+      if constexpr (std::is_same_v<CDC_INNER_TABLE_SCHEMA, ObCDCLobAuxTableSchemaInfo>) {
+        // Compaction TTL table will add ttl column for aux lob table.
+        // It is just like multi-version column, we should skip it. (the lob schema won't contain the ttl column)
+        if (i >= col_des_array.count()) {
+          continue;
+        }
+      }
+
       uint64_t column_id = OB_INVALID_ID;
       const ObObj *value = NULL;
       blocksstable::ObStorageDatum &datum = datum_row.storage_datums_[i];

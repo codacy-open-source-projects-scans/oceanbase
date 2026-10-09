@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -21,7 +14,7 @@ inner_lob_map_t inner_lob_map;
 bool lob_mapping_init()
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(inner_lob_map.create(369, ObModIds::OB_INNER_LOB_HASH_SET))) {
+  if (OB_FAIL(inner_lob_map.create(380, ObModIds::OB_INNER_LOB_HASH_SET))) {
     SERVER_LOG(WARN, "fail to create inner lob map", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < ARRAYSIZEOF(lob_aux_table_mappings); ++i) {

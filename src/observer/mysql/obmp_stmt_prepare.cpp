@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -512,8 +505,8 @@ int ObMPStmtPrepare::do_process(ObSQLSessionInfo &session,
       sqlstat_record.set_partition_cnt(result.get_exec_context().get_das_ctx().get_related_tablet_cnt());
       sqlstat_record.set_is_route_miss(result.get_session().partition_hit().get_bool()? 0 : 1);
       sqlstat_record.set_is_plan_cache_hit(ctx_.plan_cache_hit_);
-      sqlstat_record.set_is_muti_query(session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
       if (OB_NOT_NULL(session.get_cur_exec_ctx()) && OB_NOT_NULL(session.get_cur_exec_ctx()->get_sql_ctx())) {
+        sqlstat_record.set_is_muti_query(session.get_cur_exec_ctx()->get_sql_ctx()->multi_stmt_item_.is_part_of_multi_stmt());
         sqlstat_record.set_is_muti_query_batch(session.get_cur_exec_ctx()->get_sql_ctx()->multi_stmt_item_.is_batched_multi_stmt());
       }
       if (OB_NOT_NULL(result.get_physical_plan())) {

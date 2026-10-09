@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -1068,8 +1061,11 @@ int ObTransformQueryPushDown::reset_set_stmt_select_list(ObSelectStmt *select_st
 {
   int ret = OB_SUCCESS;
   ObSEArray<ObRawExpr*, 4> old_select_exprs;
+  ObSEArray<ObRawExpr*, 4> select_exprs;
+  ObSEArray<ObRawExpr*, 4> old_pure_set_exprs;
   ObSEArray<ObRawExpr*, 4> adjust_old_select_exprs;
   ObSEArray<ObRawExpr*, 4> new_select_exprs;
+  ObSEArray<ObRawExpr*, 4> new_pure_set_exprs;
   ObSEArray<ObRawExpr*, 4> adjust_new_select_exprs;
   ObRawExpr* select_expr;
   if (OB_ISNULL(select_stmt) || OB_ISNULL(ctx_)) {
@@ -1079,7 +1075,18 @@ int ObTransformQueryPushDown::reset_set_stmt_select_list(ObSelectStmt *select_st
     /*do nothing*/
   } else if (OB_FAIL(select_stmt->get_select_exprs(old_select_exprs))) {
     LOG_WARN("failed to get select exprs", K(ret));
+  } else if (OB_FAIL(select_stmt->get_pure_set_exprs(old_pure_set_exprs))) {
+    LOG_WARN("failed to get select exprs", K(ret));
+  } else if (old_pure_set_exprs.count() != old_select_exprs.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("set expr count is not valid", K(ret));
   } else {
+    // res_types for pure set exprs
+    // not for select exprs
+    // for examples,
+    // select expr : cast(union[0] as xx)
+    // set expr: union[0]
+    // new set expr: union[1]
     ObSEArray<ObExprResType, 8> res_types;
     int64_t k = 0;
     for (int64_t i = 0; OB_SUCC(ret) && i < select_offset.count(); ++i) {
@@ -1092,11 +1099,14 @@ int ObTransformQueryPushDown::reset_set_stmt_select_list(ObSelectStmt *select_st
         } else {
           ++ k;
         }
-      } else if (OB_ISNULL(select_expr = old_select_exprs.at(select_offset.at(i)))) {
+      } else if (OB_ISNULL(select_expr = old_pure_set_exprs.at(select_offset.at(i)))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("select expr is null", K(ret), K(select_expr));
+        // extract set expr from select expr
       } else if (OB_FAIL(res_types.push_back(select_expr->get_result_type()))) {
         LOG_WARN("failed to pushback result type");
+      } else if (OB_FAIL(select_exprs.push_back(old_select_exprs.at(select_offset.at(i))))) {
+        LOG_WARN("failed to pushback expr");
       }
     }
     select_stmt->get_select_items().reset();
@@ -1106,27 +1116,41 @@ int ObTransformQueryPushDown::reset_set_stmt_select_list(ObSelectStmt *select_st
                                                                       select_stmt,
                                                                       res_types))) {
       LOG_WARN("failed to create select list for union", K(ret));
-    } else if (OB_FAIL(select_stmt->get_select_exprs(new_select_exprs))) {
+    } else if (OB_FAIL(select_stmt->get_select_exprs(new_pure_set_exprs))) {
       LOG_WARN("failed to get select exprs", K(ret));
     } else {
+      int64_t j = 0;
       for (int64_t i = 0; OB_SUCC(ret) && i < select_offset.count(); ++i) {
         if (select_offset.at(i) == -1) {//-1 meanings upper stmt has const select item
           /*do nothing */
         } else if (OB_UNLIKELY(select_offset.at(i) < 0 ||
-                               select_offset.at(i) >= old_select_exprs.count() ||
-                               i >= new_select_exprs.count())) {
+                               j >= select_exprs.count() ||
+                               select_offset.at(i) >= old_pure_set_exprs.count() ||
+                               i >= new_pure_set_exprs.count())) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("get unexpected error", K(select_offset.at(i)), K(old_select_exprs.count()),
-                                           K(new_select_exprs.count()), K(i), K(ret));
-        } else if (OB_FAIL(adjust_old_select_exprs.push_back(old_select_exprs.at(select_offset.at(i)))) ||
-                   OB_FAIL(adjust_new_select_exprs.push_back(new_select_exprs.at(i)))) {
+          LOG_WARN("get unexpected error", K(select_offset.at(i)), K(old_pure_set_exprs.count()),
+                                           K(new_pure_set_exprs.count()), K(select_exprs.count()),
+                                           K(i), K(ret));
+        } else if (OB_FAIL(adjust_old_select_exprs.push_back(old_pure_set_exprs.at(select_offset.at(i)))) ||
+                   OB_FAIL(adjust_new_select_exprs.push_back(new_pure_set_exprs.at(i)))) {
           LOG_WARN("failed to push back expr", K(ret));
-        } else {/*do nothing*/}
+        } else {
+          SelectItem &select_item = select_stmt->get_select_item(i);
+          select_item.expr_ =  select_exprs.at(j);
+          j++;
+        }
       }
       if (OB_SUCC(ret) && adjust_old_select_exprs.count() > 0) {
-        if (OB_FAIL(select_stmt->replace_relation_exprs(adjust_old_select_exprs,
-                                                        adjust_new_select_exprs))) {
-          LOG_WARN("failed to replace relation exprs", K(ret));
+        ObStmtExprReplacer replacer;
+        replacer.set_relation_scope();
+        replacer.add_scope(SCOPE_SELECT);
+        replacer.add_scope(SCOPE_HAVING);
+        replacer.add_scope(SCOPE_ORDERBY);
+        replacer.set_recursive(false);
+        if (OB_FAIL(replacer.add_replace_exprs(adjust_old_select_exprs, adjust_new_select_exprs))) {
+          LOG_WARN("failed to add replace exprs", K(ret));
+        } else if (OB_FAIL(select_stmt->iterate_stmt_expr(replacer))) {
+          LOG_WARN("failed to iterate stmt expr", K(ret));
         }
       }
     }

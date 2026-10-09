@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -138,6 +131,14 @@ int ObDBMSSchedJobExecutor::init_session(
       ObObj trx_timeout_obj;
       query_timeout_obj.set_int(QUERY_TIMEOUT_US);
       trx_timeout_obj.set_int(TRX_TIMEOUT_US);
+      OZ (session.update_sys_variable(SYS_VAR_OB_QUERY_TIMEOUT, query_timeout_obj));
+      OZ (session.update_sys_variable(SYS_VAR_OB_TRX_TIMEOUT, trx_timeout_obj));
+    } else if (job_info.is_purge_recyclebin_job()) {
+      const int64_t TIMEOUT_US = job_info.get_max_run_duration() * 1000000L;
+      ObObj query_timeout_obj;
+      ObObj trx_timeout_obj;
+      query_timeout_obj.set_int(TIMEOUT_US);
+      trx_timeout_obj.set_int(TIMEOUT_US);
       OZ (session.update_sys_variable(SYS_VAR_OB_QUERY_TIMEOUT, query_timeout_obj));
       OZ (session.update_sys_variable(SYS_VAR_OB_TRX_TIMEOUT, trx_timeout_obj));
     }
@@ -291,6 +292,9 @@ int ObDBMSSchedJobExecutor::run_dbms_sched_job(
       } else if (job_info.is_mysql_event_job()) { //mysql event
         OZ (what.append_fmt("%.*s",
               job_info.get_what().length(), job_info.get_what().ptr()));
+      } else if (job_info.is_purge_recyclebin_job()) { //purge recyclebin is raw DDL
+        OZ (what.append_fmt("%.*s",
+            job_info.get_what().length(), job_info.get_what().ptr()));
       } else {
         //mysql mode not support anonymous block
         OZ (what.append_fmt("CALL %.*s;",
@@ -398,7 +402,7 @@ int ObDBMSSchedJobExecutor::run_dbms_sched_job(
       OX (session_info->set_current_trace_id(ObCurTraceId::get_trace_id()));
       OX (session_info->set_session_active(what.string(), current_time, current_time, obmysql::COM_QUERY));
       EVENT_INC(ACTIVE_SESSIONS);
-      OZ (table_operator_.update_for_start_execute(tenant_id, job_info));
+      OZ (table_operator_.update_for_start_execute(tenant_id, job_info, static_cast<uint64_t>(session_info->get_sid())));
       OZ (pool->acquire_spi_conn(session_info, conn));
       if (OB_NOT_NULL(conn) && OB_NOT_NULL(session_info) && !is_ora_sys_user(session_info->get_user_id()) && !is_root_user(session_info->get_user_id())) {
         conn->set_check_priv(true);
@@ -456,6 +460,9 @@ int ObDBMSSchedJobExecutor::run_dbms_sched_job(uint64_t tenant_id, bool is_oracl
   OZ (table_operator_.get_dbms_sched_job_info(tenant_id, is_oracle_tenant, job_id, job_name, allocator, job_info));
 
   if (OB_SUCC(ret)) {
+    if (job_info.is_mview_job() && job_info.max_run_duration_ > 0) {
+      THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + job_info.max_run_duration_ * 1000000LL);
+    }
     if (job_info.is_killed()) { //Intercept user cancellation requests before the actual execution of the job
       OZ(table_operator_.update_for_kill(job_info));
     } else {

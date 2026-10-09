@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef  PL_MOD_DEF
@@ -73,14 +66,6 @@ static constexpr const char* OB_PL_MOD_DEF[PL_MOD_IDX_NUM] =
       : "PlTemp"
 
 
-class PlMemEntifyDestroyGuard
-{
-public:
-  PlMemEntifyDestroyGuard(lib::MemoryContext &entity) : ref_(entity) {}
-  ~PlMemEntifyDestroyGuard();
-private:
-  lib::MemoryContext &ref_;
-};
 
 class ObPLAllocator1 : public common::ObIAllocator
 {
@@ -90,7 +75,8 @@ public:
     memattr_(ObMemAttr(MTL_ID(), "PlTemp", ObCtxIds::DEFAULT_CTX_ID)),
     parent_allocator_(parent_alloc),
     allocator_(nullptr),
-    use_malloc_(false) {}
+    use_malloc_(false),
+    need_destroy_allocator_(false) {}
 
   virtual ~ObPLAllocator1() {
     destroy();
@@ -139,6 +125,7 @@ private:
   common::ObBlockAllocMgr alloc_mgr_;
   common::ObIAllocator *allocator_;
   bool use_malloc_;
+  bool need_destroy_allocator_;
 };
 
 }

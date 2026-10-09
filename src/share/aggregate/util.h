@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_AGGREGATE_UTIL_H_
@@ -689,15 +682,11 @@ inline bool supported_aggregate_function(const ObItemType agg_op, bool use_hash_
   }
   case T_FUN_GROUP_CONCAT: {
     uint64_t ob_version = GET_MIN_CLUSTER_VERSION();
-    if (!has_rollup && ob_version >= CLUSTER_VERSION_4_3_5_1) {
-      return true;
-    }
+    return !has_rollup && ob_version >= CLUSTER_VERSION_4_3_5_1;
   }
   case T_FUN_CK_GROUPCONCAT: {
     uint64_t ob_version = GET_MIN_CLUSTER_VERSION();
-    if (!has_rollup && ob_version >= CLUSTER_VERSION_4_5_1_0) {
-      return true;
-    }
+    return !has_rollup && ob_version >= CLUSTER_VERSION_4_5_1_0;
   }
   case T_FUN_TOP_FRE_HIST: {
     return GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_5_2;
@@ -727,6 +716,15 @@ inline bool supported_aggregate_function(const ObItemType agg_op, bool use_hash_
   }
   case T_FUN_SYS_COUNT_INROW: {
     return GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_5_1_0;
+  }
+  case T_FUN_WINDOW_FUNNEL: {
+    uint64_t cluster_version = GET_MIN_CLUSTER_VERSION();
+    return (cluster_version >= MOCK_CLUSTER_VERSION_4_4_2_1 && cluster_version < CLUSTER_VERSION_4_5_0_0)
+            || (cluster_version >= CLUSTER_VERSION_4_6_1_0);
+  }
+  case T_FUN_SYS_EXT_MIN:
+  case T_FUN_SYS_EXT_MAX: {
+    return GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_6_1_0;
   }
   default:
     return false;
@@ -810,6 +808,14 @@ inline bool agg_res_not_null(const ObItemType agg_op)
   VEC_TC_MYSQL_DATETIME,      \
   VEC_TC_MYSQL_DATE,          \
   VEC_TC_ROARINGBITMAP
+
+// window_funnel parameter indices
+constexpr int64_t WINDOW_FUNNEL_TIMESTAMP_EXPR_IDX = 0;
+constexpr int64_t WINDOW_FUNNEL_WINDOW_EXPR_IDX = 1;
+constexpr int64_t WINDOW_FUNNEL_MODE_EXPR_IDX = 2;
+constexpr int64_t WINDOW_FUNNEL_PSEUDO_TIME_EXPR_IDX = 3;
+constexpr int64_t WINDOW_FUNNEL_PSEUDO_EVENT_IDX_EXPR_IDX = 4;
+constexpr int64_t WINDOW_FUNNEL_CONDITION_START_IDX = 5;
 
 } // end namespace aggregate
 } // end namespace share

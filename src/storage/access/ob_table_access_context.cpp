@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -66,6 +59,7 @@ ObTableAccessContext::ObTableAccessContext()
     scan_mem_(nullptr),
     table_scan_stat_(NULL),
     table_store_stat_(),
+    cache_aware_row_num_(0),
     out_cnt_(0),
     trans_version_range_(),
     range_array_pos_(nullptr),
@@ -85,7 +79,8 @@ ObTableAccessContext::ObTableAccessContext()
     mds_collector_(nullptr),
     row_scan_cnt_(nullptr),
     skip_scan_factory_(nullptr),
-    is_inc_major_query_(false)
+    is_inc_major_query_(false),
+    ttl_major_for_partial_update_upper_snapshot_(0)
 {
   merge_scn_.set_max();
 }
@@ -199,8 +194,7 @@ int ObTableAccessContext::build_lob_locator_helper(const ObStoreCtx &ctx,
 
 int ObTableAccessContext::init(ObTableScanParam &scan_param,
                                ObStoreCtx &ctx,
-                               const ObVersionRange &trans_version_range,
-                               CachedIteratorNode *cached_iter_node)
+                               const ObVersionRange &trans_version_range)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(is_inited_ && stmt_allocator_ != scan_param.allocator_)) {
@@ -211,7 +205,6 @@ int ObTableAccessContext::init(ObTableScanParam &scan_param,
     LOG_WARN("Failed to init scan allocator", K(ret));
   } else {
     stmt_allocator_ = scan_param.allocator_;
-    cached_iter_node_ = cached_iter_node;
     ls_id_ = scan_param.ls_id_;
     tablet_id_ = scan_param.tablet_id_;
     query_flag_ = scan_param.scan_flag_;
@@ -222,7 +215,6 @@ int ObTableAccessContext::init(ObTableScanParam &scan_param,
     limit_param_ = scan_param.limit_param_.is_valid() ? &scan_param.limit_param_ : NULL;
     table_scan_stat_->reset();
     table_store_stat_.in_bf_cache_threshold_ = scan_param.in_bf_cache_threshold_;
-    table_store_stat_.in_fuse_row_cache_threshold_ = scan_param.in_fuse_row_cache_threshold_;
     table_store_stat_.in_row_cache_threshold_ = scan_param.in_row_cache_threshold_;
     trans_version_range_ = trans_version_range;
     need_scn_ = scan_param.need_scn_ ||
@@ -233,6 +225,7 @@ int ObTableAccessContext::init(ObTableScanParam &scan_param,
     mds_collector_ = scan_param.mds_collector_;
     row_scan_cnt_ = scan_param.row_scan_cnt_;
     is_inc_major_query_ = false;
+    cache_aware_row_num_ = scan_param.cache_aware_row_num_ > 0 ? scan_param.cache_aware_row_num_ : scan_param.in_fuse_row_cache_threshold_;
     if(OB_FAIL(build_lob_locator_helper(scan_param, ctx, trans_version_range))) {
       STORAGE_LOG(WARN, "Failed to build lob locator helper", K(ret));
       // new static engine do not need fill scale
@@ -533,6 +526,7 @@ void ObTableAccessContext::reset()
   }
   row_scan_cnt_ = nullptr;
   is_inc_major_query_ = false;
+  ttl_major_for_partial_update_upper_snapshot_ = 0;
 }
 
 int ObTableAccessContext::rescan_reuse(ObTableScanParam &scan_param)
@@ -582,6 +576,7 @@ void ObTableAccessContext::reuse()
   scan_resume_point_ = nullptr;
   row_scan_cnt_ = nullptr;
   is_inc_major_query_ = false;
+  ttl_major_for_partial_update_upper_snapshot_ = 0;
 }
 
 int ObTableAccessContext::alloc_iter_pool(const bool use_column_store)
@@ -641,9 +636,7 @@ int ObTableAccessContext::combine_to_filter_tree(sql::ObPushdownFilterExecutor *
     LOG_WARN("not inited", K(ret));
   } else if (nullptr == mds_filter_mgr_) {
     root_filter = sql_pushdown_filter;
-  } else if (OB_FAIL(mds_filter_mgr_->combine_to_filter_tree_with_check(root_filter, sql_pushdown_filter))) {
-    // the function will check double combine to filter tree
-    // if double combine isn't the same, it will return error
+  } else if (OB_FAIL(mds_filter_mgr_->combine_to_filter_tree(root_filter, sql_pushdown_filter))) {
     LOG_WARN("failed to combine to filter tree", K(ret));
   }
 

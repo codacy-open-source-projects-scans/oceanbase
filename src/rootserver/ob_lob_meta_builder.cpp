@@ -1,17 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
 #include "ob_lob_meta_builder.h"
+#include "share/compaction_ttl/ob_compaction_ttl_util.h"
 
 namespace oceanbase
 {
@@ -51,6 +45,7 @@ int ObLobMetaBuilder::generate_aux_lob_meta_schema(
     char buf[buf_size];
     MEMSET(buf, 0, buf_size);
     int64_t pos = 0;
+    bool need_set_random_part_attr = data_schema.is_random_part();
     if (OB_FAIL(generate_schema(data_schema, aux_lob_meta_schema))) {
       LOG_WARN("generate_schema for aux vp table failed", K(data_schema), K(ret));
     } else if (OB_INVALID_ID == new_table_id
@@ -83,7 +78,10 @@ int ObLobMetaBuilder::generate_aux_lob_meta_schema(
     } else if (OB_FAIL(set_lob_table_column_store_if_need(aux_lob_meta_schema))) {
       LOG_WARN("fail to set lob table column store if need", KR(ret));
     } else if ((data_schema.is_partitioned_table() || data_schema.is_auto_partitioned_table())
+               && !need_set_random_part_attr
                && OB_FAIL(aux_lob_meta_schema.assign_partition_schema_without_auto_part_attr(data_schema))) {
+      LOG_WARN("fail to assign partition schema", K(aux_lob_meta_schema), K(ret));
+    } else if (need_set_random_part_attr && OB_FAIL(aux_lob_meta_schema.assign_partition_schema(data_schema))) {
       LOG_WARN("fail to assign partition schema", K(aux_lob_meta_schema), K(ret));
     } else if (need_generate_id) {
       if (OB_FAIL(ddl_service_.generate_object_id_for_partition_schema(aux_lob_meta_schema))) {
@@ -112,8 +110,8 @@ int ObLobMetaBuilder::generate_schema(
   int ret = OB_SUCCESS;
   if (OB_SUCC(ret)) {
     // reuse inner lob table create schema
-    if (OB_FAIL(ObInnerTableSchema::all_column_aux_lob_meta_schema(aux_lob_meta_schema))) {
-      LOG_WARN("get lob meta schema failed", K(data_schema), K(ret));
+    if (OB_FAIL(ObCompactionTTLUtil::build_aux_lob_table_schema(data_schema, aux_lob_meta_schema))) {
+      LOG_WARN("build aux lob table schema failed", K(data_schema), K(ret));
     } else if (OB_FAIL(set_basic_infos(data_schema, aux_lob_meta_schema))) {
       LOG_WARN("set_basic_infos failed", K(data_schema), K(ret));
     }
@@ -167,7 +165,7 @@ int ObLobMetaBuilder::set_basic_infos(
   aux_lob_meta_schema.set_merge_engine_type(ObMergeEngineStoreFormat::get_lob_aux_inherit_merge_engine_type(data_schema.get_merge_engine_type()));
   if (OB_FAIL(aux_lob_meta_schema.set_compress_func_name(data_schema.get_compress_func_name()))) {
     LOG_WARN("set_compress_func_name failed", K(data_schema));
-  } else if (OB_FAIL(aux_lob_meta_schema.set_ttl_definition(data_schema.get_ttl_definition(), data_schema.get_ttl_flag()))) {
+  } else if (OB_FAIL(aux_lob_meta_schema.inherit_ttl_definition(data_schema))) {
     LOG_WARN("set_ttl_definition failed", K(data_schema));
   }
   return ret;

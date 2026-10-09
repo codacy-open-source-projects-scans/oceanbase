@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_ROOT_SERVICE_H_
@@ -50,7 +43,6 @@
 #include "rootserver/ob_upgrade_storage_format_version_executor.h"
 #include "rootserver/ob_create_inner_schema_executor.h"
 #include "rootserver/ob_update_rs_list_task.h"
-#include "rootserver/ob_schema_history_recycler.h"
 #include "share/ls/ob_ls_info.h"
 #include "share/ls/ob_ls_table_operator.h"
 #include "rootserver/ob_disaster_recovery_task_mgr.h"
@@ -68,6 +60,7 @@
 #include "rootserver/ob_objpriv_mysql_ddl_service.h"
 #include "rootserver/ob_ccl_ddl_service.h"
 #include "rootserver/ob_sensitive_rule_ddl_service.h"
+#include "share/ob_java_policy_rpc_struct.h"
 
 namespace oceanbase
 {
@@ -450,10 +443,8 @@ public:
   obrpc::ObCommonRpcProxy &get_common_rpc_proxy() { return common_proxy_; }
   obrpc::ObSrvRpcProxy &get_rpc_proxy() { return rpc_proxy_; }
   common::ObWorkQueue &get_task_queue() { return task_queue_; }
-  common::ObWorkQueue &get_inspect_task_queue() { return inspect_task_queue_; }
   common::ObServerConfig *get_server_config() { return config_; }
   int64_t get_core_meta_table_version() { return core_meta_table_version_; }
-  ObSchemaHistoryRecycler &get_schema_history_recycler() { return schema_history_recycler_; }
   ObRootMinorFreeze &get_root_minor_freeze() { return root_minor_freeze_; }
   int admin_clear_balance_task(const obrpc::ObAdminClearBalanceTaskArg &arg);
   int check_server_have_enough_resource_for_delete_server(
@@ -518,6 +509,8 @@ public:
   int alter_database(const obrpc::ObAlterDatabaseArg &arg);
   int set_comment(const obrpc::ObSetCommentArg &arg, obrpc::ObParallelDDLRes &res);
   int alter_table(const obrpc::ObAlterTableArg &arg, obrpc::ObAlterTableRes &res);
+  int parallel_alter_table(const obrpc::ObAlterTableArg &arg, obrpc::ObAlterTableRes &res);
+  int alter_view(const obrpc::ObAlterViewArg &arg, obrpc::ObAlterViewRes &res);
   int start_redef_table(const obrpc::ObStartRedefTableArg &arg, obrpc::ObStartRedefTableRes &res);
   int copy_table_dependents(const obrpc::ObCopyTableDependentsArg &arg);
   int finish_redef_table(const obrpc::ObFinishRedefTableArg &arg);
@@ -527,6 +520,7 @@ public:
   int create_hidden_table_v2(const obrpc::ObCreateHiddenTableArgV2 &arg, obrpc::ObCreateHiddenTableRes &res);
   int send_auto_split_tablet_task_request(const obrpc::ObAutoSplitTabletBatchArg &arg, obrpc::ObAutoSplitTabletBatchRes &res);
   int split_global_index_tablet(const obrpc::ObAlterTableArg &arg);
+  int alter_random_distribution_partition(const obrpc::ObAlterTableArg &arg, obrpc::ObAlterRandomPartitionRes &res);
   /**
    * For recover restore table ddl, data insert into the target table is selected from another tenant.
    * The function is used to create a hidden target table without any change on the source table,
@@ -744,7 +738,15 @@ public:
   //----Functions for managing external resource----
   int create_external_resource(const obrpc::ObCreateExternalResourceArg &arg, obrpc::ObCreateExternalResourceRes &result);
   int drop_external_resource(const obrpc::ObDropExternalResourceArg &arg, obrpc::ObDropExternalResourceRes &result);
+  int ora_upload_jar_external_resource(const obrpc::ObOraUploadJarArg &arg, obrpc::ObOraUploadJarRes &result);
+  int ora_drop_jar_external_resource(const obrpc::ObOraDropJarArg &arg, obrpc::ObOraDropJarRes &result);
   //----End of functions for managing external resource----
+
+  //----Functions for managing java_policy----
+  int create_java_policy(const obrpc::ObCreateJavaPolicyArg &arg, obrpc::ObCreateJavaPolicyRes &result);
+  int drop_java_policy(const obrpc::ObDropJavaPolicyArg &arg, obrpc::ObDropJavaPolicyRes &result);
+  int modify_java_policy(const obrpc::ObModifyJavaPolicyArg &arg, obrpc::ObModifyJavaPolicyRes &result);
+  //----End of functions for managing java_policy----
 
   //----Functions for managing ai model----
   int create_ai_model(const obrpc::ObCreateAiModelArg &arg);
@@ -884,9 +886,6 @@ public:
   // @see ObRefreshServerTask
   int schedule_refresh_server_timer_task(const int64_t delay);
   int schedule_primary_cluster_inspection_task();
-  int schedule_recyclebin_task(int64_t delay);
-  // @see ObInspector
-  int schedule_inspector_task();
   int schedule_update_rs_list_task();
   int schedule_update_all_server_config_task();
   //update statistic cache
@@ -1137,19 +1136,15 @@ private:
 
   // the single task queue for all async tasks and timer tasks
   common::ObWorkQueue task_queue_;
-  common::ObWorkQueue inspect_task_queue_;
 
   // async timer tasks
   ObRestartTask restart_task_;  // not repeat & no retry
   ObRefreshServerTask refresh_server_task_;  // not repeat & no retry
   ObCheckServerTask check_server_task_;      // repeat & no retry
-  ObSelfCheckTask self_check_task_;  //repeat to succeed & no retry
   ObRefreshIOCalibrationTask refresh_io_calibration_task_; // retry to succeed & no repeat
   ObZoneStorageOperationTask zone_storage_operation_task_;  // repeat & no retry
   share::ObEventTableClearTask event_table_clear_task_;  // repeat & no retry
 
-  ObInspector inspector_task_;     // repeat & no retry
-  ObPurgeRecyclebinTask purge_recyclebin_task_;     // not repeat & no retry
   // for set_config
   ObLatch set_config_lock_;
 
@@ -1165,7 +1160,6 @@ private:
   ObRsStatus rs_status_;
 
   int64_t fail_count_;
-  ObSchemaHistoryRecycler schema_history_recycler_;
 #ifdef OB_BUILD_TDE_SECURITY
   // master key manager
   ObRsMasterKeyManager master_key_mgr_;

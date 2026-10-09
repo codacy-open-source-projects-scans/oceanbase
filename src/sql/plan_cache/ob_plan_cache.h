@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_PLAN_CACHE_OB_PLAN_CACHE_
@@ -90,7 +83,7 @@ struct ObKVEntryTraverseOp
     } else if (OB_FAIL(check_entry_match(entry, is_match))) {
       PL_CACHE_LOG(WARN, "failed to check entry match", K(ret));
     } else if (is_match) {
-      if (OB_FAIL(key_value_list_->push_back(ObLCKeyValue(entry.first, entry.second)))) {
+      if (OB_FAIL(key_value_list_->push_back(ObLCKeyValue(entry.first, entry.second, entry.second->get_node_stat()->weight())))) {
         PL_CACHE_LOG(WARN, "fail to push back key", K(ret));
       } else {
         entry.second->inc_ref_count(ref_handle_);
@@ -287,7 +280,7 @@ public:
   int add_cache_obj(ObILibCacheCtx &ctx, ObILibCacheKey *key, ObILibCacheObject *cache_obj);
   int get_cache_obj(ObILibCacheCtx &ctx, ObILibCacheKey *key, ObCacheObjGuard &guard);
   int cache_node_exists(ObILibCacheCtx &ctx, ObILibCacheKey* key, bool& is_exists);
-  int evict_plan(uint64_t table_id);
+  int evict_plan(uint64_t table_id, int64_t plan_expired_before);
   int evict_plan_by_table_name(uint64_t database_id, ObString tab_name);
 
   /**

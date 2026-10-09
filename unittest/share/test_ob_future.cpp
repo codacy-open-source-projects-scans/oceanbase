@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define UNITTEST_DEBUG
 
 #include "lib/future/ob_future.h"
+#include <atomic>
 #include <gtest/gtest.h>
 #include <thread>
 
@@ -54,11 +48,14 @@ TEST_F(TestObFuture, normal) {
   ObFuture<int> future = promise.get_future();
   ASSERT_EQ(future.is_ready(), false);
   ASSERT_EQ(future.is_valid(), true);
-  thread t([future]() {
+  // Use atomic flag instead of sleep-based timing to avoid flakiness on busy CI machines.
+  std::atomic<bool> waits_done(false);
+  thread t([future, &waits_done]() {
     auto start = std::chrono::system_clock::now();
     int *temp = nullptr;
     ASSERT_EQ(future.wait_for(30), OB_TIMEOUT);
     ASSERT_EQ(future.wait_for(30), OB_TIMEOUT);
+    waits_done.store(true, std::memory_order_release);
     ASSERT_EQ(future.get(temp), OB_SUCCESS);
     auto end = std::chrono::system_clock::now();
     cout << "wait " << chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << endl;
@@ -67,7 +64,9 @@ TEST_F(TestObFuture, normal) {
     ASSERT_EQ(future.is_valid(), true);
     ASSERT_EQ(future.get(temp), OB_SUCCESS);
   });
-  std::this_thread::sleep_for(chrono::milliseconds(100));
+  while (!waits_done.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(chrono::milliseconds(1));
+  }
   ASSERT_EQ(promise.set(5), OB_SUCCESS);
   ASSERT_EQ(promise.set(6), OB_OP_NOT_ALLOW);
   t.join();
@@ -88,10 +87,13 @@ TEST_F(TestObFuture, return_void) {
   ObFuture<void> future = promise.get_future();
   ASSERT_EQ(future.is_ready(), false);
   ASSERT_EQ(future.is_valid(), true);
-  thread t([future]() {
+  // Use atomic flag instead of sleep-based timing to avoid flakiness on busy CI machines.
+  std::atomic<bool> waits_done(false);
+  thread t([future, &waits_done]() {
     auto start = std::chrono::system_clock::now();
     ASSERT_EQ(future.wait_for(30), OB_TIMEOUT);
     ASSERT_EQ(future.wait_for(30), OB_TIMEOUT);
+    waits_done.store(true, std::memory_order_release);
     ASSERT_EQ(future.wait(), OB_SUCCESS);
     auto end = std::chrono::system_clock::now();
     cout << "wait " << chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << endl;
@@ -99,7 +101,9 @@ TEST_F(TestObFuture, return_void) {
     ASSERT_EQ(future.is_valid(), true);
     ASSERT_EQ(future.wait(), OB_SUCCESS);
   });
-  std::this_thread::sleep_for(chrono::milliseconds(100));
+  while (!waits_done.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(chrono::milliseconds(1));
+  }
   ASSERT_EQ(promise.set(), OB_SUCCESS);
   t.join();
 }

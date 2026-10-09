@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SHARE
 #include "ob_ivf_async_task_executor.h"
@@ -158,13 +151,14 @@ int ObIvfAsyncTaskExector::LoadTaskCallback::operator()(ObIvfAuxTableInfoEntry &
   int ret = OB_SUCCESS;
   const ObIvfAuxTableInfo &table_info = entry.second;
   ObIAllocator *allocator = task_opt_.get_allocator();
+  bool should_load_task = true;
 
   if (!table_info.is_ivf_centroid_table_valid() && !table_info.is_ivf_pq_centroid_table_valid()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("neither ivf centroid table nor ivf pq centroid table is ready for construction", K(ret), K(table_info));
+    should_load_task = false;
+    LOG_INFO("neither ivf centroid table nor ivf pq centroid table is ready for construction", K(table_info));
   }
 
-  for (int i = 0; OB_SUCC(ret) && i < table_info.count(); ++i) {
+  for (int i = 0; OB_SUCC(ret) && i < table_info.count() && should_load_task; ++i) {
     ObVecIndexAsyncTaskCtx *task_ctx = nullptr;
     int64_t new_task_id = OB_INVALID_ID;
     int64_t index_table_id = table_info.centroid_table_id_;
@@ -237,7 +231,6 @@ bool ObIvfAsyncTaskExector::check_operation_allow()
   int ret = OB_SUCCESS;
   uint64_t tenant_data_version = 0;
   bool bret = true;
-  bool is_active_time = true;
 
   if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id_, tenant_data_version))) {
     bret = false;
@@ -247,13 +240,10 @@ bool ObIvfAsyncTaskExector::check_operation_allow()
     bret = false;
     LOG_DEBUG("vector index async task only work with data version [4_3_5_3, 4_4_0_0) or [4_4_1_0, ]",
               K(tenant_data_version));
-  } else if (ObVecIndexAsyncTaskUtil::in_active_time(tenant_id_, is_active_time)) {
-    bret = false;
-    LOG_WARN("fail to get active time");
-  } else if (!is_active_time) {
-    bret = false;
-    LOG_INFO("skip this round, not in active time.");
   }
+  //  disable active time check, just check data version. because active time is used by hnsw async task.
+  //  if you want to turn off ivf async task, you need to implement a independent judgment logic for ivf,
+  //  not dependent on the judgment logic of hnsw.
   return bret;
 }
 

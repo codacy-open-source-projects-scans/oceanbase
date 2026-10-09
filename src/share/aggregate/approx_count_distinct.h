@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_AGGREGATE_APPROX_COUNT_DISTINCT_H
@@ -251,6 +244,7 @@ public:
     } else if (param_id == agg_ctx.aggr_infos_.at(agg_col_id).param_exprs_.count() - 1) {
       // last param, calculate hash values if possible
       ObIArray<ObExpr *> &param_exprs = agg_ctx.aggr_infos_.at(agg_col_id).param_exprs_;
+      NotNullBitVector &not_nulls = agg_ctx.locate_notnulls_bitmap(agg_col_id, aggr_cell);
       const char *payload = nullptr;
       int32_t len = 0;
       ObDatum tmp_datum;
@@ -273,6 +267,8 @@ public:
           if (OB_SUCC(ret)) {
             if (OB_FAIL(llc_add_value(hash_val, llc_bitmap_buf, llc_num_buckets_))) {
               SQL_LOG(WARN, "add llc value failed");
+            } else {
+              not_nulls.set(agg_col_id);
             }
           }
         }
@@ -296,6 +292,8 @@ public:
           if (OB_SUCC(ret)) {
             if (OB_FAIL(llc_add_value(hash_val, llc_bitmap_buf, llc_num_buckets_))) {
               SQL_LOG(WARN, "add llc value failed");
+            } else {
+              not_nulls.set(agg_col_id);
             }
           }
         }

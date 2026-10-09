@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_FEEDBACK_PROXY_INFO_H
@@ -63,7 +56,10 @@ public:
     if (pos + KEY_PLACEHOLDER_LENGTH + VALUE_LENGTH_PLACEHOLDER_LENGTH > len) {
       ret = OB_SIZE_OVERFLOW;
       SERVER_LOG(WARN, "buffer size overflow", K(ret), K(pos), K(len), KPC(this));
-    } else if (OB_FAIL(serialization::encode(buf + KEY_PLACEHOLDER_LENGTH + VALUE_LENGTH_PLACEHOLDER_LENGTH, len, val_len, value_))) {
+    } else if (OB_FAIL(serialization::encode(buf + org_pos + KEY_PLACEHOLDER_LENGTH + VALUE_LENGTH_PLACEHOLDER_LENGTH,
+                                             len,
+                                             val_len,
+                                             value_))) {
       // 1. skip type and len, serialize value firstly
       SERVER_LOG(WARN, "serialize value in ObFeedbackProxyInfo failed", K(ret), K(pos), K(len), KPC(this));
     } else if (OB_FAIL(ObProtoTransUtil::store_type_and_len(buf, len, pos, type, val_len))) {

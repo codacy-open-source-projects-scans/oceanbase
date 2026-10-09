@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SHARE
 
@@ -503,6 +496,13 @@ bool ObConfigAuditLogStrategyChecker::check(const ObConfigItem &t) const
   return 0 == tmp_string.case_compare("ASYNCHRONOUS")
       || 0 == tmp_string.case_compare("PERFORMANCE")
       || 0 == tmp_string.case_compare("SYNCHRONOUS");
+}
+
+bool ObConfigAuditLogEncryptionChecker::check(const ObConfigItem &t) const
+{
+  common::ObString tmp_string(t.str());
+  return 0 == tmp_string.case_compare("NONE")
+      || 0 == tmp_string.case_compare("AES");
 }
 
 bool ObConfigWorkAreaPolicyChecker::check(const ObConfigItem &t) const
@@ -1637,7 +1637,9 @@ bool ObConfigDegradationPolicyChecker::check(const ObConfigItem &t) const
 bool ObConfigRegexpEngineChecker::check(const ObConfigItem &t) const
 {
   bool valid = false;
-  if (0 == ObString::make_string("Hyperscan").case_compare(t.str())) {
+  if (0 == ObString::make_string("re2").case_compare(t.str())) {
+    valid = true;
+  } else if (0 == ObString::make_string("Hyperscan").case_compare(t.str())) {
 #if defined(__x86_64__)
     valid = true;
 #else
@@ -1699,6 +1701,16 @@ bool ObConfigEnableHashRollupChecker::check(const ObConfigItem &t) const
   return bret;
 }
 
+bool ObConfigVecHashAlgoChecker::check(const ObConfigItem &t) const
+{
+  int bret = false;
+  common::ObString tmp_str(t.str());
+  bret = (0 == tmp_str.case_compare("auto")
+          || 0 == tmp_str.case_compare("murmur2")
+          || 0 == tmp_str.case_compare("crc32"));
+  return bret;
+}
+
 bool ObConfigPxNodePolicyChecker::check(const ObConfigItem &t) const
 {
   int bret = false;
@@ -1735,6 +1747,7 @@ bool ObConfigNonStdCmpLevelChecker::check(const ObConfigItem &t) const
           || 0 == tmp_str.case_compare("range"));
   return bret;
 }
+
 
 bool ObConfigJavaParamsChecker::check(const ObConfigItem &t) const
 {
@@ -1904,6 +1917,11 @@ bool ObConfigEvictOldSSTablePolicyChecker::check(const ObConfigItem &t) const
   return bret;
 }
 
+bool ObConfigFunctionRoundDialectChecker::check(const ObConfigItem &t) const
+{
+  return 0 == t.case_compare("MYSQL") || 0 == t.case_compare("ORACLE");
+}
+
 bool ObConfigAppendUpdateGlobalIndexesForDynamicPartitionChecker::check(const ObConfigItem& t) const
 {
   return 0 == t.case_compare("AUTO")
@@ -1959,6 +1977,26 @@ bool ObConfigCommaSeparatedStringChecker::check(const ObConfigItem &t) const
     }
   }
   return bret;
+}
+
+bool ObConfigSchemaHistoryArchiveExpireTimeChecker::check(const ObConfigItem &t) const
+{
+  bool is_valid = false;
+  const int64_t val_us = ObConfigTimeParser::get(t.str(), is_valid);
+  if (is_valid) {
+    const int64_t MIN_KEEP_US = 30L * 24 * 60 * 60 * 1000 * 1000;   // 30 days
+    const int64_t MAX_KEEP_US = 365L * 24 * 60 * 60 * 1000 * 1000;  // 365 days
+    if (0 == val_us) {
+      is_valid = true; // disable GC
+    } else {
+      is_valid = (val_us >= MIN_KEEP_US && val_us <= MAX_KEEP_US);
+      if (!is_valid) {
+        LOG_USER_ERROR(OB_NOT_SUPPORTED,
+                       "schema_history_archive_expire_time out of range, valid: 0 or [30d, 365d]");
+      }
+    }
+  }
+  return is_valid;
 }
 
 } // end of namepace common

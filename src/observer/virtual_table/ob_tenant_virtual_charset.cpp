@@ -1,17 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
 #include "observer/virtual_table/ob_tenant_virtual_charset.h"
+#include "share/ob_compatibility_control.h"
+#include "sql/session/ob_sql_session_info.h"
 using namespace oceanbase::common;
 
 namespace oceanbase
@@ -47,6 +42,7 @@ int ObTenantVirtualCharset::fill_scanner()
   ObObj *cells = NULL;
   const ObCharsetWrapper *charset_wrap_arr = NULL;
   int64_t charset_wrap_arr_len = 0;
+  ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
   ObCharset::get_charset_wrap_arr(charset_wrap_arr, charset_wrap_arr_len);
   if (OB_ISNULL(allocator_)) {
     ret = OB_NOT_INIT;
@@ -59,6 +55,11 @@ int ObTenantVirtualCharset::fill_scanner()
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("charset wrap array is NULL or charset_wrap_arr_len is not CHARSET_WRAPPER_COUNT",
               K(ret), K(charset_wrap_arr), K(charset_wrap_arr_len));
+  } else if (OB_ISNULL(session_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("session is NULL", K(ret));
+  } else if (OB_FAIL(session_->get_charset_compat_type(charset_compat_type))) {
+    LOG_WARN("failed to get charset compat type", K(ret));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < charset_wrap_arr_len; ++i) {
     int cell_idx = 0;
@@ -82,7 +83,9 @@ int ObTenantVirtualCharset::fill_scanner()
         }
         case DEFAULT_COLLATION: {
           cells[cell_idx].set_varchar(
-              ObString::make_string(ObCharset::collation_name(ObCharset::get_default_collation(charset_wrap.charset_))));
+              ObString::make_string(ObCharset::collation_name(
+                  ObCharset::get_default_collation(
+                    charset_wrap.charset_, charset_compat_type))));
           cells[cell_idx].set_collation_type(
               ObCharset::get_default_collation(ObCharset::get_default_charset()));
           break;

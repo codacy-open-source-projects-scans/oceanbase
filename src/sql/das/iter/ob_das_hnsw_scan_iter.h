@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_HNSW_SCAN_ITER_H_
@@ -379,6 +372,7 @@ private:
   int set_func_lookup_rowkey(ObRowkey &rowkey);
   int filter_func_lookup_iter(bool is_vectorized, bool& filter_res);
   int filter_by_index_back(int64_t vid, ObNewRow *row, bool is_vectorized, bool& filter_res);
+  int do_table_post_filter(bool is_vectorized);
   int post_query_vid_with_filter(ObVectorQueryAdaptorResultContext *ada_ctx,
                                 ObPluginVectorIndexAdaptor* adaptor,
                                 int64_t hnsw_max_iter_scan_nums,
@@ -604,6 +598,7 @@ private:
   bool is_hybrid_;
   bool idx_iter_first_scan_;
   common::hash::ObHashMap<int64_t, double*> rel_map_;
+  common::ObRowkey tmp_filter_main_rowkey_;
   bool use_vid_;
   float distance_threshold_;
   ObVecIdxQueryStrategy strategy_;

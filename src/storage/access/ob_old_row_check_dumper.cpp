@@ -1,16 +1,7 @@
-/*************************************************************************
-  * Copyright (c) 2025 OceanBase
-  * OceanBase is licensed under Mulan PubL v2.
-  * You can use this software according to the terms and conditions of the Mulan PubL v2
-  * You may obtain a copy of Mulan PubL v2 at:
-  *          http://license.coscl.org.cn/MulanPubL-2.0
-  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-  * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-  * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-  * See the Mulan PubL v2 for more details.
-  * File Name   : ob_old_row_check_dumper.cpp
-  * Created  on : 04/27/2025
- ************************************************************************/
+/**
+ * Copyright (c) 2025 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_old_row_check_dumper.h"
 #include "share/schema/ob_table_dml_param.h"
@@ -100,6 +91,8 @@ int ObOldRowCheckDumper::dump_diag_tables()
     if (OB_FAIL(table_iter.get_next(table))) {
       if (OB_ITER_END != ret) {
         STORAGE_LOG(WARN, "failed to get next tables", K(ret));
+      } else {
+        ret = OB_SUCCESS;
       }
       break;
     } else if (OB_ISNULL(table)) {
@@ -150,17 +143,17 @@ int ObOldRowCheckDumper::dump_diag_merge()
 
   FLOG_INFO("[DUMP DIAG] prepare to use single merge to find row", K(datum_rowkey_), K(access_param_));
   ObSingleMerge *get_merge = nullptr;
-  ObGetTableParam get_table_param;
+  ObTabletReadTables tablet_read_tables;
   ObDatumRow *row = nullptr;
   void *buf = nullptr;
   bool row_found = false;
-  if (OB_FAIL(get_table_param.tablet_iter_.assign(data_table.tablet_iter_))) {
+  if (OB_FAIL(tablet_read_tables.tablet_iter_.assign(data_table.tablet_iter_))) {
     STORAGE_LOG(WARN, "Failed to assign tablet iterator", K(ret));
   } else if (OB_ISNULL(buf = allocator_.alloc(sizeof(ObSingleMerge)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     STORAGE_LOG(WARN, "Failed to alloc memory for single merge", K(ret));
   } else if (FALSE_IT(get_merge = new(buf)ObSingleMerge())) {
-  } else if (OB_FAIL(get_merge->init(access_param_, access_ctx_, get_table_param))) {
+  } else if (OB_FAIL(get_merge->init(access_param_, access_ctx_, tablet_read_tables))) {
     STORAGE_LOG(WARN, "Failed to init single get merge", K(ret));
   } else if (OB_FAIL(get_merge->open(datum_rowkey_))) {
     STORAGE_LOG(WARN, "Failed to open single merge", K(ret));

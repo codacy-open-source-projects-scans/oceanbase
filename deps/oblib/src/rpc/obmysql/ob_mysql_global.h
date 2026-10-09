@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_RPC_OBMYSQL_OB_MYSQL_GLOBAL_
@@ -15,7 +8,7 @@
 
 #include <float.h>
 #include "easy_define.h"  // for conflict of macro likely
-#include "lib/charset/ob_mysql_global.h"
+#include "obcharset/ob_mysql_global.h"
 
 /* From limits.h instead */
 /*
@@ -265,6 +258,7 @@ enum EMySQLFieldType
   MYSQL_TYPE_OB_ARRAY = 217, // used in cdc/oms not used in client
   MYSQL_TYPE_OB_MAP = 218, // used in cdc/oms not used in client
   MYSQL_TYPE_OB_SPARSE_VECTOR = 219, // used in cdc/oms not used in client
+  MYSQL_TYPE_OB_SQL_UDT = 220, // used in cdc/oms not used in client
   MYSQL_TYPE_JSON = 245,
   MYSQL_TYPE_NEWDECIMAL = 246,
   MYSQL_TYPE_ENUM = 247,

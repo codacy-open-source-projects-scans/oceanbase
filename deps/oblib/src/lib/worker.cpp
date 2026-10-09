@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -99,9 +92,11 @@ Worker::Worker()
       timeout_ts_(INT64_MAX),
       ntp_offset_(0),
       rpc_tenant_id_(0),
-      disable_wait_(false)
+      disable_wait_(false),
+      group_index_(-1)
 {
   worker_node_.get_data() = this;
+  last_idle_ts_ = ObTimeUtility::current_time();
 }
 
 Worker::~Worker()

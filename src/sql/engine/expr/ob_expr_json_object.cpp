@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation of json_object.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -437,7 +429,7 @@ int ObExprJsonObject::set_result(ObObjType dst_type, ObString str_res, common::O
     if (strict_type == OB_JSON_ON_STRICT_USE &&
         OB_FAIL(ObJsonParser::check_json_syntax(str_res, allocator,
                                                 ObJsonParser::JSN_STRICT_FLAG,
-                                                ObJsonExprHelper::get_json_max_depth_config()))) {
+                                                ObJsonExprHelper::get_json_max_depth_config(ctx)))) {
       ret = OB_ERR_JSON_SYNTAX_ERROR;
       LOG_WARN("fail to parse json text strict", K(ret));
     } else if (OB_FAIL(ObJsonExprHelper::pack_json_str_res(expr, ctx, res, str_res))) {

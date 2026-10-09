@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -98,6 +91,7 @@
 #include "observer/virtual_table/ob_virtual_ash.h"
 #include "observer/virtual_table/ob_all_virtual_arbitration_member_info.h"
 #include "observer/virtual_table/ob_all_virtual_arbitration_service_status.h"
+#include "observer/virtual_table/ob_all_virtual_keywords.h"
 #include "observer/virtual_table/ob_virtual_sql_monitor_statname.h"
 #include "observer/virtual_table/ob_tenant_virtual_concurrent_limit_sql.h"
 #include "observer/virtual_table/ob_all_virtual_proxy_partition_info.h"
@@ -114,6 +108,7 @@
 #include "observer/virtual_table/ob_all_virtual_bad_block_table.h"
 #include "observer/virtual_table/ob_agent_virtual_table.h"
 #include "observer/virtual_table/ob_iterate_virtual_table.h"
+#include "observer/virtual_table/ob_all_virtual_sys_variable_history.h"
 #include "observer/virtual_table/ob_all_virtual_id_service.h"
 #include "observer/virtual_table/ob_all_virtual_timestamp_service.h"
 #include "rootserver/ob_root_service.h"
@@ -201,6 +196,7 @@
 #include "observer/virtual_table/ob_all_virtual_ls_log_restore_status.h"
 #include "observer/virtual_table/ob_all_virtual_tablet_buffer_info.h"
 #include "observer/virtual_table/ob_all_virtual_cgroup_config.h"
+#include "observer/virtual_table/ob_all_virtual_tenant_worker_group.h"
 #include "observer/virtual_table/ob_virtual_flt_config.h"
 #include "observer/virtual_table/ob_all_virtual_tenant_snapshot_ls_replica.h"
 #include "observer/virtual_table/ob_all_virtual_tenant_snapshot_ls_replica_history.h"
@@ -745,6 +741,20 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualSysParameterStat,
                                           all_virtual_sys_parameter_stat))) {
               vt_iter = static_cast<ObAllVirtualSysParameterStat *>(all_virtual_sys_parameter_stat);
+            }
+            break;
+          }
+          case OB_ALL_VIRTUAL_SYS_VARIABLE_HISTORY_TID: {
+            ObAllVirtualSysVariableHistory *sys_var_history_iter = NULL;
+            if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualSysVariableHistory, sys_var_history_iter))) {
+              SERVER_LOG(WARN, "create virtual table iterator failed", K(ret));
+            } else if (OB_FAIL(sys_var_history_iter->init(GCTX.sql_proxy_))) {
+              SERVER_LOG(WARN, "virtual table iter init failed", K(ret));
+              sys_var_history_iter->~ObAllVirtualSysVariableHistory();
+              allocator.free(sys_var_history_iter);
+              sys_var_history_iter = NULL;
+            } else {
+              vt_iter = sys_var_history_iter;
             }
             break;
           }
@@ -2346,6 +2356,15 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             }
             break;
           }
+          case OB_ALL_VIRTUAL_KEYWORD_TID: {
+            ObAllVirtualKeywords *keywords = NULL;
+            if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualKeywords, keywords))) {
+              SERVER_LOG(ERROR, "ObAllVirtualKeywords construct failed", KR(ret));
+            } else {
+              vt_iter = static_cast<ObVirtualTableIterator *>(keywords);
+            }
+            break;
+          }
           case OB_ALL_VIRTUAL_ID_SERVICE_TID: {
             ObAllVirtualIDService *id_service = NULL;
             if (OB_FAIL(NEW_VIRTUAL_TABLE(ObAllVirtualIDService, id_service))) {
@@ -2874,6 +2893,13 @@ int ObVTIterCreator::create_vt_iter(ObVTableScanParam &params,
             ObAllVirtualCgroupConfig *all_virtual_cgroup_config = NULL;
             if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualCgroupConfig, all_virtual_cgroup_config))) {
               vt_iter = static_cast<ObVirtualTableIterator *>(all_virtual_cgroup_config);
+            }
+            break;
+          }
+          case OB_ALL_VIRTUAL_TENANT_WORKER_GROUP_TID: {
+            ObAllVirtualTenantWorkerGroup *all_virtual_tenant_worker_group = NULL;
+            if (OB_SUCC(NEW_VIRTUAL_TABLE(ObAllVirtualTenantWorkerGroup, all_virtual_tenant_worker_group))) {
+              vt_iter = static_cast<ObVirtualTableIterator *>(all_virtual_tenant_worker_group);
             }
             break;
           }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -132,16 +125,6 @@ int ObTenantArchiveMgr::decide_piece_end_scn(
   // piece end scn is the start of next piece.
   if (OB_FAIL(decide_piece_start_scn(piece_start_scn, start_piece_id, piece_switch_interval, piece_id + 1, end_scn))) {
     LOG_WARN("failed to decide piece end scn", K(ret), K(piece_start_scn), K(start_piece_id), K(piece_switch_interval), K(piece_id));
-  }
-
-  return ret;
-}
-
-int ObTenantArchiveMgr::timestamp_to_day(const int64_t ts, int64_t &day)
-{
-  int ret = OB_SUCCESS;
-  if (OB_FAIL(ObBackupUtils::convert_timestamp_to_date(ts, day))) {
-    LOG_WARN("failed to get day from timestamp", K(ret), K(ts));
   }
 
   return ret;

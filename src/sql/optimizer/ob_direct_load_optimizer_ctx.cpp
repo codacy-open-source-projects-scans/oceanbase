@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -293,7 +286,7 @@ int ObDirectLoadOptimizerCtx::init_direct_load_ctx(
                                                       table_id_,
                                                       table_schema))) {
         LOG_WARN("fail to get table schema", KR(ret));
-      } else if (OB_FAIL(ObTableLoadSchema::get_column_ids(table_schema, column_ids_))) {
+      } else if (OB_FAIL(ObTableLoadSchema::get_column_ids(table_schema, column_ids_, table_schema->is_random_part()))) {
         LOG_WARN("fail to get column ids", KR(ret));
       }
 

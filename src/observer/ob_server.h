@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEABASE_OBSERVER_OB_SERVER_H_
@@ -83,7 +76,6 @@
 #include "share/external_table/ob_external_table_file_rpc_proxy.h"
 #ifdef OB_BUILD_SHARED_STORAGE
 #include "close_modules/shared_storage/storage/shared_storage/ob_tenant_gc_task.h"
-#include "close_modules/shared_storage/storage/high_availability/ob_ss_ls_online_helper.h"
 #endif
 #include "share/ob_device_credential_task.h"
 
@@ -223,7 +215,6 @@ private:
   int init_network();
   int init_interrupt();
   int init_plugin();
-  int init_zlib_lite_compressor();
   int init_multi_tenant();
   int init_sql_proxy();
   int init_io();
@@ -278,7 +269,6 @@ private:
   int check_if_schema_ready();
   int check_if_timezone_usable();
   int parse_mode();
-  void deinit_zlib_lite_compressor();
   void deinit_plugin();
 
   // ------------------------------- arb server start ------------------------------------
@@ -442,7 +432,6 @@ private:
   ObStartupAccelTaskHandler startup_accel_handler_;
 #ifdef OB_BUILD_SHARED_STORAGE
   ObTenantGCTask tenant_dir_gc_task_;
-  ObSSLSOnlineHelper ss_ls_online_helper_;
 #endif
 }; // end of class ObServer
 

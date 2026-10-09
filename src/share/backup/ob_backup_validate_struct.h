@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
  #ifndef OCEANBASE_BACKUP_OB_BACKUP_VALIDATE_STRUCT_H_
@@ -19,6 +12,17 @@ namespace oceanbase
 {
 namespace share
 {
+class ObBackupValidateUtil
+{
+public:
+  // backup validate is supported on data versions [4.4.2.2, 4.5.0.0) and >= 4.5.1.0.
+  static bool is_data_version_support_backup_validate(const uint64_t data_version)
+  {
+    return (data_version >= MOCK_DATA_VERSION_4_4_2_2 && data_version < DATA_VERSION_4_5_0_0)
+           || data_version >= DATA_VERSION_4_5_1_0;
+  }
+};
+
 struct ObBackupValidateStatus
 {
   enum Status

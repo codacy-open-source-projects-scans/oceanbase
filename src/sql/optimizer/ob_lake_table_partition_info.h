@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LAKE_TABLE_PARTITION_INFO_
@@ -102,6 +95,8 @@ private:
   int init_tablet_loc_by_addr(ObCandiTabletLoc &tablet_loc, const ObAddr &addr, const uint64_t part_id);
   int add_table_file(ObCandiTabletLoc &tablet_loc, ObIcebergFileDesc *file_desc);
   int add_table_file_for_hive(ObCandiTabletLoc &tablet_loc, ObHiveFileDesc &file_desc);
+  template <typename T>
+  int filter_files_by_sample(const ObDMLStmt &stmt, const uint64_t table_id, common::ObIArray<T> &files);
 
 private:
   ObIAllocator &allocator_;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -1282,6 +1275,31 @@ bool ObBackupMetaIndex::operator==(const ObBackupMetaIndex &other) const
   return meta_key_ == other.meta_key_ && backup_set_id_ == other.backup_set_id_ && ls_id_ == other.ls_id_ &&
          turn_id_ == other.turn_id_ && retry_id_ == other.retry_id_ && file_id_ == other.file_id_ &&
          offset_ == other.offset_ && length_ == other.length_;
+}
+
+int64_t ObBackupMetaIndex::get_deep_copy_size() const
+{
+  return 0;
+}
+
+int ObBackupMetaIndex::deep_copy(const ObBackupMetaIndex &src, char *buf, int64_t len, int64_t &pos)
+{
+  int ret = OB_SUCCESS;
+  UNUSEDx(buf, len, pos);
+  if (!src.is_valid()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid arg", K(ret), K(src));
+  } else {
+    meta_key_ = src.meta_key_;
+    backup_set_id_ = src.backup_set_id_;
+    ls_id_ = src.ls_id_;
+    turn_id_ = src.turn_id_;
+    retry_id_ = src.retry_id_;
+    file_id_ = src.file_id_;
+    offset_ = src.offset_;
+    length_ = src.length_;
+  }
+  return ret;
 }
 
 uint64_t ObBackupMetaIndex::calc_hash(uint64_t seed) const

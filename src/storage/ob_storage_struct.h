@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_STORAGE_OB_STORAGE_STRUCT_H_
@@ -455,22 +448,13 @@ public:
 struct UpdateUpperTransParam final
 {
 public:
-  struct SCNAndVersion {
-    SCNAndVersion(): scn_(), upper_trans_version_(0) {}
-    SCNAndVersion(const share::SCN &scn, const int64_t upper_trans_version)
-    : scn_(scn), upper_trans_version_(upper_trans_version) {}
-    TO_STRING_KV(K_(scn), K_(upper_trans_version));
-    share::SCN scn_;
-    int64_t upper_trans_version_;
-  };
   UpdateUpperTransParam();
   ~UpdateUpperTransParam();
   void reset();
-  TO_STRING_KV(K_(new_upper_trans), K_(last_minor_end_scn), KPC_(ss_new_upper_trans), K_(gc_inc_major_ddl_scns));
+  TO_STRING_KV(K_(new_upper_trans), K_(last_minor_end_scn), K_(gc_inc_major_ddl_scns));
 public:
   ObIArray<int64_t> *new_upper_trans_;
   share::SCN last_minor_end_scn_;
-  ObIArray<SCNAndVersion> *ss_new_upper_trans_;
   ObIArray<int64_t> *gc_inc_major_ddl_scns_; // record the end scn of inc major ddl sstables which should be recycled
 };
 

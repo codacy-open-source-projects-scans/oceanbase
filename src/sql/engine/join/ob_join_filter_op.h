@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _SQL_ENGINE_JOIN_OB_JOIN_FILTER_OP_H
@@ -154,10 +147,6 @@ public:
       ObJoinFilterRuntimeConfig &config,
       ObP2PDatahubMsgBase &msg, int64_t sqc_count, int64_t estimated_rows);
   void set_task_id(int64_t task_id)  { task_id_ = task_id; }
-
-  inline void set_bf_idx_at_sqc_proxy(int64_t idx) { bf_idx_at_sqc_proxy_ = idx; }
-
-  inline int64_t get_bf_idx_at_sqc_proxy() { return bf_idx_at_sqc_proxy_; }
   void set_px_sequence_id(int64_t id) { px_sequence_id_ = id; }
   int64_t get_px_sequence_id() { return px_sequence_id_; }
   int load_runtime_config(const ObJoinFilterSpec &spec, ObExecContext &ctx);
@@ -324,12 +313,6 @@ public:
 
 class ObJoinFilterOp : public ObOperator
 {
-  struct ObJoinFilterMsg {
-    ObJoinFilterMsg() : bf_msg_(nullptr), range_msg_(nullptr), in_msg_(nullptr) {}
-    ObRFBloomFilterMsg *bf_msg_;
-    ObRFRangeFilterMsg *range_msg_;
-    ObRFInFilterMsg *in_msg_;
-  };
 public:
   TO_STRING_KV(K(force_dump_));
 public:
@@ -359,12 +342,9 @@ public:
     }
     ObOperator::destroy();
   }
-  static int link_ch_sets(ObPxBloomFilterChSets &ch_sets,
-                          common::ObIArray<dtl::ObDtlChannel *> &channels);
   ObJoinFilterPartitionSplitter *get_partition_splitter() { return partition_splitter_; }
 private:
   bool is_valid();
-  int destroy_filter();
   int insert_by_row();
   int insert_by_row_batch(const ObBatchRows *child_brs);
   int calc_expr_values(ObDatum *&datum);
@@ -377,7 +357,6 @@ private:
   int try_merge_join_filter();
   int calc_each_bf_group_size(int64_t &);
   int update_plan_monitor_info();
-  int prepre_bloom_filter_ctx(ObBloomFilterSendCtx *bf_ctx);
   int open_join_filter_create();
   int open_join_filter_use();
   int join_filter_create_get_next_batch(const int64_t max_row_cnt);
@@ -472,12 +451,17 @@ private:
                                      const RowMeta &row_meta);
   static int group_merge_and_send_join_filter(ObJoinFilterOp *join_filter_op);
 
+  static int group_check_hash_shuffle_join_filter(ObJoinFilterOp *join_filter_op, bool &has_shuffle)
+  {
+    has_shuffle = has_shuffle || get_my_spec(*join_filter_op).is_shuffle_;
+    return OB_SUCCESS;
+  }
+
 private:
   static const int64_t ADAPTIVE_BF_WINDOW_ORG_SIZE = 4096;
   static constexpr double ACCEPTABLE_FILTER_RATE = 0.98;
   static const int64_t N_HYPERLOGLOG_BIT = 14;
 public:
-  ObJoinFilterMsg *filter_create_msg_;
   ObArray<ObP2PDatahubMsgBase *> shared_rf_msgs_; // sqc level share
   ObArray<ObP2PDatahubMsgBase *> local_rf_msgs_;
   uint64_t *join_filter_hash_values_;

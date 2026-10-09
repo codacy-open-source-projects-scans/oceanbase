@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -33,8 +26,6 @@ ObSqcCtx::ObSqcCtx(ObPxRpcInitSqcArgs &sqc_arg) : msg_loop_(),
       transmit_data_ch_provider_(sqc_proxy_.get_msg_ready_cond()),
       all_tasks_finish_(false),
       interrupted_(false),
-      bf_ch_provider_(sqc_proxy_.get_msg_ready_cond()),
-      px_bloom_filter_msg_proc_(msg_proc_),
       opt_stats_gather_whole_msg_proc_(msg_proc_),
       sp_winfunc_whole_msg_proc_(msg_proc_),
       rd_winfunc_whole_msg_proc_(msg_proc_),

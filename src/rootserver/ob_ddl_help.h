@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_DDL_HELP_H
@@ -79,6 +72,9 @@ public:
                            const ObTablegroupSchema &tablegroup_schema,
                            common::ObMySQLTransaction &trans,
                            ObSchemaGetterGuard &schema_guard);
+  int modify_scope_type(const obrpc::ObAlterTablegroupArg &arg,
+                        const ObTablegroupSchema &tablegroup_schema,
+                        common::ObMySQLTransaction &trans);
 
 private:
 
@@ -90,7 +86,14 @@ private:
   int check_all_table_partition_option(const ObTablegroupSchema &tablegroup_schema,
                                        ObSchemaGetterGuard &schema_guard,
                                        bool check_subpart,
-                                       bool &is_matched);
+                                       bool &is_matched,
+                                       common::ObSqlString &user_error);
+
+  int check_all_partition_option_for_subpart_sharding(
+      const ObTablegroupSchema &tablegroup_schema,
+      ObSchemaGetterGuard &schema_guard,
+      bool &is_matched,
+      common::ObSqlString &user_error);
 
   int check_partition_option(const share::schema::ObTablegroupSchema &tablegroup,
                              const share::schema::ObTableSchema *fist_table_schema,

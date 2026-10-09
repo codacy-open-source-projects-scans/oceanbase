@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_trans_define_v4.h"
@@ -751,10 +744,16 @@ bool ObTxDesc::contain_savepoint(const ObString &sp)
   return hit;
 }
 
-int ObTxDesc::update_part_(ObTxPart &a, const bool append, const bool check_only_if_exist)
+int ObTxDesc::update_part_(ObTxPart &a,
+                           const bool append,
+                           const bool check_only_if_exist,
+                           const bool is_for_px)
 {
   int ret = OB_SUCCESS;
   bool hit = false;
+  const bool for_px = (true == append
+                       && false == check_only_if_exist
+                       && true == is_for_px);
   if (exec_info_reap_ts_ == 0) {
     exec_info_reap_ts_ = ObSequence::get_max_seq_no();
   }
@@ -776,12 +775,28 @@ int ObTxDesc::update_part_(ObTxPart &a, const bool append, const bool check_only
         TRANS_LOG(WARN, "tx-part epoch changed", K(ret), K(a), K(p));
       }
       if (OB_SUCC(ret) && !check_only_if_exist) {
+        bool update_last_touch_ts = false;
+        ObTxSEQ first_scn = p.first_scn_;
+        ObTxSEQ last_scn = p.last_scn_;
         if (a.addr_.is_valid()) { p.addr_ = a.addr_; }
         p.first_scn_ = MIN(a.first_scn_, p.first_scn_);
         p.last_scn_ = p.last_scn_.is_max() ? a.last_scn_ : MAX(a.last_scn_, p.last_scn_);
-        p.last_touch_ts_ = exec_info_reap_ts_ + 1;
+        if (for_px) {
+          // new logic for px
+          if (p.first_scn_ != first_scn || p.last_scn_ != last_scn) {
+            p.last_touch_ts_ = exec_info_reap_ts_ + 1;
+            update_last_touch_ts = true;
+          }
+        } else {
+          // original logic
+          p.last_touch_ts_ = exec_info_reap_ts_ + 1;
+          update_last_touch_ts = true;
+        }
         if (p.is_clean() && !a.is_clean()) {
           p.flag_.set_dirty();
+          if (!update_last_touch_ts) {
+            p.last_touch_ts_ = exec_info_reap_ts_ + 1;
+          }
         }
       }
       break;
@@ -948,11 +963,24 @@ int ObTxDesc::update_parts_(const ObTxPartList &list)
   return ret;
 }
 
-int ObTxDesc::merge_exec_info_with(const ObTxDesc &src)
+int ObTxDesc::update_parts_for_px_(const ObTxPartList &list)
+{
+  int ret = OB_SUCCESS;
+  ARRAY_FOREACH(list, i) {
+    const ObTxPart &a = list[i];
+    if (OB_FAIL(update_part_(const_cast<ObTxPart&>(a), true, false, true))) {
+      TRANS_LOG(WARN, "update part failed", K(ret), K(a));
+    }
+  }
+  return ret;
+}
+
+// NOTE that this is only for px
+int ObTxDesc::merge_exec_info_for_px(const ObTxDesc &src)
 {
   int ret = OB_SUCCESS;
   ObSpinLockGuard guard(lock_);
-  if (OB_FAIL(update_parts_(src.parts_))) {
+  if (OB_FAIL(update_parts_for_px_(src.parts_))) {
     TRANS_LOG(WARN, "update parts failed", K(ret), KPC(this), K(src));
   }
   if (src.flags_.PARTS_INCOMPLETE_) {
@@ -1172,6 +1200,12 @@ int ObTxDesc::fetch_conflict_txs_array(ObIArray<ObTransIDAndAddr> &array) {
   }
   conflict_txs_.reset();
   return ret;
+}
+
+void ObTxDesc::reset_conflict_info_array()
+{
+  ObSpinLockGuard guard(lock_);
+  conflict_info_array_.reset();
 }
 
 int ObTxDesc::fetch_conflict_info_array(ObIArray<storage::ObRowConflictInfo> &array) {
@@ -2122,6 +2156,8 @@ int ObTxDesc::add_modified_tables(const ObIArray<uint64_t> &dml_table_ids)
 {
   int ret = OB_SUCCESS;
   ObSpinLockGuard guard(lock_);
+  const int64_t old_modified_cnt = modified_tables_.count();
+  bool changed = false;
   if (modified_tables_.count() >= 8) {
     // go dedup
     ARRAY_FOREACH(dml_table_ids, i) {
@@ -2147,6 +2183,7 @@ int ObTxDesc::add_modified_tables(const ObIArray<uint64_t> &dml_table_ids)
           ++last;
           if (last != i) {
             modified_tables_.at(last) = modified_tables_.at(i);
+            changed = true;
           }
         }
       }
@@ -2155,7 +2192,11 @@ int ObTxDesc::add_modified_tables(const ObIArray<uint64_t> &dml_table_ids)
       }
     }
   }
-  LOG_TRACE("record trans dml table_ids", K(modified_tables_), K(tx_id_));
+  if (old_modified_cnt != modified_tables_.count() || changed) {
+    state_change_flags_.PARTS_CHANGED_ = true;
+  }
+  LOG_TRACE("record trans dml table_ids", K(modified_tables_), K(tx_id_), K(dml_table_ids),
+      K(old_modified_cnt), K(changed));
   return ret;
 }
 

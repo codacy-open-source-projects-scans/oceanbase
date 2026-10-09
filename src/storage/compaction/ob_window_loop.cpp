@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -22,9 +15,6 @@
 #include "share/scheduler/ob_dag_scheduler_config.h"
 #include "share/compaction/ob_compaction_resource_manager.h"
 #include "share/compaction/ob_compaction_time_guard.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_schedule_tablet_func.h"
-#endif
 
 ERRSIM_POINT_DEF(EN_WINDOW_COMPACTION_DO_NOT_ADD_READY_LIST);
 ERRSIM_POINT_DEF(EN_WINDOW_COMPACTION_DO_NOT_PROCESS_READY_LIST);
@@ -231,46 +221,6 @@ private:
   ObWindowCompactionPriorityQueue &prio_queue_;
 };
 
-class ObWindowScheduleTabletFuncGuard final
-{
-public:
-  ObWindowScheduleTabletFuncGuard()  {
-    func_ = nullptr;
-#ifdef OB_BUILD_SHARED_STORAGE
-    ss_func_ = nullptr;
-    if (GCTX.is_shared_storage_mode()) {
-      ss_func_ = MTL_NEW(ObSSWindowScheduleTabletFunc, "SS_WinSchedFunc");
-      func_ = ss_func_;
-    } else {
-      func_ = MTL_NEW(ObWindowScheduleTabletFunc, "SN_WinSchedFunc");
-    }
-#else
-    func_ = MTL_NEW(ObWindowScheduleTabletFunc, "SN_WinSchedFunc");
-#endif
-  }
-  ObWindowScheduleTabletFunc *get_func() const { return func_; }
-  ~ObWindowScheduleTabletFuncGuard() {
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (ss_func_) {
-      ss_func_->~ObSSWindowScheduleTabletFunc();
-      mtl_free(ss_func_);
-      ss_func_ = nullptr;
-      func_ = nullptr;
-    }
-#endif
-    if (func_) {
-      func_->~ObWindowScheduleTabletFunc();
-      mtl_free(func_);
-      func_ = nullptr;
-    }
-  }
-private:
-  ObWindowScheduleTabletFunc *func_;
-#ifdef OB_BUILD_SHARED_STORAGE
-  ObSSWindowScheduleTabletFunc *ss_func_;
-#endif
-};
-
 int ObWindowLoop::loop_tablet_stats()
 {
   int ret = OB_SUCCESS;
@@ -278,22 +228,18 @@ int ObWindowLoop::loop_tablet_stats()
   tablet_analyzers.set_attr(ObMemAttr(MTL_ID(), "TbltAnlyrs"));
   ObTabletStatAnalyzerLSIDComparator cmp(ret);
   ObLSSortedIterator<storage::ObTabletStatAnalyzer> iterator;
-  ObWindowScheduleTabletFuncGuard func_guard;
-  ObWindowScheduleTabletFunc *func = func_guard.get_func();
+  ObWindowScheduleTabletFunc func; // only used to filter tablets
   TabletStatAnalyzerProcessor processor(score_prio_queue_);
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObWindowLoop is not inited", K(ret));
-  } else if (OB_ISNULL(func)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc SchedTabletFunc fail", K(ret));
   } else if (OB_FAIL(MTL(storage::ObTenantTabletStatMgr *)->get_all_tablet_analyzers(tablet_analyzers))) {
     LOG_WARN("failed to get all tablet analyzers", K(ret));
   } else if (tablet_analyzers.empty()) {
   } else if (FALSE_IT(lib::ob_sort(tablet_analyzers.begin(), tablet_analyzers.end(), cmp))) {
   } else if (OB_FAIL(ret)) {
     LOG_WARN("failed to sort tablet analyzers", K(ret));
-  } else if (OB_FAIL(iterator.iterate(*func, tablet_analyzers, processor, true /*skip_follower*/))) {
+  } else if (OB_FAIL(iterator.iterate(func, tablet_analyzers, processor, true /*skip_follower*/))) {
     LOG_WARN("failed to iterate tablet stat analyzers", K(ret));
   } else {
     LOG_INFO("[WIN-COMPACTION] Successfully loop tablet stats", K(ret), "tablet_cnt", tablet_analyzers.count(),
@@ -392,14 +338,10 @@ public:
   int operator()(ObScheduleTabletFunc &func, ObTabletCompactionScore *candidate, ObTabletHandle &tablet_handle)
   {
     int ret = OB_SUCCESS;
-    ObWindowScheduleTabletFunc *window_func = nullptr;
     if (OB_UNLIKELY(!func.is_window_compaction_func())) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid func", K(ret), K(func));
-    } else if (OB_ISNULL(window_func = dynamic_cast<ObWindowScheduleTabletFunc *>(&func))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid func", K(ret), K(func));
-    } else if (OB_FAIL(window_loop_.process_ready_candidate(*window_func, candidate, tablet_handle, record_))) {
+    } else if (OB_FAIL(window_loop_.process_ready_candidate(static_cast<ObWindowScheduleTabletFunc &>(func), candidate, tablet_handle, record_))) {
       LOG_WARN("failed to process ready candidate", K(ret), KPC(candidate), K(tablet_handle));
     }
     return ret;
@@ -414,8 +356,7 @@ int ObWindowLoop::loop_ready_list(const int64_t ts_threshold)
   int ret = OB_SUCCESS;
   ObSEArray<ObTabletCompactionScore *, 4> candidates;  // capcity will be reserved when get_candidate_list
   ObLSSortedIterator<ObTabletCompactionScore *> iterator;
-  ObWindowScheduleTabletFuncGuard func_guard;
-  ObWindowScheduleTabletFunc *func = func_guard.get_func();
+  ObWindowScheduleTabletFunc func;
   LoopReadyListRecord loop_record;
   ReadyCandidateProcessor processor(*this, loop_record);
   ObWindowCompactionBaseContainerGuard list_guard(ready_list_); // for thread-safely access ready list
@@ -424,9 +365,6 @@ int ObWindowLoop::loop_ready_list(const int64_t ts_threshold)
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObWindowLoop is not inited", K(ret));
-  } else if (OB_ISNULL(func)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc SchedTabletFunc fail", K(ret));
   } else if (OB_FAIL(list_guard.acquire())) {
     LOG_WARN("failed to init list guard", K(ret));
   } else if (FALSE_IT(old_weighted_size = ready_list_.get_current_weighted_size())) {
@@ -437,7 +375,7 @@ int ObWindowLoop::loop_ready_list(const int64_t ts_threshold)
   } else if (FALSE_IT(lib::ob_sort(candidates.begin(), candidates.end(), ObTabletCompactionScoreLSComparator(ret)))) {
   } else if (OB_FAIL(ret)) {
     LOG_WARN("failed to sort candidates", K(ret));
-  } else if (OB_FAIL(iterator.iterate(*func, candidates, processor, false /*skip_follower*/))) {
+  } else if (OB_FAIL(iterator.iterate(func, candidates, processor, false /*skip_follower*/))) {
     LOG_WARN("failed to iterate ready candidates", K(ret));
   } else if (OB_FAIL(loop_record.record_to_string(loop_info))) {
     LOG_WARN("failed to convert loop info to string", K(ret));
@@ -520,20 +458,16 @@ void ObWindowLoop::update_adaptive_compaction_thread_cnt()
 {
   int ret = OB_SUCCESS;
   bool from_job_config = false;
-  if (OB_ISNULL(GCTX.cgroup_ctrl_) || !GCTX.cgroup_ctrl_->is_valid()) {
-    // cgroup is invalid , set adaptive_task_limit_ as limits_
-    adaptive_compaction_thread_cnt_ = 0;
-    adaptive_status_ = THREAD_NOT_INITED;
-    LOG_INFO("cgroup is invalid, don't need to adapt window thread cnt");
-  } else if (THREAD_NOT_INITED == adaptive_status_ || REACH_THREAD_TIME_INTERVAL(5_min)) {
-    // adaptive task limit for window compaction is affected by tenant max cpu, plan directive, and job_config, so it needs to be updated periodically.
+  int64_t tmp_thread_cnt = 0;
+  if (THREAD_NOT_INITED == adaptive_status_ || REACH_THREAD_TIME_INTERVAL(5_min)) {
     ObCompactionResourceManager resource_mgr;
-    if (OB_FAIL(resource_mgr.get_window_compaction_thread_cnt(adaptive_compaction_thread_cnt_, from_job_config))) {
-      LOG_WARN("failed to get window compaction thread cnt", K(ret));
-    } else if (from_job_config) {
-      adaptive_status_ = THREAD_ASSIGNED;
+    if (OB_FAIL(resource_mgr.get_window_compaction_thread_cnt(tmp_thread_cnt, from_job_config))) {
+      adaptive_compaction_thread_cnt_ = 0;
+      adaptive_status_ = THREAD_NOT_INITED;
+      LOG_WARN("failed to get window compaction thread cnt, use compaction_low_thread_score", K(ret));
     } else {
-      adaptive_status_ = THREAD_ADAPTIVE;
+      adaptive_compaction_thread_cnt_ = tmp_thread_cnt;
+      adaptive_status_ = from_job_config ? THREAD_ASSIGNED : THREAD_ADAPTIVE;
     }
   }
   time_guard_.click(ObWindowCompactionTimeGuard::UPDATE_ADAPTIVE_THREAD_CNT);
@@ -546,9 +480,9 @@ int ObWindowLoop::get_adaptive_compaction_thread_cnt(
   int ret = OB_SUCCESS;
   if (THREAD_NOT_INITED == adaptive_status_) {
     adaptive_thread_cnt = compaction_low_thread_score;
-  } else if (THREAD_ADAPTIVE) {
+  } else if (THREAD_ADAPTIVE == adaptive_status_) {
     adaptive_thread_cnt = std::max(adaptive_compaction_thread_cnt_, compaction_low_thread_score);
-  } else if (THREAD_ASSIGNED) {
+  } else if (THREAD_ASSIGNED == adaptive_status_) {
     adaptive_thread_cnt = adaptive_compaction_thread_cnt_;
   } else {
     ret = OB_STATE_NOT_MATCH;

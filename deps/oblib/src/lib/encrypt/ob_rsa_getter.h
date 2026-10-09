@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_RSA_GETTER_H_
@@ -164,6 +157,16 @@ private:
    * @return Error code
    */
   int create_wallet_directory(const char *wallet_path);
+
+  int decrypt_with_padding(EVP_PKEY *pkey,
+                           const unsigned char *ciphertext,
+                           const int64_t ciphertext_len,
+                           unsigned char *plaintext,
+                           int64_t &plaintext_len,
+                           const int64_t max_plaintext_len,
+                           const int padding_mode,
+                           const char *padding_name,
+                           const bool need_oaep_sha1);
 
 private:
   static const char *DEFAULT_WALLET_PATH;        // Default wallet path

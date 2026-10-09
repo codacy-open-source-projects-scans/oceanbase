@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_CACHE_OB_KVCACHE_STORE_H_
@@ -124,7 +117,7 @@ private:
   void purge_mb_handle_retire_station();
 
   static const int64_t SYNC_WASH_MB_TIMEOUT_US = 100 * 1000; // 100ms
-  static const int64_t FLUSH_MB_TIMEOUT_US = 1000 * 1000; // 1000ms
+  static const int64_t FLUSH_MB_TIMEOUT_US = 10 * 1000 * 1000; // 10s
   static const int64_t RETIRE_LIMIT = 16;
   static const int64_t WASH_THREAD_RETIRE_LIMIT = 2048;
   static const int64_t SUPPLY_MB_NUM_ONCE = 128;

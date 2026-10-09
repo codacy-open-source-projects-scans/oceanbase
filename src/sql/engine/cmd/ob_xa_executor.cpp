@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -102,7 +95,7 @@ int ObXaStartExecutor::execute(ObExecContext &ctx, ObXaStartStmt &stmt)
     } else if (OB_FAIL(MTL(transaction::ObXAService*)->xa_start_for_mysql(xid,
             flags, my_session->get_server_sid(), my_session->get_sid(), tx_param, tx_desc))) {
       LOG_WARN("mysql xa start failed", K(ret), K(tx_param));
-      my_session->get_trans_result().reset();
+      ctx.get_trans_result().reset();
       my_session->reset_tx_variable();
       ctx.set_need_disconnect(false);
     } else {
@@ -220,7 +213,7 @@ int ObXaPrepareExecutor::execute(ObExecContext &ctx, ObXaPrepareStmt &stmt)
       LOG_WARN("mysql xa prepare failed", K(ret), K(xid));
     }
     if (need_exit) {
-      my_session->get_trans_result().reset();
+      ctx.get_trans_result().reset();
       my_session->reset_tx_variable();
       my_session->disassociate_xa();
       ctx.set_need_disconnect(false);
@@ -289,7 +282,7 @@ int ObXaCommitExecutor::execute(ObExecContext &ctx, ObXaCommitStmt &stmt)
           LOG_WARN("mysql xa commit failed", K(ret), K(xid));
         }
         if (need_exit) {
-          my_session->get_trans_result().reset();
+          ctx.get_trans_result().reset();
           my_session->reset_tx_variable();
           my_session->disassociate_xa();
           ctx.set_need_disconnect(false);
@@ -384,7 +377,7 @@ int ObXaRollbackExecutor::execute(ObExecContext &ctx, ObXaRollBackStmt &stmt)
         LOG_WARN("mysql xa rollback failed", K(ret), K(xid));
       }
       if (need_exit) {
-        my_session->get_trans_result().reset();
+        ctx.get_trans_result().reset();
         my_session->reset_tx_variable();
         my_session->disassociate_xa();
         ctx.set_need_disconnect(false);
@@ -441,7 +434,8 @@ int ObPlXaStartExecutor::execute(ObExecContext &ctx, ObXaStartStmt &stmt)
     ret = OB_TRANS_XA_OUTSIDE;
     LOG_WARN("already start trans", K(ret), K(xid), K(tx_desc->tid()),
         K(tx_desc->get_xid()));
-  } else if (true == my_session->is_for_trigger_package()) {
+  } else if (OB_NOT_NULL(my_session->get_pl_context())
+             && my_session->get_pl_context()->is_in_trigger_context()) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not support xa start in trigger", K(ret), K(xid));
   } else if (OB_FAIL(ObXaExecutorUtil::get_org_cluster_id(my_session, org_cluster_id))) {
@@ -549,7 +543,8 @@ int ObPlXaEndExecutor::execute(ObExecContext &ctx, ObXaEndStmt &stmt)
   } else if (!my_session->get_in_transaction()) {
     ret = OB_TRANS_XA_PROTO;
     LOG_WARN("not in a trans", K(ret));
-  } else if (true == my_session->is_for_trigger_package()) {
+  } else if (OB_NOT_NULL(my_session->get_pl_context())
+             && my_session->get_pl_context()->is_in_trigger_context()) {
     ret = OB_NOT_SUPPORTED;
     LOG_WARN("not support xa end in trigger", K(ret), K(xid));
   } else if (my_session->get_xid().empty()) {

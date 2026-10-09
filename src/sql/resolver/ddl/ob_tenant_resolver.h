@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_TENANT_RESOLVER_RESOLVER_
@@ -344,6 +337,34 @@ int ObTenantResolver<T>::resolve_tenant_option(T *stmt, ParseNode *node,
           ret = OB_OP_NOT_ALLOW;
           SQL_LOG(WARN, "create tenant set default_tablegroup not allowed");
           LOG_USER_ERROR(OB_OP_NOT_ALLOW, "set defalut_tablegroup");
+        }
+        break;
+      }
+      case T_TABLESPACE: {
+        if (OB_FAIL(ObResolverUtils::check_default_tablespace_enable(session_info))) {
+          LOG_WARN("fail to check default tablespace enable", KR(ret));
+        } else if (stmt->get_stmt_type() == stmt::T_MODIFY_TENANT) {
+          common::ObString tablespace_name;
+          if (OB_UNLIKELY(1 != option_node->num_child_) || OB_ISNULL(option_node->children_)) {
+            ret = OB_ERR_UNEXPECTED;
+            OB_LOG(WARN, "invalid tablespace argument", K(ret));
+          } else if (OB_NOT_NULL(option_node->children_[0])) {
+            tablespace_name.assign_ptr(option_node->children_[0]->str_value_,
+                                      static_cast<int32_t>(option_node->children_[0]->str_len_));
+          } else {
+            tablespace_name = ObString::make_string("NULL");
+          }
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(stmt->set_default_tablespace_name(tablespace_name))) {
+            OB_LOG(WARN, "failed to set default tablespace name", K(ret));
+          } else if (OB_FAIL(alter_option_bitset_.add_member(
+                  obrpc::ObModifyTenantArg::DEFAULT_TABLESPACE))) {
+            OB_LOG(WARN, "failed to add member to bitset!", K(ret));
+          }
+        } else {
+          ret = OB_OP_NOT_ALLOW;
+          SQL_LOG(WARN, "create tenant set default_tablespace not allowed");
+          LOG_USER_ERROR(OB_OP_NOT_ALLOW, "set default_tablespace");
         }
         break;
       }

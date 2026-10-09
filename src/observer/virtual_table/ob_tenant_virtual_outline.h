@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_OBSERVER_VIRTUAL_TABLE_OB_TENANT_VIRTUAL_OUTLINE_
@@ -92,6 +85,7 @@ class ObTenantVirtualOutline : public ObTenantVirtualOutlineBase
     FORMAT_SQL_TEXT = OB_APP_MIN_COLUMN_ID + 11,
     FORMAT_SQL_ID = OB_APP_MIN_COLUMN_ID + 12,
     FORMAT_OUTLINE = OB_APP_MIN_COLUMN_ID + 13,
+    PATTERN_RULES = OB_APP_MIN_COLUMN_ID + 14,
   };
 public:
   ObTenantVirtualOutline() : ObTenantVirtualOutlineBase() {}

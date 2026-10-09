@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 namespace oceanbase
@@ -33,6 +26,7 @@ void ObSortVecOpImpl<Compare, Store_Row, has_addon>::reset()
   outputted_rows_cnt_ = 0;
   is_fetch_with_ties_ = false;
   rows_ = nullptr;
+  heap_rows_ = nullptr;
   ties_array_pos_ = 0;
   sort_exprs_getter_.reset();
   if (0 != ties_array_.count()) {
@@ -83,9 +77,10 @@ void ObSortVecOpImpl<Compare, Store_Row, has_addon>::reset()
     }
     if (nullptr != topn_heap_) {
       for (int64_t i = 0; i < topn_heap_->count(); ++i) {
-        if (OB_NOT_NULL(topn_heap_->at(i))) {
-          store_row_factory_.free_row_store(topn_heap_->at(i));
-          topn_heap_->at(i) = nullptr;
+        if (OB_NOT_NULL(topn_heap_->at(i).row_)) {
+
+          store_row_factory_.free_row_store(topn_heap_->at(i).row_);
+          topn_heap_->at(i).row_ = nullptr;
         }
       }
       topn_heap_->~TopnHeap();
@@ -123,6 +118,7 @@ void ObSortVecOpImpl<Compare, Store_Row, has_addon>::reuse()
   mem_check_interval_mask_ = 1;
   row_idx_ = 0;
   next_stored_row_func_ = &ObSortVecOpImpl<Compare, Store_Row, has_addon>::array_next_stored_row;
+  seq_num_ = 0;
   ties_array_pos_ = 0;
   if (0 != ties_array_.count()) {
     for (int64_t i = 0; i < ties_array_.count(); ++i) {
@@ -147,9 +143,9 @@ void ObSortVecOpImpl<Compare, Store_Row, has_addon>::reuse()
   }
   if (nullptr != topn_heap_) {
     for (int64_t i = 0; i < topn_heap_->count(); ++i) {
-      if (OB_NOT_NULL(topn_heap_->at(i))) {
-        store_row_factory_.free_row_store(topn_heap_->at(i));
-        topn_heap_->at(i) = nullptr;
+      if (OB_NOT_NULL(topn_heap_->at(i).row_)) {
+        store_row_factory_.free_row_store(topn_heap_->at(i).row_);
+        topn_heap_->at(i).row_ = nullptr;
       }
     }
     topn_heap_->reset();
@@ -233,7 +229,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init_sort_temp_row_store(
 
 template <typename Compare, typename Store_Row, bool has_addon>
 int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init_eager_topn_filter(
-    const common::ObIArray<Store_Row *> *dumped_rows,
+    int64_t dumped_rows_count,
     const int64_t max_batch_size) {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(topn_filter_)) {
@@ -247,7 +243,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init_eager_topn_filter(
       topn_filter_ = new (buf) ObSortVecOpEagerFilter<Compare, Store_Row, has_addon>(
           allocator_, store_row_factory_);
     }
-    if (OB_FAIL(topn_filter_->init(comp_, dumped_rows->count(), topn_cnt_,
+    if (OB_FAIL(topn_filter_->init(comp_, dumped_rows_count, topn_cnt_,
                                    max_batch_size))) {
       SQL_ENG_LOG(WARN, "init eager topn filter failed", K(ret));
     }
@@ -320,7 +316,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
       SQL_ENG_LOG(WARN, "failed to init compare functions", K(ret));
     } else if (is_topn_sort()
                && OB_ISNULL(topn_heap_ = OB_NEWx(TopnHeap, (&mem_context_->get_malloc_allocator()),
-                                                 comp_, &mem_context_->get_malloc_allocator()))) {
+                                                 stable_comp_, &mem_context_->get_malloc_allocator()))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       SQL_ENG_LOG(WARN, "allocate memory failed", K(ret));
     } else if (is_topn_sort() && ctx.enable_pd_topn_filter_
@@ -359,15 +355,19 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
         op_monitor_info_.otherstat_5_value_ = phy_plan->get_ddl_task_id();
       }
     }
-    if (OB_SUCC(ret)) {
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(init_fixed_key_sort())) {
+      SQL_ENG_LOG(WARN, "failed to init fixed key sort", K(ret));
+    } else {
       inited_ = true;
       is_topn_filter_enabled_ = EVENT_CALL(EventTable::EN_SORT_IMPL_TOPN_EAGER_FILTER) == OB_SUCCESS;
 
       if (OB_SUCC(ret)) {
-        if (!is_topn_sort()) {
+        if (!use_heap_sort_) {
           rows_ = &quick_sort_array_;
         } else {
-          rows_ = &(const_cast<common::ObIArray<Store_Row *> &>(topn_heap_->get_heap_data()));
+          heap_rows_ = &(const_cast<common::ObIArray<StableTopNSortKey> &>(topn_heap_->get_heap_data()));
         }
       }
 
@@ -375,7 +375,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
         using FullStrategyT = ObFullSortStrategy<Compare, Store_Row, has_addon>;
         full_sort_strategy_ = OB_NEWx(FullStrategyT,
                                       (&mem_context_->get_malloc_allocator()),
-                                      comp_, sk_row_meta_, &mem_context_, false/*enable_encode_sortkey*/);
+                                      comp_, sk_row_meta_, &mem_context_, enable_encode_sortkey_);
         if (nullptr == full_sort_strategy_) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
           SQL_ENG_LOG(WARN, "failed to create full sort strategy", K(ret));
@@ -389,8 +389,9 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
       if (OB_SUCC(ret) && part_cnt_ > 0 && !use_partition_topn_sort_ && nullptr == part_sort_strategy_) {
         using PartSortStrategyT = ObPartitionSortStrategy<Compare, Store_Row, has_addon>;
         part_sort_strategy_ = OB_NEWx(PartSortStrategyT,
-                                      (&mem_context_->get_malloc_allocator()),
-                                      comp_, *sk_row_meta_, part_cnt_, sk_exprs_, sk_collations_, allocator_);
+                                      (&mem_context_->get_malloc_allocator()), comp_, *sk_row_meta_,
+                                      part_cnt_, sk_exprs_, sk_collations_, addon_collations_, allocator_,
+                                      enable_encode_sortkey_, is_fixed_key_sort_enabled_, fixed_sort_key_len_);
         if (nullptr == part_sort_strategy_) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
           SQL_ENG_LOG(WARN, "failed to create partition sort strategy", K(ret));
@@ -411,7 +412,8 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
         int64_t size = OB_INVALID_ID == input_rows_ ? 0 : input_rows_ * input_width_ * (use_heap_sort_ ? 2 : 1);
         if (OB_FAIL(sort_resource_mgr_.init(part_cnt_, use_partition_topn_sort_,
                                             is_topn_filter_enabled_, is_topn_sort(),
-                                            part_topn_sort_strategy_, tenant_id_, size, exec_ctx_))) {
+                                            part_topn_sort_strategy_, part_sort_strategy_,
+                                            tenant_id_, size, exec_ctx_))) {
           SQL_ENG_LOG(WARN, "failed to init sql mem processor", K(ret));
         } else {
           store_mgr_.set_dir_id(sort_resource_mgr_.get_dir_id());
@@ -423,6 +425,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init(ObSortVecOpContext &ctx
     if (OB_SUCC(ret) && OB_FAIL(init_fixed_key_sort())) {
       SQL_ENG_LOG(WARN, "init fixed key sort failed", K(ret));
     }
+    LOG_TRACE("init sort vec op impl", K(enable_encode_sortkey_), K(is_fixed_key_sort_enabled_), K(fixed_sort_key_len_), K(use_heap_sort_), K(use_partition_topn_sort_), K(part_cnt_));
   }
   return ret;
 }
@@ -439,6 +442,10 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::init_fixed_key_sort()
       is_fixed_key_sort_enabled_ = true;
       fixed_sort_key_len_ = 0;
       for (int64_t i = 0; i < sk_collations_->count(); ++i) {
+        // for partition sort, skip the partition column and hash column
+        if (part_cnt_ > 0 && i < part_cnt_ + 1) {
+          continue;
+        }
         ObExpr *expr = sk_exprs_->at(sk_collations_->at(i).field_idx_);
         int64_t encoding_len = get_type_encoding_sortkey_size_map()[expr->datum_meta_.type_];
         if (encoding_len != -1) {
@@ -718,13 +725,13 @@ template <typename Compare, typename Store_Row, bool has_addon>
 int ObSortVecOpImpl<Compare, Store_Row, has_addon>::copy_to_topn_row(Store_Row *&new_row)
 {
   int ret = OB_SUCCESS;
-  Store_Row *top_row = topn_heap_->top();
+  Store_Row *top_row = topn_heap_->top().row_;
   if (OB_FAIL(copy_to_row(top_row))) {
-    topn_heap_->top() = top_row;
+    topn_heap_->top().row_ = top_row;
     SQL_ENG_LOG(WARN, "failed to copy to row", K(ret));
   } else {
     new_row = top_row;
-    topn_heap_->top() = top_row;
+    topn_heap_->top().row_ = top_row;
   }
   return ret;
 }
@@ -733,16 +740,16 @@ template <typename Compare, typename Store_Row, bool has_addon>
 int ObSortVecOpImpl<Compare, Store_Row, has_addon>::adjust_topn_heap(const Store_Row *&store_row)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(topn_heap_->top())) {
+  if (OB_ISNULL(topn_heap_->top().row_)) {
     ret = OB_ERR_UNEXPECTED;
     SQL_ENG_LOG(WARN, "unexpected error.top of the heap is nullptr", K(ret),
                 K(topn_heap_->count()));
   } else if (!topn_heap_->empty()) {
-    if (comp_(topn_heap_->top(), *eval_ctx_)) {
+    if (comp_(topn_heap_->top().row_, *eval_ctx_)) {
       Store_Row *new_row = nullptr;
       if (OB_FAIL(copy_to_topn_row(new_row))) {
         SQL_ENG_LOG(WARN, "failed to generate new row", K(ret));
-      } else if (OB_FAIL(topn_heap_->replace_top(new_row))) {
+      } else if (OB_FAIL(topn_heap_->replace_top(StableTopNSortKey(new_row, seq_num_++)))) {
         SQL_ENG_LOG(WARN, "failed to replace top", K(ret));
       } else {
         store_row = new_row;
@@ -769,17 +776,17 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::adjust_topn_heap_with_ties(
   const Store_Row *&store_row)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(topn_heap_->top())) {
+  if (OB_ISNULL(topn_heap_->top().row_)) {
     ret = OB_ERR_UNEXPECTED;
     SQL_ENG_LOG(WARN, "unexpected error.top of the heap is nullptr", K(ret),
                 K(topn_heap_->count()));
   } else if (!topn_heap_->empty()) {
-    int cmp = comp_.with_ties_cmp(topn_heap_->top(), *eval_ctx_);
+    int cmp = comp_.with_ties_cmp(topn_heap_->top().row_, *eval_ctx_);
     bool is_alloced = false;
     bool add_ties_array = false;
     Store_Row *new_row = nullptr;
     Store_Row *copy_pre_heap_top_row = nullptr;
-    Store_Row *pre_heap_top_row = topn_heap_->top();
+    Store_Row *pre_heap_top_row = topn_heap_->top().row_;
     if (OB_FAIL(comp_.ret_) || cmp < 0) {
       /* do nothing */
     } else if (0 == cmp) {
@@ -797,9 +804,9 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::adjust_topn_heap_with_ties(
       SQL_ENG_LOG(WARN, "failed to generate new row", K(ret));
     } else if (OB_FAIL(copy_to_topn_row(new_row))) {
       SQL_ENG_LOG(WARN, "failed to generate new row", K(ret));
-    } else if (OB_FAIL(topn_heap_->replace_top(new_row))) {
+    } else if (OB_FAIL(topn_heap_->replace_top(StableTopNSortKey(new_row, seq_num_++)))) {
       SQL_ENG_LOG(WARN, "failed to replace top", K(ret));
-    } else if (OB_FALSE_IT(cmp = comp_.with_ties_cmp(copy_pre_heap_top_row, topn_heap_->top()))) {
+    } else if (OB_FALSE_IT(cmp = comp_.with_ties_cmp(copy_pre_heap_top_row, topn_heap_->top().row_))) {
     } else if (OB_FAIL(comp_.ret_)) {
       /* do nothing */
     } else if (0 != cmp) {
@@ -1093,7 +1100,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_heap_sort_row(const Stor
     int64_t topn_heap_size = topn_heap_->count();
     if (OB_FAIL(copy_to_row(new_sk_row))) {
       SQL_ENG_LOG(WARN, "failed to copy to row", K(ret));
-    } else if (OB_FAIL(topn_heap_->push(new_sk_row))) {
+    } else if (OB_FAIL(topn_heap_->push(StableTopNSortKey(new_sk_row, seq_num_++)))) {
       SQL_ENG_LOG(WARN, "failed to push back row", K(ret));
       if (topn_heap_->count() == topn_heap_size) {
         store_row_factory_.free_row_store(new_sk_row);
@@ -1166,7 +1173,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_heap_sort_batch(
       row_count++;
     }
     if (OB_SUCC(ret) && pd_topn_filter_.need_update()) {
-      if (OB_FAIL(pd_topn_filter_.update_filter_data(topn_heap_->top(), sk_row_meta_))) {
+      if (OB_FAIL(pd_topn_filter_.update_filter_data(topn_heap_->top().row_, sk_row_meta_))) {
         LOG_WARN("failed to update filter data", K(ret));
       }
     }
@@ -1202,15 +1209,15 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_heap_sort_batch(
       SQL_ENG_LOG(WARN, "check need sort failed", K(ret));
     } else if (OB_NOT_NULL(store_row)) {
       sk_rows_[i] = const_cast<Store_Row *>(store_row);
-    } else if (OB_NOT_NULL(topn_heap_) && OB_NOT_NULL(topn_heap_->top())) {
-      sk_rows_[i] = topn_heap_->top();
+    } else if (OB_NOT_NULL(topn_heap_) && OB_NOT_NULL(topn_heap_->top().row_)) {
+      sk_rows_[i] = topn_heap_->top().row_;
     } else {
       ret = OB_ERR_UNEXPECTED;
       SQL_ENG_LOG(WARN, "failed to add heap sort batch", K(ret));
     }
   }
   if (OB_SUCC(ret) && pd_topn_filter_.need_update()) {
-    if (OB_FAIL(pd_topn_filter_.update_filter_data(topn_heap_->top(), sk_row_meta_))) {
+    if (OB_FAIL(pd_topn_filter_.update_filter_data(topn_heap_->top().row_, sk_row_meta_))) {
       LOG_WARN("failed to update filter data", K(ret));
     }
   }
@@ -1235,15 +1242,52 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::update_max_available_mem_siz
 }
 template <typename Compare, typename Store_Row, bool has_addon>
 int ObSortVecOpImpl<Compare, Store_Row, has_addon>::eager_topn_filter(
-    common::ObIArray<Store_Row *> *sorted_dumped_rows) {
+    common::ObIArray<StableTopNSortKey> *sorted_dumped_rows) {
   int ret = OB_SUCCESS;
   if (is_topn_sort() && is_topn_filter_enabled()) {
     // init topn_filter_ if necessarily
-    if (OB_FAIL(init_eager_topn_filter(sorted_dumped_rows,
+    if (OB_FAIL(init_eager_topn_filter(sorted_dumped_rows->count(),
                                        eval_ctx_->max_batch_size_))) {
       SQL_ENG_LOG(WARN, "failed to prepare for topn filter", K(ret));
     } else if (OB_FAIL(eager_topn_filter_update(sorted_dumped_rows))) {
       SQL_ENG_LOG(WARN, "failed to update eager topn filter", K(ret));
+    }
+  }
+  return ret;
+}
+
+template <typename Compare, typename Store_Row, bool has_addon>
+int ObSortVecOpImpl<Compare, Store_Row, has_addon>::eager_topn_filter(
+    common::ObIArray<Store_Row *> *sorted_dumped_rows) {
+  int ret = OB_SUCCESS;
+  if (is_topn_sort() && is_topn_filter_enabled()) {
+    // init topn_filter_ if necessarily
+    if (OB_FAIL(init_eager_topn_filter(sorted_dumped_rows->count(),
+                                       eval_ctx_->max_batch_size_))) {
+      SQL_ENG_LOG(WARN, "failed to prepare for topn filter", K(ret));
+    } else if (OB_FAIL(eager_topn_filter_update(sorted_dumped_rows))) {
+      SQL_ENG_LOG(WARN, "failed to update eager topn filter", K(ret));
+    }
+  }
+  return ret;
+}
+
+template <typename Compare, typename Store_Row, bool has_addon>
+int ObSortVecOpImpl<Compare, Store_Row, has_addon>::eager_topn_filter_update(
+    const common::ObIArray<StableTopNSortKey> *sorted_dumped_rows) {
+  int ret = OB_SUCCESS;
+  if (topn_filter_->is_by_pass()) {
+    // do nothing
+  } else {
+    int64_t dumped_rows_count = sorted_dumped_rows->count();
+    int64_t bucket_size = topn_filter_->bucket_size();
+    bool updated = true;
+    for (int64_t i = bucket_size - 1;
+        OB_SUCC(ret) && updated && i < dumped_rows_count; i += bucket_size) {
+      if (OB_FAIL(
+              topn_filter_->update_filter(sorted_dumped_rows->at(i).row_, updated))) {
+        SQL_ENG_LOG(WARN, "failed to eager topn filter update", K(ret));
+      }
     }
   }
   return ret;
@@ -1291,7 +1335,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::preprocess_dump(bool &dumped
   if (OB_FAIL(sort_resource_mgr_.preprocess_dump(dumped))) {
     SQL_ENG_LOG(WARN, "failed to preprocess dump", K(ret));
   } else {
-    if (dumped && OB_NOT_NULL(rows_) && rows_->empty()) {
+    if (dumped && get_rows_count() == 0) {
       dumped = false; //no data to dump, try to add a batch of data directly
       LOG_TRACE("Insufficient memory, unable to store a batch of data", K(sort_resource_mgr_.get_memory_used()), K(sort_resource_mgr_.get_memory_bound()),
                     K(sort_resource_mgr_.get_cache_size()), K(sort_resource_mgr_.get_expect_size()));
@@ -1336,7 +1380,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::sort_inmem_data()
   if (!is_inited()) {
     ret = OB_NOT_INIT;
     SQL_ENG_LOG(WARN, "not init", K(ret));
-  } else if (!rows_->empty()) {
+  } else if (get_rows_count() > 0) {
     if (!use_heap_sort_ && (local_merge_sort_ || sorted_)) {
       // row already in order, do nothing.
     } else {
@@ -1350,7 +1394,9 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::sort_inmem_data()
           }
         }
       }
-      if (OB_ISNULL(sort_strategy_)) {
+      if (use_heap_sort_) {
+        boost::sort::spinsort(&heap_rows_->at(begin), &heap_rows_->at(0) + heap_rows_->count(), stable_comp_);
+      } else if (OB_ISNULL(sort_strategy_)) {
         ret = OB_ERR_UNEXPECTED;
         SQL_ENG_LOG(WARN, "sort strategy is null", K(ret));
       } else if (OB_FAIL(sort_strategy_->sort_inmem_data(begin, rows_->count(), rows_))) {
@@ -1361,7 +1407,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::sort_inmem_data()
         SQL_ENG_LOG(WARN, "compare failed", K(ret));
       }
       op_monitor_info_.otherstat_1_id_ = ObSqlMonitorStatIds::SORT_SORTED_ROW_COUNT;
-      op_monitor_info_.otherstat_1_value_ += rows_->count();
+      op_monitor_info_.otherstat_1_value_ += get_rows_count();
     }
     if (OB_SUCC(ret) && need_imms()) {
       if (nullptr == imms_heap_) {
@@ -1456,7 +1502,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::do_fixed_key_sort(int64_t be
   if (OB_SUCC(ret) && !can_encode) {
     enable_encode_sortkey_ = false;
     comp_.fallback_to_disable_encode_sortkey();
-    lib::ob_sort(&rows_->at(begin), &rows_->at(0) + rows_->count(), CopyableComparer(comp_));
+    boost::sort::spinsort(&rows_->at(begin), &rows_->at(0) + rows_->count(), CopyableComparer(comp_));
   }
   return ret;
 }
@@ -1468,7 +1514,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::do_dump()
   if (!is_inited()) {
     ret = OB_NOT_INIT;
     SQL_ENG_LOG(WARN, "not init", K(ret));
-  } else if (rows_->empty()) {
+  } else if (get_rows_count() == 0) {
     ret = OB_INVALID_ARGUMENT;
     SQL_ENG_LOG(WARN, "invalid argument", K(ret));
   } else if (OB_FAIL(sort_inmem_data())) {
@@ -1485,13 +1531,24 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::do_dump()
         SQL_ENG_LOG(WARN, "build chunk failed", K(ret));
       }
     } else if (!need_imms()) {
-      // Use NormalDumpStrategy
-      NormalDumpStrategy<Compare, Store_Row, has_addon>
-        input(rows_, &ties_array_, sk_row_meta_);
-      if (OB_FAIL(build_chunk(level, input))) {
-        SQL_ENG_LOG(WARN, "build chunk failed");
-      } else if (OB_FAIL(eager_topn_filter(rows_))) {
-        SQL_ENG_LOG(WARN, "eager_topn_filter failed", K(ret));
+      if (use_heap_sort_) {
+        int64_t row_pos = 0;
+        int64_t ties_array_pos = 0;
+        HeapSortInputFunctor input(row_pos, ties_array_pos, this);
+        if (OB_FAIL(build_chunk(level, input))) {
+          SQL_ENG_LOG(WARN, "build chunk failed", K(ret));
+        } else if (OB_FAIL(eager_topn_filter(heap_rows_))) {
+          SQL_ENG_LOG(WARN, "eager_topn_filter failed", K(ret));
+        }
+      } else {
+        // Use NormalDumpStrategy
+        NormalDumpStrategy<Compare, Store_Row, has_addon>
+          input(rows_, &ties_array_, sk_row_meta_);
+        if (OB_FAIL(build_chunk(level, input))) {
+          SQL_ENG_LOG(WARN, "build chunk failed");
+        } else if (OB_FAIL(eager_topn_filter(rows_))) {
+          SQL_ENG_LOG(WARN, "eager_topn_filter failed", K(ret));
+        }
       }
     } else {
       // Use IMMSDumpStrategy
@@ -1518,9 +1575,9 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::do_dump()
     if (OB_SUCC(ret) && use_heap_sort_) {
       if (nullptr != mem_context_ && nullptr != topn_heap_) {
         for (int64_t i = 0; i < topn_heap_->count(); ++i) {
-          if (OB_NOT_NULL(topn_heap_->at(i))) {
-            store_row_factory_.free_row_store(topn_heap_->at(i));
-            topn_heap_->at(i) = nullptr;
+          if (OB_NOT_NULL(topn_heap_->at(i).row_)) {
+            store_row_factory_.free_row_store(topn_heap_->at(i).row_);
+            topn_heap_->at(i).row_ = nullptr;
           }
         }
         topn_heap_->~TopnHeap();
@@ -1537,11 +1594,17 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::do_dump()
       got_first_row_ = false;
       use_heap_sort_ = false;
       rows_ = &quick_sort_array_;
+      heap_rows_ = nullptr;
     }
 
     if (OB_SUCC(ret) && use_partition_topn_sort_) {
       part_topn_sort_strategy_->reuse();
       rows_ = &quick_sort_array_;
+    }
+
+    if (OB_SUCC(ret) && part_cnt_ > 0 && !use_partition_topn_sort_ &&
+        part_sort_strategy_ != nullptr) {
+      part_sort_strategy_->reuse();
     }
 
     if (OB_SUCC(ret)) {
@@ -1748,7 +1811,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::sort()
   if (!is_inited()) {
     ret = OB_NOT_INIT;
     SQL_ENG_LOG(WARN, "not init", K(ret));
-  } else if (!rows_->empty()) {
+  } else if (get_rows_count() > 0) {
     // in memory sort
     if (sort_chunks_.is_empty()) {
       if (OB_FAIL(sort_inmem_data())) {
@@ -1821,9 +1884,10 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::sort()
           return external_sorter_->get_next_row(sk_row, addon_row);
         };
         const int64_t level = sort_chunks_.get_first()->level_ + 1;
+        const int64_t chunk_idx = sort_chunks_.get_first()->chunk_idx_;
         op_monitor_info_.otherstat_2_id_ = ObSqlMonitorStatIds::SORT_MERGE_SORT_ROUND;
         op_monitor_info_.otherstat_2_value_ = level;
-        if (OB_FAIL(build_chunk(level, input))) {
+        if (OB_FAIL(build_chunk(level, input, chunk_idx))) {
           SQL_ENG_LOG(WARN, "build chunk failed", K(ret));
         } else {
           sort_resource_mgr_.set_number_pass(level + 1);
@@ -1858,14 +1922,23 @@ template <typename Compare, typename Store_Row, bool has_addon>
 int ObSortVecOpImpl<Compare, Store_Row, has_addon>::array_next_stored_row(const Store_Row *&sk_row)
 {
   int ret = OB_SUCCESS;
-  if (row_idx_ >= rows_->count() && ties_array_pos_ >= ties_array_.count()) {
-    ret = OB_ITER_END;
-  } else if (row_idx_ < rows_->count()) {
-    sk_row = rows_->at(row_idx_);
-    row_idx_ += 1;
+  if (use_heap_sort_) {
+    if (row_idx_ >= heap_rows_->count() && ties_array_pos_ >= ties_array_.count()) {
+      ret = OB_ITER_END;
+    } else if (row_idx_ < heap_rows_->count()) {
+      sk_row = heap_rows_->at(row_idx_).row_;
+      row_idx_ += 1;
+    } else {
+      sk_row = ties_array_.at(ties_array_pos_);
+      ties_array_pos_ += 1;
+    }
   } else {
-    sk_row = ties_array_.at(ties_array_pos_);
-    ties_array_pos_ += 1;
+    if (row_idx_ >= rows_->count()) {
+      ret = OB_ITER_END;
+    } else if (row_idx_ < rows_->count()) {
+      sk_row = rows_->at(row_idx_);
+      row_idx_ += 1;
+    }
   }
   return ret;
 }
@@ -1962,7 +2035,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::get_next_batch(const int64_t
 }
 
 template <typename Compare, typename Store_Row, bool has_addon>
-int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_sort_chunk(const int64_t level, SortVecOpChunk *&chunk)
+int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_sort_chunk(const int64_t level, SortVecOpChunk *&chunk, const int64_t chunk_idx)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!is_inited())) {
@@ -1974,6 +2047,15 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_sort_chunk(const int64_t
   } else {
     // In increase sort, chunk->level_ may less than the last of sort chunks.
     // insert the chunk to the upper bound the level.
+    //
+    // Set the `chunk_idx_` field to ensure stable comparison between chunks: a
+    // newly built chunk gets the next available index; merged chunks inherit
+    // the first input chunk's index.
+    if (chunk_idx >= 0) {
+      chunk->chunk_idx_ = chunk_idx;
+    } else {
+      chunk->chunk_idx_ = sort_chunks_.get_size();
+    }
     SortVecOpChunk *pos = sort_chunks_.get_last();
     for (; pos != sort_chunks_.get_header() && pos->level_ > level;
          pos = pos->get_prev()) {
@@ -1991,7 +2073,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::add_sort_chunk(const int64_t
 
 template <typename Compare, typename Store_Row, bool has_addon>
 template <typename Input>
-int ObSortVecOpImpl<Compare, Store_Row, has_addon>::build_chunk(const int64_t level, Input &input)
+int ObSortVecOpImpl<Compare, Store_Row, has_addon>::build_chunk(const int64_t level, Input &input, const int64_t chunk_idx)
 {
   // Check if the object is properly initialized
   int ret = OB_SUCCESS;
@@ -2025,7 +2107,7 @@ int ObSortVecOpImpl<Compare, Store_Row, has_addon>::build_chunk(const int64_t le
       SQL_ENG_LOG(WARN, "unexpected output chunks count", K(ret), K(output_chunks.count()));
     } else {
       SortVecOpChunk *&chunk = output_chunks.at(0);
-      if (OB_FAIL(add_sort_chunk(level, chunk))) {
+      if (OB_FAIL(add_sort_chunk(level, chunk, chunk_idx))) {
         SQL_ENG_LOG(WARN, "failed to add sort chunks", K(ret));
       }
     }

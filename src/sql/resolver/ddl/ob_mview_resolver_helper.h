@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_MV_RESOLVER_HELPER_H_
@@ -42,6 +35,23 @@ public:
                                        ObSelectStmt *select_stmt,
                                        ObCreateTableArg &create_arg,
                                        ObCreateViewResolver &resolver);
+  static int resolve_refresh_method(const int32_t refresh_method_value,
+                                    ObMVRefreshMethod &refresh_method);
+  static int resolve_refresh_parallel_node(const ParseNode *refresh_parallel_node,
+                                           int64_t &refresh_dop);
+  static int resolve_nested_refresh_node(const ParseNode *nested_refresh_node,
+                                         ObMVNestedRefreshMode &nested_refresh_mode);
+  static int resolve_refresh_on_node(const ParseNode *refresh_on_node,
+                                     ObMVRefreshMode &refresh_mode);
+  static int resolve_refresh_interval_node(const ParseNode *refresh_interval_node,
+                                           ObSQLSessionInfo *session_info,
+                                           common::ObIAllocator *allocator,
+                                           ObResolverParams &resolver_params,
+                                           int64_t &start_time,
+                                           ObString &next_time_expr);
+  static int resolve_compat_version_node(const ParseNode *compat_version_node,
+                                         const uint64_t tenant_id,
+                                         uint64_t &compat_version);
 
 private:
   static int resolve_materialized_view_container_table(ParseNode *partition_node,
@@ -69,9 +79,16 @@ private:
   static int get_dep_session_vars_from_stmt(ObSQLSessionInfo &session_info,
                                             ObSelectStmt *stmt,
                                             ObLocalSessionVar &dep_vars);
+  static int generate_hidden_column_comment(const std::pair<ObRawExpr*, int64_t> &dependency_info,
+                                            const bool is_set_stmt,
+                                            ObSchemaGetterGuard *schema_guard,
+                                            ObSQLSessionInfo *session_info,
+                                            char *buf,
+                                            ObString &comment_string);
   static int add_hidden_cols_for_mv(ObTableSchema &table_schema,
                                     const uint64_t column_id,
                                     const SelectItem &select_item,
+                                    const ObString &comment_string,
                                     ObCreateViewResolver &resolver);
 };
 }  // namespace sql

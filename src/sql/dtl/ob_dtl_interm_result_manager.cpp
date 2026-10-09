@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DTL
@@ -50,6 +43,8 @@ void ObAtomicGetIntermResultInfoCall::operator() (common::hash::HashMapPair<ObDT
     result_info_guard_.set_result_info(*entry.second, interm_res_manager_);
   } else {
     ret_ = OB_HASH_NOT_EXIST;
+    int ret = ret_;
+    LOG_WARN("not eof", K(entry.first));
   }
   LOG_DEBUG("debug start read", K(entry.second->is_read_), K(entry.first));
 }
@@ -547,7 +542,7 @@ int ObDTLIntermResultManager::process_interm_result(ObDtlLinkedBuffer *buffer, i
     if (OB_FAIL(process_interm_result_inner(*buffer, key, 0, buffer->size(), 0, buffer->is_eof(), true))) {
       LOG_WARN("process interm result inner", K(ret));
     }
-    LOG_TRACE("process interm result", K(buffer->size()), K(buffer->get_batch_info().count()),
+    LOG_TRACE("process interm result", K(key), K(buffer->size()), K(buffer->get_batch_info().count()),
               K(buffer->get_batch_info()));
   }
 

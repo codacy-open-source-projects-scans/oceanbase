@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -1276,21 +1269,16 @@ int64_t ObTimeGuard::to_string(char *buf, const int64_t buf_len) const
 {
   int ret = OB_SUCCESS;
   int64_t pos = 0;
-  if (!need_record_log_) {
-    ret = databuff_printf(buf, buf_len, pos, "time guard have no click events for optimization");
-  } else {
-    int64_t i = 0;
 
-    ret = databuff_printf(buf, buf_len, pos, "time guard '%s' cost too much time, used=%ld%s",
-        owner_, common::ObTimeUtility::fast_current_time() - start_ts_,
-        click_count_ > 0 ? ", time_dist: " : "");
+  ret = databuff_printf(buf, buf_len, pos, "time guard '%s' cost too much time, used=%ld%s",
+      owner_, common::ObTimeUtility::fast_current_time() - start_ts_,
+      click_count_ > 0 ? ", time_dist: " : "");
 
-    if (OB_SUCC(ret) && click_count_ > 0) {
-      ret = databuff_printf(buf, buf_len, pos, "%s=%d", click_str_[0], click_[0]);
-    }
-    for (int i = 1; OB_SUCC(ret) && i < click_count_; i++) {
-      ret = databuff_printf(buf, buf_len, pos, ", %s=%d", click_str_[i], click_[i]);
-    }
+  if (OB_SUCC(ret) && click_count_ > 0) {
+    ret = databuff_printf(buf, buf_len, pos, "%s=%d", click_str_[0], click_[0]);
+  }
+  for (int i = 1; OB_SUCC(ret) && i < click_count_; i++) {
+    ret = databuff_printf(buf, buf_len, pos, ", %s=%d", click_str_[i], click_[i]);
   }
 
   if (OB_FAIL(ret)) pos = 0;

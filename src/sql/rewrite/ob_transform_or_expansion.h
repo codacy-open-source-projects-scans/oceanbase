@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_OR_EXPANSION_H_
@@ -371,7 +364,10 @@ private:
   int is_expected_multi_index_plan(ObLogicalOperator* op,
                                    ObCostBasedRewriteCtx &ctx,
                                    bool &is_valid);
-  int get_range_exprs(ObLogicalOperator* op, ObIArray<ObRawExpr*> &candi_exprs);
+  int get_range_exprs(ObLogicalOperator* op, ObIArray<ObRawExpr*> &candi_exprs,
+                      bool include_unprecise_range = false);
+  int add_range_exprs_from_array(const ObIArray<ObRawExpr*> &src,
+                                 ObIArray<ObRawExpr*> &dst);
   int is_candi_match_index_exprs(ObRawExpr *expr, bool &result);
   int get_candi_match_index_exprs(ObRawExpr *expr,
                                   ObIArray<ObRawExpr*> &candi_exprs);

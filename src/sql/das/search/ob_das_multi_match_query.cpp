@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -32,7 +25,8 @@ OB_SERIALIZE_MEMBER((ObDASMultiMatchCtDef, ObIDASSearchCtDef),
                     minimum_should_match_,
                     type_,
                     field_boosts_,
-                    ir_ctdef_indices_);
+                    ir_ctdef_indices_,
+                    is_msm_unresolved_expr_);
 
 OB_SERIALIZE_MEMBER((ObDASMultiMatchRtDef, ObIDASSearchRtDef));
 
@@ -162,6 +156,7 @@ int ObDASMultiMatchRtDef::generate_op(
   } else if (query_tokens.empty()) {
     ObDASDummyOp *dummy_op = nullptr;
     ObDASDummyOpParam dummy_op_param;
+    dummy_op_param.set_is_scoring(ctdef->is_scoring());
     if (OB_FAIL(search_ctx.create_op(dummy_op_param, dummy_op))) {
       LOG_WARN("failed to create dummy op", KR(ret));
     } else {
@@ -214,6 +209,7 @@ int ObDASMultiMatchRtDef::generate_op(
       for (int64_t j = 0; OB_SUCC(ret) && j < token_cnt; ++j) {
         ObDASTokenOp *token_op = nullptr;
         ObDASTokenOpParam token_op_param;
+        token_op_param.set_is_scoring(ctdef->is_scoring());
         token_op_param.ir_ctdef_ = ir_ctdef;
         token_op_param.ir_rtdef_ = ir_rtdef;
         token_op_param.block_max_param_ = &block_max_params_[i];
@@ -240,6 +236,7 @@ int ObDASMultiMatchRtDef::generate_op(
             && !has_pushdown_filter)) {
         ObDASConjunctionOp *conj_op = nullptr;
         ObDASConjunctionOpParam conj_op_param(token_ops);
+        conj_op_param.set_is_scoring(ctdef->is_scoring());
         if (OB_FAIL(search_ctx.create_op(conj_op_param, conj_op))) {
           LOG_WARN("failed to create conjunction op", KR(ret));
         } else if (OB_FAIL(field_ops.push_back(conj_op))) {
@@ -250,6 +247,7 @@ int ObDASMultiMatchRtDef::generate_op(
             || (field_cnt > 1 && ObMatchFieldsType::MATCH_MOST_FIELDS == type_datum->get_int())) {
           ObDASDisjunctionOp *disj_op = nullptr;
           ObDASDisjunctionOpParam disj_op_param(token_ops, min_should_match, false, lead_cost);
+          disj_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(disj_op_param, disj_op))) {
             LOG_WARN("failed to create disjunction op", KR(ret));
           } else if (OB_FAIL(field_ops.push_back(disj_op))) {
@@ -258,6 +256,7 @@ int ObDASMultiMatchRtDef::generate_op(
         } else if (min_should_match > 1) {
           ObDASBMWOp *bmw_op = nullptr;
           ObDASBMWOpParam bmw_op_param(token_ops, min_should_match, allocator_);
+          bmw_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(bmw_op_param, bmw_op))) {
             LOG_WARN("failed to create bmw op", KR(ret));
           } else if (OB_FAIL(field_ops.push_back(bmw_op))) {
@@ -267,6 +266,7 @@ int ObDASMultiMatchRtDef::generate_op(
           ObDASBMMOp *bmm_op = nullptr;
           ObDASBMMOpParam bmm_op_param(
               token_ops, query_optional_, pushdown_filter_op_, allocator_);
+          bmm_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(bmm_op_param, bmm_op))) {
             LOG_WARN("failed to create bmm op", KR(ret));
           } else if (OB_FAIL(field_ops.push_back(bmm_op))) {
@@ -285,6 +285,7 @@ int ObDASMultiMatchRtDef::generate_op(
       } else if (ObMatchFieldsType::MATCH_BEST_FIELDS == type_datum->get_int()) {
         ObDASDisjunctionOp *disj_op = nullptr;
         ObDASDisjunctionOpParam disj_op_param(field_ops, 1, true, lead_cost);
+        disj_op_param.set_is_scoring(ctdef->is_scoring());
         if (OB_FAIL(search_ctx.create_op(disj_op_param, disj_op))) {
           LOG_WARN("failed to create disjunction op", KR(ret));
         } else {
@@ -294,6 +295,7 @@ int ObDASMultiMatchRtDef::generate_op(
         if (!ctdef->is_top_level_scoring()) {
           ObDASDisjunctionOp *disj_op = nullptr;
           ObDASDisjunctionOpParam disj_op_param(field_ops, 1, false, lead_cost);
+          disj_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(disj_op_param, disj_op))) {
             LOG_WARN("failed to create disjunction op", KR(ret));
           } else {
@@ -303,6 +305,7 @@ int ObDASMultiMatchRtDef::generate_op(
           ObDASBMMOp *bmm_op = nullptr;
           ObDASBMMOpParam bmm_op_param(
               field_ops, query_optional_, pushdown_filter_op_, allocator_);
+          bmm_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(bmm_op_param, bmm_op))) {
             LOG_WARN("failed to create bmm op", KR(ret));
           } else {

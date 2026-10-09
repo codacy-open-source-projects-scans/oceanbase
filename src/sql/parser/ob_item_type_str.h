@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_ITEM_TYPE_STR_H
@@ -55,6 +48,9 @@ inline const char *ob_aggr_func_str(ObItemType aggr_func)
     case T_FUN_CK_GROUPCONCAT:
       ret = "GROUPCONCAT";
       break;
+    case T_FUN_STRING_AGG:
+      ret = "STRING_AGG";
+      break;
     case T_FUN_APPROX_COUNT_DISTINCT:
       ret = "APPROX_COUNT_DISTINCT";
       break;
@@ -96,6 +92,17 @@ inline const char *ob_aggr_func_str(ObItemType aggr_func)
       break;
     case T_FUN_SYS_COUNT_INROW:
       ret = "SYS_COUNT_INROW";
+      break;
+    case T_FUN_AVG_WEIGHTED:
+      ret = "AVGWEIGHTED";
+    case T_FUN_WINDOW_FUNNEL:
+      ret = "WINDOW_FUNNEL";
+      break;
+    case T_FUN_SYS_EXT_MIN:
+      ret = "SYS_EXT_MIN";
+      break;
+    case T_FUN_SYS_EXT_MAX:
+      ret = "SYS_EXT_MAX";
       break;
     default:
       break;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_MACRO_BLOCK_WRITER_H_
@@ -41,9 +34,14 @@
 #include "storage/compaction/ob_sstable_merge_history.h"
 #include "storage/blocksstable/ob_batch_datum_rows.h"
 #include "storage/blocksstable/ob_macro_block_flusher.h"
+#include "storage/compaction/vectorization/ob_merge_vector_store.h"
 
 namespace oceanbase
 {
+namespace storage
+{
+class ObITableReadInfo;
+}
 namespace blocksstable
 {
 class ObDataIndexBlockBuilder;
@@ -54,6 +52,7 @@ struct ObIndexBlockRowDesc;
 struct ObMacroBlockDesc;
 class ObIMacroBlockFlushCallback;
 struct ObIMacroBlockValidator;
+class ObIMicroBlockReader;
 // macro block store struct
 //  |- ObMacroBlockCommonHeader
 //  |- ObSSTableMacroBlockHeader
@@ -155,7 +154,8 @@ public:
       ObISSTableObjectCleaner &object_cleaner,
       ObIMacroBlockFlushCallback *callback = nullptr,
       ObIMacroBlockValidator *validator = nullptr,
-      ObIODevice *device_handle = nullptr);
+      ObIODevice *device_handle = nullptr,
+      const storage::ObITableReadInfo *merge_micro_block_read_info = nullptr);
   int open_for_ss_ddl(
       const ObDataStoreDesc &data_store_desc,
       const int64_t parallel_idx,
@@ -165,7 +165,9 @@ public:
       ObIMacroBlockFlushCallback *callback);
   virtual int append_macro_block(const ObMacroBlockDesc &macro_desc,
                                  const ObMicroBlockData *micro_block_data);
-  virtual int append_micro_block(const ObMicroBlock &micro_block, const ObMacroBlockDesc *curr_macro_desc = nullptr);
+  virtual int append_micro_block(const ObMicroBlock &micro_block,
+                                 const ObMacroBlockDesc *curr_macro_desc = nullptr,
+                                 compaction::ObMergeVectorStore *read_vector_store = nullptr);
   int append_micro_block(ObMicroBlockDesc &micro_block_desc, const ObMicroIndexData &micro_index_data);
   int append_index_micro_block(ObMicroBlockDesc &micro_block_desc);
   virtual int append_row(const ObDatumRow &row, const ObMacroBlockDesc *curr_macro_desc = nullptr);
@@ -189,6 +191,7 @@ public:
   inline int64_t get_macro_data_size() const { return macro_blocks_[current_index_].get_data_size() + micro_writer_->get_block_size(); }
   const compaction::ObMergeBlockInfo& get_merge_block_info() const { return merge_block_info_; }
   void inc_incremental_row_count() { ++merge_block_info_.incremental_row_count_; }
+  void add_incremental_row_count(const int64_t count) { merge_block_info_.incremental_row_count_ += count; }
 protected:
   void reset_for_open();
   virtual int build_micro_block();
@@ -209,7 +212,8 @@ protected:
       ObISSTableObjectCleaner &object_cleaner,
       ObIMacroBlockFlushCallback *callback,
       ObIMacroBlockValidator *validator,
-      ObIODevice *device_handle);
+      ObIODevice *device_handle,
+      const storage::ObITableReadInfo *merge_micro_block_read_info);
 private:
   template <typename MicroBlockWriterType, typename... Args>
   static int inner_build_micro_writer(ObIAllocator &allocator,
@@ -248,6 +252,10 @@ private:
   void release_pre_agg_util();
   int agg_micro_block(const ObMicroIndexData &micro_index_data);
   int agg_micro_block(const ObMicroIndexInfo &micro_index_info);
+  int adjust_sql_sequence(const ObDatumRow &row,
+      const int64_t sql_sequence_col_idx,
+      const bool is_delete_insert_merge,
+      int64_t &cur_sql_sequence);
   int build_micro_block_desc(
       const ObMicroBlock &micro_block,
       ObMicroBlockDesc &micro_block_desc,
@@ -260,7 +268,15 @@ private:
   int index_builder_append_row(const ObMicroBlockDesc &micro_block_desc, const ObMacroBlock &macro_block);
   int write_micro_block(ObMicroBlockDesc &micro_block_desc, const bool need_pre_warm);
   int check_micro_block_need_merge(const ObMicroBlock &micro_block, bool &need_merge);
-  int merge_micro_block(const ObMicroBlock &micro_block);
+  int merge_micro_block(const ObMicroBlock &micro_block, compaction::ObMergeVectorStore *read_vector_store = nullptr);
+  int flush_read_vector_store(compaction::ObMergeVectorStore &read_vector_store, const int64_t split_size);
+  int merge_micro_block_append_rows_by_batch(
+      ObIMicroBlockReader &micro_reader,
+      compaction::ObMergeVectorStore &read_vector_store,
+      const int64_t split_size);
+  int merge_micro_block_append_rows_by_row(
+      ObIMicroBlockReader &micro_reader,
+      const int64_t split_size);
   int flush_macro_block(ObMacroBlock &macro_block, const bool is_close_flush);
   int choose_macro_block_flusher(const bool is_close_flush, ObIMacroBlockFlusher *&final_flusher);
   int prepare_default_macro_block_flusher(const bool is_close_flush);
@@ -379,6 +395,7 @@ private:
   char *io_buf_;
   ObIMacroBlockValidator *validator_;
   bool can_append_batch_;
+  const storage::ObITableReadInfo *merge_micro_block_read_info_;
   ObDefaultMacroBlockFlusher default_macro_flusher_;
   ObSmallSStableMacroBlockFlusher small_sstable_macro_flusher_;
 };

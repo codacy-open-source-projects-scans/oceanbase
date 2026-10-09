@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_GROUPBY_PUSHDOWN_H
@@ -288,7 +281,8 @@ private:
                                    const ObIArray<TableItem*> &table_items,
                                    ObIArray<uint64_t> &flatten_joined_tables,
                                    PushDownParam &params,
-                                   TableItem *&new_table_item);
+                                   TableItem *&new_table_item,
+                                   ObIArray<ObRawExpr *> *pushed_pseudo_column_like_exprs = NULL);
 
   int transform_aggregation_expr(ObDMLStmt &stmt,
                                  ObAggFunRawExpr &aggr_expr,

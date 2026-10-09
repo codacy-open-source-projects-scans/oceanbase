@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_PARALLEL_EXTERNAL_SORT_H_
@@ -1710,6 +1703,7 @@ public:
   bool is_sorted() const { return is_sorted_; }
   bool is_all_got() const { return add_count_ == get_count_; }
   void add_count(const int64_t count) { add_count_ += count; }
+  int64_t get_add_count() const { return add_count_; }
   TO_STRING_KV(K(is_inited_), K(file_buf_size_), K(buf_mem_limit_), K(expire_timestamp_),
       K(merge_count_per_round_), KP(tenant_id_), KP(compare_), K_(add_count), K_(get_count));
 private:

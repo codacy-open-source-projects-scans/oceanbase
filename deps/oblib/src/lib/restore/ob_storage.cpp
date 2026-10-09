@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_storage.h"
@@ -97,7 +90,8 @@ int get_storage_type_from_path_for_external_table(const common::ObString &uri, O
              || uri.prefix_match(OB_S3A_PREFIX)
              || uri.prefix_match(OB_S3N_PREFIX)) {
     type = OB_STORAGE_S3;
-  } else if (uri.prefix_match(OB_FILE_PREFIX)) {
+  } else if (uri.prefix_match(OB_FILE_PREFIX)
+             || uri.prefix_match(OB_SHARED_FILE_PREFIX)) {
     type = OB_STORAGE_FILE;
   } else if (uri.prefix_match(OB_HDFS_PREFIX)) {
     type = OB_STORAGE_HDFS;
@@ -394,7 +388,7 @@ ObStorageUtil::~ObStorageUtil()
 int ObStorageUtil::open(common::ObObjectStorageInfo *storage_info)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info, "", IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, "", IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (is_init()) {
     ret = OB_INIT_TWICE;
@@ -443,7 +437,7 @@ int ObStorageUtil::open(common::ObObjectStorageInfo *storage_info)
 void ObStorageUtil::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, "", IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, "", IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (NULL != util_) {
     util_->close();
   }
@@ -506,7 +500,7 @@ int ObStorageUtil::detect_storage_obj_meta(
     ObStorageObjectMeta &obj_meta)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   obj_meta.reset();
   bool need_detect_appendable = is_adaptive;
   if (OB_UNLIKELY(!is_init())) {
@@ -573,7 +567,8 @@ int ObStorageUtil::read_seal_meta_if_needed(
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
-  ObArenaAllocator allocator(APPENDABLE_OBJECT_ALLOCATOR);
+  ObArenaAllocator allocator(ObMemAttr(
+      ObObjectStorageTenantGuard::get_tenant_id(), APPENDABLE_OBJECT_ALLOCATOR));
   int64_t pos = 0;
   char *seal_meta_uri = NULL;
 
@@ -663,7 +658,7 @@ int ObStorageUtil::is_exist(const common::ObString &uri, const bool is_adaptive,
   const int64_t start_ts = ObTimeUtility::current_time();
   exist = false;
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_IS_EXIST) OB_SUCCESS;
@@ -690,7 +685,7 @@ int ObStorageUtil::is_directory(const common::ObString &uri,
   const int64_t start_ts = ObTimeUtility::current_time();
   is_directory = false;
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_FAIL(ret)) {
     //do nothing
@@ -715,7 +710,7 @@ int ObStorageUtil::get_file_length(const common::ObString &uri, const bool is_ad
   const int64_t start_ts = ObTimeUtility::current_time();
   file_length = -1;
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_GET_FILE_LENGTH) OB_SUCCESS;
@@ -752,7 +747,7 @@ int ObStorageUtil::get_file_stat(
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_GET_FILE_LENGTH) OB_SUCCESS;
@@ -784,7 +779,7 @@ int ObStorageUtil::get_file_content_digest(
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_GET_FILE_LENGTH) OB_SUCCESS;
@@ -821,7 +816,7 @@ int ObStorageUtil::del_file(const common::ObString &uri, const bool is_adaptive)
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_BEFORE_DEL_FILE) OB_SUCCESS;
@@ -891,7 +886,7 @@ int ObStorageUtil::list_files(
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   char uri_buf[OB_MAX_URI_LENGTH] = {0};
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_UNLIKELY(!is_init())) {
     ret = OB_NOT_INIT;
@@ -925,9 +920,10 @@ int ObStorageUtil::list_adaptive_files(
     common::ObBaseDirEntryOperator &op)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
-  ObArenaAllocator allocator(APPENDABLE_OBJECT_ALLOCATOR);
+  ObArenaAllocator allocator(ObMemAttr(
+      ObObjectStorageTenantGuard::get_tenant_id(), APPENDABLE_OBJECT_ALLOCATOR));
   ObStorageListObjectsCtx list_obj_ctx;
   ObStorageListFilesCtx list_file_ctx;
   ObStorageListCtxBase *list_ctx = NULL;
@@ -1193,7 +1189,7 @@ int ObStorageUtil::list_directories(
   int ret = OB_SUCCESS;
   char uri_buf[OB_MAX_URI_LENGTH] = {0};
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_LIST_FILE) OB_SUCCESS;
@@ -1233,7 +1229,7 @@ int ObStorageUtil::is_exist(const common::ObString &uri, bool &exist)
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   exist = false;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_IS_EXIST) OB_SUCCESS;
@@ -1267,7 +1263,7 @@ int ObStorageUtil::get_adaptive_file_length(const common::ObString &uri, int64_t
   const int64_t start_ts = ObTimeUtility::current_time();
   file_length = 0;
   ObStorageObjectMeta obj_meta;
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_GET_FILE_LENGTH) OB_SUCCESS;
 #endif
@@ -1316,7 +1312,7 @@ int ObStorageUtil::del_file(const common::ObString &uri)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_BEFORE_DEL_FILE) OB_SUCCESS;
@@ -1362,10 +1358,10 @@ int ObStorageUtil::batch_del_files(
   } else {
     files_uri = files_to_delete.at(0).ptr();
   }
-  OBJECT_STORAGE_GUARD(storage_info_, files_uri, IO_HANDLED_SIZE_ZERO);
   const char *mem_tag = "BatchDelFiles";
   const int64_t start_ts = ObTimeUtility::current_time();
   const int64_t n_files_to_delete = files_to_delete.count();
+  OBJECT_STORAGE_GUARD(storage_info_, files_uri, n_files_to_delete, true);
   int64_t cur_deleted_pos = 0;
   failed_files_idx.reset();
   const bool use_batch_del_flag =
@@ -1493,7 +1489,7 @@ int ObStorageUtil::mkdir(const common::ObString &uri)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   STORAGE_LOG(DEBUG, "mkdir", K(uri));
 #ifdef ERRSIM
@@ -1526,7 +1522,7 @@ int ObStorageUtil::list_files(const common::ObString &uri, common::ObBaseDirEntr
   int ret = OB_SUCCESS;
   char uri_buf[OB_MAX_URI_LENGTH] = {0};
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_LIST_FILE) OB_SUCCESS;
@@ -1562,7 +1558,7 @@ int ObStorageUtil::write_single_file(const common::ObString &uri, const char *bu
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, size, false/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_BEFORE_WRITE_SINGLE_FILE) OB_SUCCESS;
@@ -1604,7 +1600,7 @@ int ObStorageUtil::del_dir(const common::ObString &uri)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_FAIL(ret)) {
   } else if (OB_UNLIKELY(!is_init())) {
@@ -1625,7 +1621,7 @@ int ObStorageUtil::list_directories(const common::ObString &uri, common::ObBaseD
   int ret = OB_SUCCESS;
   char uri_buf[OB_MAX_URI_LENGTH] = {0};
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_LIST_FILE) OB_SUCCESS;
@@ -1660,7 +1656,7 @@ int ObStorageUtil::is_tagging(const common::ObString &uri, bool &is_tagging)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   is_tagging = false;
   if (OB_FAIL(ret)) {
   } else if (OB_UNLIKELY(!is_init())) {
@@ -1683,7 +1679,6 @@ int ObStorageUtil::is_tagging(const common::ObString &uri, bool &is_tagging)
   EVENT_INC(ObStatEventIds::OBJECT_STORAGE_IO_HEAD_COUNT);
   return ret;
 }
-
 
 int ObStorageUtil::del_unmerged_parts(const common::ObString &uri)
 {
@@ -1794,7 +1789,7 @@ int ObStorageReader::open(const common::ObString &uri,
   int tmp_ret = OB_SUCCESS;
   ObStorageType type = OB_STORAGE_MAX_TYPE;
   start_ts_ = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_READER_OPEN) OB_SUCCESS;
@@ -1879,7 +1874,7 @@ int ObStorageReader::pread(char *buf, const int64_t buf_size, int64_t offset, in
 {
   int ret = OB_SUCCESS;
   read_size = 0;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, read_size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, read_size, false/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_READER_PREAD) OB_SUCCESS;
@@ -1915,7 +1910,7 @@ int ObStorageReader::pread(char *buf, const int64_t buf_size, int64_t offset, in
 int ObStorageReader::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, false/*is_util_io*/);
 
   if (OB_ISNULL(reader_)) {
     ret = OB_NOT_INIT;
@@ -2032,7 +2027,7 @@ int ObStorageAdaptiveReader::open(const common::ObString &uri,
   ObStorageType type = OB_STORAGE_MAX_TYPE;
   start_ts_ = ObTimeUtility::current_time();
   ObStorageUtil util;
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, false/*is_util_io*/);
 
   if (OB_FAIL(ret)) {
   } else if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
@@ -2114,7 +2109,7 @@ int ObStorageAdaptiveReader::pread(char *buf,
   int ret = OB_SUCCESS;
   read_size = 0;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, read_size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, read_size, false/*is_util_io*/);
 
   if (OB_FAIL(ret)) {
   } else if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
@@ -2140,7 +2135,8 @@ int ObStorageAdaptiveReader::pread(char *buf,
   } else if (meta_.is_simulate_append_type()) {
     // To enable parallel pread,
     // use a temporary allocator/reader for each pread call instead of using allocator_/reader_
-    ObArenaAllocator tmp_allocator(APPENDABLE_OBJECT_ALLOCATOR);
+    ObArenaAllocator tmp_allocator(ObMemAttr(
+        ObObjectStorageTenantGuard::get_tenant_id(), APPENDABLE_OBJECT_ALLOCATOR));
     ObIStorageReader *tmp_reader = nullptr;
     char uri[OB_MAX_URI_LENGTH] = { 0 };
     ObArray<ObAppendableFragmentMeta> fragments_need_to_read;
@@ -2222,7 +2218,7 @@ int ObStorageAdaptiveReader::pread(char *buf,
 int ObStorageAdaptiveReader::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_ISNULL(reader_)) {
     ret = OB_NOT_INIT;
@@ -2290,7 +2286,7 @@ int ObStorageWriter::open(const common::ObString &uri, common::ObObjectStorageIn
   int tmp_ret = OB_SUCCESS;
   ObStorageType type = OB_STORAGE_MAX_TYPE;
   start_ts_ = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_WRITE_OPEN) OB_SUCCESS;
@@ -2361,7 +2357,7 @@ int ObStorageWriter::open(const common::ObString &uri, common::ObObjectStorageIn
 int ObStorageWriter::write(const char *buf,const int64_t size)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_WRITE_WRITE) OB_SUCCESS;
@@ -2391,7 +2387,7 @@ int ObStorageWriter::write(const char *buf,const int64_t size)
 int ObStorageWriter::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (OB_ISNULL(writer_)) {
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "not opened", K(ret));
@@ -2477,7 +2473,7 @@ int ObStorageAppender::open(
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
   start_ts_ = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_APPENDER_OPEN) OB_SUCCESS;
@@ -2564,14 +2560,15 @@ int ObStorageAppender::open(
 int ObStorageAppender::repeatable_pwrite_(const char *buf, const int64_t size, const int64_t offset)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
   int tmp_ret = OB_SUCCESS;
   int64_t read_size = 0;
   int64_t read_buf_size = 0;
   int64_t actual_write_offset = 0;
   char *read_buffer = nullptr;
   ObStorageReader *reader = nullptr;
-  ObArenaAllocator allocator;
+  ObArenaAllocator allocator(ObMemAttr(
+      ObObjectStorageTenantGuard::get_tenant_id(), APPENDABLE_OBJECT_ALLOCATOR));
 
   if (OB_ISNULL(appender_)) {
     ret = OB_NOT_INIT;
@@ -2620,7 +2617,7 @@ int ObStorageAppender::pwrite(const char *buf, const int64_t size, const int64_t
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
 
 #ifdef ERRSIM
   ret = OB_E(EventTable::EN_BACKUP_IO_APPENDER_WRITE) OB_SUCCESS;
@@ -2665,7 +2662,7 @@ int64_t ObStorageAppender::get_length()
   int64_t ret_int = -1;
   const int64_t start_ts = ObTimeUtility::current_time();
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_ISNULL(appender_)) {
     STORAGE_LOG_RET(WARN, common::OB_ERR_UNEXPECTED, "appender not opened");
@@ -2696,7 +2693,7 @@ int64_t ObStorageAppender::get_length()
 int ObStorageAppender::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_ISNULL(appender_)) {
     ret = OB_NOT_INIT;
@@ -2745,7 +2742,7 @@ int ObStorageAppender::seal_for_adaptive()
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
   int64_t handled_size = 0;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (OB_ISNULL(appender_)) {
     ret = OB_NOT_INIT;
@@ -2830,7 +2827,7 @@ int ObStorageMultiPartWriter::open(
   int tmp_ret = OB_SUCCESS;
   ObStorageType type = OB_STORAGE_MAX_TYPE;
   start_ts_ = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
 
   if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
     ret = OB_BACKUP_IO_PROHIBITED;
@@ -2897,7 +2894,7 @@ int ObStorageMultiPartWriter::write(const char *buf, const int64_t size)
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
 
   if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
     ret = OB_BACKUP_IO_PROHIBITED;
@@ -2924,7 +2921,7 @@ int ObStorageMultiPartWriter::pwrite(const char *buf, const int64_t size, const 
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
   if (OB_FAIL(ret)) {
   } else if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
     ret = OB_BACKUP_IO_PROHIBITED;
@@ -2954,7 +2951,7 @@ int64_t ObStorageMultiPartWriter::get_length()
   int64_t ret_int = -1;
   const int64_t start_ts = ObTimeUtility::current_time();
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (OB_ISNULL(multipart_writer_)) {
     STORAGE_LOG_RET(WARN, common::OB_ERR_UNEXPECTED, "multipart_writer_ not opened");
   } else {
@@ -2968,7 +2965,7 @@ int ObStorageMultiPartWriter::complete()
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (OB_FAIL(ret)) {
   } else if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
     ret = OB_BACKUP_IO_PROHIBITED;
@@ -2993,7 +2990,7 @@ int ObStorageMultiPartWriter::abort()
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (OB_FAIL(ret)) {
   } else if (ObStorageGlobalIns::get_instance().is_io_prohibited()) {
     ret = OB_BACKUP_IO_PROHIBITED;
@@ -3018,7 +3015,7 @@ int ObStorageMultiPartWriter::close()
 {
   int ret = OB_SUCCESS;
   const int64_t start_ts = ObTimeUtility::current_time();
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   if (OB_ISNULL(multipart_writer_)) {
     ret = OB_NOT_INIT;
     STORAGE_LOG(WARN, "not opened", K(ret));
@@ -3109,7 +3106,7 @@ int ObStorageParallelMultiPartWriterBase::open(
     ObObjectStorageInfo *storage_info)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info, uri, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   ObStorageType type = OB_STORAGE_MAX_TYPE;
   start_ts_ = ObTimeUtility::current_time();
   if (OB_NOT_NULL(multipart_writer_)) {
@@ -3208,7 +3205,7 @@ int ObStorageDirectMultiPartWriter::upload_part(
     const char *buf, const int64_t size, const int64_t part_id)
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, size);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, size, false/*is_util_io*/);
   const int64_t start_ts = ObTimeUtility::current_time();
   if (OB_ISNULL(multipart_writer_)) {
     ret = OB_NOT_INIT;
@@ -3242,7 +3239,7 @@ int ObStorageDirectMultiPartWriter::upload_part(
 int ObStorageDirectMultiPartWriter::complete()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   const int64_t start_ts = ObTimeUtility::current_time();
   if (OB_ISNULL(multipart_writer_)) {
     ret = OB_NOT_INIT;
@@ -3260,7 +3257,7 @@ int ObStorageDirectMultiPartWriter::complete()
 int ObStorageDirectMultiPartWriter::abort()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   const int64_t start_ts = ObTimeUtility::current_time();
   if (OB_ISNULL(multipart_writer_)) {
     ret = OB_NOT_INIT;
@@ -3284,7 +3281,7 @@ int ObStorageDirectMultiPartWriter::abort()
 int ObStorageDirectMultiPartWriter::close()
 {
   int ret = OB_SUCCESS;
-  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO);
+  OBJECT_STORAGE_GUARD(storage_info_, uri_, IO_HANDLED_SIZE_ZERO, true/*is_util_io*/);
   SpinWLockGuard guard(lock_);
   const int64_t start_ts = ObTimeUtility::current_time();
   if (OB_ISNULL(multipart_writer_)) {

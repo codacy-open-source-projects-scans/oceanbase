@@ -1,19 +1,14 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define OB_TX_LOG_TEST
 #include <gtest/gtest.h>
 #define private public
 #include "storage/tx/ob_tx_log.h"
+#include "storage/tx/ob_tx_log_cb_define.h"
+#include "storage/tx/ob_trans_submit_log_cb.h"
 void ob_abort (void) __THROW {}
 namespace oceanbase
 {
@@ -24,6 +19,14 @@ using namespace share;
 
 namespace unittest
 {
+class TestAppendCb : public logservice::AppendCb
+{
+public:
+  int on_success() override { return OB_SUCCESS; }
+  int on_failure() override { return OB_SUCCESS; }
+  const char *get_cb_name() const override { return "TestAppendCb"; }
+};
+
 class TestObTxLog : public ::testing::Test
 {
 public:
@@ -158,6 +161,20 @@ TEST_F(TestObTxLog, tx_log_block_header)
   EXPECT_EQ(TEST_LOG_ENTRY_NO + 1, replay_block_header2.get_log_entry_no());
   EXPECT_EQ(fill_block_header.flags(), replay_block_header2.flags());
   EXPECT_FALSE(replay_block_header2.is_serial_final());
+}
+
+TEST_F(TestObTxLog, tx_log_cb_reuse_clears_extra_cb)
+{
+  ObTxLogCb log_cb;
+  TestAppendCb extra_cb;
+
+  log_cb.set_extra_cb(&extra_cb);
+  ASSERT_EQ(&extra_cb, log_cb.get_extra_cb());
+
+  log_cb.reuse();
+
+  EXPECT_EQ(nullptr, log_cb.get_extra_cb());
+  EXPECT_FALSE(log_cb.need_free_extra_cb());
 }
 
 TEST_F(TestObTxLog, tx_log_body_except_redo)

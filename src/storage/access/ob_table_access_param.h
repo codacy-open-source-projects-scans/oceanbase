@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_TABLE_ACCESS_PARAM_H
@@ -109,6 +102,10 @@ public:
   {
     return (read_info_ != nullptr) ? &read_info_->get_columns_desc() : nullptr;
   }
+  OB_INLINE const ObMergeEngineUpperVersion &get_merge_engine_upper_version() const
+  {
+    return merge_engine_upper_version_;
+  }
   OB_INLINE bool read_with_same_schema() const
   {
     return is_same_schema_column_;
@@ -128,6 +125,10 @@ public:
   OB_INLINE bool need_ttl_filter() const
   {
     return (read_info_ != nullptr && read_info_ != rowkey_read_info_) ? read_info_->has_ttl_definition() : false;
+  }
+  OB_INLINE bool need_adjust_query_merge_engine() const
+  {
+    return !is_mds_query_ && merge_engine_upper_version_.is_inited();
   }
   bool can_be_reused(const uint32_t cg_idx, const common::ObIArray<sql::ObExpr*> &exprs, const bool is_aggregate)
   {
@@ -161,6 +162,7 @@ public:
   OB_INLINE void set_is_advance_skip_scan()
   {
     is_advance_skip_scan_ = true;
+    disable_delete_insert();
   }
   OB_INLINE bool is_advance_skip_scan() const
   {
@@ -177,7 +179,7 @@ public:
   OB_INLINE void disable_blockscan()
   {
     pd_storage_flag_.set_blockscan_pushdown(false);
-    is_delete_insert_ = false;
+    disable_delete_insert();
   }
   OB_INLINE bool enable_pd_blockscan() const
   { return pd_storage_flag_.is_blockscan_pushdown(); }
@@ -186,7 +188,12 @@ public:
   OB_INLINE void disable_pd_filter()
   {
     pd_storage_flag_.set_filter_pushdown(false);
+    disable_delete_insert();
+  }
+  OB_INLINE void disable_delete_insert()
+  {
     is_delete_insert_ = false;
+    enable_append_only_blockscan_ = false;
   }
   OB_INLINE void disable_pd_aggregate()
   { pd_storage_flag_.set_aggregate_pushdown(false); }
@@ -266,7 +273,7 @@ public:
 
   OB_INLINE bool is_memtable_can_blockscan() const
   {
-    return is_delete_insert_ || is_append_only_can_blockscan();
+    return is_delete_insert_ || enable_append_only_blockscan_;
   }
 
   DECLARE_TO_STRING;
@@ -336,10 +343,12 @@ public:
 
       // column storage tables created after v435 will place the rowkey/all cg at the start of the table schema column group array
       uint64_t is_normal_cgs_at_the_end_ : 1;
+      uint64_t enable_append_only_blockscan_ : 1;
 
-      uint64_t reserved_ : 38;
+      uint64_t reserved_ : 37;
     };
   };
+  ObMergeEngineUpperVersion merge_engine_upper_version_;
 };
 
 struct ObTableAccessParam
@@ -360,7 +369,7 @@ public:
                        const common::ObTabletID &tablet_id,
                        const ObITableReadInfo &read_info,
                        const bool is_multi_version_merge = false,
-                       const ObMergeEngineType merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_MAX);
+                       const ObMergeEngineType original_merge_engine_type = ObMergeEngineType::OB_MERGE_ENGINE_MAX);
   // used for get unique index conflict row
   int init_dml_access_param(const ObRelativeTable &table,
                             const ObITableReadInfo &rowkey_read_info,

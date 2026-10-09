@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -17,9 +10,7 @@
 #include "storage/multi_data_source/ob_mds_table_merge_dag_param.h"
 #include "storage/ddl/ob_tablet_lob_split_task.h"
 #include "storage/compaction/ob_batch_freeze_tablets_dag.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_major_attach_dag.h"
-#endif
+#include "storage/ddl/ob_ddl_merge_task.h"
 
 namespace oceanbase
 {
@@ -158,17 +149,6 @@ int ObScheduleDagFunc::schedule_batch_freeze_dag(
   }
   return ret;
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-int ObScheduleDagFunc::schedule_ss_attach_major_dag(
-    ObTabletMergeDagParam &param)
-{
-  int ret = OB_SUCCESS;
-  bool is_emergency = false;
-  CREATE_DAG(ObAttachSSMajorSSTableDag);
-  return ret;
-}
-#endif
 
 int ObDagParamFunc::fill_param(
     const share::ObLSID &ls_id,

@@ -1,13 +1,6 @@
-/**ob_das_scan_op.cpp
+/**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -46,7 +39,7 @@ namespace sql
 {
 
 OB_SERIALIZE_MEMBER(ObDASTCBMemProfileKey, fake_unique_id_, timestamp_);
-OB_SERIALIZE_MEMBER(ObDASScanCtDef,
+OB_SERIALIZE_MEMBER(ObDASScanCtDef, // FARM COMPAT WHITELIST
                     ref_table_id_,
                     access_column_ids_,
                     schema_version_,
@@ -84,7 +77,9 @@ OB_SERIALIZE_MEMBER(ObDASScanCtDef,
                     aggregate_param_props_,
                     lake_table_format_,
                     push_down_topn_,
-                    semantic_index_info_);
+                    semantic_index_info_,
+                    cache_aware_row_num_,
+                    external_file_pattern_type_);
 
 OB_DEF_SERIALIZE(ObDASScanRtDef)
 {
@@ -371,6 +366,7 @@ int ObDASScanOp::init_scan_param()
   }
   scan_param_.ls_id_ = ls_id_;
   scan_param_.tablet_id_ = tablet_id_;
+  scan_param_.cache_aware_row_num_ = scan_ctdef_->cache_aware_row_num_;
   if (scan_rtdef_->sample_info_ != nullptr) {
     scan_param_.sample_info_ = *scan_rtdef_->sample_info_;
   }
@@ -695,15 +691,42 @@ int ObDASScanOp::set_hybrid_search_tablet_ids(ObDASIter *result)
       case DAS_ITER_VEC_INDEX_DRIVER: {
         ObDASVecIndexDriverIter *vec_index_driver_iter = static_cast<ObDASVecIndexDriverIter *>(result);
         ObDASVecIndexScanIter *vec_index_scan_iter = vec_index_driver_iter->get_vec_index_scan_iter();
+        const ObDASVecIndexDriverCtDef *driver_ctdef = vec_index_driver_iter->get_driver_ctdef();
         ObDASRelatedTabletID related_tablet_ids(op_alloc_);
-        if (OB_ISNULL(vec_index_scan_iter)) {
+        if (OB_ISNULL(vec_index_scan_iter) || OB_ISNULL(driver_ctdef)
+            || driver_ctdef->children_cnt_ < 1 || OB_ISNULL(driver_ctdef->children_)) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected nullptr vec index scan iter", K(ret));
-        } else if (OB_FAIL(get_vec_ir_tablet_ids(related_tablet_ids))) {
-          LOG_WARN("failed to get vec index related tablet id", K(ret));
+          LOG_WARN("unexpected nullptr in vec index driver iter", K(ret), KP(vec_index_scan_iter), KP(driver_ctdef));
+        } else if (OB_UNLIKELY(driver_ctdef->children_[0]->op_type_ != DAS_OP_VEC_INDEX_HNSW_SCAN)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected child op type in vec index driver", K(ret),
+                   K(driver_ctdef->children_[0]->op_type_));
         } else {
-          vec_index_driver_iter->set_related_tablet_ids(related_tablet_ids);
-          vec_index_scan_iter->set_related_tablet_ids(related_tablet_ids);
+          const ObDASVecIndexHNSWScanCtDef *scan_ctdef =
+              static_cast<const ObDASVecIndexHNSWScanCtDef *>(driver_ctdef->children_[0]);
+          if (OB_ISNULL(scan_ctdef)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected nullptr hnsw scan ctdef", K(ret));
+          } else if (OB_NOT_NULL(scan_ctdef->get_delta_buf_table_ctdef()) &&
+                     OB_FAIL(get_related_tablet_id(scan_ctdef->get_delta_buf_table_ctdef(),
+                                                   related_tablet_ids.delta_buf_tablet_id_))) {
+            LOG_WARN("failed to get delta buf tablet id", K(ret));
+          } else if (OB_NOT_NULL(scan_ctdef->get_index_id_table_ctdef()) &&
+                     OB_FAIL(get_related_tablet_id(scan_ctdef->get_index_id_table_ctdef(),
+                                                   related_tablet_ids.index_id_tablet_id_))) {
+            LOG_WARN("failed to get index id tablet id", K(ret));
+          } else if (OB_NOT_NULL(scan_ctdef->get_snapshot_table_ctdef()) &&
+                     OB_FAIL(get_related_tablet_id(scan_ctdef->get_snapshot_table_ctdef(),
+                                                   related_tablet_ids.snapshot_tablet_id_))) {
+            LOG_WARN("failed to get snapshot tablet id", K(ret));
+          } else if (OB_NOT_NULL(scan_ctdef->get_com_aux_vec_table_ctdef()) &&
+                     OB_FAIL(get_related_tablet_id(scan_ctdef->get_com_aux_vec_table_ctdef(),
+                                                   related_tablet_ids.lookup_tablet_id_))) {
+            LOG_WARN("failed to get com aux vec tablet id", K(ret));
+          } else {
+            vec_index_driver_iter->set_related_tablet_ids(related_tablet_ids);
+            vec_index_scan_iter->set_related_tablet_ids(related_tablet_ids);
+          }
         }
         break;
       }
@@ -2405,6 +2428,7 @@ OB_INLINE int ObLocalIndexLookupOp::init_scan_param()
     scan_param_.op_filters_ = &lookup_ctdef_->pd_expr_spec_.pushdown_filters_;
   }
   scan_param_.pd_storage_filters_ = lookup_rtdef_->p_pd_expr_op_->pd_storage_filters_;
+  scan_param_.cache_aware_row_num_ = lookup_ctdef_->cache_aware_row_num_;
   if (FAILEDx(scan_param_.column_ids_.assign(lookup_ctdef_->access_column_ids_))) {
     LOG_WARN("init column ids failed", K(ret));
   }

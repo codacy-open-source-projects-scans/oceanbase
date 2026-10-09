@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
 
 #include "storage/tmp_file/ob_tmp_file_block.h"
 #include "storage/tmp_file/ob_tmp_file_block_manager.h"
+#include "storage/tmp_file/ob_tmp_file_block_handle_list.h"
 #include "storage/tmp_file/ob_tmp_file_write_cache.h"
 #include "storage/tmp_file/ob_tmp_file_manager.h"
 #include "storage/blocksstable/ob_block_manager.h"
@@ -237,6 +231,8 @@ int ObTmpFileBlock::destroy()
     flushed_page_bitmap_.reset();
     flushing_page_bitmap_.reset();
     flushing_page_list_.clear();
+    full_page_cnt_in_flushing_list_ = 0;
+    flush_level_ = BlockFlushLevel::INVALID;
     tmp_file_blk_mgr_ = nullptr;
   }
   return ret;
@@ -264,6 +260,8 @@ int ObTmpFileBlock::init(const int64_t block_index, BlockType type, ObTmpFileBlo
     block_index_ = block_index;
     type_ = type;
     free_page_num_ = ObTmpFileGlobal::BLOCK_PAGE_NUMS;
+    full_page_cnt_in_flushing_list_ = 0;
+    flush_level_ = BlockFlushLevel::INVALID;
 
     LOG_DEBUG("init block successfully", K(block_index), KPC(this));
   }
@@ -380,10 +378,8 @@ int ObTmpFileBlock::release_pages(const int64_t begin_page_id, const int64_t pag
         LOG_WARN("fail to remove page from flushing status", KR(ret), K(page_id), KPC(this));
       }
     }
-    if (OB_SUCC(ret) && old_flushing_page_num > 0) {
-      if (OB_FAIL(update_block_flush_level_(old_flushing_page_num))) {
-        LOG_WARN("fail to update block flush level", KR(ret), K(old_flushing_page_num), KPC(this));
-      }
+    if (FAILEDx(update_block_flush_level_())) {
+      LOG_WARN("fail to update block flush level", KR(ret), K(old_flushing_page_num), KPC(this));
     }
   }
 
@@ -440,6 +436,9 @@ int ObTmpFileBlock::remove_page_from_flushing_status_(const int64_t page_id)
       if (node->page_.get_page_id().page_index_in_block_ == page_id) {
         find = true;
         flushing_page_list_.remove(node);
+        if (node->page_.is_full()) {
+          --full_page_cnt_in_flushing_list_;
+        }
         node->page_.dec_ref();
       }
     }
@@ -470,6 +469,7 @@ int ObTmpFileBlock::reinsert_into_flush_prio_mgr()
 int ObTmpFileBlock::reinsert_into_flush_prio_mgr_()
 {
   int ret = OB_SUCCESS;
+  BlockFlushLevel level = BlockFlushLevel::INVALID;
 
   if (OB_UNLIKELY(!is_valid_without_lock())) {
     ret = OB_ERR_UNEXPECTED;
@@ -480,9 +480,19 @@ int ObTmpFileBlock::reinsert_into_flush_prio_mgr_()
   } else if (OB_UNLIKELY(!is_in_flushing_)) {
     LOG_DEBUG("block is not in flushing", KR(ret), KPC(this));
   } else if (flushing_page_list_.get_size() > 0 &&
-             OB_FAIL(tmp_file_blk_mgr_->insert_block_into_flush_priority_mgr(flushing_page_list_.get_size(), *this))) {
-    LOG_WARN("fail to insert block into flush priority mgr", KR(ret), K(flushing_page_list_.get_size()), KPC(this));
+             OB_FAIL(tmp_file_blk_mgr_->get_flush_priority_mgr().get_block_list_level(
+               flushing_page_list_.get_size(),
+               is_exclusive_block(),
+               is_all_incomplete_flushing(),
+               level))) {
+    LOG_WARN("fail to get block list level", KR(ret), KPC(this));
+  } else if (flushing_page_list_.get_size() > 0 &&
+             OB_FAIL(tmp_file_blk_mgr_->insert_block_into_flush_priority_mgr(level, *this))) {
+    LOG_WARN("fail to insert block into flush priority mgr", KR(ret), K(level), KPC(this));
   } else {
+    flush_level_ = flushing_page_list_.get_size() > 0
+        ? level
+        : BlockFlushLevel::INVALID;
     is_in_flushing_ = false;
   }
   LOG_DEBUG("reinsert into flush prio mgr over", KR(ret), K(flushing_page_list_.get_size()), KPC(this));
@@ -490,12 +500,16 @@ int ObTmpFileBlock::reinsert_into_flush_prio_mgr_()
 }
 
 // No action needed if this page is already in the flushing list
-int ObTmpFileBlock::insert_page_into_flushing_list(ObTmpFilePageHandle &page_handle)
+int ObTmpFileBlock::insert_page_into_flushing_list(ObTmpFilePageHandle &page_handle,
+                                                   const bool is_full)
 {
   int ret = OB_SUCCESS;
   SpinWLockGuard guard(lock_);
   const int64_t old_flushing_page_num = flushing_page_list_.get_size();
 
+  if (is_full) {
+    page_handle.get_page()->set_is_full(true);
+  }
   if (OB_UNLIKELY(!is_valid_without_lock())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tmp file block is invalid", KR(ret), KPC(this));
@@ -504,7 +518,7 @@ int ObTmpFileBlock::insert_page_into_flushing_list(ObTmpFilePageHandle &page_han
     LOG_WARN("block is in deleting", KR(ret), KPC(this));
   } else if (OB_FAIL(insert_page_into_flushing_list_(page_handle))) {
     LOG_WARN("fail to insert page into flushing list", KR(ret), K(page_handle), KPC(this));
-  }  else if (OB_FAIL(update_block_flush_level_(old_flushing_page_num))) {
+  }  else if (OB_FAIL(update_block_flush_level_())) {
     LOG_WARN("fail to update block flush level", KR(ret), K(old_flushing_page_num), KPC(this));
   }
   LOG_DEBUG("insert page into flushing list over", KR(ret), K(old_flushing_page_num), K(flushing_page_list_.get_size()), K(page_handle), KPC(this));
@@ -538,7 +552,7 @@ int ObTmpFileBlock::insert_pages_into_flushing_list(ObIArray<ObTmpFilePageHandle
     } else if (is_in_flushing_) {
       // do nothing
       LOG_DEBUG("block is already in flushing, skip insertion", KPC(this));
-    } else if (OB_FAIL(update_block_flush_level_(old_flushing_page_num))) {
+    } else if (OB_FAIL(update_block_flush_level_())) {
       LOG_WARN("fail to update block flush level", KR(ret), K(old_flushing_page_num), KPC(this));
     }
   }
@@ -569,8 +583,12 @@ int ObTmpFileBlock::insert_page_into_flushing_list_(ObTmpFilePageHandle &page_ha
     } else if (OB_FAIL(flushing_page_bitmap_.get_value(page_id.page_index_in_block_, is_flushing))) {
       LOG_WARN("fail to get value from bitmap", KR(ret), KPC(this));
     } else if (is_flushing) {
-      // do nothing
-      LOG_DEBUG("page is already in flushing list, ignore", K(is_flushing), KPC(page), KPC(this));
+      // If an incomplete page is already in flushing list, it may be full later,
+      // so we need to update the full page count. It works in single-threaded scenario.
+      // If current write is implemented with concurrent write, it may cause duplicate counting.
+      if (page->is_full()) {
+        ++full_page_cnt_in_flushing_list_;
+      }
     } else if (OB_FAIL(alloc_page_bitmap_.get_value(page_id.page_index_in_block_, is_allocated))) {
       LOG_WARN("fail to get value from bitmap", KR(ret), KPC(this));
     } else if (OB_UNLIKELY(!is_allocated)) {
@@ -581,40 +599,53 @@ int ObTmpFileBlock::insert_page_into_flushing_list_(ObTmpFilePageHandle &page_ha
     } else if (FALSE_IT(page->inc_ref())) {
     } else if (OB_FAIL(flushing_page_bitmap_.set_bitmap(page_id.page_index_in_block_, true))) {
       LOG_WARN("fail to set bitmap", KR(ret), KPC(this));
+    } else if (page->is_full()) {
+      ++full_page_cnt_in_flushing_list_;
     }
   }
   LOG_DEBUG("insert_page_into_flushing_list_ over", KR(ret), K(is_flushing), K(is_allocated), K(page_handle), KPC(this));
   return ret;
 }
 
-int ObTmpFileBlock::update_block_flush_level_(const int64_t old_flushing_page_num)
+int ObTmpFileBlock::update_block_flush_level_()
 {
   int ret = OB_SUCCESS;
+  BlockFlushLevel new_level = BlockFlushLevel::INVALID;
   const int64_t new_flushing_page_num = flushing_page_list_.get_size();
-  if (OB_UNLIKELY(new_flushing_page_num < 0 || old_flushing_page_num < 0)) {
+  if (OB_UNLIKELY(new_flushing_page_num < 0 ||
+                  flush_level_ < BlockFlushLevel::INVALID ||
+                  flush_level_ >= BlockFlushLevel::MAX)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("invalid flushing page num", KR(ret), K(old_flushing_page_num), K(new_flushing_page_num), KPC(this));
+    LOG_WARN("invalid flushing page num", KR(ret), K(flush_level_), K(new_flushing_page_num), KPC(this));
   } else if (is_in_flushing_) {
     // do nothing
-  } else if (old_flushing_page_num == 0) {
-    if (OB_UNLIKELY(new_flushing_page_num == 0)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("invalid flushing page num", KR(ret), K(old_flushing_page_num), K(new_flushing_page_num), KPC(this));
-    } else if (OB_UNLIKELY(flush_blk_node_.get_next() != nullptr)) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("block is in flush priority mgr", KR(ret), KPC(this));
-    } else if (OB_FAIL(tmp_file_blk_mgr_->insert_block_into_flush_priority_mgr(new_flushing_page_num, *this))) {
-      LOG_WARN("fail to insert block into flush priority mgr", KR(ret), K(new_flushing_page_num), KPC(this));
-    }
   } else {
-    if (new_flushing_page_num == 0) {
-      if (OB_FAIL(tmp_file_blk_mgr_->remove_block_from_flush_priority_mgr(old_flushing_page_num, *this))) {
-        LOG_WARN("fail to remove block from flush priority mgr", KR(ret), K(old_flushing_page_num), KPC(this));
+    if (new_flushing_page_num > 0 &&
+        OB_FAIL(tmp_file_blk_mgr_->get_flush_priority_mgr().get_block_list_level(
+          new_flushing_page_num,
+          is_exclusive_block(),
+          is_all_incomplete_flushing(),
+          new_level))) {
+      LOG_WARN("fail to get block list level", KR(ret), KPC(this));
+    } else if (flush_level_ == BlockFlushLevel::INVALID) {
+      if (new_flushing_page_num > 0 &&
+          OB_FAIL(tmp_file_blk_mgr_->insert_block_into_flush_priority_mgr(new_level, *this))) {
+        LOG_WARN("fail to insert block into flush priority mgr", KR(ret), K(new_level), KPC(this));
+      } else {
+        flush_level_ = new_level;
       }
+    } else if (new_flushing_page_num == 0) {
+      if (OB_FAIL(tmp_file_blk_mgr_->remove_block_from_flush_priority_mgr(
+          flush_level_, *this))) {
+        LOG_WARN("fail to remove block from flush priority mgr", KR(ret), K(flush_level_), KPC(this));
+      } else {
+        flush_level_ = BlockFlushLevel::INVALID;
+      }
+    } else if (OB_FAIL(tmp_file_blk_mgr_->adjust_block_flush_priority(
+        flush_level_, new_level, *this))) {
+      LOG_WARN("fail to adjust block flush priority", KR(ret), K(flush_level_), K(new_level), KPC(this));
     } else {
-      if (OB_FAIL(tmp_file_blk_mgr_->adjust_block_flush_priority(old_flushing_page_num, new_flushing_page_num, *this))) {
-        LOG_WARN("fail to adjust block flush priority", KR(ret), K(old_flushing_page_num), K(new_flushing_page_num), KPC(this));
-      }
+      flush_level_ = new_level;
     }
   }
   return ret;
@@ -658,6 +689,7 @@ int ObTmpFileBlock::init_flushing_page_iterator(ObTmpFileBlockFlushingPageIterat
         // incomplete pages and meta pages will only be flushed when write cache memory
         // becomes insufficient, ensuring optimal cache utilization and preventing premature flushing.
         succ = false;
+        write_cache.metrics_.record_skip_special_page_hold(1);
         if (TC_REACH_COUNT_INTERVAL(1000)) {
           LOG_INFO("skip flush special page when write cache memory is sufficient", K(page));
         }
@@ -687,6 +719,9 @@ int ObTmpFileBlock::init_flushing_page_iterator(ObTmpFileBlockFlushingPageIterat
           ret = OB_ERR_UNEXPECTED;
           LOG_ERROR("fail to remove page from list", KR(ret), K(page));
         } else {
+          if (page.is_full()) {
+            --full_page_cnt_in_flushing_list_;
+          }
           page.dec_ref();
           flushing_page_num += 1;
         }
@@ -709,7 +744,12 @@ int ObTmpFileBlock::init_flushing_page_iterator(ObTmpFileBlockFlushingPageIterat
 // each time the block could only be flushed once.
 // otherwise, when iterate flush priority lists, the order might be wrong due to the position of block in the list
 // might be modified by other operations.
-int ObTmpFileBlock::set_flushing_status(bool &lock_succ)
+//
+// Removing the node from `list` MUST happen while the block write lock is still held.
+// Otherwise the lock would be released first, and a concurrent thread trying to
+// append the node to another level list would fail because the node is still on the old list.
+
+int ObTmpFileBlock::try_pick_for_flushing(ObTmpFileBlockHandleList &list, bool &lock_succ)
 {
   int ret = OB_SUCCESS;
   lock_succ = lock_.try_wrlock();
@@ -720,14 +760,16 @@ int ObTmpFileBlock::set_flushing_status(bool &lock_succ)
     } else if (OB_UNLIKELY(is_in_flushing_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("tmp file block is already in flushing", KR(ret), KPC(this));
+    } else if (OB_FAIL(list.remove_without_lock_(ObTmpFileBlockHandle(this)))) {
+      LOG_ERROR("fail to remove handle from flush priority list", KR(ret), KPC(this));
     } else {
       is_in_flushing_ = true;
     }
     int tmp_ret = OB_SUCCESS;
     if (OB_TMP_FAIL(lock_.unlock())) {
       LOG_ERROR("fail to unlock", KR(tmp_ret), KPC(this));
+      ob_abort();
     }
-    ret = ret == OB_SUCCESS ? tmp_ret : ret;
   }
 
   LOG_DEBUG("set flushing status over", KR(ret), K(lock_succ), KPC(this));
@@ -747,8 +789,6 @@ int ObTmpFileBlock::flush_pages_succ(const int64_t begin_page_id, const int64_t 
   } else if (OB_FAIL(flushed_page_bitmap_.set_bitmap_batch(
                      begin_page_id, page_num, true))) {
     LOG_WARN("fail to set bitmap", KR(ret), K(begin_page_id), K(page_num), KPC(this));
-  } else if (reinsert_into_flush_prio_mgr_()) {
-    LOG_DEBUG("reinsert into flush prio mgr", K(begin_page_id), K(page_num), KPC(this));
   }
 
   LOG_DEBUG("flush pages succ", KR(ret), K(begin_page_id), K(page_num), KPC(this));

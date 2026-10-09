@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef GLOBAL_ERRSIM_POINT_DEF
@@ -372,6 +365,7 @@ GLOBAL_ERRSIM_POINT_DEF(527, EN_WRITE_SPLIT_START_LOG_DELAY_SEC, "delay seconds 
 GLOBAL_ERRSIM_POINT_DEF(528, EN_AUTO_SPLIT_TASK_CNT_LESS_THAN, "max number of running auto split task allowed in cluster");
 GLOBAL_ERRSIM_POINT_DEF(529, EN_BLOCK_BEFORE_SPLIT_DOWNLOAD_SSTABLE, "block split before downloading sstables");
 GLOBAL_ERRSIM_POINT_DEF(530, EN_SKIP_TABLET_NUM_LIMIT_CHECK, "skip tablet num limit check");
+GLOBAL_ERRSIM_POINT_DEF(531, EN_MOCK_DATA_VERSION, "specify minor and patch version of data version");
 
 // vec index
 GLOBAL_ERRSIM_POINT_DEF(530, EN_VEC_INDEX_DROP_SHARE_TABLE_ERR, "");
@@ -417,6 +411,8 @@ GLOBAL_ERRSIM_POINT_DEF(566, EN_COST_MODEL_TEST, "test cost model for mysqltest 
 GLOBAL_ERRSIM_POINT_DEF(567, EN_CHECK_STMT_VALID, "Reporting error when stmt not valid after transform");
 GLOBAL_ERRSIM_POINT_DEF(568, EN_SET_CONFIG_WAIT_SYNC_TIMEOUT, "timeout in seconds for waiting config sync when set config");
 GLOBAL_ERRSIM_POINT_DEF(569, EN_MVIEW_DEFENSIVE_CHECK, "Whether allow to do some defensive checks for materialized mview");
+GLOBAL_ERRSIM_POINT_DEF(570, EN_ENABLE_VEC_LRPAD, "Used to control whether to turn on the vectorization 2.0 lrpad operator. It is turned off by default.");
+GLOBAL_ERRSIM_POINT_DEF(571, EN_PARTIAL_GROUP_BY_PUSHDOWN_CONTROLER, "Used to control partial group by pushdown.");
 // 600-700 For PX use
 GLOBAL_ERRSIM_POINT_DEF(600, EN_PX_SQC_EXECUTE_FAILED, "");
 GLOBAL_ERRSIM_POINT_DEF(601, EN_PX_SQC_INIT_FAILED, "Used to simulate the scenario of failure to init sub query coordinator");
@@ -573,6 +569,7 @@ GLOBAL_ERRSIM_POINT_DEF(1115, EN_INSERT_AUX_TENANT_RESTORE_JOB_FAILED, "");
 GLOBAL_ERRSIM_POINT_DEF(1116, EN_RESTORE_CREATE_LS_FAILED, "");
 GLOBAL_ERRSIM_POINT_DEF(1117, EN_ENABLE_LOG_OBJECT_STORAGE_CHECKSUM_TYPE, "");
 GLOBAL_ERRSIM_POINT_DEF(1118, EN_OBJECT_STORAGE_CHECKSUM_ERROR, "");
+GLOBAL_ERRSIM_POINT_DEF(1119, EN_RESTORE_DAG_NET_PERCEIVE_FAILED, "");
 // END OF STORAGE HA - 1101 - 2000
 
 // sql parameterization 1170-1180
@@ -605,6 +602,10 @@ GLOBAL_ERRSIM_POINT_DEF(1210, EN_OB_PLAN_CACHE_POST_ADDITION_CHECK, "Used to con
 // vector index 1300 - 1399
 GLOBAL_ERRSIM_POINT_DEF(1300, EN_VEC_INDEX_IVF_ROWKEY_CID_BUILD_ERR, "");
 GLOBAL_ERRSIM_POINT_DEF(1301, EN_VEC_INDEX_IVF_PQ_BUILD_ERR, "");
+GLOBAL_ERRSIM_POINT_DEF(1302, EN_VEC_INDEX_HNSW_SNAPSHOT_TABLE_BUILD_ERR, "");
+GLOBAL_ERRSIM_POINT_DEF(1303, EN_VEC_INDEX_HNSW_REBUILD_CREATE_ERR, "");
+GLOBAL_ERRSIM_POINT_DEF(1304, EN_VEC_INDEX_HNSW_RELEASE_SNAPSHOT_ERR, "");
+GLOBAL_ERRSIM_POINT_DEF(1305, EN_VEC_INDEX_IVF_CENTER_TABLE_BUILD_ERR, "");
 
 // Transaction // 2001 - 2100
 // Transaction free route
@@ -638,6 +639,7 @@ GLOBAL_ERRSIM_POINT_DEF(2211, EN_ENABLE_RANDOM_TSC, "wether to randomize batch_s
 GLOBAL_ERRSIM_POINT_DEF(2212, EN_LOCK_CONFLICT_RETRY_THEN_REROUTE, "force reroute sql when lock conflict and retry a few times");
 GLOBAL_ERRSIM_POINT_DEF(2213, EN_DISABLE_VEC_MERGE_GBY, "Used to control whether to turn off the vectorization 2.0 merge group by operator. It is turned on by default.");
 GLOBAL_ERRSIM_POINT_DEF(2214, EN_DISABLE_VEC_MERGE_JOIN, "Used to control whether to turn off the vectorization 2.0 when use Merge Join Operator");
+GLOBAL_ERRSIM_POINT_DEF(2215, EN_FORCE_MONITORING_DUMP_ROWS, "Used to force dump output rows in monitoring dump operator.");
 // WR && ASH
 GLOBAL_ERRSIM_POINT_DEF(2301, EN_CLOSE_ASH, "");
 GLOBAL_ERRSIM_POINT_DEF(2302, EN_DISABLE_HASH_BASE_DISTINCT, "");
@@ -690,6 +692,7 @@ GLOBAL_ERRSIM_POINT_DEF(2625, EN_DELETE_HTABLE_SKIP_CF_ERR, "delete htable table
 GLOBAL_ERRSIM_POINT_DEF(2651, EN_AUTO_SPLIT_SCHEDULER_ERR, "inject error in auto split schedule step");
 GLOBAL_ERRSIM_POINT_DEF(2652, EN_DDL_SCAN_TASK_PERIOD, "ddl scan task timer thread schedule period");
 GLOBAL_ERRSIM_POINT_DEF(2653, EN_PART_SPLIT_AT_DECIDE_RANGES, "partition split at decide tablet split ranges");
+GLOBAL_ERRSIM_POINT_DEF(2654, EN_DEFAULT_RANDOM_PARTITION_INTERVAL, "used to overwrite _default_random_partition_interval for all tenant");
 
 // Rescan op 2701 - 2710
 GLOBAL_ERRSIM_POINT_DEF(2701, EN_ENABLE_RESCAN_OP, "enable rescan op");
@@ -700,4 +703,28 @@ GLOBAL_ERRSIM_POINT_DEF(2703, EN_ENABLE_OPERATOR_DUMMY_MEM_CHECK, "Used to track
 GLOBAL_ERRSIM_POINT_DEF(2704, EN_VSLICE_ALLOC_INIT_MEM, "Used to enable ObVSliceAlloc block memory initialization");
 GLOBAL_ERRSIM_POINT_DEF(2705, EN_ROW_STORE_GEN_SKIP_INDEX_ADAPTIVELY, "Whether to generate skip index adaptively for row store delta sstable");
 GLOBAL_ERRSIM_POINT_DEF(2706, EN_DISABLE_INC_SKIP_INDEX_SCAN, "Whether disable skip index scan in inc table");
+GLOBAL_ERRSIM_POINT_DEF(2707, EN_SQL_MEM_TOTAL_ALLOC_SIZE_CHECK, "Log error when sql memory total alloc size is negative");
+GLOBAL_ERRSIM_POINT_DEF(2708, EN_SQL_MEM_CACHESIZE_GROWTH_LIMIT, "Growth limit percentage(e.g. 10 means 10%) to trigger error when cache_size surges in extend_max_memory_size");
+
+// BatchFile Pipeline begin 2710 - 2730
+GLOBAL_ERRSIM_POINT_DEF(2710, EN_AI_SERVICE_CREATE_TASK_ERR, "ai access service create prepare task error");
+GLOBAL_ERRSIM_POINT_DEF(2711, EN_AI_SERVICE_ADD_BATCH_LINE_ERR, "ai access service add batch line error");
+GLOBAL_ERRSIM_POINT_DEF(2712, EN_AI_SERVICE_FINISH_PREPARE_ERR, "ai access service finish prepare task error");
+GLOBAL_ERRSIM_POINT_DEF(2713, EN_AI_SERVICE_REGISTER_TASK_ERR, "ai access service register task object error");
+GLOBAL_ERRSIM_POINT_DEF(2714, EN_AI_TASK_PREPARE_DATA_FLUSH_ERR, "ai task prepare data flush jsonl error");
+GLOBAL_ERRSIM_POINT_DEF(2715, EN_AI_TASK_PREPARE_TO_RUNNING_ERR, "ai task prepare data transition to running error");
+GLOBAL_ERRSIM_POINT_DEF(2716, EN_AI_TASK_FILE_UPLOAD_ERR, "ai task file uploading phase error");
+GLOBAL_ERRSIM_POINT_DEF(2717, EN_AI_TASK_BATCH_SUBMIT_ERR, "ai task batch submitting phase error");
+GLOBAL_ERRSIM_POINT_DEF(2718, EN_AI_TASK_BATCH_POLL_ERR, "ai task batch polling phase error");
+GLOBAL_ERRSIM_POINT_DEF(2719, EN_AI_TASK_RESULT_DOWNLOAD_ERR, "ai task result downloading phase error");
+GLOBAL_ERRSIM_POINT_DEF(2720, EN_BATCH_FILE_OP_COLLECT_DATA_ERR, "batch file operator collect data error");
+GLOBAL_ERRSIM_POINT_DEF(2721, EN_BATCH_FILE_OP_SUBMIT_TASK_ERR, "batch file operator submit task error");
+GLOBAL_ERRSIM_POINT_DEF(2722, EN_BATCH_FILE_OP_POLL_SLOT_ERR, "batch file operator poll slot error");
+GLOBAL_ERRSIM_POINT_DEF(2723, EN_BATCH_FILE_OP_OUTPUT_RESULT_ERR, "batch file operator output result error");
+// BatchFile Pipeline end
+
+// Database isolation
+GLOBAL_ERRSIM_POINT_DEF(2730, EN_ENABLE_DATABASE_ISOLATION, "force enable database isolation mode");
+GLOBAL_ERRSIM_POINT_DEF(2731, EN_CHECK_PROXY_DB_ACCURACY, "Check if proxy specified database matches session database in plan cache and resolve");
+
 #endif /*GLOBAL_ERRSIM_POINT_DEF*/

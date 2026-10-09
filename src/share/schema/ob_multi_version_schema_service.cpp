@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -375,6 +368,7 @@ bool ObSchemaGetterController::is_object_level_parallelism_(
   return is_object_level_parallelism;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_FORCE_LAZY_SCHEMA_GUARD);
 int ObSchemaGetterController::construct_schema_(
   const ObSchemaMgr *mgr,
   const ObRefreshSchemaStatus &schema_status,
@@ -385,7 +379,13 @@ int ObSchemaGetterController::construct_schema_(
   const ObSchema *&schema)
 {
   int ret = OB_SUCCESS;
-  const bool is_lazy = (NULL == mgr);
+  bool is_lazy = (NULL == mgr);
+  if (OB_UNLIKELY(ERRSIM_FORCE_LAZY_SCHEMA_GUARD)) {
+    is_lazy = true;
+    LOG_INFO("[ERRSIM] force lazy schema guard",
+             "tenant_id", schema_status.tenant_id_,
+             K(schema_type), K(schema_id), K(schema_version));
+  }
   const uint64_t tenant_id = schema_status.tenant_id_;
   bool update_history_cache = false;
   schema = NULL;
@@ -5481,8 +5481,17 @@ int ObMultiVersionSchemaService::check_schema_slot_available(const uint64_t tena
   } else if (OB_ISNULL(schema_mgr_cache = &schema_store->schema_mgr_cache_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("schema_mgr_cache is null", KR(ret), K(tenant_id));
-  } else if (OB_FAIL(schema_mgr_cache->find_dst_item_for_put(tenant_id, dst_item, target_pos))){
-    LOG_WARN("fail to find dst item for put", KR(ret), K(dst_item));
+  } else {
+    int64_t max_schema_slot_num = schema_mgr_cache->get_max_cached_num();
+    if (!ObSchemaService::g_liboblog_mode_) {
+      omt::ObTenantConfigGuard tenant_config(OTC_MGR.get_tenant_config_with_lock(tenant_id));
+      if (tenant_config.is_valid()) {
+        max_schema_slot_num = tenant_config->_max_schema_slot_num;
+      }
+    }
+    if (OB_FAIL(schema_mgr_cache->find_dst_item_for_put(tenant_id, max_schema_slot_num, dst_item, target_pos))){
+      LOG_WARN("fail to find dst item for put", KR(ret), K(dst_item));
+    }
   }
   return ret;
 }

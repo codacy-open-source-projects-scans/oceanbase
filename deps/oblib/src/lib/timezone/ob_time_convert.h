@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_TIMEZONE_OB_TIME_CONVERT_
@@ -722,6 +715,7 @@ public:
                               bool &datetime_valid,
                               bool &string_match_format,
                               int64_t &last_first_8digits);
+  template<bool is_clickhouse_style = false>
   static int str_to_ob_time_format(const ObString &str, const ObString &fmt, ObTime &ob_time,
                                    int16_t *scale, const ObDateSqlMode date_sql_mode);
   // parameter is_oracle_mode is true by default.
@@ -802,7 +796,7 @@ public:
   static int get_round_day_of_isoyear(ObTime &ob_time);
   //mysql binary value encoder/decoder
   static int decode_otimestamp(const ObObjType obj_type, const char *data,
-                               const int64_t total_len, const ObTimeConvertCtx &cvrt_ctx,
+                               const uint64_t total_len, const ObTimeConvertCtx &cvrt_ctx,
                                ObOTimestampData &otimestamp_val, int8_t &scale);
   static int encode_otimestamp(const ObObjType obj_type, char *buf,
                                const int64_t len, int64_t &pos,

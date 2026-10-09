@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifdef OB_STMT_TYPE_DEF
@@ -37,7 +30,7 @@ OB_STMT_TYPE_DEF(T_ALTER_TABLE, get_alter_table_stmt_need_privs, 22, ACTION_TYPE
 OB_STMT_TYPE_DEF(T_CREATE_INDEX, get_create_index_stmt_need_privs, 23, ACTION_TYPE_CREATE_INDEX)
 OB_STMT_TYPE_DEF(T_DROP_INDEX, get_drop_index_stmt_need_privs, 24, ACTION_TYPE_DROP_INDEX)
 OB_STMT_TYPE_DEF(T_CREATE_VIEW, err_stmt_type_priv, 25, ACTION_TYPE_CREATE_VIEW)
-OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ALTER_VIEW, err_stmt_type_priv, 26)
+OB_STMT_TYPE_DEF_UNKNOWN_AT(T_ALTER_VIEW, get_alter_view_stmt_need_privs, 26)
 OB_STMT_TYPE_DEF(T_DROP_VIEW, err_stmt_type_priv, 27, ACTION_TYPE_DROP_VIEW)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_HELP, no_priv_needed, 28)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_SHOW_TABLES, err_stmt_type_priv, 29)
@@ -413,7 +406,7 @@ OB_STMT_TYPE_DEF_UNKNOWN_AT(T_PAUSE_ROUTINE_LOAD, no_priv_needed, 405)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_RESUME_ROUTINE_LOAD, no_priv_needed, 406)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_STOP_ROUTINE_LOAD, no_priv_needed, 407)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_BACKUP_VALIDATE, get_sys_tenant_alter_system_priv, 408)
-
+OB_STMT_TYPE_DEF_UNKNOWN_AT(T_REFRESH_FULLTEXT_DICT, get_sys_tenant_alter_system_priv, 409)
 OB_STMT_TYPE_DEF_UNKNOWN_AT(T_MAX, err_stmt_type_priv, 500)
 #endif
 

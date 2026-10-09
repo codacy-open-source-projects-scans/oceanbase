@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SQL_ENGINE_JOIN_HASH_JOIN_OB_HJ_PARTITION_H_
@@ -142,6 +135,12 @@ public:
   int64_t get_pre_part_count() { return pre_part_count_; }
 
   inline void set_memory_limit(int64_t limit) { partition_store_->set_memory_limit(limit); }
+  inline void set_callback(ObSqlMemoryCallback *callback)
+  {
+    if (OB_NOT_NULL(partition_store_)) {
+      partition_store_->get_row_store().set_callback(callback);
+    }
+  }
   inline bool is_dumped() { return 0 < partition_store_->is_dumped(); }
   inline int64_t get_dump_size() { return partition_store_->get_dump_size(); }
   ObTempRowStore &get_row_store() { return partition_store_->get_row_store(); }

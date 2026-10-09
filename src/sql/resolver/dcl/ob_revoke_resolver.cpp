@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -502,6 +495,12 @@ int ObRevokeResolver::resolve_mysql(const ParseNode &parse_tree)
             ret = OB_NOT_SUPPORTED;
             LOG_WARN("grammar is not support when MIN_DATA_VERSION is below MOCK_DATA_VERSION_4_3_5_3 or MOCK_DATA_VERSION_4_4_2_0 or DATA_VERSION_4_5_1_0", K(ret));
             LOG_USER_ERROR(OB_NOT_SUPPORTED, "revoke create sensitive rule/plainaccess privilege");
+          } else if (!((compat_version >= MOCK_DATA_VERSION_4_4_2_1 && compat_version < DATA_VERSION_4_5_0_0)
+                       || compat_version >= DATA_VERSION_4_6_1_0)
+                     && ((priv_set & OB_PRIV_APPLICATION_PASSWORD_ADMIN) != 0)) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_WARN("grammar is not support in current DATA_VERSION", K(ret));
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "revoke application_password_admin privilege");
           }
           if (OB_FAIL(ret)) {
           } else {
@@ -551,7 +550,7 @@ int ObRevokeResolver::resolve_mysql(const ParseNode &parse_tree)
                 }
                 if (user_name.length() > OB_MAX_USER_NAME_LENGTH) {
                   ret = OB_WRONG_USER_NAME_LENGTH;
-                  LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr());
+                  LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr(), OB_MAX_USER_NAME_LENGTH);
                 } else if (OB_FAIL(revoke_stmt->add_grantee(user_name))) {
                   SQL_RESV_LOG(WARN, "fail to add grantee", K(ret), K(user_name), K(host_name));
                 } else if (OB_FAIL(
@@ -996,7 +995,7 @@ int ObRevokeResolver::resolve_revoke_obj_priv_inner(const ParseNode *node,
             }
             if (user_name.length() > OB_MAX_USER_NAME_LENGTH) {
               ret = OB_WRONG_USER_NAME_LENGTH;
-              LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr());
+              LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr(), OB_MAX_USER_NAME_LENGTH);
             }
           }
           if (OB_SUCC(ret)) {

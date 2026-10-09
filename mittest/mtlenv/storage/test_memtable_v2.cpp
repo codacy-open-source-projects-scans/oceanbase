@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -20,6 +13,9 @@
 #include "mtlenv/mock_tenant_module_env.h"
 #include "storage/tx/ob_mock_tx_ctx.h"
 #include "storage/init_basic_struct.h"
+#ifdef OB_BUILD_TDE_SECURITY
+#include "share/ob_master_key_getter.h"
+#endif
 
 namespace oceanbase
 {
@@ -511,7 +507,8 @@ public:
                                NULL, /*old_row*/
                                1,    /*row_count*/
                                false /*check_exist*/,
-                               encrypt_meta_);
+                               encrypt_meta_,
+                               ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
 
     EXPECT_EQ(expect_ret, (ret = memtable->set(iter_param_, context, arg)));
 
@@ -555,7 +552,8 @@ public:
                                NULL, /*old_row*/
                                1,    /*row_count*/
                                false /*check_exist*/,
-                               encrypt_meta_);
+                               encrypt_meta_,
+                               ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
 
     EXPECT_EQ(expect_ret, (ret = memtable->set(iter_param_, context, arg)));
 
@@ -3473,7 +3471,8 @@ TEST_F(TestMemtableV2, test_seq_set_violation)
                              NULL, /*old_row*/
                              1,    /*row_count*/
                              false /*check_exist*/,
-                             encrypt_meta_);
+                             encrypt_meta_,
+                             ObMergeEngineType::OB_MERGE_ENGINE_PARTIAL_UPDATE);
 
   EXPECT_EQ(OB_SUCCESS, (ret = memtable->set(iter_param_,
                                              context,

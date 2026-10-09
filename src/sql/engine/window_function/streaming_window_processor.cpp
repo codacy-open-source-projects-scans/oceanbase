@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -195,7 +188,7 @@ int StreamingWindowProcessor::compute_all_wf_values(
                  K(start_idx), K(end_idx));
       } else if (OB_FAIL(it->wf_expr_->collect_part_results(
                      ctx.win_col_, start_idx, end_idx, *child_brs.skip_,
-                     false))) {
+                     child_brs.all_rows_active_, false))) {
         LOG_WARN("collect part results failed", K(ret));
       }
     }

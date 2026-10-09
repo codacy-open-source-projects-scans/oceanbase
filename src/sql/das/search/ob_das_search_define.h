@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -260,6 +253,8 @@ public:
 
 public:
   int get_cost(ObDASSearchCtx &search_ctx, ObDASSearchCost &cost);
+  void reset_cost() { cost_.reset(); }
+  void reset_cost_recursive();
   virtual int generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &search_ctx, ObIDASSearchOp *&op) = 0;
   virtual int compute_cost(ObDASSearchCtx &search_ctx, ObDASSearchCost &cost) = 0;
   virtual int can_pushdown_filter_to_bmm(bool &can_pushdown);
@@ -296,10 +291,16 @@ public:
       has_vector_subquery_(false),
       is_top_k_query_(true),
       fusion_method_(ObFusionMethod::WEIGHT_SUM),
-      has_hybrid_fusion_op_(false)
+      has_hybrid_fusion_op_(false),
+      enable_parallel_(false),
+      query_dop_(1),
+      track_score_(true),
+      fusion_iter_exec_mode_(ObFusionIterExecMode::SCORE_TOP_K_QUERY_HITS),
+      is_single_partition_(false),
+      rerank_window_size_expr_(nullptr)
   {}
   ~ObDASFusionCtDef() {}
-  INHERIT_TO_STRING_KV("ObDASFusionCtDef", ObDASAttachCtDef, K(search_index_), K(has_search_subquery_), K(has_vector_subquery_), K(rowid_exprs_), K(score_exprs_), K(rank_exprs_), K(weight_exprs_), KPC_(size_expr), KPC_(offset_expr), KPC_(rank_window_size_expr), KPC_(rank_constant_expr), KPC_(min_score_expr), K(fusion_method_));
+  INHERIT_TO_STRING_KV("ObDASFusionCtDef", ObDASAttachCtDef, K(search_index_), K(has_search_subquery_), K(has_vector_subquery_), K(rowid_exprs_), K(score_exprs_), K(rank_exprs_), K(weight_exprs_), KPC_(size_expr), KPC_(offset_expr), KPC_(rank_window_size_expr), KPC_(rank_constant_expr), KPC_(min_score_expr), K(fusion_method_), K(enable_parallel_), K(query_dop_));
 
   int init(
     int64_t search_index,
@@ -369,6 +370,12 @@ public:
   bool is_top_k_query_;
   ObFusionMethod fusion_method_;
   bool has_hybrid_fusion_op_;
+  bool enable_parallel_;
+  int64_t query_dop_;
+  bool track_score_;
+  ObFusionIterExecMode fusion_iter_exec_mode_;
+  bool is_single_partition_;
+  ObExpr *rerank_window_size_expr_;
 };
 
 struct ObDASFusionRtDef : ObDASAttachRtDef

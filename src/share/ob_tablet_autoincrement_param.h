@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_TABLET_AUTOINCREMENT_PARAM_H_
@@ -146,15 +139,16 @@ struct ObMigrateTabletAutoincSeqParam final
   OB_UNIS_VERSION(1);
 public:
   ObMigrateTabletAutoincSeqParam()
-    : src_tablet_id_(), dest_tablet_id_(), ret_code_(OB_SUCCESS), autoinc_seq_(0)
+    : src_tablet_id_(), dest_tablet_id_(), ret_code_(OB_SUCCESS), autoinc_seq_(0), autoinc_seq_end_(INT64_MAX)
   {}
   bool is_valid() const { return src_tablet_id_.is_valid(); }
-  TO_STRING_KV(K_(src_tablet_id), K_(dest_tablet_id), K_(ret_code), K_(autoinc_seq));
+  TO_STRING_KV(K_(src_tablet_id), K_(dest_tablet_id), K_(ret_code), K_(autoinc_seq), K_(autoinc_seq_end));
 public:
   common::ObTabletID src_tablet_id_;
   common::ObTabletID dest_tablet_id_;
   int ret_code_;
   uint64_t autoinc_seq_;
+  uint64_t autoinc_seq_end_;
 };
 
 class ObTabletAutoincSeq : public memtable::ObIMultiSourceDataUnit, public storage::ObIStorageMetaObj
@@ -183,10 +177,11 @@ public:
   {
     return memtable::MultiSourceDataUnitType::TABLET_SEQ;
   }
-  int get_autoinc_seq_value(uint64_t &autoinc_seq) const;
+  int get_autoinc_seq_value(uint64_t &autoinc_seq, uint64_t &autoinc_seq_end) const;
   int set_autoinc_seq_value(
     common::ObArenaAllocator &allocator,
-    const uint64_t autoinc_seq);
+    const uint64_t autoinc_seq,
+    const uint64_t autoinc_seq_end);
   const share::ObTabletAutoincInterval* get_intervals() const { return intervals_; }
   int64_t get_intervals_count() const { return intervals_count_; }
 

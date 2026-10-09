@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 
@@ -85,6 +78,8 @@ void oceanbase::observer::init_srv_xlator_for_rootserver(ObSrvRpcXlator *xlator)
     RPC_PROCESSOR(rootserver::ObRpcCreateHiddenTableV2P, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcSetCommentP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcAlterTableP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcParallelAlterTableP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcAlterViewP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcExchangePartitionP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropTableP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcParallelDropTableP, *gctx_.root_service_);
@@ -309,6 +304,12 @@ void oceanbase::observer::init_srv_xlator_for_rootserver(ObSrvRpcXlator *xlator)
 
     RPC_PROCESSOR(rootserver::ObRpcCreateExternalResourceP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropExternalResourceP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObAlterRandomDistributionPartitionP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcCreateJavaPolicyP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcDropJavaPolicyP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcModifyJavaPolicyP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcOraUploadJarP, *gctx_.root_service_);
+    RPC_PROCESSOR(rootserver::ObRpcOraDropJarP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcCreateAiModelP, *gctx_.root_service_);
     RPC_PROCESSOR(rootserver::ObRpcDropAiModelP, *gctx_.root_service_);
 

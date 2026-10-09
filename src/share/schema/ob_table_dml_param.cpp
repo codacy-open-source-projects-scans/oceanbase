@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -69,7 +62,8 @@ ObTableSchemaParam::ObTableSchemaParam(ObIAllocator &allocator)
     search_idx_included_cids_(allocator),
     search_idx_included_cid_idxes_(allocator),
     search_idx_arr_types_(allocator),
-    search_idx_column_comments_(allocator)
+    search_idx_column_comments_(allocator),
+    user_ttl_column_id_(OB_INVALID_ID)
 {
 }
 
@@ -120,6 +114,7 @@ void ObTableSchemaParam::reset()
   search_idx_included_cid_idxes_.reset();
   search_idx_arr_types_.reset();
   search_idx_column_comments_.reset();
+  user_ttl_column_id_ = OB_INVALID_ID;
 }
 
 int ObTableSchemaParam::convert(const ObTableSchema *schema)
@@ -144,6 +139,7 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
     lob_inrow_threshold_ = schema->get_lob_inrow_threshold();
     is_delete_insert_ = schema->is_delete_insert_merge_engine();
     is_rowscn_ttl_table_ = schema->get_ttl_flag().ttl_column_type_ == ObTTLFlag::TTLColumnType::ROWSCN;
+    user_ttl_column_id_ = schema->get_ttl_flag().get_last_user_ttl_column_id();
     merge_engine_type_ = schema->get_merge_engine_type();
     if (OB_FAIL(schema->get_is_row_store(use_cs))) {
       LOG_WARN("fail to get is row store", K(ret));
@@ -350,9 +346,10 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
     if (OB_SUCC(ret)) {
       if (OB_FAIL(tmp_cols_index.push_back(col_index))) {
         LOG_WARN("fail to push_back col_index", K(ret));
-      } else if (use_cs && OB_FAIL(schema->get_column_group_index(*column, false /*need_calculate_cg_idx*/, cg_idx))) {
-        LOG_WARN("Fail to get column group index", K(ret));
-      } else if (use_cs && OB_FAIL(tmp_cg_idxs.push_back(cg_idx))) {
+      // Always add CG IDXs to support potential online COLUMN STORE to ROW STORE switch even if the schema is row store
+      } else if (OB_FAIL(schema->get_column_group_index(*column, !use_cs /*need_calculate_cg_idx*/, cg_idx))) {
+        LOG_WARN("Fail to get column group index", K(ret), KPC(schema));
+      } else if (OB_FAIL(tmp_cg_idxs.push_back(cg_idx))) {
         LOG_WARN("Fail to push back cg idx", K(ret));
       }
     }
@@ -369,12 +366,12 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
                 tmp_col_descs,
                 &tmp_cols_index,
                 &tmp_cols,
-                use_cs ? &tmp_cg_idxs : nullptr,
+                &tmp_cg_idxs, /*Always add CG IDXs to support potential online COLUMN STORE to ROW STORE switch even if the schema is row store*/
                 nullptr/*cols_extend*/,
                 true/*has_all_column_group*/,
                 false/*is_cg_sstable*/,
                 need_truncate_filter,
-                is_delete_insert(),
+                merge_engine_type_,
                 schema->get_micro_block_format_version(),
                 has_ttl_definition))) {
       LOG_WARN("Fail to init read info", K(ret));
@@ -386,7 +383,8 @@ int ObTableSchemaParam::convert(const ObTableSchema *schema)
   }
   LOG_DEBUG("Generated read info", K_(read_info));
   read_param_version_ = storage::ObCGReadInfo::MIX_READ_INFO_LOCAL_CACHE;
-  if (OB_SUCC(ret) && use_cs && tmp_cg_idxs.count() <= storage::ObCGReadInfo::get_local_max_cg_cnt()) {
+  // Always init CG Read Infos to support potential online COLUMN STORE to ROW STORE switch even if the schema is row store
+  if (OB_SUCC(ret) && tmp_cg_idxs.count() <= storage::ObCGReadInfo::get_local_max_cg_cnt()) {
     // construct cg read infos
     void *tmp_ptr  = nullptr;
     int64_t cg_cnt = tmp_cg_idxs.count();
@@ -731,6 +729,7 @@ OB_DEF_SERIALIZE(ObTableSchemaParam)
   OB_UNIS_ENCODE(fts_index_type_);
   OB_UNIS_ENCODE(is_rowscn_ttl_table_);
   OB_UNIS_ENCODE(search_idx_column_comments_);
+  OB_UNIS_ENCODE(user_ttl_column_id_);
   return ret;
 }
 
@@ -933,6 +932,7 @@ OB_DEF_DESERIALIZE(ObTableSchemaParam)
   OB_UNIS_DECODE(fts_index_type_);
   OB_UNIS_DECODE(is_rowscn_ttl_table_);
   OB_UNIS_DECODE(search_idx_column_comments_);
+  OB_UNIS_DECODE(user_ttl_column_id_);
   return ret;
 }
 
@@ -1007,6 +1007,7 @@ OB_DEF_SERIALIZE_SIZE(ObTableSchemaParam)
   OB_UNIS_ADD_LEN(fts_index_type_);
   OB_UNIS_ADD_LEN(is_rowscn_ttl_table_);
   OB_UNIS_ADD_LEN(search_idx_column_comments_);
+  OB_UNIS_ADD_LEN(user_ttl_column_id_);
   return len;
 }
 

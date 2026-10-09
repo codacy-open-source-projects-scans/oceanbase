@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -50,6 +43,7 @@ int ObTableRedefinitionTask::init(const ObTableSchema* src_table_schema,
                                   const ObAlterTableArg &alter_table_arg,
                                   const uint64_t tenant_data_version,
                                   const bool ddl_need_retry_at_executor,
+                                  const bool direct_load_need_sync_stats_info,
                                   const int64_t task_status,
                                   const int64_t snapshot_version)
 {
@@ -112,6 +106,7 @@ int ObTableRedefinitionTask::init(const ObTableSchema* src_table_schema,
     } else if (OB_FAIL(ObDDLUtil::get_no_logging_param(tenant_id_, is_no_logging_))) {
       LOG_WARN("fail to get no logging param", K(ret), K(tenant_id_));
     } else {
+      direct_load_need_sync_stats_info_ = direct_load_need_sync_stats_info;
       is_inited_ = true;
       ObDDLTask::target_cg_cnt_ = target_cg_cnt_; // only use for 4.3.x recover table
       ddl_tracing_.open();
@@ -494,6 +489,7 @@ int ObTableRedefinitionTask::copy_table_indexes()
       ObSchemaGetterGuard schema_guard;
       const ObTableSchema *table_schema = nullptr;
       ObSArray<uint64_t> index_ids;
+      ObArray<ObTabletID> data_tablet_ids;
       alter_table_arg_.ddl_task_type_ = share::REBUILD_INDEX_TASK;
       alter_table_arg_.table_id_ = object_id_;
       alter_table_arg_.hidden_table_id_ = target_object_id_;
@@ -505,6 +501,8 @@ int ObTableRedefinitionTask::copy_table_indexes()
       } else if (OB_ISNULL(table_schema)) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("error unexpected, table schema must not be nullptr", K(ret), K(target_object_id_));
+      } else if (OB_FAIL(table_schema->get_tablet_ids(data_tablet_ids))) {
+        LOG_WARN("failed to get tablet ids", K(ret));
       } else {
         const common::ObIArray<ObAuxTableMetaInfo> &index_infos = table_schema->get_simple_index_infos();
         if ((index_infos.count() > 0) || (table_schema->mv_container_table()
@@ -593,7 +591,7 @@ int ObTableRedefinitionTask::copy_table_indexes()
               create_index_arg.index_type_ = index_schema->get_index_type();
               if (index_schema->is_vec_index() || index_schema->is_fts_index() || index_schema->is_multivalue_index() || index_schema->is_search_index()) {
                 has_rebuild_domain_indexes_ = true;
-                if (OB_FAIL(ObDDLUtil::construct_domain_index_arg(table_schema, index_schema, *this, create_index_arg, ddl_type))) {
+                if (OB_FAIL(ObDDLUtil::construct_domain_index_arg(new_schema_guard, table_schema, index_schema, *this, create_index_arg, ddl_type))) {
                   LOG_WARN("failed to construct domain index arg", K(ret));
                 }
               }
@@ -609,7 +607,11 @@ int ObTableRedefinitionTask::copy_table_indexes()
                                            consumer_group_id_,
                                            &allocator_,
                                            &create_index_arg,
-                                           task_id_);
+                                           task_id_,
+                                           0/*task_id*/,
+                                           false/*ddl_need_retry_at_executor*/,
+                                           false/*direct_load_need_sync_stats_info*/,
+                                           &data_tablet_ids);
                 param.sub_task_trace_id_ = sub_task_trace_id_;
                 param.tenant_data_version_ = data_format_version_;
                 if (OB_FAIL(ObSysDDLSchedulerUtil::create_ddl_task(param, *GCTX.sql_proxy_, task_record))) {
@@ -914,7 +916,7 @@ int ObTableRedefinitionTask::take_effect(const ObDDLTaskStatus next_task_status)
     LOG_WARN("table schema not exist", K(ret), K(target_object_id_));
   } else if (!table_schema->is_user_hidden_table()) {
     LOG_INFO("target schema took effect", K(target_object_id_));
-  } else if (table_schema->is_table_with_hidden_pk_column()
+  } else if ((table_schema->is_table_with_hidden_pk_column() || table_schema->is_random_part())
       && !(DDL_ALTER_PARTITION_BY == task_type_ || DDL_DROP_PRIMARY_KEY == task_type_)
       && OB_FAIL(sync_tablet_autoinc_seq())) {
     if (OB_TIMEOUT == ret || OB_NOT_MASTER == ret) {
@@ -930,6 +932,8 @@ int ObTableRedefinitionTask::take_effect(const ObDDLTaskStatus next_task_status)
     } else {
       LOG_WARN("sync auto increment position failed", K(ret), K(object_id_), K(target_object_id_));
     }
+  } else if (is_direct_load_task(task_type_) && OB_FAIL(sync_identity_column_sequence_value())) {
+    LOG_WARN("sync indentity column sequence value failed", K(ret), K(object_id_), K(target_object_id_));
   } else if (OB_FAIL(sync_stats_info())) {
     LOG_WARN("fail to sync stats info", K(ret), K(object_id_), K(target_object_id_));
   } else if (alter_table_arg_.mview_refresh_info_.is_mview_complete_refresh_ &&
@@ -1153,7 +1157,8 @@ int64_t ObTableRedefinitionTask::get_serialize_param_size() const
          + serialization::encoded_length_i64(complete_sstable_job_ret_code_)
          + serialization::encoded_length_i8(use_heap_table_ddl_plan_)
          + serialization::encoded_length_i8(is_ddl_retryable_)
-         + serialization::encoded_length_i8(has_rebuild_domain_indexes_);
+         + serialization::encoded_length_i8(has_rebuild_domain_indexes_)
+         + serialization::encoded_length_i8(direct_load_need_sync_stats_info_);
 }
 
 int ObTableRedefinitionTask::serialize_params_to_message(char *buf, const int64_t buf_len, int64_t &pos) const
@@ -1194,6 +1199,8 @@ int ObTableRedefinitionTask::serialize_params_to_message(char *buf, const int64_
     LOG_WARN("fail to serialize ddl can retry", K(ret));
   } else if (OB_FAIL(serialization::encode_i8(buf, buf_len, pos, has_rebuild_domain_indexes_))) {
     LOG_WARN("fail to serialize has rebuild domain indexes", K(ret));
+  } else if (OB_FAIL(serialization::encode_i8(buf, buf_len, pos, direct_load_need_sync_stats_info_))) {
+    LOG_WARN("fail to serialize need sync stats info", K(ret));
   }
   FLOG_INFO("serialize message for table redefinition", K(ret),
       K(copy_indexes), K(copy_triggers), K(copy_constraints), K(copy_foreign_keys), K(ignore_errors), K(do_finish), K(*this));
@@ -1272,6 +1279,14 @@ int ObTableRedefinitionTask::deserialize_params_from_message(const uint64_t tena
         LOG_WARN("fail to deserialize has rebuild domain indexes", K(ret));
       } else {
         has_rebuild_domain_indexes_ = has_rebuild_domain_indexes;
+      }
+    }
+    if (OB_SUCC(ret) && pos < data_len) {
+      int8_t direct_load_need_sync_stats_info = false;
+      if (OB_FAIL(serialization::decode_i8(buf, data_len, pos, &direct_load_need_sync_stats_info))) {
+        LOG_WARN("fail to deserialize need sync stats info", K(ret));
+      } else {
+        direct_load_need_sync_stats_info_ = direct_load_need_sync_stats_info;
       }
     }
   }
@@ -1556,7 +1571,7 @@ int ObTableRedefinitionTask::get_direct_load_job_stat(common::ObArenaAllocator &
   SMART_VAR(ObMySQLProxy::MySQLResult, select_res) {
     if (OB_FAIL(select_sql.assign_fmt(
         "SELECT JOB_ID, BATCH_SIZE, PARALLEL, MAX_ALLOWED_ERROR_ROWS, DETECTED_ERROR_ROWS, "
-        "STORE_PROCESSED_ROWS, COORDINATOR_STATUS FROM %s WHERE TENANT_ID=%lu "
+        "STORE_PROCESSED_ROWS, COORDINATOR_STATUS, STORE_STATUS FROM %s WHERE TENANT_ID=%lu "
         "AND JOB_ID=%ld AND JOB_TYPE='direct'",
         OB_ALL_VIRTUAL_LOAD_DATA_STAT_TNAME, tenant_id_, object_id_))) {
       LOG_WARN("failed to assign sql", KR(ret));
@@ -1584,22 +1599,26 @@ int ObTableRedefinitionTask::get_direct_load_job_stat(common::ObArenaAllocator &
         int64_t max_allowed_error_rows = 0;
         int64_t detected_error_rows = 0;
         int64_t store_processed_rows = 0;
-        ObString load_status;
+        ObString coordinator_status;
+        ObString store_status;
         EXTRACT_INT_FIELD_MYSQL(*select_result, "JOB_ID", job_stat.job_id_, int64_t);
         EXTRACT_INT_FIELD_MYSQL(*select_result, "BATCH_SIZE", batch_size, int64_t);
         EXTRACT_INT_FIELD_MYSQL(*select_result, "PARALLEL", parallel, int64_t);
         EXTRACT_INT_FIELD_MYSQL(*select_result, "MAX_ALLOWED_ERROR_ROWS", max_allowed_error_rows, int64_t);
         EXTRACT_INT_FIELD_MYSQL(*select_result, "DETECTED_ERROR_ROWS", detected_error_rows, int64_t);
         EXTRACT_INT_FIELD_MYSQL(*select_result, "STORE_PROCESSED_ROWS", store_processed_rows, int64_t);
-        EXTRACT_VARCHAR_FIELD_MYSQL(*select_result, "COORDINATOR_STATUS", load_status);
+        EXTRACT_VARCHAR_FIELD_MYSQL(*select_result, "COORDINATOR_STATUS", coordinator_status);
+        EXTRACT_VARCHAR_FIELD_MYSQL(*select_result, "STORE_STATUS", store_status);
         if (OB_SUCC(ret)) {
           job_stat.detected_error_rows_ += detected_error_rows;
           job_stat.store_.processed_rows_ += store_processed_rows;
-          if (0 != load_status.case_compare("none")) {
+          if (0 != store_status.case_compare("none")) {
+            job_stat.parallel_ += parallel;
+          }
+          if (0 != coordinator_status.case_compare("none")) {
             job_stat.batch_size_ = batch_size;
-            job_stat.parallel_ = parallel;
             job_stat.max_allowed_error_rows_ = max_allowed_error_rows;
-            if (OB_FAIL(ob_write_string(allocator, load_status, job_stat.coordinator_.status_))) {
+            if (OB_FAIL(ob_write_string(allocator, coordinator_status, job_stat.coordinator_.status_))) {
               LOG_WARN("failed to write string", KR(ret));
             }
           }

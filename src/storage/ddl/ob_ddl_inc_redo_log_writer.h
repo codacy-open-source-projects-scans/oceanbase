@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -73,6 +66,7 @@ public:
       const ObTabletID &lob_meta_tablet_id,
       const int64_t snapshot_version,
       const uint64_t data_format_version,
+      const share::SCN &start_scn,
       transaction::ObTxDesc *tx_desc,
       const ObSSTable *inc_major,
       const ObSSTable *lob_inc_major,
@@ -96,6 +90,7 @@ private:
       const ObTabletID &lob_meta_tablet_id,
       const int64_t snapshot_version,
       const uint64_t data_format_version,
+      const share::SCN &start_scn,
       transaction::ObTxDesc *tx_desc,
       const ObSSTable *inc_major,
       const ObSSTable *lob_inc_major,
@@ -122,6 +117,7 @@ private:
       const common::ObTabletID lob_meta_tablet_id,
       const int64_t snapshot_version,
       const uint64_t data_format_version,
+      const share::SCN &start_scn,
       transaction::ObTxDesc *tx_desc,
       const ObSSTable *inc_major,
       const ObSSTable *lob_inc_major,
@@ -130,6 +126,7 @@ private:
       const common::ObTabletID lob_meta_tablet_id,
       const int64_t snapshot_version,
       const uint64_t data_format_version,
+      const share::SCN &start_scn,
       transaction::ObTxDesc *tx_desc,
       const ObSSTable *inc_major,
       const ObSSTable *lob_inc_major,
@@ -141,6 +138,10 @@ private:
   int freeze_inc_minor_tablet(
       ObLS *ls,
       const common::ObTabletID &tablet_id);
+  int freeze_for_inc_major(
+    ObLS *ls,
+    const common::ObTabletID &tablet_id,
+    const common::ObTabletID &lob_meta_tablet_id);
 private:
   bool is_inited_;
   bool remote_write_;

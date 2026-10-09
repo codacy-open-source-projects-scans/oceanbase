@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -100,7 +93,7 @@ int ObTableDirectInsertCtx::init(
                                                                  parallel,
                                                                  compressor_type))) {
         LOG_WARN("fail to get tmp store compressor type", KR(ret));
-      } else if (OB_FAIL(ObTableLoadSchema::get_column_ids(table_schema, column_ids))) {
+      } else if (OB_FAIL(ObTableLoadSchema::get_column_ids(table_schema, column_ids, table_schema->is_random_part()))) {
         LOG_WARN("failed to init store column idxs", KR(ret));
       } else if (OB_FAIL(get_partition_level_tablet_ids(phy_plan, table_schema, tablet_ids))) {
         LOG_WARN("failed to get partition level tablet ids", KR(ret), K(phy_plan), KPC(table_schema));

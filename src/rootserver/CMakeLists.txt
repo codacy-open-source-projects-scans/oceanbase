@@ -1,5 +1,8 @@
 ob_set_subtarget(ob_rootserver ALONE
   ob_ddl_service.cpp
+  ob_column_group_ddl_helper.cpp
+  ob_alter_column_ddl_service.cpp
+  ob_alter_partition_ddl_service.cpp
   ob_ddl_service_launcher.cpp
   ob_root_service.cpp
   ddl_task/ob_ddl_redefinition_task.cpp
@@ -18,6 +21,7 @@ ob_set_subtarget(ob_rootserver backup
   backup/ob_backup_service.cpp
   backup/ob_backup_schedule_task.cpp
   backup/ob_backup_task_scheduler.cpp
+  backup/ob_backup_server_disk_space_filter.cpp
   backup/ob_tenant_archive_scheduler.cpp
   backup/ob_backup_data_scheduler.cpp
   backup/ob_backup_data_set_task_mgr.cpp
@@ -25,7 +29,6 @@ ob_set_subtarget(ob_rootserver backup
   backup/ob_backup_data_ls_task_mgr.cpp
   backup/ob_backup_table_list_mgr.cpp
   backup/ob_backup_param_operator.cpp
-  backup/ob_macro_block_collector.cpp
   backup/ob_backup_validate_scheduler.cpp
   backup/ob_backup_validate_info_collector.cpp
   backup/ob_backup_validate_task_mgr.cpp
@@ -59,6 +62,7 @@ ob_set_subtarget(ob_rootserver common
   ob_index_builder.cpp
   ob_mlog_builder.cpp
   ob_locality_util.cpp
+  ob_random_partition_helper.cpp
   ob_resource_weight_parser.cpp
   ob_root_balancer.cpp
   ob_partition_balance.cpp
@@ -107,7 +111,6 @@ ob_set_subtarget(ob_rootserver common
   ob_system_admin_util.cpp
   ob_update_rs_list_task.cpp
   ob_upgrade_storage_format_version_executor.cpp
-  ob_schema_history_recycler.cpp
   ob_alter_locality_finish_checker.cpp
   ob_lob_piece_builder.cpp
   ob_lob_meta_builder.cpp
@@ -130,7 +133,6 @@ ob_set_subtarget(ob_rootserver common
   ob_location_ddl_service.cpp
   ob_objpriv_mysql_ddl_operator.cpp
   ob_objpriv_mysql_ddl_service.cpp
-  ob_objpriv_mysql_schema_history_recycler.cpp
   ob_ai_model_ddl_operator.cpp
   ob_ai_model_ddl_service.cpp
   ob_create_index_on_empty_table_helper.cpp
@@ -197,6 +199,17 @@ ob_set_subtarget(ob_rootserver parallel_ddl
   parallel_ddl/ob_drop_tablegroup_helper.cpp
   parallel_ddl/ob_table_helper.cpp
   parallel_ddl/ob_create_table_like_helper.cpp
+  parallel_ddl/ob_alter_table_helper.cpp
+  parallel_ddl/ob_alter_table_column_action.cpp
+  parallel_ddl/ob_alter_table_add_column_action.cpp
+  parallel_ddl/ob_alter_table_drop_column_action.cpp
+  parallel_ddl/ob_alter_table_partition_action.cpp
+  parallel_ddl/ob_add_partition_action.cpp
+  parallel_ddl/ob_add_subpartition_action.cpp
+  parallel_ddl/ob_drop_partition_action.cpp
+  parallel_ddl/ob_drop_subpartition_action.cpp
+  parallel_ddl/ob_truncate_partition_action.cpp
+  parallel_ddl/ob_truncate_subpartition_action.cpp
 )
 
 ob_set_subtarget(ob_rootserver freeze
@@ -261,8 +274,6 @@ ob_set_subtarget(ob_rootserver mview
   mview/ob_mview_update_cache_task.cpp
   mview/ob_mview_mds_op_task.cpp
   mview/ob_mview_alter_service.cpp
-  mview/ob_mview_update_deps_task.cpp
-  mview/ob_mview_trim_mlog_task.cpp
   mview/ob_mview_utils.cpp
 )
 

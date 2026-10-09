@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -1022,9 +1015,11 @@ int ObTableLocation::init_table_location(ObExecContext &exec_ctx,
     table_type_ = table_schema->get_table_type();
     loc_meta_.is_external_table_ = table_schema->is_external_table();
     ObString file_location;
+    bool is_shared_external_files_on_disk = false;
     CK (OB_NOT_NULL(schema_guard.get_schema_guard()));
-    OZ (ObExternalTableUtils::get_external_file_location(*table_schema, *schema_guard.get_schema_guard(), exec_ctx.get_allocator(), file_location));
+    OZ (ObExternalTableUtils::get_external_file_location(*table_schema, *schema_guard.get_schema_guard(), exec_ctx.get_allocator(), file_location, &is_shared_external_files_on_disk));
     loc_meta_.is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta_.is_shared_external_files_on_disk_ = is_shared_external_files_on_disk;
   }
 
   if (OB_FAIL(ret)) {
@@ -1297,8 +1292,8 @@ int ObTableLocation::calc_not_partitioned_table_ids(ObExecContext &exec_ctx)
   ObDASTabletMapper tablet_mapper;
   const storage::ObGTTTabletInfo gtt_tablet_info(
     loc_meta_.ref_table_id_,
-    exec_ctx.get_my_session()->get_gtt_session_scope_unique_id(),
-    exec_ctx.get_my_session()->get_gtt_trans_scope_unique_id(),
+    exec_ctx.get_my_session()->get_session_gtt_v2_sequence(),
+    exec_ctx.get_my_session()->get_trans_gtt_v2_sequence(),
     exec_ctx.get_my_session()->get_sessid_for_table());
   tablet_mapper.set_session_tablet_info(gtt_tablet_info, &(exec_ctx.get_my_session()->get_gtt_tablet_info_map()));
   if (OB_FAIL(exec_ctx.get_das_ctx().get_das_tablet_mapper(
@@ -1360,8 +1355,10 @@ int ObTableLocation::init(
     table_type_ = table_schema->get_table_type();
     loc_meta_.is_external_table_ = table_schema->is_external_table();
     ObString file_location;
-    OZ(ObExternalTableUtils::get_external_file_location(*table_schema, schema_guard, exec_ctx->get_allocator(), file_location));
+    bool is_shared_external_files_on_disk = false;
+    OZ(ObExternalTableUtils::get_external_file_location(*table_schema, schema_guard, exec_ctx->get_allocator(), file_location, &is_shared_external_files_on_disk));
     loc_meta_.is_external_files_on_disk_ = ObSQLUtils::is_external_files_on_local_disk(file_location);
+    loc_meta_.is_shared_external_files_on_disk_ = is_shared_external_files_on_disk;
     loc_meta_.route_policy_ = route_policy;
     if (route_policy == COLUMN_STORE_ONLY && (is_dml_table || !(table_schema->is_user_table() || table_schema->is_index_table()))) {
       loc_meta_.route_policy_ = READONLY_ZONE_FIRST;
@@ -1872,8 +1869,8 @@ int ObTableLocation::calculate_tablet_ids(ObExecContext &exec_ctx,
       if (!is_partitioned_) {
         const storage::ObGTTTabletInfo gtt_tablet_info(
           loc_meta_.ref_table_id_,
-          exec_ctx.get_my_session()->get_gtt_session_scope_unique_id(),
-          exec_ctx.get_my_session()->get_gtt_trans_scope_unique_id(),
+          exec_ctx.get_my_session()->get_session_gtt_v2_sequence(),
+          exec_ctx.get_my_session()->get_trans_gtt_v2_sequence(),
           exec_ctx.get_my_session()->get_sessid_for_table());
         storage::ObSessionTabletInfoMap *session_tablet_info_map = &(exec_ctx.get_my_session()->get_gtt_tablet_info_map());
         tablet_mapper.set_session_tablet_info(gtt_tablet_info, session_tablet_info_map);
@@ -2214,7 +2211,34 @@ int ObTableLocation::set_location_calc_node(const ObDMLStmt &stmt,
   ObSEArray<ColumnItem, 3> gen_cols;
   const ObRawExpr *part_raw_expr = NULL;
   ObQueryCtx *query_ctx = NULL;
-  if (OB_ISNULL(exec_ctx) || OB_ISNULL(query_ctx = stmt.get_query_ctx())) {
+  bool fallback_scan_all_parts = false;
+
+  if ((PARTITION_LEVEL_ONE == part_level &&
+        NULL == stmt.get_part_expr(loc_meta_.table_loc_id_, loc_meta_.ref_table_id_)) ||
+      (PARTITION_LEVEL_TWO == part_level &&
+        NULL == stmt.get_subpart_expr(loc_meta_.table_loc_id_, loc_meta_.ref_table_id_))) {
+    const TableItem *table_item = stmt.get_table_item_by_id(loc_meta_.table_loc_id_);
+    if (OB_NOT_NULL(table_item)
+        && table_item->is_index_table_
+        && stmt.is_select_stmt()
+        && OB_NOT_NULL(table_schema)
+        && share::schema::is_local_fts_index(table_schema->get_index_type())) {
+      get_all = true;
+      is_range_get = false;
+      is_col_part_expr = false;
+      se_part_expr = NULL;
+      se_gen_col_expr = NULL;
+      calc_node = NULL;
+      gen_col_node = NULL;
+      fallback_scan_all_parts = true;
+      LOG_INFO("index direct select: fallback to scanning all partitions",
+               K(part_level), K(loc_meta_.ref_table_id_), K(ret));
+    }
+  }
+
+  if (OB_FAIL(ret) || fallback_scan_all_parts) {
+    // do nothing
+  } else if (OB_ISNULL(exec_ctx) || OB_ISNULL(query_ctx = stmt.get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(exec_ctx), K(query_ctx), K(ret));
   } else if (OB_FAIL(get_partition_column_info(stmt,
@@ -6606,8 +6630,7 @@ int ObTableLocation::get_tablet_id_for_temp_table(
     LOG_WARN("data table schema is null", K(ret), K(table_schema));
   } else {
     const bool is_trx_tmp_table = data_table_schema->is_oracle_trx_tmp_table_v2();
-    const int64_t sequence = is_trx_tmp_table ? session_info.get_gtt_trans_scope_unique_id()
-                                              : session_info.get_gtt_session_scope_unique_id();
+    const int64_t sequence = is_trx_tmp_table ? session_info.get_trans_gtt_v2_sequence() : session_info.get_session_gtt_v2_sequence();
     const ObSessionTabletInfoKey info_key(table_schema.get_table_id(), sequence, session_info.get_sessid_for_table());
     ObSessionTabletInfo tablet_info;
     if (OB_SUCC(session_info.get_gtt_tablet_info_map().get_session_tablet(info_key, tablet_info))) {

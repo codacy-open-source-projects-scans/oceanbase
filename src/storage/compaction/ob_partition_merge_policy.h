@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_PARTITION_MERGE_POLICY_H_
@@ -57,12 +50,6 @@ public:
       storage::ObLS &ls,
       const storage::ObTablet &tablet,
       storage::ObGetMergeTablesResult &result);
-#ifdef OB_BUILD_SHARED_STORAGE
-  static int get_ss_minor_merge_tables(
-      storage::ObLS &ls,
-      const storage::ObTablet &tablet,
-      storage::ObGetMergeTablesResult &result);
-#endif
   static int get_hist_minor_merge_tables(
       const storage::ObGetMergeTablesParam &param,
       storage::ObLS &ls,
@@ -148,7 +135,9 @@ public:
     storage::ObLS &ls,
     const storage::ObTablet &tablet,
     storage::ObGetMergeTablesResult &result);
-
+  static int set_filled_tx_scn_for_minor_merge(
+    const ObTablet &tablet,
+    ObGetMergeTablesResult &result);
 private:
   static int find_mini_merge_tables(
       const storage::ObGetMergeTablesParam &param,
@@ -204,17 +193,6 @@ private:
   static int deal_hist_minor_merge(
       const storage::ObTablet &tablet,
       int64_t &max_snapshot_version);
-#ifdef OB_BUILD_SHARED_STORAGE
-  static int get_ss_minor_boundary_snapshot_version(
-      ObLS &ls,
-      const ObTablet &tablet,
-      int64_t &min_snapshot,
-      int64_t &max_snapshot);
-  static int deal_with_ss_minor_result(
-      ObLS &ls,
-      const ObTablet &tablet,
-      ObGetMergeTablesResult &result);
-#endif
   // diagnose part
   static int diagnose_minor_dag(
       compaction::ObMergeType merge_type,
@@ -227,9 +205,6 @@ private:
     const ObTablesHandleArray &input_tables,
     const int64_t start_pos,
     ObIArray<ObTableHandleV2> &output_tables);
-  static int set_filled_tx_scn_for_minor_merge(
-    const ObTablet &tablet,
-    ObGetMergeTablesResult &result);
 public:
   static const int64_t OB_HIST_MINOR_FACTOR = 3;
   static const int64_t OB_UNSAFE_TABLE_CNT = 32;
@@ -295,6 +270,7 @@ public:
     RECYCLE_MDS_INFO = 11,
     TOO_MANY_INC_MAJOR = 12,
     WINDOW_COMPACTION = 13,
+    NEED_MLOG_PURGE_CATCHUP = 14,
     INVALID_REASON
   };
 
@@ -317,14 +293,17 @@ public:
   static bool is_skip_merge_reason(const AdaptiveMergeReason &reason);
   static bool is_recycle_mds_info_merge_reason(const AdaptiveMergeReason &reason);
   static bool is_window_merge_reason(const AdaptiveMergeReason &reason);
+  static bool is_need_mlog_purge_catchup_reason(const AdaptiveMergeReason &reason);
   static bool is_valid_compaction_policy(const AdaptiveCompactionPolicy &policy);
   static bool is_schedule_medium(const share::schema::ObTableModeFlag &mode);
   static bool is_schedule_meta(const share::schema::ObTableModeFlag &mode);
   static bool take_normal_policy(const share::schema::ObTableModeFlag &mode);
   static bool take_advanced_policy(const share::schema::ObTableModeFlag &mode);
   static bool take_extrem_policy(const share::schema::ObTableModeFlag &mode);
-  static bool need_schedule_meta(const AdaptiveCompactionEvent& event);
+  static bool is_valid_compaction_event(const AdaptiveCompactionEvent& event);
   static bool need_schedule_medium(const AdaptiveCompactionEvent& event);
+
+  static bool need_and_only_schedule_medium(const share::schema::ObTableModeFlag &mode, const AdaptiveCompactionEvent& event);
 
   static int get_meta_merge_tables(
       const storage::ObGetMergeTablesParam &param,
@@ -345,6 +324,7 @@ public:
       const AdaptiveCompactionEvent &event,
       const int64_t update_row_cnt,
       const int64_t delete_row_cnt,
+      bool &medium_is_cooling_down,
       ObTableModeFlag &mode,
       AdaptiveMergeReason &reason);
   static int check_tombstone_reason(
@@ -354,6 +334,10 @@ public:
       storage::ObTablet &tablet,
       AdaptiveMergeReason &reason,
       int64_t &least_medium_snapshot);
+  static int check_mlog_purge_catchup_reason(
+      const storage::ObTablet &tablet,
+      const int64_t mlog_latest_purge_scn,
+      AdaptiveMergeReason &merge_reason);
   static int find_adaptive_merge_tables(
       const ObMergeType &merge_type,
       const storage::ObTablet &tablet,
@@ -470,6 +454,7 @@ public:
   bool only_use_row_store_;
 };
 
+
 class ObIncMajorTxHelper final
 {
 public:
@@ -554,6 +539,69 @@ private:
       const ObMergeType merge_type,
       const ObIArray<ObITable *> &sstables,
       const ObMediumCompactionInfo &medium_info);
+};
+
+class ObAfterMiniMinorHelper
+{
+public:
+  enum Action : uint8_t
+  {
+    NORMAL                = 0, // Try schedule minor normally.
+    SKIP_TENANT_PRESSURE  = 1, // Tenant minor dag count has reached dag limit threshold.
+    SKIP_TRIGGER_NOT_MET  = 2, // Minor table count does not cross its trigger.
+    FORCE_SCHEDULE        = 3, // SSTable-count pressure: schedule minor unconditionally.
+    INVALID_ACTION        = 4,
+  };
+public:
+  static int decide_need_minor_after_mini(
+      storage::ObTabletHandle &tablet_handle,
+      const share::ObLSID &ls_id,
+      bool &need_minor);
+public:
+  static constexpr int64_t AFTER_MINI_TOTAL_DAG_RATIO = 80;
+  static constexpr int64_t AFTER_MINI_MINOR_DAG_RATIO = 30;
+  static constexpr int64_t AFTER_MINI_MINI_DAG_SOFT_RATIO = 40;
+  static constexpr int64_t AFTER_MINI_MINOR_DAG_SOFT_RATIO = 20;
+  static constexpr int64_t AFTER_MINI_SOFT_TRIGGER_SCALE = 2;
+private:
+  struct DecisionContext
+  {
+  public:
+    DecisionContext()
+      : minor_cnt_(0),
+        total_table_cnt_(0),
+        compaction_dag_cnt_(0),
+        minor_dag_cnt_(0),
+        mini_dag_cnt_(0),
+        compaction_dag_limit_(0),
+        minor_compact_trigger_(ObPartitionMergePolicy::DEFAULT_MINOR_COMPACT_TRIGGER),
+        trigger_raised_by_soft_pressure_(false)
+    {}
+    void init_table_count(const storage::ObTablet &tablet);
+    void init_compact_trigger();
+    void init_dag_cnt(share::ObTenantDagScheduler *dag_scheduler);
+    void adjust_trigger_by_soft_pressure();
+
+    TO_STRING_KV(K_(minor_cnt), K_(total_table_cnt),
+        K_(compaction_dag_cnt), K_(minor_dag_cnt), K_(mini_dag_cnt),
+        K_(compaction_dag_limit), K_(minor_compact_trigger),
+        K_(trigger_raised_by_soft_pressure));
+  public:
+    int64_t minor_cnt_;
+    int64_t total_table_cnt_;           // major + minor + mds_minor
+    int64_t compaction_dag_cnt_;
+    int64_t minor_dag_cnt_;
+    int64_t mini_dag_cnt_;              // DAG_PRIO_COMPACTION_HIGH: mini + tx_table_merge
+    int64_t compaction_dag_limit_;
+    int64_t minor_compact_trigger_;
+    bool    trigger_raised_by_soft_pressure_;
+  };
+
+  static bool need_schedule_minor_after_mini(const Action action)
+  {
+    return Action::NORMAL == action
+        || Action::FORCE_SCHEDULE == action;
+  }
 };
 
 } /* namespace compaction */

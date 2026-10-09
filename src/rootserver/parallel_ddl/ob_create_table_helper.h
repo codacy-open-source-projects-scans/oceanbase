@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_ROOTSERVER_OB_CREATE_TABLE_HELPER_H_
 #define OCEANBASE_ROOTSERVER_OB_CREATE_TABLE_HELPER_H_
@@ -96,6 +89,7 @@ private:
       const ObString &table_name);
   int check_table_name_();
   int set_tablegroup_id_();
+  int set_tablespace_id_();
   int check_and_set_parent_table_id_();
 
   virtual int generate_table_schema_() override;
@@ -114,6 +108,7 @@ private:
   int create_tables_();
   int create_audits_();
   int deal_with_mock_fk_parent_tables_();
+  int record_fts_dict_dependencies_();
 private:
   const obrpc::ObCreateTableArg &arg_;
   obrpc::ObCreateTableRes &res_;

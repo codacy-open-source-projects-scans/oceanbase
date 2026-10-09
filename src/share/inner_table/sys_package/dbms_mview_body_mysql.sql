@@ -18,7 +18,10 @@ CREATE OR REPLACE PACKAGE BODY dbms_mview
     IN     method                 VARCHAR(65535) DEFAULT NULL,
     IN     refresh_parallel       INT            DEFAULT 0,
     IN     nested                 BOOLEAN        DEFAULT FALSE,
-    IN     nested_refresh_mode    VARCHAR(65535) DEFAULT NULL);
+    IN     nested_refresh_mode    VARCHAR(65535) DEFAULT NULL,
+    -- TEMPORARY v2 (task 0036): async param, see dbms_mview_mysql.sql
+    IN     async                  BOOLEAN        DEFAULT FALSE,
+    IN     force                  BOOLEAN        DEFAULT FALSE);
   PRAGMA INTERFACE(C, DBMS_MVIEW_MYSQL_REFRESH);
 
   PROCEDURE refresh(
@@ -26,7 +29,10 @@ CREATE OR REPLACE PACKAGE BODY dbms_mview
     IN     method                 VARCHAR(65535) DEFAULT NULL,
     IN     refresh_parallel       INT            DEFAULT 0,
     IN     nested                 BOOLEAN        DEFAULT FALSE,
-    IN     nested_refresh_mode    VARCHAR(65535) DEFAULT NULL)
+    IN     nested_refresh_mode    VARCHAR(65535) DEFAULT NULL,
+    -- TEMPORARY v2 (task 0036): async param, see dbms_mview_mysql.sql
+    IN     async                  BOOLEAN        DEFAULT FALSE,
+    IN     force                  BOOLEAN        DEFAULT FALSE)
   BEGIN
     DECLARE EXIT HANDLER for SQLWARNING
     BEGIN
@@ -36,7 +42,40 @@ CREATE OR REPLACE PACKAGE BODY dbms_mview
     SET @ob_dbmsmview_cno=null;
     SET @ob_dbmsmview_errno=null;
     SET @ob_dbmsmview_p4=null;
-    CALL do_refresh(mv_name, method, refresh_parallel, nested, nested_refresh_mode);
+    CALL do_refresh(mv_name, method, refresh_parallel, nested, nested_refresh_mode, async, force);
   END;
+
+  FUNCTION refresh_report(
+    IN     refresh_id             INT            DEFAULT NULL,
+    IN     mv_name                VARCHAR(65535) DEFAULT NULL,
+    IN     tenant_id              INT            DEFAULT NULL,
+    IN     format                 VARCHAR(65535) DEFAULT 'TEXT')
+  RETURN TEXT;
+  PRAGMA INTERFACE(C, DBMS_MVIEW_MYSQL_REFRESH_REPORT);
+
+  PROCEDURE do_kill_refresh(
+    IN     refresh_id              BIGINT);
+  PRAGMA INTERFACE(C, DBMS_MVIEW_MYSQL_KILL_REFRESH);
+
+  PROCEDURE kill_refresh(
+    IN     refresh_id              BIGINT)
+  BEGIN
+    COMMIT;
+    CALL do_kill_refresh(refresh_id);
+  END;
+
+  PROCEDURE set_refresh_params(
+    IN     mv_name                VARCHAR(65535),
+    IN     parameter_name         VARCHAR(65535),
+    IN     parameter_value        VARCHAR(65535));
+  PRAGMA INTERFACE(C, DBMS_MVIEW_MYSQL_SET_REFRESH_PARAMS);
+
+  FUNCTION explain_refresh(
+    IN     mv_name                VARCHAR(65535),
+    IN     method                 VARCHAR(65535) DEFAULT NULL,
+    IN     nested                 BOOLEAN        DEFAULT FALSE,
+    IN     tenant_id              INT            DEFAULT 0
+  ) RETURN LONGTEXT;
+  PRAGMA INTERFACE(C, DBMS_MVIEW_MYSQL_EXPLAIN_REFRESH);
 
 END dbms_mview;

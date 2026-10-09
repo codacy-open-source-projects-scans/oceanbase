@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_SESSION_OB_SYSTEM_VARIABLE_
@@ -26,6 +19,12 @@ namespace sql
 {
 class ObExecContext;
 class ObBasicSessionInfo;
+class ObSQLSessionInfo;
+}
+
+namespace observer
+{
+class ObAllVirtualSysVariableHistory;
 }
 
 namespace share
@@ -147,6 +146,7 @@ private:
 class ObBasicSysVar
 {
   OB_UNIS_VERSION_V(1);
+  friend class ::oceanbase::observer::ObAllVirtualSysVariableHistory;
 public:
   static const char * EMPTY_STRING;
   typedef int (*OnCheckAndConvertFunc)(sql::ObExecContext &ctx,
@@ -286,7 +286,8 @@ public:
                                            const common::ObString &cs_val,
                                            common::ObString &coll_var_name,
                                            common::ObString &coll_val,
-                                           common::ObCollationType &coll_type);
+                                           common::ObCollationType &coll_type,
+                                           common::ObCharsetCompatType charset_compat_type = common::CHARSET_COMPAT_MYSQL57);
   DECLARE_TO_STRING;
 
 protected:
@@ -887,6 +888,11 @@ public:
                                                  const ObBasicSysVar &sys_var,
                                                  const common::ObObj &in_val,
                                                  common::ObObj &out_val);
+  static int check_and_convert_max_execution_time(sql::ObExecContext &ctx,
+                                                  const ObSetVar &set_var,
+                                                  const ObBasicSysVar &sys_var,
+                                                  const common::ObObj &in_val,
+                                                  common::ObObj &out_val);
   static int check_and_convert_max_user_connections(sql::ObExecContext &ctx,
                                                     const ObSetVar &set_var,
                                                     const ObBasicSysVar &sys_var,

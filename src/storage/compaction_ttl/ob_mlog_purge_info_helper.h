@@ -1,12 +1,5 @@
-//Copyright (c) 2025 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2025 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #ifndef OB_STORAGE_COMPACTION_TTL_MLOG_CACHE_H_
 #define OB_STORAGE_COMPACTION_TTL_MLOG_CACHE_H_
 #include "lib/utility/ob_print_utils.h"
@@ -16,6 +9,7 @@ namespace oceanbase
 {
 namespace storage
 {
+using MlogPurgeScnMap = common::hash::ObHashMap<int64_t, uint64_t>; // mlog id -> last purge scn
 class ObMLogPurgeInfoHelper
 {
 public:
@@ -23,6 +17,9 @@ public:
     const uint64_t mlog_id,
     const int64_t read_snapshot,
     int64_t &last_purge_scn);
+  static int get_recent_tenant_mlog_purge_scns(
+    const int64_t read_snapshot,
+    MlogPurgeScnMap &mlog_purge_scn_map);
 };
 
 } // namespace storage

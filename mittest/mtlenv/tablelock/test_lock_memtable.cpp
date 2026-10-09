@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TABLELOCK
@@ -1019,8 +1012,7 @@ TEST_F(TestLockMemtable, test_lock_retry)
   start_tx(DEFAULT_TRANS_ID, default_ctx);
   get_store_ctx(default_ctx, store_ctx);
   default_ctx.tx_ctx_.change_to_leader();
-  CtxLockGuard guard(default_ctx.tx_ctx_.lock_);
-  ASSERT_EQ(guard.is_locked(), true);
+  ASSERT_EQ(OB_SUCCESS, default_ctx.tx_ctx_.lock_.lock());
 
   // 2. do obj lock
   LOG_INFO("TestLockMemtable::test_lock_retry 2 do obj lock");
@@ -1055,7 +1047,7 @@ TEST_F(TestLockMemtable, test_lock_retry)
   ASSERT_EQ(default_ctx.tx_ctx_.mds_cache_.mds_list_.empty(), true);
 
   // 4. unlock part ctx
-  guard.reset();
+  default_ctx.tx_ctx_.lock_.unlock();
 
   // 5. do obj lock again.
   LOG_INFO("TestLockMemtable::test_lock_retry 5 do lock again");

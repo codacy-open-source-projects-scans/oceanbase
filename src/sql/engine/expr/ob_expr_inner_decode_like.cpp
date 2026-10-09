@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation for _st_asewkb expr.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
@@ -68,8 +60,8 @@ int ObExprInnerDecodeLike::eval_inner_decode_like(const ObExpr &expr, ObEvalCtx 
     //a like null return empty range
     expr_datum.set_null();
   } else if (col_length->get_int() <= 0) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("invalid argument, unexpected length", K(ret));
+    // column length is 0 (e.g. CAST(NULL AS CHAR)), cannot extract valid like range, return empty range
+    expr_datum.set_null();
   } else if (OB_FAIL(cast_like_obj_if_needed(ctx, *expr.args_[0], pattern, expr, pattern_val))) {
     LOG_WARN("failed to cast like obj if needed", K(ret));
   } else {

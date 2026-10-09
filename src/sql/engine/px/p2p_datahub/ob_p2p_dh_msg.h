@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef __SQL_ENG_P2P_DH_MSG_H__
 #define __SQL_ENG_P2P_DH_MSG_H__
@@ -158,7 +151,11 @@ public:
   virtual int process_receive_count(ObP2PDatahubMsgBase &);
   virtual int process_msg_internal(bool &need_free);
   virtual int reuse() { return OB_SUCCESS; }
-  virtual int regenerate() { return OB_SUCCESS; }
+  // After RPC deserialize, ObDatum::ptr_ may reference the packet buffer. When this msg is
+  // inserted into PX_P2P_DH map (need_free=false), copy payload into get_allocator() so it
+  // outlives the RPC buffer. Override in msg types that deserialize datums from wire.
+  // For bloom filter, we need to recover the whole size of bits_array_
+  virtual int regenerate() { return OB_NOT_IMPLEMENT; }
   virtual void check_finish_receive();
   virtual int prepare_storage_white_filter_data(ObDynamicFilterExecutor &dynamic_filter,
                                 ObEvalCtx &eval_ctx,
@@ -244,10 +241,9 @@ struct ObP2PDatahubMsgGuard
 template <typename ResVec>
 static int proc_filter_not_active(ResVec *res_vec, const ObBitVector &skip, const EvalBound &bound);
 
-template <>
-int proc_filter_not_active<IntegerUniVec>(IntegerUniVec *res_vec, const ObBitVector &skip,
-                                          const EvalBound &bound)
-{
+template <typename ResVec>
+int proc_filter_not_active(ResVec *res_vec, const ObBitVector &skip,
+                           const EvalBound &bound) {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObBitVector::flip_foreach(
           skip, bound, [&](int64_t idx) __attribute__((always_inline)) {

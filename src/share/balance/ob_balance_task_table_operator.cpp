@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -622,9 +615,10 @@ int ObBalanceTaskTableOperator::finish_transfer_task(
     LOG_WARN("append failed", KR(ret), K(transfer_finished_part_list), K(new_finished_part_list));
   } else if (OB_FAIL(new_finished_part_list.to_display_str(allocator, new_finished_part_list_str))) {
     LOG_WARN("failed to transfer list to str", KR(ret), K(new_finished_part_list));
+  // Remove transfer_finished_part_list from part_list
   } else if (OB_FAIL(common::get_difference(
       balance_task.get_part_list(),
-      new_finished_part_list,
+      transfer_finished_part_list,
       to_do_part_list))) {
     LOG_WARN("get difference failed", KR(ret), K(balance_task), K(transfer_finished_part_list));
   } else if (OB_FAIL(to_do_part_list.to_display_str(allocator, to_do_part_list_str))) {

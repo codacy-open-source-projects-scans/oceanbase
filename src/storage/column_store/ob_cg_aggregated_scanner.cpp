@@ -1,12 +1,5 @@
 // Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// SPDX-License-Identifier: Apache-2.0
 #define USING_LOG_PREFIX STORAGE
 #include "ob_cg_aggregated_scanner.h"
 #include "storage/access/ob_aggregated_store.h"
@@ -84,6 +77,27 @@ int ObCGAggregatedScanner::init(
     iter_param_ = &iter_param;
     set_cg_idx(iter_param.cg_idx_);
     is_inited_ = true;
+  }
+  return ret;
+}
+
+int ObCGAggregatedScanner::switch_context(
+    const ObTableIterParam &iter_param,
+    ObTableAccessContext &access_ctx,
+    ObSSTableWrapper &wrapper)
+{
+  int ret = OB_SUCCESS;
+  if (IS_NOT_INIT) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObCGAggregatedScanner not init", K(ret));
+  } else if (OB_FAIL(check_need_access_data(iter_param, access_ctx))) {
+    LOG_WARN("Fail to check need access data", K(ret));
+  } else if (need_access_data_ || need_get_row_ids_) {
+    if (OB_FAIL(ObCGRowScanner::switch_context(iter_param, access_ctx, wrapper))) {
+      LOG_WARN("Fail to switch context for cg row scanner", K(ret));
+    } else if (iter_param.enable_base_skip_index()) {
+      prefetcher_.set_agg_group(agg_group_);
+    }
   }
   return ret;
 }
@@ -282,7 +296,12 @@ int ObCGAggregatedScanner::check_need_access_data(const ObTableIterParam &iter_p
   } else {
     ObAggregatedStore *agg_store = static_cast<ObAggregatedStore *>(access_ctx.block_row_store_);
     ObCGAggCells *agg_cells = nullptr;
-    agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    if (nullptr == agg_group_) {
+      agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    } else {
+      agg_cells = static_cast<ObCGAggCells *>(agg_group_);
+      agg_cells->reuse();
+    }
     if (OB_ISNULL(agg_cells)) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("Failed to alloc memory", K(ret));

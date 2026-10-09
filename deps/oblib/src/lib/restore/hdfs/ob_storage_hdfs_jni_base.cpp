@@ -1,19 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "lib/restore/ob_storage.h"
 #include "ob_storage_hdfs_jni_base.h"
 #include "ob_storage_hdfs_cache.h"
-#include "lib/jni_env/ob_java_helper.h"
+#include "lib/jni_env/ob_java_vm_manager.h"
 
 #include "lib/utility/ob_print_utils.h"
 #include "lib/utility/ob_tracepoint.h"
@@ -488,6 +481,10 @@ int ObStorageHdfsJniUtil::list_files(const common::ObString &uri, common::ObBase
                      K(file_info.mName));
             } else {
               op.set_size(file_info.mSize);
+              // Set file extra info last modified time and its unit is seconds.
+              ObFileExtraInfo file_ext_info;
+              file_ext_info.last_modified_time_ms_ = file_info.mLastMod * 1000LL;
+              op.set_extra_info(file_ext_info);
             }
 
             if (OB_SUCC(ret)) {

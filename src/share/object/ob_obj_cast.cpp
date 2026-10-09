@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -7269,6 +7262,11 @@ static int string_json(const ObObjType expect_type, ObObjCastParams &params,
                                  || in_type == ObTextType
                                  || in_type == ObMediumTextType
                                  || in_type == ObLongTextType);
+    sql::ObSQLSessionInfo *session = (params.exec_ctx_ != NULL) ? params.exec_ctx_->get_my_session() : NULL;
+    bool json_float_full_precision =
+        OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+    ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                     ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
     if (expect_type == ObJsonType && j_text.length() == 0 && cast_mode == 0) { // add column json null
       j_base = &j_null;
     } else if (is_oracle && (OB_ISNULL(j_text.ptr()) || j_text.length() == 0)) {
@@ -7284,9 +7282,6 @@ static int string_json(const ObObjType expect_type, ObObjCastParams &params,
       // consistent with mysql: TINYTEXT, TEXT, MEDIUMTEXT, and LONGTEXT. We want to treat them like strings
       ret = OB_SUCCESS;
       j_base = &j_string;
-      if ((CM_IS_SQL_AS_JSON_SCALAR(cast_mode) && ob_is_string_type(in_type)) && j_text.compare("null") == 0) {
-        j_base = &j_null;
-      }
     } else if (OB_FAIL(ObJsonParser::get_tree(params.allocator_v2_, j_text,
                                               j_tree, parse_flag,
                                               sql::ObJsonExprHelper::get_json_max_depth_config()))) {
@@ -11382,6 +11377,7 @@ static int string_collection(const ObObjType expect_type, ObObjCastParams &param
       ObIAllocator &temp_allocator = *params.allocator_v2_;
       ObIArrayType *arr_dst = NULL;
       ObString res_str;
+      ObSQLSessionInfo *session = params.exec_ctx_ ? params.exec_ctx_->get_my_session() : nullptr;
       const ObSqlCollectionInfo *dst_coll_info = reinterpret_cast<const ObSqlCollectionInfo *>(dst_meta.value_);
       ObCollectionArrayType *dst_arr_type = static_cast<ObCollectionArrayType *>(dst_coll_info->collection_meta_);
       if (dst_coll_info->collection_meta_->type_id_ != ObNestedType::OB_VECTOR_TYPE && OB_FAIL(ObArrayTypeObjFactory::construct(temp_allocator, *dst_arr_type, arr_dst))) {
@@ -11395,7 +11391,7 @@ static int string_collection(const ObObjType expect_type, ObObjCastParams &param
         }
       } else if (dst_coll_info->collection_meta_->type_id_ == ObNestedType::OB_ARRAY_TYPE) {
         if (cs_type != CS_TYPE_BINARY) {
-          if (OB_FAIL(ObArrayCastUtils::string_cast(temp_allocator, in_str, arr_dst, dst_arr_type->element_type_))) {
+          if (OB_FAIL(ObArrayCastUtils::string_cast(temp_allocator, in_str, arr_dst, dst_arr_type->element_type_, session))) {
             LOG_WARN("array element cast failed", K(ret), K(dst_coll_info));
           }
         } else {
@@ -11413,7 +11409,7 @@ static int string_collection(const ObObjType expect_type, ObObjCastParams &param
           }
         } else {
           // Use standard parser for regular map
-          if (OB_FAIL(ObArrayCastUtils::string_cast_map(temp_allocator, in_str, arr_dst, static_cast<ObCollectionMapType *>(dst_coll_info->collection_meta_), cast_mode, false))) {
+          if (OB_FAIL(ObArrayCastUtils::string_cast_map(temp_allocator, in_str, arr_dst, static_cast<ObCollectionMapType *>(dst_coll_info->collection_meta_), cast_mode, false, session))) {
             LOG_WARN("map cast failed", K(ret), K(dst_coll_info));
           }
         }

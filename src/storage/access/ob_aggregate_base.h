@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_AGGREGATE_BASE_H_
@@ -170,7 +163,6 @@ protected:
   OB_INLINE bool is_monotonic_asc() const { return share::Monotonicity::ASC == param_prop_.mono_; }
   OB_INLINE bool is_monotonic_desc() const { return share::Monotonicity::DESC == param_prop_.mono_; }
   OB_INLINE bool is_monotonic() const { return is_monotonic_asc() || is_monotonic_desc(); }
-  OB_INLINE bool is_param_null_prop() const { return param_prop_.is_null_prop_; }
 protected:
   ObBitmap *bitmap_;
   blocksstable::ObAggRowReader *agg_row_reader_;

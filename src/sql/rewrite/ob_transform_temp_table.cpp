@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -1797,6 +1790,7 @@ int ObTransformTempTable::inner_create_temp_table(ObSelectStmt *parent_stmt,
     ObSEArray<ObRawExpr *, 8> pushdown_groupby;
     ObSEArray<ObRawExpr *, 8> pushdown_rollup;
     ObSEArray<ObRawExpr *, 8> pushdown_having;
+    ObSEArray<ObRawExpr *, 8> pullup_minmax_having;
     ObSEArray<ObRawExpr *, 8> origin_condition_exprs;
 
     if (common_map_info.is_group_equal_ &&
@@ -1827,8 +1821,10 @@ int ObTransformTempTable::inner_create_temp_table(ObSelectStmt *parent_stmt,
                OB_FAIL(pullup_where_to_having_conds(pushdown_select,
                                                     origin_condition_exprs,
                                                     map_info.cond_property_map_,
-                                                    pushdown_having))) {
+                                                    pullup_minmax_having))) {
       LOG_WARN("failed to pullup where to having conds", K(ret));
+    } else if (OB_FAIL(append(parent_stmt->get_having_exprs(), pullup_minmax_having))) {
+      LOG_WARN("failed to append pullup minmax having", K(ret));
       //下压having
     } else if (parent_stmt->get_having_expr_size() > 0 &&
               OB_FAIL(pushdown_having_conditions(parent_stmt,
@@ -2221,15 +2217,12 @@ int ObTransformTempTable::update_table_id_for_pseudo_columns(ObSelectStmt *view,
     LOG_WARN("failed to extract pseudo column like expr", K(ret));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < pseudo_column_like_exprs.count(); ++i) {
-      ObPseudoColumnRawExpr *pseudo_column_like_expr = NULL;
-      TableItem *table_item = NULL;
-      if (OB_ISNULL(pseudo_column_like_exprs.at(i)) ||
-          OB_UNLIKELY(!pseudo_column_like_exprs.at(i)->is_pseudo_column_expr())) {
+      if (OB_ISNULL(pseudo_column_like_exprs.at(i))) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpect null expr", K(ret), K(pseudo_column_like_expr));
-      } else if (OB_FALSE_IT(pseudo_column_like_expr =
-                 static_cast<ObPseudoColumnRawExpr *>(pseudo_column_like_exprs.at(i)))) {
-      } else {
+        LOG_WARN("unexpect null expr", K(ret));
+      } else if (pseudo_column_like_exprs.at(i)->is_pseudo_column_expr()) {
+        ObPseudoColumnRawExpr *pseudo_column_like_expr =
+            static_cast<ObPseudoColumnRawExpr *>(pseudo_column_like_exprs.at(i));
         uint64_t table_id = OB_INVALID_ID;
         ObRelIds table_set;
         if (OB_FAIL(ObStmtComparer::get_map_table(map_info, view, temp_table_query,

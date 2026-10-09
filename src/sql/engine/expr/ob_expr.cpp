@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1417,7 +1410,7 @@ int ObExpr::eval_vector(ObEvalCtx &ctx,
     ret = init_vector(ctx, batch_result_ ? VEC_UNIFORM : VEC_UNIFORM_CONST, BATCH_SIZE());
   }
   if (OB_FAIL(ret)) {
-  } else if ((batch_result_ && info.is_projected()) || NULL == eval_batch_func_
+  } else if ((batch_result_ && info.is_projected()) || NULL == eval_vector_func_
              || (!batch_result_ && info.is_evaluated(ctx))) {
     // expr values is projected by child or has no evaluate func, do nothing.
   } else if (!info.is_evaluated(ctx)) {
@@ -1910,6 +1903,59 @@ DEF_TO_STRING(ToStrVectorHeader)
     }
     J_OBJ_END();
   }
+  return pos;
+}
+
+DEF_TO_STRING(ToStrExprVecFmt)
+{
+  int64_t pos = 0;
+  int ret = OB_SUCCESS;
+  J_ARRAY_START();
+  for (int i = 0; OB_SUCC(ret) && i < exprs_.count(); i++) {
+    ObExpr *expr = exprs_.at(i);
+    if (OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("invalid null expr", K(ret));
+    } else if (OB_FAIL(expr->eval_vector(eval_ctx_, skip_, bound_))) {
+      LOG_WARN("eval vector failed", K(ret));
+    } else {
+      J_OBJ_START();
+      J_KV(KP(expr));
+      J_COMMA();
+      VectorFormat fmt = expr->get_format(eval_ctx_);
+      switch (fmt) {
+        case VEC_FIXED: {
+          J_KV("format", "VEC_FIXED");
+          break;
+        }
+        case VEC_DISCRETE: {
+          J_KV("format", "VEC_DISCRETE");
+          break;
+        }
+        case VEC_CONTINUOUS: {
+          J_KV("format", "VEC_CONTINUOUS");
+          break;
+        }
+        case VEC_UNIFORM: {
+          J_KV("format", "VEC_UNIFORM");
+          break;
+        }
+        case VEC_UNIFORM_CONST: {
+          J_KV("format", "VEC_UNIFORM_CONST");
+          break;
+        }
+        default: {
+          J_KV("format", "VEC_INVALID");
+          break;
+        }
+      }
+      J_OBJ_END();
+    }
+    if (OB_SUCC(ret) && i != exprs_.count() - 1) {
+      J_COMMA();
+    }
+  }
+  J_ARRAY_END();
   return pos;
 }
 

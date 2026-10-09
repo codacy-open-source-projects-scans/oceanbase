@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SHARE_VECTOR_INDEX_AUX_TABLE_HANDLER_H_
 #define OCEANBASE_SHARE_VECTOR_INDEX_AUX_TABLE_HANDLER_H_
@@ -26,9 +19,14 @@
 
 namespace oceanbase
 {
+namespace storage
+{
+class ObTableScanIterator;
+}
 namespace share
 {
 class ObPluginVectorIndexAdaptor;
+class ObVecIndexAsyncTaskCtx;
 
 class ObVectorIndexDeltaTableHandler
 {
@@ -54,6 +52,7 @@ public:
   int delete_incr_table_data(transaction::ObTxReadSnapshot &snapshot,
       transaction::ObTxDesc *tx_desc, const int64_t timeout,
       const share::SCN& frozen_scn, const ObVectorIndexRoaringBitMap *bitmap);
+  int check_delta_table_empty(bool &is_empty);
 
 private:
   int prepare_dml_param(
@@ -129,6 +128,12 @@ public:
   int insert_segment_data(
       ObIArray<ObVecIdxSnapshotBlockData> &data_blocks, transaction::ObTxDesc *tx_desc, transaction::ObTxReadSnapshot &snapshot,
       const int64_t snapshot_version, const ObVectorIndexAlgorithmType index_type, const int64_t timeout);
+  int delete_segment_data(
+      ObPluginVectorIndexAdaptor *adaptor,
+      ObTableScanIterator *table_scan_iter,
+      transaction::ObTxDesc *tx_desc,
+      transaction::ObTxReadSnapshot &snapshot,
+      const int64_t timeout);
 
 private:
   static int prepare_snapshot_table_column_info(
@@ -147,10 +152,19 @@ private:
       int64_t &data_col_id,
       int64_t &visible_col_id);
 
+  int prepare_delete_iter(
+      ObPluginVectorIndexAdaptor *adaptor,
+      transaction::ObTxDesc *tx_desc,
+      ObTableScanIterator *table_scan_iter,
+      storage::ObValueRowIterator &row_iter,
+      transaction::ObTxReadSnapshot &snapshot);
   int prepare_insert_iter(
       ObIArray<ObVecIdxSnapshotBlockData> &data_blocks, const int64_t snapshot_version,
       const ObVectorIndexAlgorithmType index_type, storage::ObValueRowIterator &row_iter);
   int do_insert(
+      storage::ObValueRowIterator &row_iter, transaction::ObTxDesc *tx_desc,
+      transaction::ObTxReadSnapshot &snapshot, const int64_t timeout);
+  int do_delete(
       storage::ObValueRowIterator &row_iter, transaction::ObTxDesc *tx_desc,
       transaction::ObTxReadSnapshot &snapshot, const int64_t timeout);
   int inner_insertup_meta_row(

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -451,10 +444,6 @@ int ObTableLoadMacroBlockWriteTask::process()
     writer_param.is_sorted_table_load_ = true;
     if (OB_FAIL(ObDDLUtil::fill_writer_param(tablet_id, slice_idx, -1 /*cg_idx*/, dag_, writer_param))) {
       LOG_WARN("fail to fill writer param", K(ret), K(tablet_id), K(slice_idx), K(dag_));
-    } else if (0 == writer_param.max_batch_size_) {
-      writer_param.max_batch_size_ = ObTabletSliceBufferTempFileWriter::ObDDLRowBuffer::DEFAULT_MAX_BATCH_SIZE;
-    }
-    if (OB_FAIL(ret)) {
     } else if (OB_FAIL(ObDDLUtil::alloc_storage_macro_block_writer(writer_param, allocator,
                                                                    storage_writer))) {
       LOG_WARN("fail to alloc storage macro block writer", K(ret), K(writer_param));

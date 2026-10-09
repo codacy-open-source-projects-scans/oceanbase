@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_ENGINE_EXPR_OB_EXPR_TOKENIZE_H_
@@ -56,10 +49,10 @@ private:
   public:
     TokenizeParam();
 
-    int parse_json_param(const ObIJsonBase *obj);
+    int parse_json_param(const ObIJsonBase *obj, const ObString &database_name, const uint64_t tenant_id);
 
     // check and reform parser properties to standard format
-    int reform_parser_properties(const ObString &properties);
+    int reform_parser_properties(const ObString &properties, const uint64_t tenant_id);
     int try_load_dictionary_for_ik(const uint64_t tenant_id);
 
   public:
@@ -88,6 +81,8 @@ private:
                             TokenizeParam &param);
   static int parse_parser_name(const ObExpr &expr, ObEvalCtx &ctx, TokenizeParam &param);
   static int parse_parser_properties(const ObExpr &expr,
+                                     const uint64_t tenant_id,
+                                     const ObString &database_name,
                                      ObEvalCtx &ctx,
                                      MultimodeAlloctor &mm_alloc,
                                      TokenizeParam &param);

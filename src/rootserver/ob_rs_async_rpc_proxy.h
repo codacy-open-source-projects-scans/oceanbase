@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_RS_ASYNC_RPC_PROXY_H_
@@ -93,6 +86,7 @@ RPC_F(obrpc::OB_UPDATE_TENANT_INFO_CACHE, obrpc::ObUpdateTenantInfoCacheArg, obr
 RPC_F(obrpc::OB_BROADCAST_CONSENSUS_VERSION, obrpc::ObBroadcastConsensusVersionArg, obrpc::ObBroadcastConsensusVersionRes, ObBroadcstConsensusVersionProxy);
 RPC_F(obrpc::OB_CHECK_STORAGE_OPERATION_STATUS, obrpc::ObCheckStorageOperationStatusArg, obrpc::ObCheckStorageOperationStatusResult, ObCheckStorageOperationStatusProxy);
 RPC_F(obrpc::OB_KILL_CLIENT_SESSION, obrpc::ObKillClientSessionArg, obrpc::ObKillClientSessionRes, ObKillClientSessionProxy);
+RPC_F(obrpc::OB_DROP_GTT_V2_SESSION_TABLET, share::ObDropGTTV2SessionTabletArg, share::ObDropGTTV2SessionTabletRes, ObDropGTTV2SessionTabletProxy);
 #ifdef OB_BUILD_TDE_SECURITY
 RPC_F(obrpc::OB_RESTORE_KEY, obrpc::ObRestoreKeyArg, obrpc::ObRestoreKeyResult, ObRestoreKeyProxy);
 RPC_F(obrpc::OB_SET_ROOT_KEY, obrpc::ObRootKeyArg, obrpc::ObRootKeyResult, ObSetRootKeyProxy);
@@ -115,6 +109,8 @@ RPC_F(obrpc::OB_CHECK_SYS_TABLE_SCHEMA, obrpc::ObCheckSysTableSchemaArg, obrpc::
 RPC_F(obrpc::OB_PREWARM_SS_LOCAL_CACHE, obrpc::ObPrewarmSSLocalCacheArg, obrpc::ObPrewarmSSLocalCacheResult, ObPrewarmSSLocalCacheProxy);
 #endif
 RPC_RS(obrpc::OB_NON_ATOMIC_DROP_TABLE_IN_DATABASE, obrpc::ObDropTableArg, obrpc::ObDropTableRes, ObNonAtomicDropTableInDBProxy);
+RPC_F(obrpc::OB_GET_TENANT_MEMORY_INFO, obrpc::ObGetTenantMemoryInfoArg, obrpc::ObGetTenantMemoryInfoResult, ObGetTenantMemoryInfoProxy);
+RPC_F(obrpc::OB_ASYNC_RUN_INSPECTION, obrpc::ObRunInspectionArg, obrpc::ObRpcProxy::NoneT, ObAsyncRunInspectionProxy);
 
 
 }//end namespace rootserver

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -403,7 +396,8 @@ int ObDDLIncCommitClogCb::on_success_(const ObLSHandle &ls_handle, const ObTable
                                                                        log_basic_.get_seq_no(),
                                                                        log_basic_.get_snapshot_version(),
                                                                        log_basic_.get_data_format_version(),
-                                                                       false /*is_replay*/))) {
+                                                                       false /*is_replay*/,
+                                                                       SCN::min_scn()/*placeholder*/))) {
       LOG_WARN("fail to freeze inc major ddl kv", KR(ret), K(ls_id_), K(tablet_id), K(commit_scn), K(log_basic_));
     } else if (is_rollback_) {
       // do nothing

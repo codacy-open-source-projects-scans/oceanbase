@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -4575,7 +4568,10 @@ static int common_string_json(const ObExpr &expr,
                                  || in_type == ObTextType
                                  || in_type == ObMediumTextType
                                  || in_type == ObLongTextType);
-
+      ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+      bool json_float_full_precision =
+        OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+      ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag, ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
       if (!is_oracle && in_cs_type == CS_TYPE_BINARY) {
         j_base = &j_opaque;
       } else if (is_oracle && CM_IS_IMPLICIT_CAST(expr.extra_) && OB_ISNULL(j_text.ptr())) {
@@ -4590,9 +4586,6 @@ static int common_string_json(const ObExpr &expr,
                           && is_convert_jstr_type))) {
         // consistent with mysql: TINYTEXT, TEXT, MEDIUMTEXT, and LONGTEXT. We want to treat them like strings
         j_base = &j_string;
-        if ((CM_IS_SQL_AS_JSON_SCALAR(expr.extra_) && ob_is_string_type(in_type)) && j_text.compare("null") == 0) {
-          j_base = &j_null;
-        }
       } else if (is_oracle && (OB_ISNULL(j_text.ptr()) || j_text.length() == 0)) {
         j_base = &j_null;
       } else if (OB_FAIL(ObJsonParser::get_tree(&temp_allocator, j_text, j_tree,
@@ -5429,7 +5422,8 @@ static int common_string_geometry(const char *buf, int64_t length, const sql::Ob
                                            cast_name))) {
     LOG_WARN("fail to get srs item", K(ret));
   } else if (OB_FAIL(ObGeoExprUtils::build_geometry(temp_allocator, ObString(length, buf), geo, srs,
-                                                    cast_name))) {
+                                                    cast_name,
+                                                    ObGeoBuildFlag::GEO_DEFAULT | ObGeoBuildFlag::GEO_CHECK_FINITE))) {
     LOG_WARN("fail to parse geometry", K(ret), K(ObString(length, buf)), K(dst_geo_type));
   } else {
     ObString res_wkb;
@@ -9986,7 +9980,8 @@ CAST_FUNC_NAME(lob, geometry)
     const ObSrsItem *srs = NULL;
     if (OB_FAIL(ObGeoExprUtils::get_srs_item(ctx, srs_guard, in_str, srs, true, cast_name))) {
       LOG_WARN("fail to get srs item", K(ret), K(in_str));
-    } else if (OB_FAIL(ObGeoExprUtils::build_geometry(temp_allocator, in_str, geo, srs, cast_name))) {
+    } else if (OB_FAIL(ObGeoExprUtils::build_geometry(temp_allocator, in_str, geo, srs, cast_name,
+                                                      ObGeoBuildFlag::GEO_DEFAULT | ObGeoBuildFlag::GEO_CHECK_FINITE))) {
       LOG_WARN("fail to parse geometry", K(ret), K(in_str), K(dst_geo_type));
     } else if (ObGeoType::GEOMETRY == dst_geo_type || ObGeoType::GEOTYPEMAX == dst_geo_type) {
       res_datum.set_string(in_str);
@@ -11648,6 +11643,7 @@ CAST_FUNC_NAME(string, collection)
       ObString res_str;
       const ObSqlCollectionInfo *dst_coll_info = reinterpret_cast<const ObSqlCollectionInfo *>(dst_meta.value_);
       ObCollectionTypeBase *dst_coll_type = dst_coll_info->collection_meta_;
+      sql::ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(temp_allocator, *child_res,
                   expr.args_[0]->datum_meta_, expr.args_[0]->obj_meta_.has_lob_header(), in_str))) {
         LOG_WARN("fail to get real data.", K(ret), K(in_str));
@@ -11662,7 +11658,7 @@ CAST_FUNC_NAME(string, collection)
         }
       } else if (dst_coll_type->type_id_== ObNestedType::OB_ARRAY_TYPE) {
         if (cs_type != CS_TYPE_BINARY) {
-          if (OB_FAIL(ObArrayCastUtils::string_cast(temp_allocator, in_str, arr_dst, static_cast<ObCollectionArrayType *>(dst_coll_type)->element_type_))) {
+          if (OB_FAIL(ObArrayCastUtils::string_cast(temp_allocator, in_str, arr_dst, static_cast<ObCollectionArrayType *>(dst_coll_type)->element_type_, session))) {
             LOG_WARN("array element cast failed", K(ret), K(dst_coll_info));
           }
         } else {
@@ -11679,7 +11675,7 @@ CAST_FUNC_NAME(string, collection)
           }
         } else {
           // Use standard parser for regular map
-          if (OB_FAIL(ObArrayCastUtils::string_cast_map(temp_allocator, in_str, arr_dst, static_cast<ObCollectionMapType *>(dst_coll_type), expr.extra_, false))) {
+          if (OB_FAIL(ObArrayCastUtils::string_cast_map(temp_allocator, in_str, arr_dst, static_cast<ObCollectionMapType *>(dst_coll_type), expr.extra_, false, session))) {
             LOG_WARN("map cast failed", K(ret), K(dst_coll_info));
           }
         }
@@ -11788,10 +11784,7 @@ int cast_sql_xml_pl_xml(const sql::ObExpr &expr,
   void *ptr = NULL;
   ObObj* data = NULL; // obobj for blob;
   ObIAllocator &allocator = ctx.exec_ctx_.get_allocator();
-  if (OB_ISNULL(data = static_cast<ObObj*>(allocator.alloc(sizeof(ObObj))))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to allocate memory for pl object", K(ret));
-  } else if (OB_ISNULL(ptr = allocator.alloc(sizeof(pl::ObPLXmlType)))) {
+  if (OB_ISNULL(ptr = allocator.alloc(sizeof(pl::ObPLXmlType)))) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("Failed to allocate memory for pl xml data type", K(ret), K(sizeof(pl::ObPLXmlType)));
   } else if (FALSE_IT(xmltype = new (ptr)pl::ObPLXmlType())) {
@@ -11802,16 +11795,22 @@ int cast_sql_xml_pl_xml(const sql::ObExpr &expr,
     ObString xml_data;
     if (!child_res->is_null() && !child_res->get_string().empty()) {
       /*
-      We believe that the memory in child_res is reliable,
-      and the content in it can be passed to the next layer without copying.
-      Therefore, there is no deep copy of row-level memory here.
-      If you find that the memory of xml_data is unstable later,
-      you can add a deep copy here to copy the data to the memory of expr: get_str_res_mem().
+      Deep copy XML bytes into exec_ctx allocator to avoid keeping references
+      to child_res row-level buffers. The PL XML object may outlive the source
+      datum memory when rows are materialized and reused by upstream operators.
       */
       xml_data = child_res->get_string();
-      data->set_string(ObLongTextType, xml_data.ptr(), xml_data.length());
-      data->set_has_lob_header(); // must has lob header
-      data->set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      int64_t data_size = xml_data.length();
+      char *data_buff = static_cast<char *>(allocator.alloc(data_size));
+      if (OB_ISNULL(data_buff)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to allocate memory for xml data", K(ret), K(data_size));
+      } else {
+        MEMCPY(data_buff, xml_data.ptr(), data_size);
+        data->set_string(ObLongTextType, data_buff, static_cast<int32_t>(data_size));
+        data->set_has_lob_header(); // must has lob header
+        data->set_collation_type(CS_TYPE_UTF8MB4_BIN);
+      }
     } else {
       data->set_null();
     }

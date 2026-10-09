@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -24,7 +17,6 @@
 #include "storage/ddl/ob_ddl_independent_dag.h"
 #include "storage/direct_load/ob_direct_load_auto_inc_seq_service.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "close_modules/shared_storage/storage/compaction_v2/ob_ss_compact_helper.h"
 #include "storage/compaction/ob_schedule_dag_func.h"
 #endif
 
@@ -635,14 +627,17 @@ int ObIncMajorDDLMergeHelper::process_prepare_task(
     }
 
     int64_t cg_count = ObITable::is_column_store_sstable(ddl_merge_param.table_key_.table_type_) ?
-                      tablet_param->storage_schema_->get_column_group_count() : 1;
-    for (int64_t cg_idx = 0; OB_SUCC(ret) && cg_idx < cg_count; cg_idx++) {
+                           tablet_param->storage_schema_->get_column_group_count() : 1;
+    for (int64_t idx = 0; OB_SUCC(ret) && idx < cg_count; idx++) {
       for (hash::ObHashSet<int64_t>::const_iterator iter = slice_idxes.begin();
           OB_SUCC(ret) && iter != slice_idxes.end();
           ++iter) {
         int64_t start_slice_idx = iter->first;
         int64_t end_slice_idx   = 0 == iter->first ? merge_slice_idx : iter->first;
-        if (OB_FAIL(cg_slices.push_back(ObTuple<int64_t, int64_t, int64_t>(cg_idx, start_slice_idx, end_slice_idx)))) {
+        int64_t cg_idx = -1;
+        if (OB_FAIL(tablet_param->storage_schema_->convert_iter_idx_to_column_group_idx(idx, cg_idx))) {
+          LOG_WARN("failed to convert iter idx to cg idx", K(ret), K(idx), K(cg_count));
+        } else if (OB_FAIL(cg_slices.push_back(ObTuple<int64_t, int64_t, int64_t>(cg_idx, start_slice_idx, end_slice_idx)))) {
           LOG_WARN("failed to push back val", K(ret), K(start_slice_idx), K(end_slice_idx));
         }
       }
@@ -731,7 +726,7 @@ int ObIncMajorDDLMergeHelper::merge_cg_slice(ObIDag *dag,
                                                                   ddl_param,
                                                                   tablet_param->storage_schema_,
                                                                   ddl_sstables,
-                                                                  cg_idx == merge_param.table_key_.column_group_idx_ ?
+                                                                  (cg_idx == merge_param.table_key_.column_group_idx_ || cg_idx == HIDDEN_ROWKEY_COLUMN_GROUP_IDX) ?
                                                                       tablet_handle.get_obj()->get_rowkey_read_info()
                                                                       : *cg_index_read_info,
                                                                   arena, tmp_metas))) {
@@ -1276,10 +1271,15 @@ int ObSSIncMajorDDLMergeHelper::process_prepare_task(
       LOG_WARN("fail to calculate inc major end scn", KR(ret));
     }
     /* for ss mode, inc major build from cg meta file, follower not need build inc major*/
-    for (int64_t i = 0; OB_SUCC(ret) && i < tablet_param->storage_schema_->get_column_group_count(); ++i) {
+    ObStorageCGSchemaIterator cg_iter(*tablet_param->storage_schema_);
+    const int64_t cg_count = cg_iter.get_column_group_count();
+    for (int64_t i = 0; OB_SUCC(ret) && i < cg_count; ++i) {
       /* when build major only one slice is needed */
-      if (OB_FAIL(cg_slices.push_back(ObTuple<int64_t, int64_t, int64_t>(i /* cg_idx */, 0 /* start_slice */, 0 /* end_slice */)))) {
-        LOG_WARN("failed to get slice", K(ret));
+      int64_t cg_idx = -1;
+      if (OB_FAIL(cg_iter.convert_iter_idx_to_column_group_idx(i, cg_idx))) {
+        LOG_WARN("failed to convert iter idx to cg idx", K(ret), K(i), K(cg_count));
+      } else if (OB_FAIL(cg_slices.push_back(ObTuple<int64_t, int64_t, int64_t>(cg_idx, 0 /* start_slice */, 0 /* end_slice */)))) {
+        LOG_WARN("failed to push back slice", K(ret), K(cg_idx));
       }
     }
   }
@@ -1349,6 +1349,8 @@ int ObSSIncMajorDDLMergeHelper::assemble_sstable(ObDDLTabletMergeDagParamV2 &dag
   ObSSTable *inc_major_sstable = nullptr;
   ObTablesHandleArray co_sstable_array;
   ObDDLKvMgrHandle ddl_kv_mgr_handle;
+  ObDirectLoadAutoIncSeqData start_macro_seq;
+  int64_t out_macro_seq = 0;
 
   if (OB_UNLIKELY(!dag_merge_param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
@@ -1360,8 +1362,13 @@ int ObSSIncMajorDDLMergeHelper::assemble_sstable(ObDDLTabletMergeDagParamV2 &dag
   } else if (OB_UNLIKELY(!tablet_handle.is_valid())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet handle is invalid", KR(ret), K(tablet_handle));
-  } else if (OB_FAIL(ObSSDDLMergeHelper::build_sstable(dag_merge_param, co_sstable_array, inc_major_sstable))) {
+  } else if (OB_FAIL(ObDirectLoadAutoIncSeqService::get_start_seq(ls_id, tablet_id, compaction::MACRO_STEP_SIZE, start_macro_seq))) {
+    LOG_WARN("fail to get start seq", KR(ret));
+  } else if (OB_FAIL(ObSSDDLMergeHelper::build_sstable(dag_merge_param, co_sstable_array, start_macro_seq.get_seq_val(), out_macro_seq, inc_major_sstable))) {
     LOG_WARN("failed to build major sstable", K(ret), KPC(inc_major_sstable));
+  } else if (OB_ISNULL(inc_major_sstable)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null inc major sstable", KR(ret), K(dag_merge_param));
   } else if (OB_FAIL(update_tablet_table_store(dag_merge_param, co_sstable_array, inc_major_sstable))) {
     LOG_WARN("failed to update tablet table store", K(ret), KPC(inc_major_sstable));
   } else if (OB_FAIL(tablet_handle.get_obj()->get_ddl_kv_mgr(ddl_kv_mgr_handle))) {
@@ -1580,10 +1587,13 @@ int ObSSIncMajorDDLMergeHelper::merge_cg_sstable(ObIDag* dag,
     storage::ObDDLIncRedoLogWriterCallback clustered_index_flush_callback;
     ObDDLRedoLogWriterCallbackInitParam init_param;
     ObSSTableMergeRes res;
-    const ObStorageColumnGroupSchema &cg_schema = storage_schema->get_column_groups().at(cg_idx);
+    const ObStorageColumnGroupSchema *cg_schema = nullptr;
     ObMacroDataSeq tmp_seq;
     ObDirectLoadAutoIncSeqData inc_start_seq;
-    if (OB_FAIL(ObDirectLoadAutoIncSeqService::get_start_seq(ls_id, tablet_id, compaction::MACRO_STEP_SIZE, inc_start_seq))) {
+
+    if (OB_FAIL(storage_schema->get_cg_schema_with_column_group_idx(cg_idx, cg_schema))) {
+      LOG_WARN("fail to get column group schema", K(ret), K(cg_idx));
+    } else if (OB_FAIL(ObDirectLoadAutoIncSeqService::get_start_seq(ls_id, tablet_id, compaction::MACRO_STEP_SIZE, inc_start_seq))) {
       LOG_WARN("fail to get start seq", KR(ret), K(ls_id), K(tablet_id), K(inc_start_seq));
     } else {
       tmp_seq.macro_data_seq_ = inc_start_seq.get_seq_val();
@@ -1593,7 +1603,7 @@ int ObSSIncMajorDDLMergeHelper::merge_cg_sstable(ObIDag* dag,
       init_param.direct_load_type_ = dag_merge_param.direct_load_type_;
       init_param.block_type_ = DDL_MB_INDEX_TYPE;
       init_param.table_key_ = cur_cg_table_key;
-      init_param.start_scn_ = dag_merge_param.start_scn_;
+      init_param.start_scn_ = dag_merge_param.get_tablet_ctx()->get_start_scn();
       init_param.task_id_ = dag_merge_param.ddl_task_param_.ddl_task_id_;
       init_param.data_format_version_ = dag_merge_param.ddl_task_param_.tenant_data_version_;
       init_param.parallel_cnt_ = max(dag_merge_param.get_tablet_ctx()->slice_count_, 1);
@@ -1622,7 +1632,7 @@ int ObSSIncMajorDDLMergeHelper::merge_cg_sstable(ObIDag* dag,
                                       0, /* concurrent_cnt */
                                       tablet_handle.get_obj()->get_reorganization_scn(),
                                       SCN::min_scn(),
-                                      &cg_schema,
+                                      cg_schema,
                                       cg_idx,
                                       compaction::ObExecMode::EXEC_MODE_OUTPUT,
                                       true/*need_submit_io*/,
@@ -1792,7 +1802,8 @@ int ObSSIncMajorDDLMergeHelper::prepare_for_dump_sstable(
                                                                      dag_merge_param.seq_no_,
                                                                      dag_merge_param.ddl_task_param_.snapshot_version_,
                                                                      dag_merge_param.ddl_task_param_.tenant_data_version_,
-                                                                     false/*is_replay*/))) {
+                                                                     false/*is_replay*/,
+                                                                     SCN::min_scn()/*placeholder*/))) {
     LOG_WARN("fail to freeze inc major ddl kv", KR(ret), K(dag_merge_param));
   } else if (OB_FAIL(tablet_handle.get_obj()->get_ddl_kv_mgr(ddl_kv_mgr_handle))) {
     if (OB_ENTRY_NOT_EXIST == ret) {
@@ -2274,12 +2285,6 @@ int ObSSIncMajorDDLMergeHelper::update_tablet_table_store_for_inc_major(
     LOG_WARN("failed to update shared tablet", K(ret), K(ls_id), K(tablet_id));
   } else if (OB_FAIL(MTL(observer::ObTabletTableUpdater*)->submit_tablet_update_task(ls_id, tablet_id))) {
     LOG_WARN("fail to submit tablet update task", K(ret), K(ls_id), K(tablet_id));
-  } else if (OB_FAIL(share::SSCompactHelper::link_inc_major(ls_id,
-                                                    tablet_id,
-                                                    snapshot_version,
-                                                    dag_merge_param.trans_id_,
-                                                    dag_merge_param.seq_no_))) {
-    LOG_WARN("fail to link inc major", KR(ret));
   } else {
     ObUpdateTableStoreParam table_store_param(snapshot_version,
                                               ObVersionRange::MIN_VERSION/*multi_version_start*/,

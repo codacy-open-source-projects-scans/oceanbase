@@ -1,14 +1,7 @@
 #ifdef OB_BUILD_CPP_ODPS
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -532,7 +525,7 @@ int ObODPSTableRowIterator::print_type_map_user_info(apsara::odps::sdk::ODPSColu
         }
       }
     }
-    LOG_USER_ERROR(OB_EXTERNAL_ODPS_COLUMN_TYPE_MISMATCH, odps_type_cstr, ob_type_cstr);
+    LOG_WARN("odps type mismatch", K(ret), K(odps_type_cstr), K(ob_type_cstr));
   } catch (apsara::odps::sdk::OdpsTunnelException& ex) {
     if (OB_SUCC(ret)) {
       ret = OB_ODPS_ERROR;

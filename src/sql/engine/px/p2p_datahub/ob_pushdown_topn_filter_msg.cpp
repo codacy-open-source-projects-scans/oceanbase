@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -337,12 +330,18 @@ int ObPushDownTopNFilterMsg::filter_out_data_vector(
     int64_t filter_count = 0;
     ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
     VectorFormat res_format = expr.get_format(ctx);
-    if (VEC_UNIFORM == res_format) {
-      IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
-      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
-    } else if (VEC_FIXED == res_format) {
+    if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else if (VEC_UNIFORM == res_format) {
+      IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
+      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -600,6 +599,20 @@ int ObPushDownTopNFilterMsg::adjust_cell_size()
   CK(cells_size_.count() == heap_top_datums_.count());
   for (int i = 0; OB_SUCC(ret) && i < cells_size_.count(); ++i) {
     cells_size_.at(i) = std::min(cells_size_.at(i), (int64_t)heap_top_datums_.at(i).len_);
+  }
+  return ret;
+}
+
+int ObPushDownTopNFilterMsg::regenerate()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < heap_top_datums_.count(); ++i) {
+    ObDatum copy;
+    if (OB_FAIL(copy.deep_copy(heap_top_datums_.at(i), get_allocator()))) {
+      LOG_WARN("rehome topn heap_top_datums failed", K(ret), K(i));
+    } else {
+      heap_top_datums_.at(i) = copy;
+    }
   }
   return ret;
 }

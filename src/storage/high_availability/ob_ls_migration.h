@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_LS_MIGRATION_
@@ -32,6 +25,41 @@ namespace oceanbase
 {
 namespace storage
 {
+
+struct ObMigrationCtx;
+
+// Encapsulates the concurrency state for parallel tablet creation during
+// LS migration. All concurrent access is serialized by a single lock.
+struct ObParallelCreateTabletsInfo
+{
+public:
+  ObParallelCreateTabletsInfo();
+  ~ObParallelCreateTabletsInfo();
+  void reset();
+  void reuse();
+  void free_copy_ls_view_reader();
+  void init(ObCopyLSViewInfoObReader *reader, const bool need_check_tablet_limit);
+  bool has_reader() const { return OB_NOT_NULL(copy_ls_view_reader_); }
+  bool get_need_check_tablet_limit() const { return need_check_tablet_limit_; }
+  // lockless read, safe because reader_finished_ is a monotonic false->true transition
+  bool is_reader_finished() const { return reader_finished_; }
+  void record_start_ts();
+  int64_t get_create_tablets_cost_ts() const;
+  // serialize read from the reader under lock, set reader_finished_ on OB_ITER_END
+  int fetch_next_tablet_infos(ObStorageHATabletsBuilder &builder,
+      common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos,
+      const int64_t max_count);
+  // serialize push_back to ctx.sys_tablet_id_array_ under lock
+  int record_sys_tablet_id(ObMigrationCtx &ctx,
+      const obrpc::ObCopyTabletInfo &tablet_info);
+private:
+  ObCopyLSViewInfoObReader *copy_ls_view_reader_;
+  bool need_check_tablet_limit_;
+  bool reader_finished_;
+  int64_t create_tablets_start_ts_;
+  common::ObSpinLock lock_;
+  DISALLOW_COPY_AND_ASSIGN(ObParallelCreateTabletsInfo);
+};
 
 struct ObMigrationCtx :  public ObIHADagNetCtx
 {
@@ -68,6 +96,7 @@ public:
   // used to detect split source tablet GC and prevent split log replay blocking
   // (see ObMigrationFinishTask::check_split_tablets_ready_)
   common::hash::ObHashSet<common::ObTabletID> non_existent_tablet_ids_;
+  ObParallelCreateTabletsInfo parallel_create_tablets_info_;
 
   INHERIT_TO_STRING_KV(
       "ObIHADagNetCtx", ObIHADagNetCtx,
@@ -99,6 +128,7 @@ public:
 
 public:
   common::ObTabletID tablet_id_;
+  common::ObArenaAllocator tablet_allocator_;
   ObTabletHandle tablet_handle_;
   ObCopyTabletRecordExtraInfo extra_info_; // extra info of server event
 private:
@@ -116,10 +146,7 @@ public:
   VIRTUAL_TO_STRING_KV(K_(arg), K_(task_id));
   ObMigrationOpArg arg_;
   share::ObTaskId task_id_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
-  common::ObMySQLProxy *sql_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
 };
 
 class ObMigrationDagNet: public share::ObIDagNet
@@ -142,10 +169,7 @@ public:
   virtual int deal_with_cancel() override;
 
   ObMigrationCtx *get_migration_ctx() { return ctx_; }
-  common::ObInOutBandwidthThrottle *get_bandwidth_throttle() { return bandwidth_throttle_; }
-  obrpc::ObStorageRpcProxy *get_storage_rpc_proxy() { return svr_rpc_proxy_; }
-  storage::ObStorageRpc *get_storage_rpc() { return storage_rpc_; }
-  common::ObMySQLProxy *get_sql_proxy() { return sql_proxy_; }
+  const ObStorageHAServiceCtx &get_ha_svc_ctx() const { return ha_svc_ctx_; }
   INHERIT_TO_STRING_KV("ObIDagNet", share::ObIDagNet, KPC_(ctx));
 private:
   int start_running_for_migration_();
@@ -156,10 +180,7 @@ private:
 private:
   bool is_inited_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
-  common::ObMySQLProxy *sql_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   DISALLOW_COPY_AND_ASSIGN(ObMigrationDagNet);
 };
 
@@ -169,27 +190,16 @@ public:
   explicit ObMigrationDag(const share::ObDagType::ObDagTypeEnum &dag_type);
   virtual ~ObMigrationDag();
   virtual int fill_info_param(compaction::ObIBasicInfoParam *&out_param, ObIAllocator &allocator) const override;
+  virtual bool operator == (const share::ObIDag &other) const override;
+  virtual uint64_t hash() const override;
   ObMigrationCtx *get_migration_ctx() const { return static_cast<ObMigrationCtx *>(ha_dag_net_ctx_); }
 
   INHERIT_TO_STRING_KV("ObStorageHADag", ObStorageHADag, KP(this));
-  DISALLOW_COPY_AND_ASSIGN(ObMigrationDag);
-};
-
-class ObInitialMigrationDag : public ObMigrationDag
-{
-public:
-  ObInitialMigrationDag();
-  virtual ~ObInitialMigrationDag();
-  virtual bool operator == (const share::ObIDag &other) const override;
-  virtual uint64_t hash() const override;
-  virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
-  virtual int create_first_task() override;
-
-  int init(share::ObIDagNet *dag_net);
-  INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
 protected:
+  int init_from_dag_net_(share::ObIDagNet *dag_net);
+  int fill_dag_key_impl_(const char *dag_name, char *buf, const int64_t buf_len) const;
   bool is_inited_;
-  DISALLOW_COPY_AND_ASSIGN(ObInitialMigrationDag);
+  DISALLOW_COPY_AND_ASSIGN(ObMigrationDag);
 };
 
 class ObInitialMigrationTask : public share::ObITask
@@ -206,28 +216,9 @@ private:
 private:
   bool is_inited_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   share::ObIDagNet *dag_net_;
   DISALLOW_COPY_AND_ASSIGN(ObInitialMigrationTask);
-};
-
-class ObStartMigrationDag : public ObMigrationDag
-{
-public:
-  ObStartMigrationDag();
-  virtual ~ObStartMigrationDag();
-  virtual bool operator == (const share::ObIDag &other) const override;
-  virtual uint64_t hash() const override;
-  virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
-  virtual int create_first_task() override;
-
-  int init(share::ObIDagNet *dag_net);
-  INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
-protected:
-  bool is_inited_;
-  DISALLOW_COPY_AND_ASSIGN(ObStartMigrationDag);
 };
 
 class ObStartMigrationTask : public share::ObITask
@@ -253,7 +244,10 @@ private:
   int check_before_ls_migrate_(const ObLSMeta &ls_meta);
   int build_ls_();
   int inner_build_ls_(bool &is_rpc_not_support);
-  int create_all_tablets_(ObCopyLSViewInfoObReader *ob_reader);
+  // hand over the reader to ctx and schedule the parallel create tablets
+  // tasks, the tablets are created by ObMigrationCreateAllTabletsTask
+  int schedule_parallel_create_tablets_(ObCopyLSViewInfoObReader *ob_reader);
+  int generate_parallel_create_tablets_task_();
   int inner_build_ls_with_old_rpc_();
   int create_all_tablets_with_4_1_rpc_();
 
@@ -264,29 +258,64 @@ private:
 private:
   bool is_inited_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
-  common::ObMySQLProxy *sql_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   DISALLOW_COPY_AND_ASSIGN(ObStartMigrationTask);
 };
 
-class ObSysTabletsMigrationDag : public ObMigrationDag
+// Parallel tasks in ObStartMigrationDag which stream tablet infos from
+// ctx_->parallel_create_tablets_info_ and create tablets concurrently.
+// The first task is scheduled by ObStartMigrationTask as its child task,
+// the rest are chained by generate_next_task until the reader is drained.
+// Each task creates at most CREATE_TABLETS_BATCH_CNT tablets then returns
+// the dag worker, the concurrency is decided by the dag worker count of
+// the dag priority, which can be adjusted by the thread score config
+// (e.g. ha_high_thread_score).
+class ObMigrationCreateAllTabletsTask : public share::ObITask
 {
 public:
-  ObSysTabletsMigrationDag();
-  virtual ~ObSysTabletsMigrationDag();
-  virtual bool operator == (const share::ObIDag &other) const override;
-  virtual uint64_t hash() const override;
-  virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
-  virtual int create_first_task() override;
-
-  int init(share::ObIDagNet *dag_net);
-  INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
-protected:
+  ObMigrationCreateAllTabletsTask();
+  virtual ~ObMigrationCreateAllTabletsTask();
+  int init();
+  virtual int process() override;
+  virtual int generate_next_task(share::ObITask *&next_task) override;
+  VIRTUAL_TO_STRING_KV(K("ObMigrationCreateAllTabletsTask"), KP(this), KPC(ctx_));
+public:
+  static const int64_t CREATE_TABLETS_BATCH_CNT = 1024;
+private:
+  int create_tablets_();
+  int fetch_next_tablet_infos_(common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos,
+      const int64_t max_count);
+  int record_tablet_id_(const obrpc::ObCopyTabletInfo &tablet_info);
+  int record_tablet_ids_(const common::ObIArray<obrpc::ObCopyTabletInfo> &tablet_infos);
+private:
   bool is_inited_;
-  DISALLOW_COPY_AND_ASSIGN(ObSysTabletsMigrationDag);
+  ObMigrationCtx *ctx_;
+  ObLSHandle ls_handle_;
+  ObStorageHATabletsBuilder ha_tablets_builder_;
+  DISALLOW_COPY_AND_ASSIGN(ObMigrationCreateAllTabletsTask);
 };
+
+// Child task of every ObMigrationCreateAllTabletsTask (the dag framework
+// copies children to the tasks generated by generate_next_task), so it is
+// scheduled after all parallel create tablets tasks have finished. It frees
+// the copy ls view reader, generates the tablets migration dags and records
+// the create tablets statistics.
+class ObMigrationCreateTabletsFinishTask : public share::ObITask
+{
+public:
+  ObMigrationCreateTabletsFinishTask();
+  virtual ~ObMigrationCreateTabletsFinishTask();
+  int init();
+  virtual int process() override;
+  VIRTUAL_TO_STRING_KV(K("ObMigrationCreateTabletsFinishTask"), KP(this), KPC(ctx_));
+private:
+  void record_server_event_();
+private:
+  bool is_inited_;
+  ObMigrationCtx *ctx_;
+  DISALLOW_COPY_AND_ASSIGN(ObMigrationCreateTabletsFinishTask);
+};
+
 
 class ObSysTabletsMigrationTask : public share::ObITask
 {
@@ -299,15 +328,15 @@ public:
 private:
   int build_tablets_sstable_info_();
   int generate_sys_tablet_migartion_dag_();
+  int try_remove_tablets_info_();
+  int remove_tablets_info_();
   int record_server_event_();
 
 private:
   bool is_inited_;
   ObLSHandle ls_handle_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   ObStorageHATabletsBuilder ha_tablets_builder_;
   DISALLOW_COPY_AND_ASSIGN(ObSysTabletsMigrationTask);
 };
@@ -342,7 +371,6 @@ public:
   INHERIT_TO_STRING_KV("ObIMigrationDag", ObMigrationDag, KP(this), K(copy_tablet_ctx_), K(tablet_type_));
 
 protected:
-  bool is_inited_;
   ObLSHandle ls_handle_;
   ObCopyTabletCtx copy_tablet_ctx_;
   ObHATabletGroupCtx *tablet_group_ctx_;
@@ -412,10 +440,7 @@ private:
 private:
   bool is_inited_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
-  common::ObMySQLProxy *sql_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   ObCopyTabletCtx *copy_tablet_ctx_;
   common::ObArray<ObITable::TableKey> copy_table_key_array_;
   ObStorageHACopySSTableInfoMgr copy_sstable_info_mgr_;
@@ -449,24 +474,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObTabletFinishMigrationTask);
 };
 
-class ObDataTabletsMigrationDag : public ObMigrationDag
-{
-public:
-  ObDataTabletsMigrationDag();
-  virtual ~ObDataTabletsMigrationDag();
-  virtual bool operator == (const share::ObIDag &other) const override;
-  virtual uint64_t hash() const override;
-  virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
-  virtual int create_first_task() override;
-
-  int init(share::ObIDagNet *dag_net);
-  INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
-protected:
-  bool is_inited_;
-  DISALLOW_COPY_AND_ASSIGN(ObDataTabletsMigrationDag);
-};
-
-class ObTabletGroupMigrationDag;
 class ObDataTabletsMigrationTask : public share::ObITask
 {
 public:
@@ -492,9 +499,7 @@ private:
   bool is_inited_;
   ObLSHandle ls_handle_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   share::ObIDag *finish_dag_;
   ObStorageHATabletsBuilder ha_tablets_builder_;
   DISALLOW_COPY_AND_ASSIGN(ObDataTabletsMigrationTask);
@@ -518,7 +523,6 @@ public:
 
   INHERIT_TO_STRING_KV("ObIMigrationDag", ObMigrationDag, KP(this));
 protected:
-  bool is_inited_;
   ObArray<ObLogicTabletID> tablet_id_array_;
   share::ObIDag *finish_dag_;
   ObHATabletGroupCtx *tablet_group_ctx_;
@@ -546,9 +550,7 @@ private:
   bool is_inited_;
   ObLSHandle ls_handle_;
   ObMigrationCtx *ctx_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
-  storage::ObStorageRpc *storage_rpc_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   common::ObArray<ObLogicTabletID> tablet_id_array_;
   share::ObIDag *finish_dag_;
   ObStorageHATabletsBuilder ha_tablets_builder_;
@@ -570,7 +572,6 @@ public:
   int64_t get_last_schedule_time() const { return last_schedule_time_; }
   INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
 protected:
-  bool is_inited_;
   int64_t dag_idx_;
   ObArray<ObLogicTabletID> tablet_id_array_; // hold tablet id array from dependency manager for retry
   int64_t last_schedule_time_;
@@ -599,23 +600,6 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObTabletGroupGenerateTask);
 };
 
-class ObMigrationFinishDag : public ObMigrationDag
-{
-public:
-  ObMigrationFinishDag();
-  virtual ~ObMigrationFinishDag();
-  virtual bool operator == (const share::ObIDag &other) const override;
-  virtual uint64_t hash() const override;
-  virtual int fill_dag_key(char *buf, const int64_t buf_len) const override;
-  virtual int create_first_task() override;
-
-  int init(share::ObIDagNet *dag_net);
-  INHERIT_TO_STRING_KV("ObMigrationDag", ObMigrationDag, KP(this));
-protected:
-  bool is_inited_;
-  DISALLOW_COPY_AND_ASSIGN(ObMigrationFinishDag);
-};
-
 class ObMigrationFinishTask : public share::ObITask
 {
 public:
@@ -635,6 +619,23 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObMigrationFinishTask);
 };
 
+#define DEFINE_MIGRATION_DAG(DAG_NAME, DAG_TYPE, TASK_NAME)                                           \
+  class DAG_NAME : public ObMigrationDag {                                                            \
+  public:                                                                                             \
+    DAG_NAME() : ObMigrationDag(DAG_TYPE) {}                                                          \
+    virtual ~DAG_NAME() = default;                                                                    \
+    virtual int fill_dag_key(char *buf, const int64_t buf_len) const override { return fill_dag_key_impl_("DAG_NAME", buf, buf_len); } \
+    virtual int create_first_task() override { TASK_NAME *task = nullptr; return create_task(nullptr, task); } \
+    int init(share::ObIDagNet *dag_net) { return init_from_dag_net_(dag_net); }                        \
+    INHERIT_TO_STRING_KV("DAG_NAME", ObMigrationDag, KP(this));                                       \
+  };
+
+DEFINE_MIGRATION_DAG(ObInitialMigrationDag, ObDagType::DAG_TYPE_INITIAL_MIGRATION, ObInitialMigrationTask);
+DEFINE_MIGRATION_DAG(ObStartMigrationDag, ObDagType::DAG_TYPE_START_MIGRATION, ObStartMigrationTask);
+DEFINE_MIGRATION_DAG(ObSysTabletsMigrationDag, ObDagType::DAG_TYPE_SYS_TABLETS_MIGRATION, ObSysTabletsMigrationTask);
+DEFINE_MIGRATION_DAG(ObDataTabletsMigrationDag, ObDagType::DAG_TYPE_DATA_TABLETS_MIGRATION, ObDataTabletsMigrationTask);
+DEFINE_MIGRATION_DAG(ObMigrationFinishDag, ObDagType::DAG_TYPE_MIGRATION_FINISH, ObMigrationFinishTask);
+
 struct ObLSMigrationUtils
 {
   static int init_ha_tablets_builder(
@@ -646,6 +647,16 @@ struct ObLSMigrationUtils
       ObLS *ls,
       ObStorageHATableInfoMgr *ha_table_info_mgr,
       ObStorageHATabletsBuilder &ha_tablets_builder);
+  static int get_migration_ctx_from_dag_net(
+      share::ObIDagNet *dag_net,
+      ObMigrationCtx *&ctx,
+      ObStorageHAServiceCtx &ha_svc_ctx);
+  static int record_migration_event(
+      const char *event_name,
+      const ObMigrationCtx *ctx);
+  static int generate_tablets_migration_dag(
+      share::ObIDag *parent_dag,
+      ObMigrationCtx *ctx);
 };
 
 

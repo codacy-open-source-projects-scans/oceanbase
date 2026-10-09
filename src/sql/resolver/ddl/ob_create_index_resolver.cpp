@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -428,7 +421,11 @@ int ObCreateIndexResolver::resolve_index_column_node(
           && index_keyname_ == INDEX_KEYNAME::SEARCH_KEY
           && OB_NOT_NULL(search_with_node)) {
         const ObColumnSchemaV2 *col_schema = tbl_schema->get_column_schema(sort_item.column_name_);
-        if (OB_FAIL(ObDDLResolver::resolve_search_index_column_comment(
+        if (OB_ISNULL(col_schema)) {
+          ret = OB_ERR_KEY_COLUMN_DOES_NOT_EXITS;
+          LOG_USER_ERROR(OB_ERR_KEY_COLUMN_DOES_NOT_EXITS, sort_item.column_name_.length(), sort_item.column_name_.ptr());
+          LOG_WARN("column does not exist", K(ret), K(sort_item.column_name_));
+        } else if (OB_FAIL(ObDDLResolver::resolve_search_index_column_comment(
                 search_with_node, col_schema, sort_item.column_name_, allocator_, sort_item.column_comment_))) {
           LOG_WARN("failed to resolve search index column config", K(ret), K(sort_item.column_name_));
         }
@@ -911,6 +908,19 @@ int ObCreateIndexResolver::resolve(const ParseNode &parse_tree)
       }
     }
   }
+  if (OB_SUCC(ret) && schema::is_vec_index(crt_idx_stmt->get_create_index_arg().index_type_)) {
+    bool has_string_lob_in_key = false;
+    if (OB_ISNULL(tbl_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("table schema is null", K(ret));
+    } else if (OB_FAIL(tbl_schema->has_string_lob_in_rowkey_or_partkey(has_string_lob_in_key))) {
+      LOG_WARN("fail to check string lob in rowkey or partkey", K(ret));
+    } else if (has_string_lob_in_key) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_WARN("creating vector index on table with STRING type as primary key or partition key is not supported", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "creating vector index on table with STRING type as primary key or partition key is");
+    }
+  }
   // Check storage cache policy for index
   if (OB_FAIL(ret)) {
   } else if (GCTX.is_shared_storage_mode() && is_mysql_mode()) {
@@ -1032,6 +1042,10 @@ int ObCreateIndexResolver::set_table_option_to_stmt(
     if (UNIQUE_KEY == index_keyname_) {
       if (global_) {
         index_arg.index_type_ = INDEX_TYPE_UNIQUE_GLOBAL;
+      } else if (tbl_schema.is_random_part()) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("create local unique index on random partition table is not supported", K(ret));
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "create local unique index on random partition table");
       } else {
         index_arg.index_type_ = INDEX_TYPE_UNIQUE_LOCAL;
       }

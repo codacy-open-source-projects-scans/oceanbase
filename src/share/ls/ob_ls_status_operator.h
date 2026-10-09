@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_LS_STATUS_OPERATOR_H_
@@ -577,9 +570,11 @@ public:
                 share::ObLSPrimaryZoneInfo &status_info);
   int get_ls_primary_zone_info(const uint64_t tenant_id, const ObLSID &id,
                                ObLSPrimaryZoneInfo &primary_zone_info, ObISQLClient &client);
-  int get_ls_primary_zone_info_by_order_ls_group(const uint64_t tenant_id,
-                                         ObLSPrimaryZoneInfoIArray &primary_zone_info_array,
-                                         ObISQLClient &client);
+  int get_ls_primary_zone_info_by_order_ls_group(
+      const uint64_t tenant_id,
+      ObLSPrimaryZoneInfoIArray &primary_zone_info_array,
+      ObISQLClient &client,
+      const bool skip_dropping_and_offline = false);
   /*
    * description: get user tenant max ls id, only for compatible
    * @param[in] tenant_id

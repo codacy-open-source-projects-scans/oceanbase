@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TRANS
@@ -489,14 +482,9 @@ int ObPartTransCtx::handle_timeout(const int64_t delay)
   const int64_t now = ObClockGenerator::getClock();
   bool tx_expired = is_trans_expired_();
   bool commit_expired = now > stmt_expired_time_;
-  share::SCN palf_max_committed_scn;
-  // get palf commited scn to help diagnose log_cb busy reason
-  if (is_leader_() && OB_TMP_FAIL(ls_tx_ctx_mgr_->get_ls_log_adapter()->get_palf_committed_max_scn(palf_max_committed_scn))) {
-    TRANS_LOG(WARN, "get palf max committed scn fail, need retry", K(tmp_ret), KPC(this));
-  }
   common::ObTimeGuard timeguard("part_handle_timeout", 10 * 1000);
-  CtxLockGuard guard(lock_, false/*try lock*/, 5_s);
-  if (guard.is_locked()) {
+  if (OB_SUCC(lock_.lock(5000000 /*5 seconds*/))) {
+    CtxLockGuard guard(lock_, false);
     timeguard.click();
     if (IS_NOT_INIT) {
       TRANS_LOG(WARN, "ObPartTransCtx not inited");
@@ -658,11 +646,10 @@ int ObPartTransCtx::handle_timeout(const int64_t delay)
               K(*this),
               K(tx_expired),
               K(commit_expired),
-              K(palf_max_committed_scn),
               K(delay));
     if (busy_cbs_.get_size() > 0) {
-      TRANS_LOG(INFO, "trx is waiting log_cb", K_(ls_id), K_(trans_id), KP(this), K(palf_max_committed_scn),
-                K(busy_cbs_.get_size()), KPC(busy_cbs_.get_first()), KPC(busy_cbs_.get_last()));
+      TRANS_LOG(INFO, "trx is waiting log_cb", K(busy_cbs_.get_size()), KPC(busy_cbs_.get_first()),
+                KPC(busy_cbs_.get_last()));
     }
   } else {
     TRANS_LOG(WARN, "failed to acquire lock in specified time", K_(trans_id));
@@ -754,6 +741,8 @@ int ObPartTransCtx::kill(const KillTransArg &arg, ObTxCommitCallback *&cb_list)
  * @app_trace_info: application level tracing infor
  *                  will be recorded in txn CommitLog
  * @request_id:     commit request identifier
+ * @app_trace_id:   application level tracing id
+ *                  will be recorded in txn CommitLog
  *
  * Return:
  * OB_SUCCESS - request was accepted and promise result would be
@@ -768,7 +757,8 @@ int ObPartTransCtx::commit(const ObTxCommitParts &parts,
                            const MonotonicTs &commit_time,
                            const int64_t &expire_ts,
                            const common::ObString &app_trace_info,
-                           const int64_t &request_id)
+                           const int64_t &request_id,
+                           const common::ObString &app_trace_id)
 {
   TRANS_LOG(DEBUG, "tx.commit", K(parts), K(trans_id_), K(ls_id_));
   int ret = OB_SUCCESS;
@@ -822,6 +812,8 @@ int ObPartTransCtx::commit(const ObTxCommitParts &parts,
       TRANS_LOG(WARN, "set request id failed", K(ret), K(request_id), KPC(this));
     } else if (OB_FAIL(set_app_trace_info_(app_trace_info))) {
       TRANS_LOG(WARN, "set app trace info error", K(ret), K(app_trace_info), KPC(this));
+    } else if (OB_FAIL(set_app_trace_id_(app_trace_id))) {
+      TRANS_LOG(WARN, "set app trace id error", K(ret), K(app_trace_id), KPC(this));
     } else if (FALSE_IT(stmt_expired_time_ = expire_ts)) {
     } else {
       if (commit_time.is_valid()) {
@@ -897,8 +889,9 @@ int ObPartTransCtx::check_modify_schema_elapsed(
     const int64_t schema_version)
 {
   int ret = OB_SUCCESS;
-  CtxLockGuard guard(lock_, false/*try lock*/, 100_ms);
-  if (guard.is_locked()) {
+  if (OB_SUCC(lock_.lock(100000 /*100 ms*/))) {
+    CtxLockGuard guard(lock_, false);
+
     if (IS_NOT_INIT) {
       TRANS_LOG(WARN, "ObPartTransCtx not inited");
       ret = OB_NOT_INIT;
@@ -938,8 +931,9 @@ int ObPartTransCtx::check_modify_time_elapsed(
     const int64_t timestamp)
 {
   int ret = OB_SUCCESS;
-  CtxLockGuard guard(lock_, false/*try lock*/, 100_ms);
-  if (guard.is_locked()) {
+  if (OB_SUCC(lock_.lock(100000 /*100 ms*/))) {
+    CtxLockGuard guard(lock_, false);
+
     if (IS_NOT_INIT) {
       TRANS_LOG(WARN, "ObPartTransCtx not inited");
       ret = OB_NOT_INIT;
@@ -1458,11 +1452,10 @@ int ObPartTransCtx::get_prepare_version_if_prepared(bool &is_prepared, SCN &prep
   return ret;
 }
 
-ERRSIM_POINT_DEF(EN_TX_SKIP_GET_MEMTABLE_KEY_ARR)
 int ObPartTransCtx::get_memtable_key_arr(ObMemtableKeyArray &memtable_key_arr)
 {
   int ret = OB_SUCCESS;
-  if (EN_TX_SKIP_GET_MEMTABLE_KEY_ARR == OB_SUCCESS) {
+  if (OB_SUCCESS == lock_.try_lock()) {
     if (IS_NOT_INIT || is_follower_() || is_exiting_) {
       TRANS_LOG(DEBUG, "part_ctx not need to get memtable key");
     } else if (OB_FAIL(mt_ctx_.get_memtable_key_arr(memtable_key_arr))) {
@@ -1470,6 +1463,7 @@ int ObPartTransCtx::get_memtable_key_arr(ObMemtableKeyArray &memtable_key_arr)
     } else {
       // do nothing
     }
+    lock_.unlock();
   } else {
     ObMemtableKeyInfo info;
     info.init(1);
@@ -1568,8 +1562,8 @@ int ObPartTransCtx::gc_ctx_()
 int ObPartTransCtx::check_scheduler_status()
 {
   int ret = OB_SUCCESS;
-  CtxLockGuard guard(lock_, true);
-  if (guard.is_locked()) {
+  if (OB_SUCCESS == lock_.try_lock()) {
+    CtxLockGuard guard(lock_, false);
     // 1. check the status of scheduler on rs
     bool is_alive = true;
     bool need_check_scheduler = need_to_ask_scheduler_status_();
@@ -1877,6 +1871,7 @@ int ObPartTransCtx::remove_callback_for_uncommited_txn(
   const memtable::ObMemtableSet *memtable_set)
 {
   int ret = OB_SUCCESS;
+  CtxLockGuard guard(lock_);
 
   if (IS_NOT_INIT) {
     TRANS_LOG(WARN, "ObPartTransCtx not inited");
@@ -1901,12 +1896,12 @@ int ObPartTransCtx::submit_redo_log_for_freeze(const uint32_t freeze_clock)
   TRANS_LOG(TRACE, "", K_(trans_id), K_(ls_id));
   ObTimeGuard tg("submit_redo_for_freeze_log", 100000);
   bool submitted = false;
-  bool need_submit = fast_check_need_submit_redo_for_freeze_(freeze_clock);
+  bool need_submit = fast_check_need_submit_redo_for_freeze_();
   if (need_submit) {
-    CtxLockGuard guard(lock_, CtxLockGuard::MODE::REDO_FLUSH_X);
-    tg.click("acquire lock");
+    CtxLockGuard guard(lock_);
+    tg.click();
     ret = submit_redo_log_for_freeze_(submitted, freeze_clock);
-    tg.click("submit redo");
+    tg.click();
     if (submitted) {
       REC_TRANS_TRACE_EXT2(tlog_, submit_log_for_freeze, OB_Y(ret),
                            OB_ID(used), tg.get_diff(), OB_ID(ref), get_ref());
@@ -1931,8 +1926,8 @@ int ObPartTransCtx::submit_redo_after_write(const bool force, const ObTxSEQ &wri
     LOAD_PARALLEL_LOGGING;
     if (!parallel_logging) {
       int submitted_cnt = 0;
-      CtxLockGuard guard(lock_, CtxLockGuard::MODE::REDO_FLUSH_X, !force /* try_lock */);
-      if (guard.is_locked()) {
+      if (force || OB_SUCCESS == lock_.try_lock()) {
+        CtxLockGuard guard(lock_, force /* need lock */);
         // double check parallel_logging is on
         LOAD_PARALLEL_LOGGING;
         if (!parallel_logging) {
@@ -1946,9 +1941,8 @@ int ObPartTransCtx::submit_redo_after_write(const bool force, const ObTxSEQ &wri
     }
 #undef LOAD_PARALLEL_LOGGING
     tg.click("serial_log");
-    if (parallel_logging) {
-      CtxLockGuard guard(lock_, CtxLockGuard::MODE::REDO_FLUSH_R, !force /* try_lock */);
-      if (guard.is_locked() && OB_SUCC(check_can_submit_redo_())) {
+    if (parallel_logging && OB_SUCC(lock_.try_rdlock_flush_redo())) {
+      if (OB_SUCC(check_can_submit_redo_())) {
         if (is_committing_()) {
           ret = force ? OB_TRANS_HAS_DECIDED : OB_SUCCESS;
         } else {
@@ -1962,6 +1956,7 @@ int ObPartTransCtx::submit_redo_after_write(const bool force, const ObTxSEQ &wri
           }
         }
       }
+      lock_.unlock_flush_redo();
     }
     if (!force && (OB_TRANS_HAS_DECIDED == ret // do committing
                    || OB_BLOCK_FROZEN == ret   // memtable logging blocked
@@ -2041,7 +2036,7 @@ int ObPartTransCtx::prepare_for_submit_redo(ObTxLogCb *&log_cb,
   return ret;
 }
 
-// NOTE: REDO_FLUSH_X lock mode has been acquired by caller
+
 int ObPartTransCtx::submit_redo_log_for_freeze_(bool &submitted, const uint32_t freeze_clock)
 {
   int ret = OB_SUCCESS;
@@ -2058,8 +2053,6 @@ int ObPartTransCtx::submit_redo_log_for_freeze_(bool &submitted, const uint32_t 
     submitted = submitter.get_submitted_cnt() > 0;
   }
   if (OB_SUCC(ret) || OB_BLOCK_FROZEN == ret) {
-    // NOTE: need acquire CTX_LOCK to satisfy the assumption of submit_log_impl_
-    CtxLockGuard guard(lock_, CtxLockGuard::MODE::CTX);
     ret = submit_log_impl_(ObTxLogType::TX_MULTI_DATA_SOURCE_LOG);
     if (ret == OB_TRANS_KILLED) {
       ret = OB_TRANS_HAS_DECIDED;
@@ -2069,9 +2062,15 @@ int ObPartTransCtx::submit_redo_log_for_freeze_(bool &submitted, const uint32_t 
   return ret;
 }
 
-bool ObPartTransCtx::fast_check_need_submit_redo_for_freeze_(uint32_t freeze_clock) const
+bool ObPartTransCtx::fast_check_need_submit_redo_for_freeze_() const
 {
-  return mt_ctx_.has_pending_log_for_freeze(freeze_clock);
+  bool has_pending_log = true;
+  bool blocked = false;
+  if (OB_SUCCESS == lock_.try_wrlock_flush_redo()) {
+    blocked = mt_ctx_.is_logging_blocked(has_pending_log);
+    lock_.unlock_flush_redo();
+  }
+  return has_pending_log && !blocked;
 }
 
 void ObPartTransCtx::get_audit_info(int64_t &lock_for_read_elapse) const
@@ -2250,7 +2249,6 @@ int ObPartTransCtx::on_dist_end_(const bool commit)
 ERRSIM_POINT_DEF(EN_TX_ON_SUCCESS_DELAY)
 #endif
 ERRSIM_POINT_DEF(EN_TX_ON_SUCCESS_SKIP_SUBMIT_REDO_LOG)
-ERRSIM_POINT_DEF(EN_TX_ON_SUCCESS_COST_TIME_LIMIT)
 int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
 {
   int ret = OB_SUCCESS;
@@ -2273,8 +2271,8 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
 
   bool handle_fast_commit = false;
   bool try_submit_log_for_commit = false;
+  bool need_return_log_cb = false;
   bool retry_submit_mds = false;
-  uint64_t callback_scope_host_bitmap = 0;
   {
     #ifdef ERRSIM
     uint64_t sleep_us = abs(EN_TX_ON_SUCCESS_DELAY);
@@ -2295,7 +2293,7 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
     ObTransStatistic::get_instance().add_clog_sync_count(tenant_id_, 1);
     ctx_lock_wait_time = guard.get_lock_acquire_used_time();
     if (log_sync_used_time + ctx_lock_wait_time >= ObServerConfig::get_instance().clog_sync_time_warn_threshold) {
-      TRANS_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "transaction log sync use too much time", K(trans_id_), K(ls_id_), KPC(log_cb),
+      TRANS_LOG_RET(WARN, OB_ERR_TOO_MUCH_TIME, "transaction log sync use too much time", KPC(log_cb),
                     K(log_sync_used_time), K(ctx_lock_wait_time));
     }
     if (log_cb->get_cb_arg_array().count() == 0) {
@@ -2310,6 +2308,7 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
       TRANS_LOG(INFO, "cb has been callbacked", KPC(log_cb));
 #endif
       busy_cbs_.remove(log_cb);
+      return_log_cb_(log_cb);
     } else if (is_exiting_) {
       skip_on_succ_cnt++;
       // the TxCtx maybe has been killed forcedly by background GC thread
@@ -2318,6 +2317,7 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
         TRANS_LOG(WARN, "ctx has been aborted forcedly before log sync successfully", KPC(this));
         print_trace_log_();
         busy_cbs_.remove(log_cb);
+        return_log_cb_(log_cb);
       } else {
         ret = OB_ERR_UNEXPECTED;
         TRANS_LOG(ERROR, "callback was missed when tx ctx exiting", K(ret), KPC(log_cb), KPC(this));
@@ -2383,39 +2383,39 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
         }
         submit_record_log_time = ObTimeUtility::fast_current_time() -  before_submit_record_ts;
       }
+      handle_fast_commit = !(sub_state_.is_state_log_submitted() || log_cb->get_callbacks().count() == 0);
+      try_submit_log_for_commit = !ObTxLogTypeChecker::is_state_log(log_cb->get_last_log_type()) && is_committing_();
+      retry_submit_mds = ObTxLogTypeChecker::is_mds_log(log_cb->get_last_log_type());
       busy_cbs_.remove(log_cb);
+      need_return_log_cb = true;
     }
 
     on_succ_ctx_lock_hold_time = ObTimeUtility::fast_current_time() - guard.get_hold_ts();
+  }
+  // let fast commit out of ctx's lock, because it is time consuming in calculating checksum
+  if (handle_fast_commit) {
+    // acquire REDO_FLUSH_READ LOCK, which allow other thread flush redo
+    // but disable other manage operation on ctx
+    // FIXME: acquire CTX's READ lock maybe better
+    const int64_t before_fast_commit_ts = ObTimeUtility::fast_current_time();
+    CtxLockGuard guard(lock_, CtxLockGuard::MODE::REDO_FLUSH_R);
+    mt_ctx_.remove_callbacks_for_fast_commit(log_cb->get_callbacks());
+    fast_commit_time = ObTimeUtility::fast_current_time() - before_fast_commit_ts;
   }
   ObTxLogCbPool::finish_syncing_with_stat(log_cb->get_group_ptr(),
                                           log_cb->get_log_size(),
                                           ObTimeUtility::fast_current_time()
                                               - log_cb->get_submit_ts(),
                                           log_cb->get_submit_ts());
-  handle_fast_commit = !(sub_state_.is_state_log_submitted() || log_cb->get_callbacks().count() == 0);
-  try_submit_log_for_commit = !ObTxLogTypeChecker::is_state_log(log_cb->get_last_log_type()) && is_committing_();
-  retry_submit_mds = ObTxLogTypeChecker::is_mds_log(log_cb->get_last_log_type());
-  if (handle_fast_commit) {
-    ARRAY_FOREACH(log_cb->get_callbacks(), i) {
-      callback_scope_host_bitmap |= (uint64_t)1 << log_cb->get_callbacks().at(i).host_->get_id();
-    }
+  if (need_return_log_cb) {
+    return_log_cb_(log_cb);
   }
-  return_log_cb_(log_cb);
-  log_cb = NULL;
-
-  // let fast commit out of ctx's lock, because it is time consuming in calculating checksum
-  if (handle_fast_commit) {
-    const int64_t before_fast_commit_ts = ObTimeUtility::fast_current_time();
-    mt_ctx_.remove_callbacks_for_fast_commit(callback_scope_host_bitmap);
-    fast_commit_time = ObTimeUtility::fast_current_time() - before_fast_commit_ts;
-  }
-
   // try submit log if txn is in commit phase
   if (try_submit_log_for_commit) {
     const int64_t before_try_submit_next_log_ts = ObTimeUtility::fast_current_time();
-    CtxLockGuard guard(lock_);
-    try_submit_next_log_();
+    // in commiting, acquire CTX lock is enough, because redo flushing must finished
+    CtxLockGuard guard(lock_, CtxLockGuard::MODE::CTX);
+    try_submit_next_log_(false);
     try_submit_next_log_cost_time = ObTimeUtility::fast_current_time() - before_try_submit_next_log_ts;
   }
 
@@ -2438,8 +2438,8 @@ int ObPartTransCtx::on_success(ObTxLogCb *log_cb)
                 KP(log_cb));
     }
   }
-  int64_t cost_time_limit = (EN_TX_ON_SUCCESS_COST_TIME_LIMIT == OB_SUCCESS) ? LOG_CB_ON_SUCC_TIME_LIMIT : (-1 * EN_TX_ON_SUCCESS_COST_TIME_LIMIT);
-  if (ObTimeUtility::fast_current_time() - cur_ts > cost_time_limit) {
+
+  if (ObTimeUtility::fast_current_time() - cur_ts > LOG_CB_ON_SUCC_TIME_LIMIT) {
     TRANS_LOG(WARN, "on_success cost too much time", K(ret), K(trans_id_), K(ls_id_),
               K(max_cost_cb_scn), K(max_cost_cb_time), K(skip_on_succ_cnt), K(invoke_on_succ_cnt),
               K(invoke_on_succ_time), K(submit_record_log_time), K(fast_commit_time),
@@ -4930,16 +4930,8 @@ int ObPartTransCtx::after_submit_log_(ObTxLogBlock &log_block,
     } else {
       exec_info_.max_submitted_seq_no_.inc_update(helper->max_seq_no_);
       helper->log_scn_ = log_cb->get_log_ts();
-      if (!helper->callback_redo_submitted_) {
-        if (OB_FAIL(mt_ctx_.prepare_log_submitted(*helper))) {
-          TRANS_LOG(ERROR, "fill to do prepare log submitted on redo log gen", K(ret), K(*this));
-          helper->callback_redo_submitted_ = true;
-        }
-      }
-      if (helper->callback_redo_submitted_) {
-        if (OB_FAIL(mt_ctx_.log_submitted(*helper))) {
-          TRANS_LOG(ERROR, "fill to do log_submitted on redo log gen", K(ret), K(*this));
-        }
+      if (helper->callback_redo_submitted_ && OB_FAIL(mt_ctx_.log_submitted(*helper))) {
+        TRANS_LOG(ERROR, "fill to do log_submitted on redo log gen", K(ret), K(*this));
       }
     }
   }
@@ -7967,11 +7959,21 @@ int ObPartTransCtx::register_multi_data_source(const ObTxDataSourceType data_sou
   ObTxPrintTimeGuard tx_print_guard;
 
   tx_print_guard.click_start("ctx_lock_time", 0);
+  bool need_lock = true;
 
-  CtxLockGuard guard(lock_, false/*try lock*/, try_lock ? 100_ms : 0);
-  if (!guard.is_locked()) {
-    ret = OB_EAGAIN;
+  if (try_lock) {
+    // avoid deadlock, but give a timeout ts to avoid lock conflict short time.
+    ret = lock_.lock(100000 /* 100ms */);
+    // lock timeout need retry again outside.
+    ret = OB_TIMEOUT == ret ? OB_EAGAIN : ret;
+    need_lock = false;
   } else {
+    // do nothing
+  }
+
+  if (OB_SUCC(ret)) {
+    CtxLockGuard guard(lock_, need_lock);
+
     tx_print_guard.click_end(0);
     if (OB_UNLIKELY(nullptr == buf || len <= 0 || data_source_type <= ObTxDataSourceType::UNKNOWN
                     || data_source_type >= ObTxDataSourceType::MAX_TYPE)) {
@@ -8481,8 +8483,9 @@ int ObPartTransCtx::dup_table_tx_redo_sync(const bool need_retry_by_task)
 {
   int ret = OB_SUCCESS;
 
-  CtxLockGuard guard(lock_, true /* try_lock */);
-  if (guard.is_locked()) {
+  if (OB_SUCCESS == lock_.try_lock()) {
+    CtxLockGuard guard(lock_, false);
+
     if (!is_leader_()) {
       ret = OB_NOT_MASTER;
       TRANS_LOG(WARN, "redo sync need not execute on a follower", K(ret), KPC(this));
@@ -8538,7 +8541,8 @@ int ObPartTransCtx::sub_prepare(const ObTxCommitParts &parts,
                                 const int64_t &expire_ts,
                                 const common::ObString &app_trace_info,
                                 const int64_t &request_id,
-                                const ObXATransID &xid)
+                                const ObXATransID &xid,
+                                const common::ObString &app_trace_id)
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
@@ -8579,6 +8583,8 @@ int ObPartTransCtx::sub_prepare(const ObTxCommitParts &parts,
     TRANS_LOG(WARN, "set request id failed", K(ret), K(request_id), KPC(this));
   } else if (OB_FAIL(set_app_trace_info_(app_trace_info))) {
     TRANS_LOG(WARN, "set app trace info error", K(ret), K(app_trace_info), KPC(this));
+  } else if (OB_FAIL(set_app_trace_id_(app_trace_id))) {
+    TRANS_LOG(WARN, "set app trace id error", K(ret), K(app_trace_id), KPC(this));
   } else if (FALSE_IT(stmt_expired_time_ = expire_ts)) {
   } else {
     if (commit_time.is_valid()) {
@@ -9286,8 +9292,8 @@ int ObPartTransCtx::handle_tx_keepalive_response(const int64_t status)
 {
   int ret = OB_SUCCESS;
 
-  CtxLockGuard guard(lock_, true /* try_lock */);
-  if (guard.is_locked()) {
+  if (OB_SUCCESS == lock_.try_lock()) {
+    CtxLockGuard guard(lock_, false);
     ret = tx_keepalive_response_(status);
   }
 
@@ -11445,12 +11451,13 @@ int ObPartTransCtx::submit_redo_log_out(ObTxLogBlock &log_block,
                                         ObTxLogCb *&log_cb,
                                         ObRedoLogSubmitHelper &helper,
                                         const int64_t replay_hint,
+                                        const bool has_hold_ctx_lock,
                                         share::SCN &submitted_scn)
 {
   int ret = OB_SUCCESS;
   ObTimeGuard time_guard("submit_redo_log_out_");
   CtxLockGuard ctx_lock;
-  if (!lock_.is_locked_by_self()) {
+  if (!has_hold_ctx_lock) {
     get_ctx_guard(ctx_lock, CtxLockGuard::MODE::CTX);
   }
   bool with_ref = false;
@@ -11600,10 +11607,10 @@ inline int ObPartTransCtx::correct_cluster_version_(uint64_t cluster_version_in_
 int ObPartTransCtx::get_stat_for_virtual_table(share::ObLSArray &participants, int &busy_cbs_cnt)
 {
   int ret = OB_SUCCESS;
-  CtxLockGuard guard(lock_, CtxLockGuard::MODE::CTX, true /*try lock*/);
-  if (guard.is_locked()) {
+  if (OB_SUCC(lock_.try_rdlock_ctx())) {
     participants.assign(exec_info_.participants_);
     busy_cbs_cnt = busy_cbs_.get_size();
+    lock_.unlock_ctx();
   }
   return ret;
 }

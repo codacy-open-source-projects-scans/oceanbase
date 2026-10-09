@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_OB_INDEX_MICRO_BLOCK_BUILDER_H_
@@ -43,7 +36,6 @@ static const uint32_t META_BLOCK_VERSION = 1;
 static const int64_t DEFAULT_MICRO_BLOCK_WRITER_COUNT = 64;
 static const int64_t DEFAULT_MACRO_BLOCK_CNT = 64;
 static const int64_t SMALL_SSTABLE_THRESHOLD = 1 << 20; // 1M
-static const int64_t SMALL_SSTABLE_ROW_COUNT_THRESHOLD_FOR_CG = 50000;
 
 typedef common::ObSEArray<ObIndexTreeRootCtx *, DEFAULT_MICRO_BLOCK_WRITER_COUNT>
     IndexTreeRootCtxList;
@@ -97,6 +89,7 @@ public:
       const int64_t block_offset,
       const int64_t block_size,
       const ObLogicMicroBlockId &logic_micro_id);
+  int set_small_sstable_block_info(const ObBlockInfo &block_info);
 
   TO_STRING_KV(KP(allocator_), K_(is_inited), K_(task_type), K_(last_key),
                K_(task_idx), K_(meta_block_offset), K_(meta_block_size),
@@ -229,15 +222,17 @@ struct ObIndexTreeInfo final
      row_count_(0),
      max_merged_trans_version_(0),
      min_merged_trans_version_(0),
+     sstable_skip_index_(),
      contain_uncommitted_row_(false) {}
   ~ObIndexTreeInfo() = default;
   void set_empty();
   TO_STRING_KV(K_(root_desc), K_(row_count),
-      K_(max_merged_trans_version), K_(min_merged_trans_version), K_(contain_uncommitted_row));
+      K_(max_merged_trans_version), K_(min_merged_trans_version), K_(sstable_skip_index), K_(contain_uncommitted_row));
   ObIndexTreeRootBlockDesc root_desc_;
   int64_t row_count_;
   int64_t max_merged_trans_version_;
   int64_t min_merged_trans_version_;
+  ObSSTableMetaSkipIndex sstable_skip_index_; // the lifetime is the same as root_desc_
   bool contain_uncommitted_row_;
 };
 
@@ -271,7 +266,8 @@ public:
                K_(use_old_macro_block_count), K_(compressor_type),
                K_(root_row_store_type), K_(nested_offset), K_(nested_size), K_(is_small_sstable),
                K_(table_backup_flag), K_(root_macro_seq), K_(encrypt_id),
-               K_(master_key_id), KPHEX_(encrypt_key, sizeof(encrypt_key_)));
+               K_(master_key_id), KPHEX_(encrypt_key, sizeof(encrypt_key_)),
+               K_(sstable_skip_index));
 
 public:
   ObIndexTreeRootBlockDesc root_desc_;
@@ -285,6 +281,8 @@ public:
   int64_t row_count_;
   int64_t max_merged_trans_version_;
   int64_t min_merged_trans_version_;
+  // skip index in SSTable level
+  ObSSTableMetaSkipIndex sstable_skip_index_; // the lifetime is the same as root_desc_
   bool contain_uncommitted_row_;
   int64_t occupy_size_;
   int64_t original_size_;
@@ -332,6 +330,7 @@ public:
       ObIndexBlockRowDesc &row_desc);
   int row_desc_to_meta(
       const ObIndexBlockRowDesc &macro_row_desc,
+      const uint64_t data_version,
       ObDataMacroBlockMeta &macro_meta,
       ObIAllocator &allocator);
   int append_micro_block(
@@ -353,11 +352,16 @@ protected:
   int close_index_tree(ObBaseIndexBlockBuilder *&root_builder);
   int64_t get_row_count() { return micro_writer_->get_row_count(); }
   virtual OB_INLINE bool need_pre_warm() const { return false; }
+
+  /**
+   * Whether build skip index row in SSTable level, It will stored in ObSSTableMeta.
+   */
+  virtual bool need_build_skip_index_in_meta() const { return true; }
 private:
   int new_next_builder(ObBaseIndexBlockBuilder *&next_builder);
   virtual int append_next_row(const ObMicroBlockDesc &micro_block_desc);
   int64_t calc_basic_micro_block_data_offset(const uint64_t column_cnt);
-  int init_tree_info(const ObIndexBlockAggregator &root_aggregator, ObIndexTreeInfo &tree_info) const;
+  int init_tree_info(ObIndexBlockAggregator &root_aggregator, ObIndexTreeInfo &tree_info, ObIAllocator &allocator) const;
 public:
   static const int64_t MIN_INDEX_MICRO_BLOCK_ROW_CNT = 10;
 protected:
@@ -489,6 +493,7 @@ private:
       ObIAllocator &allocator,
       const ObMicroBlockDesc &micro_block_desc,
       ObIndexTreeRootBlockDesc &block_desc);
+  virtual bool need_build_skip_index_in_meta() const override { return false; }
 private:
   ObIMicroBlockWriter *micro_writer_;
   ObMacroBlockWriter *macro_writer_;
@@ -535,6 +540,8 @@ public:
       common::ObIAllocator &allocator,
       ObDataMacroBlockMeta *&macro_meta);
   int get_tablet_private_transfer_epoch(int32_t &tablet_private_transfer_epoch) const;
+  int set_block_info(const ObBlockInfo &block_info);
+  OB_INLINE const ObSSTableIndexBuilder *get_sstable_index_builder() const { return sstable_builder_; }
 
 private:
   int inner_init(
@@ -682,6 +689,7 @@ public:
   bool micro_index_clustered() const;
   int32_t get_private_transfer_epoch() const;
   OB_INLINE ObSpaceOptimizationMode get_optimization_mode() const { return optimization_mode_; }
+  OB_INLINE int64_t get_concurrent_cnt() const { return roots_.count(); }
   const compaction::ObMergeBlockInfo &get_merge_block_info() const { return macro_writer_.get_merge_block_info(); }
   TO_STRING_KV(K(roots_.count()));
 
@@ -701,10 +709,8 @@ public:
                                                      const ObDataStoreDesc &container_store_desc,
                                                      const IndexTreeRootCtxList &roots,
                                                      ObDataMacroBlockMeta &macro_meta);
-  static bool satisfies_small_sstable_pre_requisites(ObSSTableIndexBuilder::ObSpaceOptimizationMode mode,
-                                                     int64_t concurrent_cnt,
-                                                     bool is_cg,
-                                                     int64_t row_count,
+  static bool satisfies_small_sstable_pre_requisites(const ObSpaceOptimizationMode mode,
+                                                     const int64_t concurrent_cnt,
                                                      const ObIODevice *device_handle);
 
 private:

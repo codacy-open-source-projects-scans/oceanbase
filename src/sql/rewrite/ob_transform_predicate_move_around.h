@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_PREDICATE_MOVE_AROUND_H
@@ -165,6 +158,14 @@ private:
 
   int pushdown_predicates(ObDMLStmt *stmt,
                           ObIArray<ObRawExpr *> &predicates);
+
+  static int check_dblink_pushdown_preds_safe(ObDMLStmt *stmt,
+                                              ObIArray<ObRawExpr *> &preds,
+                                              bool &can_pushdown);
+
+  static int check_stmt_has_dblink(ObDMLStmt *stmt, bool &has_dblink);
+
+  static int has_unsafe_implicit_cast(ObRawExpr *expr, bool &has_unsafe);
 
   int pushdown_into_tables_skip_current_level_stmt(ObDMLStmt &stmt);
   int pushdown_into_joined_table_skip_current_level_stmt(TableItem *table_item);
@@ -368,7 +369,9 @@ private:
   static int extract_generalized_column(ObRawExpr *expr,
                                         ObIArray<ObRawExpr *> &output);
 
-  int acquire_transform_params(ObDMLStmt *stmt, ObIArray<ObRawExpr *> *&preds);
+  int acquire_transform_params(ObDMLStmt *stmt,
+                               ObIArray<ObRawExpr *> *&preds,
+                               int64_t *stmt_idx = NULL);
 
   int get_columns_in_filters(ObDMLStmt &stmt,
                              ObIArray<int64_t> &sel_items,
@@ -424,6 +427,19 @@ private:
   ObSEArray<ObRawExpr *, 4> null_constraints_;
   ObSEArray<ObRawExpr *, 4> not_null_constraints_;
   ObSEArray<ObPCParamEqualInfo, 4> equal_param_constraints_;
+  /*
+   * the following two arrays are used to record the predicates pullup status of each stmt
+   * to skip re-pullup predicates for one stmt in pullup_predicates_for_view/set_stmt().
+   * for set stmt:
+   *   skip pullup predicates if stmt_preds_pulled_up_[stmt_idx] is true
+   * for non-set stmt:
+   *   skip pullup predicates if stmt_preds_pulled_up_[stmt_idx] is true
+   *   and sel_ids requested to pullup predicates is a subset of stmt_pulled_up_sel_ids_[stmt_idx]
+   */
+  // stmt_preds_pulled_up_[stmt_idx] will be set to true after predicates are pulled-up
+  ObSEArray<bool, 8> stmt_preds_pulled_up_;
+  // for non-set stmt, stmt_pulled_up_sel_ids_[stmt_idx] will union sel_ids after predicates are pulled-up
+  ObSEArray<ObSqlBitSet<>, 8> stmt_pulled_up_sel_ids_;
   bool real_happened_;
 };
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -669,10 +662,19 @@ int ObIHashPartInfrastructure::calc_hash_value_for_batch(const common::ObIArray<
     // do nothing
   } else if (0 != sort_collations_->count()) {
     // from child op, need eval
-    for (int64_t j = start_idx; OB_SUCC(ret) && j < sort_collations_->count(); ++j) {
-      const int64_t idx = sort_collations_->at(j).field_idx_;
-      if (OB_FAIL(exprs.at(idx)->eval_vector(*eval_ctx_, skip, size, all_rows_active))) {
-        SQL_ENG_LOG(WARN, "failed to eval batch", K(ret), K(j));
+    // eval extra exprs not covered by sort_collations to ensure valid vector format
+    if (exprs.count() != sort_collations_->count()) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < exprs.count(); ++i) {
+        if (OB_FAIL(exprs.at(i)->eval_vector(*eval_ctx_, skip, size, all_rows_active))) {
+          SQL_ENG_LOG(WARN, "failed to eval vector for extra expr", K(ret), K(i));
+        }
+      }
+    } else {
+      for (int64_t j = start_idx; OB_SUCC(ret) && j < sort_collations_->count(); ++j) {
+        const int64_t idx = sort_collations_->at(j).field_idx_;
+        if (OB_FAIL(exprs.at(idx)->eval_vector(*eval_ctx_, skip, size, all_rows_active))) {
+          SQL_ENG_LOG(WARN, "failed to eval batch", K(ret), K(j));
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -684,9 +686,10 @@ int ObIHashPartInfrastructure::calc_hash_value_for_batch(const common::ObIArray<
         const int64_t idx = sort_collations_->at(j).field_idx_;
         ObExpr *expr = exprs.at(idx);
         ObIVector *col_vec = expr->get_vector(*eval_ctx_);
-        if (OB_FAIL(col_vec->murmur_hash_v3(
-              *expr, hash_values_for_batch, skip, EvalBound(size, all_rows_active),
-              is_batch_seed ? hash_values_for_batch : &default_hash_value, is_batch_seed))) {
+        if (OB_FAIL(col_vec->hash(*expr, hash_values_for_batch, skip,
+                                     EvalBound(size, all_rows_active),
+                                     is_batch_seed ? hash_values_for_batch : &default_hash_value,
+                                     is_batch_seed))) {
           SQL_ENG_LOG(WARN, "failed to calc hash value", K(ret));
         }
       }
@@ -705,7 +708,7 @@ int ObIHashPartInfrastructure::update_mem_status_periodically()
                     updated))) {
     SQL_ENG_LOG(WARN, "failed to update usable memory size periodically", K(ret));
   } else if (updated) {
-    int64_t total_mem_used = get_mem_used();
+    int64_t total_mem_used = get_total_mem_used();
     if (total_mem_used_func_) {
       total_mem_used = total_mem_used_func_();
     }
@@ -765,7 +768,8 @@ do_insert_batch_with_unique_hash_table_by_pass(const common::ObIArray<ObExpr *> 
                                                bool can_insert,
                                                int64_t &exists,
                                                bool &full_by_pass,
-                                               ObBitVector *&output_vec)
+                                               ObBitVector *&output_vec,
+                                               common::ObArray<std::pair<uint64_t, int32_t>> *popular_array_temp)
 {
   int ret = OB_SUCCESS;
   ++period_row_cnt_;
@@ -790,7 +794,7 @@ do_insert_batch_with_unique_hash_table_by_pass(const common::ObIArray<ObExpr *> 
        }
       } else {
         if (OB_FAIL(set_distinct_batch(exprs, hash_values_for_batch, batch_size,
-                                            skip, *my_skip_))) {
+                                            skip, *my_skip_, popular_array_temp))) {
           SQL_ENG_LOG(WARN, "failed to set distinct values into hash table", K(ret));
         } else if (OB_FAIL(update_mem_status_periodically())) {
           SQL_ENG_LOG(WARN, "failed to update memory status periodically", K(ret));
@@ -1663,13 +1667,14 @@ int ObHashPartInfrastructureVecImpl::do_insert_batch_with_unique_hash_table_by_p
   bool can_insert,
   int64_t &exists,
   bool &full_by_pass,
-  ObBitVector *&output_vec)
+  ObBitVector *&output_vec,
+  common::ObArray<std::pair<uint64_t, int32_t>> *popular_array_temp)
 {
   HP_INFRAS_STATUS_CHECK
   {
     return hp_infras_->do_insert_batch_with_unique_hash_table_by_pass(
       exprs, hash_values_for_batch, batch_size, skip, is_block, can_insert, exists, full_by_pass,
-      output_vec);
+      output_vec, popular_array_temp);
   }
   return ret;
 }
@@ -1780,4 +1785,23 @@ int ObHashPartInfrastructureVecImpl::rewind()
   }
   return ret;
 }
+int ObHashPartInfrastructureVecImpl::process_popular_value_batch_distinct(
+    ObBatchRows *result_brs,
+    const common::ObIArray<ObExpr *> &exprs,
+    uint64_t *hash_vals,
+    uint64_t &by_pass_rows,
+    const uint64_t check_valid_threshold,
+    int64_t dop,
+    common::hash::ObHashMap<uint64_t, uint64_t,
+    hash::NoPthreadDefendMode> *popular_map)
+{
+  HP_INFRAS_STATUS_CHECK
+  {
+    return hp_infras_->process_popular_value_batch_distinct(
+        result_brs, exprs, hash_vals, by_pass_rows,
+        check_valid_threshold, dop, popular_map);
+  }
+  return ret;
+}
+
 //////////////////// end ObHashPartInfrastructureVecImpl //////////////////

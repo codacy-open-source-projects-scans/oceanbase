@@ -1,21 +1,15 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_OBMYSQL_OB_CTYPE_
 #define OCEANBASE_LIB_OBMYSQL_OB_CTYPE_
 
-#include "lib/charset/ob_mysql_global.h"
+#include "obcharset/ob_ctype_tab.h"
+#include "obcharset/ob_mysql_global.h"
 #include "lib/hash_func/wyhash.h"
-
+#include "obcharset/ob_ctype_uca_tab.h"
 
 #define OB_UTF8MB4                 "utf8mb4"
 
@@ -164,7 +158,6 @@ extern "C" void right_to_die_or_duty_to_live_c();
 struct ObCharsetInfo;
 
 typedef char        ob_bool; /* Small bool */
-#define ob_wc_t ulong
 
 #define OB_CS_REPLACEMENT_CHARACTER 0xFFFD
 
@@ -182,32 +175,12 @@ typedef size_t (*ob_charset_conv_case)(const struct ObCharsetInfo *,
 
 int init_gb18030_2022();
 
-extern ObUCAInfo ob_uca_v400;
-extern unsigned char ob_uca520_length[4352];
-extern uint16 *ob_uca520_weight[4352];
-extern unsigned char ob_uca_length[256];
-extern uint16 *ob_uca_weight[256];
-
 typedef struct
 {
   unsigned int beg;
   unsigned int end;
   unsigned int mb_len;
 } ob_match_t;
-
-typedef struct ObUnicaseInfoChar
-{
-  uint32 toupper;
-  uint32 tolower;
-  uint32 sort;
-} ObUnicaseInfoChar;
-
-
-typedef struct ObUnicaseInfo
-{
-  ob_wc_t maxchar;
-  const ObUnicaseInfoChar **page;
-} ObUnicaseInfo;
 
 typedef struct ObCharsetHandler
 {

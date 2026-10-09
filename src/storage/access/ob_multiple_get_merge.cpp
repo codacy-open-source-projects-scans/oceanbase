@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include "ob_multiple_get_merge.h"
 #include "storage/tablet/ob_tablet.h"
@@ -230,15 +223,16 @@ int ObMultipleGetMerge::init_resource()
 {
   int ret = OB_SUCCESS;
   ObITable *table = tables_.at(0);
-  const ObTabletMeta &tablet_meta = get_table_param_->tablet_iter_.get_tablet()->get_tablet_meta();
+  const ObTabletMeta &tablet_meta = tablet_read_tables_->tablet_iter_.get_tablet()->get_tablet_meta();
   access_ctx_->use_fuse_row_cache_ = access_ctx_->use_fuse_row_cache_ &&
                                     access_param_->iter_param_.enable_fuse_row_cache(access_ctx_->query_flag_) &&
                                     access_ctx_->trans_version_range_.snapshot_version_ >= tablet_meta.snapshot_version_ &&
                                     (!table->is_co_sstable() || static_cast<ObCOSSTableV2 *>(table)->is_all_cg_base()) &&
-                                    OB_ISNULL(get_table_param_->tablet_iter_.get_split_extra_tablet_handles_ptr()) &&
+                                    OB_ISNULL(tablet_read_tables_->tablet_iter_.get_split_extra_tablet_handles_ptr()) &&
                                     !(!tablet_meta.table_store_flag_.with_major_sstable() && tablet_meta.split_info_.get_split_src_tablet_id().is_valid()) && // not split dst tablet
                                     !tablet_meta.has_transfer_table() &&
                                     !(access_ctx_->is_inc_major_query_ && access_param_->iter_param_.is_use_column_store()) && // inc major query with co sstables does not use fuse row cache
+                                    !exist_ddl_kv_ && // direct load memtable(ddl kv) does not use fuse row cache
                                     !is_fuse_row_cache_force_disable();
   access_ctx_->query_flag_.set_not_use_row_cache();
   STORAGE_LOG(DEBUG, "multiple get merge start", K(rowkeys_->count()), K(tables_.count()), K(iters_.count()), K(access_ctx_->use_fuse_row_cache_),
@@ -534,7 +528,7 @@ int ObMultipleGetMerge::get_rows_from_memory()
 {
   int ret = OB_SUCCESS;
   int64_t max_prefetch_rowkey_cnt = MIN(rowkeys_->count(), common::OB_MULTI_GET_OPEN_ROWKEY_NUM);
-  const int64_t &multi_version_start = get_table_param_->tablet_iter_.get_tablet()->get_tablet_meta().multi_version_start_;
+  const int64_t &multi_version_start = tablet_read_tables_->tablet_iter_.get_tablet()->get_tablet_meta().multi_version_start_;
   const int64_t &read_snapshot_version = access_ctx_->trans_version_range_.snapshot_version_;
   int64_t in_mem_cnt = 0;
   ObITable *table = tables_.at(tables_.count() - 1);
@@ -663,7 +657,7 @@ int ObMultipleGetMerge::inner_get_next_row_for_sstables_exist(ObDatumRow &row)
   bool is_valid_row = false;
   int64_t rowkey_cnt = rowkeys_->count();
   int64_t idx = 0;
-  const int64_t &multi_version_start = get_table_param_->tablet_iter_.get_tablet()->get_tablet_meta().multi_version_start_;
+  const int64_t &multi_version_start = tablet_read_tables_->tablet_iter_.get_tablet()->get_tablet_meta().multi_version_start_;
   const int64_t &read_snapshot_version = access_ctx_->trans_version_range_.snapshot_version_;
 
   if (OB_UNLIKELY(0 == tables_.count())) {
@@ -695,13 +689,15 @@ int ObMultipleGetMerge::inner_get_next_row_for_sstables_exist(ObDatumRow &row)
         }
         // prepare to prefetch next rowkey
         if (OB_FAIL(ret)) {
-        } else if (FALSE_IT(++get_row_range_idx_)) {
-        } else if (prefetch_row_range_idx_ < rowkey_cnt) {
+        } else if (prefetch_row_range_idx_ < rowkey_cnt && prefetch_row_range_idx_ - get_row_range_idx_ < common::OB_MULTI_GET_OPEN_ROWKEY_NUM) {
           if (OB_FAIL(prepare_prefetch_next_rowkey(multi_version_start, read_snapshot_version))) {
             STORAGE_LOG(WARN, "fail to prepare to prefetch next rowkey", K(ret), K(prefetch_row_range_idx_), K(rowkey_cnt));
           } else {
             ++prefetch_row_range_idx_;
           }
+        }
+        if (OB_SUCC(ret)) {
+          ++get_row_range_idx_;
         }
       }
     }

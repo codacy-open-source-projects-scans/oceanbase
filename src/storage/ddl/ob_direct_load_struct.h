@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_DDL_OB_DIRECT_LOAD_COMMON_H
@@ -341,7 +334,8 @@ public:
             const transaction::ObTransID &trans_id,
             const int64_t trans_version,
             const int64_t sql_no,
-            const ObDirectLoadType direct_load_type);
+            const ObDirectLoadType direct_load_type,
+            const ObTableSchemaItem &schema_item);
   void reset();
   void reuse();
   virtual int get_next_row(const blocksstable::ObDatumRow *&row) override;
@@ -456,7 +450,7 @@ struct ObDDLTabletMergeDagParamV2
 public:
   ObDDLTabletMergeDagParamV2():
     for_major_(false), for_lob_(false), for_replay_(false), merge_all_slice_(false), direct_load_type_(ObDirectLoadType::DIRECT_LOAD_INVALID), start_scn_(share::SCN::min_scn()),
-    rec_scn_(share::SCN::min_scn()),  ddl_task_param_(), inc_major_trans_version_(0), tablet_ctx_(nullptr), is_inited_(false) {}
+    rec_scn_(share::SCN::min_scn()),  ddl_task_param_(), tx_desc_(nullptr), inc_major_trans_version_(0), tablet_ctx_(nullptr), is_inited_(false) {}
   int init(const bool for_major,
            const bool for_lob,
            const bool for_replay,
@@ -484,7 +478,7 @@ public:
   int get_merge_helper(ObIDDLMergeHelper *&merge_helper);
   VIRTUAL_TO_STRING_KV(K(for_major_), K(for_replay_), K(for_lob_), K(merge_all_slice_),
       K(direct_load_type_), K(start_scn_), K(rec_scn_), K(table_key_), K(ddl_task_param_),
-      K_(trans_id), K_(seq_no), KPC(tablet_ctx_), K_(inc_major_trans_version));
+      K_(trans_id), K_(seq_no), KP_(tx_desc), KPC(tablet_ctx_), K_(inc_major_trans_version));
 public:
   bool for_major_;
   bool for_lob_;
@@ -496,6 +490,7 @@ public:
   ObDDLTaskParam ddl_task_param_;
   transaction::ObTransID trans_id_; // for inc-major direct load only
   transaction::ObTxSEQ seq_no_; // for inc-major direct load only
+  transaction::ObTxDesc *tx_desc_; // for inc-major direct load only
   ObITable::TableKey table_key_;
   int64_t inc_major_trans_version_;
 private:
@@ -1312,8 +1307,10 @@ private:
       const ObBatchSliceWriteInfo &info,
       share::ObTabletCacheInterval &pk_interval,
       const common::ObObjMeta &col_type,
+      const ObTableSchemaItem &schema_item,
       const ObLobStorageParam &lob_storage_param,
-      blocksstable::ObStorageDatum &datum);
+      blocksstable::ObStorageDatum &datum,
+      const blocksstable::ObStorageDatum *ttl_datum);
   int check_null_and_length(
       const bool is_index_table,
       const bool has_lob_rowkey,
@@ -1374,6 +1371,8 @@ private:
       const ObDirectLoadType direct_load_type,
       transaction::ObTxDesc* tx_desc,
       share::ObTabletCacheInterval &pk_interval,
+      const ObTableSchemaItem &schema_item,
+      const blocksstable::ObStorageDatum *ttl_datum,
       ObLobMetaRowIterator *&row_iter);
   int mock_chunk_store(const int64_t row_cnt);
   int inner_fill_column_group(

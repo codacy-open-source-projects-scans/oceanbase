@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -42,17 +35,15 @@ int ObWriterArgs::init(const ObWriteMacroParam &param,
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("get unexpected storage schema", K(ret), K(storage_schema));
     } else {
-      const int64_t cg_count = storage_schema->get_column_group_count();
-      if (OB_UNLIKELY(param.cg_idx_ < 0 || param.cg_idx_ >= cg_count)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("the cg idx is invalid", K(ret), K(param.cg_idx_), K(cg_count));
+      const ObStorageColumnGroupSchema *cg_schema = nullptr;
+      if (OB_FAIL(storage_schema->get_cg_schema_with_column_group_idx(param.cg_idx_, cg_schema))) {
+        LOG_WARN("fail to get column group schema", K(ret), K(param.cg_idx_), KPC(storage_schema));
       } else {
         const bool is_inc_major = is_incremental_major_direct_load(param.direct_load_type_);
         const bool is_inc_minor = is_incremental_minor_direct_load(param.direct_load_type_);
         const ObLSID ls_id = param.ls_id_;
         const uint64_t tenant_data_version = param.tenant_data_version_;
         const bool need_submit_io = !with_cs_replica;
-        const ObStorageColumnGroupSchema &cg_schema = storage_schema->get_column_groups().at(param.cg_idx_);
         ObITable::TableKey cg_table_key;
         compaction::ObExecMode exec_mode = GCTX.is_shared_storage_mode() && !is_inc_minor
                                            ? compaction::ObExecMode::EXEC_MODE_OUTPUT
@@ -67,7 +58,7 @@ int ObWriterArgs::init(const ObWriteMacroParam &param,
         cg_table_key.column_group_idx_ = param.cg_idx_;
         if (!with_cs_replica && !param.ddl_table_schema_.table_item_.is_column_store_) {
           cg_table_key.table_type_ = is_inc_major ? ObITable::INC_MAJOR_SSTABLE : ObITable::MAJOR_SSTABLE;
-        } else if (cg_schema.is_rowkey_column_group() || cg_schema.is_all_column_group()) {
+        } else if ((cg_schema->is_rowkey_column_group() && HIDDEN_ROWKEY_COLUMN_GROUP_IDX != param.cg_idx_) || cg_schema->is_all_column_group()) {
           cg_table_key.table_type_ = is_inc_major ? ObITable::INC_COLUMN_ORIENTED_SSTABLE
                                                   : ObITable::COLUMN_ORIENTED_SSTABLE;
           cg_table_key.slice_range_.start_slice_idx_ = param.slice_idx_;
@@ -110,7 +101,7 @@ int ObWriterArgs::init(const ObWriteMacroParam &param,
                                           0/*concurrent_cnt*/,
                                           (is_inc_major || is_inc_minor) ? tablet_param.reorganization_scn_ : SCN::min_scn(),
                                           SCN::min_scn(),
-                                          &cg_schema,
+                                          cg_schema,
                                           param.cg_idx_,
                                           exec_mode,
                                           need_submit_io,
@@ -174,16 +165,14 @@ int ObWriterArgs::init(const ObWriteMacroParam &param,
 
         if (OB_SUCC(ret) && is_need_ddl_redo_callback_type(writer_type)) {
           const int64_t row_offset = param.row_offset_;
-          SCN start_scn;
           const ObDDLMacroBlockType block_type = !is_inc_minor && param.is_no_logging_ ? DDL_MB_SS_EMPTY_DATA_TYPE : DDL_MB_DATA_TYPE;
-          IGNORE_RETURN start_scn.convert_for_tx(SS_DDL_START_SCN_VAL);
           ObDDLRedoLogWriterCallbackInitParam init_param;
           init_param.ls_id_ = ls_id;
           init_param.tablet_id_ = cg_table_key.tablet_id_;
           init_param.direct_load_type_ = param.direct_load_type_;
           init_param.block_type_ = block_type;
           init_param.table_key_ = cg_table_key;
-          init_param.start_scn_ = start_scn;
+          init_param.start_scn_ = param.start_scn_;
           init_param.task_id_ = param.task_id_;
           init_param.data_format_version_ = tenant_data_version;
           init_param.parallel_cnt_ = param.get_logic_parallel_count();

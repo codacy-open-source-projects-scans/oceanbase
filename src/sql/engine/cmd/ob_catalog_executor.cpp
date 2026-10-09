@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -56,10 +49,10 @@ int ObCatalogExecutor::execute(ObExecContext &ctx, ObCatalogStmt &stmt)
       // drop current default catalog, set catalog null
       if (OB_FAIL(session->update_sys_variable(share::SYS_VAR__CURRENT_DEFAULT_CATALOG, obj))) {
         LOG_WARN("failed to update sys var", K(ret));
-      } else if (OB_FAIL(ctx.get_my_session()->set_default_database(null_string))) {
+      } else if (OB_FAIL(session->set_default_database(null_string))) {
         LOG_WARN("failed to set default database", K(ret));
       } else {
-        ctx.get_my_session()->set_database_id(OB_INVALID_ID);
+        session->set_database_id(OB_INVALID_ID);
       }
     }
   }
@@ -79,10 +72,10 @@ int ObSetCatalogExecutor::execute(ObExecContext &ctx, ObCatalogStmt &stmt)
     // do nothing
   } else if (OB_FAIL(session->update_sys_variable(share::SYS_VAR__CURRENT_DEFAULT_CATALOG, obj))) {
     LOG_WARN("failed to update sys var", K(ret));
-  } else if (OB_FAIL(ctx.get_my_session()->set_default_database(null_string))) {
+  } else if (OB_FAIL(session->set_default_database(null_string))) {
     LOG_WARN("failed to set default database", K(ret));
   } else {
-    ctx.get_my_session()->set_database_id(OB_INVALID_ID);
+    session->set_database_id(OB_INVALID_ID);
   }
   return ret;
 }

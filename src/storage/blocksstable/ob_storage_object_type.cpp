@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_object_type.h"
@@ -114,6 +107,7 @@ static const char *ob_storage_object_type_strs[] = {
   "SHARED_MINI_V2_META_MACRO",
   "SHARED_MINOR_V2_DATA_MACRO",
   "SHARED_MINOR_V2_META_MACRO",
+  "SHARED_TABLET_MACRO_DIFF",
   "MAX"
 };
 
@@ -220,9 +214,9 @@ void ObStorageObjectTypeBase::get_ss_macro_block_type(
   ss_macro_block_type = ObSSMacroBlockType::MAX_TYPE;
   if (ObStorageObjectType::EXTERNAL_TABLE_FILE == type_) {
     ss_macro_block_type = ObSSMacroBlockType::EXTERNAL_TABLE;
-  } else if (macro_id.is_shared_data_or_meta()) {
+  } else if (macro_id.is_shared_data_block_or_meta_block()) {
     ss_macro_block_type = ObSSMacroBlockType::SHARED_MACRO;
-  } else if (macro_id.is_private_data_or_meta()) {
+  } else if (macro_id.is_private_macro()) {
     ss_macro_block_type = ObSSMacroBlockType::PRIVATE_MACRO;
   }
 }
@@ -6406,6 +6400,15 @@ int ObSharedMinorV2MetaMacroType::get_object_id(const ObStorageObjectOpt &opt, M
   return ret;
 }
 
+/**
+ * ---------------------------------------ObSharedTabletMacroDiffType----------------------------------------
+ */
+
+bool ObSharedTabletMacroDiffType::is_valid(const MacroBlockId &file_id) const
+{
+  return true;
+}
+
 
 const ObStorageObjectTypeBase &ObStorageObjectTypeInstance::get_instance(ObStorageObjectType type)
 {
@@ -6564,6 +6567,10 @@ const ObStorageObjectTypeBase &ObStorageObjectTypeInstance::get_instance(ObStora
     }
     case ObStorageObjectType::SHARED_MINOR_V2_META_MACRO: {
       static const ObSharedMinorV2MetaMacroType instance;
+      return instance;
+    }
+    case ObStorageObjectType::SHARED_TABLET_MACRO_DIFF: {
+      static const ObSharedTabletMacroDiffType instance;
       return instance;
     }
     default: {

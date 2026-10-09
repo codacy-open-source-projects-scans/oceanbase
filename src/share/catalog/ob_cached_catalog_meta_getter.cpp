@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -368,23 +361,24 @@ int ObCachedCatalogMetaGetter::fetch_table_statistics(
     const ObILakeTableMetadata *table_metadata,
     const ObIArray<ObString> &partition_values,
     const ObIArray<ObString> &column_names,
-    ObOptExternalTableStat *&external_table_stat,
-    ObIArray<ObOptExternalColumnStat *> &external_table_column_stats)
+    common::ObIArray<share::ObOptCatalogTableStat *> &catalog_table_stats,
+    common::ObIArray<share::ObOptCatalogColumnStat *> &catalog_table_column_stats)
 {
   return delegate_.fetch_table_statistics(allocator,
                                           sql_schema_guard,
                                           table_metadata,
                                           partition_values,
                                           column_names,
-                                          external_table_stat,
-                                          external_table_column_stats);
+                                          catalog_table_stats,
+                                          catalog_table_column_stats);
 }
 
 int ObCachedCatalogMetaGetter::fetch_partitions(ObIAllocator &allocator,
                                                 const ObILakeTableMetadata *table_metadata,
-                                                Partitions &partitions)
+                                                const ObIArray<ObString> &part_col_names,
+                                                ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos)
 {
-  return delegate_.fetch_partitions(allocator, table_metadata, partitions);
+  return delegate_.fetch_partitions(allocator, table_metadata, part_col_names, partition_infos);
 }
 
 int ObCachedCatalogMetaGetter::get_cache_refresh_interval_sec(

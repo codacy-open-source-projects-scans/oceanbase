@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_BALANCE_DEFINE_H_
@@ -62,6 +55,10 @@ public:
     LB_LS_GROUP_COUNT = 15,
     LB_UNIT_LIST = 16,
     LB_LS_COUNT = 17,
+    // Partition Balance (zone scope tablegroup)
+    PB_INTER_ZONE = 18,
+    PB_INTER_ZONE_WEIGHT = 19,
+    PB_INTER_ZONE_DISK = 20,
     MAX_STRATEGY
   };
   static const char* BALANCE_STRATEGY_STR_ARRAY[MAX_STRATEGY + 1];
@@ -74,11 +71,14 @@ public:
   bool is_valid() const { return val_ >= LB_MIGRATE && val_ < MAX_STRATEGY; }
   bool is_partition_balance_strategy() const
   {
-    return (val_ >= PB_COMPAT_OLD && val_ <= PB_PART_DISK);
+    return (val_ >= PB_COMPAT_OLD && val_ <= PB_PART_DISK)
+        || PB_INTER_ZONE == val_
+        || PB_INTER_ZONE_WEIGHT == val_
+        || PB_INTER_ZONE_DISK == val_;
   }
   bool is_new_ls_balance_strategy() const
   {
-    return val_ >= LB_DUP_LS && val_ < MAX_STRATEGY;
+    return val_ >= LB_DUP_LS && val_ <= LB_LS_COUNT;
   }
   bool is_ls_balance_by_migrate() const { return LB_MIGRATE == val_; }
   bool is_ls_balance_by_alter() const { return LB_ALTER == val_; }
@@ -86,7 +86,13 @@ public:
   bool is_ls_balance_by_shrink() const { return LB_SHRINK == val_; }
   bool is_ls_balance_by_factor() const { return LB_SCALE_OUT_FACTOR == val_; }
   bool is_partition_balance_compatible_strategy() const { return PB_COMPAT_OLD == val_; }
-  bool is_part_balance_intra_group_weight() const { return PB_INTRA_GROUP_WEIGHT == val_; }
+  bool need_optimize_transfer_path() const
+  {
+    return PB_INTRA_GROUP_WEIGHT == val_
+        || PB_INTER_ZONE == val_
+        || PB_INTER_ZONE_WEIGHT == val_
+        || PB_INTER_ZONE_DISK == val_;
+  }
   bool is_unit_list_balance() const
   {
     return LB_UNIT_LIST == val_;
@@ -98,7 +104,18 @@ public:
   // LB_DUP_LS -> LB_UNIT_GROUP -> LB_LS_GROUP_LOCATION -> LB_LS_GROUP_COUNT -> LB_UNIT_LIST -> LB_LS_COUNT
   bool can_be_next_ls_balance_strategy(const ObBalanceStrategy &old_strategy) const
   {
-    return is_new_ls_balance_strategy() && val_ > old_strategy.val_;
+    bool b_ret = false;
+    if (!is_new_ls_balance_strategy()) {
+      b_ret = false;
+    } else if (val_ > old_strategy.val_) {
+      b_ret = true;
+    } else if (LB_LS_GROUP_LOCATION == val_ && LB_LS_GROUP_COUNT == old_strategy.val_) {
+      // 非倍数缩容优化中，LSGroupCountBalance 完成 deleting-only LSG 的 split 后，
+      // 下一轮均衡需要回到 LSGroupLocationBalance 做平均迁移，
+      // 这是预期内的"回退一档"，不应被 CANCELING。
+      b_ret = true;
+    }
+    return b_ret;
   }
   bool can_be_next_partition_balance_strategy(const ObBalanceStrategy &old_strategy) const;
   ObBalanceStrategy &operator=(const STRATEGY &val);
@@ -107,6 +124,8 @@ public:
   const char *str() const;
   int parse_from_str(const ObString &str);
   TO_STRING_KV(K_(val), "val", str());
+private:
+  int64_t get_partition_balance_strategy_order_(const STRATEGY strategy) const;
 private:
   STRATEGY val_;
 };

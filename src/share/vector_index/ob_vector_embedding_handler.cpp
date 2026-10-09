@@ -1,14 +1,7 @@
 /**
-* Copyright (c) 2023 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*/
+ * Copyright (c) 2023 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #define USING_LOG_PREFIX SHARE
 
@@ -379,10 +372,10 @@ int ObEmbeddingTask::parse_embedding_response(const char *response_data, size_t 
             } else if (OB_ISNULL(embedding_jbase)) {
               ret = OB_ERR_UNEXPECTED;
               LOG_WARN("embedding jbase is null", K(ret));
-            } else if (use_base64_format_ && OB_FAIL(ObAIFuncUtils::decode_base64_embedding_array(
+            } else if (use_base64_format_ && embedding_jbase->json_type() == ObJsonNodeType::J_STRING && OB_FAIL(ObAIFuncUtils::decode_base64_embedding_array(
                                                       *embedding_jbase, allocator_, dimension_, vector))) {
               LOG_WARN("failed to decode base64 embedding array", K(ret));
-            } else if (!use_base64_format_ && OB_FAIL(ObAIFuncUtils::decode_float_embedding_array(
+            } else if (embedding_jbase->json_type() == ObJsonNodeType::J_ARRAY && OB_FAIL(ObAIFuncUtils::decode_float_embedding_array(
                                                         *embedding_jbase, allocator_, json_reader, dimension_, vector))) {
               LOG_WARN("failed to decode float embedding array", K(ret));
             } else {

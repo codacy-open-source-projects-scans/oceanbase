@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -293,7 +286,7 @@ int ObExternalTablePushdownFilter::apply_bloom_filter(
     BloomFilterParamBuilder* bloom_filter_builder,
     bool &skipped) {
   int ret = OB_SUCCESS;
-  ObEvalCtx &eval_ctx = pd_storage_filters_->get_op().get_eval_ctx();
+  ObEvalCtx &eval_ctx = pd_storage_filters_->get_op()->get_eval_ctx();
   if (bloom_filter_enabled_ && !skipped && bloom_filter_builder != nullptr) {
     // all the items & filters
     common::ObSEArray<BloomFilterItem, 1> items;
@@ -748,6 +741,8 @@ int ObExternalTablePushdownFilter::build_filter_expr_rel(
           // update eager column flag
           is_eager_column_.at(file_col_expr_index) = true;
           is_dup_project_.at(file_col_expr_index) = row_iter->column_sel_mask_.at(index);
+        } else if (OB_FAIL(meta_filter_col_ids_.push_back(col_id))) {
+          LOG_WARN("fail to push back meta filter col id", K(ret), K(col_id));
         }
       }
     }
@@ -826,8 +821,17 @@ int ObExternalTablePushdownFilter::gather_eager_exprs(
           }
         }
         if (!is_matched) {
-          ret = OB_SEARCH_NOT_FOUND;
-          LOG_WARN("get lazy filter", K(ret), K(column_ids.at(i)), K(mapping_col_ids), K(eager_columns_));
+          FilterExprRel *filter_expr_rel = filter_expr_rels_.get(column_ids.at(i));
+          if (OB_NOT_NULL(filter_expr_rel) && filter_expr_rel->is_file_meta_column_) {
+            // Meta columns are prepared outside normal parquet file-column readers.
+          } else {
+            ret = OB_SEARCH_NOT_FOUND;
+            LOG_WARN("get lazy filter",
+                     K(ret),
+                     K(column_ids.at(i)),
+                     K(mapping_col_ids),
+                     K(eager_columns_));
+          }
         }
       }
     } else if (root_filter->is_logic_op_node()) {
@@ -856,7 +860,9 @@ int ObExternalTablePushdownFilter::generate_lazy_exprs(const ObIArray<std::pair<
       bool is_found = false;
       for (int64_t j = 0; OB_SUCC(ret) && j < mapping_col_ids.count(); ++j) {
         if (mapping_col_ids.at(j).second == i) {
-          OZ (lazy_columns_.push_back(j));
+          if (!has_exist_in_array(eager_columns_, static_cast<uint64_t>(j))) {
+            OZ (lazy_columns_.push_back(j));
+          }
           is_found = true;
           break;
         }

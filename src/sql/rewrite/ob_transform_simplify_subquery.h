@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_SIMPILFY_SUBQUERY_H
@@ -59,6 +52,26 @@ private:
   static bool is_add_limit_for_exists_subquery_enabled(const uint64_t compat_version);
   int recursive_add_limit_for_exists_expr(ObRawExpr *expr, bool &trans_happened);
 
+  // Lift an ANY/IN/EXISTS subquery's WHERE conds that contain a nested subquery correlated ONLY to
+  // an upper stmt (not to this subquery's own tables) into the outer WHERE. For
+  // `x op ANY/EXISTS (SELECT col FROM t WHERE L AND P)` where P contains a nested subquery whose only
+  // correlation is to an upper stmt (not any local table of t), is deterministic, and this subquery
+  // is not a scalar aggregate, this equals `P AND x op ANY/EXISTS (SELECT col FROM t WHERE L)`
+  // (a false/NULL P empties the subquery, making `x op ANY/EXISTS (empty set)` FALSE = the row being
+  // filtered by the lifted P). Each qualifying P is lifted independently; the subquery may stay
+  // correlated on the remaining L (the unnest framework handles it). This helps even without a
+  // following unnest, and PMA never pushes such a WHERE-expression predicate back into the subquery,
+  // so there is no oscillation.
+  int pullup_nested_correlated_subquery(ObDMLStmt *stmt, bool &trans_happened);
+  int try_pullup_nested_correlated_subquery(ObDMLStmt *stmt,
+                                            ObRawExpr *expr,
+                                            bool &trans_happened);
+  int collect_nested_correlated_subquery(ObQueryRefRawExpr *query_ref,
+                                         ObSelectStmt *subquery,
+                                         ObIArray<ObRawExpr *> &pullup_conds);
+  int decorrelate_pulled_up_nested_conds(ObIArray<ObRawExpr *> &pullup_conds,
+                                         ObIArray<ObExecParamRawExpr *> &exec_params);
+
   /**
    * @brief transform_any_all
    * 遍历stmt中不同部分中的表达式，并尝试对其改写
@@ -69,18 +82,30 @@ private:
    * @brief try_trans_any_all
    * 尝试对表达式 expr 本身或者它的参数表达式进行改写
    */
-  int try_transform_any_all(ObDMLStmt *stmt, ObRawExpr *&expr, bool &trans_happened);
+  int try_transform_any_all(ObDMLStmt *stmt,
+                            ObRawExpr *root_expr,
+                            ObRawExpr *&expr,
+                            bool &trans_happened);
 
   /**
    * @brief do_trans_any_all
    * 判断一个表达式是否可以进行改写，如果可以那么进行改写
    */
-  int do_transform_any_all(ObDMLStmt *stmt, ObRawExpr *&expr, bool &trans_happened);
+  int do_transform_any_all(ObDMLStmt *stmt,
+                           ObRawExpr *root_expr,
+                           ObRawExpr *&expr,
+                           bool &trans_happened);
 
-  int check_any_all_as_min_max(ObRawExpr *expr, bool &is_valid);
+  int check_any_all_as_min_max(ObDMLStmt *stmt,
+                               ObRawExpr *root_expr,
+                               ObRawExpr *expr,
+                               bool &is_valid);
 
 
-  int transform_any_all_as_min_max(ObDMLStmt *stmt, ObRawExpr *expr, bool &trans_happened);
+  int transform_any_all_as_min_max(ObDMLStmt *stmt,
+                                   ObRawExpr *root_expr,
+                                   ObRawExpr *expr,
+                                   bool &trans_happened);
 
   int do_transform_any_all_as_min_max(ObSelectStmt *sel_stmt, const ObItemType aggr_type,
                                       bool is_with_all, bool &trans_happened);
@@ -175,6 +200,8 @@ private:
                             ObSelectStmt *subquery,
                             bool parent_is_set_query,
                             bool &trans_happened);
+  int wrap_const_view_for_set_child_if_needed(ObIArray<ObSelectStmt *> &child_stmts,
+                                              const ObIArray<bool> &child_happened);
   int eliminate_groupby_in_exists(ObDMLStmt *stmt,
                                   const ObItemType op_type,
                                   ObSelectStmt *&subquery,

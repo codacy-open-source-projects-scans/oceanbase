@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #pragma once
 
@@ -113,7 +106,7 @@ public:
   TO_STRING_KV(K_(table_id), K_(rowkey_column_num), K_(column_count), KP_(col_descs),
                KP_(datum_utils), KP_(lob_column_idxs), "merge_mode",
                ObDirectLoadMergeMode::get_type_string(merge_mode_), K_(use_batch_mode),
-               KP_(dml_row_handler), KP_(insert_table_ctx), K_(trans_param), KP_(file_mgr),
+               KP_(dml_row_handler), KP_(insert_table_ctx), K_(snapshot_version), K_(trans_param), KP_(file_mgr),
                KP_(ctx));
 
 public:
@@ -130,6 +123,7 @@ public:
   ObDirectLoadDMLRowHandler *dml_row_handler_; // rescan时为nullptr
   ObDirectLoadInsertTableContext *insert_table_ctx_;
   // 任务级参数
+  int64_t snapshot_version_;
   ObDirectLoadTransParam trans_param_;
   ObDirectLoadTmpFileManager *file_mgr_;
   // TODO 更新进度信息

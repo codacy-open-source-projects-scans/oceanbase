@@ -1,17 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
 #include "storage/blocksstable/ob_logic_macro_id.h"
+#include "common/ob_version_def.h"
 
 namespace oceanbase
 {
@@ -149,6 +143,49 @@ OB_SERIALIZE_MEMBER(ObLogicMacroBlockId,
                     logic_version_,
                     tablet_id_,
                     info_);
+
+int64_t ObLogicMacroBlockId::get_serialize_size(const uint64_t data_version) const
+{
+  int64_t len = 0;
+  LST_DO_CODE(OB_UNIS_ADD_LEN, static_cast<int64_t>(LOGIC_BLOCK_ID_VERSION));
+  len += serialization::OB_SERIALIZE_SIZE_NEED_BYTES;
+  LST_DO_CODE(OB_UNIS_ADD_LEN,
+              data_seq_,
+              logic_version_,
+              tablet_id_);
+  if (DATA_VERSION_4_3_0_0 <= data_version) {
+    LST_DO_CODE(OB_UNIS_ADD_LEN, info_);
+  }
+  return len;
+}
+
+int ObLogicMacroBlockId::serialize(char *buf, const int64_t buf_len, int64_t &pos, const uint64_t data_version) const
+{
+  int ret = OB_SUCCESS;
+  OB_UNIS_ENCODE(static_cast<int64_t>(LOGIC_BLOCK_ID_VERSION));
+  if (OB_SUCC(ret)) {
+    const int64_t size_nbytes = serialization::OB_SERIALIZE_SIZE_NEED_BYTES;
+    const int64_t pos_bak = (pos += size_nbytes);
+    LST_DO_CODE(OB_UNIS_ENCODE,
+                data_seq_,
+                logic_version_,
+                tablet_id_);
+    if (OB_SUCC(ret) && DATA_VERSION_4_3_0_0 <= data_version) {
+      LST_DO_CODE(OB_UNIS_ENCODE, info_);
+    }
+    if (OB_SUCC(ret)) {
+      const int64_t serial_size = pos - pos_bak;
+      int64_t tmp_pos = 0;
+      if (OB_FAIL(serialization::encode_fixed_bytes_i64(buf + pos_bak - size_nbytes,
+                                                       size_nbytes,
+                                                       tmp_pos,
+                                                       serial_size))) {
+        LOG_WARN("fail to serialize logic macro block id", K(ret), K(buf_len), K(pos), KDV(data_version));
+      }
+    }
+  }
+  return ret;
+}
 
 uint64_t ObLogicMicroBlockId::hash() const
 {

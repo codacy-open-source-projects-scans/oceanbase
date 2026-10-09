@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -30,6 +23,8 @@
 #include "sql/engine/expr/ob_expr_sql_udt_construct.h"
 #include "sql/engine/expr/ob_expr_priv_attribute_access.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
+#include "sql/engine/expr/ob_expr_random_part_nextval.h"
+#include "share/aggregate/util.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -914,7 +909,7 @@ int ObRawExpr::calc_hash()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected null", K(ret));
     } else if (OB_FAIL(SMART_CALL(get_param_expr(i)->calc_hash()))) {
-      LOG_WARN("fail to extract sysvar from params", K(ret));
+      LOG_WARN("fail to extract sysvar from params", K(ret), K(get_param_expr(i)));
     }
   }
   if (OB_SUCC(ret)) {
@@ -959,7 +954,8 @@ bool ObRawExpr::need_extra_calc_type(const bool is_mysql_number) const
           T_OP_ADD == type_ ||
           T_OP_MINUS == type_ ||
           T_OP_MUL == type_ ||
-          T_FUN_AVG == type_
+          T_FUN_AVG == type_ ||
+          T_FUN_AVG_WEIGHTED == type_
          ));
 }
 
@@ -1073,6 +1069,7 @@ int ObRawExpr::is_const_inherit_expr(bool &is_const_inherit,
       || T_FUN_SYS_UUID_SHORT == type_
       || T_FUN_SYS_SEQ_NEXTVAL == type_
       || T_FUN_SYS_AUTOINC_NEXTVAL == type_
+      || T_FUN_SYS_RANDOM_PART_NEXTVAL == type_
       || T_FUN_SYS_DOC_ID == type_
       || T_FUN_SYS_VEC_VID == type_
       || T_PSEUDO_HIDDEN_CLUSTERING_KEY == type_
@@ -1119,7 +1116,8 @@ int ObRawExpr::is_const_inherit_expr(bool &is_const_inherit,
       || T_FUN_SYS_IS_USED_LOCK == type_
       || T_FUN_SYS_RELEASE_LOCK == type_
       || T_FUN_SYS_RELEASE_ALL_LOCKS == type_
-      || T_FUN_ES_MATCH == type_) {
+      || T_FUN_ES_MATCH == type_
+      || T_FUN_CK_RAND_CANONICAL == type_) {
      is_const_inherit = false;
   }
   if (is_const_inherit && T_OP_GET_USER_VAR == type_) {
@@ -1245,7 +1243,8 @@ int ObRawExpr::is_non_pure_sys_func_expr(bool &is_non_pure) const
           || T_FUN_SYS_RELEASE_LOCK == type_
           || T_FUN_SYS_RELEASE_ALL_LOCKS == type_
           || T_FUN_SYS_CURRENT_ROLE == type_
-          || T_FUN_SYS_IS_ENABLED_ROLE == type_) {
+          || T_FUN_SYS_IS_ENABLED_ROLE == type_
+          || T_FUN_CK_RAND_CANONICAL == type_) {
       is_non_pure = true;
     }
   }
@@ -1340,6 +1339,7 @@ int ObConstRawExpr::assign(const ObRawExpr &other)
       is_date_unit_ = const_expr.is_date_unit_;
       is_literal_bool_ = const_expr.is_literal_bool();
       is_dynamic_eval_questionmark_ = const_expr.is_dynamic_eval_questionmark_;
+      is_from_overloaded_routine_ = const_expr.is_from_overloaded_routine_;
       orig_questionmark_type_.assign(const_expr.get_orig_qm_type());
     }
   }
@@ -1407,6 +1407,7 @@ void ObConstRawExpr::reset()
   is_literal_bool_ = false;
   extra_.array_param_group_id_ = -1;
   is_dynamic_eval_questionmark_ = false;
+  is_from_overloaded_routine_ = false;
   orig_questionmark_type_.reset();
 
 }
@@ -2908,24 +2909,28 @@ bool ObOpRawExpr::inner_same_as(
     need_cmp = false;
   }
   if (need_cmp) {
+    const ObIArray<ObRawExpr *> &lhs_params = this->get_param_exprs();
+    const ObIArray<ObRawExpr *> &rhs_params = static_cast<const ObOpRawExpr &>(expr).get_param_exprs();
+    const int64_t lhs_cnt = lhs_params.count();
+    const int64_t rhs_cnt = rhs_params.count();
     if (BOTH_CMP == cmp_type || REGULAR_CMP == cmp_type) {
-      if (this->get_param_count() == expr.get_param_count()) {
+      if (lhs_cnt == rhs_cnt) {
         bool_ret = true;
-        for (int64_t i = 0; bool_ret && i < expr.get_param_count(); ++i) {
-          if (NULL == this->get_param_expr(i) || NULL == expr.get_param_expr(i)
-              || !(this->get_param_expr(i)->same_as(*expr.get_param_expr(i), check_context))) {
+        for (int64_t i = 0; bool_ret && i < rhs_cnt; ++i) {
+          if (NULL == lhs_params.at(i) || NULL == rhs_params.at(i)
+              || !(lhs_params.at(i)->same_as(*rhs_params.at(i), check_context))) {
             bool_ret = false;
           }
         }
       }
     }
     if (!bool_ret && (BOTH_CMP == cmp_type || REVERSE_CMP == cmp_type)) {
-      if (NULL == this->get_param_expr(0) || NULL == expr.get_param_expr(0)
-          || NULL == this->get_param_expr(1) || NULL == expr.get_param_expr(1)) {
+      if (NULL == lhs_params.at(0) || NULL == rhs_params.at(0)
+          || NULL == lhs_params.at(1) || NULL == rhs_params.at(1)) {
         /* bool_ret = false; */
       } else {
-        bool_ret = this->get_param_expr(0)->same_as(*expr.get_param_expr(1), check_context)
-            && this->get_param_expr(1)->same_as(*expr.get_param_expr(0), check_context);
+        bool_ret = lhs_params.at(0)->same_as(*rhs_params.at(1), check_context)
+                    && lhs_params.at(1)->same_as(*rhs_params.at(0), check_context);
       }
     }
   }
@@ -4405,6 +4410,34 @@ int ObAggFunRawExpr::get_name_internal(char *buf, const int64_t buf_len, int64_t
       } else if (OB_FAIL(get_real_param_exprs().at(0)->get_name(buf, buf_len, pos, type))) {
         LOG_WARN("fail to get_name", K(i), K(ret));
       } else {}
+    } else if (T_FUN_WINDOW_FUNNEL == get_expr_type()) {
+      // window_funnel(window, mode, timestamp, cond1, cond2, ...)
+      // params:(timestamp, window, mode, cond1, cond2, ...)
+      if (get_real_param_count() <= share::aggregate::WINDOW_FUNNEL_CONDITION_START_IDX) {
+        ret = OB_ERR_PARAM_SIZE;
+        LOG_WARN("invalid number of arguments", K(ret), K(get_expr_type()));
+      } else if (OB_FAIL(get_real_param_exprs().at(
+                          share::aggregate::WINDOW_FUNNEL_WINDOW_EXPR_IDX)->get_name(buf, buf_len, pos, type))) {
+        LOG_WARN("fail to get_name", K(share::aggregate::WINDOW_FUNNEL_WINDOW_EXPR_IDX), K(ret));
+      } else if (OB_FAIL(BUF_PRINTF(", "))) {
+      } else if (OB_FAIL(get_real_param_exprs().at(
+                          share::aggregate::WINDOW_FUNNEL_MODE_EXPR_IDX)->get_name(buf, buf_len, pos, type))) {
+        LOG_WARN("fail to get_name", K(share::aggregate::WINDOW_FUNNEL_MODE_EXPR_IDX), K(ret));
+      } else if (OB_FAIL(BUF_PRINTF(", "))) {
+        LOG_WARN("fail to BUF_PRINTF", K(ret));
+      } else if (OB_FAIL(get_real_param_exprs().at(
+                          share::aggregate::WINDOW_FUNNEL_TIMESTAMP_EXPR_IDX)->get_name(buf, buf_len, pos, type))) {
+        LOG_WARN("fail to get_name", K(share::aggregate::WINDOW_FUNNEL_TIMESTAMP_EXPR_IDX), K(ret));
+      } else {
+        for (int64_t i = share::aggregate::WINDOW_FUNNEL_CONDITION_START_IDX;
+              OB_SUCC(ret) && i < get_real_param_count(); ++i) {
+          if (OB_FAIL(BUF_PRINTF(", "))) {
+            LOG_WARN("fail to BUF_PRINTF", K(ret));
+          } else if (OB_FAIL(get_real_param_exprs().at(i)->get_name(buf, buf_len, pos, type))) {
+            LOG_WARN("fail to get_name", K(i), K(ret));
+          }
+        }
+      }
     } else {
       for (; OB_SUCC(ret) && i < get_real_param_count() - 1; ++i) {
         if (OB_ISNULL(get_real_param_exprs().at(i))) {
@@ -4675,15 +4708,16 @@ bool ObSysFunRawExpr::inner_same_as(
     } else if (IS_QUERY_JSON_EXPR(expr.get_expr_type()) || IS_QUERY_JSON_EXPR(get_expr_type())) {
       bool_ret = inner_json_expr_same_as(expr, check_context);
     }
-  } else if (T_FUN_SYS_RAND == get_expr_type() ||
+  } else if ((T_FUN_SYS_RAND == get_expr_type() ||
              T_FUN_SYS_RANDOM == get_expr_type() ||
              T_FUN_SYS_UUID == get_expr_type() ||
              T_FUN_SYS_UUID_SHORT == get_expr_type() ||
              T_FUN_SYS_GUID == get_expr_type() ||
              T_OP_GET_USER_VAR == get_expr_type() ||
              T_OP_GET_SYS_VAR == get_expr_type() ||
-             (has_flag(IS_STATE_FUNC) && (NULL == check_context ||
-                          (NULL != check_context && check_context->need_check_deterministic_)))) {
+             T_FUN_CK_RAND_CANONICAL == get_expr_type() ||
+             has_flag(IS_STATE_FUNC)) && (NULL == check_context ||
+                          (NULL != check_context && check_context->need_check_deterministic_))) {
   } else if (T_FUN_SYS_LAST_REFRESH_SCN == get_expr_type()) {
     bool_ret = get_mview_id() == static_cast<const ObSysFunRawExpr&>(expr).get_mview_id();
   } else if (get_expr_class() == expr.get_expr_class()) {
@@ -4882,10 +4916,8 @@ int ObSysFunRawExpr::check_param_num_internal(int32_t param_num, int32_t param_c
           ret = OB_ERR_PARAM_SIZE;
           LOG_WARN("Param num of function should be 2 or 3", K(func_name_), K(ret), K(param_count));
         }
-      } else if (!lib::is_oracle_mode() && T_FUN_SYS_REPLACE == type && param_count != 3) {
-        ret = OB_ERR_PARAM_SIZE;
-        LOG_WARN("Param num of function should be 3", K(func_name_), K(ret), K(lib::is_oracle_mode()));
       }
+      // ADB compatibility: REPLACE(str, search) with 2 params is equivalent to REPLACE(str, search, '')
       break;
     }
     case ObExprOperator::OCCUR_AS_PAIR: {
@@ -4981,6 +5013,9 @@ int ObSysFunRawExpr::get_name_internal(char *buf, const int64_t buf_len, int64_t
   } else {
     if (T_FUN_SYS_AUTOINC_NEXTVAL == get_expr_type() &&
         OB_FAIL(get_autoinc_nextval_name(buf, buf_len, pos))) {
+      LOG_WARN("fail to get_autoinc_nextval_name", K(ret));
+    } else if (T_FUN_SYS_RANDOM_PART_NEXTVAL == get_expr_type() &&
+        OB_FAIL(get_random_part_nextval_name(buf, buf_len, pos))) {
       LOG_WARN("fail to get_autoinc_nextval_name", K(ret));
     } else {
       if (T_FUN_COLUMN_CONV == get_expr_type()) {
@@ -5215,6 +5250,27 @@ int ObSysFunRawExpr::get_autoinc_nextval_name(char *buf, int64_t buf_len, int64_
     ObString autoinc_qualified_name =
             concat_qualified_name("", autoinc_table_name, autoinc_column_name);
     if (OB_FAIL(BUF_PRINTF("%s.", autoinc_qualified_name.ptr()))) {
+      LOG_WARN("fail to BUF_PRINTF", K(ret));
+    }
+  }
+  return ret;
+}
+
+int ObSysFunRawExpr::get_random_part_nextval_name(char *buf, int64_t buf_len, int64_t &pos) const
+{
+  int ret = OB_SUCCESS;
+  ObAutoincNextvalExtra *random_part_extra = NULL;
+  if (OB_ISNULL(buf) || T_FUN_SYS_RANDOM_PART_NEXTVAL != get_expr_type()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", K(buf), K(get_expr_type()), K(ret));
+  } else if (OB_ISNULL((random_part_extra = reinterpret_cast<ObAutoincNextvalExtra *>(extra_.random_part_nextval_extra_)))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("extra_ is null", K(ret));
+  } else {
+    ObString table_name = random_part_extra->autoinc_table_name_;
+    ObString column_name = random_part_extra->autoinc_column_name_;
+    ObString qualified_name = concat_qualified_name("", table_name, column_name);
+    if (OB_FAIL(BUF_PRINTF("%s.", qualified_name.ptr()))) {
       LOG_WARN("fail to BUF_PRINTF", K(ret));
     }
   }
@@ -7440,7 +7496,7 @@ int ObRawExprFactory::create_raw_expr(ObRawExpr::ExprClass expr_class,
     break;
   }
   case ObRawExpr::EXPR_SYS_FUNC: {
-    if (T_FUN_SYS_SEQ_NEXTVAL == expr_type) {
+    if (T_FUN_SYS_SEQ_NEXTVAL == expr_type || T_FUN_SYS_PL_SEQ_NEXT_VALUE == expr_type) {
       ObSequenceRawExpr *dest_seq = NULL;
       if (OB_FAIL(create_raw_expr(expr_type, dest_seq))) {
         LOG_WARN("failed to allocate raw expr", K(dest_seq), K(ret));

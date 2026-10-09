@@ -1,12 +1,5 @@
-//Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2021 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "ob_tablet_merge_info.h"
 #include "storage/compaction/ob_basic_tablet_merge_ctx.h"
@@ -129,9 +122,12 @@ int ObTabletMergeInfo::record_start_tx_scn_for_tx_data(const ObBasicTabletMergeC
     // when this merge is MINOR_MERGE, use max_filtered_end_scn in filter if filtered some tx data
     ObTxDataMinorFilter *compaction_filter = (ObTxDataMinorFilter*)ctx.filter_ctx_.compaction_filter_;
     ObSSTableMetaHandle sstable_meta_hdl;
-    ObSSTable *oldest_tx_data_sstable = static_cast<ObSSTable *>(tables_handle.get_table(0));
+    ObSSTable *oldest_tx_data_sstable = nullptr;
     SCN default_tx_data_recycle_scn(SCN::min_scn());
-    if (OB_ISNULL(oldest_tx_data_sstable)) {
+    if (tables_handle.empty()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_ERROR("tables handle is unexpected empty", KR(ret), K(ctx));
+    } else if (OB_ISNULL(oldest_tx_data_sstable = static_cast<ObSSTable *>(tables_handle.get_table(0)))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("tx data sstable is unexpected nullptr", KR(ret));
     } else if (OB_FAIL(oldest_tx_data_sstable->get_meta(sstable_meta_hdl))) {
@@ -185,7 +181,8 @@ int ObTabletMergeInfo::create_sstable(
   } else if (NULL == cg_schema) {
     // row store mode, do nothing
   } else {
-    is_main_table = cg_schema->is_all_column_group() || cg_schema->is_rowkey_column_group(); //"rowkey_cg" and "all_cg" are not allowed to coexist
+    is_main_table = cg_schema->is_all_column_group()
+                 || (cg_schema->is_rowkey_column_group() && !ctx.get_schema()->has_all_column_group());
   }
 
   if (OB_SUCC(ret)) {
@@ -213,9 +210,17 @@ int ObTabletMergeInfo::create_sstable(
       } else if (OB_FAIL(build_create_sstable_param(ctx, res, param, cg_schema, column_group_idx))) {
         LOG_WARN("fail to build create sstable param", K(ret));
       } else if (is_main_table) { // should build co sstable
-        if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable<ObCOSSTableV2>(param,
-                                                                              ctx.mem_ctx_.get_allocator(),
-                                                                              merge_table_handle))) {
+        const ObStorageSchema *target_schema = ctx.get_target_schema();
+        if (target_schema->is_row_store()) {
+          if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable<ObSSTable>(param,
+                                                                            ctx.mem_ctx_.get_allocator(),
+                                                                            merge_table_handle))) {
+            LOG_WARN("fail to create sstable", K(ret), K(param));
+            CTX_SET_DIAGNOSE_LOCATION(ctx);
+          }
+        } else if (OB_FAIL(ObTabletCreateDeleteHelper::create_sstable<ObCOSSTableV2>(param,
+                                                                                     ctx.mem_ctx_.get_allocator(),
+                                                                                     merge_table_handle))) {
           LOG_WARN("fail to create sstable", K(ret), K(param));
           CTX_SET_DIAGNOSE_LOCATION(ctx);
         }
@@ -251,7 +256,7 @@ int ObTabletMergeInfo::create_sstable(
       }
 
       if (OB_SUCC(ret) && !skip_to_create_empty_cg) {
-        LOG_TRACE("succeed to merge sstable", K(param), KPC(cg_schema), KPC(this));
+        FLOG_INFO("succeed to merge sstable", K(column_group_idx), K(param), KPC(cg_schema), KPC(this));
       }
     }
   }

@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_tenant_sql_memory_manager.h"
 #include "sql/engine/px/ob_px_util.h"
+#include "lib/utility/ob_tracepoint.h"
 
 namespace oceanbase {
 
@@ -910,7 +904,9 @@ int ObTenantSqlMemoryManager::get_max_work_area_size(
               : total_alloc_size;
     double alloc_ratio = total_alloc_size * 1.0 / tmp_max_wa_memory_size;
     if (alloc_ratio < 0) {
-      LOG_ERROR("alloc ratio is less than 0", K(alloc_ratio), K(total_alloc_size), K(tmp_max_wa_memory_size));
+      if (OB_UNLIKELY(OB_SUCCESS != (OB_E(EventTable::EN_SQL_MEM_TOTAL_ALLOC_SIZE_CHECK) OB_SUCCESS))) {
+        LOG_ERROR("alloc ratio is less than 0", K(alloc_ratio), K(total_alloc_size), K(tmp_max_wa_memory_size));
+      }
       alloc_ratio = 0;
       sql_mem_callback_.reset_total_alloc_size_if_negative();
     }

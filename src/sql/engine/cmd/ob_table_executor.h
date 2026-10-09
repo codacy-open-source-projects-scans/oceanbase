@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_TABLE_EXECUTOR_
@@ -201,7 +194,9 @@ private:
     const common::ObString &access_info,
     common::ObIAllocator &allocator,
     common::ObStorageType &storage_type);
-  int populate_based_schema_obj_info_(obrpc::ObAlterTableArg &alter_table_arg);
+  int populate_based_schema_obj_info_(const share::schema::ObTableSchema *&orig_table_schema,
+                                      obrpc::ObAlterTableArg &alter_table_arg,
+                                      share::schema::ObSchemaGetterGuard &schema_guard);
 
 private:
   //DISALLOW_COPY_AND_ASSIGN(ObAlterTableExecutor);
@@ -249,14 +244,6 @@ public:
   int execute(ObExecContext &ctx, ObTruncateTableStmt &stmt);
 private:
   int check_use_parallel_truncate(const obrpc::ObTruncateTableArg &arg, bool &use_parallel_truncate);
-  int truncate_oracle_temp_table_v2(
-      sql::ObSQLSessionInfo &my_session,
-      share::schema::ObSchemaGetterGuard &schema_guard,
-      const share::schema::ObTableSchema &table_schema,
-      const int64_t sequence,
-      const uint64_t session_id,
-      common::ObMySQLTransaction &trans);
-
 };
 
 class ObCreateTableLikeStmt;

@@ -1,18 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the XML path abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "ob_xpath.h"
+#include "common/ob_smart_call.h"
 #include "lib/xml/ob_path_parser.h"
 #include "lib/xml/ob_xml_util.h"
 #include "rpc/obmysql/ob_mysql_global.h" // DOUBLE_TO_STRING_CONVERSION_BUFFER_SIZE
@@ -2977,7 +2970,10 @@ int ObPathFilterOpNode::eval_node(ObPathCtx &ctx, ObSeekResult& res)
     if (ret != OB_ITER_END) {
       LOG_WARN("fail to eval right");
     } else {
-      ret = init_right_without_filter(ctx, res);
+      if (OB_NOT_NULL(right_)) {
+        right_->is_seeked_ = false;
+      }
+      ret = init_right_with_filter(ctx, res);
     }
   }
 
@@ -3112,7 +3108,7 @@ int ObPathUtil::get_filter_node_result(ObPathCtx &ctx, ObLibTreeNodeBase* filter
   } else {
     ObSeekResult seek_result;
     filter_node->is_seeked_ = false;
-    if (OB_FAIL(filter_node->eval_node(ctx, seek_result))) {
+    if (OB_FAIL(SMART_CALL(filter_node->eval_node(ctx, seek_result)))) {
       LOG_WARN("filter node eval node fail", K(ret));
     } else if (!seek_result.is_scalar_) {
       ret = OB_ERR_UNEXPECTED;

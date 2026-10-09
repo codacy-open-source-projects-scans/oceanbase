@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -22,12 +15,6 @@
 #include "rootserver/ob_root_utils.h"
 #include "share/ob_global_stat_proxy.h"
 #include "share/schema/ob_mview_info.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "rootserver/backup/ob_ss_ha_macro_block_task_mgr.h"
-#include "share/backup/ob_ss_ha_macro_block_table_operator.h"
-#include "storage/backup/ob_ss_backup_utils.h"
-#include "storage/backup/ob_ss_backup_restore_util.h"
-#endif
 
 namespace oceanbase
 {
@@ -90,11 +77,9 @@ int ObBackupDataScheduler::reload_task(
     ObBackupTaskSchedulerQueue &queue)
 {
   // 1. step1: get doing jobs from __all_backup_job;
-  // 2. step1: get all pending or doing macro block tasks in __all_backup_macro_block_task from all doing jobs
-  // 3. step2: add pending task into wait_list and add doing task into schedule_list
+  // 2. step2: add pending task into wait_list and add doing task into schedule_list
   int ret = OB_SUCCESS;
   ObArray<ObBackupJobAttr> jobs;
-  ObArray<ObSSHAMacroBlockTaskAttr> macro_tasks;
   bool for_update = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
@@ -105,30 +90,15 @@ int ObBackupDataScheduler::reload_task(
     LOG_INFO("[DATA_BACKUP]no job need to reload", K_(tenant_id));
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < jobs.count(); ++i) {
-      macro_tasks.reset();
       const ObBackupJobAttr &job = jobs.at(i);
       ObBackupSetTaskAttr set_task_attr;
-      bool is_valid = true;
       if (OB_SYS_TENANT_ID == job.tenant_id_
           || ObBackupStatus::Status::DOING != job.status_.status_) {
       } else if (OB_FAIL(ObBackupTaskOperator::get_backup_task(
           *sql_proxy_, job.job_id_, job.tenant_id_, false/*for update*/, set_task_attr))) {
         LOG_WARN("[DATA_BACKUP]failed to get set task", K(ret), K(job));
-      } else if (!GCTX.is_shared_storage_mode() || ObBackupStatus::BACKUP_USER_DATA != set_task_attr.status_) {
-        if (OB_FAIL(reload_ls_tasks_(job, set_task_attr, for_update, allocator, queue))) {
-          LOG_WARN("[DATA_BACKUP]failed to reload ls task to scheduler", K(ret), K(job));
-        }
-      } else {
-#ifdef OB_BUILD_SHARED_STORAGE
-        ObSSHAMacroTaskType task_type(ObSSHAMacroTaskType::BACKUP);
-        if (OB_FAIL(backup::ObSSBackupRestoreUtil::reload_macro_block_tasks(*sql_proxy_,
-                                                                            task_type,
-                                                                            job,
-                                                                            set_task_attr,
-                                                                            queue))) {
-          LOG_WARN("[DATA_BACKUP]fail to reload macro block tasks", K(ret), K(task_type), K(job), K(set_task_attr));
-        }
-#endif
+      } else if (OB_FAIL(reload_ls_tasks_(job, set_task_attr, for_update, allocator, queue))) {
+        LOG_WARN("[DATA_BACKUP]failed to reload ls task to scheduler", K(ret), K(job));
       }
     }
   }
@@ -185,7 +155,7 @@ int ObBackupDataScheduler::do_reload_single_ls_task_(
   if (!job.is_valid() || !ls_task.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[DATA_BACKUP]invalid argument", K(ret), K(job), K(ls_task));
-  } else if (!(job.plus_archivelog_ && set_task_attr.status_.is_backup_log())
+  } else if (!(job.plus_archivelog_ && set_task_attr.status_.is_backup_log_phase())
       && OB_FAIL(ObBackupDataLSTaskMgr::check_ls_is_dropped(ls_task, *sql_proxy_, is_dropped))) {
     LOG_WARN("failed to check ls is dropped", K(ret), K(ls_task));
   } else if (is_dropped) {
@@ -387,8 +357,6 @@ int ObBackupDataScheduler::start_backup_data(const obrpc::ObBackupDatabaseArg &i
   } else if (!in_arg.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[DATA_BACKUP]invalid argument", K(ret), K(in_arg));
-  } else if (OB_FAIL(check_backup_type_allowed_(in_arg))) {
-    LOG_WARN("failed to check backup type allowed", K(ret), K(in_arg));
   } else if (OB_FAIL(fill_template_job_(in_arg, template_job_attr))) {
     LOG_WARN("[DATA_BACKUP]failed to fill backup base arg", K(ret), K(in_arg));
   } else if (OB_SYS_TENANT_ID == in_arg.tenant_id_) {
@@ -414,23 +382,6 @@ int ObBackupDataScheduler::start_backup_data(const obrpc::ObBackupDatabaseArg &i
     FLOG_INFO("[DATA_BACKUP]insert backup data job succeed", K(in_arg));
   }
   ROOTSERVICE_EVENT_ADD("backup_data", "start_backup_data", "tenant_id", in_arg.tenant_id_, "result", ret);
-  return ret;
-}
-
-int ObBackupDataScheduler::check_backup_type_allowed_(const obrpc::ObBackupDatabaseArg &in_arg)
-{
-  int ret = OB_SUCCESS;
-  if (!GCTX.is_shared_storage_mode()) {
-    // do nothing
-  } else if (in_arg.is_incremental_) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("backup incremental database in shared storage mode is not supported", K(ret));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "backup incremental database in shared storage mode");
-  } else if (in_arg.is_compl_log_) {
-    ret = OB_NOT_SUPPORTED;
-    LOG_WARN("backup database plus archivelog in shared storage mode is not supported", K(ret));
-    LOG_USER_ERROR(OB_NOT_SUPPORTED, "backup database plus archivelog in shared storage mode");
-  }
   return ret;
 }
 
@@ -936,27 +887,6 @@ int ObBackupDataScheduler::handle_execute_over(
   } else if (nullptr == task) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("[DATA_BACKUP]invalid argument", K(ret));
-  } else if (task->is_macro_block_task()) {
-#ifdef OB_BUILD_SHARED_STORAGE
-    // Use macro block task manager to handle execution completion event
-    const ObSSHAMacroBlockScheduleTask *macro_task = nullptr;
-    if (OB_ISNULL(task)) {
-      ret = OB_INVALID_ARGUMENT;
-      LOG_WARN("invalid argument, the task is null", K(ret));
-    } else if (ObBackupScheduleTaskType::BACKUP_SS_HA_MACRO_BLOCK_TASK != task->get_task_type()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("task type is unexpected for macro block task", K(ret), K(task->get_task_type()), KPC(task));
-    } else if (OB_ISNULL(macro_task = static_cast<const ObSSHAMacroBlockScheduleTask*>(task))) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("macro task should not be null", K(ret));
-    } else if (OB_FAIL(ObSSHAMacroBlockTaskMgr::handle_execute_over(
-        *backup_service_, *sql_proxy_, macro_task, result_info))) {
-      LOG_WARN("failed to handle macro block task execute over", K(ret), KPC(macro_task), K(macro_task->get_macro_task_attr()), K(result_info));
-    } else {
-      can_remove = true;
-      LOG_INFO("handle macro block task execute over success", KPC(macro_task), K(result_info));
-    }
-#endif
   } else {
     // first get task from __all_backup_log_stream_task
     ObBackupLSTaskAttr ls_attr;
@@ -1200,7 +1130,7 @@ int ObUserTenantBackupJobMgr::deal_non_reentrant_job(const int err)
       // lock backup set task row and check leader
       ObBackupSetTaskAttr lock_set_task_attr;
       if (OB_FAIL(ObBackupTaskOperator::get_backup_task(trans,
-              job_attr_->job_id_, job_attr_->tenant_id_, /*for update*/true, lock_set_task_attr))) {
+              job_attr_->job_id_, job_attr_->tenant_id_, true/*for update*/, lock_set_task_attr))) {
         LOG_WARN("failed to lock backup set task row for update", K(ret), K_(tenant_id), KPC(job_attr_));
       } else if (lock_set_task_attr.status_.is_backup_finish()) {
         ret = OB_STATE_NOT_MATCH;
@@ -1555,11 +1485,9 @@ int ObUserTenantBackupJobMgr::insert_backup_set_task_(common::ObISQLClient &sql_
     LOG_WARN("[DATA_BACKUP]failed to assign backup dest", K(ret), KPC(job_attr_));
   } else if (OB_FAIL(get_next_task_id_(sql_proxy, backup_set_task.task_id_))) {
     LOG_WARN("[DATA_BACKUP]failed to get next task id", K(ret));
-  } else if (!GCTX.is_shared_storage_mode() && OB_FAIL(ObBackupDataScheduler::get_backup_scn(
+  } else if (OB_FAIL(ObBackupDataScheduler::get_backup_scn(
     sql_proxy, job_attr_->tenant_id_, true/*start scn*/, backup_set_task.start_scn_))) {
     LOG_WARN("fail t get start scn", K(ret));
-  } else if (GCTX.is_shared_storage_mode() && FALSE_IT(backup_set_task.start_scn_.set_min())) {
-    // start scn in shared storage mode is set in update_start_scn_and_sslog_gts_
   } else {
 #ifdef ERRSIM
     int64_t errsim_start_gts = GCONF.errsim_backup_override_start_scn;

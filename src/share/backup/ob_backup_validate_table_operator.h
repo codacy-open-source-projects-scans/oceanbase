@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_BACKUP_VALIDATE_OPERATOR_H_
@@ -87,8 +80,8 @@ class ObBackupValidateTaskOperator : public ObBackupValidateBaseTableOperator
 {
 public:
   static int insert_task(common::ObISQLClient &proxy, const ObBackupValidateTaskAttr &task_attr);
-  static int get_backup_validate_task(common::ObISQLClient &proxy, const int64_t task_id,
-    const uint64_t tenant_id, ObBackupValidateTaskAttr &task_attr);
+  static int get_backup_validate_task(common::ObISQLClient &proxy, const bool need_lock,
+    const int64_t task_id, const uint64_t tenant_id, ObBackupValidateTaskAttr &task_attr);
   static int get_tasks(common::ObISQLClient &proxy, const uint64_t tenant_id, const int64_t job_id,
     ObIArray<ObBackupValidateTaskAttr> &task_attrs);
   static int advance_task_status(common::ObMySQLTransaction &trans, const ObBackupValidateTaskAttr &task_attr,

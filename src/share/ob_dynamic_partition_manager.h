@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_DYNAMIC_PARTITION_UTIL_H_
@@ -100,6 +93,7 @@ private:
   int get_table_time_zone_wrap_(ObTimeZoneInfoWrap &tz_info_wrap);
   int fetch_timestamp_from_part_key_(const schema::ObPartition &part, int64_t &timestamp);
   int get_session_time_zone_str_(char *buf, const int64_t len, int64_t &pos);
+  int datetime_to_timestamp_skip_gap_(const int64_t datetime, const ObTimeZoneInfo *tz_info, int64_t &timestamp);
   int add_timestamp_(const int64_t num, const ObDateUnitType time_unit, int64_t &timestamp);
   int floor_timestamp_(const ObDateUnitType time_unit, int64_t &timestamp);
 public:

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -171,10 +164,25 @@ int ObTempRowStoreBase<RA>::RowBlock::get_next_batch(ObTempRowStoreBase::ReaderB
   if (RA) {
     iter.read_pos_ = get_row_location(iter.cur_blk_id_);
   }
-  for (read_rows = 0; read_rows < max_rows && iter.cur_blk_id_ < end(); ++read_rows) {
-    ++iter.cur_blk_id_;
-    stored_rows[read_rows] = reinterpret_cast<const ObCompactRow *>(iter.read_pos_ + payload_);
-    iter.read_pos_ += stored_rows[read_rows]->get_row_size();
+  const RowMeta &row_meta = iter.get_row_meta();
+  // Fast path requires the RowMeta to be fully initialized with all columns being
+  // fixed-length. col_cnt_ > 0 rules out default/uninitialized meta where
+  // get_var_col_cnt() also returns 0 (e.g. DTL interm-result buffer whose embedded
+  // RowMeta is intentionally left empty), in which case using get_row_fixed_size()
+  // as a constant stride would mis-interpret rows of arbitrary sizes.
+  if (row_meta.col_cnt_ > 0 && row_meta.fixed_cnt_ == row_meta.col_cnt_) {
+    const int32_t row_size = row_meta.get_row_fixed_size();
+    for (read_rows = 0; read_rows < max_rows && iter.cur_blk_id_ < end(); ++read_rows) {
+      ++iter.cur_blk_id_;
+      stored_rows[read_rows] = reinterpret_cast<const ObCompactRow *>(iter.read_pos_ + payload_);
+      iter.read_pos_ += row_size;
+    }
+  } else {
+    for (read_rows = 0; read_rows < max_rows && iter.cur_blk_id_ < end(); ++read_rows) {
+      ++iter.cur_blk_id_;
+      stored_rows[read_rows] = reinterpret_cast<const ObCompactRow *>(iter.read_pos_ + payload_);
+      iter.read_pos_ += stored_rows[read_rows]->get_row_size();
+    }
   }
   if (0 == read_rows) {
     ret = OB_ITER_END;
@@ -199,7 +207,7 @@ int ObTempRowStoreBase<RA>::RowBlock::calc_row_size(const common::ObIArray<ObExp
       continue;
     }
     ObIVector *vec = exprs.at(col_idx)->get_vector(ctx);
-    VectorFormat format = vec->get_format();
+    VectorFormat format = exprs.at(col_idx)->get_format(ctx);
     if (OB_LIKELY(!static_cast<ObVectorBase *>(vec)->is_collection_expr())) {
       if (VEC_DISCRETE == format) {
         ObDiscreteBase *disc_vec = static_cast<ObDiscreteBase *>(vec);
@@ -248,6 +256,9 @@ int ObTempRowStoreBase<RA>::RowBlock::calc_rows_size(const IVectorPtrs &vectors,
   }
   for (int64_t col_idx = 0; OB_SUCC(ret) && col_idx < vectors.count(); col_idx++) {
     ObIVector *vec = vectors.at(col_idx);
+    if (reordered && row_meta.project_idx(col_idx) < row_meta.fixed_cnt_) {
+      continue;
+    }
     if (nullptr == vec) {
       if (OB_ISNULL(dup_length)) {
         ret = OB_ERR_UNEXPECTED;
@@ -257,9 +268,6 @@ int ObTempRowStoreBase<RA>::RowBlock::calc_rows_size(const IVectorPtrs &vectors,
           row_size_arr[i] += dup_length->at(col_idx);
         }
       }
-      continue;
-    }
-    if (reordered && row_meta.project_idx(col_idx) < row_meta.fixed_cnt_) {
       continue;
     }
     if (OB_LIKELY(!static_cast<ObVectorBase *>(vec)->is_collection_expr())) {

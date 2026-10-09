@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -328,7 +321,7 @@ void GetPartitionsByNamesOperation::execute_impl(ThriftHiveMetastoreClient *clie
 ObHiveMetastoreClient::ObHiveMetastoreClient(ObIAllocator *allocator)
     : allocator_(allocator), socket_(), transport_(), protocol_(), hive_metastore_client_(),
       hms_keytab_(), hms_principal_(), hms_krb5conf_(), hms_default_catalog_(),
-      service_(), server_FQDN_(), state_lock_(ObLatchIds::OBJECT_DEVICE_LOCK),
+      hms_service_principal_(), service_(), server_FQDN_(), state_lock_(ObLatchIds::OBJECT_DEVICE_LOCK),
       conn_lock_(ObLatchIds::OBJECT_DEVICE_LOCK), kerberos_lock_(ObLatchIds::OBJECT_DEVICE_LOCK),
       is_inited_(false), is_opened_(false), last_kinit_ts_(0), client_id_(0), client_pool_(nullptr),
       is_in_use_(false), socket_timeout_(-1), uri_list_(), current_uri_idx_(0),
@@ -377,6 +370,12 @@ int ObHiveMetastoreClient::init(const ObHMSCatalogProperties &properties)
                                       hms_krb5conf_,
                                       true))) {
       LOG_WARN("failed to write krb5conf", K(ret));
+    } else if (!properties.service_principal_.empty()
+              && OB_FAIL(ob_write_string(*allocator_,
+                                        properties.service_principal_,
+                                        hms_service_principal_,
+                                        true))) {
+      LOG_WARN("failed to write service_principal", K(ret));
     } else if (OB_ISNULL(properties.hms_catalog_name_)
               || properties.hms_catalog_name_.empty()) {
       // do nothing
@@ -392,30 +391,39 @@ int ObHiveMetastoreClient::init(const ObHMSCatalogProperties &properties)
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("uri list is empty after parse", K(ret));
     } else if (!hms_keytab_.empty() && !hms_principal_.empty()) {
-      // Extract service and server_FQDN from principal (only once during setup).
-      ObString temp_princ;
       ObArenaAllocator temp_allocator;
-      if (OB_FAIL(ob_write_string(temp_allocator, hms_principal_, temp_princ, true))) {
-        LOG_WARN("failed to copy the hms principal", K(ret), K_(hms_principal));
-      } else {
-        // service and server_FQDN can seperate by principal.
-        // Because the GSSAPI would assembly by service and server_FQDN to be the principal.
-        // Such as service "hive" and server_FQDN "hadoop" -> "hive/hadoop@EXAMPLE.COM".
-        // TODO(bitao): this principal may be not same as "hive/hadoop@EXAMPLE.COM" in the
-        // kerberos config.
-        ObString tmp_service = temp_princ.split_on('/').trim_space_only();
-        ObString tmp_server_FQDN = temp_princ.split_on('@').trim_space_only();
-        if (OB_FAIL(ob_write_string(*allocator_, tmp_service, service_, true))) {
-          LOG_WARN("failed to write service value", K(ret), K(tmp_service));
-        } else if (OB_FAIL(ob_write_string(*allocator_, tmp_server_FQDN, server_FQDN_, true))) {
-          LOG_WARN("failed to write service_FQDN value", K(ret), K(tmp_server_FQDN));
-        } else if (OB_UNLIKELY(service_.empty())) {
-          ret = OB_INVALID_HMS_SERVICE;
-          LOG_WARN("service should not be empty", K(ret), K(temp_princ), K_(hms_principal), K_(service));
-        } else if (OB_UNLIKELY(server_FQDN_.empty())) {
-          ret = OB_INVALID_HMS_SERVICE_FQDN;
-          LOG_WARN("service_FQDN should not be empty", K(ret), K_(hms_principal), K_(server_FQDN));
+      ObString tmp_service;
+      if (!hms_service_principal_.empty()) {
+        // HMS_PRINCIPAL is set: extract service from it.
+        // "hadoop/_HOST@XTT.COM"         -> service = "hadoop"
+        // "hadoop/obrde.dev-xw2@XTT.COM" -> service = "hadoop"
+        ObString temp_sp;
+        if (OB_FAIL(ob_write_string(temp_allocator, hms_service_principal_, temp_sp, true))) {
+          LOG_WARN("failed to copy the hms service_principal", K(ret), K_(hms_service_principal));
+        } else if (OB_NOT_NULL(temp_sp.find('/'))) {
+          tmp_service = temp_sp.split_on('/').trim_space_only();
+        } else {
+          tmp_service = temp_sp.split_on('@').trim_space_only();
         }
+      } else {
+        // Fallback: extract service from PRINCIPAL (old behavior).
+        // "hive/hadoop@EXAMPLE.COM" -> service = "hive"
+        // "xxx@EXAMPLE.COM"         -> service = "xxx"
+        ObString temp_princ;
+        if (OB_FAIL(ob_write_string(temp_allocator, hms_principal_, temp_princ, true))) {
+          LOG_WARN("failed to copy the hms principal", K(ret), K_(hms_principal));
+        } else if (OB_NOT_NULL(temp_princ.find('/'))) {
+          tmp_service = temp_princ.split_on('/').trim_space_only();
+        } else {
+          tmp_service = temp_princ.split_on('@').trim_space_only();
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(ob_write_string(*allocator_, tmp_service, service_, true))) {
+        LOG_WARN("failed to write service value", K(ret), K(tmp_service));
+      } else if (OB_UNLIKELY(service_.empty())) {
+        ret = OB_INVALID_HMS_SERVICE;
+        LOG_WARN("service should not be empty", K(ret), K_(hms_service_principal), K_(hms_principal), K_(service));
       }
     }
 
@@ -547,6 +555,9 @@ ObHiveMetastoreClient::~ObHiveMetastoreClient()
     if (!hms_default_catalog_.empty()) {
       allocator_->free(hms_default_catalog_.ptr());
     }
+    if (!hms_service_principal_.empty()) {
+      allocator_->free(hms_service_principal_.ptr());
+    }
     if (!service_.empty()) {
       allocator_->free(service_.ptr());
     }
@@ -654,15 +665,6 @@ int ObHiveMetastoreClient::extract_host_and_port(const ObString &uri, char *host
   return ret;
 }
 
-int64_t ObHiveMetastoreClient::handle_ddl_time(String &time_str)
-{
-  int64_t ddl_time = 0;
-   if (OB_SUCCESS != ob_atoll(time_str.c_str(), ddl_time)) {
-    ddl_time = 0;
-  }
-  return ddl_time;
-}
-
 int ObHiveMetastoreClient::build_lock_request_for_operation(const LockableOperation &op,
                                                             ApacheHive::LockRequest &lock_request)
 {
@@ -702,6 +704,7 @@ void ObHiveMetastoreClient::extract_basic_stats_from_parameters(const std::map<s
 {
   basic_stats.reset();
 
+  // read table stats generated by hive
   std::map<std::string, std::string>::const_iterator it = parameters.find("numFiles");
   if (it != parameters.end()) {
     if (OB_SUCCESS != ob_atoll(it->second.c_str(), basic_stats.num_files_)) {
@@ -720,6 +723,25 @@ void ObHiveMetastoreClient::extract_basic_stats_from_parameters(const std::map<s
   if (it != parameters.end()) {
     if (OB_SUCCESS != ob_atoll(it->second.c_str(), basic_stats.total_size_)) {
       basic_stats.total_size_ = 0;
+    }
+  }
+
+  // read table stats generated by spark
+  if (basic_stats.num_rows_ == 0) {
+    it = parameters.find("spark.sql.statistics.numRows");
+    if (it != parameters.end()) {
+      if (OB_SUCCESS != ob_atoll(it->second.c_str(), basic_stats.num_rows_)) {
+        basic_stats.num_rows_ = 0;
+      }
+    }
+  }
+
+  if (basic_stats.total_size_ == 0) {
+    it = parameters.find("spark.sql.statistics.totalSize");
+    if (it != parameters.end()) {
+      if (OB_SUCCESS != ob_atoll(it->second.c_str(), basic_stats.total_size_)) {
+        basic_stats.total_size_ = 0;
+      }
     }
   }
 
@@ -970,8 +992,54 @@ int ObHiveMetastoreClient::setup_connection_for_uri(const int64_t uri_idx)
         ObString cache_name;
         if (OB_FAIL(init_kerberos(hms_keytab_, hms_principal_, hms_krb5conf_, cache_name))) {
           LOG_WARN("failed to init kerberos", K(ret));
-        } else if (!service_.empty() && !server_FQDN_.empty()) {
-          transport_ = TSaslClientTransport::wrap_client_transports(service_, server_FQDN_, transport_);
+        } else if (!service_.empty()) {
+          // Determine serverFQDN for SASL target.
+          // If HMS_PRINCIPAL is set and has instance part, use it
+          // (replacing _HOST with actual URI host). Otherwise use URI host directly.
+          ObString resolved_fqdn;
+          ObArenaAllocator temp_allocator;
+          if (!hms_service_principal_.empty()) {
+            ObString temp_sp;
+            if (OB_FAIL(ob_write_string(temp_allocator, hms_service_principal_, temp_sp, true))) {
+              LOG_WARN("failed to copy service_principal", K(ret));
+            } else if (OB_NOT_NULL(temp_sp.find('/'))) {
+              // Has instance part: "hadoop/_HOST@XTT.COM" or "hadoop/obrde.dev-xw2@XTT.COM"
+              temp_sp.split_on('/'); // skip service, temp_sp now = "_HOST@XTT.COM" or "host@REALM"
+              ObString instance = temp_sp.split_on('@'); // instance = "_HOST" or "obrde.dev-xw2"
+              if (instance.prefix_match("_HOST")) {
+                resolved_fqdn = ObString(host);
+              } else {
+                resolved_fqdn = instance;
+              }
+            } else {
+              // No instance part (e.g. "hadoop@XTT.COM"), use URI host
+              resolved_fqdn = ObString(host);
+            }
+          } else {
+            // No HMS_PRINCIPAL set: fall back to PRINCIPAL.
+            // If PRINCIPAL has instance part (e.g. "hdfs/obrde.host@REALM"),
+            // use that instance as serverFQDN. Otherwise use URI host.
+            ObString temp_princ;
+            if (OB_FAIL(ob_write_string(temp_allocator, hms_principal_, temp_princ, true))) {
+              LOG_WARN("failed to copy principal for fqdn", K(ret));
+            } else if (OB_NOT_NULL(temp_princ.find('/'))) {
+              temp_princ.split_on('/'); // skip service part
+              ObString instance = temp_princ.split_on('@');
+              if (instance.empty()) {
+                resolved_fqdn = ObString(host);
+              } else {
+                resolved_fqdn = instance;
+              }
+            } else {
+              resolved_fqdn = ObString(host);
+            }
+          }
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(ob_write_string(*allocator_, resolved_fqdn, server_FQDN_, true))) {
+            LOG_WARN("failed to write server_FQDN", K(ret), K(resolved_fqdn));
+          } else {
+            transport_ = TSaslClientTransport::wrap_client_transports(service_, server_FQDN_, transport_);
+          }
         }
       }
 
@@ -1132,68 +1200,6 @@ int ObHiveMetastoreClient::list_table_names(const ObString &db_name,
         LOG_WARN("failed to write table name", K(ret), K(tb_name), K(t_name));
       } else if (OB_FAIL(tb_names.push_back(t_name))) {
         LOG_WARN("failed to push table name to list", K(ret), K(tb_name), K(t_name));
-      }
-    }
-  }
-  return ret;
-}
-
-int ObHiveMetastoreClient::get_latest_schema_version(const ObString &ns_name,
-                                                     const ObString &tb_name,
-                                                     const ObNameCaseMode case_mode,
-                                                     int64_t &schema_version)
-{
-  int ret = OB_SUCCESS;
-  UNUSED(case_mode);
-  String cat_name;
-  if (OB_ISNULL(hms_default_catalog_) || hms_default_catalog_.empty()) {
-  } else {
-    cat_name = String(hms_default_catalog_.ptr(), hms_default_catalog_.length());
-  }
-  String d_name = String(ns_name.ptr(), ns_name.length());
-  String t_name = String(tb_name.ptr(), tb_name.length());
-  bool found = false;
-  std::shared_ptr<ApacheHive::Table> table = std::make_shared<ApacheHive::Table>();
-  GetTableOperation table_op(*table, cat_name, d_name, t_name, found);
-  if (OB_FAIL(try_call_hive_client(table_op))) {
-    LOG_WARN("failed to call to get table operation",
-             K(ret),
-             K(cat_name.c_str()),
-             K(ns_name),
-             K(tb_name));
-  } else if (OB_UNLIKELY(!found)) {
-    ret = OB_TABLE_NOT_EXIST;
-    LOG_WARN("failed to find table", K(ret), K(cat_name.c_str()), K(ns_name), K(tb_name));
-  } else {
-    schema_version = table->createTime;
-    if (OB_LIKELY(table->partitionKeys.empty())) {
-      // Indicate the table is not with partitions
-      std::map<String, String>::iterator iter;
-      iter = table->parameters.find(LAST_DDL_TIME);
-      if (OB_LIKELY(iter != table->parameters.end())) {
-        String version_str = iter->second;
-        int64_t ddl_time = handle_ddl_time(version_str);
-        if (schema_version < ddl_time) {
-          schema_version = ddl_time;
-        }
-      }
-    } else {
-      // Fetch the latest partition ddl time.
-      int64_t latest_ddl_time = -1;
-      GetLatestPartitionDdlTimeOperation ddl_time_op(latest_ddl_time, cat_name, d_name, t_name);
-      if (OB_FAIL(try_call_hive_client(ddl_time_op))) {
-        LOG_WARN("failed to call to get partition latest ddl time",
-                 K(ret),
-                 K(cat_name.c_str()),
-                 K(ns_name),
-                 K(tb_name));
-      } else if (OB_UNLIKELY(-1 == latest_ddl_time)) {
-        // DO NOTHING, use table create time as the schema version
-      } else if (schema_version < latest_ddl_time) {
-        schema_version = latest_ddl_time;
-        LOG_TRACE("get the latest partition ddl time as latest version",
-                  K(ret),
-                  K(latest_ddl_time));
       }
     }
   }

@@ -1,16 +1,10 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_rows_info.h"
+#include "share/schema/ob_table_dml_param.h"
 #include "storage/ob_relative_table.h"
 #include "storage/tablet/ob_tablet.h"
 #include "storage/blocksstable/ob_datum_row_utils.h"
@@ -67,7 +61,7 @@ int ObRowsInfo::ExistHelper::init(const ObRelativeTable &table,
     trans_version_range.multi_version_start_ = 0;
 
     mds_filter.mds_filter_mgr_ = table.get_mds_filter_mgr();
-    mds_filter.read_info_ = &rowkey_read_info;
+    mds_filter.read_info_ = &table.get_schema_param()->get_read_info();
 
     if (OB_FAIL(table_access_context_.init(query_flag, store_ctx, allocator, stmt_allocator,
             trans_version_range, &mds_filter, true /*+ for_exist */))) {

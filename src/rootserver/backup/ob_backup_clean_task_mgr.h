@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_BACKUP_CLEAN_SET_TASK_MGR_H_
@@ -43,9 +36,6 @@ public:
   int process();
 private:
   int do_cancel_();
-#ifdef OB_BUILD_SHARED_STORAGE
-  int do_cancel_for_ss_set_();
-#endif
   int do_cancel_for_ls_tasks_();
   int advance_task_status_(
       common::ObISQLClient &sql_proxy,
@@ -64,12 +54,8 @@ private:
       ObIArray<share::ObBackupCleanLSTaskAttr> &ls_task,
       int64_t &success_ls_count,
       int &result);
-  int mark_backup_set_files_deleting_();
-  int mark_backup_piece_files_deleting_();
-  int mark_backup_set_files_deleted_();
-  int mark_backup_piece_files_deleted_();
+  int mark_backup_files_file_status_(const share::ObBackupFileStatus::STATUS target);
   int mark_backup_files_deleted_();
-  int mark_backup_files_deleting_();
   int try_delete_extern_set_end_file_();
   int try_delete_extern_piece_end_file_();
   int try_delete_extern_end_file_();
@@ -111,12 +97,6 @@ private:
   int delete_piece_inner_placeholder_file_();
   int delete_piece_checkpoint_file_();
   bool is_can_retry_(const int error);
-#ifdef OB_BUILD_SHARED_STORAGE
-  int backup_clean_ss_set_macro_tasks_();
-  int delete_ss_backup_set_meta_info_files_();
-  int delete_ss_backup_logstream_();
-  int init_clean_macro_task_mgr_();
-#endif
 
 private:
   bool is_inited_;

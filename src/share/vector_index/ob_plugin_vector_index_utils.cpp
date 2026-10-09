@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 #include "share/vector_index/ob_plugin_vector_index_utils.h"
@@ -643,6 +636,11 @@ int ObPluginVectorIndexUtils::read_vector_info(ObPluginVectorIndexAdaptor *adapt
       K(vid_id_scan_allocator.used()), K(vid_id_scan_allocator.total()),
       K(data_scan_allocator.used()), K(data_scan_allocator.total()),
       K(batch_temp_allocator.used()), K(batch_temp_allocator.total()));
+    if (OB_SUCC(ret)) {
+      LOG_INFO("refresh memdata vector done",
+        K(ls_id), K(target_scn), K(ada_ctx.get_count()), K(ada_ctx.get_curr_idx()),
+        K(adapter->get_incr_vsag_mem_used()), K(adapter->get_snap_vsag_mem_used()));
+    }
   }
 
   if (OB_NOT_NULL(tsc_service)) {
@@ -892,6 +890,8 @@ int ObPluginVectorIndexUtils::try_sync_snapshot_memdata(ObLSID &ls_id,
                                                         ObIAllocator &allocator)
 {
   int ret = OB_SUCCESS;
+  common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_SYNC_SNAP_MEM_TIME);
+  ObCostGuard sync_snapshot_cost_guard(adapter, "try_sync_snapshot_memdata", 0, 0, ObCostGuard::KNN_THRESHOLD_500MS);
   schema::ObIndexType index_type = INDEX_TYPE_VEC_INDEX_SNAPSHOT_DATA_LOCAL;
   ObAccessService *tsc_service = MTL(ObAccessService *);
   ObPluginVectorIndexService *vector_index_service = MTL(ObPluginVectorIndexService *);
@@ -1010,8 +1010,8 @@ int ObPluginVectorIndexUtils::try_sync_snapshot_memdata(ObLSID &ls_id,
     }
   }
   // free adapter memory when failed
-  if ((OB_FAIL(ret) || index_count == 0) && OB_NOT_NULL(new_adapter) && create_new_adp) {
-    LOG_INFO("release new adapter memory in failure", K(ret), K(index_count), KP(new_adapter), K(create_new_adp));
+  if ((OB_FAIL(ret) || (index_count == 0 && !is_meta_data)) && OB_NOT_NULL(new_adapter) && create_new_adp) {
+    LOG_INFO("release new adapter memory in failure", K(ret), K(index_count), KP(new_adapter), K(create_new_adp), K(is_meta_data));
     new_adapter->~ObPluginVectorIndexAdaptor();
     vector_index_service->get_adaptor_allocator().free(adpt_buff);
     adpt_buff = nullptr;
@@ -1024,6 +1024,10 @@ int ObPluginVectorIndexUtils::try_sync_snapshot_memdata(ObLSID &ls_id,
       LOG_WARN("revert snapshot_idx_iter failed", K(ret));
     }
     snapshot_idx_iter = nullptr;
+  }
+  if (OB_SUCC(ret)) {
+    LOG_INFO("refresh memdata snap done", KP(new_adapter), KP(adapter),
+      K(ls_id), K(target_scn), K(index_count), K(is_meta_data), K(meta_scn));
   }
   return ret;
 }
@@ -1070,6 +1074,7 @@ int ObPluginVectorIndexUtils::try_reuse_segments_from_old_adapter(
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("snap data is invalid", K(ret), K(new_snap), K(old_snap));
     } else {
+      TCRLockGuard snap_mem_lock_guard(old_snap->mem_data_rwlock_);
       ObVectorIndexMeta &new_meta = new_snap->meta_;
       const ObVectorIndexMeta &old_meta = old_snap->meta_;
       for (int64_t i = 0; OB_SUCC(ret) && i < new_meta.incrs_.count(); ++i) {
@@ -1145,9 +1150,25 @@ int ObPluginVectorIndexUtils::refresh_adp_from_table(
         LOG_WARN("fail to check_delta_buffer_table_readnext_status.", K(ret));
       } else if (OB_FAIL(try_sync_vbitmap_memdata(ls_id, adapter, target_scn, allocator, ada_ctx))) {
         LOG_WARN("failed to sync vbitmap", KR(ret));
-      } else if (ada_ctx.get_status() == PVQ_COM_DATA) {
+      } else {
+        LOG_INFO("refresh memdata delta ready",
+          K(ls_id), K(target_scn), K(ada_ctx.get_status()),
+          K(ada_ctx.get_count()), K(ada_ctx.get_vec_cnt()));
+      }
+      if (OB_SUCC(ret) && ada_ctx.get_status() == PVQ_COM_DATA) {
         if (OB_FAIL(read_vector_info(adapter, allocator, ls_id, target_scn, ada_ctx))) {
           LOG_WARN("failed to read vector_info", KR(ret));
+        }
+      }
+
+      if (OB_SUCC(ret) && ! ls_leader) {
+        // check again if ls is follower
+        bool is_leader_now = false;
+        if (OB_FAIL(ObPluginVectorIndexUtils::get_ls_leader_flag(ls_id, is_leader_now))) {
+          LOG_WARN("fail to get ls leader flag", K(ret), K(ls_id));
+        } else if (is_leader_now) {
+          adapter->reset_complete();
+          LOG_INFO("ls change from follower to leader, reset complete", K(ls_id), KPC(adapter));
         }
       }
     }
@@ -1280,6 +1301,7 @@ int ObPluginVectorIndexUtils::refresh_memdata(ObLSID &ls_id,
         bool has_replace = false;
         if (OB_SUCC(ret)) {
           // Set replace scn before replace_old_adapter
+          DEBUG_SYNC(BEFORE_REPLACE_OLD_ADAPTOR);
           RWLock::WLockGuard lock_guard(vec_idx_mgr->get_adapter_map_lock());
           if (OB_FAIL(new_adapter->set_replace_scn(target_scn))) {
             LOG_WARN("failed to set replace scn", K(ret), K(target_scn));
@@ -2664,10 +2686,13 @@ int ObPluginVectorIndexUtils::check_snapshot_iter_need_rescan(common::ObNewRowIt
   } else if (OB_ISNULL(row) || row->get_column_count() < 2) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid row", K(ret), K(row));
-  } else if (row->storage_datums_[0].get_string().suffix_match("_meta_data")) {
-    need_rescan = false;
-  } else if (OB_NOT_NULL(row) && row->get_column_count() == 3 && !row->storage_datums_[2].get_bool()) { // if table 5 has visible row
-    need_rescan = true;
+  } else {
+    INC_METRIC_VAL(common::ObMetricId::HS_VEC_HNSW_SNAPSHOT_TABLE_SCAN_ROWS, 1);
+    if (row->storage_datums_[0].get_string().suffix_match("_meta_data")) {
+      need_rescan = false;
+    } else if (OB_NOT_NULL(row) && row->get_column_count() == 3 && !row->storage_datums_[2].get_bool()) { // if table 5 has visible row
+      need_rescan = true;
+    }
   }
   LOG_INFO("check snapshot iter need rescan", K(ret), K(need_rescan));
   return ret;
@@ -2707,6 +2732,33 @@ int ObPluginVectorIndexUtils::get_current_read_scn(share::SCN &current_scn)
       LOG_WARN("get read snapshot version", KR(ret));
     }
   }
+  return ret;
+}
+
+int ObPluginVectorIndexUtils::get_lob_tablet_id(const ObLSID &ls_id, const ObTabletID &data_tablet_id, ObTabletID &lob_meta_tablet_id, ObTabletID &lob_piece_tablet_id)
+{
+  int ret = OB_SUCCESS;
+ // get lob tablet id
+ HEAP_VARS_3((ObLSHandle, ls_handle), (ObTabletHandle, data_tablet_handle), (ObTabletBindingMdsUserData, ddl_data))
+ {
+   ObLSService *ls_service = nullptr;
+   if (OB_ISNULL(ls_service = MTL(ObLSService *))) {
+     ret = OB_ERR_UNEXPECTED;
+     LOG_WARN("unexpected err", K(ret), K(MTL_ID()));
+   } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::STORAGE_MOD))) {
+     LOG_WARN("failed to get log stream", K(ret), K(ls_id));
+   } else if (OB_ISNULL(ls_handle.get_ls())) {
+     ret = OB_ERR_UNEXPECTED;
+     LOG_ERROR("ls should not be null", K(ret));
+   } else if (OB_FAIL(ls_handle.get_ls()->get_tablet(data_tablet_id, data_tablet_handle))) {
+     LOG_WARN("fail to get tablet handle", K(ret), K(data_tablet_id));
+   } else if (OB_FAIL(data_tablet_handle.get_obj()->get_ddl_data(ddl_data))) {
+     LOG_WARN("failed to get ddl data from tablet", K(ret), K(data_tablet_handle));
+   } else {
+     lob_meta_tablet_id = ddl_data.lob_meta_tablet_id_;
+     lob_piece_tablet_id = ddl_data.lob_piece_tablet_id_;
+   }
+ }
   return ret;
 }
 

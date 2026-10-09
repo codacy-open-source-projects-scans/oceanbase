@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -44,6 +37,10 @@ ObTmpFileFlushTask::ObTmpFileFlushTask()
     size_(0),
     buf_(nullptr),
     create_ts_(ObTimeUtility::current_time()),
+    io_submit_ts_(0),
+    schedule_delay_us_(0),
+    io_wait_us_(0),
+    queue_wait_us_(0),
     allocator_(nullptr),
     tmp_file_block_handle_(),
     io_handle_(),
@@ -175,6 +172,7 @@ int ObTmpFileFlushTask::write()
   ObTmpFileBlock *block = tmp_file_block_handle_.get();
 
   LOG_DEBUG("flush task write begin", KR(ret), K(page_idx_), K(page_cnt_), KPC(this));
+  queue_wait_us_ = ObTimeUtility::current_time() - create_ts_;
   int64_t schedule_time_ms = (ObTimeUtility::current_time() - create_ts_) / 1000;
   if (schedule_time_ms > SCHEDULE_TIME_WARN_MS) {
     LOG_WARN("flush task schedule write too long", K(schedule_time_ms), KPC(this));
@@ -219,6 +217,8 @@ int ObTmpFileFlushTask::write()
     if (OB_FAIL(ObIOManager::get_instance().aio_write(io_info, io_handle_))) {
       LOG_WARN("fail to async write", KR(ret), K(io_info));
     } else {
+      io_submit_ts_ = ObTimeUtility::current_time();
+      schedule_delay_us_ = io_submit_ts_ - create_ts_;
       LOG_DEBUG("flush task send io succ", KR(ret), K(page_idx_), K(page_cnt_), KPC(this));
     }
   }
@@ -255,6 +255,8 @@ int ObTmpFileFlushTask::wait()
         ATOMIC_SET(&is_finished_, true);
       }
     } else {
+      int64_t wait_end_ts = ObTimeUtility::current_time();
+      io_wait_us_ = (io_submit_ts_ > 0) ? (wait_end_ts - io_submit_ts_) : 0;
       ATOMIC_SET(&ret_code_, OB_SUCCESS);
       ATOMIC_SET(&is_finished_, true);
     }

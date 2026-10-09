@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -37,7 +30,8 @@ int ObDropPrimaryKeyTask::init(const ObTableSchema* src_table_schema, const ObTa
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObTableRedefinitionTask::init(src_table_schema, dst_table_schema, 0, task_id, ddl_type, parallelism, consumer_group_id,
-                                            sub_task_trace_id, alter_table_arg, tenant_data_version, task_status, snapshot_version))) {
+                                            sub_task_trace_id, alter_table_arg, tenant_data_version, true /*ddl_need_retry_at_executor*/,
+                                            false /*direct_load_need_sync_stats_info*/, task_status, snapshot_version))) {
     LOG_WARN("fail to init ObDropPrimaryKeyTask", K(ret));
   } else {
     set_gmt_create(ObTimeUtility::current_time());

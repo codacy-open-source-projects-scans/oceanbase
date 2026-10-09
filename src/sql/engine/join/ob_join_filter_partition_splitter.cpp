@@ -1,12 +1,6 @@
-/** * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2024 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -95,7 +89,14 @@ int ObJoinFilterPartitionSplitter::init(int64_t tenant_id, lib::MemoryContext me
   row_meta_.set_allocator(malloc_alloc_);
   OZ(row_meta_.init(output_exprs, row_extra_size_));
   OZ(ObVecAllocUtil::vec_alloc_ptrs(arena_alloc_, part_added_rows_, sizeof(part_added_rows_) * max_batch_size_,
-                       null_skip_bitmap_, ObBitVector::memory_size(max_batch_size_)));
+                       null_skip_bitmap_, ObBitVector::memory_size(max_batch_size_),
+                       build_cols_have_null_, ObBitVector::memory_size(hash_join_hash_exprs.count())));
+
+  if (OB_SUCC(ret)) {
+    if (OB_NOT_NULL(build_cols_have_null_)) {
+      build_cols_have_null_->reset(hash_join_hash_exprs.count());
+    }
+  }
 
   if (OB_SUCC(ret)) {
     output_vectors_.set_allocator(malloc_alloc_);
@@ -249,10 +250,13 @@ int ObJoinFilterPartitionSplitter::calc_partition_hash_value(
         const_cast<ObBatchRows *>(brs)->all_rows_active_ =
             null_skip_bitmap_->is_all_false(brs->size_);
       }
-      ret = vector->murmur_hash_v3(*expr, hash_join_hash_values, *brs->skip_,
-                                    EvalBound(brs->size_, brs->all_rows_active_),
-                                    is_batch_seed ? hash_join_hash_values : &seed,
-                                    is_batch_seed);
+      if (!enable_skip_null && OB_NOT_NULL(build_cols_have_null_) && vector->has_null()) {
+        build_cols_have_null_->set(idx);
+      }
+      ret = vector->hash(*expr, hash_join_hash_values, *brs->skip_,
+                            EvalBound(brs->size_, brs->all_rows_active_),
+                            is_batch_seed ? hash_join_hash_values : &seed,
+                            is_batch_seed);
     }
   }
   if (OB_SUCC(ret)) {

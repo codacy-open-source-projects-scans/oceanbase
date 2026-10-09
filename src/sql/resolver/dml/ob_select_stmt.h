@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_SELECTSTMT_H_
@@ -530,6 +523,16 @@ public:
   void clear_connect_by_exprs() { connect_by_exprs_.reset(); }
   void set_nocycle(bool is_nocycle) { is_nocycle_ = is_nocycle; }
   bool is_nocycle() const { return is_nocycle_; }
+  void reset_hierarchical_params()
+  {
+    start_with_exprs_.reset();
+    connect_by_exprs_.reset();
+    connect_by_prior_exprs_.reset();
+    set_hierarchical_query(false);
+    set_nocycle(false);
+    set_has_prior(false);
+    set_order_siblings(false);
+  }
   const common::ObIArray<ObRawExpr*> &get_group_exprs() const { return group_exprs_; }
   common::ObIArray<ObRawExpr *> &get_group_exprs() { return group_exprs_; }
   const common::ObIArray<ObRawExpr*> &get_rollup_exprs() const { return rollup_exprs_; }

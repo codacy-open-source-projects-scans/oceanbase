@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -119,7 +112,9 @@ int ObSharedNothingTmpFile::release_resource()
 int ObSharedNothingTmpFile::inner_delete_file_()
 {
   int ret = OB_SUCCESS;
-  // do nothing
+  if (file_size_ % ObTmpFileGlobal::PAGE_SIZE != 0) {
+    write_cache_->dec_incomplete_data_page_cnt();
+  }
   return ret;
 }
 
@@ -636,7 +631,16 @@ int ObSharedNothingTmpFile::write(ObTmpFileIOWriteCtx &io_ctx, int64_t &cur_file
         bool is_unaligned_write = 0 != file_size_ % ObTmpFileGlobal::PAGE_SIZE ||
                                   0 != io_ctx.get_done_size() % ObTmpFileGlobal::PAGE_SIZE;
         io_ctx.set_is_unaligned_write(is_unaligned_write);
+        bool old_has_incomplete = (file_size_ % ObTmpFileGlobal::PAGE_SIZE != 0);
         file_size_ = end_write_offset;
+        bool new_has_incomplete = (file_size_ % ObTmpFileGlobal::PAGE_SIZE != 0);
+        if (old_has_incomplete != new_has_incomplete) {
+          if (new_has_incomplete) {
+            write_cache_->inc_incomplete_data_page_cnt();
+          } else {
+            write_cache_->dec_incomplete_data_page_cnt();
+          }
+        }
         cur_file_size = file_size_;
         LOG_DEBUG("write success", K(fd_), K(start_write_offset), K(end_write_offset), KPC(this), K(io_ctx));
       }
@@ -1046,10 +1050,8 @@ int ObSharedNothingTmpFile::inner_write_page_(const int64_t page_offset,
     LOG_WARN("unexpected null", KR(ret), K(fd_), KP(page), KP(block));
   } else {
     MEMCPY(page->get_buffer() + page_offset, write_buf, write_size);
-    if ((page_offset + write_size) % ObTmpFileGlobal::PAGE_SIZE == 0) {
-      page->set_is_full(true);
-    }
-    if (OB_FAIL(block->insert_page_into_flushing_list(page_handle))) {
+    bool is_full = (page_offset + write_size) % ObTmpFileGlobal::PAGE_SIZE == 0;
+    if (OB_FAIL(block->insert_page_into_flushing_list(page_handle, is_full))) {
       LOG_WARN("fail to insert page into flushing list", KR(ret), K(fd_), KPC(page), KPC(block));
     }
   }

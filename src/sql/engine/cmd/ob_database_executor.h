@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SQL_ENGINE_CMD_OB_DATABASE_EXECUTOR_H_
@@ -102,7 +95,8 @@ public:
   int init(const uint64_t tenant_id,
            obrpc::ObCommonRpcProxy &rpc_proxy,
            const ObString &database_name,
-           const common::ObIArray<ObString> &table_names);
+           const common::ObIArray<ObString> &table_names,
+           const bool force_drop = false);
   int execute();
 public:
   static const int64_t MAX_TABLES_PER_RPC = 1;
@@ -136,13 +130,14 @@ private:
   int64_t next_table_idx_;
   ObString database_name_;
   common::ObArray<ObString> table_names_;
+  bool force_drop_;
   obrpc::ObCommonRpcProxy *rpc_proxy_;
   common::ObArray<ProxyCtx *> proxy_ctxs_;
   ObArenaAllocator allocator_;
   DISABLE_COPY_ASSIGN(ObDropTableBatchScheduler);
 };
 
-int non_atomic_drop_table_in_database(const uint64_t tenant_id, const ObString &database_name, obrpc::ObCommonRpcProxy &common_rpc_proxy);
+int non_atomic_drop_table_in_database(const uint64_t tenant_id, const ObString &database_name, obrpc::ObCommonRpcProxy &common_rpc_proxy, const bool force_drop = false);
 
 }  // namespace sql
 }  // namespace oceanbase

@@ -1,17 +1,11 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 #include "ob_physical_plan_ctx.h"
+#include "share/ob_tablet_autoincrement_service.h"
 #include "src/sql/engine/ob_des_exec_context.h"
 #include "sql/engine/expr/ob_expr_sql_udt_utils.h"
 #include "sql/table_format/iceberg/ob_iceberg_table_metadata.h"
@@ -32,7 +26,8 @@ DEF_TO_STRING(ObRemoteSqlInfo)
        K_(is_batched_stmt),
        K_(is_original_ps_mode),
        K_(ps_param_cnt),
-       K_(remote_sql));
+       K_(remote_sql),
+       K_(is_ps_cursor));
   J_COMMA();
   J_NAME("ps_params");
   J_COLON();
@@ -120,7 +115,8 @@ ObPhysicalPlanCtx::ObPhysicalPlanCtx(common::ObIAllocator &allocator)
       total_ssstore_read_row_count_(0),
       is_direct_insert_plan_(false),
       check_pdml_affected_rows_(false),
-      enable_adaptive_pc_(false)
+      enable_adaptive_pc_(false),
+      timeout_strategy_(OB_TIMEOUT_STRATEGY_UNDEFINED)
 {
 }
 
@@ -211,6 +207,8 @@ int ObPhysicalPlanCtx::sync_last_value_global()
   for (int64_t i = 0; OB_SUCC(ret) && i < autoinc_params.count(); ++i) {
     AutoincParam &autoinc_param = autoinc_params.at(i);
     if (OB_FAIL(auto_service.sync_insert_value_global(autoinc_param))) {
+      LOG_WARN("failed to sync last insert value globally", K(ret));
+    } else if (OB_FAIL(ObTabletAutoincrementService::get_instance().sync_insert_value_global(autoinc_param.tenant_id_, autoinc_param.random_part_sync_ctxs_))) {
       LOG_WARN("failed to sync last insert value globally", K(ret));
     }
   }

@@ -1,16 +1,10 @@
 // Copyright (c) 2025 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef OB_STORAGE_COMPACTION_TTL_TTL_FILTER_INFO_H_
 #define OB_STORAGE_COMPACTION_TTL_TTL_FILTER_INFO_H_
 
+#include "lib/timezone/ob_timezone_info.h"
 #include "lib/utility/ob_print_utils.h"
 #include "object/ob_obj_type.h"
 
@@ -24,6 +18,32 @@ class SCN;
 
 namespace storage
 {
+
+enum class ObTTLFilterColType : uint8_t  // FARM COMPAT WHITELIST
+{
+  INVALID = 0,
+  ROWSCN = 1,         // rowscn col is int64_t, in the units of ns
+  INT64 = 2,          // int64
+  ORACLE_DATE = 3,    // date for oracle
+  TIMESTAMP = 4,      // timestamp col
+  TIMESTAMP_TZ = 5,   // timestamp with time zone for oracle
+  TIMESTAMP_LTZ = 6,  // timestamp with local time zone for oracle
+  TIMESTAMP_NANO = 7, // timestamp nanosecond for oracle
+  MYSQL_DATETIME = 8, // datetime for mysql
+  MYSQL_DATE = 9,     // date for mysql
+  MAX = 10,
+};
+
+struct ObTTLFilterColTypeUtil final
+{
+  static int to_filter_col_type(const common::ObObjType &obj_type, ObTTLFilterColType &filter_col_type);
+
+  static int to_obj_type(const ObTTLFilterColType &filter_col_type, common::ObObjType &obj_type);
+
+  // ROWSCN has no user ttl column in lob meta table
+  static bool has_ttl_column_in_lob_meta(const ObTTLFilterColType ttl_type);
+};
+
 class ObTTLFilterInfoKey final
 {
   OB_UNIS_VERSION(1);
@@ -67,20 +87,6 @@ public:
   static constexpr int64_t TTL_FILTER_INFO_VERSION_V1 = 1;
   static constexpr int64_t TTL_FILTER_INFO_VERSION_LATEST = TTL_FILTER_INFO_VERSION_V1;
 
-  enum class ObTTLFilterColType : uint8_t
-  {
-    INVALID = 0,
-    ROWSCN = 1, // rowscn col is int64_t, in the units of ns
-    INT64 = 2, // int64
-    DATE = 3, // date for oracle
-    TIMESTAMP = 4, // timestamp col
-    TIMESTAMP_TZ = 5, // timestamp with time zone for oracle
-    TIMESTAMP_LTZ = 6, // timestamp with local time zone for oracle
-    TIMESTAMP_NANO = 7, // timestamp nanosecond for oracle
-    MYSQL_DATETIME = 8, // datetime for mysql
-    MAX = 9,
-  };
-
 public:
   ObTTLFilterInfo()
       : version_(TTL_FILTER_INFO_VERSION_V1), ttl_filter_col_type_(ObTTLFilterColType::INVALID),
@@ -90,8 +96,12 @@ public:
 
   OB_INLINE bool is_valid() const
   {
-    return key_.is_valid() && version_ <= TTL_FILTER_INFO_VERSION_LATEST
-           && ttl_filter_col_type_ > ObTTLFilterColType::INVALID && ttl_filter_col_type_ < ObTTLFilterColType::MAX && ttl_filter_col_idx_ >= 0
+    return key_.is_valid()
+           && version_ <= TTL_FILTER_INFO_VERSION_LATEST
+           && commit_version_ >= 0
+           && ttl_filter_col_type_ > ObTTLFilterColType::INVALID
+           && ttl_filter_col_type_ < ObTTLFilterColType::MAX
+           && ttl_filter_col_idx_ >= 0
            && ttl_filter_value_ > 0;
   }
 
@@ -148,6 +158,13 @@ public:
   OB_INLINE bool is_rowscn_filter() const { return get_ttl_filter_col_type() == ObTTLFilterColType::ROWSCN; }
 
   /**
+   * Filter info generate
+   */
+  int fill_filter_value(const ObTTLFilterColType col_type,
+                        const int64_t ttl_filter_us,
+                        const ObTimeZoneInfo *timezone);
+
+  /**
    * serialize and deserialize
    */
   int serialize(char *buf, const int64_t buf_len, int64_t &pos) const;
@@ -161,8 +178,6 @@ public:
   }
 
   void on_commit(const share::SCN &commit_version, const share::SCN &commit_scn);
-
-  static int to_filter_col_type(const ObObjType &obj_type, ObTTLFilterColType &filter_col_type);
 
   /**
    * to string

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_BACKUP_DATA_SET_TASK_MGR_H_
@@ -55,22 +48,9 @@ public:
 private:
   int persist_sys_ls_task_();
   int do_persist_sys_ls_task_();
-  int disable_ss_gc_();
-  int do_disable_ss_gc_();
-  int wait_ss_clog_checkpoint_();
-  int do_wait_ss_clog_checkpoint_();
-  int update_start_scn_();
-  int wait_ss_ls_consistency_();
-  int do_wait_ss_ls_consistency_();
-  int get_all_ls_ids_(common::ObIArray<share::ObLSID> &ls_ids);
-  int get_all_ls_ids_(const share::SCN &read_scn, common::ObIArray<share::ObLSID> &ls_ids);
-  int wait_ss_ls_clog_checkpoint_scn_push_(const share::ObLSID &ls_id, const share::SCN &archive_round_start_scn);
-  int enable_ss_gc_();
-  int do_enable_ss_gc_();
   int deal_generate_file_list_failed_(const int err, bool &can_retry);
   int persist_ls_attr_info_(const share::ObBackupLSTaskAttr &sys_ls_task, ObIArray<share::ObLSID> &ls_ids);
   int sync_wait_backup_user_ls_scn_(const share::ObBackupLSTaskAttr &sys_ls_task, share::SCN &scn);
-  int ss_sync_wait_backup_user_ls_scn_(const share::ObBackupLSTaskAttr &sys_ls_task, share::SCN &scn);
   int generate_ls_tasks_(const ObIArray<share::ObLSID> &ls_ids, const share::ObBackupDataTaskType &type);
   int calc_task_turn_(const ObBackupDataTaskType &type, int64_t &turn_id);
   int backup_sys_meta_();
@@ -92,25 +72,8 @@ private:
   int get_extern_tablet_info_(const share::ObLSID &ls_id,
       ObIArray<ObTabletID> &user_tablet_ids, share::SCN &backup_scn);
   int merge_ls_meta_infos_(const ObIArray<share::ObBackupLSTaskAttr> &ls_tasks);
-#ifdef OB_BUILD_SHARED_STORAGE
-  int merge_ss_ls_meta_infos_(const ObIArray<share::ObBackupLSTaskAttr> &ls_tasks);
-  bool all_ls_are_normal_(const share::ObLSAttrIArray &ls_attr_array) const;
-  int get_sslog_gts_(share::SCN &sslog_gts);
-  int get_sslog_ls_ids_(const share::SCN &sslog_gts, common::ObIArray<share::ObLSID> &ls_ids,
-                        common::ObIArray<share::ObLSID> &offline_ls_ids, bool &need_retry);
-  int extract_ls_ids_from_attr_array_(const share::ObLSAttrIArray &ls_attr_array,
-                                      common::ObIArray<share::ObLSID> &ls_ids);
-  bool compare_ls_id_lists_(const common::ObIArray<share::ObLSID> &list1,
-                            const common::ObIArray<share::ObLSID> &list2);
-  int check_offline_ls_status_exists_(const uint64_t tenant_id,
-                                      const share::ObLSID &ls_id,
-                                      bool &exists);
-#endif
   int do_backup_root_key_();
   int backup_data_();
-#ifdef OB_BUILD_SHARED_STORAGE
-  int backup_data_in_shared_storage_();
-#endif
   int backup_data_in_shared_nothing_();
   int get_ls_id_array_(const ObIArray<share::ObBackupLSTaskAttr> &ls_task, ObIArray<share::ObLSID> &ls_id_array);
   int backup_fuse_tablet_meta_();
@@ -165,11 +128,15 @@ private:
   int backup_completing_log_();
   int do_backup_completing_log_(ObArray<share::ObBackupLSTaskAttr> &ls_task, int64_t &finish_cnt);
   int calculate_start_replay_scn_(share::SCN &start_replay_scn);
-#ifdef OB_BUILD_SHARED_STORAGE
-  int calculate_ss_start_replay_scn_(share::SCN &start_replay_scn);
-  int calculate_ss_min_restore_scn_(share::SCN &min_restore_scn);
-#endif
   int do_cancel_();
+  int check_and_handle_sslog_table_size_(const share::ObBackupStatus::Status &status);
+  // Top-level disk-full wait timer judgment. Reads first_disk_full_ts_ from
+  // set_task_attr_.extra_info_ and compares against _backup_disk_full_max_wait_duration.
+  // On timeout, sets job_attr_->can_retry_=false and returns OB_SERVER_OUTOF_DISK_SPACE
+  // so handle_failed_job_ -> deal_non_reentrant_job marks the job FAILED.
+  // Runs at the top of process() so it fires even when LS tasks are stuck PENDING
+  // (the scheduler-side mark_wait_list_set_tasks_disk_full_ path).
+  int check_disk_full_timeout_();
   // new function for generate file list
   int generate_backup_set_file_list_();
   int generate_backup_meta_info_file_list_();

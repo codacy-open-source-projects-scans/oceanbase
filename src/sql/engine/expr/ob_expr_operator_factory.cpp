@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -200,6 +193,7 @@
 #include "sql/engine/expr/ob_expr_left.h"
 #include "sql/engine/expr/ob_expr_space.h"
 #include "sql/engine/expr/ob_expr_rand.h"
+#include "sql/engine/expr/ob_expr_rand_canonical.h"
 #include "sql/engine/expr/ob_expr_randstr.h"
 #include "sql/engine/expr/ob_expr_random.h"
 #include "sql/engine/expr/ob_expr_generator_func.h"
@@ -244,6 +238,7 @@
 #include "sql/engine/expr/ob_expr_sys_extract_utc.h"
 #include "sql/engine/expr/ob_expr_tz_offset.h"
 #include "sql/engine/expr/ob_expr_from_tz.h"
+#include "sql/engine/expr/ob_expr_new_time.h"
 #include "sql/engine/expr/ob_expr_collection_construct.h"
 #include "sql/engine/expr/ob_expr_to_interval.h"
 #include "sql/engine/expr/ob_expr_nvl2_oracle.h"
@@ -301,6 +296,7 @@
 #include "sql/engine/expr/ob_expr_encode_sortkey.h"
 #include "sql/engine/expr/ob_expr_hash.h"
 #include "sql/engine/expr/ob_expr_nlssort.h"
+#include "sql/engine/expr/ob_expr_nls_charset_id.h"
 #include "sql/engine/expr/ob_expr_json_object.h"
 #include "sql/engine/expr/ob_expr_json_extract.h"
 #include "sql/engine/expr/ob_expr_json_schema_valid.h"
@@ -496,6 +492,7 @@
 #include "sql/engine/expr/ob_expr_array_first.h"
 #include "sql/engine/expr/ob_expr_mysql_proc_info.h"
 #include "sql/engine/expr/ob_expr_get_mysql_routine_parameter_type_str.h"
+#include "sql/engine/expr/ob_expr_get_routine_param_type_str.h"
 #include "sql/engine/expr/ob_expr_ora_login_user.h"
 #include "sql/engine/expr/ob_expr_priv_st_geohash.h"
 #include "sql/engine/expr/ob_expr_priv_st_makepoint.h"
@@ -532,14 +529,17 @@
 #include "sql/engine/expr/ob_expr_ai/ob_expr_ai_prompt.h"
 #include "sql/engine/expr/ob_expr_vector_similarity.h"
 #include "sql/engine/expr/ob_expr_edit_distance.h"
+#include "sql/engine/expr/ob_expr_parse_date_time.h"
 #include "sql/engine/expr/ob_expr_md5_concat_ws.h"
 #include "sql/engine/expr/ob_expr_collect_file_list.h"
 #include "sql/engine/expr/ob_expr_pos_list.h"
 #include "sql/engine/expr/ob_expr_ai/ob_expr_load_file.h"
+#include "sql/engine/expr/ob_expr_image_type.h"
 #include "sql/engine/expr/ob_expr_lock_func.h"
 #include "sql/engine/expr/ob_expr_format_profile.h"
 #include "sql/engine/expr/ob_expr_max_pt.h"
 #include "sql/engine/expr/ob_expr_date_trunc.h"
+#include "sql/engine/expr/ob_expr_random_part_nextval.h"
 
 using namespace oceanbase::common;
 namespace oceanbase
@@ -886,6 +886,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprUnixTimestamp, EAGER_EVALUATION);
     REG_OP(ObExprMakeTime, EAGER_EVALUATION);
     REG_OP(ObExprMakedate, EAGER_EVALUATION);
+    REG_OP(ObExprNewTime, EAGER_EVALUATION);
     REG_OP(ObExprExtract, EAGER_EVALUATION);
     REG_OP(ObExprToDays, EAGER_EVALUATION);
     REG_OP(ObExprPosition, EAGER_EVALUATION);
@@ -1056,12 +1057,10 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprBenchmark, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprWeightString, EAGER_EVALUATION);
     REG_OP(ObExprCrc32, EAGER_EVALUATION);
-  #if defined(ENABLE_DEBUG_LOG) || !defined(NDEBUG)
     REG_OP(ObExprTmpFileOpen, EAGER_EVALUATION);
     REG_OP(ObExprTmpFileClose, EAGER_EVALUATION);
     REG_OP(ObExprTmpFileWrite, EAGER_EVALUATION);
     REG_OP(ObExprTmpFileRead, EAGER_EVALUATION);
-  #endif
     REG_OP(ObExprToBase64, EAGER_EVALUATION);
     REG_OP(ObExprFromBase64, EAGER_EVALUATION);
     REG_OP(ObExprOpSubQueryInPl, SHORT_CIRCUIT_EVALUATION);
@@ -1088,6 +1087,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprJsonValue, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprJsonReplace, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprJsonType, EAGER_EVALUATION);
+    REG_OP(ObExprImageType, EAGER_EVALUATION);
     REG_OP(ObExprJsonLength, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprJsonInsert, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprJsonStorageSize, EAGER_EVALUATION);
@@ -1313,6 +1313,8 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprAuditLogRemoveFilter, EAGER_EVALUATION);
     REG_OP(ObExprAuditLogSetUser, EAGER_EVALUATION);
     REG_OP(ObExprAuditLogRemoveUser, EAGER_EVALUATION);
+    REG_OP(ObExprAuditLogPasswordGet, EAGER_EVALUATION);
+    REG_OP(ObExprAuditLogPasswordSet, EAGER_EVALUATION);
     REG_OP(ObExprIsEnabledRole, EAGER_EVALUATION);
     REG_OP(ObExprSm3, EAGER_EVALUATION);
     REG_OP(ObExprSm4Encrypt, SHORT_CIRCUIT_EVALUATION);
@@ -1371,10 +1373,13 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprToDate, SHORT_CIRCUIT_EVALUATION);
     REG_SAME_OP(T_FUN_SYS_DATE_FORMAT, T_FUN_SYS_FORMAT_DATE_TIME, N_FORMAT_DATE_TIME, i, true);
     REG_SAME_OP(T_FUN_SYS_UNIX_TIMESTAMP, T_FUN_SYS_TO_UNIX_TIMESTAMP, N_TO_UNIX_TIMESTAMP, i, true);
+    REG_OP(ObExprParseDateTime, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprIsNan, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprCollectFileList, EAGER_EVALUATION);
     REG_OP(ObExprVoid, EAGER_EVALUATION);
     REG_OP(ObExprLoadFile, SHORT_CIRCUIT_EVALUATION);
+    REG_OP(ObExprRandomPartNextval, EAGER_EVALUATION);
+    REG_OP(ObExprRandCanonical, EAGER_EVALUATION);
     REG_OP(ObExprSearchIndexInnerPath, SHORT_CIRCUIT_EVALUATION);
     REG_OP(ObExprSearchIndexInnerValue, SHORT_CIRCUIT_EVALUATION);
   }();
@@ -1439,6 +1444,7 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprSetCollation, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprWidthBucket, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprChr, EAGER_EVALUATION);
+  REG_OP_ORCL(ObExprNchr, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprExtract, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprSqrt, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprNlsLower, EAGER_EVALUATION);
@@ -1449,6 +1455,7 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprTimestampToScn, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprScnToTimestamp, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprNlsInitCap, SHORT_CIRCUIT_EVALUATION);
+  REG_OP_ORCL(ObExprGetRoutineParamTypeStr, EAGER_EVALUATION);
   //部分内部使用的表达式
   REG_OP_ORCL(ObExprAdd, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprAggAdd, SHORT_CIRCUIT_EVALUATION);
@@ -1560,6 +1567,7 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprSysExtractUtc, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprTzOffset, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprFromTz, EAGER_EVALUATION);
+  REG_OP_ORCL(ObExprNewTime, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprSpatialCellid, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprSpatialMbr, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprToPinyin, SHORT_CIRCUIT_EVALUATION);
@@ -1655,6 +1663,7 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprEncodeSortkey, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprHash, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprNLSSort, SHORT_CIRCUIT_EVALUATION);
+  REG_OP_ORCL(ObExprNLSCharsetId, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprObVersion, EAGER_EVALUATION);
 #if  defined(ENABLE_DEBUG_LOG) || !defined(NDEBUG)
   REG_OP_ORCL(ObExprErrno, EAGER_EVALUATION);
@@ -1717,17 +1726,18 @@ void ObExprOperatorFactory::register_expr_operators()
   REG_OP_ORCL(ObExprCurrentCatalog, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprCheckCatalogAccess, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprStartUpMode, SHORT_CIRCUIT_EVALUATION);
-#if defined(ENABLE_DEBUG_LOG) || !defined(NDEBUG)
   REG_OP_ORCL(ObExprTmpFileOpen, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprTmpFileClose, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprTmpFileWrite, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprTmpFileRead, EAGER_EVALUATION);
-#endif
   REG_OP_ORCL(ObExprLocalDynamicFilter, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprFormatProfile, SHORT_CIRCUIT_EVALUATION);
   REG_OP_ORCL(ObExprCheckLocationAccess, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprEnhancedAesEncrypt, SHORT_CIRCUIT_EVALUATION);
+  REG_OP_ORCL(ObExprAuditLogPasswordGet, EAGER_EVALUATION);
+  REG_OP_ORCL(ObExprAuditLogPasswordSet, EAGER_EVALUATION);
   REG_OP_ORCL(ObExprMaxPt, EAGER_EVALUATION);
+  REG_OP_ORCL(ObExprRandomPartNextval, EAGER_EVALUATION);
 }
 
 bool ObExprOperatorFactory::is_expr_op_type_valid(ObExprOperatorType type)
@@ -1914,11 +1924,18 @@ void ObExprOperatorFactory::get_function_alias_name(const ObString &origin_name,
       alias_name = ObString::make_string(N_ST_CENTROID);
     } else if (0 == origin_name.case_compare("semantic_distance")) {
       alias_name = ObString::make_string(N_SEMANTIC_DISTANCE);
+    } else if (0 == origin_name.case_compare(N_CATALOG)) {
+      // catalog() is synonym for current_catalog()
+      alias_name = ObString::make_string(N_CURRENT_CATALOG);
     } else {
       //do nothing
     }
   } else {
     //for synonyms in oracle mode
+    if (0 == origin_name.case_compare(N_CATALOG)) {
+      // catalog() is synonym for current_catalog()
+      alias_name = ObString::make_string(N_CURRENT_CATALOG);
+    }
   }
 }
 

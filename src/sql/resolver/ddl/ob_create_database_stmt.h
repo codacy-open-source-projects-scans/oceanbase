@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_CREATE_DATABASE_STMT_H_
@@ -39,6 +32,7 @@ class ObCreateDatabaseStmt : public ObDDLStmt
     int set_primary_zone(const common::ObString &zone);
     void set_read_only(const bool read_only);
     int set_default_tablegroup_name(const common::ObString &tablegroup_name);
+    int set_default_tablespace_name(const common::ObString &tablespace_name);
     obrpc::ObCreateDatabaseArg &get_create_database_arg();
     virtual bool cause_implicit_commit() const { return true; }
     virtual obrpc::ObDDLArg &get_ddl_arg() { return create_database_arg_; }

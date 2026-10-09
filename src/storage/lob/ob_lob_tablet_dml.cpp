@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -66,7 +59,10 @@ int ObLobTabletDmlHelper::build_common_lob_param_for_dml(
   lob_param.is_index_table_ = run_ctx.relative_table_.is_index_table();
   lob_param.main_table_rowkey_col_ = run_ctx.is_main_table_rowkey_col(col_idx) ||
     (!run_ctx.relative_table_.is_index_table() && col_idx < run_ctx.relative_table_.get_rowkey_column_num());
-  if (OB_FAIL(set_lob_storage_params(run_ctx, column, lob_param))) {
+  lob_param.lob_ttl_column_info_ = run_ctx.lob_ttl_column_info_;
+  if (lob_param.lob_ttl_column_info_.has_user_ttl() && OB_FAIL(lob_param.lob_ttl_column_info_.transform_to_local_cache_datum(&data_row))) {
+    LOG_WARN("transform to local cache datum fail", K(ret), K(data_row));
+  } else if (OB_FAIL(set_lob_storage_params(run_ctx, column, lob_param))) {
     LOG_WARN("set_lob_storage_params fail", K(ret), K(column));
   } else if (OB_FAIL(lob_param.snapshot_.assign(run_ctx.dml_param_.snapshot_))) {
     LOG_WARN("assign snapshot fail", K(ret), K(run_ctx.dml_param_.snapshot_));
@@ -269,6 +265,9 @@ int ObLobTabletDmlHelper::insert_lob_col(
         LOG_DEBUG("[STORAGE_LOB]write ob lob data.", K(lob_param), KPC(lob_param.lob_common_),
                   K(lob_param.handle_size_), K(column.col_type_.get_collation_type()));
       }
+    } else if (lob_param.byte_size_ != 0) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("[STORAGE_LOB]byte size is not 0", K(ret), K(lob_param));
     } else if (OB_FAIL(lob_mngr->append(lob_param, loc))) {
       LOG_WARN("[STORAGE_LOB]lob append failed.", K(ret));
     } else {

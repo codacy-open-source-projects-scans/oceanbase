@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -165,7 +158,7 @@ int ObLobPieceBuilder::set_basic_infos(
   aux_lob_piece_schema.set_merge_engine_type(ObMergeEngineStoreFormat::get_lob_aux_inherit_merge_engine_type(data_schema.get_merge_engine_type()));
   if (OB_FAIL(aux_lob_piece_schema.set_compress_func_name(data_schema.get_compress_func_name()))) {
     LOG_WARN("set_compress_func_name failed", K(data_schema));
-  } else if (OB_FAIL(aux_lob_piece_schema.set_ttl_definition(data_schema.get_ttl_definition(), data_schema.get_ttl_flag()))) {
+  } else if (OB_FAIL(aux_lob_piece_schema.inherit_ttl_definition(data_schema))) {
     LOG_WARN("set_ttl_definition failed", K(data_schema));
   }
 

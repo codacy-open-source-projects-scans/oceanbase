@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OB_PARTITION_ROWS_MERGER_H_
 #define OB_PARTITION_ROWS_MERGER_H_
@@ -181,8 +174,9 @@ public:
     const ObMergeParameter &merge_param,
     ObCompactionFilterHandle &filter_handle);
   virtual void reset();
-  virtual OB_INLINE bool is_co_major_helper() const { return false; }
+  virtual OB_INLINE bool need_skip_sstable(const bool table_need_full_merge, const ObITable &table) const { return false; }
   virtual OB_INLINE bool is_multi_major_helper() const { return false; }
+  virtual int get_next_row(const blocksstable::ObDatumRow *&row) { return OB_NOT_SUPPORTED; }
   int find_rowkey_minimum_iters(MERGE_ITER_ARRAY &minimum_iters);
   static int move_iters_next(MERGE_ITER_ARRAY &merge_iters);
   int rebuild_rows_merger();
@@ -222,18 +216,31 @@ protected:
 class ObPartitionMajorMergeHelper : public ObPartitionMergeHelper
 {
 public:
+  enum MergeIterKind : uint8_t
+  {
+    ROW_MERGE_ITER = 0,
+    MICRO_MERGE_ITER = 1,
+    MACRO_MERGE_ITER = 2,
+  };
   ObPartitionMajorMergeHelper(
       const ObITableReadInfo &read_info,
       common::ObIAllocator &allocator)
     : ObPartitionMergeHelper(read_info, allocator)
   {}
   virtual OB_INLINE bool need_check_major_sstable() const { return false; }
+  virtual int get_next_row(const blocksstable::ObDatumRow *&row) override;
 protected:
   ObPartitionMergeIter *alloc_merge_iter(
     const ObMergeParameter &merge_param,
     const int64_t sstable_idx,
     const ObITable *table,
     ObCompactionFilterHandle &filter_handle) override;
+  int get_merge_iter_kind(
+    const ObMergeParameter &merge_param,
+    const int64_t sstable_idx,
+    const ObITable *table,
+    bool &need_co_sstable_scan,
+    MergeIterKind &iter_kind);
 private:
   virtual bool need_all_column_from_rowkey_co_sstable(const ObITable &table, const ObMergeParameter &merge_param) const { return false; }
   virtual bool table_need_full_merge(const int64_t sstable_idx, const ObITable &table, const ObMergeParameter &merge_param) const
@@ -256,11 +263,12 @@ public:
       replay_base_directly_(replay_base_directly)
   {}
   virtual OB_INLINE bool is_multi_major_helper() const { return true; }
+  virtual OB_INLINE bool need_skip_sstable(const bool table_need_full_merge, const ObITable &table) const { return !table.is_major_type_sstable(); }
   virtual OB_INLINE bool need_check_major_sstable() const { return true; }
   bool check_could_move_to_end();
   void move_to_end();
   int get_current_major_iter(ObPartitionMergeIter *&row_store_iter);
-  int next();
+  int next(const bool need_move_next);
 private:
   virtual int check_unique_champion() override;
   virtual bool need_all_column_from_rowkey_co_sstable(const ObITable &table, const ObMergeParameter &merge_param) const override;
@@ -290,6 +298,20 @@ protected:
     ObCompactionFilterHandle &filter_handle) override;
 };
 
+class ObMultiMajorBatchMergeIter : public ObMultiMajorMergeIter
+{
+public:
+  ObMultiMajorBatchMergeIter(
+      const ObITableReadInfo &read_info,
+      common::ObIAllocator &allocator,
+      const bool replay_base_directly = false)
+    : ObMultiMajorMergeIter(read_info, allocator, replay_base_directly)
+  {}
+  virtual OB_INLINE bool need_skip_sstable(const bool table_need_full_merge, const ObITable &table) const
+  {
+    return !table.is_major_type_sstable() || (table.is_major_type_sstable() && table_need_full_merge);
+  }
+};
 } //namespace compaction
 } //namespace oceanbase
 #endif

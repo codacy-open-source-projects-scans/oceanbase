@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_OB_SCHEMA_UTILS_H
@@ -32,6 +25,10 @@ namespace common
 {
 class ObISQLClient;
 }
+namespace obrpc
+{
+class ObAlterTableArg;
+}
 
 namespace share
 {
@@ -42,6 +39,7 @@ class ObColumnSchemaV2;
 class ObServerSchemaService;
 struct SchemaKey;
 class AlterTableSchema;
+class ObSchemaGuardWrapper;
 class ObSchemaUtils
 {
 public:
@@ -281,8 +279,13 @@ public:
 
   static int is_drop_column_only(const schema::AlterTableSchema &alter_table_schema, bool &is_drop_col_only);
   static int check_build_old_version_column_group(const share::schema::ObTableSchema &table_schema, bool &build_old_version_cg);
+  static int check_allow_hidden_rowkey_column_group(const share::schema::ObTableSchema &table_schema, bool &allow_hidden_rowkey_cg);
 
 private:
+  static int check_need_rowkey_column_group(
+      const share::schema::ObTableSchema &table_schema,
+      bool &need_rowkey_cg,
+      bool &need_hidden_rowkey_cg);
   static int push_inner_table_schema_(
       const uint64_t tenant_id,
       const bool include_index_and_lob_aux_schemas,
@@ -440,6 +443,14 @@ public:
     CREATE_INDEX = 2,
     CREATE_VIEW = 3,
     DROP_TABLE = 4,
+    ADD_COLUMN = 5,
+    DROP_COLUMN = 6,
+    ADD_PARTITION = 7,
+    ADD_SUB_PARTITION = 8,
+    DROP_PARTITION = 9,
+    DROP_SUB_PARTITION = 10,
+    TRUNCATE_PARTITION = 11,
+    TRUNCATE_SUB_PARTITION = 12,
     MAX_TYPE // can not > 32
   };
 
@@ -467,6 +478,30 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObParallelDDLControlMode);
 };
 
+// On can_parallel_alter==false, `reason` points to a static string naming the
+// field that blocked parallel DDL (forwarded to LOG_WARN by callers).
+int check_alter_table_arg_for_parallel(const obrpc::ObAlterTableArg &arg,
+                                       bool &can_parallel_alter,
+                                       const char *&reason);
+// Check that non-column-operation fields in ObAlterTableArg are all in their
+// default/safe state for parallel DDL. Thin wrapper over
+// ObAlterTableArg::has_no_non_column_operation() — add new whitelist entries
+// there rather than here.
+int check_non_column_arg_for_parallel(const obrpc::ObAlterTableArg &arg,
+                                      bool &can_parallel,
+                                      const char *&reason);
+bool is_drop_column_lob(const ObColumnSchemaV2 &column_schema);
+int count_drop_column_lob_columns(const ObTableSchema &table_schema,
+                                  int64_t &lob_column_count);
+int check_drop_column_can_parallel(const obrpc::ObAlterTableArg &arg,
+                                   const ObTableSchema &orig_table_schema,
+                                   ObSchemaGetterGuard &schema_guard,
+                                   bool &can_parallel_alter,
+                                   const char *&reason);
+int check_add_column_can_parallel(const obrpc::ObAlterTableArg &arg,
+                                  const ObTableSchema &orig_table_schema,
+                                  bool &can_parallel_alter,
+                                  const char *&reason);
 class ObTenantDDLCountGuard
 {
 public:
@@ -480,6 +515,7 @@ private:
 };
 
 } // end schema
+
 } // end share
 } // end oceanbase
 

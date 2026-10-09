@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_SQL_ENGINE_PX_NEW_ROW_H_
@@ -25,6 +18,7 @@
 #include "sql/engine/basic/ob_compact_row.h"
 #include "sql/engine/basic/ob_temp_row_store.h"
 #include "sql/dtl/ob_dtl_vectors_buffer.h"
+#include "lib/allocator/page_arena.h"
 
 namespace oceanbase
 {
@@ -52,8 +46,11 @@ public:
       reorder_fixed_expr_(reorder_fixed_expr),
       child_exprs_(child_exprs),
       allocator_(allocator),
-      recv_op_(recv_op)
+      recv_op_(recv_op),
+      arena_allocator_(),
+      col_has_null_cache_(nullptr)
   {
+    arena_allocator_.set_attr(ObMemAttr(MTL_ID(), "PxRowStore"));
   }
   ~ObReceiveRowReader()
   {
@@ -182,6 +179,8 @@ private:
   common::ObIAllocator *allocator_ = NULL;
   bool row_meta_init_ = false;
   ObPxReceiveOp *recv_op_;
+  common::ObArenaAllocator arena_allocator_;
+  bool *col_has_null_cache_;
 };
 
 class ObPxNewRow

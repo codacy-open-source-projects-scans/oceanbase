@@ -12,14 +12,7 @@ import glob
 # global variables
 copyright = '''/**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */'''
 
 # store all configed object types
@@ -472,9 +465,9 @@ void ObStorageObjectTypeBase::get_ss_macro_block_type(
   ss_macro_block_type = ObSSMacroBlockType::MAX_TYPE;
   if (ObStorageObjectType::EXTERNAL_TABLE_FILE == type_) {
     ss_macro_block_type = ObSSMacroBlockType::EXTERNAL_TABLE;
-  } else if (macro_id.is_shared_data_or_meta()) {
+  } else if (macro_id.is_shared_data_block_or_meta_block()) {
     ss_macro_block_type = ObSSMacroBlockType::SHARED_MACRO;
-  } else if (macro_id.is_private_data_or_meta()) {
+  } else if (macro_id.is_private_macro()) {
     ss_macro_block_type = ObSSMacroBlockType::PRIVATE_MACRO;
   }
 }

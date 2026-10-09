@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_MEMTABLE_OB_MEMTABLE_INTERFACE_
@@ -83,7 +76,7 @@ struct CreateMemtableArg {
   share::SCN new_clog_checkpoint_scn_;
   bool for_replay_;
   bool for_inc_direct_load_;
-  bool is_delete_insert_;
+  ObMergeEngineType original_merge_engine_type_;
   int64_t micro_block_format_version_;
 
   CreateMemtableArg() { reset(); }
@@ -94,7 +87,7 @@ struct CreateMemtableArg {
     new_clog_checkpoint_scn_.set_min();
     for_replay_ = false;
     for_inc_direct_load_ = false;
-    is_delete_insert_ = false;
+    original_merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
     micro_block_format_version_ = ObMicroBlockFormatVersionHelper::DEFAULT_VERSION;
   }
 
@@ -103,7 +96,7 @@ struct CreateMemtableArg {
                K(new_clog_checkpoint_scn_),
                K(for_replay_),
                K(for_inc_direct_load_),
-               K(is_delete_insert_),
+               K(original_merge_engine_type_),
                K(micro_block_format_version_));
 };
 

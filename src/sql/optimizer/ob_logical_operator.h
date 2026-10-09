@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOGICAL_OPERATOR_H
@@ -463,10 +456,12 @@ struct ObExchangeInfo
     calc_part_id_expr_(NULL),
     hash_dist_exprs_(),
     popular_values_(),
+    popular_values_ratio_(0.0),
     dist_method_(ObPQDistributeMethod::LOCAL), // pull to local
     unmatch_row_dist_method_(ObPQDistributeMethod::LOCAL),
     null_row_dist_method_(ObNullDistributeMethod::NONE),
     slave_mapping_type_(SlaveMappingType::SM_NONE),
+    slave_mapping_id_(0),
     strong_sharding_(NULL),
     weak_sharding_(),
     need_null_aware_shuffle_(false),
@@ -521,10 +516,12 @@ struct ObExchangeInfo
   common::ObSEArray<HashExpr, 4> hash_dist_exprs_;
   // for hybrid hash distr
   common::ObSEArray<ObObj, 20> popular_values_;
+  double popular_values_ratio_; // fraction of hot rows, used for hybrid hash exchange cost estimation
   ObPQDistributeMethod::Type dist_method_;
   ObPQDistributeMethod::Type unmatch_row_dist_method_;
   ObNullDistributeMethod::Type null_row_dist_method_;
   SlaveMappingType slave_mapping_type_;
+  int64_t slave_mapping_id_;
   // for repart transmit with pkey range
   ObSEArray<uint64_t, 4> repart_all_tablet_ids_;
   // for hash-hash, re-partition and broadcast, remember the consumer exchange sharding
@@ -580,7 +577,8 @@ struct ObExchangeInfo
                K_(server_list),
                K_(is_ordered_agg),
                K_(hidden_pk_expr),
-               K_(use_scatter_channel_for_pkey_hash));
+               K_(use_scatter_channel_for_pkey_hash),
+               K_(popular_values_ratio));
 private:
   DISALLOW_COPY_AND_ASSIGN(ObExchangeInfo);
 };
@@ -686,6 +684,9 @@ struct ObAllocExprContext
   common::ObSEArray<ExprProducer, 16> expr_producers_;
   // Exprs that cannot be used to extract shared child exprs
   common::ObSEArray<ObRawExpr *, 4> inseparable_exprs_;
+  // Branch sub-exprs (CASE/IF/NVL/...) with CNT_SUB_QUERY flag found during flatten.
+  // SPF uses this list to register them as separate producers when they wrap its subqueries.
+  common::ObSEArray<ObRawExpr *, 4> branch_subquery_exprs_;
 };
 
 struct ObPxPipeBlockingCtx
@@ -1185,6 +1186,8 @@ public:
    */
   inline void set_is_local_order(bool is_local_order) { is_local_order_ = is_local_order; }
   inline bool get_is_local_order() const { return is_local_order_; }
+  inline void set_is_local_order_by_das(bool is_local_order_by_das) { is_local_order_by_das_ = is_local_order_by_das; }
+  inline bool get_is_local_order_by_das() const { return is_local_order_by_das_; }
   inline void set_is_range_order(bool is_range_order) { is_range_order_ = is_range_order; }
   inline bool get_is_range_order() const { return is_range_order_; }
 
@@ -1766,7 +1769,7 @@ public:
   int check_contain_dist_das(const ObIArray<ObAddr> &exec_server_list,
                              bool &contain_dist_das) const;
 
-  inline bool can_re_parallel() { return !is_distributed() && !is_match_all() && 1 < get_available_parallel() && !get_is_at_most_one_row(); }
+  inline bool can_re_parallel() const { return !is_distributed() && !is_match_all() && 1 < get_available_parallel() && !get_is_at_most_one_row(); }
   int check_op_orderding_used_by_parent(bool &used);
 
   inline void set_is_order_by_plan_top(const bool is_top) { is_order_by_plan_top_ = is_top; }
@@ -1956,7 +1959,7 @@ private:
   int refine_dop_by_hint();
   int check_has_temp_table_access(ObLogicalOperator *cur, bool &has_temp_table_access);
 
-  int find_px_for_batch_rescan(ObLogicalOperator *batch_rescan_op, bool &find);
+  int find_px_for_batch_rescan(ObLogicalOperator *batch_rescan_op, bool &find, int64_t spf_child_idx = OB_INVALID_ID);
   int find_nested_dis_rescan(bool &find, bool nested);
   int add_op_exprs(ObRawExpr* expr);
   // alloc mat for sync in output
@@ -2011,6 +2014,7 @@ protected:
   // when has no op_ordering_
   // is_local_order has no meanings
   bool is_local_order_;
+  bool is_local_order_by_das_;  // local order originates from DAS scan, GI cannot leverage it
   bool is_range_order_;
   ObSqlArray<OrderItem> op_ordering_;
   const EqualSets &empty_expr_sets_;

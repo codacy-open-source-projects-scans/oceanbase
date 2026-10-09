@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -22,6 +15,7 @@ namespace oceanbase
 {
 namespace pl
 {
+ERRSIM_POINT_DEF(EN_ALTER_DAILY_MAINTENANCE_REPEAT_INTERVAL, "enable alter daily maintenance repeat interval for testing");
 
 int ObDBMSDailyMaintenance::trigger_window_compaction_proc(sql::ObExecContext &ctx,
                                                            sql::ParamStore &params,
@@ -129,11 +123,50 @@ int ObDBMSDailyMaintenance::set_thread_count(sql::ObExecContext &ctx,
   return ret;
 }
 
+int ObDBMSDailyMaintenance::alter_repeat_interval_proc(sql::ObExecContext &ctx,
+                                                       sql::ParamStore &params,
+                                                       common::ObObj &result)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(result);
+  const int64_t start_time_us = ObTimeUtility::current_time();
+  uint64_t tenant_id = MTL_ID();
+  ObString repeat_interval_str;
+
+  if (OB_UNLIKELY(!EN_ALTER_DAILY_MAINTENANCE_REPEAT_INTERVAL)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("ALTER_REPEAT_INTERVAL is for testing only now, enable tracepoint EN_ALTER_DAILY_MAINTENANCE_REPEAT_INTERVAL first", KR(ret), K(tenant_id));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "ALTER_REPEAT_INTERVAL only allowed for testing, execute without EN_ALTER_DAILY_MAINTENANCE_REPEAT_INTERVAL tracepoint");
+  } else if (OB_FAIL(check_supported(tenant_id))) {
+    LOG_WARN("fail to check window compaction compatbility", K(ret), K(tenant_id));
+  } else if (OB_UNLIKELY(!ctx.is_valid() || 1 != params.count() || params.at(0).is_null())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid argument", KR(ret), K(ctx), K(params));
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "repeat_interval should be a non-empty string");
+  } else if (OB_FAIL(params.at(0).get_string(repeat_interval_str))) {
+    LOG_WARN("failed to get repeat_interval string", KR(ret), K(params.at(0)));
+  } else if (repeat_interval_str.empty()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("repeat_interval is empty", KR(ret));
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "repeat_interval should be a non-empty string");
+  } else if (OB_FAIL(ObScheduleDailyMaintenanceWindow::set_repeat_interval(ctx, tenant_id, repeat_interval_str))) {
+    LOG_WARN("failed to set repeat_interval", KR(ret), K(tenant_id), K(repeat_interval_str));
+  }
+  const int64_t cost_time = ObTimeUtility::current_time() - start_time_us;
+  FLOG_INFO("[WIN-COMPACTION] end to alter repeat interval", KR(ret), K(repeat_interval_str),
+            K(start_time_us), K(cost_time));
+  return ret;
+}
+
 int ObDBMSDailyMaintenance::check_supported(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   uint64_t data_version = 0;
-  if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
+  if (GCTX.is_shared_storage_mode()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("window compaction is not supported in shared storage mode", KR(ret), K(tenant_id));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "window compaction in shared storage mode");
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
     LOG_WARN("fail to get data version", K(ret), K(tenant_id));
   } else if (data_version < DATA_VERSION_4_5_1_0) {
     ret = OB_NOT_SUPPORTED;

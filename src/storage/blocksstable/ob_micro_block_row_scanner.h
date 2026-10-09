@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_BLOCKSSTABLE_OB_MICRO_BLOCK_ROW_SCANNER_H_
@@ -21,6 +14,7 @@
 #include "storage/blocksstable/cs_encoding/ob_micro_block_cs_decoder.h"
 #include "storage/access/ob_index_sstable_estimator.h"
 #include "storage/column_store/ob_cg_bitmap.h"
+#include "storage/compaction/vectorization/ob_merge_vector_store.h"
 
 namespace oceanbase
 {
@@ -147,6 +141,17 @@ public:
       const common::ObIArray<blocksstable::ObStorageDatum> *default_datums,
       const bool is_padding_mode,
       const bool need_init_vector = true);
+  int get_next_batch_rows(
+      compaction::ObMergeVectorStore &vector_store,
+      const int64_t border_row_id_inclusive,
+      bool &reach_border,
+      const common::ObIArrayWrap<uint16_t> *cols = nullptr);
+  int get_next_batch_rows(
+      compaction::ObMergeVectorStore &vector_store,
+      const ObDatumRowkey &border_key,
+      bool &reach_border,
+      bool &need_prepare_micro_border);
+
   OB_INLINE int64_t get_current_pos() const
   { return current_; }
   OB_INLINE int64_t get_last_pos() const
@@ -154,8 +159,20 @@ public:
   OB_INLINE ObIMicroBlockReader *get_reader() const
   { return reader_; }
   int get_next_border_rows(const ObDatumRowkey &rowkey);
+  int set_runtime_rowkey_border(const ObDatumRowkey &border_key);
+  void clear_runtime_rowkey_border();
+  OB_INLINE bool is_runtime_rowkey_border_hit() const
+  {
+    return !reverse_scan_
+        && runtime_rowkey_border_enabled_
+        && current_ >= runtime_rowkey_border_exclusive_idx_;
+  }
   OB_INLINE bool can_blockscan() const
   { return can_blockscan_ && can_ignore_multi_version_; }
+  OB_INLINE bool can_batch_scan_to_merge_vector() const
+  {
+    return can_ignore_multi_version_;
+  }
   OB_INLINE bool is_filter_applied() const
   { return is_filter_applied_; }
   void reset_blockscan()
@@ -190,6 +207,7 @@ public:
     current_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
     reserved_pos_ = ObIMicroBlockReaderInfo::INVALID_ROW_INDEX;
   }
+  static int get_global_border_row_id(const ObDatumRange &range, const int64_t border_row_id, int64_t &global_border_row_id);
   VIRTUAL_TO_STRING_KV(K_(is_left_border), K_(is_right_border), K_(can_ignore_multi_version), K_(use_private_bitmap),
                        K_(can_blockscan), K_(is_filter_applied), K_(current), K_(start), K_(last), K_(reserved_pos), K_(step),
                        K_(macro_id));
@@ -215,6 +233,15 @@ protected:
   bool is_di_bitmap_valid() const;
   int init_bitmap(ObCGBitmap *&bitmap, bool is_all_true);
   int inner_get_next_row_blockscan(const ObDatumRow *&row);
+  int inner_get_next_batch_rows(
+      compaction::ObMergeVectorStore &vector_store,
+      const int64_t border_exclusive,
+      bool &reach_border,
+      const common::ObIArrayWrap<uint16_t> *cols = nullptr);
+  int inner_get_next_batch_rows(
+      compaction::ObMergeVectorStore &vector_store,
+      const ObDatumRowkey &border_key,
+      bool &reach_border);
 private:
   int apply_filter_batch(
       sql::ObPushdownFilterExecutor *parent,
@@ -236,6 +263,8 @@ protected:
   int64_t last_;            // end of scan, inclusive.
   int64_t reserved_pos_;
   int64_t step_;
+  bool runtime_rowkey_border_enabled_;
+  int64_t runtime_rowkey_border_exclusive_idx_;
   ObDatumRow row_;
   MacroBlockId macro_id_;
   const ObITableReadInfo *read_info_;
@@ -347,7 +376,8 @@ public:
         cell_allocator_(common::ObModIds::OB_SSTABLE_READER, OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
         trans_version_col_idx_(-1),
         sql_sequence_col_idx_(-1),
-        cell_cnt_(0)
+        cell_cnt_(0),
+        cur_rowkey_exist_new_version_(false)
   {}
   virtual ~ObMultiVersionMicroBlockRowScanner() {}
   virtual void reuse() override;
@@ -367,10 +397,47 @@ public:
   INHERIT_TO_STRING_KV("ObMultiVersionMicroBlockRowScanner",
                        ObIMicroBlockRowScanner, K_(read_row_direct_flag),
                        K_(version_range), K_(is_last_multi_version_row),
-                       K_(finish_scanning_cur_rowkey));
+                       K_(finish_scanning_cur_rowkey), K_(cur_rowkey_exist_new_version));
 
 protected:
+  // The full read+mark decision for a single multi-version row, made BEFORE reading it
+  // out. The action is the single carrier of intent: which ttl-major marker (if any) a
+  // read row will carry is fixed here, so mark_ttl_major_flag is a pure switch on it and
+  // never re-derives the verdict from trans_version/snapshot.
+  //   SKIP                 - filtered by version_range (or unsupported), do not read.
+  //   READ                 - read and emit normally, no ttl-major marker.
+  //   READ_MARK_EXIST_NEW  - read and emit; an earlier version of this rowkey is beyond
+  //                          snapshot -> tag it so downstream knows a newer committed
+  //                          version exists.
+  //   READ_AS_VIRTUAL      - the row is filtered by version_range, but the current rowkey
+  //                          has a newer committed version and produced no surviving row;
+  //                          resurrect the filtered boundary row and emit it purely as a
+  //                          ttl-major virtual marker.
+  enum class RowReadAction { SKIP, READ, READ_MARK_EXIST_NEW, READ_AS_VIRTUAL };
   virtual int inner_get_next_row(const ObDatumRow *&row) override;
+  // ---- ttl-major partial-update semantics live in a small function family ----
+  // Read-side verdict (called before get_row):
+  //   classify_committed_trans_version - generic version_range (base/snapshot) verdict,
+  //       deciding version_fit/final_result. Knows nothing about ttl-major.
+  //   decide_row_read_action_for_ttl - the full read+mark decision (see RowReadAction). The only
+  //       place ttl-major is consulted: it turns the generic verdict into an action that
+  //       carries the marker intent forward, and owns the cur_rowkey_exist_new_version_
+  //       cross-row side effect.
+  // Write-side marking (called after get_row):
+  //   mark_ttl_major_flag - stamps the ttl-major major_merge_flag by switching purely on
+  //       the action, never re-deriving from trans_version/snapshot.
+  // Not const: owns the cur_rowkey_exist_new_version_ cross-row side effect for ttl-major.
+  RowReadAction decide_row_read_action_for_ttl(
+      const int64_t trans_version, const bool version_fit, const bool final_result);
+  // Generic committed-version verdict by version_range (base/snapshot). ttl-major-blind;
+  // shared by all three check_trans_version branches.
+  void classify_committed_trans_version(
+      const int64_t trans_version,
+      bool &version_fit,
+      bool &final_result);
+  // Stamp ttl-major major_merge_flag onto a freshly materialized row.
+  // Precondition: caller guarantees ttl_major_for_partial_update_upper_snapshot_ > 0.
+  int mark_ttl_major_flag(ObDatumRow *row, const RowReadAction action);
   int check_trans_version(
       bool &final_result,
       bool &version_fit,
@@ -379,32 +446,45 @@ protected:
       int64_t &sql_sequence,
       const ObMultiVersionRowFlag &mvcc_row_flag,
       const transaction::ObTransID &trans_id);
+  int get_row_action(
+        bool &final_result,
+        RowReadAction &action,
+        bool &have_uncommited_row,
+        int64_t &trans_version,
+        int64_t &sql_sequence,
+        const ObMultiVersionRowFlag &mvcc_row_flag,
+        const transaction::ObTransID &trans_id);
   int check_foreign_key(
       const int64_t trans_version,
       const int64_t sql_sequence,
       const transaction::ObTransID trans_id);
   void reuse_cur_micro_row();
 
-  int read_current_row_with_uncommitted_check(const ObDatumRow *&ret_row,
-                                              bool &version_fit,
-                                              bool &final_result,
-                                              bool &have_uncommitted_row);
+  int read_and_resolve_row(const ObDatumRow *&ret_row,
+                          bool &version_fit,
+                          bool &final_result,
+                          bool &have_uncommitted_row);
+  int fill_row_version_info(ObDatumRow *row, const int64_t trans_version, RowReadAction &action);
 
 private:
   void reuse_prev_micro_row();
   void inner_reset();
   int locate_cursor_to_read(bool &found_first_row);
-  int inner_get_next_row_impl(const ObDatumRow *&ret_row);
-  int inner_inner_get_next_row(
+  int locate_cursor_forward(bool &found_first_row);
+  int locate_cursor_reverse(bool &found_first_row);
+  int compact_multi_version_rows(const ObDatumRow *&ret_row);
+  int read_next_version_row(
       const ObDatumRow *&ret_row,
       bool &version_fit,
       bool &final_result,
       bool &have_uncommitted_row);
-  int inner_get_next_row_directly(
+  int read_row_on_direct_path(
       const ObDatumRow *&ret_row,
       bool &version_fit,
       bool &final_result);
   int cache_cur_micro_row(const bool found_first_row, const bool final_result);
+  int cache_cur_micro_row_forward(const bool final_result);
+  int cache_cur_micro_row_reverse(const bool found_first_row, const bool final_result);
   int do_compact(const ObDatumRow *src_row, ObDatumRow &dest_row, bool &final_result);
   int lock_for_read(
       const transaction::ObLockForReadArg &lock_for_read_arg,
@@ -433,6 +513,7 @@ private:
   int64_t sql_sequence_col_idx_;
   int64_t cell_cnt_;
   common::ObVersionRange version_range_;
+  bool cur_rowkey_exist_new_version_;
 };
 
 class ObMultiVersionIOMicroBlockRowScanner final : public ObMultiVersionMicroBlockRowScanner

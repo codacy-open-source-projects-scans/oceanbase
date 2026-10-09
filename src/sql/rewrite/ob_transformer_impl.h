@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_TRANSFORMER_IMPL_H
@@ -16,6 +9,7 @@
 #include "lib/allocator/ob_allocator.h"
 #include "lib/container/ob_iarray.h"
 #include "lib/container/ob_se_array.h"
+#include "lib/hash/ob_hashset.h"
 #include "sql/parser/parse_node.h"
 #include "sql/rewrite/ob_transform_rule.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
@@ -194,6 +188,8 @@ private:
                                          ObIArray<int32_t> &enable_cnt_array);
 
   int finalize_exec_params(ObDMLStmt *stmt);
+  int finalize_exec_params_recursive(ObDMLStmt *stmt,
+                                     common::hash::ObHashSet<uint64_t> &visited);
 
   int finalize_exec_params(ObDMLStmt *stmt, ObIArray<ObExecParamRawExpr*> & exec_params);
   /**

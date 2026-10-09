@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -340,7 +333,8 @@ int ObPLPackage::instantiate_package_state(const ObPLResolveCtx &resolve_ctx,
       } else {
         const sql::ObSqlExpression *default_expr = var->is_formal_param() ? NULL : get_default_expr(var->get_default());
         if (OB_NOT_NULL(default_expr) &&
-            !IS_CONST_TYPE(default_expr->get_expr_items().at(0).get_item_type())) { // has default value, make user var to sync it
+            !IS_CONST_TYPE(default_expr->get_expr_items().at(0).get_item_type()) &&
+            lib::is_oracle_mode()) { // has default value, make user var to sync it
           OZ (package_state.update_changed_vars(var_idx));
           OX (resolve_ctx.session_info_.set_pl_can_retry(false));
         }
@@ -376,6 +370,11 @@ int ObPLPackage::execute_init_routine(ObIAllocator &allocator, ObExecContext &ex
       int status;
       ObSEArray<int64_t, 2> subp_path;
       pl::ObPLExecuteArg pl_execute_arg;
+      bool need_end_stmt = false;
+      if (!exec_ctx.get_my_session()->has_start_stmt()) {
+        need_end_stmt = true;
+        exec_ctx.get_my_session()->set_start_stmt();
+      }
       OZ (pl_execute_arg.obtain_routine(exec_ctx,
                                         init_routine->get_package_id(),
                                         init_routine->get_routine_id(),
@@ -392,6 +391,9 @@ int ObPLPackage::execute_init_routine(ObIAllocator &allocator, ObExecContext &ex
                              &status,
                              false,
                              init_routine->is_function()));
+      if (need_end_stmt) {
+        exec_ctx.get_my_session()->set_end_stmt();
+      }
     }
   } else {
     LOG_DEBUG("package init routine function is null",

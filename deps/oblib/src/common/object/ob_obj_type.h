@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_OB_OBJECT_TYPE_H_
@@ -1373,7 +1366,8 @@ int ob_sql_type_str_with_coll(char *buff,
     ObCollationType coll_type,
     const common::ObIArray<ObString> &type_info,
     const uint64_t sub_type = static_cast<uint64_t>(common::ObGeoType::GEOTYPEMAX),
-    const bool is_string_lob = false);
+    const bool is_string_lob = false,
+    ObCharsetCompatType compat_type = CHARSET_COMPAT_MYSQL57);
 
 //such as "double(10,7)". with accuracy
 int ob_sql_type_str(char *buff,
@@ -1396,6 +1390,7 @@ int ob_sql_type_str(const common::ObObjMeta &obj_meta,
                     const uint64_t sub_type = static_cast<uint64_t>(common::ObGeoType::GEOTYPEMAX),
                     const bool is_string_lob = false);
 
+int ob_append_quoted_str(char *buff, int64_t buff_length, int64_t &pos, const ObString &str);
 
 //such as "double". without any accuracy.
 int ob_sql_type_str(char *buff,

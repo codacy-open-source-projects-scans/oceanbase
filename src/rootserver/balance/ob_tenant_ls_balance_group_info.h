@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_TENANT_LS_BALANCE_GROUP_INFO_H
@@ -66,7 +59,8 @@ public:
       const share::ObLSID &dest_ls_id,
       const int64_t tablet_size,
       const uint64_t part_group_uid,
-      const int64_t balance_weight);
+      const int64_t bg_balance_weight,
+      const int64_t part_balance_weight);
 
   TO_STRING_KV(K_(inited), K_(tenant_id), "valid_ls_count", ls_bg_map_.size(), K_(balanced_ls_num));
 

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -300,6 +293,7 @@ int ObSSTableIndexBlockLevelScanner::advance_to(const ObDatumRowkey &rowkey, con
 {
   int ret = OB_SUCCESS;
   int cmp_ret = 0;
+  bool prefetch_key_prefix_equal = false;
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", K(ret));
@@ -318,8 +312,13 @@ int ObSSTableIndexBlockLevelScanner::advance_to(const ObDatumRowkey &rowkey, con
   bool prefetched = false;
   const bool has_valid_prefetched_key = last_prefetch_key_.is_valid();
   if (OB_FAIL(ret)) {
-  } else if (has_valid_prefetched_key && OB_FAIL(last_prefetch_key_.compare(rowkey, *datum_utils_, cmp_ret))) {
+  } else if (has_valid_prefetched_key && OB_FAIL(last_prefetch_key_.compare(rowkey, *datum_utils_, cmp_ret, false))) {
     LOG_WARN("failed to compare advance key with last prefetch key", K(ret));
+  } else if (has_valid_prefetched_key) {
+    prefetch_key_prefix_equal = (0 == cmp_ret);
+  }
+
+  if (OB_FAIL(ret)) {
   } else if (has_valid_prefetched_key && (cmp_ret > 0 || (cmp_ret == 0 && inclusive))) {
     prefetched = true;
     // advance to key is in block already prefetched
@@ -359,12 +358,26 @@ int ObSSTableIndexBlockLevelScanner::advance_to(const ObDatumRowkey &rowkey, con
       }
 
       if (OB_SUCC(ret) && !found_advanced_key) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("block contains advanced key already prefetched but not found",
-            K(ret), K_(last_prefetch_key), K_(query_range), K_(is_root_block));
+        if (prefetch_key_prefix_equal) {
+          prefetched = false;
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("block contains advanced key already prefetched but not found",
+              K(ret), K_(last_prefetch_key), K_(query_range), K_(is_root_block));
+        }
       }
     }
   } else {
+    query_range_.start_key_ = rowkey;
+    if (inclusive) {
+      query_range_.set_left_closed();
+    } else {
+      query_range_.set_left_open();
+    }
+    prefetched = false;
+  }
+
+  if (OB_SUCC(ret) && !prefetched) {
     // advance to rowkey that is not prefetched yet
     // cancel all prefetch io
     while (!is_prefetch_queue_empty()) {

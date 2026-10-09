@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -27,7 +20,6 @@
 #include "storage/compaction/ob_partition_merge_policy.h"
 #include "storage/ddl/ob_ddl_merge_schedule.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_compact_helper.h"
 #include "storage/incremental/ob_shared_meta_service.h"
 #include "close_modules/shared_storage/storage/ddl/ob_ss_ddl_util.h"
 #endif
@@ -94,7 +86,8 @@ int ObIncDDLMergeTaskUtils::freeze_inc_major_ddl_kv(
     const ObTxSEQ &seq_no,
     const int64_t snapshot_version,
     const uint64_t data_format_version,
-    const bool is_replay)
+    const bool is_replay,
+    const share::SCN &start_scn)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(!tablet_handle.is_valid()
@@ -140,7 +133,16 @@ int ObIncDDLMergeTaskUtils::freeze_inc_major_ddl_kv(
       mock_start_scn.convert_for_tx(SS_DDL_START_SCN_VAL);
       ObStorageSchema *storage_schema = nullptr;
       ObArenaAllocator arena("FreezeIncDdlKv", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
-      if (OB_FAIL(tablet_handle.get_obj()->load_storage_schema(arena, storage_schema))) {
+      ObLSHandle ls_handle;
+      const share::ObLSID &ls_id = tablet_handle.get_obj()->get_tablet_meta().ls_id_;
+      ObLSService *ls_service = MTL(ObLSService *);
+
+      if (OB_ISNULL(ls_service)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("ls service is null", K(ret));
+      } else if (OB_FAIL(ls_service->get_ls(ls_id, ls_handle, ObLSGetMod::DDL_MOD))) {
+        LOG_WARN("get ls failed", K(ret), K(ls_id));
+      } else if (OB_FAIL(tablet_handle.get_obj()->load_storage_schema(arena, storage_schema))) {
         LOG_WARN("load storage schema failed", K(ret), K(tablet_handle));
       } else if (OB_ISNULL(storage_schema)) {
         ret = OB_ERR_UNEXPECTED;
@@ -153,10 +155,12 @@ int ObIncDDLMergeTaskUtils::freeze_inc_major_ddl_kv(
         if (!storage_schema->is_user_data_table()) {
           // 非用户表只有行存
           table_type = ObITable::INC_MAJOR_DDL_MEM_SSTABLE;
-        } else if (storage_schema->is_row_store() &&
-                   CS_REPLICA_VISIBLE_AND_REPLAY_COLUMN !=
-                     tablet_handle.get_obj()->get_tablet_meta().ddl_replay_status_) {
-          table_type = ObITable::INC_MAJOR_DDL_MEM_SSTABLE;
+        } else if (storage_schema->is_row_store()) {
+          if (ls_handle.get_ls()->is_cs_replica() && start_scn > tablet_handle.get_obj()->get_tablet_meta().inc_major_replay_scn_) {
+            table_type = ObITable::INC_MAJOR_DDL_MEM_CO_SSTABLE;
+          } else {
+            table_type = ObITable::INC_MAJOR_DDL_MEM_SSTABLE;
+          }
         } else {
           table_type = ObITable::INC_MAJOR_DDL_MEM_CO_SSTABLE;
         }
@@ -201,6 +205,52 @@ int ObIncDDLMergeTaskUtils::freeze_inc_major_ddl_kv(
   return ret;
 }
 
+int ObIncDDLMergeTaskUtils::freeze_ddl_kv(const ObTabletHandle &tablet_handle)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!tablet_handle.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", KR(ret), K(tablet_handle));
+  } else {
+    ObDDLKvMgrHandle ddl_kv_mgr_handle;
+    if (OB_FAIL(tablet_handle.get_obj()->get_ddl_kv_mgr(ddl_kv_mgr_handle))) {
+      if (OB_UNLIKELY(OB_ENTRY_NOT_EXIST != ret)) {
+        LOG_WARN("failed to get ddl kv mgr", KR(ret), K(tablet_handle));
+      } else {
+        ret = OB_SUCCESS;
+      }
+    } else if (!ddl_kv_mgr_handle.get_obj()->can_freeze()) {
+      ret = OB_EAGAIN;
+      if (REACH_TIME_INTERVAL(1 * 1000 * 1000)) {
+        LOG_WARN("ddl kv cannot freeze now", KR(ret), K(ddl_kv_mgr_handle));
+      }
+    } else {
+      if (OB_FAIL(ddl_kv_mgr_handle.get_obj()->freeze_ddl_kv(SCN::min_scn() /*start_scn*/,
+                                                             0/*snapshot_version*/,
+                                                             0/*data_format_version*/))) {
+        LOG_WARN("fail to freeze ddl kv", KR(ret), K(tablet_handle));
+      }
+    }
+  }
+  return ret;
+}
+
+int ObIncDDLMergeTaskUtils::freeze_ddl_kv(ObLS *ls, const ObTabletID &tablet_id)
+{
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(ls == nullptr || !tablet_id.is_valid())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid args", KR(ret), KP(ls), K(tablet_id));
+  } else {
+    ObTabletHandle tablet_handle;
+    if (OB_FAIL(ObDDLUtil::ddl_get_tablet(ls, tablet_id, tablet_handle, ObMDSGetTabletMode::READ_ALL_COMMITED))) {
+      LOG_WARN("failed to get tablet handle", KR(ret), KPC(ls), K(tablet_id));
+    } else if (OB_FAIL(freeze_ddl_kv(tablet_handle))) {
+      LOG_WARN("failed to freeze ddl kv", KR(ret), K(tablet_handle));
+    }
+  }
+  return ret;
+}
 
 int ObIncDDLMergeTaskUtils::update_tablet_table_store(
     ObLS *ls,
@@ -299,13 +349,6 @@ int ObIncDDLMergeTaskUtils::link_inc_major(
                                                                  seq_no,
                                                                  is_exist))) {
       LOG_WARN("fail to check inc major exist", KR(ret), K(ss_tablet_handle), K(trans_id), K(seq_no));
-    } else if (is_exist && OB_FAIL(SSCompactHelper::link_inc_major(ls_id,
-                                                                   tablet_id,
-                                                                   snapshot_version,
-                                                                   trans_id,
-                                                                   seq_no))) {
-      LOG_WARN("fail to link inc major", KR(ret), K(ls_id), K(tablet_id),
-               K(snapshot_version), K(trans_id), K(seq_no));
     } else {
       FLOG_INFO("[SS INC MAJOR] link inc major succeed", K(ls_id), K(tablet_id), K(trans_id),
                 K(seq_no), K(is_exist));

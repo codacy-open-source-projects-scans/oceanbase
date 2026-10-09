@@ -1,12 +1,6 @@
-/** * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+/**
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SQL_ENGINE_JOIN_HASH_JOIN_OB_HASH_JOIN_VEC_OP_H_
@@ -94,7 +88,7 @@ public:
     return ret;
   }
 
-  int sync_wait(ObExecContext &ctx, int64_t &sys_event, EventPred pred, bool ignore_interrupt = false, bool is_open = false);
+  int sync_wait(ObExecContext &ctx, int64_t &sys_event, EventPred pred, bool ignore_interrupt = false, bool is_open = false, bool is_close = false);
   int64_t get_sync_val()
   {
     ObHJSharedTableInfo *shared_hj_info = reinterpret_cast<ObHJSharedTableInfo *>(shared_hj_info_);
@@ -611,6 +605,8 @@ private:
   JoinHashTable *cur_join_table_;
 
   // ********* for fill partitions *********
+  // Sql mem callback is on each ObHJPartition row_store (create_partition / fill_partition_from_join_filter /
+  // get_max_memory_size); part_mgr_ only holds partition pairs.
   ObHJPartition **left_part_array_;
   ObHJPartition **right_part_array_;
   ObHJPartition *left_part_;

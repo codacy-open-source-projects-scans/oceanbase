@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_sstable_printer.h"
@@ -17,6 +10,7 @@
 #include "storage/blocksstable/ob_macro_block_meta.h"
 #include "storage/blocksstable/index_block/ob_index_block_row_struct.h"
 #include "storage/blocksstable/cs_encoding/ob_column_encoding_struct.h"
+#include "common/ob_store_format.h"
 
 #define USING_LOG_PREFIX COMMON
 
@@ -221,6 +215,7 @@ void ObSSTablePrinter::print_row_title(const ObDatumRow *row, const int64_t row_
   char mvcc_flag[16];
   row->mvcc_row_flag_.format_str(mvcc_flag, 16);
   row->row_flag_.format_str(dml_flag, 32);
+  const char *merge_engine_type_str = ObMergeEngineStoreFormat::get_merge_engine_type_name(row->merge_engine_type_);
   if (isatty(fileno(stderr)) > 0) {
     P_COLOR(LIGHT_GREEN);
     P_BAR();
@@ -237,6 +232,9 @@ void ObSSTablePrinter::print_row_title(const ObDatumRow *row, const int64_t row_
     P_COMMA();
     P_NAME("mvcc_flag=");
     P_VALUE_STR_B(mvcc_flag);
+    P_COMMA();
+    P_NAME("merge_engine_type=");
+    P_VALUE_STR_B(merge_engine_type_str);
     P_BAR();
     P_COLOR(NONE_COLOR);
   } else {
@@ -253,6 +251,9 @@ void ObSSTablePrinter::print_row_title(const ObDatumRow *row, const int64_t row_
     P_COMMA();
     P_NAME("mvcc_flag=");
     P_VALUE_STR_B(mvcc_flag);
+    P_COMMA();
+    P_NAME("merge_engine_type=");
+    P_VALUE_STR_B(merge_engine_type_str);
     P_BAR();
   }
 }

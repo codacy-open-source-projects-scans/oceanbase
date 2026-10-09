@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -19,6 +12,8 @@
 #include "observer/dbms_scheduler/ob_dbms_sched_job_rpc_proxy.h"
 #include "share/ob_scheduled_manage_dynamic_partition.h"
 #include "share/balance/ob_scheduled_trigger_partition_balance.h" // ObScheduledTriggerPartitionBalance
+#include "share/ob_scheduled_recycle_schema_history.h"
+#include "share/ob_scheduled_inspection.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_time_utils.h"
 #include "share/compaction/ob_schedule_daily_maintenance_window.h"
 
@@ -451,6 +446,8 @@ int ObDBMSScheduler::set_job_attribute(
     bool is_trigger_balance_attr = false;
     bool is_dynamic_partition_attr = false;
     bool is_daily_maintenance_attr = false;
+    bool is_recycle_schema_history_attr = false;
+    bool is_scheduled_inspection_attr = false;
     ObDMLSqlSplicer dml;
     const int64_t now = ObTimeUtility::current_time();
     if (job_info.is_stats_maintenance_job()) {
@@ -533,11 +530,36 @@ int ObDBMSScheduler::set_job_attribute(
         OZ (execute_sql(ctx, sql, affected_rows));
         CK (1 == affected_rows || 2 == affected_rows);
       }
+    } else if (job_info.is_recycle_schema_history_job()) {
+      if (OB_FAIL(ObScheduledRecycleSchemaHistory::set_attribute(*ctx.get_sql_proxy(),
+                                                                 tenant_id,
+                                                                 attr_name,
+                                                                 attr_val,
+                                                                 job_info,
+                                                                 is_recycle_schema_history_attr))) {
+        LOG_WARN("failed to set attribute for recycle schema history job", KR(ret),
+          K(tenant_id), K(job_name), K(attr_name), K(attr_val));
+      }
+    } else if (job_info.is_inspection_job() || job_info.is_purge_recyclebin_job()) {
+      if (OB_FAIL(ObScheduledInspection::set_attribute(*ctx.get_sql_proxy(),
+                                                       ctx.get_my_session(),
+                                                       attr_name,
+                                                       attr_val,
+                                                       job_info,
+                                                       is_scheduled_inspection_attr))) {
+        LOG_WARN("failed to set attribute for scheduled inspection job", KR(ret),
+          K(tenant_id), K(job_name), K(attr_name), K(attr_val));
+      }
     }
 
     if (OB_FAIL(ret)) {
       // do nothing
-    } else if (is_stat_window_attr || is_trigger_balance_attr || is_dynamic_partition_attr || is_daily_maintenance_attr) {
+    } else if (is_stat_window_attr
+               || is_trigger_balance_attr
+               || is_dynamic_partition_attr
+               || is_daily_maintenance_attr
+               || is_recycle_schema_history_attr
+               || is_scheduled_inspection_attr) {
       // do nothing
     } else {
       ObObj attr_val_obj;

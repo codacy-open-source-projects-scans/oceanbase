@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_RESOLVER_DEFINE_H
@@ -260,6 +253,11 @@ class ObPLBlockNS;
 class ObPLPackageGuard;
 }
 
+namespace obrpc
+{
+struct ObDependencyObjDDLArg;
+}
+
 namespace sql
 {
 class ObSQLSessionInfo;
@@ -388,7 +386,8 @@ struct ObResolverParams
        is_in_view_(false),
        is_htable_(false),
        disable_shared_expr_(false),
-       is_from_pl_(false)
+       is_from_pl_(false),
+       alter_view_compile_args_(NULL)
   {}
   int assign(const ObResolverParams &other);
   bool is_force_trace_log() { return force_trace_log_; }
@@ -468,6 +467,7 @@ public:
   bool is_htable_;
   bool disable_shared_expr_;
   bool is_from_pl_;
+  common::ObIArray<obrpc::ObDependencyObjDDLArg> *alter_view_compile_args_;
 };
 struct FunctionInfo {
   char name_[OB_MAX_FUNC_EXPR_LENGTH];
@@ -475,11 +475,13 @@ struct FunctionInfo {
 };
 
 static FunctionInfo CLICKHOUSE_EXPR_LIST[] = {
+  {"parseDateTime", T_FUN_SYS_PARSE_DATE_TIME},
   {"editDistance", T_FUN_SYS_EDIT_DISTANCE},
   {"editDistanceUTF8", T_FUN_SYS_EDIT_DISTANCE_UTF8},
   {"formatDateTime", T_FUN_SYS_FORMAT_DATE_TIME},
   {"toUnixTimestamp", T_FUN_SYS_TO_UNIX_TIMESTAMP},
   {"isNaN", T_FUN_CK_SYS_IS_NAN},
+  {"randCanonical", T_FUN_CK_RAND_CANONICAL},
 };
 
 static FunctionInfo CLICKHOUSE_AGGR_LIST[] =
@@ -490,6 +492,7 @@ static FunctionInfo CLICKHOUSE_AGGR_LIST[] =
   {"leadInFrame", T_WIN_FUN_LEAD_IN_FRAME},
   {"lagInFrame", T_WIN_FUN_LAG_IN_FRAME},
   {"ANY", T_FUN_ANY},
+  {"avgWeighted", T_FUN_AVG_WEIGHTED},
   {"VARSAMP", T_FUN_CK_VARSAMP},
   {"STDDEVSAMP", T_FUN_CK_STDDEVSAMP},
 };

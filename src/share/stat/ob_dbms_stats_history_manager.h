@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_DBMS_STATS_HISTORY_MANAGER_H
@@ -27,7 +20,7 @@ struct ObOptTableStatHandle;
 static int64_t MAX_HISTORY_RETENTION = 365001;
 static int64_t BATCH_DELETE_MAX_ROWCNT = 10000;
 static int64_t BATCH_DELETE_MAX_QUERY_TIMEOUT = 43200000000;//12 * 60 * 60 * 1000000LL
-enum ObOptStatsDeleteFlags
+enum ObOptStatsDeleteFlags  // FARM COMPAT WHITELIST
 {
   DELETE_NONE                = 0,
   DELETE_TAB_STAT_HISTORY    = 1,
@@ -37,7 +30,8 @@ enum ObOptStatsDeleteFlags
   DELETE_TAB_GATHER_HISTORY  = 1 << 4,
   DELETE_USELESS_COL_STAT    = 1 << 5,
   DELETE_USELESS_HIST_STAT   = 1 << 6,
-  DELETE_ALL                 = (1 << 7) - 1
+  DELETE_CACHE_INVALIDATE    = 1 << 7,
+  DELETE_ALL                 = (1 << 8) - 1
 };
 class ObDbmsStatsHistoryManager
 {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_ALTER_TABLEGROUP_STMT_
@@ -39,6 +32,7 @@ public:
   virtual int set_primary_zone(const common::ObString &zone) override;
   virtual int set_locality(const common::ObString &locality) override;
   virtual int set_tablegroup_sharding(const common::ObString &sharding) override;
+  virtual int set_tablegroup_scope(const common::ObString &scope) override;
   inline void set_alter_option_set(const common::ObBitSet<> &alter_option_set);
   bool is_alter_partition() const { return alter_tablegroup_arg_.is_alter_partitions(); }
   virtual int set_tablegroup_id(uint64_t tablegroup_id) override;

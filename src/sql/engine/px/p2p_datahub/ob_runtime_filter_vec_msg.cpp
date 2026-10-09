@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -407,6 +400,28 @@ int ObRFRangeFilterVecMsg::adjust_cell_size()
   return ret;
 }
 
+int ObRFRangeFilterVecMsg::regenerate()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < lower_bounds_.count(); ++i) {
+    ObDatum copy;
+    if (OB_FAIL(copy.deep_copy(lower_bounds_.at(i), get_allocator()))) {
+      SQL_LOG(WARN, "rehome lower bound datum failed", K(ret), K(i));
+    } else {
+      lower_bounds_.at(i) = copy;
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < upper_bounds_.count(); ++i) {
+    ObDatum copy;
+    if (OB_FAIL(copy.deep_copy(upper_bounds_.at(i), get_allocator()))) {
+      SQL_LOG(WARN, "rehome upper bound datum failed", K(ret), K(i));
+    } else {
+      upper_bounds_.at(i) = copy;
+    }
+  }
+  return ret;
+}
+
 int ObRFRangeFilterVecMsg::dynamic_copy_cell(const ObDatum &src, ObDatum &target,
                                              int64_t &cell_size)
 {
@@ -433,6 +448,19 @@ int ObRFRangeFilterVecMsg::dynamic_copy_cell(const ObDatum &src, ObDatum &target
     }
   }
   return ret;
+}
+
+int ObRFRangeFilterVecMsg::destroy() {
+  build_row_cmp_info_.reset();
+  probe_row_cmp_info_.reset();
+  lower_bounds_.reset();
+  upper_bounds_.reset();
+  need_null_cmp_flags_.reset();
+  cells_size_.reset();
+  query_range_info_.destroy();
+  query_range_allocator_.reset();
+  allocator_.reset();
+  return OB_SUCCESS;
 }
 
 int ObRFRangeFilterVecMsg::merge_min(ObIArray<ObDatum> &vals)
@@ -811,6 +839,9 @@ int ObRFRangeFilterVecMsg::do_might_contain_vector(
           if (VEC_UNIFORM == res_format) {
             IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
             res_vec->set_int(batch_i, is_match ? 1 : 0);
+          } else if (VEC_UNIFORM_CONST == res_format) {
+            IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+            res_vec->set_int(batch_i, is_match ? 1 : 0);
           } else if (VEC_FIXED == res_format) {
             IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
             if (is_match) {
@@ -818,6 +849,9 @@ int ObRFRangeFilterVecMsg::do_might_contain_vector(
             } else {
               // do nothing, already set not match in preset_not_match
             }
+          } else {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected res_format", K(res_format));
           }
         }
       }
@@ -848,9 +882,15 @@ int ObRFRangeFilterVecMsg::might_contain_vector(
     if (VEC_UNIFORM == res_format) {
       IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
     } else if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -1190,7 +1230,7 @@ int ObRFInFilterVecMsg::do_insert_by_row_vector(const ObBatchRows *child_brs,
         } else {
           const bool is_batch_seed = (i > 0);
           ObIVector *arg_vec = expr->get_vector(eval_ctx);
-          arg_vec->murmur_hash_v3(*expr, batch_hash_values, *(child_brs->skip_), bound,
+          ret = arg_vec->hash(*expr, batch_hash_values, *(child_brs->skip_), bound,
                                   is_batch_seed ? batch_hash_values : &seed, is_batch_seed);
         }
       }
@@ -1546,7 +1586,7 @@ int ObRFInFilterVecMsg::might_contain(const ObExpr &expr,
         datum.len_ = arg_vec->get_length(batch_idx);
         datum.null_ = arg_vec->is_null(batch_idx) ? 1 : 0;
         cur_row.row_.at(i) = datum;
-        if (OB_FAIL(arg_vec->murmur_hash_v3_for_one_row(*expr.args_[i], hash_val, batch_idx,
+        if (OB_FAIL(arg_vec->hash_for_one_row(*expr.args_[i], hash_val, batch_idx,
             batch_size, hash_val))) {
           LOG_WARN("failed to cal hash");
         }
@@ -1721,26 +1761,27 @@ int ObRFInFilterVecMsg::do_might_contain_vector_impl(
     } else {
       const bool is_batch_seed = (i > 0);
       ObIVector *arg_vec = e->get_vector(ctx);
-      if (OB_FAIL(arg_vec->murmur_hash_v3(*e, right_hash_vals, skip,
+      if (OB_FAIL(arg_vec->hash(*e, right_hash_vals, skip,
           bound, is_batch_seed ? right_hash_vals : &seed, is_batch_seed))) {
         LOG_WARN("failed to cal hash");
       }
     }
   }
 
-#define IN_FILTER_PROBE_HELPER                                                                     \
-  is_match = sm_hash_set_.test_hash(right_hash_vals[batch_i]);                                     \
-  if (!is_match) {                                                                                 \
-    filter_count++;                                                                                \
-    if (std::is_same<ResVec, IntegerUniVec>::value) {                                              \
-      res_vec->set_int(batch_i, 0);                                                                \
-    }                                                                                              \
-  } else {                                                                                         \
-    if (std::is_same<ResVec, IntegerUniVec>::value) {                                              \
-      res_vec->set_int(batch_i, 1);                                                                \
-    } else {                                                                                       \
-      res_vec->set_payload(batch_i, &is_match_payload, sizeof(int64_t));                           \
-    }                                                                                              \
+#define IN_FILTER_PROBE_HELPER                                                 \
+  is_match = sm_hash_set_.test_hash(right_hash_vals[batch_i]);                 \
+  if (!is_match) {                                                             \
+    filter_count++;                                                            \
+    if (std::is_same<ResVec, IntegerFixedVec>::value) {                        \
+    } else {                                                                   \
+      res_vec->set_int(batch_i, 0);                                            \
+    }                                                                          \
+  } else {                                                                     \
+    if (std::is_same<ResVec, IntegerFixedVec>::value) {                        \
+      res_vec->set_payload(batch_i, &is_match_payload, sizeof(int64_t));       \
+    } else {                                                                   \
+      res_vec->set_int(batch_i, 1);                                            \
+    }                                                                          \
   }
 
   if (OB_FAIL(ret)) {
@@ -1774,8 +1815,13 @@ int ObRFInFilterVecMsg::do_might_contain_vector_impl(
 #define IN_FILTER_DISPATCH_RES_FORMAT(function, res_format)                                        \
   if (res_format == VEC_FIXED) {                                                                   \
     ret = function<IntegerFixedVec>(expr, ctx, skip, bound, filter_ctx);                           \
-  } else {                                                                                         \
+  } else if (VEC_UNIFORM_CONST == res_format) {                                                    \
+    ret = function<IntegerUniCVec>(expr, ctx, skip, bound, filter_ctx);                            \
+  } else if (VEC_UNIFORM == res_format) {                                                          \
     ret = function<IntegerUniVec>(expr, ctx, skip, bound, filter_ctx);                             \
+  } else {                                                                                         \
+    ret = OB_ERR_UNEXPECTED;                                                                       \
+    LOG_WARN("unexpected res_format", K(res_format));                                              \
   }
 
 int ObRFInFilterVecMsg::might_contain_vector(
@@ -1792,9 +1838,15 @@ int ObRFInFilterVecMsg::might_contain_vector(
     if (VEC_UNIFORM == res_format) {
       IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
       ret = proc_filter_not_active(res_vec, skip, bound);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_not_active(res_vec, skip, bound);
     } else if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_not_active(res_vec, skip, bound);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -1807,9 +1859,15 @@ int ObRFInFilterVecMsg::might_contain_vector(
     if (VEC_UNIFORM == res_format) {
       IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
     } else if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -2000,8 +2058,10 @@ int ObRFInFilterVecMsg::process_query_ranges_with_deduplicate()
       for (int64_t j = 0; j < prefix_col_idxs.count() && OB_SUCC(ret); ++j) {
         int64_t col_idx = prefix_col_idxs.at(j);
         tmp_row.at(j) = row_store_.get_row(row_idx)->get_datum(build_row_meta_, col_idx);
-        if (OB_FAIL(hash_funcs_for_insert_.at(col_idx).hash_func_(tmp_row.at(j), hash_value,
-                                                                  hash_value))) {
+        if (tmp_row.at(j).is_null()) {
+          // Keep NULL hash consistent with TempHashNode equality, which treats NULL = NULL.
+        } else if (OB_FAIL(hash_funcs_for_insert_.at(col_idx).hash_func_(tmp_row.at(j), hash_value,
+                                                                         hash_value))) {
           LOG_WARN("fail to calc hash value", K(ret), K(hash_value));
         }
       }

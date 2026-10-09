@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_STORAGE_OB_I_TABLE_H_
@@ -207,9 +200,9 @@ public:
     OB_INLINE bool is_remote_logical_minor_sstable() const { return ObITable::is_remote_logical_minor_sstable(table_type_); }
     OB_INLINE bool is_co_sstable() const { return ObITable::is_co_sstable(table_type_); }
     OB_INLINE bool is_rowkey_cg_sstable() const { return ObITable::is_rowkey_cg_sstable(table_type_); }
-    OB_INLINE bool is_normal_cg_sstable() const { return ObITable::is_normal_cg_sstable(table_type_); }
+    OB_INLINE bool is_normal_cg_sstable() const { return ObITable::is_normal_cg_sstable(table_type_) && HIDDEN_ROWKEY_COLUMN_GROUP_IDX != column_group_idx_; }
     OB_INLINE bool is_cg_sstable() const { return ObITable::is_cg_sstable(table_type_); }
-    OB_INLINE bool is_column_store_sstable() const { return is_co_sstable() || is_cg_sstable(); }
+    OB_INLINE bool is_column_store_sstable() const { return is_co_sstable() || is_cg_sstable() || ObITable::TableType::INC_MAJOR_DDL_MEM_CO_SSTABLE == table_type_ || ObITable::TableType::DDL_MEM_CO_SSTABLE == table_type_; }
     OB_INLINE bool is_row_store_major_sstable() const { return ObITable::is_row_store_major_sstable(table_type_); }
     OB_INLINE bool is_column_store_major_sstable() const { return ObITable::is_column_store_major_sstable(table_type_); }
     OB_INLINE bool is_true_major_sstable() const { return is_row_store_major_sstable() || is_column_store_major_sstable(); }
@@ -316,9 +309,9 @@ public:
   virtual bool is_row_store_major_sstable() const { return is_row_store_major_sstable(key_.table_type_); }
   virtual bool is_co_sstable() const { return is_co_sstable(key_.table_type_); }
   virtual bool is_rowkey_cg_sstable() const { return is_rowkey_cg_sstable(key_.table_type_); }
-  virtual bool is_normal_cg_sstable() const { return is_normal_cg_sstable(key_.table_type_); }
+  virtual bool is_normal_cg_sstable() const { return is_normal_cg_sstable(key_.table_type_) && HIDDEN_ROWKEY_COLUMN_GROUP_IDX != key_.column_group_idx_; }
   virtual bool is_cg_sstable() const { return is_cg_sstable(key_.table_type_); }
-  virtual bool is_column_store_sstable() const { return is_co_sstable() || is_cg_sstable(); }
+  virtual bool is_column_store_sstable() const { return is_column_store_sstable(key_.table_type_); }
   virtual bool is_meta_major_sstable() const { return is_meta_major_sstable(key_.table_type_); }
   virtual bool is_major_sstable() const { return is_major_sstable(key_.table_type_) || is_meta_major_sstable(key_.table_type_); }
   virtual bool is_major_or_ddl_merge_sstable() const { return is_major_sstable()
@@ -671,6 +664,18 @@ inline int64_t ObITable::dec_ref()
 
   return cnt;
 }
+
+// Compact log wrapper for an array of table keys. Consecutive entries that are
+// identical except for column_group_idx (e.g. the long run of NORMAL_COL_GROUP
+// keys of a wide column-store tablet) are collapsed into a single entry that
+// prints only [start_cg_idx, end_cg_idx], to avoid flooding the log.
+struct ObTableKeyArrayLogWrap
+{
+  explicit ObTableKeyArrayLogWrap(const common::ObIArray<ObITable::TableKey> &table_keys)
+    : table_keys_(table_keys) {}
+  int64_t to_string(char *buf, const int64_t buf_len) const;
+  const common::ObIArray<ObITable::TableKey> &table_keys_;
+};
 
 class ObTableHandleV2 final
 {

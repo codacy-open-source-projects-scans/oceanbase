@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SRC_PL_OB_PL_RECOMPILE_TASK_HELPER_H_
 #define OCEANBASE_SRC_PL_OB_PL_RECOMPILE_TASK_HELPER_H_
@@ -62,6 +55,10 @@ public:
   int64_t schema_version_;
   ObString ref_obj_name_;
 };
+  static int refresh_latest_schema_guard(uint64_t tenant_id,
+                                          int64_t refresh_version,
+                                          share::schema::ObSchemaGetterGuard &latest_schema_guard,
+                                          share::schema::ObSchemaGetterGuard *&schema_guard);
   static int recompile_pl_objs(pl::ObPLExecCtx &ctx, sql::ParamStore &params, common::ObObj &result);
   static int collect_delta_recompile_obj_data(common::ObMySQLProxy* sql_proxy,
                                                       uint64_t tenant_id,

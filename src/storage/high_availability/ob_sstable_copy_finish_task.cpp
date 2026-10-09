@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -19,9 +12,7 @@
 #include "storage/high_availability/ob_storage_ha_tablet_builder.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "share/compaction/ob_shared_storage_compaction_util.h"
-#endif
+#include "storage/column_store/ob_column_oriented_sstable.h"
 
 namespace oceanbase
 {
@@ -233,16 +224,6 @@ int ObCopiedEmptySSTableCreator::create_sstable()
         LOG_WARN("fail to init create sstable param", K(ret));
       } else if (OB_FAIL(do_create_sstable_(param, table_handle))) {
         LOG_WARN("failed to create sstable", K(ret), K(param));
-#ifdef OB_BUILD_SHARED_STORAGE
-      } else if (src_sstable_param_->is_shared_sstable()) {
-        // empty sstable may be shared sstable.
-        int64_t last_meta_macro_seq = 1;
-        last_meta_macro_seq = MAX(src_sstable_param_->basic_meta_.root_macro_seq_,
-                finish_task_->get_max_next_copy_task_id() * oceanbase::compaction::MACRO_STEP_SIZE);
-        if (OB_FAIL(finish_task_->add_sstable(table_handle, last_meta_macro_seq))) {
-          LOG_WARN("fail to add sstable", K(ret), K(table_handle));
-        }
-#endif
       } else if (OB_FAIL(finish_task_->add_sstable(table_handle))) {
         LOG_WARN("fail to add sstable", K(ret), K(table_handle));
       }
@@ -272,10 +253,18 @@ int ObCopiedSSTableCreator::create_sstable()
   int ret = OB_SUCCESS;
   ObSSTableMergeRes res;
   ObTableHandleV2 table_handle;
+  int64_t concurrent_cnt = 0;
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObCopiedSSTableCreator not init", K(ret));
+  } else if (OB_ISNULL(finish_task_) || OB_ISNULL(sstable_index_builder_)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get invalid argument", K(ret), KP(finish_task_), KP(sstable_index_builder_));
+  } else if (FALSE_IT(concurrent_cnt = finish_task_->get_copy_task_concurrent_cnt())) {
+  } else if (OB_UNLIKELY(concurrent_cnt != sstable_index_builder_->get_concurrent_cnt())) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("concurrent cnt is invalid", K(ret), K(concurrent_cnt), K(sstable_index_builder_->get_concurrent_cnt()));
   } else {
     SMART_VAR(ObTabletCreateSSTableParam, param) {
       if (OB_FAIL(sstable_index_builder_->close(res))) {
@@ -309,48 +298,36 @@ int ObCopiedSSTableCreator::check_sstable_param_for_init_(const ObMigrationSSTab
   return ret;
 }
 
-
-#ifdef OB_BUILD_SHARED_STORAGE
-// ObRestoredSharedSSTableCreator
-int ObRestoredSharedSSTableCreator::create_sstable()
+// ObCopiedSharedSSTableCreator
+int ObCopiedSharedSSTableCreator::create_sstable()
 {
   int ret = OB_SUCCESS;
-  ObSSTableMergeRes res;
   ObTableHandleV2 table_handle;
-  ObMacroDataSeq meta_block_seq(1);
-  meta_block_seq.macro_data_seq_ = MAX(src_sstable_param_->basic_meta_.root_macro_seq_,
-          finish_task_->get_max_next_copy_task_id() * oceanbase::compaction::MACRO_STEP_SIZE);
-  share::ObPreWarmerParam pre_warm_param;
+  const int64_t MACRO_BLOCK_CNT = 1;
+  common::ObSEArray<blocksstable::MacroBlockId, MACRO_BLOCK_CNT> data_block_ids;
+  common::ObSEArray<blocksstable::MacroBlockId, MACRO_BLOCK_CNT> other_block_ids;
 
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
-    LOG_WARN("ObCopiedSSTableCreator not init", K(ret));
+    LOG_WARN("ObCopiedSharedSSTableCreator not init", K(ret));
   } else {
-    meta_block_seq.set_index_block();
-    pre_warm_param.init(ls_id_, tablet_id_);
     SMART_VAR(ObTabletCreateSSTableParam, param) {
-      if (OB_FAIL(sstable_index_builder_->close_with_macro_seq(res,
-                                                               meta_block_seq.macro_data_seq_,
-                                                               OB_DEFAULT_MACRO_BLOCK_SIZE /*nested_size*/,
-                                                               0 /*nested_offset*/,
-                                                               pre_warm_param))) {
-        LOG_WARN("failed to close sstable index builder", K(ret), K(tablet_id_), KPC(src_sstable_param_));
-      } else if (OB_FAIL(init_create_sstable_param_(res, param))) {
-        LOG_WARN("fail to init create sstable param", K(ret), K(res));
+      if (OB_FAIL(init_create_sstable_param_(param, data_block_ids, other_block_ids))) {
+        LOG_WARN("fail to init create sstable param", K(ret));
       } else if (OB_FAIL(do_create_sstable_(param, table_handle))) {
         LOG_WARN("failed to create sstable", K(ret), K(param));
-      } else if (OB_FAIL(finish_task_->add_sstable(table_handle, meta_block_seq.macro_data_seq_))) {
-        LOG_WARN("fail to add sstable", K(ret), K(table_handle), K(meta_block_seq));
+      } else if (OB_FAIL(finish_task_->add_sstable(table_handle))) {
+        LOG_WARN("fail to add sstable", K(ret), K(table_handle));
       }
     }
   }
 
-  LOG_INFO("create restore shared sstable with index builder", K(ret), K(table_handle));
+  LOG_INFO("create shared sstable", K(ret), K(table_handle));
 
   return ret;
 }
 
-int ObRestoredSharedSSTableCreator::check_sstable_param_for_init_(const ObMigrationSSTableParam *src_sstable_param) const
+int ObCopiedSharedSSTableCreator::check_sstable_param_for_init_(const ObMigrationSSTableParam *src_sstable_param) const
 {
   int ret = OB_SUCCESS;
   if (!src_sstable_param->is_shared_sstable()) {
@@ -360,83 +337,6 @@ int ObRestoredSharedSSTableCreator::check_sstable_param_for_init_(const ObMigrat
 
   return ret;
 }
-
-//TODO(muwei.ym) check it after shared mini/minor with cangdi
-// ObCopiedSharedMacroBlocksSSTableCreator
-int ObCopiedSharedMacroBlocksSSTableCreator::create_sstable()
-{
-  int ret = OB_SUCCESS;
-  ObSSTableMergeRes res;
-  ObTableHandleV2 table_handle;
-  ObArray<MacroBlockId> macro_block_id_array;
-
-  if (!is_inited_) {
-    ret = OB_NOT_INIT;
-    LOG_WARN("sstable copy finish task do not init", K(ret));
-  } else {
-    SMART_VAR(ObTabletCreateSSTableParam, param) {
-      if (OB_FAIL(get_shared_macro_id_list_(macro_block_id_array))) {
-        LOG_WARN("failed to get shared ddl sstable macro id list", K(ret));
-      } else if (OB_FAIL(sstable_index_builder_->close(res))) {
-        LOG_WARN("failed to close sstable index builder", K(ret));
-      } else if (OB_FAIL(res.other_block_ids_.assign(macro_block_id_array))) {
-        LOG_WARN("failed to assign other block id", K(ret), K(macro_block_id_array));
-      } else if (OB_FAIL(init_create_sstable_param_(res, param))) {
-        LOG_WARN("fail to init create sstable param", K(ret), K(res));
-      } else if (OB_FAIL(do_create_sstable_(param, table_handle))) {
-        LOG_WARN("failed to create sstable", K(ret), K(param));
-      } else if (OB_FAIL(finish_task_->add_sstable(table_handle))) {
-        LOG_WARN("fail to add sstable", K(ret), K(table_handle));
-      }
-    }
-  }
-
-  LOG_INFO("create shared macro blocks sstable", K(ret), K(table_handle));
-
-  return ret;
-}
-
-int ObCopiedSharedMacroBlocksSSTableCreator::check_sstable_param_for_init_(const ObMigrationSSTableParam *src_sstable_param) const
-{
-  int ret = OB_SUCCESS;
-  if (!src_sstable_param->is_shared_macro_blocks_sstable()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("sstable is not shared macro blocks", K(ret), KPC(src_sstable_param));
-  } else if (src_sstable_param->is_shared_sstable()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("sstable is shared", K(ret), KPC(src_sstable_param));
-  } else if (!src_sstable_param->table_key_.is_ddl_dump_sstable()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("sstable is not ddl dump", K(ret), KPC(src_sstable_param));
-  }
-
-  return ret;
-}
-
-
-int ObCopiedSharedMacroBlocksSSTableCreator::get_shared_macro_id_list_(common::ObIArray<MacroBlockId> &macro_block_id_array)
-{
-  int ret = OB_SUCCESS;
-  const common::ObArray<ObCopyMacroRangeIdInfo> *macro_range_array = NULL;
-
-  macro_block_id_array.reset();
-  if (OB_FAIL(finish_task_->get_copy_macro_range_array(macro_range_array))) {
-    LOG_WARN("failed to get macro range array", K(ret));
-  } else if (OB_ISNULL(macro_range_array)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("macro_range_array is null", K(ret));
-  } else {
-    for (int64_t i = 0; OB_SUCC(ret) && i < macro_range_array->count(); ++i) {
-      const ObCopyMacroRangeInfo &macro_range_info = macro_range_array->at(i).range_info_;
-      if (OB_FAIL(ObStorageHAUtils::extract_macro_id_from_datum(macro_range_info.start_macro_block_end_key_, macro_block_id_array))) {
-        LOG_WARN("failed to extract macro id from datum", K(ret), K(macro_range_info));
-      }
-    }
-  }
-
-  return ret;
-}
-#endif
 
 // ObSSTableCopyFinishTask
 ObSSTableCopyFinishTask::ObSSTableCopyFinishTask()
@@ -498,8 +398,10 @@ int ObSSTableCopyFinishTask::init(const ObPhysicalCopyTaskInitParam &init_param)
     copy_ctx_.ls_id_ = init_param.ls_id_;
     copy_ctx_.tablet_id_ = init_param.tablet_id_;
     copy_ctx_.src_info_ = init_param.src_info_;
-    copy_ctx_.bandwidth_throttle_ = bandwidth_throttle;
-    copy_ctx_.svr_rpc_proxy_ = svr_rpc_proxy;
+    copy_ctx_.ha_svc_ctx_.bandwidth_throttle_ = bandwidth_throttle;
+    copy_ctx_.ha_svc_ctx_.svr_rpc_proxy_ = svr_rpc_proxy;
+    copy_ctx_.ha_svc_ctx_.storage_rpc_ = ls_service->get_storage_rpc();
+    copy_ctx_.ha_svc_ctx_.sql_proxy_ = GCTX.sql_proxy_;
     copy_ctx_.is_leader_restore_ = init_param.is_leader_restore_;
     copy_ctx_.restore_action_ = init_param.restore_action_;
     copy_ctx_.restore_base_info_ = init_param.restore_base_info_;
@@ -823,18 +725,46 @@ int ObSSTableCopyFinishTask::prepare_data_store_desc_(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("tablet should not be NULL", K(ret), K(tablet_id));
   } else {
-    const uint16_t cg_idx = sstable_param->table_key_.get_column_group_id();
+    const ObITable::TableKey &table_key = sstable_param->table_key_;
+    const uint16_t cg_idx = table_key.get_column_group_id();
     const ObStorageColumnGroupSchema *cg_schema = nullptr;
-    if (OB_UNLIKELY(cg_idx < 0 || cg_idx >= storage_schema->get_column_group_count())) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("get unexpected cg idx", K(ret), K(cg_idx), KPC(storage_schema));
-    } else {
-      cg_schema = &storage_schema->get_column_groups().at(cg_idx);
-      if (OB_ISNULL(cg_schema)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("fail to get cg schema", K(ret), KPC(storage_schema), K(cg_idx));
+    bool use_mock_cg_schema = false;
+
+    if (!storage_schema->is_row_store() || !table_key.is_column_store_sstable()) {
+      int64_t fetch_idx = cg_idx;
+      if (HIDDEN_ROWKEY_COLUMN_GROUP_IDX == cg_idx && !storage_schema->has_hidden_rowkey_column_group()) {
+        fetch_idx = 0; // ALL CG + EACH CG + HIDDEN ROWKEY CG  -->  ROWKEY CG + EACH CG
+      } else if (storage_schema->has_hidden_rowkey_column_group()
+              && table_key.is_co_sstable()
+              && ObCOSSTableBaseType::ROWKEY_CG_TYPE == static_cast<ObCOSSTableBaseType>(sstable_param->co_base_type_)) {
+        fetch_idx = HIDDEN_ROWKEY_COLUMN_GROUP_IDX;
       }
+
+      if (OB_FAIL(storage_schema->get_cg_schema_with_column_group_idx(fetch_idx, cg_schema))) {
+        LOG_WARN("failed to get cg schema from storage_schema", K(ret), K(cg_idx), K(fetch_idx), KPC(storage_schema));
+      }
+    } else if (table_key.is_co_sstable()
+            && ObCOSSTableBaseType::ALL_CG_TYPE == static_cast<ObCOSSTableBaseType>(sstable_param->co_base_type_)) {
+      if (OB_FAIL(storage_schema->get_cg_schema_with_column_group_idx(0/*base cg idx*/, cg_schema))) {
+        LOG_WARN("failed to get base cg schema from storage_schema", K(ret), KPC(storage_schema));
+      }
+    } else if (OB_UNLIKELY(!src_tablet_param->mock_rowkey_cg_schema_.is_valid()
+                        || !src_tablet_param->mock_single_cg_schema_.is_valid())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("get unexpected mock cg schemas", K(ret), KPC(src_tablet_param));
+    } else if (HIDDEN_ROWKEY_COLUMN_GROUP_IDX == cg_idx || table_key.is_co_sstable()) {
+      cg_schema = &src_tablet_param->mock_rowkey_cg_schema_;
+    } else {
+      // cannot generate skip index for old co sstable with mocked cg schema
+      use_mock_cg_schema = true;
+      cg_schema = &src_tablet_param->mock_single_cg_schema_;
     }
+
+    if (OB_SUCC(ret) && OB_ISNULL(cg_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("fail to get cg schema", K(ret), KPC(storage_schema), K(cg_idx));
+    }
+
     int32_t private_transfer_epoch = -1;
     if (FAILEDx(tablet->get_private_transfer_epoch(private_transfer_epoch))) {
       LOG_WARN("failed to get private transfer epoch", K(ret), "tablet_meta", tablet->get_tablet_meta());
@@ -853,15 +783,17 @@ int ObSSTableCopyFinishTask::prepare_data_store_desc_(
         sstable_param->table_key_.get_end_scn(),
         cg_schema,
         cg_idx,
-        sstable_param->basic_meta_.table_shared_flag_.is_shared_sstable()
-          ? compaction::ObExecMode::EXEC_MODE_OUTPUT
-          : compaction::ObExecMode::EXEC_MODE_LOCAL))) {
+        compaction::ObExecMode::EXEC_MODE_LOCAL))) {
       LOG_WARN("failed to init index store desc for column store table", K(ret), K(cg_idx), KPC(sstable_param), K(cg_schema));
     } else {
       /* Since the storage_schema of migration maybe newer or older than the original sstable,
         we always use the col_cnt in sstable_param to re-generate sstable for dst.
         Besides, we fill default chksum array with zeros since there's no need to recalculate*/
       int64_t column_cnt = sstable_param->basic_meta_.column_cnt_;
+      if (use_mock_cg_schema) {
+        desc.get_col_desc().agg_meta_array_.reset();
+        LOG_INFO("cannot generate skip index for old co sstable with mocked cg schema", K(ret), KPC(sstable_param));
+      }
       if (OB_FAIL(desc.get_col_desc().mock_valid_col_default_checksum_array(column_cnt))) {
         LOG_WARN("fail to mock valid col default checksum array", K(ret));
       } else if (OB_FAIL(desc.get_desc().update_basic_info_from_macro_meta(sstable_param->basic_meta_))) {
@@ -1106,36 +1038,24 @@ int ObSSTableCopyFinishTask::alloc_and_init_sstable_creator_(ObCopiedSSTableCrea
 {
   int ret = OB_SUCCESS;
   ObCopiedSSTableCreatorImpl *tmp_creator = nullptr;
-  const bool is_shared_storage = GCTX.is_shared_storage_mode();
   if (sstable_param_->is_empty_sstable()) {
     tmp_creator = MTL_NEW(ObCopiedEmptySSTableCreator, "CopySSTCreator");
-  } else if (!is_shared_storage) {
-    if (sstable_param_->is_shared_sstable() && is_shared_sstable_without_copy_(sstable_param_)) {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("not supported to create shared sstable", K(ret));
-    } else {
-      tmp_creator = MTL_NEW(ObCopiedSSTableCreator, "CopySSTCreator");
-    }
+  } else if (sstable_param_->basic_meta_.table_shared_flag_.is_shared_macro_blocks()) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("shared storage sstable should not encounter here", K(ret), KPC(sstable_param_));
+  } else if (sstable_param_->basic_meta_.table_backup_flag_.is_shared_sstable()
+             && !ObTabletRestoreAction::is_restore_replace_remote_sstable(copy_ctx_.restore_action_)) {
+    // Keep pure-backup SSTables as-is for migration and RESTORE_REMOTE_SSTABLE.
+    // For RESTORE_REPLACE_REMOTE_SSTABLE, data must be loaded to local storage.
+    tmp_creator = MTL_NEW(ObCopiedSharedSSTableCreator, "CopySSTCreator");
   } else {
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (sstable_param_->is_shared_sstable()) {
-      if (is_shared_sstable_without_copy_(sstable_param_)) {
-        ret = OB_NOT_SUPPORTED;
-        LOG_WARN("not supported to create shared sstable", K(ret));
-      } else {
-        tmp_creator = MTL_NEW(ObRestoredSharedSSTableCreator, "CopySSTCreator");
-      }
-    } else if (sstable_param_->is_shared_macro_blocks_sstable()) {
-      tmp_creator = MTL_NEW(ObCopiedSharedMacroBlocksSSTableCreator, "CopySSTCreator");
-    } else {
-      tmp_creator = MTL_NEW(ObCopiedSSTableCreator, "CopySSTCreator");
-    }
-#endif
+    tmp_creator = MTL_NEW(ObCopiedSSTableCreator, "CopySSTCreator");
   }
 
-  if (OB_ISNULL(tmp_creator)) {
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(tmp_creator)) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to alloc memory", K(ret));
+    LOG_WARN("failed to alloc memory", K(ret), KP(tmp_creator));
   } else if (OB_FAIL(tmp_creator->init(copy_ctx_.ls_id_,
                                        copy_ctx_.tablet_id_,
                                        sstable_param_,

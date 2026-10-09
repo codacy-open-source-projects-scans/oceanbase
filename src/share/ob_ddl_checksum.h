@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_DDL_CHECKSUM_H_
@@ -84,6 +77,8 @@ public:
       const uint64_t tenant_id,
       const uint64_t table_id,
       const uint64_t index_table_id,
+      const ObIArray<ObTabletID> &tablet_ids,
+      const ObIArray<ObTabletID> &index_tablet_ids,
       const int64_t ddl_task_id,
       const bool is_unique_index_checking,
       common::hash::ObHashMap<int64_t, int64_t> &column_checksums, common::ObMySQLProxy &sql_proxy);
@@ -117,6 +112,8 @@ public:
       const uint64_t tenant_id,
       const uint64_t data_table_id,
       const uint64_t index_table_id,
+      const ObIArray<ObTabletID> &data_tablet_ids,
+      const ObIArray<ObTabletID> &index_tablet_ids,
       const int64_t ddl_task_id,
       const bool is_unique_index_checking,
       const ObIArray<int64_t> &ignore_col_ids,
@@ -129,7 +126,8 @@ public:
       const uint64_t dest_table_id,
       const int64_t ddl_task_id,
       common::ObMySQLProxy &sql_proxy,
-      const int64_t tablet_task_id = OB_INVALID_INDEX);
+      const int64_t tablet_task_id = OB_INVALID_INDEX,
+      const bool is_unique_index_checksum = false);
 private:
   static int fill_one_item(
       const uint64_t data_format_version,
@@ -140,22 +138,13 @@ private:
       const uint64_t tenant_id,
       common::hash::ObHashMap<int64_t, int64_t> &column_checksum_map,
       common::ObMySQLProxy &sql_proxy);
-  static int get_part_column_checksum(
-      const uint64_t tenant_id,
-      const uint64_t table_id,
-      const uint64_t tablet_id,
-      const uint64_t execution_id,
-      const int64_t ddl_task_id,
-      const bool is_unique_index_checking,
-      common::ObMySQLProxy &sql_proxy,
-      common::hash::ObHashMap<int64_t, int64_t> &column_checksum_map);
   static int get_tablet_latest_execution_id(
       const uint64_t tenant_id,
       const uint64_t index_table_id,
       const int64_t ddl_task_id,
-      const int64_t tablet_id,
+      const ObIArrayWrap<ObTabletID> &index_tablet_ids,
       common::ObMySQLProxy &sql_proxy,
-      int64_t &execution_id);
+      common::hash::ObHashMap<int64_t, int64_t> &tablet_exec_id_map);
   static int get_tablet_checksum_status(
       const ObSqlString &sql,
       const uint64_t tenant_id,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/tablet/ob_tablet_create_mds_helper.h"
@@ -312,6 +305,7 @@ int ObTabletDDLCompleteMdsHelper::process_ddl(
     LOG_WARN("ls is null", KR(ret), K(ls_handle));
   } else if (!for_replay) {
     if (OB_FAIL(ObDDLUtil::ddl_get_tablet(ls_handle, tablet_id, tablet_handle, ObMDSGetTabletMode::READ_ALL_COMMITED))) {
+      LOG_WARN("failed to get tablet hanlde", K(ret), K(tablet_id));
     } else if (OB_FAIL(ObTabletDDLCompleteReplayExecutor::freeze_ddl_kv(*tablet_handle.get_obj(), data))) {
       LOG_WARN("failed to freeze ddl kv", K(ret));
     } else if (OB_FAIL(ObTabletDDLCompleteReplayExecutor::update_tablet_table_store(*tablet_handle.get_obj(), data))) {

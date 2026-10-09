@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEANBASE_SHARE_VECTOR_INDEX_SEGMENT_H_
 #define OCEANBASE_SHARE_VECTOR_INDEX_SEGMENT_H_
 
 #include "roaring/roaring64.h"
+#include "lib/container/ob_se_array.h"
 #include "lib/vector/ob_vector_util.h"
 #include "lib/stat/ob_latch_define.h"
 #include "share/vector_index/ob_vector_index_common_define.h"
@@ -101,6 +95,7 @@ enum class ObVectorIndexSegmentType : uint16_t
   BASE,
   LEGACY_BASE,
   EMPTY,
+  VSAG_MERGE,
   MAX
 };
 
@@ -347,8 +342,8 @@ public:
 
 public:
   ObVectorIndexSegment(ObIAllocator *allocator):
-    is_inited_(false), is_base_(false), ref_cnt_(0), write_ref_cnt_(0),
-    allocator_(allocator), mem_ctx_(nullptr), index_(nullptr), vid_bound_(),
+    index_(nullptr), is_inited_(false), is_base_(false), ref_cnt_(0), write_ref_cnt_(0),
+    allocator_(allocator), mem_ctx_(nullptr), vid_bound_(),
     ibitmap_(nullptr), vbitmap_(nullptr)
   {
     ATOMIC_INC(&instacnce_cnt_);
@@ -400,6 +395,7 @@ public:
   int fserialize(std::ostream& out_stream) { return obvectorutil::fserialize(index_, out_stream); }
   int fdeserialize(std::istream& in_stream) { return obvectorutil::fdeserialize(index_, in_stream); }
   int immutable_optimize() { return obvectorutil::immutable_optimize(index_); }
+  int tune_index(int new_index_type) { return obvectorutil::tune_index(index_, new_index_type); }
 
   // TODO mark const
   ObVectorIndexAlgorithmType get_index_type() const { return static_cast<ObVectorIndexAlgorithmType>(obvectorutil::get_index_type(const_cast<void*>(index_))); }
@@ -417,6 +413,8 @@ public:
   {
     return obvectorutil::cal_distance_by_id(index_, len, dims, vals, ids, count, distances);
   }
+
+  int check_id_exist(const int64_t vid, bool &exist) const;
 
   bool is_base() const { return is_base_; }
   void set_is_base() { is_base_ = true; }
@@ -444,6 +442,8 @@ public:
     KP_(allocator), KP_(mem_ctx), KP_(index), K_(vid_bound), KPC_(ibitmap), KPC_(vbitmap));
 
 private:
+  // must keep as first member, avoid null pointer check failure
+  void* index_;
   bool is_inited_;
   bool is_base_;
   int64_t ref_cnt_;
@@ -451,8 +451,6 @@ private:
   uint64_t tenant_id_;
   ObIAllocator *allocator_;
   ObVsagMemContext* mem_ctx_;
-  // VSAG库的向量索引是线程安全的, 所以不需要锁保护
-  void* index_;
   ObVidBound vid_bound_;
 public:
   ObVectorIndexRoaringBitMap *ibitmap_;
@@ -679,6 +677,7 @@ public:
     is_inited_(false),
     has_build_(false),
     need_vid_check_(false),
+    build_finished_(false),
     segment_handle_(),
     vid_array_(nullptr),
     vec_array_(nullptr),
@@ -689,6 +688,7 @@ public:
     vid_bound_(),
     ibitmap_(nullptr),
     vbitmap_(nullptr),
+    merge_source_seg_handles_(),
     total_cnt_(0),
     add_cnt_(0),
     skip_cnt_(0)
@@ -698,6 +698,8 @@ public:
   ~ObVectorIndexSegmentBuilder();
   bool is_inited() const { return ATOMIC_LOAD(&is_inited_); }
   void set_inited() { ATOMIC_STORE(&is_inited_, true); }
+  bool is_build_finished() const { return ATOMIC_LOAD(&build_finished_); }
+  void set_build_finished(const bool v) { ATOMIC_STORE(&build_finished_, v); }
   void free(ObIAllocator &allocator);
   void free_vec_buf_data(ObIAllocator &allocator);
   int init_vec_buffer(const uint64_t tenant_id, ObIAllocator &allocator, const bool is_sparse_vector);
@@ -741,10 +743,10 @@ public:
 
   int check_vid_range(const int64_t vid, bool &has_skip_vid);
   int serialize(const uint64_t tenant_id, ObHNSWSerializeCallback::CbParam &param);
-  int add_index(float* vecs, int64_t* ids, int dim, char *extra_info, int size);
-  int add_index(uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos);
+  int add_index(float* vecs, int64_t* ids, int dim, char *extra_info, int size, int64_t extra_info_actual_size = 0);
+  int add_index(uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos, int64_t extra_info_actual_size = 0);
 
-  TO_STRING_KV(KP(this), K_(is_inited), K_(seg_type), K_(has_build), K_(need_vid_check),
+  TO_STRING_KV(KP(this), K_(is_inited), K_(seg_type), K_(has_build), K_(need_vid_check), K_(build_finished),
       K_(segment_handle), KP_(vid_array), KP_(vec_array), KP_(extra_info_buf),
       KP_(lens_array), KP_(dims_array), KP_(vals_array),
       K_(vid_bound), KPC_(ibitmap), KPC_(vbitmap), K_(total_cnt), K_(add_cnt), K_(skip_cnt));
@@ -754,6 +756,7 @@ public:
   bool is_inited_;  // true only after segment_handle_ or vec buffer is fully initialized
   bool has_build_;
   bool need_vid_check_;
+  bool build_finished_;
   TCRWLock mem_data_rwlock_{ObLatchIds::VECTOR_MEM_DATA};
   ObVectorIndexSegmentHandle segment_handle_;
   ObVecIdxVidArray *vid_array_;
@@ -766,6 +769,7 @@ public:
   ObVidBound vid_bound_;
   ObVectorIndexRoaringBitMap *ibitmap_;
   ObVectorIndexRoaringBitMap *vbitmap_;
+  ObSEArray<ObVectorIndexSegmentHandle, OB_VECTOR_INDEX_MAX_SEGMENT_CNT> merge_source_seg_handles_;
   int64_t total_cnt_;
   int64_t add_cnt_;
   int64_t skip_cnt_;
@@ -800,9 +804,7 @@ public:
   static int64_t instacnce_cnt_;
   ObVecIdxSnapshotData()
     : ObVectorIndexDataBase(),
-      is_ready_for_read_(false),
       builder_(nullptr),
-      deserializer_(nullptr),
       meta_(),
       vid_bound_()
   {
@@ -844,13 +846,11 @@ private:
       storage::ObTableScanIterator *snap_data_iter, const uint64_t tenant_id, ObVectorIndexSegmentMeta &seg_meta);
 
 public:
-  TO_STRING_KV(KP(this), K_(type), K_(is_init), K_(has_complete), K_(is_ready_for_read), K_(scn),
-    K_(ref_cnt), KPC_(builder), KPC_(deserializer), K_(meta), K_(vid_bound), K_(last_res_seg_info));
+  TO_STRING_KV(KP(this), K_(type), K_(is_init), K_(has_complete), K_(scn),
+    K_(ref_cnt), KPC_(builder), K_(meta), K_(vid_bound), K_(last_res_seg_info));
 
   TCRWLock mem_data_rwlock_{ObLatchIds::VECTOR_MEM_DATA};
-  bool is_ready_for_read_;
   ObVectorIndexSegmentBuilder *builder_;
-  ObVectorIndexSegmentDeserializer *deserializer_;
   ObVectorIndexMeta meta_;
   ObVidBound vid_bound_;
   ObVecIndexBuildSegInfo last_res_seg_info_;
@@ -864,6 +864,7 @@ struct ObVecIdxFrozenData : public ObVectorIndexDataBase
     NO_FROZEN = 0,
     FROZEN,
     WAIT_WRITE_FINISHED,
+    TUNE_INDEX,  // after write ref 0, tune index (e.g. HNSW_SQ/BQ) before WAIT_WRITE_FINISHED
     REFRESH_VBITMAP,
     PERSIST,
     REFRESH_SNAP,
@@ -915,6 +916,7 @@ struct ObVectorIndexSegQueryHandler
       ctx_(nullptr),
       query_cond_(nullptr),
       valid_ratio_(0.0f),
+      selectivity_(1.0f),
       extra_info_actual_size_(0),
       is_sparse_vector_(false),
       query_vector_(nullptr),
@@ -923,10 +925,10 @@ struct ObVectorIndexSegQueryHandler
       sparse_dims_(nullptr),
       sparse_vals_(nullptr) {}
 
-  int knn_search(ObVsagQueryResult &result);
+  int knn_search(ObVsagQueryResult &result, int segment_cnt = 0);
 
   TO_STRING_KV(KP(this), K_(tenant_id), KPC_(segment_querier), KP_(ctx), KP_(query_cond),
-      K_(valid_ratio), K_(extra_info_actual_size), K_(is_sparse_vector),
+      K_(valid_ratio), K_(selectivity), K_(extra_info_actual_size), K_(is_sparse_vector),
       KP_(query_vector), K_(dim), KP_(sparse_lens), KP_(sparse_dims), KP_(sparse_vals));
 
 
@@ -935,6 +937,7 @@ struct ObVectorIndexSegQueryHandler
   ObVectorQueryAdaptorResultContext *ctx_;
   ObVectorQueryConditions *query_cond_;
   float valid_ratio_;
+  float selectivity_; // optimizer-estimated selectivity for timeout_ms calculation
   int64_t extra_info_actual_size_;
   bool is_sparse_vector_;
 

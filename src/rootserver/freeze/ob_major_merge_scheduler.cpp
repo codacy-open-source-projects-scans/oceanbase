@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS_COMPACTION
@@ -750,7 +743,7 @@ int ObMajorMergeScheduler::get_epoch_with_retry(int64_t &freeze_service_epoch)
     FREEZE_TIME_GUARD;
     if (OB_FAIL(ObServiceEpochProxy::get_service_epoch(*sql_proxy_, tenant_id_,
                 ObServiceEpochProxy::FREEZE_SERVICE_EPOCH, freeze_service_epoch))) {
-      const int32_t idle_time_us = 100 * 1000 * (i + 1);
+      const int64_t idle_time_us = 100 * 1000LL * (i + 1);
       LOG_WARN("fail to get freeze_service_epoch, will retry", KR(ret), K_(tenant_id),
                K(idle_time_us), "cur_retry_count", i + 1, K(MAX_RETRY_COUNT));
       ob_throttle_usleep(idle_time_us, ret, i + 1);

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -582,7 +575,7 @@ int ObLSRestoreConsistentScnState::do_restore()
     if (REACH_TIME_INTERVAL(10 * 1000 * 1000L)) {
       LOG_INFO("clog replay not finish, wait later", KPC_(ls));
     }
-  } else if (OB_FAIL(set_empty_for_transfer_tablets_())) {
+  } else if (OB_FAIL(set_empty_for_transfer_or_split_tablets_())) {
     LOG_WARN("fail to set empty for transfer tablets", K(ret), KPC_(ls));
   } else if (OB_FAIL(report_finish_replay_clog_lsn_())) {
     LOG_WARN("fail to report finish replay clog lsn", K(ret));
@@ -607,7 +600,7 @@ int ObLSRestoreConsistentScnState::check_recover_to_consistent_scn_finish(bool &
   return ret;
 }
 
-int ObLSRestoreConsistentScnState::set_empty_for_transfer_tablets_()
+int ObLSRestoreConsistentScnState::set_empty_for_transfer_or_split_tablets_()
 {
   int ret = OB_SUCCESS;
   ObLSTabletService *ls_tablet_svr = nullptr;
@@ -646,22 +639,37 @@ int ObLSRestoreConsistentScnState::set_empty_for_transfer_tablets_()
       ++total_tablet_cnt_;
     } else if (tablet->get_tablet_meta().ha_status_.is_restore_status_empty()) {
       ++total_tablet_cnt_;
-    } else if (!tablet->get_tablet_meta().has_transfer_table()) {
-    } else if (OB_FAIL(tablet->get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
-      LOG_WARN("failed to get tablet status", K(ret), KPC(tablet));
-    } else if (mds::TwoPhaseCommitState::ON_COMMIT != trans_stat
-        && ObTabletStatus::TRANSFER_IN == user_data.tablet_status_.get_status()) {
-      LOG_INFO("skip tablet which transfer in not commit", "tablet_id", tablet->get_tablet_meta().tablet_id_, K(user_data));
-    } else if (OB_FAIL(ls_->update_tablet_restore_status(tablet->get_reorganization_scn(),
-                                                         tablet->get_tablet_meta().tablet_id_,
-                                                         restore_status,
-                                                         true/* need reset tranfser flag */,
-                                                         false/*need_to_set_split_data_complete*/))) {
-      LOG_WARN("failed to update tablet restore status to EMPTY", K(ret), KPC(tablet));
-    } else {
-      ++total_tablet_cnt_;
-      LOG_INFO("update tablet restore status to EMPTY",
-               "tablet_meta", tablet->get_tablet_meta());
+    } else if (tablet->get_tablet_meta().has_transfer_table()) {
+      if (OB_FAIL(tablet->get_latest_tablet_status(user_data, writer, trans_stat, trans_version))) {
+        LOG_WARN("failed to get tablet status", K(ret), KPC(tablet));
+      } else if (mds::TwoPhaseCommitState::ON_COMMIT != trans_stat
+          && ObTabletStatus::TRANSFER_IN == user_data.tablet_status_.get_status()) {
+        LOG_INFO("skip tablet which transfer in not commit", "tablet_id", tablet->get_tablet_meta().tablet_id_, K(user_data));
+      } else if (OB_FAIL(ls_->update_tablet_restore_status(tablet->get_reorganization_scn(),
+                                                           tablet->get_tablet_meta().tablet_id_,
+                                                           restore_status,
+                                                           true/* need reset tranfser flag */,
+                                                           false/*need_to_set_split_data_complete*/))) {
+        LOG_WARN("failed to update tablet restore status to EMPTY", K(ret), KPC(tablet));
+      } else {
+        ++total_tablet_cnt_;
+        LOG_INFO("update tablet restore status to EMPTY",
+                 "tablet_meta", tablet->get_tablet_meta());
+      }
+    } else if (tablet->get_tablet_meta().split_info_.is_data_incomplete()) {
+      ObTabletRestoreStatus::STATUS origin_status = ObTabletRestoreStatus::STATUS::RESTORE_STATUS_MAX;
+      if (OB_FAIL(tablet->get_restore_status(origin_status))) {
+        LOG_WARN("failed to get restore status of tablet", K(ret), KPC(tablet));
+      } else if (OB_FAIL(ls_->update_tablet_restore_status(tablet->get_reorganization_scn(),
+                                                           tablet->get_tablet_meta().tablet_id_,
+                                                           restore_status,
+                                                           false/* need reset transfer flag */,
+                                                           true/*need_to_set_split_data_complete*/))) {
+        LOG_WARN("failed to update tablet restore status", K(ret), KPC(tablet));
+      } else {
+        ++total_tablet_cnt_;
+        LOG_INFO("split update tablet restore status to EMPTY", K(origin_status), "tablet_meta", tablet->get_tablet_meta());
+      }
     }
   }
 
@@ -891,6 +899,15 @@ int ObLSQuickRestoreState::do_quick_restore_(const ObLSRestoreTaskMgr::ToRestore
   return ret;
 }
 
+bool ObLSQuickRestoreState::is_tablet_clog_checkpoint_acceptable_for_restore(
+    const ObTabletID &tablet_id,
+    const SCN &clog_checkpoint_scn,
+    const SCN &restore_scn)
+{
+  return clog_checkpoint_scn <= restore_scn
+      || tablet_id.is_ls_tx_ctx_tablet();
+}
+
 int ObLSQuickRestoreState::check_tablet_checkpoint_()
 {
   int ret = OB_SUCCESS;
@@ -924,22 +941,37 @@ int ObLSQuickRestoreState::check_tablet_checkpoint_()
         if (!tablet_meta.is_valid()) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("invalid tablet meta", K(ret), K(tablet_meta));
-        } else if (tablet_meta.clog_checkpoint_scn_ > ls_restore_arg_->get_restore_scn()) {
+        } else if (!is_tablet_clog_checkpoint_acceptable_for_restore(
+                       tablet->get_tablet_id(),
+                       tablet_meta.clog_checkpoint_scn_,
+                       ls_restore_arg_->get_restore_scn())) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("tablet clog checkpoint ts should less than restore end ts", K(ret), K(tablet_meta),
               "ls restore end ts", ls_restore_arg_->get_restore_scn());
-        } else if (tablet->is_empty_shell()) {
-        } else if (!ls_restore_arg_->get_progress_display_mode().is_bytes()) {
-        } else if (ls_->is_sys_ls() && tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
-          // sys ls's tablets have all been fully restore, take occupy size as total bytes
-          if (OB_FAIL(ObStorageHAUtils::get_tablet_occupy_size_in_bytes(
-                  ls_->get_ls_id(), tablet->get_tablet_id(), tablet_size))) {
-            LOG_WARN("fail to get tablet size", K(ret), KPC(tablet));
+        } else {
+          if (tablet_meta.clog_checkpoint_scn_ > ls_restore_arg_->get_restore_scn()) {
+            // Only reached when LS_TX_CTX_TABLET's sstable carries the +1
+            // bookkeeping offset from ObTxCtxMemtable::flush(). Log for
+            // observability and continue with the rest of the per-tablet work.
+            LOG_INFO("tx ctx tablet clog_checkpoint_scn exceeds restore_scn, exempted",
+                "ls_id", ls_->get_ls_id(),
+                "tablet_id", tablet->get_tablet_id(),
+                "clog_checkpoint_scn", tablet_meta.clog_checkpoint_scn_,
+                "restore_scn", ls_restore_arg_->get_restore_scn());
           }
-        } else if (!ls_->is_sys_ls() && tablet->get_tablet_meta().ha_status_.is_restore_status_remote()) {
-          if (OB_FAIL(ObStorageHAUtils::get_tablet_backup_size_in_bytes(
-                  ls_->get_ls_id(), tablet->get_tablet_id(), tablet_size))) {
-            LOG_WARN("fail to get tablet size", K(ret), KPC(tablet));
+          if (tablet->is_empty_shell()) {
+          } else if (!ls_restore_arg_->get_progress_display_mode().is_bytes()) {
+          } else if (ls_->is_sys_ls() && tablet->get_tablet_meta().ha_status_.is_restore_status_full()) {
+            // sys ls's tablets have all been fully restore, take occupy size as total bytes
+            if (OB_FAIL(ObStorageHAUtils::get_tablet_occupy_size_in_bytes(
+                    ls_->get_ls_id(), tablet->get_tablet_id(), tablet_size))) {
+              LOG_WARN("fail to get tablet size", K(ret), KPC(tablet));
+            }
+          } else if (!ls_->is_sys_ls() && tablet->get_tablet_meta().ha_status_.is_restore_status_remote()) {
+            if (OB_FAIL(ObStorageHAUtils::get_tablet_backup_size_in_bytes(
+                    ls_->get_ls_id(), tablet->get_tablet_id(), tablet_size))) {
+              LOG_WARN("fail to get tablet size", K(ret), KPC(tablet));
+            }
           }
         }
       }

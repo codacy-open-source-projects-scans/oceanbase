@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1735,7 +1728,12 @@ int ObBasicStatsEstimator::add_global_skip_rate(ObGlobalSkipRateStat &global_ski
                                                 BlockNumStat *block_num_stat)
 {
   int ret = OB_SUCCESS;
-  if (block_num_stat != NULL && !block_num_stat->cg_micro_cnt_arr_.empty()) {
+
+  // In online row-col switch scene, tablets of the same data table may be partially switched.
+  // the collected cg counts can differ across tablets, so the cg count must be unified when add to global skip rate.
+  // If the length mismatch, alienged to per-column sample counts
+  if (block_num_stat != NULL && !block_num_stat->cg_micro_cnt_arr_.empty()
+      && block_num_stat->cg_micro_cnt_arr_.count() == estimate_res.cg_skip_rate_arr_.count()) {
     ObSEArray<uint64_t, 4> cg_micro_arr;
     for (int i = 0; OB_SUCC(ret) && i < block_num_stat->cg_micro_cnt_arr_.count(); i++) {
       if (OB_FAIL(cg_micro_arr.push_back(block_num_stat->cg_micro_cnt_arr_.at(i)))) {

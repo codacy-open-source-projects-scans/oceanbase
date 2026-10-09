@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX LIB
 #include "ob_json_bin.h"
@@ -19,6 +12,14 @@ namespace oceanbase {
 namespace common {
 
 static const double OB_JSON_BIN_REBUILD_THRESHOLD = 1.3; // 30%
+
+// Indexed by ObJsonBinLenSize (JBLS_UINT8..JBLS_UINT64); must match JBLS_MAX == 4.
+constexpr uint8_t OB_JSON_VAR_BYTE_WIDTH[static_cast<size_t>(JBLS_MAX)] = {
+  static_cast<uint8_t>(sizeof(uint8_t)),
+  static_cast<uint8_t>(sizeof(uint16_t)),
+  static_cast<uint8_t>(sizeof(uint32_t)),
+  static_cast<uint8_t>(sizeof(uint64_t)),
+};
 
 int ObJsonBin::get_obtime(ObTime &t) const
 {
@@ -4705,29 +4706,11 @@ int ObJsonVar::set_var(ObILobCursor *cursor, int64_t offset, uint64_t var, uint8
 
 uint64_t ObJsonVar::get_var_size(uint8_t type)
 {
-  uint64_t var_size = JBLS_MAX;
-  ObJsonBinLenSize size = static_cast<ObJsonBinLenSize>(type);
-  switch (size) {
-    case JBLS_UINT8: {
-      var_size = sizeof(uint8_t);
-      break;
-    }
-    case JBLS_UINT16: {
-      var_size = sizeof(uint16_t);
-      break;
-    }
-    case JBLS_UINT32: {
-      var_size = sizeof(uint32_t);
-      break;
-    }
-    case JBLS_UINT64: {
-      var_size = sizeof(uint64_t);
-      break;
-    }
-    default: {
-      LOG_WARN_RET(OB_ERR_UNEXPECTED, "invalid var type.", K(OB_NOT_SUPPORTED), K(size));
-      break;
-    }
+  uint64_t var_size = static_cast<uint64_t>(JBLS_MAX);
+  if (OB_LIKELY(type < JBLS_MAX)) {
+    var_size = static_cast<uint64_t>(OB_JSON_VAR_BYTE_WIDTH[type]);
+  } else {
+    LOG_WARN_RET(OB_ERR_UNEXPECTED, "invalid var type.", K(OB_NOT_SUPPORTED), K(type));
   }
   return var_size;
 }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_STORAGE_FTS_OB_IK_FT_PARSER_H_
@@ -17,6 +10,7 @@
 #include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
+#include "storage/fts/dict/ob_ft_dict_cache_loader.h"
 #include "storage/fts/ik/ob_ik_processor.h"
 #include "storage/fts/ik/ob_ik_arbitrator.h"
 #include "storage/fts/ob_i_ft_parser.h"
@@ -27,17 +21,14 @@ namespace oceanbase
 {
 namespace storage
 {
-class ObFTDictHub;
-
 class ObIKFTParser final : public ObIFTParser
 {
 public:
-  ObIKFTParser(ObIAllocator &metadata_alloc, ObFTDictHub *hub)
+  ObIKFTParser(ObIAllocator &metadata_alloc)
       : is_inited_(false),
         metadata_alloc_(metadata_alloc),
         coll_type_(ObCollationType::CS_TYPE_INVALID),
         ctx_(nullptr),
-        hub_(hub),
         segmenters_(metadata_alloc),
         cache_main_(metadata_alloc),
         cache_quan_(metadata_alloc),
@@ -45,6 +36,7 @@ public:
         dict_main_(nullptr),
         dict_quan_(nullptr),
         dict_stop_(nullptr),
+        cache_loader_(nullptr),
         arb_(),
         scratch_alloc_()
   {
@@ -78,15 +70,15 @@ private:
 private:
   int init_dict(const plugin::ObFTParserParam &param);
 
-  int init_single_dict(ObFTDictDesc desc, ObFTCacheRangeContainer &container);
+  int init_cache_loader(const ObFTDictDesc::BuildMode build_mode);
+
+  int init_single_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
   int init_segmenter(const plugin::ObFTParserParam &param);
 
   int init_ctx(const plugin::ObFTParserParam &param);
 
   void reset();
-
-  bool should_read_newest_table() const;
 
   int build_dict_from_cache(const ObFTDictDesc &desc,
                             ObFTCacheRangeContainer &container,
@@ -98,7 +90,6 @@ private:
 
   ObCollationType coll_type_;
   TokenizeContext *ctx_;
-  ObFTDictHub *hub_;
   ObList<ObIIKProcessor *, ObIAllocator> segmenters_;
 
   // For now there's no change of dict in one query, so we can pin dict this level.
@@ -109,6 +100,8 @@ private:
   ObIFTDict *dict_main_;
   ObIFTDict *dict_quan_;
   ObIFTDict *dict_stop_;
+
+  ObFTDictCacheLoaderBase *cache_loader_;
   ObIKArbitrator arb_;
   ObArenaAllocator scratch_alloc_;
 

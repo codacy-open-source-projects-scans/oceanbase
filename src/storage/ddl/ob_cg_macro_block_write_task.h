@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_DDL_OB_CG_MACRO_BLOCK_WRITE_TASK_H_
@@ -45,34 +38,6 @@ struct ObStorageColumnGroupSchema;
 class ObITabletSliceRowIterator;
 class ObDDLSlice;
 
-// this task is used to directly write cg macro blocks in the scan task.
-// This task uses a macro block writer for each column group (CG) to write macro blocks
-// and can only be used when there is sufficient memory.
-class ObCgMacroBlockWriteTask : public share::ObITaskWithMonitor
-{
-public:
-  ObCgMacroBlockWriteTask(const ObITaskType type);
-  ObCgMacroBlockWriteTask();
-  virtual ~ObCgMacroBlockWriteTask();
-  int init(ObDDLIndependentDag *ddl_dag,
-           ObITabletSliceRowIterator *row_iter,
-           const ObTabletID &tablet_id);
-  int process() override;
-
-private:
-  int project_cg_row(const ObStorageColumnGroupSchema &cg_schema,
-                     const blocksstable::ObDatumRow &row,
-                     blocksstable::ObDatumRow &cg_row);
-  DISABLE_COPY_ASSIGN(ObCgMacroBlockWriteTask);
-
-private:
-  bool is_inited_;
-  ObArenaAllocator allocator_;
-  common::ObTabletID tablet_id_;
-  const ObStorageSchema *storage_schema_;
-  ObITabletSliceRowIterator *row_iter_;
-  ObArray<ObCgMacroBlockWriter *> cg_macro_block_writers_;
-};
 
 class ObDDLScanTask : public share::ObITaskWithMonitor
 {

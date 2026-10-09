@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // define the feature list here whose behavior is different in MySQL5.7, MySQL8.0 or OB
@@ -70,7 +63,25 @@ DEF_COMPAT_CONTROL_FEATURE(PLSQL_CAN_TRANSFORM_SQL_TO_ASSIGN,
 DEF_COMPAT_CONTROL_FEATURE(EXTERNAL_COLUMN_NAME_CASE_INSENSITIVE,
     "Whether column name mapping in Parquet/ORC file is case insensitive",
     CLUSTER_VERSION_4_5_0_0)
+
 DEF_COMPAT_CONTROL_FEATURE(DEFAULT_CSV_ESCAPE_CHAR_IS_NONE,
     "Whether the default CSV escape character is none",
-    CLUSTER_VERSION_4_5_1_0)
+    MOCK_CLUSTER_VERSION_4_4_2_1, CLUSTER_VERSION_4_5_0_0, CLUSTER_VERSION_4_6_0_0)
+
+DEF_COMPAT_CONTROL_FEATURE(STANDARD_CSV_FORMAT_IN_EXTERNAL_TABLE,
+    "Whether to use standard CSV format in external table (comma delimiter, '\\n' line delimiter, double-quote enclosed, no escape char, preserve trailing empty columns)",
+    CLUSTER_VERSION_4_6_1_0)
+
+DEF_COMPAT_CONTROL_FEATURE(UTF8MB4_DEFAULT_COLLATION_COMPAT,
+    "The default collation for utf8mb4 is different in MySQL 5.7 and 8.0",
+    CLUSTER_VERSION_4_6_1_0)
+DEF_COMPAT_CONTROL_FEATURE(DISABLE_CREATE_OR_REPLACE_MLOG,
+    "Whether to disable CREATE OR REPLACE MATERIALIZED VIEW LOG syntax",
+    MOCK_CLUSTER_VERSION_4_4_2_2, CLUSTER_VERSION_4_5_0_0,
+    CLUSTER_VERSION_4_6_1_0)
+DEF_COMPAT_CONTROL_FEATURE(MYSQL_USERNAME_LENGTH_32,
+    "Limit MySQL CREATE USER username to 32 characters, same as MySQL 8.0 behavior",
+    MOCK_CLUSTER_VERSION_4_3_5_6, CLUSTER_VERSION_4_4_0_0,
+    MOCK_CLUSTER_VERSION_4_4_2_2, CLUSTER_VERSION_4_5_0_0,
+    CLUSTER_VERSION_4_6_1_0)
 #endif

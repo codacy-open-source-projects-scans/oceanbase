@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_VECTOR_INDEX_FREEZE_TASK_H_
@@ -54,6 +47,8 @@ private:
   int check_and_freeze(ObPluginVectorIndexAdapterGuard &adpt_guard, const ObLSID &ls_id);
   int do_check_and_freeze(ObPluginVectorIndexAdapterGuard &adpt_guard, const ObLSID &ls_id);
   int check_and_wait_write(const ObVecIdxFrozenDataHandle &frozen_data);
+  int do_tune_index_if_needed(const ObVecIdxFrozenDataHandle &frozen_data,
+                              ObPluginVectorIndexAdaptor *adaptor);
   int refresh_adaptor(ObPluginVectorIndexAdapterGuard &adpt_guard, ObIAllocator &allocator, const ObLSID &ls_id);
 
   DISALLOW_COPY_AND_ASSIGN(ObVecIdxFreezeTask);

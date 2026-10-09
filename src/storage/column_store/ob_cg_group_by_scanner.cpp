@@ -1,12 +1,5 @@
 // Copyright (c) 2023 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// SPDX-License-Identifier: Apache-2.0
 #define USING_LOG_PREFIX STORAGE
 #include "ob_cg_group_by_scanner.h"
 #include "storage/access/ob_vector_store.h"
@@ -81,6 +74,10 @@ int ObCGGroupByScanner::switch_context(
     }
   } else if (OB_FAIL(index_prefetcher_.switch_context(get_type(), *sstable_, iter_param, access_ctx))) {
     LOG_WARN("Fail to switch context for prefetcher", K(ret));
+  }
+  if (OB_SUCC(ret)) {
+    // point to valid group by cell in block row store, can not ignore this assignment
+    group_by_cell_ = (static_cast<ObVectorStore*>(access_ctx.block_row_store_))->get_group_by_cell();
   }
   return ret;
 }

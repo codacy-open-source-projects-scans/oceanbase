@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SHARE_SCHEMA_OB_EXTERNAL_RESOURCE_MGR_H_
@@ -15,6 +8,7 @@
 
 #include "share/schema/ob_schema_struct.h"
 #include "share/schema/ob_external_resource_schema_struct.h"
+#include "share/ob_get_compat_mode.h"
 
 namespace oceanbase
 {
@@ -35,6 +29,8 @@ public:
     INVALID_TYPE = 0,
     JAVA_JAR_TYPE = 1,
     PYTHON_PY_TYPE = 2,
+    JAVA_ORACLE_JAR_TYPE = 3,  // in Oracle, JAR is not a first-class resource and does not show up in ALL_OBJECTS
+    JAVA_ORACLE_JAR_CLASS_TYPE = 4,  // Java class reside in a JAR file
   };
 
 public:
@@ -147,8 +143,10 @@ public:
 
   inline void set_case_mode()
   {
-    case_mode_ = lib::is_mysql_mode() ? common::OB_ORIGIN_AND_INSENSITIVE
-                                      : common::OB_ORIGIN_AND_SENSITIVE;
+    lib::Worker::CompatMode tenant_mode = lib::Worker::CompatMode::MYSQL;
+    ObCompatModeGetter::get_tenant_mode(tenant_id_, tenant_mode);
+    case_mode_ = lib::Worker::CompatMode::ORACLE != tenant_mode ? common::OB_ORIGIN_AND_INSENSITIVE
+                                                                : common::OB_ORIGIN_AND_SENSITIVE;
   }
 
   inline uint64_t get_tenant_id() const { return tenant_id_; }

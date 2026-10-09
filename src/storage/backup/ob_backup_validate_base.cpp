@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 
@@ -349,11 +342,9 @@ int ObBackupValidateTaskContext::add_archive_piece_lsn_range(const ObBackupArchi
 
 int ObBackupValidateTaskContext::get_archive_piece_lsn_range(
     const int64_t group_id,
-    ObBackupArchivePieceLSNRange* &lsn_range,
-    bool &is_last_task)
+    ObBackupArchivePieceLSNRange* &lsn_range)
 {
   int ret = OB_SUCCESS;
-  is_last_task = false;
   common::SpinWLockGuard guard(ctx_lock_);
   if (!inited_) {
     ret = OB_NOT_INIT;
@@ -366,9 +357,6 @@ int ObBackupValidateTaskContext::get_archive_piece_lsn_range(
     LOG_WARN("invalid range id", KR(ret), K(group_id));
   } else {
     lsn_range = &(archive_piece_lsn_ranges_.at(group_id));
-    if (group_id == archive_piece_lsn_ranges_.count() - 1) {
-      is_last_task = true;
-    }
   }
   return ret;
 }

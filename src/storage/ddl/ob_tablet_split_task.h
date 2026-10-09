@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_TABLET_SPLIT_TASK_H
@@ -15,6 +8,7 @@
 
 #include "share/ob_ddl_common.h"
 #include "share/scheduler/ob_tenant_dag_scheduler.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "storage/blocksstable/index_block/ob_index_block_builder.h"
 #include "storage/ddl/ob_tablet_split_sstable_helper.h"
 #include "storage/ob_micro_block_index_iterator.h"

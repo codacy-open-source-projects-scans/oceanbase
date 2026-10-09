@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_VECTOR_UTIL_H
@@ -66,6 +59,7 @@ int build_index(obvsag::VectorIndexPtr index_handler, float* vector_list, int64_
 int build_index(obvsag::VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids,
     int size, char *extra_infos = nullptr);
 
+int tune_index(obvsag::VectorIndexPtr index_handler, int new_index_type);
 int add_index(obvsag::VectorIndexPtr index_handler,float* vector_list, int64_t* ids, int dim, char *extra_info, int size);
 
 int add_index(obvsag::VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size,
@@ -95,6 +89,7 @@ int get_extra_info_by_ids(obvsag::VectorIndexPtr& index_handler,
                           int64_t count,
                           char *extra_infos);
 int get_vid_bound(obvsag::VectorIndexPtr index_handler, int64_t &min_vid, int64_t &max_vid);
+int check_id_exist(obvsag::VectorIndexPtr index_handler, int64_t id, bool &exist);
 uint64_t estimate_memory(obvsag::VectorIndexPtr& index_handler, const uint64_t row_count, const bool is_build);
 int knn_search(obvsag::VectorIndexPtr index_handler,
                float *query_vector,
@@ -111,7 +106,8 @@ int knn_search(obvsag::VectorIndexPtr index_handler,
                float valid_ratio = 1.0,
                void *allocator = nullptr,
                bool need_extra_info = false,
-               float distance_threshold = FLT_MAX);
+               float distance_threshold = FLT_MAX,
+               float timeout_ms = 0.0f);
 
 int knn_search(obvsag::VectorIndexPtr index_handler,
                float *query_vector,
@@ -129,7 +125,8 @@ int knn_search(obvsag::VectorIndexPtr index_handler,
                void *allocator,
                bool need_extra_info,
                void *&iter_filter,
-               bool is_last_search = false);
+               bool is_last_search = false,
+               float timeout_ms = 0.0f);
 
 int knn_search(obvsag::VectorIndexPtr index_handler, uint32_t len, uint32_t *dims, float *vals, int64_t topk,
     const float *&result_dist, const int64_t *&result_ids, const char *&extra_info, int64_t &result_size, float query_prune_ratio, int64_t n_candidate,

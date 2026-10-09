@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVE_OB_TABLEGROUP_RESOLVER_H
@@ -18,6 +11,7 @@
 #include "share/ob_rpc_struct.h"
 #include "sql/resolver/ob_stmt.h"
 #include "share/config/ob_server_config.h"
+#include "share/ob_share_util.h"
 
 namespace oceanbase
 {
@@ -219,18 +213,68 @@ int ObTableGroupResolver::resolve_tablegroup_option(T *stmt, ParseNode *node)
             const char *sharding_str = option_node->children_[0]->str_value_;
             common::ObString tablegroup_sharding;
             tablegroup_sharding.assign_ptr(sharding_str, static_cast<int32_t>(sharding_length));
-            if (tablegroup_sharding != OB_PARTITION_SHARDING_NONE && tablegroup_sharding != OB_PARTITION_SHARDING_PARTITION
-                && tablegroup_sharding != OB_PARTITION_SHARDING_ADAPTIVE) {
+            if (tablegroup_sharding.case_compare(OB_PARTITION_SHARDING_NONE) != 0
+                && tablegroup_sharding.case_compare(OB_PARTITION_SHARDING_PARTITION) != 0
+                && tablegroup_sharding.case_compare(OB_PARTITION_SHARDING_ADAPTIVE) != 0
+                && tablegroup_sharding.case_compare(OB_PARTITION_SHARDING_SUBPARTITION) != 0) {
               ret = OB_INVALID_ARGUMENT;
               SQL_RESV_LOG(WARN, "invalid tablegroup sharding attribute", K(ret),
                          "sharding", tablegroup_sharding);
               LOG_USER_ERROR(OB_INVALID_ARGUMENT, "sharding");
             } else if (OB_FAIL(stmt->set_tablegroup_sharding(tablegroup_sharding))) {
               SQL_LOG(WARN, "set_tablegroup_sharding", K(ret));
+            } else if (0 == tablegroup_sharding.case_compare(OB_PARTITION_SHARDING_SUBPARTITION)) {
+              if (OB_ISNULL(session_info_)) {
+                ret = OB_ERR_UNEXPECTED;
+                SQL_LOG(WARN, "session_info_ is null", KR(ret));
+              } else if (OB_FAIL(ObShareUtil::check_compat_version_for_subpartition_sharding(
+                      session_info_->get_effective_tenant_id()))) {
+                SQL_LOG(WARN, "fail to check compat version for subpartition sharding", KR(ret));
+              }
             }
           }
           if (OB_SUCC(ret) && OB_FAIL(alter_option_bitset_.add_member(obrpc::ObAlterTablegroupArg::SHARDING))) {
             SQL_LOG(WARN, "fail to add member", K(ret));
+          }
+          break;
+        }
+        case T_TABLEGROUP_SCOPE: {
+          uint64_t data_version = OB_INVALID_VERSION;
+          if (OB_ISNULL(option_node->children_) || option_node->num_child_ != 1) {
+            ret = OB_INVALID_ARGUMENT;
+            SQL_RESV_LOG(WARN, "invalid tablegroup scope attribute", KR(ret),
+                         "num_child", option_node->num_child_);
+          } else if (OB_ISNULL(option_node->children_[0])) {
+            ret = OB_ERR_UNEXPECTED;
+            SQL_RESV_LOG(WARN, "option_node child is null", KR(ret));
+          } else if (OB_ISNULL(session_info_)) {
+            ret = OB_ERR_UNEXPECTED;
+            SQL_RESV_LOG(WARN, "session_info_ is null", K(ret));
+          } else if (OB_FAIL(GET_MIN_DATA_VERSION(session_info_->get_effective_tenant_id(), data_version))) {
+            LOG_WARN("get min data_version failed", K(ret));
+          } else if (data_version < MOCK_DATA_VERSION_4_4_2_1 ||
+              (data_version >= DATA_VERSION_4_5_0_0 && data_version < DATA_VERSION_4_6_1_0)) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_WARN("can not use scope attribute for tablegroup before 4.6.1", KR(ret));
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "use scope attribute for tablegroup before 4.6.1 is");
+          } else {
+            int64_t scope_length = option_node->children_[0]->str_len_;
+            const char *scope_str = option_node->children_[0]->str_value_;
+            common::ObString tablegroup_scope;
+            tablegroup_scope.assign_ptr(scope_str, static_cast<int32_t>(scope_length));
+            // validate scope: must be one of SERVER/ZONE/CLUSTER
+            if (tablegroup_scope.case_compare(OB_TABLEGROUP_SCOPE_SERVER) != 0
+                && tablegroup_scope.case_compare(OB_TABLEGROUP_SCOPE_ZONE) != 0
+                && tablegroup_scope.case_compare(OB_TABLEGROUP_SCOPE_CLUSTER) != 0) {
+              ret = OB_INVALID_ARGUMENT;
+              SQL_RESV_LOG(WARN, "invalid tablegroup scope attribute", KR(ret), K(tablegroup_scope));
+              LOG_USER_ERROR(OB_INVALID_ARGUMENT, "scope attribute");
+            } else if (OB_FAIL(stmt->set_tablegroup_scope(tablegroup_scope))) {
+              SQL_LOG(WARN, "set_tablegroup_scope", KR(ret));
+            }
+          }
+          if (OB_SUCC(ret) && OB_FAIL(alter_option_bitset_.add_member(obrpc::ObAlterTablegroupArg::SCOPE))) {
+            SQL_LOG(WARN, "fail to add member", KR(ret));
           }
           break;
         }

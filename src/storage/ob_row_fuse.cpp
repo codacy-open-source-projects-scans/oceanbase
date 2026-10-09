@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include "storage/ob_row_fuse.h"
 
@@ -112,6 +105,7 @@ OB_INLINE static int simple_fuse_row(
     final_result = false;
     bool first_val = (0 == result.row_val_.count_ || result.flag_.is_not_exist());
     int64_t column_cnt = 0;
+    result.fuse_merge_engine_type(former.merge_engine_type_);
 
     if (first_val) {
       nop_pos.reset();
@@ -200,6 +194,7 @@ int ObRowFuse::fuse_row(const blocksstable::ObDatumRow &former,
     STORAGE_LOG(WARN, "Invalid arguments", K(ret), K(former), K(result), K(nop_pos.count()), K(nop_pos.capacity()));
   } else if (OB_FAIL(result.fuse_delete_insert(former))) {
     STORAGE_LOG(WARN, "Fail to fuse delete_insert info", K(ret), K(former), K(result));
+  } else if (OB_FALSE_IT(result.fuse_merge_engine_type(former.merge_engine_type_))) {
   } else if (result.row_flag_.is_delete() || former.row_flag_.is_not_exist()) {
     // do nothing
   } else {
@@ -216,6 +211,7 @@ int ObRowFuse::fuse_row(const blocksstable::ObDatumRow &former,
       nop_pos.reset();
       result.row_flag_ = former.row_flag_;
       result.fast_filter_skipped_ = former.fast_filter_skipped_;
+      result.major_merge_flag_ = former.major_merge_flag_;
       column_cnt = former.count_;
     } else {
       column_cnt = nop_pos.count_;

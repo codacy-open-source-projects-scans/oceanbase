@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OBJECT_STORAGE_OB_ZONE_STORAGE_TABLE_OPERATION_H_
@@ -118,6 +111,8 @@ public:
   static int get_table_total_data_size(const uint64_t tenant_id, const common::ObAddr &server, int64_t &total_size);
   static int get_tmp_file_data_size(const uint64_t tenant_id, const common::ObAddr &server, int64_t &total_size);
   static int get_ls_leader_addr(const uint64_t tenant_id, const int64_t ls_id, common::ObAddr &server);
+  static int get_ls_replica_addrs(
+      const uint64_t tenant_id, const int64_t ls_id, common::ObIArray<common::ObAddr> &servers);
 private:
   static int extract_storage_table_info(const sqlclient::ObMySQLResult &result,
       share::ObZoneStorageTableInfo &storage_table_info);

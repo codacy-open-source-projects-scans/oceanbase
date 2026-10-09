@@ -1,6 +1,8 @@
 ob_set_subtarget(ob_server ALONE
   ob_server.cpp
+  ob_server_empty_checker.cpp
   ob_service.cpp
+  ob_srv_mem_info.cpp
 )
 
 ob_set_subtarget(ob_server common
@@ -466,6 +468,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_id_service.cpp
   virtual_table/ob_all_virtual_io_stat.cpp
   virtual_table/ob_all_virtual_kvcache_store_memblock.cpp
+  virtual_table/ob_all_virtual_keywords.cpp
   virtual_table/ob_all_virtual_load_data_stat.cpp
   virtual_table/ob_all_virtual_lock_wait_stat.cpp
   virtual_table/ob_all_virtual_long_ops_status.cpp
@@ -587,6 +590,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_information_schema_enable_roles_table.cpp
   virtual_table/ob_iterate_private_virtual_table.cpp
   virtual_table/ob_iterate_virtual_table.cpp
+  virtual_table/ob_all_virtual_sys_variable_history.cpp
   virtual_table/ob_all_virtual_external_location_list_file.cpp
   virtual_table/ob_mem_leak_checker_info.cpp
   virtual_table/ob_mysql_db_table.cpp
@@ -639,6 +643,7 @@ ob_set_subtarget(ob_server virtual_table
   virtual_table/ob_all_virtual_sql_plan.cpp
   virtual_table/ob_all_virtual_opt_stat_gather_monitor.cpp
   virtual_table/ob_all_virtual_thread.cpp
+  virtual_table/ob_all_virtual_tenant_worker_group.cpp
   virtual_table/ob_all_virtual_cgroup_config.cpp
   virtual_table/ob_all_virtual_shared_storage_quota.cpp
   virtual_table/ob_virtual_flt_config.cpp

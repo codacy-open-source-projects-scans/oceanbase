@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "test_scan_basic.h"
@@ -250,7 +243,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_mixed_sst_scan)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -442,7 +435,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_out_of_version_inc_major)
   OK(res_iter.from(result1));
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -658,7 +651,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_multi_inc_major_scan)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -795,7 +788,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_di_base)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -833,8 +826,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_di_base)
     total_count += count;
   }
   ASSERT_EQ(3, total_count);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
   // get residual rows
   while (OB_SUCC(ret)) {
@@ -967,7 +960,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_retry_number_changed
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -996,10 +989,10 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_retry_number_changed
   table_store_iter.add_table(handle4.get_table());
   table_store_iter.add_table(handle3.get_table());
   mock_tablet_table_store(table_store_iter);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
   ob_usleep(2 * 1000 * 1000); // sleep 2s
-  ASSERT_EQ(OB_SNAPSHOT_DISCARDED, refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  ASSERT_EQ(OB_SNAPSHOT_DISCARDED, refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
   ASSERT_EQ(1, total_count);
 
   handle1.reset();
@@ -1103,7 +1096,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_retry_inc_major_chan
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -1130,10 +1123,10 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_retry_inc_major_chan
   table_store_iter.add_table(handle1.get_table());
   table_store_iter.add_table(handle3.get_table());
   mock_tablet_table_store(table_store_iter);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
   ob_usleep(2 * 1000 * 1000); // sleep 2s
-  ASSERT_EQ(OB_SNAPSHOT_DISCARDED, refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  ASSERT_EQ(OB_SNAPSHOT_DISCARDED, refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
   ASSERT_EQ(1, total_count);
 
   handle1.reset();
@@ -1281,7 +1274,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_single_row)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -1306,8 +1299,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_scan_with_refresh_single_row)
     total_count += count;
   }
   ASSERT_EQ(1, total_count);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
   // get residual rows
   while (OB_SUCC(ret)) {
@@ -1441,7 +1434,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_multi_range_scan)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleMultiScanMerge multi_scan_merge;
-  OK(multi_scan_merge.init(access_param_, context_, get_table_param_));
+  OK(multi_scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(multi_scan_merge);
   OK(multi_scan_merge.open(ranges));
   multi_scan_merge.disable_padding();
@@ -1495,8 +1488,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_multi_range_scan)
     STORAGE_LOG(INFO, "get next rows", K(count), K(total_count));
   }
   ASSERT_EQ(4, total_count);
-  OK(refresh_table(multi_scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(multi_scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
   // get residual rows
   while (OB_SUCC(ret)) {
@@ -1623,7 +1616,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_di_base_sstable_row_scanner_with_iter_
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -1781,7 +1774,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_no_minor_sstable_scan)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -1793,8 +1786,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_no_minor_sstable_scan)
   ObMockIterator res_iter;
   res_iter.reset();
   ASSERT_EQ(OB_SUCCESS, res_iter.from(result1));
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
   while (OB_SUCC(ret)) {
     ret = scan_merge.get_next_rows(count, SQL_BATCH_SIZE);
     if (ret != OB_SUCCESS && ret != OB_ITER_END) {
@@ -1947,7 +1940,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_no_minor_sstable_multi_scan)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleMultiScanMerge multi_scan_merge;
-  OK(multi_scan_merge.init(access_param_, context_, get_table_param_));
+  OK(multi_scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(multi_scan_merge);
   OK(multi_scan_merge.open(ranges));
   multi_scan_merge.disable_padding();
@@ -1959,8 +1952,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_no_minor_sstable_multi_scan)
   ObMockIterator res_iter;
   res_iter.reset();
   ASSERT_EQ(OB_SUCCESS, res_iter.from(result1));
-  OK(refresh_table(multi_scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(multi_scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
   while (OB_SUCC(ret)) {
     ret = multi_scan_merge.get_next_rows(count, SQL_BATCH_SIZE);
     if (ret != OB_SUCCESS && ret != OB_ITER_END) {
@@ -2083,7 +2076,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_double_refresh_table)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -2121,8 +2114,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_double_refresh_table)
     total_count += count;
   }
   ASSERT_EQ(3, total_count);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
   // get two di base rows
   OK(scan_merge.get_next_rows(count, 2));
@@ -2162,8 +2155,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_double_refresh_table)
     total_count += count;
   }
   ASSERT_EQ(8, total_count);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
 
   // get residual rows
@@ -2289,7 +2282,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_switch_table)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -2316,7 +2309,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_switch_table)
   scan_merge.unprojected_row_.row_flag_.reset();
   scan_merge.unprojected_row_.trans_info_ = nullptr;
   scan_merge.out_project_cols_.reuse();
-  OK(scan_merge.switch_table(access_param_, context_, get_table_param_));
+  OK(scan_merge.switch_table(access_param_, context_, tablet_read_tables_));
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
   scan_merge.disable_fill_virtual_column();
@@ -2444,7 +2437,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_switch_param)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -2463,7 +2456,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_switch_param)
 
   // switch param
   scan_merge.reuse();
-  OK(scan_merge.switch_param(access_param_, context_, get_table_param_));
+  OK(scan_merge.switch_param(access_param_, context_, tablet_read_tables_));
   OK(scan_merge.open(range));
 
   // get residual rows
@@ -2723,7 +2716,7 @@ int ret = OB_SUCCESS;
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -2808,7 +2801,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_apply_filter_empty)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -2963,7 +2956,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_multi_block)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -3122,7 +3115,7 @@ TEST_P(TestIncMajorDeleteInsertScan, test_refresh_table_intermediate)
 
   mock_tablet_table_store(table_store_iter);
   ObMultipleScanMerge scan_merge;
-  OK(scan_merge.init(access_param_, context_, get_table_param_));
+  OK(scan_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(scan_merge);
   OK(scan_merge.open(range));
   scan_merge.disable_padding();
@@ -3186,8 +3179,8 @@ TEST_P(TestIncMajorDeleteInsertScan, test_refresh_table_intermediate)
     total_count += count;
   }
   ASSERT_EQ(5, total_count);
-  OK(refresh_table(scan_merge, get_table_param_.tablet_iter_.table_store_iter_));
-  STORAGE_LOG(INFO, "refresh tablet iter", K(get_table_param_.tablet_iter_.table_store_iter_));
+  OK(refresh_table(scan_merge, tablet_read_tables_.tablet_iter_.table_store_iter_));
+  STORAGE_LOG(INFO, "refresh tablet iter", K(tablet_read_tables_.tablet_iter_.table_store_iter_));
 
   // get residual rows
   while (OB_SUCC(ret)) {

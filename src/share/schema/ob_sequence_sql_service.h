@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SCHEMA_OB_SEQUENCE_SQL_SERVICE_H_
@@ -68,6 +61,11 @@ public:
                               common::ObISQLClient &sql_client,
                               ObIAllocator &allocator,
                               common::number::ObNumber &next_value);
+  int sync_sequence_value(const uint64_t tenant_id,
+                          const uint64_t src_sequence_id,
+                          const uint64_t dest_sequence_id,
+                          const share::ObSequenceOption &option,
+                          common::ObMySQLTransaction &trans);
   int send_rpc_clean_sequence_cache(uint64_t tenant_id, uint64_t sequence_id,
                                     const uint64_t timeout, const common::ObAddr &server,
                                     const obrpc::ObSrvRpcProxy &srv_rpc_proxy,

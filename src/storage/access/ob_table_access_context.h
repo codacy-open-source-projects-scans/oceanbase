@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_TABLE_ACCESS_CONTEXT_H
@@ -70,7 +63,6 @@ struct ObTableScanStoreStat
     MEMSET(this, 0, sizeof(ObTableScanStoreStat));
     in_bf_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
     in_row_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
-    in_fuse_row_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
   }
   // for rescan query, keep row cache and bf releated stats unchanged
   OB_INLINE void reuse()
@@ -83,7 +75,6 @@ struct ObTableScanStoreStat
     rowkey_prefix_ = 0;
     in_bf_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
     in_row_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
-    in_fuse_row_cache_threshold_ = common::DEFAULT_MAX_MULTI_GET_CACHE_AWARE_ROW_NUM;
     out_row_cnt_ = 0;
     major_sstable_read_row_cnt_ = 0;
     minor_sstable_read_row_cnt_ = 0;
@@ -95,16 +86,15 @@ struct ObTableScanStoreStat
 public:
   OB_INLINE bool enable_get_row_cache() const
   {
-    return row_cache_miss_cnt_ < in_row_cache_threshold_
-           || row_cache_hit_cnt_ > row_cache_miss_cnt_ / 2;
+    return row_cache_miss_cnt_ < in_row_cache_threshold_ || row_cache_hit_cnt_ > row_cache_miss_cnt_ / 2;
   }
   OB_INLINE bool enable_put_row_cache() const
   {
     return row_cache_put_cnt_ < in_row_cache_threshold_;
   }
-  OB_INLINE bool enable_put_fuse_row_cache() const
+  OB_INLINE bool enable_put_fuse_row_cache(const int64_t threshold) const
   {
-    return fuse_row_cache_put_cnt_ < in_fuse_row_cache_threshold_;
+    return fuse_row_cache_put_cnt_ < threshold;
   }
   OB_INLINE bool enable_bf_cache() const
   {
@@ -117,7 +107,7 @@ public:
                K_(fuse_row_cache_hit_cnt), K_(fuse_row_cache_miss_cnt), K_(fuse_row_cache_put_cnt),
                K_(micro_access_cnt), K_(pushdown_micro_access_cnt), K_(empty_read_cnt),
                K_(rowkey_prefix),
-               K_(in_bf_cache_threshold), K_(in_fuse_row_cache_threshold), K_(in_row_cache_threshold),
+               K_(in_bf_cache_threshold), K_(in_row_cache_threshold),
                K_(major_sstable_read_row_cnt), K_(minor_sstable_read_row_cnt), K_(memstore_read_row_cnt),
                K_(blockscan_row_cnt), K_(storage_filtered_row_cnt), K_(skip_index_skip_block_cnt));
   int64_t row_cache_hit_cnt_;
@@ -135,7 +125,6 @@ public:
   int64_t empty_read_cnt_;
   int64_t rowkey_prefix_;
   int64_t in_bf_cache_threshold_;
-  int64_t in_fuse_row_cache_threshold_;
   int64_t in_row_cache_threshold_;
   int64_t out_row_cnt_;
   int64_t major_sstable_read_row_cnt_;
@@ -171,10 +160,10 @@ struct ObTableAccessContext
     return trans_version_range_.snapshot_version_ < snapshot_version;
   }
   inline bool enable_put_fuse_row_cache(const bool is_mview_table_scan = false) const {
-    return query_flag_.is_use_fuse_row_cache() && table_store_stat_.enable_put_fuse_row_cache() && (!need_scn_ || is_mview_table_scan) && !tablet_id_.is_ls_inner_tablet() && !has_mds_filter();
+    return query_flag_.is_use_fuse_row_cache() && table_store_stat_.enable_put_fuse_row_cache(cache_aware_row_num_) && (!need_scn_ || is_mview_table_scan) && !tablet_id_.is_ls_inner_tablet() && !has_mds_filter();
   }
   inline int64_t get_fuse_row_cache_put_count_threshold() const {
-    return table_store_stat_.in_fuse_row_cache_threshold_;
+    return cache_aware_row_num_;
   }
   inline bool is_limit_end() const {
     return (nullptr != limit_param_ && limit_param_->limit_ >= 0 && (out_cnt_ - limit_param_->offset_ >= limit_param_->limit_));
@@ -201,8 +190,7 @@ struct ObTableAccessContext
   // used for query
   int init(ObTableScanParam &scan_param,
            ObStoreCtx &ctx,
-           const common::ObVersionRange &trans_version_range,
-           CachedIteratorNode *cached_iter_node);
+           const common::ObVersionRange &trans_version_range);
   // used for merge and exist
   int init(const common::ObQueryFlag &query_flag,
            ObStoreCtx &ctx,
@@ -297,7 +285,8 @@ struct ObTableAccessContext
     KP_(mds_collector),
     KP_(row_scan_cnt),
     KP_(skip_scan_factory),
-    K_(is_inc_major_query));
+    K_(is_inc_major_query),
+    K_(ttl_major_for_partial_update_upper_snapshot));
 private:
   static const int64_t DEFAULT_COLUMN_SCALE_INFO_SIZE = 8;
   static const int64_t USE_BLOCK_CACHE_LIMIT = 128L << 10;  // 128K
@@ -352,10 +341,8 @@ public:
   lib::MemoryContext scan_mem_; // scan/rescan level memory entity, only for query
   common::ObTableScanStatistic *table_scan_stat_;
   ObTableScanStoreStat table_store_stat_;
+  int64_t cache_aware_row_num_;
   int64_t out_cnt_;
-  int64_t in_bf_cache_threshold_;
-  int64_t in_fuse_row_cache_threshold_;
-  int64_t in_row_cache_threshold_;
   common::ObVersionRange trans_version_range_;
   const common::ObSEArray<int64_t, 4, common::ModulePageAllocator> *range_array_pos_;
   share::SCN merge_scn_;
@@ -375,6 +362,8 @@ public:
   uint64_t *row_scan_cnt_;
   ObIndexSkipScanFactory *skip_scan_factory_;
   bool is_inc_major_query_;
+  // 0: not ttl partial_update major path; > 0: upper bound for trans_version when checking new committed rows
+  int64_t ttl_major_for_partial_update_upper_snapshot_;
 };
 
 } // namespace storage

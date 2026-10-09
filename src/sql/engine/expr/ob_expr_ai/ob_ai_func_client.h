@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_AI_FUNC_CLIENT_H_
@@ -21,6 +14,22 @@ namespace oceanbase
 {
 namespace common
 {
+
+// Result structure for individual request in batch
+struct ObAIBatchItemResult
+{
+  int64_t http_code_;           // HTTP status code, 0 means network failure
+  ObJsonObject *response_;      // Response JSON (valid when success)
+  CURLcode curl_code_;          // curl error code (valid when network failure)
+
+  ObAIBatchItemResult()
+      : http_code_(0), response_(nullptr), curl_code_(CURLE_OK) {}
+
+  bool is_success() const { return http_code_ >= 200 && http_code_ < 300 && OB_NOT_NULL(response_); }
+
+  TO_STRING_KV(K_(http_code), KP_(response), K_(curl_code));
+};
+
 class ObAIFuncClient: public ObAIFuncHandle
 {
 public:
@@ -30,6 +39,9 @@ public:
   void clean_up();
   void reset();
   void set_timeout_sec(int64_t timeout_sec) { timeout_sec_ = timeout_sec; }
+  // Check if HTTP status code is retryable (network failure, rate limited, or server error)
+  static bool is_retryable_status_code(int64_t http_code);
+  static bool is_retryable_curl_code(int curl_code);
   // ai function interface
   virtual int send_post(common::ObIAllocator &allocator,
                         const ObString &url,
@@ -41,17 +53,25 @@ public:
                               ObArray<ObString> &headers,
                               ObArray<ObJsonObject *> &data_array,
                               ObArray<ObJsonObject *> &responses) override;
+  // batch interface with individual result (for adaptive concurrency)
+  int send_post_batch_with_result(common::ObIAllocator &allocator,
+                                  const ObString &url,
+                                  ObArray<ObString> &headers,
+                                  ObArray<ObJsonObject *> &data_array,
+                                  ObArray<ObAIBatchItemResult> &results);
   // embedding service interface
   int send_post_batch_no_wait(ObArray<ObJsonObject *> &data_array);
   bool check_batch_finished();
   int get_batch_result(ObArray<ObJsonObject *> &responses);
+  int get_batch_result(ObArray<ObAIBatchItemResult> &results);
 private:
   int error_handle(CURLcode res);
   int send_post(ObJsonObject *data, ObJsonObject *&response);
   int send_post_batch(ObArray<ObJsonObject *> &data_array, ObArray<ObJsonObject *> &responses);
+  // Core batch send implementation, returns individual results
+  int send_post_batch_internal(ObArray<ObJsonObject *> &data_array, ObArray<ObAIBatchItemResult> &results);
   int init_easy_handle(CURL *curl, ObJsonObject *data, ObStringBuffer &response_buf);
   static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp);
-  bool is_retryable_status_code(int64_t http_code);
   bool is_timeout();
 private:
   static const int64_t CURL_MAX_TIMEOUT_SEC;

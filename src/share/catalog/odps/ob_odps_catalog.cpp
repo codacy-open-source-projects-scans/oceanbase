@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SHARE
 #include "share/catalog/odps/ob_odps_catalog.h"
@@ -18,7 +11,7 @@
 #include "sql/resolver/dml/ob_dml_resolver.h"
 #include "sql/table_format/odps/ob_odps_table_metadata.h"
 #include "share/external_table/ob_external_table_utils.h"
-#include "share/stat/ob_opt_external_table_stat_builder.h"
+#include "share/stat/catalog/ob_opt_catalog_table_stat_builder.h"
 #ifdef OB_BUILD_CPP_ODPS
 #include <odps/odps_table.h>
 #endif
@@ -386,10 +379,12 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
                                           const ObILakeTableMetadata *table_metadata,
                                           const ObIArray<ObString> &partition_values,
                                           const ObIArray<ObString> &column_names,
-                                          ObOptExternalTableStat *&external_table_stat,
-                                          ObIArray<ObOptExternalColumnStat *> &external_table_column_stats)
+                                          ObIArray<ObOptCatalogTableStat *> &catalog_table_stats,
+                                          ObIArray<ObOptCatalogColumnStat *> &catalog_table_column_stats)
 {
   int ret = OB_SUCCESS;
+  catalog_table_stats.reset();
+  catalog_table_column_stats.reset();
 
   // do some argument check
   if (OB_ISNULL(table_metadata)
@@ -403,8 +398,7 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
   }
   int64_t total_partition_count = 0;
   if (OB_SUCC(ret)) {
-    external_table_stat = nullptr;
-    external_table_column_stats.reset();
+    ObOptCatalogTableStat *catalog_table_stat = nullptr;
     const odps::ObODPSTableMetadata* odps_table_metadata = static_cast<const odps::ObODPSTableMetadata*>(table_metadata);
     ObString format_str;
     const ObTableSchema *table_schema = NULL;
@@ -441,7 +435,7 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("table schema is null", K(ret));
     }
-    if (OB_FAIL(ret)){
+    if (OB_FAIL(ret)) {
     } else if (external_format.odps_format_.api_mode_ == sql::ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
       // 现在有所有分区 和 过滤获得分区
       omt::ObTenantConfigGuard tenant_config(TENANT_CONF(table_metadata->tenant_id_));
@@ -548,10 +542,11 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
     } else { // Storage api mode 谓词过滤不加入
       if (GCONF._use_odps_jni_connector) {
         // use split by row
-        ObString part_str = ObString::make_empty_string();
-        if (partition_values.count() == 1) {
+        #if defined(OB_BUILD_JNI_ODPS)
+          ObString part_str = ObString::make_empty_string();
           ObSqlString part_spec_str;
           int64_t part_count = partition_values.count();
+          int64_t part_sum_row_count = 0;
           for (int64_t i = 0; OB_SUCC(ret) && i < part_count; ++i) {
             const ObString &external_info = partition_values.at(i);
             if (0 == external_info.compare(ObExternalTableUtils::dummy_file_name())) {
@@ -566,14 +561,18 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
           } else if (OB_FAIL(ob_write_string(allocator, part_spec_str.string(), part_str, true))) {
             LOG_WARN("failed to write string", K(ret), K(part_spec_str));
           }
-          OX(total_partition_count = 1);
-        } else {
-          OX(total_partition_count = table_schema->get_partition_num());
-        }
 
-        OZ(ObOdpsPartitionJNIDownloaderMgr::fetch_storage_row_count(
-            THIS_WORKER.get_session(), part_str, format_str, row_count));
-        LOG_INFO("fetch storage row count", K(row_count));
+          OZ(ObOdpsPartitionJNIDownloaderMgr::fetch_storage_row_count(
+              THIS_WORKER.get_session(), part_str, format_str, part_sum_row_count));
+          LOG_INFO("fetch storage row count", K(part_sum_row_count));
+          if (OB_SUCC(ret)) {
+            OX(row_count = part_sum_row_count / part_count * table_schema->get_partition_num());
+            OX(total_partition_count = table_schema->get_partition_num());
+          }
+        #else
+          ret = OB_NOT_SUPPORTED;
+          LOG_WARN("not support jni odps", K(ret));
+        #endif
       } else {
         ret = OB_NOT_SUPPORTED;
         LOG_WARN("not support row api", K(ret));
@@ -582,25 +581,40 @@ int ObOdpsCatalog::fetch_table_statistics(ObIAllocator &allocator,
 
     if (OB_SUCC(ret)) {
       int64_t snapshot_timestamp_ms = static_cast<const odps::ObODPSTableMetadata*>(table_metadata)->lake_table_metadata_version_ * 1000;
-      ObOptExternalTableStatBuilder stat_builder;
+      ObOptCatalogTableStatBuilder stat_builder;
       if (OB_FAIL(stat_builder.set_basic_info(table_metadata->tenant_id_,
                                               table_metadata->catalog_id_,
                                               table_metadata->namespace_name_,
                                               table_metadata->table_name_,
                                               ObString("")))) {
         LOG_WARN("failed to set basic info for table stat builder", K(ret));
-      }  else if (OB_FAIL(stat_builder.set_stat_info(
-            row_count, 1, total_data_size,
-            snapshot_timestamp_ms))) { // last_analyzed
+      } else if (OB_FAIL(stat_builder.set_stat_info(table_metadata->lake_table_metadata_version_,
+                                                    row_count,
+                                                    1,
+                                                    total_data_size,
+                                                    snapshot_timestamp_ms))) { // last_analyzed
         LOG_WARN("failed to set stat info for table stat builder", K(ret));
       } else if (OB_FALSE_IT(stat_builder.add_partition_num(total_partition_count))) {
         // 如果是多个分区 odps 通过选中分区进行缩放
         // do nothing
-      } else if (OB_FAIL(stat_builder.build(allocator, external_table_stat))) {
-        LOG_WARN("failed to build external table stat", K(ret));
+      } else if (OB_FAIL(stat_builder.build(allocator, catalog_table_stat))) {
+        LOG_WARN("failed to build catalog table stat", K(ret));
+      } else if (OB_NOT_NULL(catalog_table_stat)
+                 && OB_FAIL(catalog_table_stats.push_back(catalog_table_stat))) {
+        LOG_WARN("failed to push back odps catalog table stat", K(ret));
       }
     }
   }
+  return ret;
+}
+
+int ObOdpsCatalog::fetch_partitions(ObIAllocator &allocator,
+                                    const ObILakeTableMetadata *table_metadata,
+                                    const ObIArray<ObString> &part_col_names,
+                                    ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos)
+{
+  int ret = OB_NOT_SUPPORTED;
+  LOG_WARN("not support fetch partitions", K(ret));
   return ret;
 }
 

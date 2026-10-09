@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OCEANBASE_SQL_REWRITE_RULE_H
@@ -141,6 +134,7 @@ struct ObTransformerCtx
     materialize_blacklist_(),
     disable_gtt_session_isolation_(false),
     force_subquery_unnest_(false),
+    force_equal_semi_to_inner_(false),
     nested_loop_join_enabled_(true)
   { }
   virtual ~ObTransformerCtx() {}
@@ -222,6 +216,8 @@ struct ObTransformerCtx
   bool disable_gtt_session_isolation_; //debug GTT, do not add session filters in transformer preprocessing for all GTTs
   /* used to control subquery unnest behavior */
   bool force_subquery_unnest_;
+  /* used to control force equal semi to inner behavior */
+  bool force_equal_semi_to_inner_;
   /* used for NLJ opportunity check */
   bool nested_loop_join_enabled_;
 };
@@ -248,7 +244,7 @@ enum TRANSFORM_TYPE {
   FASTMINMAX                    = 10, // select min/max -> select order by limit 1
   ELIMINATE_OJ                  = 11, // 外连接消除
   VIEW_MERGE                    = 12, // 视图合并
-  WHERE_SQ_PULL_UP              = 13, // where子查询 -> semi join
+  SUBQUERY_UNNEST               = 13, // 子查询提升
   QUERY_PUSH_DOWN               = 14, // push down limit
   AGGR_SUBQUERY                 = 15, // JA类型子查询改写
   SIMPLIFY_SET                  = 16, // set相关改写
@@ -380,7 +376,7 @@ public:
       (1L << FASTMINMAX) |
       (1L << ELIMINATE_OJ) |
       (1L << VIEW_MERGE) |
-      (1L << WHERE_SQ_PULL_UP) |
+      (1L << SUBQUERY_UNNEST) |
       (1L << QUERY_PUSH_DOWN) |
       (1L << SIMPLIFY_SET) |
       (1L << PROJECTION_PRUNING) |

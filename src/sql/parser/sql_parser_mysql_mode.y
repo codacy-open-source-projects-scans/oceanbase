@@ -1,13 +1,6 @@
 /**
- * Copyright (c) 2021 OceanBase 
- * OceanBase CE is licensed under Mulan PubL v2. 
- * You can use this software according to the terms and conditions of the Mulan PubL v2. 
- * You may obtain a copy of Mulan PubL v2 at: 
- *          http://license.coscl.org.cn/MulanPubL-2.0 
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, 
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, 
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE. 
- * See the Mulan PubL v2 for more details.
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 %define api.pure
@@ -181,7 +174,7 @@ FROZEN_VERSION TOPK QUERY_TIMEOUT READ_CONSISTENCY LOG_LEVEL USE_PLAN_CACHE
 TRACE_LOG LOAD_BATCH_SIZE TRANS_PARAM OPT_PARAM OB_DDL_SCHEMA_VERSION FORCE_REFRESH_LOCATION_CACHE
 ENABLE_PARALLEL_DAS_DML DISABLE_PARALLEL_DAS_DML DISABLE_PARALLEL_DML ENABLE_PARALLEL_DML MONITOR NO_PARALLEL CURSOR_SHARING_EXACT
 MAX_CONCURRENT DOP TRACING NO_QUERY_TRANSFORMATION NO_COST_BASED_QUERY_TRANSFORMATION BLOCKING RESOURCE_GROUP
-PX_NODE_POLICY PX_NODE_ADDRS PX_NODE_COUNT DML_PARALLEL DISABLE_OP_RICH_FORMAT DISABLE_TRIGGER TABLE_LOCK_MODE
+PX_NODE_POLICY PX_NODE_ADDRS PX_NODE_COUNT DML_PARALLEL DISABLE_OP_RICH_FORMAT DISABLE_TRIGGER TABLE_LOCK_MODE MAX_EXECUTION_TIME
 // transform hint
 NO_REWRITE MERGE_HINT NO_MERGE_HINT NO_EXPAND USE_CONCAT NO_UNNEST
 PLACE_GROUP_BY NO_PLACE_GROUP_BY INLINE MATERIALIZE SEMI_TO_INNER NO_SEMI_TO_INNER
@@ -231,6 +224,7 @@ _BINARY _UTF8 _UTF8MB4 _UTF8MB3 _GBK _UTF16 _GB18030 _GB18030_2022 _LATIN1 _GB23
 SELECT_HINT_BEGIN UPDATE_HINT_BEGIN DELETE_HINT_BEGIN INSERT_HINT_BEGIN REPLACE_HINT_BEGIN MERGE_HINT_BEGIN HINT_HINT_BEGIN HINT_END
 LOAD_DATA_HINT_BEGIN CREATE_HINT_BEGIN ALTER_HINT_BEGIN
 END_P SET_VAR DELIMITER
+GLOBAL_ALIAS SESSION_ALIAS WITH_COLUMN_GROUP
 
 %token <reserved_keyword>
 /*
@@ -283,9 +277,9 @@ END_P SET_VAR DELIMITER
 %token <non_reserved_keyword>
 //-----------------------------non_reserved keyword begin-------------------------------------------
         ACCESS ACCESS_INFO ACCESSID ACCESSKEY ACCESSTYPE ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI AI_SPLIT_DOCUMENT ALGORITHM ALL_META ALL_USER ALWAYS ALLOW ANALYSE ANY
-        APPEND_ONLY APPID APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
+        APPEND_ONLY APPID APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE APPLICATION_PASSWORD_ADMIN
         ARBITRARY ARBITRATION ARG_MAX ARG_MIN ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTH_TYPE AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_MODE AUTO_INCREMENT_CACHE_SIZE
-        AVG AVG_ROW_LENGTH ACTIVATE AVAILABILITY ARCHIVELOG ARCHIVELOG_PIECE ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY
+        AVG AVG_ROW_LENGTH AVGWEIGHTED ACTIVATE AVAILABILITY ARCHIVELOG ARCHIVELOG_PIECE ASYNCHRONOUS AUDIT ADMIN AUTO_REFRESH API_MODE APPROX APPROXIMATE ARRAY_AGG ARRAY_FILTER ARRAY_FIRST ARRAY_MAP ARRAY_SORTBY
 
         BACKUP BACKUP_COPIES BALANCE BANDWIDTH BASE BASELINE BASELINE_ID BASIC BEGI BINDING SHARDING BINARY_FORMAT BINLOG BIT BIT_AND
         BIT_OR BIT_XOR BLOCK BLOCK_INDEX BLOCK_SIZE BLOOM_FILTER BOOL BOOLEAN BOOTSTRAP BTREE BYTE
@@ -294,15 +288,15 @@ END_P SET_VAR DELIMITER
 
         CACHE CALIBRATION CALIBRATION_INFO CANCEL CASCADED CAST CATALOG CATALOGS CATALOG_NAME CHAIN CHANGED CHARSET CHECKSUM CHECKPOINT CHUNK CIPHER
         CLASS_ORIGIN CLEAN CLEAR CLIENT CLONE CLOG CLOSE CLUSTER CLUSTERING CLUSTER_ID CLUSTER_NAME COALESCE COLUMN_BLOOM_FILTER COLUMN_STAT
-        CODE COLLATION COLLECT_STATISTICS_ON_CREATE COLUMN_FORMAT COLUMN_INDEX_TYPE COLUMN_NAME COLUMN_NAME_CASE_SENSITIVE COLUMNS COMMENT COMMIT COMMITTED COMPACT COMPACTION COMPLETION COMPLETE
-        COMPRESSED COMPRESSION COMPRESSION_BLOCK_SIZE COMPRESSION_CODE COMPUTATION COMPUTE CONCURRENT CONCURRENT_LIMITING_RULE CONDENSED CONDITIONAL CONFIGS CONNECTION CONSISTENT CONSISTENT_MODE CONSTRAINT_CATALOG
+        CODE COLLATION COLLECT_STATISTICS_ON_CREATE COLUMN_FORMAT COLUMN_INDEX_TYPE COLUMN_NAME COLUMN_NAME_CASE_SENSITIVE COLUMNS COMMENT COMMIT COMMITTED COMPILE COMPACT COMPACTION COMPAT COMPLETION COMPLETE
+        COMPRESSED COMPRESSION COMPRESSION_BLOCK_SIZE COMPRESSION_CODE COMPUTATION COMPUTE CONCURRENT CONCURRENT_LIMITING_RULE CONDENSED CONDITIONAL CONFIGS CONNECTION CONSISTENT CONSTRAINT_CATALOG
         CONSTRAINT_NAME CONSTRAINT_SCHEMA CONTAINS CONTEXT CONTRIBUTORS COPY COSINE COUNT CPU CREATE_TIMESTAMP CREDENTIAL
         CTXCAT CTX_ID CUBE CURDATE CURRENT STACKED CURTIME CURSOR_NAME CUME_DIST CYCLE CALC_PARTITION_ID CONNECT CACHE_REFRESH_INTERVAL_SEC
 
         DAG DATA DATAFILE DATA_DISK_SIZE DATA_SOURCE DATA_TABLE_ID DATE DATE_ADD DATE_SUB DATETIME DAY DEALLOCATE DECRYPT DECRYPTION
-        DEFAULT_AUTH DEFAULT_LOB_INROW_THRESHOLD DEFINER DELAY DELAY_KEY_WRITE DELETING DELTA_FORMAT DEPTH DES_KEY_FILE DENSE_RANK DESCRIPTION DESTINATION DIAGNOSTICS DICT_TABLE
+        DEFAULT_AUTH DEFAULT_LOB_INROW_THRESHOLD DEFINER DELAY DELAY_KEY_WRITE DEPTH DES_KEY_FILE DENSE_RANK DESCRIPTION DESTINATION DIAGNOSTICS DICT DICT_TABLE
         DIRECTORY DISABLE DISALLOW DISCARD DISK DISKGROUP DO DOT DUMP DUMPFILE DUPLICATE DUPLICATE_SCOPE DUPLICATE_READ_CONSISTENCY DYNAMIC
-        DATABASE_ID DEFAULT_TABLEGROUP DISCONNECT DEMAND DELETE_INSERT DYNAMIC_PARTITION_POLICY
+        DATABASE_ID DEFAULT_TABLEGROUP DISCONNECT DEMAND DELETE_INSERT DELETING DELTA_FORMAT DYNAMIC_PARTITION_POLICY
 
         EFFECTIVE EMPTY ENABLE ENABLE_ARBITRATION_SERVICE ENABLE_EXTENDED_ROWID ENABLE_MACRO_BLOCK_BLOOM_FILTER ENCODING_TYPE ENCRYPT ENCRYPTED ENCRYPTION END ENDPOINT ENDS ENFORCED ENGINE_ ENGINES ENUM ENTITY ERROR_CODE ERROR_P ERRORS ESTIMATE EXCLUDE_PATHS
         ESCAPE EVENT EVENTS EVERY EXCHANGE EXCLUDING EXECUTE EXPANSION EXPIRE EXPIRE_INFO EXPORT OUTLINE EXTENDED
@@ -310,22 +304,23 @@ END_P SET_VAR DELIMITER
 
         FAILOVER FAST FAULTS FILE_BLOCK_SIZE FIELDS FILEX FINAL_COUNT FIRST FIRST_VALUE FIXED FLUSH FOLLOWER FORMAT
         FOUND FREEZE FREQUENCY FUNCTION FOLLOWING FLASHBACK FULL FRAGMENTATION FREQ_THRESHOLD FROZEN FILE_ID FILTER
-        FIELD_OPTIONALLY_ENCLOSED_BY FIELD_DELIMITER FIELD_ENCLOSED_BY FILE_EXTENSION FTS_INDEX_TYPE
+        FIELD_OPTIONALLY_ENCLOSED_BY FIELD_DELIMITER FIELD_ENCLOSED_BY FILE_EXTENSION FTS_INDEX_TYPE FULLTEXT_DICT
 
         GENERAL GEOMETRY GEOMCOLLECTION GEOMETRYCOLLECTION GET_FORMAT GLOBAL GRANTS GRANULARITY GROUPCONCAT GROUP_CONCAT GROUPING GROUPING_ID GTS
-        GLOBAL_NAME GLOBAL_ALIAS
+        GLOBAL_NAME GLOB_PATTERN
 
-        HANDLER HASH HEAP HELP HISTOGRAM HOST HOSTS HOT_RETENTION MIXED_RETENTION HOUR HIDDEN HTTP_TIMEOUT HTTP_KEEPALIVE_TIME HYBRID HYBRID_HIST HYBRID_SEARCH HMS_CATALOG_NAME
+        HANDLER HASH HEADER HEAP HELP HISTOGRAM HOST HOSTS HOT_RETENTION MIXED_RETENTION HOUR HIDDEN HTTP_TIMEOUT HTTP_KEEPALIVE_TIME HYBRID HYBRID_HIST HYBRID_SEARCH HMS_CATALOG_NAME
+        HMS_PRINCIPAL
 
         ID IDC IDENTIFIED IGNORE_SERVER_IDS IK_MODE ILOG IMMEDIATE IMPORT INCLUDING INCLUDE_PATHS INCLUDE_TYPES INCR INDEXES INDEX_DATA_GEN INDEX_TABLE_ID INFO INITIAL_SIZE
         INNODB INSERT_METHOD INSTALL INSTANCE INVOKER IO IOPS_WEIGHT IO_THREAD IPC ISOLATE ISOLATION ISSUER
-        INCREMENT IS_TENANT_SYS_POOL INVISIBLE MERGE ISNULL INTERSECT INCREMENTAL INNER_PARSE ILOGCACHE INPUT INDEXED INPLACE INSTANT INCONSISTENT INDIVIDUAL
+        INCREMENT INVISIBLE MERGE ISNULL INTERSECT INCREMENTAL ILOGCACHE INDEXED INPLACE INSTANT INCONSISTENT INDIVIDUAL
 
         JOB JSON JSON_ARRAYAGG JSON_EXTRACT_FUNC JSON_NUMBER JSON_OBJECTAGG JSON_QUERY JSON_STRING JSON_VALUE JSON_TABLE
 
         KEYWORD KEY_BLOCK_SIZE KEY_VERSION KEYTAB KRB5CONF KVCACHE KV_ATTRIBUTES
 
-        LAG LAG_IN_FRAME LANGUAGE LAST LAST_REFRESH_SCN LAST_VALUE LATERAL LEAD LEADER LEAD_IN_FRAME LEAVES LESS LEAK LEAK_MOD LEAK_RATE LIB LINESTRING LIST_
+        LAG LAG_IN_FRAME LANGUAGE LAST LAST_REFRESH_SCN LAST_VALUE LATERAL LEAD LEADER LEAD_IN_FRAME LEAVES LESS LEAK LEAK_MOD LEAK_RATE LIB LINESTRING
         LISTAGG LOB_INROW_THRESHOLD LOCAL LOCALITY LOCATION LOCKED LOCKS LOGFILE LOGONLY_REPLICA_NUM LOGS LOCK_ LOGICAL_READS
         LEVEL LN LOG LS LINK LOG_RESTORE_SOURCE LINE_DELIMITER LOCATIONS LICENSE
 
@@ -350,22 +345,22 @@ END_P SET_VAR DELIMITER
         LOGSERVICE_ACCESS_POINT
 
         PACK_KEYS PAGE PARALLEL PARAMETERS PARSER PARSER_PROPERTIES PARTIAL PARTITION_ID PARTITIONING PARTITIONS PASSWORD PATH PAUSE PAXOS_REPLICA_NUM PER PERCENTAGE PICK
-        PERCENT_RANK PERCENTILE_CONT PHASE PHRASE PHRASE_MATCH PHYSICAL PLAN PLAINACCESS PLANREGRESS PLUGIN PLUGIN_DIR PLUGINS POINT POLYGON PERFORMANCE
+        PERCENT_RANK PERCENTILE_CONT PHASE PHRASE PHRASE_MATCH PHYSICAL PLAN PLAINACCESS PLANREGRESS PLUGIN PLUGIN_DIR PLUGINS POINT POLICY_STATUS POLYGON PERFORMANCE
         PREFIX PARALLEL_PARSE_FILE_SIZE_THRESHOLD PARALLEL_PARSE_ON_SINGLE_FILE PRINCIPAL PROTECTION PROJECT_NAME PRIORITY PL POLICY POOL PORT POSITION PREPARE PRESERVE PRETTY PRETTY_COLOR PREV PRIMARY_ZONE PRIVILEGES PROCESS
         PROCESSLIST PROCTIME PROFILE PROFILES PROPERTIES PROXY PRECEDING PCTFREE P_ENTITY P_CHUNK
         PUBLIC PROGRESSIVE_MERGE_NUM PREVIEW PS PLUS PATTERN PARTITION_TYPE FILES PARTIAL_UPDATE PRECREATE_TIME ON_ERROR
 
         QUANTIFIER_TABLE QUARTER QUERY QUERY_RESPONSE_TIME QUEUE_TIME QUICK QUOTA_NAME
 
-        RANGE RB_AND_AGG RB_AND_CARDINALITY_AGG RB_BUILD_AGG RB_ITERATE RB_OR_AGG RB_OR_CARDINALITY_AGG REBUILD RECOVER RECOVERY_WINDOW RECYCLE REDO_BUFFER_SIZE REDOFILE REDUNDANCY REDUNDANT REFRESH REGION RELAY RELAYLOG
+        RANGE RB_AND_AGG RB_AND_CARDINALITY_AGG RB_BUILD_AGG RB_ITERATE RB_OR_AGG RB_OR_CARDINALITY_AGG REBUILD RECOMPILE RECOVER RECOVERY_WINDOW RECYCLE REDO_BUFFER_SIZE REDOFILE REDUNDANCY REDUNDANT REFRESH REGEXP_PATTERN REGION RELAY RELAYLOG
         RELAY_LOG_FILE RELAY_LOG_POS RELAY_THREAD RELOAD REMAP REMOVE REORGANIZE REPAIR REPEATABLE REPLICA
         REPLICA_NUM REPLICA_TYPE REPLICATION REPORT RESET RESOURCE RESOURCE_POOL RESOURCE_POOL_LIST RESPECT RESTART
-        RESTORE RESUME RETURNED_SQLSTATE RETURNS RETURNING REVERSE REWRITE ROLLBACK ROLLUP ROOT
+        RESTORE RESUME RETAIN RETURNED_SQLSTATE RETURNS RETURNING REVERSE REWRITE ROLLBACK ROLLUP ROOT
         ROARINGBITMAP ROOTTABLE ROOTSERVICE ROOTSERVICE_LIST ROUTINE ROW ROLLING ROWID ROW_COUNT ROW_FORMAT ROW_GROUP_SIZE ROW_INDEX_STRIDE ROWS RTREE RUN
-        RECYCLEBIN ROTATE ROW_NUMBER RUDUNDANT RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS REMOTE_OSS RT
+        RECYCLEBIN ROTATE ROW_NUMBER RECURSIVE RANDOM REDO_TRANSPORT_OPTIONS REMOTE_OSS RT
         RANK READ_ERROR_LOG READ_ONLY RECOVERY REJECT ROLE RULE RULES
 
-        S3_REGION SAMPLE SAVEPOINT SCALARS SCHEDULE SCHEMA_NAME SCN SCOPE SCORE SEARCH SECOND SECURITY SEED SEMISTRUCT_ENCODING_TYPE SEMISTRUCT_PROPERTIES SEQUENCES SERIAL SERIALIZABLE SERVER
+        S3_REGION SAMPLE SAVEPOINT SCALARS SCHEDULE SCHEMA_NAME SCN SCOPE SCORE SEARCH SECOND SECURITY SEED SEMISTRUCT_PROPERTIES SEQUENCES SERIAL SERIALIZABLE SERVER
         SERVER_IP SERVER_PORT SERVER_TYPE SERVICE SESSION SESSION_USER SETS SET_MASTER_CLUSTER SET_SLAVE_CLUSTER
         SET_TP SHARE SHARED_STORAGE_DEST SHARED_STORAGE_INFO SHUTDOWN SIGNED SIGN_NAME SIGN_REGION SIMPLE SINGLE SKIP_INDEX SKIP_INDEX_LEVEL SLAVE SLOW SLOT_IDX SNAPSHOT SOCKET SOME SONAME SOUNDS
         SOURCE SPFILE SPLIT SQL_AFTER_GTIDS SQL_AFTER_MTS_GAPS SQL_BEFORE_GTIDS SQL_BUFFER_RESULT
@@ -376,12 +371,12 @@ END_P SET_VAR DELIMITER
         SS MI HH DD WK WW MM QQ YY MS NS S N H D M Q
         SRID STANDBY _ST_ASMVT STAT START STARTS STATS_AUTO_RECALC
         STATS_PERSISTENT STATS_SAMPLE_PAGES STATUS STATEMENTS STATISTICS STD STDDEV STDDEV_POP STDDEV_SAMP STDDEVSAMP STOPWORD_TABLE STORAGE_CACHE_POLICY STORAGE_CACHE_POLICY_EXECUTOR STRONG STSTOKEN
-        SYNCHRONIZATION SYNCHRONOUS STOP STORAGE STORAGE_FORMAT_VERSION STORE STORING STREAM STRING STRIPE_SIZE
+        SYNCHRONIZATION SYNCHRONOUS STOP STORAGE STORAGE_FORMAT_VERSION STORE STORING STREAM STRING STRING_AGG STRIPE_SIZE
         SUBCLASS_ORIGIN SUBDATE SUBJECT SUBPARTITION SUBPARTITIONS SUBSTR SUBSTRING SUCCESSFUL SUM
-        SUPER SUSPEND SWAPS SWITCH SWITCHES SWITCHOVER SYSTEM SYSTEM_USER SYSDATE SYS_COUNT_INROW SESSION_ALIAS
+        SUPER SUSPEND SWAPS SWITCH SWITCHES SWITCHOVER SYSTEM SYSTEM_USER SYSDATE SYS_COUNT_INROW
         SIZE SKEWONLY SEQUENCE SLOG STATEMENT_ID SKIP_HEADER PARSE_HEADER IGNORE_LAST_EMPTY_COLUMN
         SKIP_BLANK_LINES STATEMENT SUM_OPNSIZE SS_MICRO_CACHE SPARSEVECTOR SHARED SEQUENCE_NAME SS_LOCAL_CACHE SOCKET_TIMEOUT SKIP
-
+        SYS_EXT_MIN SYS_EXT_MAX
 
         TABLE_CHECKSUM TABLE_MODE TABLE_ID TABLE_NAME TABLEGROUPS TABLES TABLESPACE TABLET TABLET_ID TABLET_MAX_SIZE TASK_ID
         TEMPLATE TEMPORARY TEMPTABLE TENANT TEXT THAN TIME TIMESTAMP TIMESTAMPADD TIMESTAMPDIFF TP_NO
@@ -396,7 +391,7 @@ END_P SET_VAR DELIMITER
         VALID VALUE VARIANCE VARIABLES VENDED_CREDENTAIL_ENABLED VERBOSE VERIFY VERSION VIEW VISIBLE VIRTUAL_COLUMN_ID VALIDATE VAR_POP
         VAR_SAMP VARSAMP VALIDATION VECTOR VECTOR_DISTANCE MICRO_INDEX_CLUSTERED VECTOR_SIMILARITY
 
-        WAIT WAREHOUSE WARM WARNINGS WASH WEEK WEIGHT_STRING WHENEVER WORK WRAPPER WINDOW WEAK WITH_COLUMN_GROUP WITHOUT
+        WAIT WAREHOUSE WARM WARNINGS WASH WEEK WEIGHT_STRING WHENEVER WORK WRAPPER WINDOW WINDOW_FUNNEL WEAK WITHOUT
 
         X509 XA XID XML
 
@@ -409,7 +404,7 @@ END_P SET_VAR DELIMITER
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt merge_stmt
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
-%type <node> create_table_stmt create_table_like_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
+%type <node> create_table_stmt create_table_like_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated create_function_stmt drop_function_stmt parallel_option parallel_option_opt lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> opt_force
 %type <node> index_or_heap
 %type <node> create_sequence_stmt alter_sequence_stmt drop_sequence_stmt opt_sequence_option_list sequence_option_list sequence_option simple_num
@@ -460,6 +455,7 @@ END_P SET_VAR DELIMITER
 %type <node> add_key_or_index_opt add_key_or_index add_unique_key_opt add_unique_key add_constraint_uniq_key_opt add_constraint_uniq_key add_constraint_pri_key_opt add_constraint_pri_key add_primary_key_opt add_primary_key add_spatial_index_opt add_spatial_index add_search_index_opt add_search_index
 %type <node> index_hint_definition index_hint_list
 %type <node> intnum_list
+%type <node> max_execution_time_value
 %type <node> qb_name_option qb_name_string qb_name_list multi_qb_name_list
 %type <node> coalesce_strategy_list
 %type <node> join_condition inner_join_type except_full_outer_join_type opt_outer natural_join_type opt_full_table_factor
@@ -478,7 +474,7 @@ END_P SET_VAR DELIMITER
 %type <node> create_user_stmt user_specification user_specification_list user password opt_host_name user_with_host_name opt_auth_plugin opt_auth_plugin_with
 %type <node> drop_user_stmt user_list user_specification_without_password user_specification_with_password
 %type <node> create_role_stmt drop_role_stmt role_list role_with_host role user_specification_without_password_list
-%type <node> set_password_stmt opt_for_user
+%type <node> set_password_stmt opt_for_user opt_retain_current_password
 %type <node> rename_user_stmt rename_info rename_list
 %type <node> rename_table_stmt rename_table_actions rename_table_action
 %type <node> truncate_table_stmt
@@ -497,7 +493,7 @@ END_P SET_VAR DELIMITER
 %type <node> alter_column_behavior opt_set opt_position_column
 %type <node> alter_system_stmt alter_system_set_parameter_actions alter_system_settp_actions settp_option alter_system_set_parameter_action server_info_list server_info opt_bootstrap_info bootstrap_info opt_logservice_access_point logservice_access_point opt_shared_storage_info shared_storage_info alter_system_reset_parameter_actions alter_system_reset_parameter_action
 %type <node> opt_comment opt_as
-%type <node> column_name relation_name relation_name_list opt_relation_name function_name column_label var_name relation_name_or_string row_format_option compression_name merge_engine_types
+%type <node> column_name relation_name relation_name_list opt_relation_name function_name column_label var_name relation_name_or_string refresh_fulltext_dict_dst row_format_option compression_name merge_engine_types
 %type <node> audit_stmt audit_clause op_audit_tail_clause audit_operation_clause audit_all_shortcut_list audit_all_shortcut auditing_on_clause auditing_by_user_clause audit_user_list audit_user audit_user_with_host_name
 %type <node> opt_hint_list hint_option select_with_opt_hint update_with_opt_hint delete_with_opt_hint merge_with_opt_hint hint_list_with_end global_hint transform_hint optimize_hint
 %type <node> create_index_stmt index_name sort_column_list sort_column_key opt_index_option_list opt_fulltext_index_option_list index_option fulltext_index_option opt_sort_column_key_length opt_index_using_algorithm index_using_algorithm visibility_option opt_constraint_name constraint_name create_with_opt_hint index_expr alter_with_opt_hint
@@ -515,8 +511,8 @@ END_P SET_VAR DELIMITER
 %type <node> drop_index_stmt hint_options opt_expr_as_list expr_as_list expr_with_opt_alias substr_params opt_comma substr_or_substring
 %type <node> /*frozen_type*/ opt_binary
 %type <node> ip_port
-%type <node> create_view_stmt view_name opt_column_list opt_mv_column_list mv_column_list opt_table_id opt_tablet_id view_select_stmt opt_check_option opt_tablet_id_no_empty
-%type <node> create_mview_stmt create_mview_opts mview_refresh_opt mv_refresh_on_clause mv_refresh_mode mv_refresh_interval mv_start_clause mv_next_clause mv_nested_refresh_opt mview_nested_refresh_mode
+%type <node> create_view_stmt view_name opt_column_list opt_mv_column_list mv_column_list opt_table_id opt_tablet_id view_select_stmt opt_check_option opt_tablet_id_no_empty policy_status_type alter_view_compile_action
+%type <node> create_mview_stmt create_mview_opts mview_refresh_opt mv_refresh_on_clause mv_refresh_mode mv_refresh_interval mv_start_clause mv_next_clause mv_nested_refresh_opt mview_nested_refresh_mode opt_mv_compat_version mv_compat_version
 %type <ival> mv_refresh_method mview_enable_disable
 %type <node> name_list opt_name_list
 %type <node> partition_role ls_role zone_desc opt_zone_desc server_or_zone opt_server_or_zone opt_partitions opt_subpartitions add_or_alter_zone_options alter_or_change_or_modify
@@ -530,7 +526,7 @@ END_P SET_VAR DELIMITER
 %type <node> opt_index_name opt_key_or_index opt_index_options opt_fulltext_index_options fulltext_parser_properties_list fulltext_parser_properties fts_index_type_value opt_primary  opt_all
 %type <node> charset_key database_key charset_name charset_name_or_default collation_name compression_key databases_or_schemas trans_param_name trans_param_value
 %type <node> charset_introducer complex_string_literal literal number_literal now_or_signed_literal signed_literal
-%type <node> create_tablegroup_stmt drop_tablegroup_stmt alter_tablegroup_stmt default_tablegroup
+%type <node> create_tablegroup_stmt drop_tablegroup_stmt alter_tablegroup_stmt default_tablegroup default_tablespace
 %type <node> set_transaction_stmt transaction_characteristics transaction_access_mode isolation_level
 %type <node> lock_tables_stmt unlock_tables_stmt lock_type lock_table_list lock_table opt_local lock_mode
 %type <node> flashback_stmt purge_stmt opt_flashback_rename_table opt_flashback_rename_database opt_flashback_rename_tenant
@@ -608,6 +604,7 @@ END_P SET_VAR DELIMITER
 %type <node> dynamic_partition_option dynamic_partition_option_list sys_view_cast_opt
 %type <node> create_location_stmt alter_location_stmt drop_location_stmt location_name location_url opt_sub_path credential_option_list credential_option opt_credential location_utils_stmt
 %type <node> flashback_standby_log_stmt
+%type <node> random_partition_option opt_random_partition_tablet_size_option random_partition_tablet_size_option
 %type <node> column_list_with_boost with_param_column_ref
 %type <node> es_sql_opt
 %type <node> operator_list
@@ -617,6 +614,7 @@ END_P SET_VAR DELIMITER
 %type <node> algorithm_opt lock_opt
 %type <node> vector_similarity_expr vector_similarity_metric
 %type <node> groupconcat_agg_func
+%type <node> string_agg_agg_func
 %type <node> create_sensitive_rule_stmt drop_sensitive_rule_stmt alter_sensitive_rule_stmt alter_sensitive_rule_action sensitive_rule_name sensitive_field_list sensitive_field sensitivity_protection_spec sensitivity_encryption_spec
 %type <node> table_name_or_tablet_id opt_with_index
 %type <node> create_routine_load_stmt load_properties load_property_list load_property opt_load_where_clause job_properties_expr job_property_list job_property
@@ -2378,6 +2376,11 @@ COUNT '(' opt_all '*' ')' OVER new_generalized_window_clause
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_AVG, 2, $3, $4);
   malloc_non_terminal_node($$, result->malloc_pool_, T_WINDOW_FUNCTION, 2, $$, $7);
 }
+| AVGWEIGHTED '(' opt_distinct_or_all expr ',' expr ')' OVER new_generalized_window_clause
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_AVG_WEIGHTED, 3, $3, $4, $6);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_WINDOW_FUNCTION, 2, $$, $9);
+}
 | JSON_ARRAYAGG '(' opt_distinct_or_all expr ')' OVER new_generalized_window_clause
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_JSON_ARRAYAGG, 2, $3, $4);
@@ -2442,6 +2445,15 @@ COUNT '(' opt_all '*' ')' OVER new_generalized_window_clause
 | groupconcat_agg_func OVER new_generalized_window_clause
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_WINDOW_FUNCTION, 2, $1, $3);
+}
+| string_agg_agg_func OVER new_generalized_window_clause
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_WINDOW_FUNCTION, 2, $1, $3);
+}
+| WINDOW_FUNNEL '(' INTNUM ',' STRING_VALUE ',' expr_list ')' OVER new_generalized_window_clause
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_WINDOW_FUNNEL, 3, $3, $5, $7);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_WINDOW_FUNCTION, 2, $$, $10);
 }
 | LISTAGG '(' opt_distinct expr_list opt_order_by opt_separator ')' OVER new_generalized_window_clause
 {
@@ -2897,6 +2909,14 @@ MOD '(' expr ',' expr ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_MIN, 2, $3, $4);
 }
+| SYS_EXT_MAX '(' expr ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_EXT_MAX, 1, $3);
+}
+| SYS_EXT_MIN '(' expr ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_EXT_MIN, 1, $3);
+}
 | ARG_MAX '(' opt_distinct_or_all expr ',' expr ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_ARG_MAX, 3, $3, $4, $6);
@@ -2930,6 +2950,10 @@ MOD '(' expr ',' expr ')'
 | AVG '(' opt_distinct_or_all expr ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_AVG, 2, $3, $4);
+}
+| AVGWEIGHTED '(' opt_distinct_or_all expr ',' expr ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_AVG_WEIGHTED, 3, $3, $4, $6);
 }
 | ARBITRARY '(' expr ')'
 {
@@ -3013,6 +3037,14 @@ MOD '(' expr ',' expr ')'
 {
   $$ = $1;
 }
+| string_agg_agg_func %prec LOWER_OVER
+{
+  $$ = $1;
+}
+| WINDOW_FUNNEL '(' INTNUM ',' STRING_VALUE ',' expr_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_WINDOW_FUNNEL, 3, $3, $5, $7);
+}
 | TOP_K_FRE_HIST '(' DECIMAL_VAL ',' bit_expr  ','  INTNUM ','  expr_const ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_TOP_FRE_HIST, 4, $3, $5, $7, $9);
@@ -3020,6 +3052,14 @@ MOD '(' expr ',' expr ')'
 | HYBRID_HIST '(' bit_expr ',' INTNUM ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_HYBRID_HIST, 2, $3, $5);
+}
+| IF '(' expr ',' expr ')'
+{
+  /* ADB compatibility: IF(cond, value) with 2 params, resolver will treat as IF(cond, value, null) */
+  ParseNode *params = NULL;
+  malloc_non_terminal_node(params, result->malloc_pool_, T_EXPR_LIST, 2, $3, $5);
+  make_name_node($$, result->malloc_pool_, "if");
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_SYS_IF, 2, $$, params);
 }
 | IF '(' expr ',' expr ',' expr ')'
 {
@@ -3946,6 +3986,13 @@ GROUPCONCAT '(' expr ')'
 | GROUPCONCAT '(' expr ',' INTNUM ')' '(' opt_distinct_or_all expr ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_CK_GROUPCONCAT, 4, $3, $5, $8, $9);
+}
+;
+
+string_agg_agg_func:
+STRING_AGG '(' opt_distinct_or_all expr ',' expr opt_order_by ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FUN_STRING_AGG, 4, $3, $4, $6, $7);
 }
 ;
 
@@ -4972,6 +5019,10 @@ LOGONLY_REPLICA_NUM opt_equal_mark INTNUM
 {
   $$ = $1;
 }
+| default_tablespace
+{
+  $$ = $1;
+}
 | PROGRESSIVE_MERGE_NUM opt_equal_mark INTNUM
 {
   (void)($2) ; /* make bison mute */
@@ -5224,7 +5275,7 @@ set_catalog_stmt:
 SET CATALOG relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_SET_CATALOG, 1, $3);
-}
+};
 
 /*****************************************************************************
  *
@@ -5388,6 +5439,10 @@ opt_default_mark charset_key opt_equal_mark charset_name
 {
   $$ = $1;
 }
+| default_tablespace
+{
+  $$ = $1;
+}
 | DATABASE_ID opt_equal_mark INTNUM
 {
   (void)($2) ; /* make bison mute */
@@ -5399,6 +5454,18 @@ read_only_or_write:
 READ ONLY { malloc_terminal_node($$, result->malloc_pool_, T_ON); }
 |
 READ WRITE { malloc_terminal_node($$, result->malloc_pool_, T_OFF); }
+;
+
+default_tablespace:
+DEFAULT TABLESPACE tablespace
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_TABLESPACE, 1, $3);
+}
+| DEFAULT TABLESPACE NULLX
+{
+  (void)($3);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_TABLESPACE, 1, NULL);
+}
 ;
 
 /*****************************************************************************
@@ -8265,10 +8332,6 @@ DEFAULT
 {
   malloc_terminal_node($$, result->malloc_pool_, T_DEFAULT);
 }
-| RANDOM
-{
-  malloc_terminal_node($$, result->malloc_pool_, T_RANDOM);
-}
 | USER_VARIABLE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_OP_GET_USER_VAR, 1, $1);
@@ -8519,6 +8582,11 @@ TABLE_MODE opt_equal_mark STRING_VALUE
   (void)($2); /*  make bison mute*/
   malloc_non_terminal_node($$, result->malloc_pool_, T_MICRO_BLOCK_FORMAT_VERSION, 1, $3);
 }
+| FULLTEXT_DICT opt_equal_mark STRING_VALUE
+{
+  (void)($2); /*  make bison mute*/
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FULLTEXT_DICT, 1, $3);
+}
 | AUTO_REFRESH opt_equal_mark OFF
 {
   (void)($2) ; /* make bison mute */
@@ -8670,7 +8738,6 @@ TABLE_MODE opt_equal_mark STRING_VALUE
 {
   (void)($2);
   merge_nodes($$, result, T_DYNAMIC_PARTITION_POLICY, $4);
-  dup_expr_string($$, result, @4.first_column, @4.last_column);
 }
 | CLUSTER BY '(' column_name_list ')'
 {
@@ -8799,9 +8866,11 @@ STRING_VALUE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_LOCATION_OBJECT, 2, $1, $2);
   $$->stmt_loc_.first_column_ = @1.first_column - 1;
-  $$->stmt_loc_.last_column_ = @1.last_column - 1;
-  $$->str_len_ = $1->str_len_;
-  $$->str_value_ = $1->str_value_;
+  $$->stmt_loc_.last_column_ = (NULL != $2 ? @2.last_column : @1.last_column) - 1;
+  check_ret(setup_token_pos_info_and_dup_string($$, result,
+                                                @1.first_column,
+                                                NULL != $2 ? @2.last_column : @1.last_column),
+            &@1, result);
 }
 ;
 
@@ -8949,6 +9018,17 @@ PARALLEL opt_equal_mark INTNUM
 }
 ;
 
+parallel_option_opt:
+parallel_option
+{
+  $$ = $1;
+}
+|
+{
+  $$ = NULL;
+}
+;
+
 ttl_definition:
 ttl_expr
 {
@@ -9029,6 +9109,22 @@ relation_name
 }
 ;
 
+refresh_fulltext_dict_dst:
+relation_name_or_string { $$ = $1; }
+| relation_name '.' relation_name
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_RELATION_FACTOR, 2, $1, $3);
+  dup_node_string($3, $$, result->malloc_pool_);
+}
+| id_dot_id
+{
+  ParseNode* db_node = $1->children_[0];
+  ParseNode* tb_node = $1->children_[1];
+  malloc_non_terminal_node($$, result->malloc_pool_, T_RELATION_FACTOR, 2, db_node, tb_node);
+  dup_node_string(tb_node, $$, result->malloc_pool_);
+}
+;
+
 archivelog_piece_optional_piece_list:
 ARCHIVELOG_PIECE opt_equal_mark STRING_VALUE
 {
@@ -9092,6 +9188,38 @@ hash_partition_option
 | external_table_partition_option
 {
   $$ = $1;
+}
+| random_partition_option
+{
+  $$ = $1;
+}
+;
+
+random_partition_option:
+PARTITION BY RANDOM opt_random_partition_tablet_size_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_RANDOM_PARTITION, 1, $4);
+}
+;
+
+opt_random_partition_tablet_size_option:
+/* EMPTY */
+{
+  $$ = NULL;
+}
+|
+random_partition_tablet_size_option
+{
+  $$ = $1;
+}
+;
+
+random_partition_tablet_size_option:
+SIZE '(' STRING_VALUE ')'
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_AUTO_SPLIT_TABLET_SIZE);
+  $$->str_value_ = $3->str_value_;
+  $$->str_len_ = $3->str_len_;
 }
 ;
 
@@ -10065,6 +10193,10 @@ TYPE COMP_EQ STRING_VALUE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_PRINCIPAL, 1, $3);
 }
+| HMS_PRINCIPAL COMP_EQ STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_HMS_PRINCIPAL, 1, $3);
+}
 | KEYTAB COMP_EQ STRING_VALUE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_KEYTAB, 1, $3);
@@ -10290,6 +10422,10 @@ TYPE COMP_EQ STRING_VALUE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_MAX_ROW_LENGTH, 1, $3);
 }
+| HEADER COMP_EQ BOOL_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXPORT_CSV_HEADER, 1, $3);
+}
 ;
 
 /*****************************************************************************
@@ -10399,6 +10535,11 @@ TABLEGROUP_ID opt_equal_mark INTNUM
   (void)($2);
   malloc_non_terminal_node($$, result->malloc_pool_, T_TABLEGROUP_SHARDING, 1, $3);
 }
+| SCOPE opt_equal_mark STRING_VALUE
+{
+  (void)($2);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_TABLEGROUP_SCOPE, 1, $3);
+}
 | MAX_USED_PART_ID opt_equal_mark INTNUM
 {
   (void)($2);
@@ -10504,6 +10645,37 @@ create_with_opt_hint opt_replace opt_algorithm opt_definer opt_sql_security VIEW
   dup_expr_string($10, result, @10.first_column, @10.last_column);
   $$->reserved_ = 1; /* is alter view */
 }
+| alter_with_opt_hint opt_algorithm opt_definer opt_sql_security VIEW IF EXISTS view_name alter_view_compile_action
+{
+  ParseNode *if_exists_node = NULL;
+  (void)($1);
+  UNUSED($2);
+  UNUSED($3);
+  UNUSED($4);
+  UNUSED($6);
+  UNUSED($7);
+  malloc_terminal_node(if_exists_node, result->malloc_pool_, T_IF_EXISTS);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_VIEW, 3, if_exists_node, $8, $9);
+}
+| alter_with_opt_hint opt_algorithm opt_definer opt_sql_security VIEW view_name alter_view_compile_action
+{
+  (void)($1);
+  UNUSED($2);
+  UNUSED($3);
+  UNUSED($4);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_VIEW, 3, NULL, $6, $7);
+}
+;
+
+alter_view_compile_action:
+COMPILE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_ALTER_VIEW_COMPILE);
+}
+| RECOMPILE
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_ALTER_VIEW_COMPILE);
+}
 ;
 
 /*****************************************************************************
@@ -10602,10 +10774,10 @@ DISABLE
 ;
 
 mview_refresh_opt:
-REFRESH mv_refresh_method mv_nested_refresh_opt mv_refresh_on_clause mv_refresh_interval
+REFRESH mv_refresh_method parallel_option_opt mv_nested_refresh_opt mv_refresh_on_clause mv_refresh_interval opt_mv_compat_version
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_INFO,
-                           3, $3, $4, $5);
+                           5, $3, $4, $5, $6, $7);
   $$->int32_values_[0] = 0;
   $$->int32_values_[1] = $2[0];
 }
@@ -10624,25 +10796,22 @@ $$ = NULL;
 mv_refresh_on_clause:
 ON mv_refresh_mode
 {
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_ON_CLAUSE, 1,
-                $2);
-
+  $$ = $2;
 }
 |
 {
-$$ = NULL;
+  $$ = NULL;
 }
 ;
 
 mv_nested_refresh_opt:
 mview_nested_refresh_mode
 {
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_NESTED_REFRESH_CLAUSE, 1,
-                           $1);
+  $$ = $1;
 }
 |
 {
-$$ = NULL;
+  $$ = NULL;
 }
 ;
 
@@ -10685,19 +10854,19 @@ $$[0] = 2;
 mv_refresh_mode:
 DEMAND
 {
-  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_METHOD);
+  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_ON_CLAUSE);
   $$->value_ = 0;
 }
 |
 COMMIT
 {
-  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_METHOD);
+  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_ON_CLAUSE);
   $$->value_ = 1;
 }
 |
 STATEMENT
 {
-  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_METHOD);
+  malloc_terminal_node($$, result->malloc_pool_, T_MV_REFRESH_ON_CLAUSE);
   $$->value_ = 2;
 }
 ;
@@ -10728,6 +10897,24 @@ $$ = $2;
 |
 {
 $$ = NULL;
+};
+
+opt_mv_compat_version:
+mv_compat_version
+{
+  $$ = $1;
+}
+|
+{
+  $$ = NULL;
+}
+;
+
+mv_compat_version:
+COMPAT VERSION opt_equal_mark STRING_VALUE
+{
+  (void)$3;
+  $$ = $4;
 };
 
 alter_mview_stmt:
@@ -10766,14 +10953,12 @@ alter_mview_action:
 mview_enable_disable ON QUERY COMPUTATION
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, NULL);
-  $$->value_ = 0;
   $$->int32_values_[0] = 1;
   $$->int32_values_[1] = $1[0];
 }
 | mview_enable_disable QUERY REWRITE
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, NULL);
-  $$->value_ = 0;
   $$->int32_values_[0] = 2;
   $$->int32_values_[1] = $1[0];
 }
@@ -10781,42 +10966,60 @@ mview_enable_disable ON QUERY COMPUTATION
 {
   (void)$1;
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, $2);
-  $$->value_ = 0;
   $$->int32_values_[0] = 3;
 }
 | REFRESH mv_refresh_method
 {
   ParseNode *refresh_info = NULL;
-  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 2, NULL, NULL);
+  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 5, NULL, NULL, NULL, NULL, NULL);
   refresh_info->int32_values_[0] = 0;
   refresh_info->int32_values_[1] = $2[0];
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
-  $$->value_ = 0;
+  $$->int32_values_[0] = 0;
 }
 | NEVER REFRESH
 {
   ParseNode *refresh_info = NULL;
-  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 2, NULL, NULL);
+  malloc_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO);
   refresh_info->int32_values_[0] = 1;
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
-  $$->value_ = 0;
+  $$->int32_values_[0] = 0;
+}
+| REFRESH parallel_option
+{
+  ParseNode *refresh_info = NULL;
+  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 5, $2, NULL, NULL, NULL, NULL);
+  refresh_info->int32_values_[0] = 0;
+  refresh_info->int32_values_[1] = -1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
+  $$->int32_values_[0] = 0;
+}
+| REFRESH mview_nested_refresh_mode
+{
+  ParseNode *refresh_info = NULL;
+  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 5, NULL, $2, NULL, NULL, NULL);
+  refresh_info->int32_values_[0] = 0;
+  refresh_info->int32_values_[1] = -1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
+  $$->int32_values_[0] = 0;
 }
 | REFRESH mv_refresh_interval
 {
   ParseNode *refresh_info = NULL;
-  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 2, NULL, $2);
-  refresh_info->int32_values_[0] = 2;
+  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 5, NULL, NULL, NULL, $2, NULL);
+  refresh_info->int32_values_[0] = 0;
+  refresh_info->int32_values_[1] = -1;
   malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
-  $$->value_ = 0;
+  $$->int32_values_[0] = 0;
 }
-| REFRESH mview_nested_refresh_mode
+| REFRESH mv_compat_version
 {
-  ParseNode *nested_refresh_node = NULL;
-  malloc_terminal_node(nested_refresh_node, result->malloc_pool_, T_MV_NESTED_REFRESH_CLAUSE);
-  nested_refresh_node->int32_values_[0] = $2->value_;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, nested_refresh_node);
-  $$->value_ = 0;
-  $$->int32_values_[0] = 4;
+  ParseNode *refresh_info = NULL;
+  malloc_non_terminal_node(refresh_info, result->malloc_pool_, T_MV_REFRESH_INFO, 5, NULL, NULL, NULL, NULL, $2);
+  refresh_info->int32_values_[0] = 0;
+  refresh_info->int32_values_[1] = -1;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_MV_OPTIONS, 1, refresh_info);
+  $$->int32_values_[0] = 0;
 }
 ;
 
@@ -13276,6 +13479,17 @@ NAME_OB
   $$ = $1;
 }
 
+max_execution_time_value:
+INTNUM
+{
+  $$=$1;
+}
+| NEG_SIGN INTNUM
+{
+  $2->value_ = -$2->value_;
+  $$ = $2;
+}
+
 global_hint:
 READ_CONSISTENCY '(' consistency_level ')'
 {
@@ -13289,6 +13503,10 @@ READ_CONSISTENCY '(' consistency_level ')'
 | QUERY_TIMEOUT '(' INTNUM ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_QUERY_TIMEOUT, 1, $3);
+}
+| MAX_EXECUTION_TIME '(' max_execution_time_value ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_MAX_EXECUTION_TIME, 1, $3);
 }
 | FROZEN_VERSION '(' INTNUM ')'
 {
@@ -13929,6 +14147,14 @@ INDEX_HINT '(' qb_name_option relation_factor_in_hint opt_comma NAME_OB opt_inde
 | NO_USE_DAS_HINT '(' qb_name_option relation_factor_in_hint ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_NO_USE_DAS_HINT, 2, $3, $4);
+}
+| CACHE '(' qb_name_option relation_factor_in_hint ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_CACHE_HINT, 2, $3, $4);
+}
+| NOCACHE '(' qb_name_option relation_factor_in_hint ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_NOCACHE_HINT, 2, $3, $4);
 }
 | INDEX_SS_HINT '(' qb_name_option relation_factor_in_hint NAME_OB ')'
 {
@@ -15671,7 +15897,18 @@ PATTERN opt_equal_mark STRING_VALUE
 {
   (void)($2) ; /* make bison mute */
   malloc_non_terminal_node($$, result->malloc_pool_, T_EXTERNAL_FILE_PATTERN, 1, $3);
-};
+}
+| REGEXP_PATTERN opt_equal_mark STRING_VALUE
+{
+  (void)($2) ; /* make bison mute */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXTERNAL_FILE_PATTERN, 1, $3);
+}
+| GLOB_PATTERN opt_equal_mark STRING_VALUE
+{
+  (void)($2) ; /* make bison mute */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_EXTERNAL_FILE_GLOB_PATTERN, 1, $3);
+}
+;
 
 format_expr:
 FORMAT opt_equal_mark '(' external_file_format_list ')'
@@ -18473,21 +18710,21 @@ STRING_VALUE
  *
  *****************************************************************************/
 set_password_stmt:
-SET PASSWORD opt_for_user COMP_EQ STRING_VALUE
+SET PASSWORD opt_for_user COMP_EQ STRING_VALUE opt_retain_current_password
 {
   ParseNode *need_enc_node = NULL;
   malloc_terminal_node(need_enc_node, result->malloc_pool_, T_BOOL);
   need_enc_node->value_ = 0;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, $5, need_enc_node, NULL, NULL, NULL);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, $5, need_enc_node, NULL, NULL, NULL, $6);
 }
-| SET PASSWORD opt_for_user COMP_EQ PASSWORD '(' password ')'
+| SET PASSWORD opt_for_user COMP_EQ PASSWORD '(' password ')' opt_retain_current_password
 {
   ParseNode *need_enc_node = NULL;
   malloc_terminal_node(need_enc_node, result->malloc_pool_, T_BOOL);
   need_enc_node->value_ = 1;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, $7, need_enc_node, NULL, NULL, NULL);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, $7, need_enc_node, NULL, NULL, NULL, $9);
 }
-| alter_with_opt_hint USER user_with_host_name IDENTIFIED opt_auth_plugin BY password
+| alter_with_opt_hint USER user_with_host_name IDENTIFIED opt_auth_plugin BY password opt_retain_current_password
 {
   (void)($1);
   ParseNode *need_enc_node = NULL;
@@ -18495,9 +18732,9 @@ SET PASSWORD opt_for_user COMP_EQ STRING_VALUE
   malloc_terminal_node(need_enc_node, result->malloc_pool_, T_BOOL);
   malloc_terminal_node(from_alter, result->malloc_pool_, T_BOOL);
   need_enc_node->value_ = 1;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, $7, need_enc_node, NULL, $5, from_alter);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, $7, need_enc_node, NULL, $5, from_alter, $8);
 }
-| alter_with_opt_hint USER user_with_host_name IDENTIFIED opt_auth_plugin AS password
+| alter_with_opt_hint USER user_with_host_name IDENTIFIED opt_auth_plugin AS password opt_retain_current_password
 {
   (void)($1);
   ParseNode *need_enc_node = NULL;
@@ -18505,23 +18742,44 @@ SET PASSWORD opt_for_user COMP_EQ STRING_VALUE
   malloc_terminal_node(need_enc_node, result->malloc_pool_, T_BOOL);
   malloc_terminal_node(from_alter, result->malloc_pool_, T_BOOL);
   need_enc_node->value_ = 0;
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, $7, need_enc_node, NULL, $5, from_alter);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, $7, need_enc_node, NULL, $5, from_alter, $8);
 }
 | alter_with_opt_hint USER user_with_host_name require_specification
 {
   (void)($1);
   ParseNode *require_node = NULL;
   merge_nodes(require_node, result, T_TLS_OPTIONS, $4);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, NULL, NULL, require_node, NULL, NULL);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, NULL, NULL, require_node, NULL, NULL, NULL);
 }
 | alter_with_opt_hint USER user_with_host_name WITH resource_option_list
 {
   (void)($1);
   ParseNode *res_opt_node = NULL;
   merge_nodes(res_opt_node, result, T_USER_RESOURCE_OPTIONS, $5);
-  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 6, $3, NULL, NULL, res_opt_node, NULL, NULL);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, NULL, NULL, res_opt_node, NULL, NULL, NULL);
+}
+| alter_with_opt_hint USER user_with_host_name DISCARD OLD PASSWORD
+{
+  (void)($1);
+  ParseNode *from_alter = NULL;
+  ParseNode *retain_or_discard_node = NULL;
+  malloc_terminal_node(from_alter, result->malloc_pool_, T_BOOL);
+  malloc_terminal_node(retain_or_discard_node, result->malloc_pool_, T_BOOL);
+  retain_or_discard_node->value_ = 0;
+  malloc_non_terminal_node($$, result->malloc_pool_, T_SET_PASSWORD, 7, $3, NULL, NULL, NULL, NULL, from_alter, retain_or_discard_node);
 }
 ;
+
+opt_retain_current_password:
+RETAIN CURRENT PASSWORD
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_BOOL);
+  $$->value_ = 1;
+}
+| /**/
+{
+  $$ = NULL;
+}
 
 opt_for_user:
 FOR user opt_host_name
@@ -19552,6 +19810,11 @@ role_with_host
 {
   malloc_terminal_node($$, result->malloc_pool_, T_PRIV_TYPE);
   $$->value_ = OB_PRIV_PLAINACCESS;
+}
+| APPLICATION_PASSWORD_ADMIN
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_PRIV_TYPE);
+  $$->value_ = OB_PRIV_APPLICATION_PASSWORD_ADMIN;
 }
 ;
 
@@ -20846,6 +21109,10 @@ hash_partition_option
 {
   $$ = $1;
 }
+| random_partition_option
+{
+  $$ = $1;
+}
 ;
 
 modify_tg_partition_info:
@@ -21817,6 +22084,12 @@ alter_with_opt_hint SYSTEM REFRESH IO CALIBRATION opt_storage_name opt_calibrati
   malloc_non_terminal_node($$, result->malloc_pool_, T_REFRESH_IO_CALIBRATION, 3, $6, $7, $8);
 }
 |
+alter_with_opt_hint SYSTEM REFRESH FULLTEXT DICT refresh_fulltext_dict_dst
+{
+  (void)($1);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_REFRESH_FULLTEXT_DICT, 1, $6);
+}
+|
 alter_with_opt_hint SYSTEM opt_set alter_system_set_parameter_actions
 {
   (void)($1);
@@ -22616,6 +22889,16 @@ alter_with_opt_hint SYSTEM TRIGGER STORAGE_CACHE_POLICY_EXECUTOR opt_tenant_name
   malloc_terminal_node(action_type, result->malloc_pool_, T_INT);
   action_type->value_ = 0; /* 0:trigger */
   malloc_non_terminal_node($$, result->malloc_pool_, T_TRIGGER_STORAGE_CACHE, 2, action_type, $5);
+}
+|
+alter_with_opt_hint SYSTEM SET STATUS STORAGE_CACHE_POLICY_EXECUTOR POLICY_STATUS COMP_EQ policy_status_type opt_tablet_id_no_empty opt_tenant_name
+{
+  (void)($1);
+  ParseNode *action_type = NULL;
+  malloc_terminal_node(action_type, result->malloc_pool_, T_INT);
+  action_type->value_ = 1; /* 1:set_status */
+  /* children order: action_type, policy_status, tablet_id, tenant_name */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_TRIGGER_STORAGE_CACHE, 4, action_type, $8, $9, $10);
 }
 |
 SET ENCRYPTION ON IDENTIFIED BY STRING_VALUE ONLY
@@ -24002,6 +24285,16 @@ tenant_name
 | /* EMPTY */
 {
   $$ = NULL;
+}
+;
+
+policy_status_type:
+STRING_VALUE
+{
+  /* Accept string value like 'hot' or 'auto', validation is done in resolver */
+  malloc_terminal_node($$, result->malloc_pool_, T_VARCHAR);
+  $$->str_value_ = $1->str_value_;
+  $$->str_len_ = $1->str_len_;
 }
 ;
 
@@ -26204,6 +26497,10 @@ STATISTICS
 {
   make_name_node($$, result->malloc_pool_, "decrypt");
 }
+| RANDOM
+{
+  make_name_node($$, result->malloc_pool_, "random");
+}
 | AI
 {
   make_name_node($$, result->malloc_pool_, "ai");
@@ -26211,6 +26508,10 @@ STATISTICS
 | MODEL
 {
   make_name_node($$, result->malloc_pool_, "model");
+}
+| CATALOG
+{
+  make_name_node($$, result->malloc_pool_, "catalog");
 }
 ;
 
@@ -28136,6 +28437,7 @@ ACCESS_INFO
 |       AUTO_REFRESH
 |       AVG
 |       AVG_ROW_LENGTH
+|       AVGWEIGHTED
 |       ARRAY_AGG
 |       ARRAY_FIRST
 |       ARRAY_MAP
@@ -28220,8 +28522,10 @@ ACCESS_INFO
 |       COMMENT
 |       COMMIT
 |       COMMITTED
+|       COMPILE
 |       COMPACT
 |       COMPACTION
+|       COMPAT
 |       COMPLETE
 |       COMPLETION
 |       COMPRESSED
@@ -28237,7 +28541,6 @@ ACCESS_INFO
 |       CONFIGS
 |       CONNECTION %prec KILL_EXPR
 |       CONSISTENT
-|       CONSISTENT_MODE
 |       CONSTRAINT_CATALOG
 |       CONSTRAINT_NAME
 |       CONSTRAINT_SCHEMA
@@ -28287,6 +28590,7 @@ ACCESS_INFO
 |       DESTINATION
 |       DEMAND
 |       DIAGNOSTICS
+|       DICT
 |       DICT_TABLE
 |       DIRECTORY
 |       DISABLE
@@ -28380,6 +28684,7 @@ ACCESS_INFO
 |       FTS_INDEX_TYPE
 |       FUNCTION
 |       FULL %prec HIGHER_PARENS
+|       FULLTEXT_DICT
 |       GENERAL
 |       GEOMETRY
 |       GEOMCOLLECTION
@@ -28393,13 +28698,17 @@ ACCESS_INFO
 |       GROUPING_ID
 |       GROUP_CONCAT
 |       GROUPCONCAT
+|       STRING_AGG
 |       GTS
+|       GLOB_PATTERN
 |       HANDLER
 |       HASH
+|       HEADER
 |       HEAP
 |       HELP
 |       HISTOGRAM
 |       HMS_CATALOG_NAME
+|       HMS_PRINCIPAL
 |       HOST
 |       HOSTS
 |       HOUR
@@ -28480,7 +28789,6 @@ ACCESS_INFO
 |       LICENSE
 |       LINE_DELIMITER
 |       LINESTRING
-|       LIST_
 |       LISTAGG
 |       LN
 |       LOB_INROW_THRESHOLD
@@ -28670,6 +28978,7 @@ ACCESS_INFO
 |       PLUS
 |       POINT
 |       POLICY
+|       POLICY_STATUS
 |       POLYGON
 |       POOL
 |       PORT
@@ -28705,10 +29014,13 @@ ACCESS_INFO
 |       QUERY_RESPONSE_TIME
 |       QUEUE_TIME
 |       QUICK
+|       RANDOM
 |       RANK
 |       READ_ERROR_LOG
 |       READ_ONLY
 |       REBUILD
+|       RECOMPILE
+|       RETAIN
 |       RECOVER
 |       RECOVERY
 |       RECOVERY_WINDOW
@@ -28724,6 +29036,7 @@ ACCESS_INFO
 |       REDUNDANCY
 |       REDUNDANT
 |       REFRESH
+|       REGEXP_PATTERN
 |       REGION
 |       REJECT
 |       RELAY
@@ -28928,6 +29241,8 @@ ACCESS_INFO
 |       SYSTEM_USER
 |       SYSDATE
 |       SYS_COUNT_INROW
+|       SYS_EXT_MAX
+|       SYS_EXT_MIN
 |       SLOG
 |       S3_REGION
 |       TABLE_CHECKSUM
@@ -29032,6 +29347,7 @@ ACCESS_INFO
 |       WEIGHT_STRING
 |       WHENEVER
 |       WINDOW
+|       WINDOW_FUNNEL
 |       WITHOUT
 |       WORK
 |       WRAPPER
@@ -29127,6 +29443,7 @@ unreserved_keyword_ambiguous_roles:
 |       SHUTDOWN
 |       ENCRYPT
 |       DECRYPT
+|       APPLICATION_PASSWORD_ADMIN
 ;
 
 /*注释掉的关键字有规约冲突暂时注释了,都是一些sql中常用的关键字,后面按需打开,增加这块代码逻辑是为了支持在mysql中允许以

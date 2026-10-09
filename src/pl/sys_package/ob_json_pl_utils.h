@@ -1,13 +1,6 @@
-/*
- * Copyright (c) 2021 OceanBase Technology Co.,Ltd.
- * OceanBase is licensed under Mulan PubL v1.
- * You can use this software according to the terms and conditions of the Mulan PubL v1.
- * You may obtain a copy of Mulan PubL v1 at:
- *          http://license.coscl.org.cn/MulanPubL-1.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v1 for more details.
+/**
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -72,6 +65,7 @@ public:
   static int get_json_array(sql::ObExecContext &ctx, ObJsonNode*& json_val);
   static int get_json_boolean(sql::ObExecContext &ctx, ObObj &data, ObJsonNode*& json_val);
   static int get_json_null(sql::ObExecContext &ctx, ObJsonNode*& json_val);
+  static int clone_json_node_to_target(ObJsonNode *target_doc, ObJsonNode *src_node, ObJsonNode *&dst_node);
   static int set_on_error(sql::ObExecContext &ctx, sql::ParamStore &params, common::ObObj &result);
   static int check_on_error(ObObj &obj, int& err_val);
   static bool proc_on_error(common::ObObj &result, int error_behavior, int &ret);

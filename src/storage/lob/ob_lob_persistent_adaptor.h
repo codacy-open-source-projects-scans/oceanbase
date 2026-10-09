@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_OB_LOB_PERSISTENT_ADAPTOR_
@@ -18,6 +11,7 @@
 #include "ob_i_lob_adaptor.h"
 #include "common/row/ob_row_iterator.h"
 #include "storage/blocksstable/ob_datum_row_iterator.h"
+#include "storage/compaction_ttl/ob_ttl_filter_info.h"
 
 namespace oceanbase
 {
@@ -30,14 +24,7 @@ class ObStoreCtxGuard;
 class ObPersistentLobApator : public ObILobApator
 {
 public:
-  explicit ObPersistentLobApator(const uint64_t tenant_id):
-    tenant_id_(tenant_id),
-    allocator_(lib::ObMemAttr(tenant_id, "LobPersist", ObCtxIds::LOB_CTX_ID)),
-    lock_(common::ObLatchIds::OB_LOB_PERSISTENT_ADAPTOR_LOCK),
-    table_param_inited_(false),
-    meta_table_param_(nullptr),
-    meta_table_dml_param_(nullptr)
-  {}
+  explicit ObPersistentLobApator(const uint64_t tenant_id);
 
   virtual ~ObPersistentLobApator();
 
@@ -86,8 +73,8 @@ public:
   int prepare_scan_param_schema_version(
       ObLobAccessParam &param,
       ObTableScanParam &scan_param);
-  int get_meta_table_param(const ObTableParam *&table_param);
-  int get_meta_table_dml_param(const ObTableDMLParam *&table_param);
+  int get_meta_table_param(ObTTLFilterColType ttl_type, const ObTableParam *&table_param);
+  int get_meta_table_dml_param(ObTTLFilterColType ttl_type, const ObTableDMLParam *&table_param);
 
 private:
   // get schema from schema service 
@@ -130,7 +117,6 @@ private:
       ObLobPieceInfo& in_row);
 
   int init_table_param();
-  int init_meta_column_ids(ObSEArray<uint64_t, 6> &meta_column_ids);
   int set_dml_seq_no(ObLobAccessParam &param);
 
   int build_common_scan_param(
@@ -150,8 +136,8 @@ private:
   ObArenaAllocator allocator_;
   mutable ObSpinLock lock_;
   bool table_param_inited_;
-  ObTableParam *meta_table_param_;
-  ObTableDMLParam *meta_table_dml_param_;
+  ObTableParam *meta_table_params_[static_cast<size_t>(ObTTLFilterColType::MAX)];
+  ObTableDMLParam *meta_table_dml_params_[static_cast<size_t>(ObTTLFilterColType::MAX)];
 
 private:
   static const uint64_t LOB_EXPIRE_TIME_US = 3 * 1000 * 1000; // 3s

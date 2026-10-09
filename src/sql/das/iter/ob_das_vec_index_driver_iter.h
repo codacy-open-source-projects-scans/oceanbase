@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_VEC_INDEX_DRIVER_ITER_H_
@@ -89,6 +82,8 @@ public:
       snapshot_(nullptr),
       vec_index_scan_iter_(nullptr),
       filter_iter_(nullptr),
+      pre_filter_iter_(nullptr),
+      post_filter_iter_(nullptr),
       vec_index_driver_ctdef_(nullptr),
       vec_index_driver_rtdef_(nullptr),
       vec_index_type_(ObVecIndexType::VEC_INDEX_INVALID),
@@ -101,7 +96,9 @@ public:
       dim_(0),
       filter_mode_(ObVecFilterMode::VEC_FILTER_MODE_INVALID),
       scalar_scan_ctdef_(nullptr),
-      scalar_scan_rtdef_(nullptr) {}
+      scalar_scan_rtdef_(nullptr),
+      filter_rtdef_for_reeval_(nullptr),
+      go_brute_force_(false) {}
 
   virtual ~ObDASVecIndexDriverIterParam() {}
 
@@ -119,6 +116,8 @@ public:
   TO_STRING_KV(K_(vec_index_driver_ctdef),
               K_(vec_index_driver_rtdef),
               K_(filter_iter),
+              K_(pre_filter_iter),
+              K_(post_filter_iter),
               K_(vec_index_scan_iter),
               K_(vec_index_type),
               K_(vec_idx_try_path),
@@ -130,6 +129,8 @@ public:
 
   ObDASVecIndexScanIter *vec_index_scan_iter_;
   ObDASIter *filter_iter_;
+  ObDASIter *pre_filter_iter_;
+  ObDASIter *post_filter_iter_;
 
   const ObDASVecIndexDriverCtDef *vec_index_driver_ctdef_;
   ObDASVecIndexDriverRtDef *vec_index_driver_rtdef_;
@@ -149,6 +150,8 @@ public:
   ObVecFilterMode filter_mode_;
   const ObDASScalarScanCtDef *scalar_scan_ctdef_;
   ObDASScalarScanRtDef *scalar_scan_rtdef_;
+  ObIDASSearchRtDef *filter_rtdef_for_reeval_;
+  bool go_brute_force_;
 };
 
 
@@ -164,6 +167,8 @@ public:
       vec_op_alloc_("VecIdxDriver", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       vec_index_scan_iter_(nullptr),
       filter_iter_(nullptr),
+      pre_filter_iter_(nullptr),
+      post_filter_iter_(nullptr),
       bitmap_(nullptr),
       vec_index_driver_ctdef_(nullptr),
       vec_index_driver_rtdef_(nullptr),
@@ -192,7 +197,12 @@ public:
       vid_to_distance_(),
       filter_mode_(ObVecFilterMode::VEC_FILTER_MODE_INVALID),
       scalar_scan_ctdef_(nullptr),
-      scalar_scan_rtdef_(nullptr) {}
+      scalar_scan_rtdef_(nullptr),
+      filter_rtdef_for_reeval_(nullptr),
+      go_brute_force_(false),
+      last_partition_row_count_(-1),
+      last_filter_est_row_count_(-1),
+      profile_(nullptr) {}
 
   virtual ~ObDASVecIndexDriverIter() {}
 
@@ -216,6 +226,7 @@ public:
   }
 
   ObDASVecIndexScanIter *get_vec_index_scan_iter() const { return vec_index_scan_iter_; }
+  const ObDASVecIndexDriverCtDef *get_driver_ctdef() const { return vec_index_driver_ctdef_; }
 
   static const uint64_t VSAG_MAX_EF_SEARCH = 160000;
   static constexpr double FIXED_MAGNIFICATION_RATIO = 2.0;
@@ -250,11 +261,18 @@ private:
   int fill_results_to_eval_ctx(share::ObVectorQueryVidIterator *adaptor_vid_iter, int64_t &count, int64_t capacity);
 
   int post_query_vid_with_expr_filter();
+  int do_expr_filter_batch();
   int filter_by_index_back(int64_t vid, float distance, bool &filter_res);
   int set_rowkey_by_vid(int64_t vid);
   int get_single_row_from_filter_iter(bool is_vectorized);
 
   int init_adaptor_vid_iter_if_null();
+
+  ObVecPathType get_vec_index_path_type();
+
+  int evaluate_partition_path();
+  void switch_to_pre_filter();
+  void switch_to_post_filter();
 
   OB_INLINE bool is_pre_filter() const { return vec_index_type_ == ObVecIndexType::VEC_INDEX_PRE; }
   OB_INLINE bool is_iter_filter() const { return vec_index_type_ == ObVecIndexType::VEC_INDEX_POST_ITERATIVE_FILTER; }
@@ -275,6 +293,8 @@ private:
 
   ObDASVecIndexScanIter *vec_index_scan_iter_;
   ObDASIter *filter_iter_;
+  ObDASIter *pre_filter_iter_;
+  ObDASIter *post_filter_iter_;
   ObVecIndexBitmap bitmap_;
 
   const ObDASVecIndexDriverCtDef *vec_index_driver_ctdef_;
@@ -316,7 +336,12 @@ private:
   ObVecFilterMode filter_mode_;
   const ObDASScalarScanCtDef *scalar_scan_ctdef_;
   ObDASScalarScanRtDef *scalar_scan_rtdef_;
+  ObIDASSearchRtDef *filter_rtdef_for_reeval_;
+  bool go_brute_force_;
+  int64_t last_partition_row_count_;
+  int64_t last_filter_est_row_count_;
   common::ObObj vid_obj_for_lookup_;
+  common::ObOpProfile<common::ObMetric> *profile_;
 };
 
 } // namespace sql

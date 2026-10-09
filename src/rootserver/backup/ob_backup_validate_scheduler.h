@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
  #ifndef OCEANBASE_ROOTSERVER_OB_BACKUP_VALIDATE_SCHEDULER_H_
@@ -220,6 +213,7 @@ private:
   int update_task_to_canceling_(ObArray<share::ObBackupValidateTaskAttr> &task_attrs);
   int do_validate_tasks_(const ObArray<share::ObBackupValidateTaskAttr> &task_attrs);
   int get_need_validate_infos_(
+      common::ObISQLClient &sql_proxy,
       ObArray<share::ObBackupSetFileDesc> &set_list,
       ObArray<share::ObPieceKey> &piece_list,
       common::hash::ObHashMap<int64_t, ObArray<share::ObPieceKey>> &complement_piece_map);
@@ -251,6 +245,7 @@ private:
       ObBackupDest &complement_dest);
   int persist_archive_piece_tasks_(common::ObISQLClient &trans, const ObArray<share::ObPieceKey> &piece_list);
   int inner_persist_set_task_(
+      common::ObMySQLTransaction &trans,
       const ObArray<share::ObBackupSetFileDesc> &set_list,
       const ObArray<share::ObPieceKey> &piece_list,
       const common::hash::ObHashMap<int64_t,

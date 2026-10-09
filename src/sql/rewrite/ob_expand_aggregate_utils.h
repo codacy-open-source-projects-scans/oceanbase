@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_REWRITE_EXPAND_AGGREGATE_UTILS
@@ -99,7 +92,7 @@ private:
                          ObRawExpr *&replace_expr,
                          ObIArray<ObAggFunRawExpr*> &new_aggr_items);
 
-  bool is_valid_aggr_type(const ObItemType aggr_type) const;
+  bool is_valid_aggr_type(ObDMLStmt *stmt, const ObItemType aggr_type) const;
 
   static bool is_covar_expr_type(const ObItemType aggr_type) {
     return aggr_type == T_FUN_COVAR_POP || aggr_type == T_FUN_COVAR_SAMP;
@@ -150,12 +143,17 @@ private:
            aggr_type == T_FUN_STDDEV_SAMP ||
            aggr_type == T_FUN_APPROX_COUNT_DISTINCT ||
            aggr_type == T_FUN_SYS_RB_AND_CARDINALITY_AGG ||
-           aggr_type == T_FUN_SYS_RB_OR_CARDINALITY_AGG;
+           aggr_type == T_FUN_SYS_RB_OR_CARDINALITY_AGG ||
+           aggr_type == T_FUN_AVG_WEIGHTED;
   }
 
   int expand_avg_expr(ObAggFunRawExpr *aggr_expr,
                       ObRawExpr *&replace_expr,
                       ObIArray<ObAggFunRawExpr*> &new_aggr_items);
+
+  int expand_avg_weighted_expr(ObAggFunRawExpr *aggr_expr,
+                               ObRawExpr *&replace_expr,
+                               ObIArray<ObAggFunRawExpr*> &new_aggr_items);
 
   int expand_oracle_variance_expr(ObAggFunRawExpr *aggr_expr,
                                   ObRawExpr *&replace_expr,

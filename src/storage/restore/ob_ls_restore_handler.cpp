@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -20,9 +13,6 @@
 #include "observer/ob_server_event_history_table_operator.h"
 #include "storage/high_availability/ob_rebuild_service.h"
 #include "storage/high_availability/ob_storage_ha_utils.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "close_modules/shared_storage/storage/high_availability/ob_ss_ls_restore_state.h"
-#endif
 #include "share/backup/ob_backup_connectivity.h"
 #include "rootserver/ob_tenant_info_loader.h"
 #include "src/storage/restore/ob_tenant_restore_info_mgr.h"
@@ -487,6 +477,8 @@ int ObLSRestoreHandler::refresh_restore_info_()
     ObPhysicalRestoreBackupDestList backup_dest_list;
     common::ObArray<share::ObBackupSetBriefInfo> backup_set_list;
     const ObBackupDestType::TYPE backup_dest_type = ObBackupDestType::DEST_TYPE_RESTORE_DATA;
+    // dest_id is reserved for traffic control, which is not available currently; temporarily set it to 0
+    // TODO (xingzhi): get correct dest id when traffic control is available
     int64_t dest_id = 0;
     ObTenantBackupDestInfoMgr *mgr = MTL(ObTenantBackupDestInfoMgr *);
     if (OB_ISNULL(mgr)) {
@@ -507,9 +499,6 @@ int ObLSRestoreHandler::refresh_restore_info_()
       LOG_WARN("failed to get backup dest list from restore info", K(ret), K(tenant_id));
     } else if (OB_FAIL(backup_dest_list.get_backup_set_brief_info_list(backup_set_list))) {
       LOG_WARN("fail to get backup set brief info list", K(ret), K(backup_dest_list));
-    } else if (OB_FAIL(share::ObBackupStorageInfoOperator::get_restore_dest_id(*sql_proxy, tenant_id,
-                                                                                  backup_dest_type, dest_id))) {
-      LOG_WARN("failed to get restore dest id", K(ret), K(tenant_id), K(backup_dest_type));
     } else if (backup_set_list.empty()) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("backup set list is empty", K(ret), K(tenant_id));
@@ -702,44 +691,6 @@ int ObLSRestoreHandler::get_restore_state_handler_(const share::ObLSRestoreStatu
       }
       break;
     }
-#ifdef OB_BUILD_SHARED_STORAGE
-    case ObLSRestoreStatus::Status::SS_RESTORE_START: {
-      ObSSLSRestoreStartState *tmp_ptr = nullptr;
-      if (OB_FAIL(construct_state_handler_(tmp_ptr))) {
-        LOG_WARN("fail to construct ObLSRestoreStartState", K(ret), K(new_status));
-      } else {
-        new_state_handler = tmp_ptr;
-      }
-      break;
-    }
-    case ObLSRestoreStatus::Status::SS_RESTORE_LS: {
-      ObSSLSRestoreLSState *tmp_ptr = nullptr;
-      if (OB_FAIL(construct_state_handler_(tmp_ptr))) {
-        LOG_WARN("fail to construct ObSSLSRestoreLSState", K(ret), K(new_status));
-      } else {
-        new_state_handler = tmp_ptr;
-      }
-      break;
-    }
-    case ObLSRestoreStatus::Status::SS_RESTORE_WAIT_LS: {
-      ObSSWaitLSRestoreState *tmp_ptr = nullptr;
-      if (OB_FAIL(construct_state_handler_(tmp_ptr))) {
-        LOG_WARN("fail to construct ObSSWaitLSRestoreState", K(ret), K(new_status));
-      } else {
-        new_state_handler = tmp_ptr;
-      }
-      break;
-    }
-    case ObLSRestoreStatus::Status::SS_RESTORE_CLOG: {
-      ObSSLSRestoreCLogState *tmp_ptr = nullptr;
-      if (OB_FAIL(construct_state_handler_(tmp_ptr))) {
-        LOG_WARN("fail to construct ObSSLSRestoreRestoreCLogState", K(ret), K(new_status));
-      } else {
-        new_state_handler = tmp_ptr;
-      }
-      break;
-    }
-#endif
     default: {
       ret = OB_ERR_SYS;
       LOG_ERROR("unknown ls restore status", K(ret), K(new_status));

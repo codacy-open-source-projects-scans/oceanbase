@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -15,9 +8,6 @@
 #include "storage/backup/ob_backup_index_block_builder_mgr.h"
 #include "storage/tablet/ob_tablet.h"
 #include "storage/tablet/ob_mds_schema_helper.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "share/compaction/ob_shared_storage_compaction_util.h"
-#endif
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -184,11 +174,6 @@ int ObBackupTaskIndexRebuilderMgr::prepare_index_block_rebuilder_(
   blocksstable::ObMacroSeqParam macro_seq_param;
   macro_seq_param.start_ = 0;
   macro_seq_param.seq_type_ = blocksstable::ObMacroSeqParam::SeqType::SEQ_TYPE_INC;
-#ifdef OB_BUILD_SHARED_STORAGE
-  if (GCTX.is_shared_storage_mode() && OB_NOT_NULL(task_idx) && *task_idx > 0) {
-    macro_seq_param.start_ += (*task_idx) * oceanbase::compaction::MACRO_STEP_SIZE;
-  }
-#endif
   void *buf = NULL;
   if (!item.is_valid() || 2 != device_handle_array.count()) {
     ret = OB_INVALID_ARGUMENT;
@@ -398,9 +383,7 @@ int ObBackupTabletIndexBlockBuilderMgr::open_sstable_index_builders_without_lock
           LOG_WARN("table should not be null", K(ret));
         } else {
           const ObITable::TableKey &table_key = sstable_ptr->get_key();
-          if (GCTX.is_shared_storage_mode() && table_key.is_ddl_dump_sstable()) {
-            // do nothing
-          } else if (OB_FAIL(mgr->add_sstable_index_builder(ls_id_, tablet_handle, table_key, sstable_ptr))) {
+          if (OB_FAIL(mgr->add_sstable_index_builder(ls_id_, tablet_handle, table_key, sstable_ptr))) {
             LOG_WARN("failed to add sstable index builder", K(ret), K(tablet_id), K(table_key), KPC(sstable_ptr));
           } else {
             LOG_INFO("[INDEX_BUILDER_MGR] open sstable index builder", K(tablet_id), K(table_key));
@@ -685,7 +668,10 @@ ObBackupTabletSSTableIndexBuilderMgr::ObBackupTabletSSTableIndexBuilderMgr()
     builders_(),
     merge_results_(),
     local_reuse_map_(),
-    is_major_compaction_mview_dep_tablet_(false)
+    is_major_compaction_mview_dep_tablet_(false),
+    mock_cg_allocator_("BACKUP_MOCK_CG", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
+    mock_rowkey_cg_schema_(nullptr),
+    mock_single_cg_schema_(nullptr)
 {
 }
 
@@ -740,6 +726,17 @@ void ObBackupTabletSSTableIndexBuilderMgr::reset()
     }
   }
   builders_.reset();
+  if (nullptr != mock_rowkey_cg_schema_) {
+    mock_rowkey_cg_schema_->destroy(mock_cg_allocator_);
+    mock_cg_allocator_.free(mock_rowkey_cg_schema_);
+    mock_rowkey_cg_schema_ = nullptr;
+  }
+  if (nullptr != mock_single_cg_schema_) {
+    mock_single_cg_schema_->destroy(mock_cg_allocator_);
+    mock_cg_allocator_.free(mock_single_cg_schema_);
+    mock_single_cg_schema_ = nullptr;
+  }
+  mock_cg_allocator_.reset();
 }
 
 int ObBackupTabletSSTableIndexBuilderMgr::add_sstable_index_builder(
@@ -949,12 +946,27 @@ int ObBackupTabletSSTableIndexBuilderMgr::prepare_data_store_desc_(const share::
       } else {
         const uint16_t cg_idx = table_key.get_column_group_id();
         const ObStorageColumnGroupSchema *cg_schema = NULL;
-        if (table_key.is_cg_sstable()) {
-          if (OB_UNLIKELY(cg_idx < 0 || cg_idx >= storage_schema->get_column_group_count())) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("get unexpected cg idx", K(ret), K(cg_idx), KPC(storage_schema));
+        bool use_mock_cg_schema = false;
+        if (!table_key.is_normal_cg_sstable()) {
+          // no need to fetch cg schema
+        } else if (storage_schema->is_row_store()) {
+          // need get cg schema from mock cg schema
+          if (OB_FAIL(build_mock_cg_schemas_if_need_(*storage_schema))) {
+            LOG_WARN("failed to build mock cg schemas", K(ret));
+          } else if (HIDDEN_ROWKEY_COLUMN_GROUP_IDX == cg_idx) {
+            cg_schema = mock_rowkey_cg_schema_;
           } else {
-            cg_schema = &storage_schema->get_column_groups().at(cg_idx);
+            // cannot generate skip index for co sstable with mocked cg schema
+            use_mock_cg_schema = true;
+            cg_schema = mock_single_cg_schema_;
+          }
+        } else {
+          uint16_t fetch_cg_idx = cg_idx;
+          if (HIDDEN_ROWKEY_COLUMN_GROUP_IDX == cg_idx && !storage_schema->has_hidden_rowkey_column_group()) {
+            fetch_cg_idx = 0; // ALL CG + EACH CG + HIDDEN ROWKEY CG --> ROWKEY CG + EACH CG
+          }
+          if (OB_FAIL(storage_schema->get_cg_schema_with_column_group_idx(fetch_cg_idx, cg_schema))) {
+            LOG_WARN("failed to get column group schema", K(ret), K(cg_idx), K(fetch_cg_idx));
           }
         }
         if (FAILEDx(data_store_desc.init(false/* is ddl */,
@@ -974,6 +986,10 @@ int ObBackupTabletSSTableIndexBuilderMgr::prepare_data_store_desc_(const share::
           LOG_WARN("failed to init index store desc for column store table", K(ret), K(cg_idx), K(cg_schema));
         } else {
           int64_t column_cnt = sstable_meta_handle.get_sstable_meta().get_basic_meta().column_cnt_;
+          if (use_mock_cg_schema) {
+            data_store_desc.get_col_desc().agg_meta_array_.reset();
+            LOG_INFO("cannot generate skip index for old co sstable with mocked cg schema", K(ret), K(table_key));
+          }
           if (OB_FAIL(data_store_desc.get_col_desc().mock_valid_col_default_checksum_array(column_cnt))) {
             LOG_WARN("fail to mock valid col default checksum array", K(ret));
           } else if (OB_FAIL(data_store_desc.get_desc().update_basic_info_from_macro_meta(
@@ -983,6 +999,44 @@ int ObBackupTabletSSTableIndexBuilderMgr::prepare_data_store_desc_(const share::
         }
       }
       ObTabletObjLoadHelper::free(allocator, storage_schema);
+    }
+  }
+  return ret;
+}
+
+// under mutex lock
+int ObBackupTabletSSTableIndexBuilderMgr::build_mock_cg_schemas_if_need_(const ObStorageSchema &storage_schema)
+{
+  int ret = OB_SUCCESS;
+  uint16_t fake_idx = static_cast<uint16_t>(storage_schema.get_rowkey_column_num() + ObMultiVersionRowkeyHelpper::get_extra_rowkey_col_cnt());
+  if (nullptr != mock_rowkey_cg_schema_ && nullptr != mock_single_cg_schema_) {
+    // already built, reuse
+  } else if (OB_UNLIKELY(nullptr != mock_rowkey_cg_schema_ || nullptr != mock_single_cg_schema_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("mock cg schemas in inconsistent state", K(ret), KP_(mock_rowkey_cg_schema), KP_(mock_single_cg_schema));
+  } else if (OB_ISNULL(mock_rowkey_cg_schema_ = OB_NEWx(ObStorageColumnGroupSchema, &mock_cg_allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to alloc mock rowkey cg schema", K(ret));
+  } else if (OB_ISNULL(mock_single_cg_schema_ = OB_NEWx(ObStorageColumnGroupSchema, &mock_cg_allocator_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to alloc mock single cg schema", K(ret));
+  } else if (OB_FAIL(storage_schema.build_rowkey_column_group_schema(mock_cg_allocator_, *mock_rowkey_cg_schema_))) {
+    LOG_WARN("failed to build mock rowkey cg schema for backup", K(ret), K(tablet_id_));
+  } else if (OB_FAIL(storage_schema.generate_single_column_group_schema(mock_cg_allocator_, *mock_single_cg_schema_, fake_idx))) {
+    LOG_WARN("failed to build mock single cg schema for backup", K(ret), K(tablet_id_), K(fake_idx));
+  } else {
+    FLOG_INFO("[ROW_COL_SWITCH] built mock cg schemas for tablet", K(tablet_id_), KPC_(mock_rowkey_cg_schema), KPC_(mock_single_cg_schema));
+  }
+  if (OB_FAIL(ret)) {
+    if (nullptr != mock_rowkey_cg_schema_) {
+      mock_rowkey_cg_schema_->destroy(mock_cg_allocator_);
+      mock_cg_allocator_.free(mock_rowkey_cg_schema_);
+      mock_rowkey_cg_schema_ = nullptr;
+    }
+    if (nullptr != mock_single_cg_schema_) {
+      mock_single_cg_schema_->destroy(mock_cg_allocator_);
+      mock_cg_allocator_.free(mock_single_cg_schema_);
+      mock_single_cg_schema_ = nullptr;
     }
   }
   return ret;

@@ -1,19 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- *
- * ObEasyHazardMap
- * An easy-to-use HashMap that supports the get/revert/remove interface and implements the methods:
- * 1. use ObObConcurrentHashMapDoNotUseWithHazardValue as a HashMap that supports Hazard protection
- * 2. use ObSmallObjPool as the Value object allocator
- * 3. Require a fixed size of Value object
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIBOBCDC_EASY_HAZARD_MAP_

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_DAS_TEXT_RETRIEVAL_DEFINE_H_
@@ -36,7 +29,8 @@ public:
       match_operator_(nullptr),
       minimum_should_match_(nullptr),
       ir_ctdef_idx_(-1),
-      pushdown_must_filter_op_ctdef_idx_(-1)
+      pushdown_must_filter_op_ctdef_idx_(-1),
+      is_msm_unresolved_expr_(false)
   {
     set_is_scoring(true);
   }
@@ -56,7 +50,8 @@ public:
       KPC_(match_operator),
       KPC_(minimum_should_match),
       K_(ir_ctdef_idx),
-      K_(pushdown_must_filter_op_ctdef_idx));
+      K_(pushdown_must_filter_op_ctdef_idx),
+      K_(is_msm_unresolved_expr));
 
   ObExpr *query_text_;
   ObExpr *boost_;
@@ -64,6 +59,7 @@ public:
   ObExpr *minimum_should_match_;
   int64_t ir_ctdef_idx_;
   int64_t pushdown_must_filter_op_ctdef_idx_;
+  bool is_msm_unresolved_expr_;
 };
 
 struct ObDASMatchRtDef : ObIDASSearchRtDef

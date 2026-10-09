@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -64,6 +57,7 @@ struct ObExternalReadInfo final
 struct ObExternalFileUrlInfo
 {
   friend class ObExternalFileAccess;
+  friend class ObCSVPrefetchMgr;
   ObExternalFileUrlInfo(const ObString &location, const ObString &access_info, const ObString &url,
                         const ObString &content_digest, const int64_t file_size,
                         const int64_t modify_time) :
@@ -78,7 +72,10 @@ struct ObExternalFileUrlInfo
   {}
   TO_STRING_KV(K_(location), K_(access_info), K_(url), K_(content_digest), K_(file_size),
                K_(modify_time));
+  ObString get_url() const { return url_; }
+  ObString get_content_digest() const { return content_digest_; }
   int64_t get_file_size() const { return file_size_; }
+  int64_t get_modify_time() const { return modify_time_; }
 private:
   const ObString location_;
   const ObString access_info_;

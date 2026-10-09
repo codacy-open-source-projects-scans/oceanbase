@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -396,6 +389,36 @@ int ObKillSession::kill_session(const ObKillSessionArg &arg, ObSQLSessionMgr &se
       if (OB_FAIL(sess_mgr.kill_session(*sess_info))) {
         LOG_WARN("fail to kill session", K(ret), K(arg));
       }
+    }
+  }
+  return ret;
+}
+
+int ObKillSession::kill_one_session(uint32_t sessid, const ObAddr &addr, uint64_t tenant_id)
+{
+  int ret = OB_SUCCESS;
+  const ObAddr &self = GCONF.self_addr_;
+  ObKillSessionArg arg;
+  arg.sess_id_ = sessid;
+  arg.tenant_id_ = tenant_id;
+  if (OB_UNLIKELY(!addr.is_valid())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("addr is invalid", K(ret), K(addr));
+  } else if (addr == self) {
+    ObKillSession killer;
+    if (OB_ISNULL(GCTX.session_mgr_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("session_mgr is null", KR(ret));
+    } else if (OB_FAIL(killer.kill_session(arg, *GCTX.session_mgr_))) {
+      LOG_WARN("kill local session failed", KR(ret), K(sessid));
+    }
+  } else {
+    const int64_t rpc_timeout = GCONF.rpc_timeout;
+    if (OB_ISNULL(GCTX.srv_rpc_proxy_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null", K(ret));
+    } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(addr).by(tenant_id).timeout(rpc_timeout).kill_session(arg))) {
+      LOG_WARN("kill remote session via rpc failed", KR(ret), K(sessid), K(addr));
     }
   }
   return ret;

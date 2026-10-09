@@ -70,7 +70,6 @@ endfunction()
 ob_offline_observer(test_simple_ob test_ob_simple_cluster.cpp)
 ob_offline_observer(test_transfer_tx test_transfer_tx.cpp)
 ob_offline_observer(test_tx_data test_tx_data.cpp)
-ob_offline_observer(test_collect_mv mv/test_collect_mv.cpp)
 
 ob_unittest_observer(test_transfer_no_kill_tx test_transfer_tx.cpp)
 ob_unittest_observer(test_ls_recover test_ls_recover.cpp)
@@ -82,6 +81,7 @@ ob_unittest_observer(test_mds_table_checkpoint test_mds_table_checkpoint.cpp)
 ob_unittest_observer(test_ob_black_list_service test_ob_black_list_service.cpp)
 ob_unittest_observer(test_ob_queuing_table test_ob_queuing_table.cpp)
 ob_unittest_observer(test_ob_table_lock_service test_ob_table_lock_service.cpp)
+ob_unittest_observer(test_ddl_obj_lock_timeout test_ddl_obj_lock_timeout.cpp)
 ob_unittest_observer(test_ob_obj_lock_garbage_collector test_ob_obj_lock_garbage_collector.cpp)
 ob_unittest_observer(test_ob_window_compaction_controller test_ob_window_compaction_controller.cpp)
 ob_unittest_observer(test_ob_compaction_resource_manager test_ob_compaction_resource_manager.cpp)
@@ -148,8 +148,6 @@ ob_ha_unittest_observer(test_reorg_info_table_basic storage_ha/test_reorg_info_t
 ob_ha_unittest_observer(test_reorg_info_table_mini_and_minor storage_ha/test_reorg_info_table_mini_and_minor.cpp)
 errsim_ha_unittest_observer(errsim_test_transfer_handler errsim/storage_ha/errsim_test_transfer_handler.cpp)
 
-ob_farm_observer(test_collect_mv_farm mv/test_collect_mv.cpp)
-
 ###### rootservice case #########
 ob_unittest_observer(test_add_remove_replace_arbitration_service rootservice/test_add_remove_replace_arbitration_service.cpp)
 ob_unittest_observer(test_all_virtual_proxy_partition_info_default_value rootservice/test_all_virtual_proxy_partition_info_default_value.cpp)
@@ -172,9 +170,7 @@ ob_unittest_observer(test_tenant_transfer_service rootservice/test_tenant_transf
 ob_unittest_observer(test_transfer_partition_task rootservice/test_transfer_partition_task.cpp)
 ob_unittest_observer(test_dup_table_partition_balance rootservice/test_dup_table_partition_balance.cpp)
 ob_unittest_observer(test_transfer_task_operator rootservice/test_transfer_task_operator.cpp)
-ob_unittest_observer(test_ss_ha_macro_block_task_idempotency rootservice/test_ss_ha_macro_block_task_idempotency.cpp)
-ob_unittest_observer(test_ss_ha_macro_block_task_operator rootservice/test_ss_ha_macro_block_task_operator.cpp)
-ob_unittest_observer(test_ss_ha_macro_block_task_for_each rootservice/test_ss_ha_macro_block_task_for_each.cpp)
+ob_unittest_observer(test_backup_server_disk_space_filter rootservice/test_backup_server_disk_space_filter.cpp)
 ob_unittest_observer(test_ob_parallel_migration_mode rootservice/test_ob_parallel_migration_mode.cpp)
 ob_unittest_observer(test_ls_status_operator rootservice/test_ls_status_operator.cpp)
 ob_unittest_observer(test_external_resource_schema rootservice/test_external_resource_schema.cpp)
@@ -207,5 +203,4 @@ set(VECTOR_INDEX_TEST_SHARE
         vector_index/test_vector_index_utils.cpp
         )
 ob_unittest_observer(test_vector_index_freeze vector_index/test_vector_index_freeze.cpp ${VECTOR_INDEX_TEST_SHARE})
-ob_unittest_observer(test_vector_index_freeze_with_base vector_index/test_vector_index_freeze_with_base.cpp ${VECTOR_INDEX_TEST_SHARE})
 ####### vector index case #########

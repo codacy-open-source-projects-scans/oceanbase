@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/memtable/mvcc/ob_query_engine.h"
@@ -90,10 +83,11 @@ void ObQueryEngine::dump2text(FILE* fd)
         for (ObMvccTransNode *node = row->get_list_head(); OB_SUCC(ret) && OB_NOT_NULL(node); node = node->prev_) {
           const ObMemtableDataHeader *mtd = reinterpret_cast<const ObMemtableDataHeader *>(node->buf_);
           helper.reset();
-          fprintf(fd, "\t%s dml=%d size=%ld\n", helper.convert(*node), mtd->dml_flag_, mtd->buf_len_);
+          fprintf(fd, "\t%s dml=%d size=%ld", helper.convert(*node), mtd->dml_flag_, mtd->buf_len_);
           if (OB_FAIL(row_reader.read_row(mtd->buf_, mtd->buf_len_, nullptr, datum_row))) {
             TRANS_LOG(WARN, "Failed to read datum row", K(ret));
           } else {
+            fprintf(fd, " merge_engine_type=%s\n", ObMergeEngineStoreFormat::get_merge_engine_type_name(datum_row.merge_engine_type_));
             for (int64_t i = 0; OB_SUCC(ret) && i < datum_row.get_column_count(); i++) {
               blocksstable::ObStorageDatum &datum = datum_row.storage_datums_[i];
               helper.reset();
@@ -422,7 +416,7 @@ int ObQueryEngine::sample_rows(Iterator<BtreeRawIterator> *iter,
     TRANS_LOG(WARN, "set key range to btree scan handle failed", KR(ret));
   } else {
     while (OB_SUCC(ret)) {
-      if (OB_FAIL(iter->next())) {
+      if (OB_FAIL(iter->next_internal())) {
         if (OB_ITER_END != ret) {
           TRANS_LOG(WARN, "query engine iter next fail", KR(ret));
         }
@@ -432,7 +426,11 @@ int ObQueryEngine::sample_rows(Iterator<BtreeRawIterator> *iter,
       } else {
         ++sample_row_count;
         ++physical_row_count;
-        if (blocksstable::ObDmlFlag::DF_NOT_EXIST == value->first_dml_flag_ &&
+        if (value->is_empty()) {
+          // Empty rows must still be counted in sample_row_count above; otherwise
+          // the sample limit is never reached and we may scan a large number of
+          // empty rows during sampling.
+        } else if (blocksstable::ObDmlFlag::DF_NOT_EXIST == value->first_dml_flag_ &&
             blocksstable::ObDmlFlag::DF_NOT_EXIST == value->last_dml_flag_) {
           ObMvccTransNode *iter = value->get_list_head();
           if (nullptr != iter && iter->get_tx_id() == tx_id) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX TEST
@@ -627,12 +620,16 @@ public:
 
       if (OB_FAIL(dag->init(dag_id, expect_ret, expect_value, this))) {
         COMMON_LOG(WARN, "failed to init dag", K(ret));
+        scheduler_->free_dag(*dag);
       } else if (OB_SUCCESS != (tmp_ret = alloc_task(*dag, task))){
         COMMON_LOG(WARN, "failed to alloc task", K(tmp_ret));
+        scheduler_->free_dag(*dag);
       } else if (OB_FAIL(task->init(dag_id, NULL, expect_ret != OB_SUCCESS))) {
         COMMON_LOG(WARN, "failed to init task", K(ret));
+        scheduler_->free_dag(*dag);
       } else if (OB_FAIL(dag->add_task(*task))) {
         COMMON_LOG(WARN, "failed to add task", K(ret));
+        scheduler_->free_dag(*dag);
       } else {
         if (OB_SUCCESS != (tmp_ret = scheduler_->add_dag(dag))) {
           if (OB_SIZE_OVERFLOW != tmp_ret) {
@@ -1663,94 +1660,6 @@ TEST_F(TestDagScheduler, test_max_concurrent_task)
   wait_scheduler();
   EXPECT_EQ(0, scheduler->get_running_task_cnt(ObDagPrio::DAG_PRIO_COMPACTION_MID));
 }
-
-#ifdef OB_BUILD_SHARED_STORAGE
-TEST_F(TestDagScheduler, test_auto_adaptive)
-{
-  EXPECT_EQ(OB_SUCCESS, ObClockGenerator::init());
-  EXPECT_EQ(OB_SUCCESS, ObTenantConfigMgr::get_instance().add_tenant_config(MTL_ID()));
-  ObTenantDagScheduler *scheduler = MTL(ObTenantDagScheduler*);
-  ASSERT_TRUE(nullptr != scheduler);
-  ASSERT_EQ(OB_SUCCESS, scheduler->init(MTL_ID(), time_slice));
-  scheduler->stop();
-  bool finish_flag[6] = {false, false, false, false, false, false};
-  int32_t concurrency = 1;
-  LoopWaitTask *inc_task = NULL;
-
-  TestMemRelatedDag *dag1 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag1));
-  EXPECT_EQ(OB_SUCCESS, dag1->init(1));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag1, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[0]));
-  EXPECT_EQ(OB_SUCCESS, dag1->add_task(*inc_task));
-
-  TestSSUploadDag *dag2 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag2));
-  EXPECT_EQ(OB_SUCCESS, dag2->init(2));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag2, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[1]));
-  EXPECT_EQ(OB_SUCCESS, dag2->add_task(*inc_task));
-
-  TestSSUploadDag *dag3 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag3));
-  EXPECT_EQ(OB_SUCCESS, dag3->init(3));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag3, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[2]));
-  EXPECT_EQ(OB_SUCCESS, dag3->add_task(*inc_task));
-
-  TestSSAttachDag *dag4 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag4));
-  EXPECT_EQ(OB_SUCCESS, dag4->init(4));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag4, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[3]));
-  EXPECT_EQ(OB_SUCCESS, dag4->add_task(*inc_task));
-
-  TestCompMidDag *dag5 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag5));
-  EXPECT_EQ(OB_SUCCESS, dag5->init(5));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag5, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[4]));
-  EXPECT_EQ(OB_SUCCESS, dag5->add_task(*inc_task));
-
-  TestCompMidDag *dag6 = NULL;
-  EXPECT_EQ(OB_SUCCESS, scheduler->alloc_dag(dag6));
-  EXPECT_EQ(OB_SUCCESS, dag6->init(6));
-  EXPECT_EQ(OB_SUCCESS, alloc_task(*dag6, inc_task));
-  EXPECT_EQ(OB_SUCCESS, inc_task->init(1, concurrency, finish_flag[5]));
-  EXPECT_EQ(OB_SUCCESS, dag6->add_task(*inc_task));
-
-  // default thread num is 24
-  EXPECT_EQ(24, scheduler->get_ss_total_thread_num_());
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag1));
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag2));
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag3));
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag4));
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag5));
-  EXPECT_EQ(OB_SUCCESS, scheduler->add_dag(dag6));
-
-  omt::ObTenantConfigGuard tenant_config(TENANT_CONF(MTL_ID()));
-  if (!tenant_config.is_valid()) {
-    COMMON_LOG(INFO, "tenant config invalid");
-  } else if (!tenant_config->_ob_enable_background_thread_auto_adapt) {
-    COMMON_LOG(INFO, "_ob_enable_background_thread_auto_adapt not enabled");
-  } else {
-    COMMON_LOG(INFO, "auto adapt ss thread");
-  }
-  scheduler->adapt_ss_work_thread();
-  usleep(11 * 1000 * 1000);  // 11 s
-  scheduler->adapt_ss_work_thread();
-  scheduler->dump_dag_status();
-  int64_t curr_limit = 0;
-  EXPECT_EQ(OB_SUCCESS, scheduler->get_adaptive_limit(ObDagPrio::DAG_PRIO_COMPACTION_HIGH, curr_limit));
-  EXPECT_EQ(6, curr_limit);
-  EXPECT_EQ(OB_SUCCESS, scheduler->get_adaptive_limit(ObDagPrio::DAG_PRIO_COMPACTION_MID, curr_limit));
-  EXPECT_EQ(7, curr_limit);
-  EXPECT_EQ(OB_SUCCESS, scheduler->get_adaptive_limit(ObDagPrio::DAG_PRIO_INC_SSTABLE_UPLOAD, curr_limit));
-  EXPECT_EQ(7, curr_limit);
-  EXPECT_EQ(OB_SUCCESS, scheduler->get_adaptive_limit(ObDagPrio::DAG_PRIO_ATTACH_SHARED_SSTABLE, curr_limit));
-  EXPECT_EQ(4, curr_limit);
-}
-#endif
 /*
 TEST_F(TestDagScheduler, test_large_thread_cnt)
 {

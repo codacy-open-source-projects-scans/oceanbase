@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -72,7 +65,9 @@ ObTableIterParam::ObTableIterParam()
       is_get_(false),
       is_sample_(false),
       filter_canbe_handle_in_di_(false),
-      reserved_(0)
+      enable_append_only_blockscan_(false),
+      reserved_(0),
+      merge_engine_upper_version_()
 {}
 
 ObTableIterParam::~ObTableIterParam()
@@ -139,6 +134,7 @@ void ObTableIterParam::reset()
   is_tablet_spliting_ = false;
   is_column_replica_table_ = false;
   is_delete_insert_ = false;
+  enable_append_only_blockscan_ = false;
   merge_engine_type_ = ObMergeEngineType::OB_MERGE_ENGINE_MAX;
   is_get_ = false;
   is_sample_ = false;
@@ -148,6 +144,7 @@ void ObTableIterParam::reset()
   ObSSTableIndexFilterFactory::destroy_sstable_index_filter(sstable_index_filter_);
   need_update_tablet_param_ = nullptr;
   default_row_ = nullptr;
+  merge_engine_upper_version_.reset();
 }
 
 int ObTableIterParam::refresh_lob_column_out_status()
@@ -396,9 +393,10 @@ int ObTableAccessParam::init(
     iter_param_.limit_prefetch_ = (nullptr == op_filters_ || op_filters_->empty());
     iter_param_.is_mds_query_ = scan_param.is_mds_query_;
 
-    if (iter_param_.is_use_column_store() &&
-        nullptr != table_param.get_read_info().get_cg_idxs() &&
-        !iter_param_.need_fill_group_idx()) { // not use column store in group rescan
+    // for online row-col switch: schema is row store but the major is pure col, should use column store path
+    if ((iter_param_.is_use_column_store() || (nullptr != tablet_handle && tablet_handle->get_obj()->is_last_major_pure_column_store()))
+            && nullptr != table_param.get_read_info().get_cg_idxs()
+            && !iter_param_.need_fill_group_idx()) { // not use column store in group rescan
       iter_param_.set_use_column_store();
     } else {
       iter_param_.set_not_use_column_store();
@@ -414,7 +412,9 @@ int ObTableAccessParam::init(
       iter_param_.disable_blockscan();
     }
 
-    if (OB_FAIL(iter_param_.refresh_lob_column_out_status())) {
+    if (OB_FAIL(iter_param_.merge_engine_upper_version_.assign(table_param.get_merge_engine_upper_version()))) {
+      STORAGE_LOG(WARN, "Failed to assign merge engine upper version", K(ret), K(table_param));
+    } else if (OB_FAIL(iter_param_.refresh_lob_column_out_status())) {
       STORAGE_LOG(WARN, "Failed to refresh lob column out status", K(ret), K(iter_param_));
     } else if (scan_param.use_index_skip_scan() &&
                OB_FAIL(check_skip_scan(scan_param, iter_param_))) {
@@ -425,6 +425,7 @@ int ObTableAccessParam::init(
       iter_param_.is_get_ = scan_param.is_get_;
       iter_param_.is_sample_ = !scan_param.sample_info_.is_no_sample();
       iter_param_.filter_canbe_handle_in_di_ = table_param.is_safe_filter_with_di();
+      iter_param_.enable_append_only_blockscan_ = iter_param_.is_append_only_can_blockscan();
 
       if (iter_param_.can_use_delete_insert_query_path(scan_param.scan_flag_.scan_order_)) {
         iter_param_.is_delete_insert_ = true;
@@ -484,7 +485,7 @@ int ObTableAccessParam::init_merge_param(
     const common::ObTabletID &tablet_id,
     const ObITableReadInfo &read_info,
     const bool is_multi_version_minor_merge,
-    const ObMergeEngineType merge_engine_type)
+    const ObMergeEngineType original_merge_engine_type)
 {
   int ret = OB_SUCCESS;
 
@@ -497,8 +498,8 @@ int ObTableAccessParam::init_merge_param(
     iter_param_.is_multi_version_minor_merge_ = is_multi_version_minor_merge;
     iter_param_.read_info_ = &read_info;
     iter_param_.rowkey_read_info_ = &read_info;
-    iter_param_.is_delete_insert_ = is_multi_version_minor_merge && merge_engine_type == ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT;
-    iter_param_.merge_engine_type_ = merge_engine_type;
+    iter_param_.is_delete_insert_ = is_multi_version_minor_merge && original_merge_engine_type == ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT;
+    iter_param_.merge_engine_type_ = original_merge_engine_type;
     // merge_query will not goto ddl_merge_query, no need to pass tablet
     is_inited_ = true;
   }

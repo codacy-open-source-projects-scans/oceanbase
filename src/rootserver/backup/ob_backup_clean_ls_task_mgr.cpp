@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -224,20 +217,7 @@ int ObBackupCleanLSTaskMgr::cancel(int64_t &finish_cnt)
   next_status.status_ = ObBackupTaskStatus::Status::FINISH;
   if (ObBackupTaskStatus::Status::PENDING == ls_attr_->status_.status_
     || ObBackupTaskStatus::Status::DOING == ls_attr_->status_.status_) {
-#if OB_BUILD_SHARED_STORAGE
-    if (GCTX.is_shared_storage_mode()) {
-      ret = task_scheduler_->cancel_tasks(BackupJobType::BACKUP_CLEAN_JOB, ls_attr_->tenant_id_);
-    } else {
-      ret = task_scheduler_->cancel_tasks(BackupJobType::BACKUP_CLEAN_JOB, ls_attr_->job_id_, ls_attr_->tenant_id_);
-    }
-#else
-    if (!GCTX.is_shared_storage_mode()) {
-      ret = task_scheduler_->cancel_tasks(BackupJobType::BACKUP_CLEAN_JOB, ls_attr_->job_id_, ls_attr_->tenant_id_);
-    } else {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("unexpeced shared storage mode", K(ret));
-    }
-#endif
+    ret = task_scheduler_->cancel_tasks(BackupJobType::BACKUP_CLEAN_JOB, ls_attr_->job_id_, ls_attr_->tenant_id_);
     if (OB_FAIL(ret)) {
       if (OB_ENTRY_EXIST == ret) {
         ret = OB_SUCCESS;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_DAS_IR_DEFINE_H_
@@ -66,6 +59,7 @@ public:
       search_text_(nullptr),
       inv_scan_domain_id_col_(nullptr),
       inv_scan_doc_length_col_(nullptr),
+      inv_scan_token_cnt_col_(nullptr),
       inv_scan_pos_list_col_(nullptr),
       match_filter_(nullptr),
       relevance_expr_(nullptr),
@@ -191,6 +185,7 @@ public:
                        KPC_(search_text),
                        KPC_(inv_scan_domain_id_col),
                        KPC_(inv_scan_doc_length_col),
+                       KPC_(inv_scan_token_cnt_col),
                        KPC_(inv_scan_pos_list_col),
                        KPC_(match_filter),
                        KPC_(relevance_expr),
@@ -207,6 +202,7 @@ public:
   ObExpr *search_text_;
   ObExpr *inv_scan_domain_id_col_;
   ObExpr *inv_scan_doc_length_col_;
+  ObExpr *inv_scan_token_cnt_col_;
   ObExpr *inv_scan_pos_list_col_;
   ObExpr *match_filter_;
   ObExpr *relevance_expr_;

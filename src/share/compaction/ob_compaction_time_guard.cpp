@@ -1,12 +1,5 @@
-//Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2021 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #include "share/compaction/ob_compaction_time_guard.h"
 
 namespace oceanbase
@@ -301,35 +294,11 @@ int64_t ObStorageCompactionTimeGuard::to_string(char *buf, const int64_t buf_len
 }
 
 /**
- * --------------------------------------ObSSCompactionTimeGuard--------------------------------------
- */
-const char *ObSSCompactionTimeGuard::CompactionEventStr[] = {
-    "GET_SCHEDULE_TABLET",
-    "PREPARE_CLOG",
-    "UPDATE_TABLET_OBJ",
-    "GET_TABLET",
-    "SCHEDULE_MERGE",
-    "REFRESH",
-    "FORCE_FREEZE"
-};
-
-const char *ObSSCompactionTimeGuard::get_comp_event_str(enum CompactionEvent event)
-{
-  STATIC_ASSERT(static_cast<int64_t>(COMPACTION_EVENT_MAX) == ARRAYSIZEOF(CompactionEventStr), "events str len is mismatch");
-  const char *str = "";
-  if (event >= COMPACTION_EVENT_MAX || event < GET_SCHEDULE_TABLET) {
-    str = "invalid_type";
-  } else {
-    str = CompactionEventStr[event];
-  }
-  return str;
-}
-
-/**
  * --------------------------------------ObCOMergeTimeGuard--------------------------------------
  */
 const char *ObCOMergeTimeGuard::CompactionEventStr[] = {
     "MOVE_NEXT",
+    "BATCH_MOVE_NEXT",
     "COMPARE",
     "BUILD_LOG",
     "REPLAY_BASE_CG",

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -17,6 +10,8 @@
 #include "sql/engine/px/ob_px_sqc_async_proxy.h"
 #include "share/detect/ob_detect_manager_utils.h"
 #include "ob_px_coord_op.h"
+#include "sql/engine/ob_phy_operator_type.h"
+#include "sql/engine/subquery/ob_subplan_filter_op.h"
 
 using namespace oceanbase::common;
 using namespace oceanbase::share;
@@ -275,7 +270,7 @@ int ObSerialDfoScheduler::init_all_dfo_channel(ObExecContext &ctx) const
       /*do nothing*/
     }
     if (OB_SUCC(ret)) {
-      const bool has_reference_child = IS_HASH_SLAVE_MAPPING(parent->get_in_slave_mapping_type());
+      const bool has_reference_child = parent->has_reference_child();
       if (parent->is_thread_inited()) {
       } else if (has_reference_child && OB_FAIL(ObPXServerAddrUtil::alloc_distribution_of_reference_child(
             coord_info_.pruning_table_location_, ctx, *parent))) {
@@ -463,9 +458,51 @@ int ObSerialDfoScheduler::dispatch_sqcs(ObExecContext &exec_ctx,
           sqc.set_ignore_vtable_error(true);
         }
         if (coord_info_.enable_px_batch_rescan()) {
-          OZ(sqc.set_rescan_batch_params(coord_info_.batch_rescan_ctl_->params_));
+          if (OB_ISNULL(coord_info_.batch_rescan_ctl_)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("batch rescan ctl is null", K(ret));
+          } else {
+            const ObPxCoordSpec *px_coord_spec = static_cast<const ObPxCoordSpec *>(&(coord_info_.coord_.get_spec()));
+            bool use_filtered_params = false;
+            // for subplan filter px batch rescan, dispatch params by child index
+            if (px_coord_spec->batch_op_info_.op_type_ == PHY_SUBPLAN_FILTER) {
+              int64_t spf_child_idx = px_coord_spec->batch_op_info_.spf_child_idx_;
+              const ObSubPlanFilterSpec *spf_spec = nullptr;
+              ObOperatorKit *kit = exec_ctx.get_operator_kit(px_coord_spec->batch_op_info_.op_id_);
+              if (OB_FAIL(ret)) {
+              } else if (OB_ISNULL(kit) || OB_ISNULL(kit->spec_)) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("unexpected operator kit or spec is null", K(ret), KP(kit));
+              } else if (PHY_SUBPLAN_FILTER != kit->spec_->type_) {
+                // do nothing
+              } else if (OB_ISNULL(spf_spec = static_cast<const ObSubPlanFilterSpec *>(kit->spec_))) {
+                ret = OB_ERR_UNEXPECTED;
+                LOG_WARN("unexpected spf spec", K(ret), KP(kit->spec_));
+              } else if (spf_spec->px_rescan_param_positions_per_child_.count() <= 1) {
+                // do nothing
+              } else if (spf_child_idx <= 0
+                         || spf_child_idx > spf_spec->px_rescan_param_positions_per_child_.count()) {
+                LOG_TRACE("spf child index out of range, fallback to send all params",
+                         K(spf_child_idx),
+                         K(spf_spec->px_rescan_param_positions_per_child_.count()));
+              } else if (OB_FAIL(coord_info_.batch_rescan_ctl_->params_.extract_params_by_range(
+                                 spf_spec->px_rescan_param_positions_per_child_,
+                                 spf_child_idx,
+                                 sqc.get_rescan_batch_params()))) {
+                LOG_WARN("fail to extract params by range", K(ret), K(spf_child_idx));
+              } else {
+                use_filtered_params = true;
+              }
+            }
+            if (OB_SUCC(ret) && !use_filtered_params) {
+              if (OB_FAIL(sqc.set_rescan_batch_params(coord_info_.batch_rescan_ctl_->params_))) {
+                LOG_WARN("fail to set rescan batch params", K(ret));
+              }
+            }
+          }
         }
-        if (timeout_us <= 0) {
+        if (OB_FAIL(ret)) {
+        } else if (timeout_us <= 0) {
           ret = OB_TIMEOUT;
           LOG_WARN("dispatch sqc timeout", K(ret));
         } else if (OB_FAIL(args.sqc_.assign(sqc))) {
@@ -1388,7 +1425,7 @@ int ObParallelDfoScheduler::schedule_pair(ObExecContext &exec_ctx,
   }
   if (OB_SUCC(ret)) {
     if (!parent.is_scheduled()) {
-      const bool has_reference_child = IS_HASH_SLAVE_MAPPING(parent.get_in_slave_mapping_type());
+      const bool has_reference_child = parent.has_reference_child();
       if (has_reference_child && OB_FAIL(ObPXServerAddrUtil::alloc_distribution_of_reference_child(
             coord_info_.pruning_table_location_, exec_ctx, parent))) {
         LOG_WARN("alloc distribution of reference child failed", K(ret));

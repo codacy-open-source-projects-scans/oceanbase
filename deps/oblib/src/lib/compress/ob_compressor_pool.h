@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_COMPRESSOR_POOL_H_
@@ -27,7 +20,6 @@
 #include "zstd_1_3_8/ob_zstd_stream_compressor_1_3_8.h"
 #include "zstd_1_5_7/ob_zstd_compressor_1_5_7.h"
 #include "zstd_1_5_7/ob_zstd_stream_compressor_1_5_7.h"
-#include "zlib_lite/ob_zlib_lite_compressor.h"
 
 namespace oceanbase
 {
@@ -75,7 +67,6 @@ private:
   zstd::ObZstdCompressor zstd_compressor;
   zstd_1_3_8::ObZstdCompressor_1_3_8 zstd_compressor_1_3_8;
   zstd_1_5_7::ObZstdCompressor_1_5_7 zstd_compressor_1_5_7;
-  ZLIB_LITE::ObZlibLiteCompressor zlib_lite_compressor;
 
   //stream compressor
   ObLZ4StreamCompressor lz4_stream_compressor;

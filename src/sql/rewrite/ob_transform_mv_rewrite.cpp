@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -2633,13 +2626,13 @@ int ObTransformMVRewrite::check_opt_feat_ctrl(MvRewriteHelper &helper,
                                               bool &is_valid)
 {
   int ret = OB_SUCCESS;
-  uint64_t opt_version = LASTED_COMPAT_VERSION;
+  uint64_t opt_version = LATEST_COMPAT_VERSION;
   is_valid = true;
   if (OB_ISNULL(helper.ori_stmt_.get_query_ctx()) || OB_ISNULL(helper.mv_info_.view_stmt_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected null", K(ret), K(helper.ori_stmt_.get_query_ctx()), K(helper.mv_info_.view_stmt_));
   } else if (OB_FALSE_IT(opt_version = helper.ori_stmt_.get_query_ctx()->optimizer_features_enable_version_)) {
-  } else if (opt_version >= LASTED_COMPAT_VERSION) {
+  } else if (opt_version >= LATEST_COMPAT_VERSION) {
     // do nothing
   } else if (opt_version < COMPAT_VERSION_4_3_3
              && (!helper.query_delta_table_.is_empty()

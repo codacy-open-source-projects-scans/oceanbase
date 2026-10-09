@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL
@@ -233,9 +226,9 @@ int ObUserDefinedType::deep_copy_obj(
   ObIAllocator &allocator, const ObObj &src, ObObj &dst, bool need_new_allocator, bool ignore_del_element)
 {
   int ret = OB_SUCCESS;
-  CK (src.is_pl_extend());
+  // CK (src.is_pl_extend());
 
-  if (OB_SUCC(ret)) {
+  if (src.is_pl_extend()) {
     switch (src.get_meta().get_extend_type()) {
     case PL_CURSOR_TYPE: {
       OZ (ObRefCursorType::deep_copy_cursor(allocator, src, dst));
@@ -259,6 +252,8 @@ int ObUserDefinedType::deep_copy_obj(
     }
       break;
     }
+  } else {
+    OZ (common::deep_copy_obj(allocator, src, dst));
   }
   return ret;
 }
@@ -1958,6 +1953,9 @@ int ObRecordType::init_session_var(const ObPLResolveCtx &resolve_ctx,
     ObObj *member = NULL;
     MEMSET(data, 0, init_size);
     new (data) ObPLRecord(user_type_id_, record_members_.count());
+    if (is_object_type()) {
+      record->set_null();
+    }
     if (OB_FAIL(record->init_data(obj_allocator, true))) {
       obj_allocator.free(data);
     } else {
@@ -2011,6 +2009,11 @@ int ObRecordType::init_session_var(const ObPLResolveCtx &resolve_ctx,
             OZ (get_member(i)->get_size(PL_TYPE_INIT_SIZE, init_size));
             OZ (get_member(i)->newx(*record->get_allocator(), &resolve_ctx, member_ptr));
             OX (member->set_extend(member_ptr, get_member(i)->get_type(), init_size));
+            if (OB_SUCC(ret) && get_member(i)->is_record_type()) {
+              ObPLComposite *composite = reinterpret_cast<ObPLComposite *>(member_ptr);
+              CK (OB_NOT_NULL(composite));
+              OX (composite->set_null());
+            }
           }
         }
       }
@@ -2301,7 +2304,7 @@ int ObRecordType::deserialize(ObSchemaGetterGuard &schema_guard,
         if (!type->is_obj_type()) {
           const ObUserDefinedType *user_type = NULL;
           ObPLUDTNS ns(schema_guard);
-          ObArenaAllocator local_allocator;
+          ObArenaAllocator local_allocator("DeserRecordType", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID());
           int64_t ptr = 0;
           ObPLComposite *composite = NULL;
           if (OB_FAIL(ns.get_user_type(type->get_user_type_id(), user_type, &local_allocator))) {
@@ -2848,6 +2851,9 @@ int ObCollectionType::init_session_var(const ObPLResolveCtx &resolve_ctx,
                                             0,
                                             false));
       OX (default_construct ? coll->set_inited() : void(NULL));
+      if (OB_SUCC(ret) && !is_associative_array_type() && !default_construct) {
+        coll->set_null();
+      }
       if (OB_FAIL(ret)) {
         ObUserDefinedType::destruct_objparam(obj_allocator, obj, &(resolve_ctx.session_info_));
       }

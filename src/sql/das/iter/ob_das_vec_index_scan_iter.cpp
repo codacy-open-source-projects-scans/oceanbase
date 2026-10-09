@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -38,14 +31,21 @@ int ObVecIndexBitmap::init(int64_t min_vid, int64_t max_vid, uint64_t capacity)
   } else if (OB_ISNULL(allocator_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("allocator is null", K(ret));
+  } else if (capacity == 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("capacity is 0", K(ret));
   } else {
-    min_vid_bound_ = min_vid;
-    max_vid_bound_ = max_vid;
-    capacity_ = capacity;
-    type_ = VIDS;
-    if (OB_ISNULL(vids_ = static_cast<int64_t *>(allocator_->alloc(sizeof(int64_t) * capacity_)))) {
+    if (OB_ISNULL(vids_ = static_cast<int64_t *>(allocator_->alloc(sizeof(int64_t) * capacity)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-      LOG_WARN("failed to alloc vids", K(ret));
+      LOG_WARN("failed to alloc vids", K(ret), K(capacity));
+    } else {
+      min_vid_bound_ = min_vid;
+      max_vid_bound_ = max_vid;
+      capacity_ = capacity;
+      type_ = VIDS;
+      valid_cnt_ = 0;
+      min_vid_ = INT64_MAX;
+      max_vid_ = INT64_MIN;
     }
   }
 
@@ -60,8 +60,17 @@ int ObVecIndexBitmap::add_vid(int64_t vid)
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("vids_ is null", K(ret));
     } else if (valid_cnt_ >= capacity_) {
-      if (min_vid_ < min_vid_bound_ || max_vid_ > max_vid_bound_) {
-        if(OB_FAIL(upgrade_to_roaring_bitmap())) {
+
+      const uint64_t vid_range = static_cast<uint64_t>(max_vid_bound_)
+                               - static_cast<uint64_t>(min_vid_bound_) + 1;
+      const uint64_t bitmap_size = (vid_range + 7) / 8;
+
+      if (bitmap_size > NORMAL_BITMAP_MAX_SIZE) {
+        if (OB_FAIL(upgrade_to_roaring_bitmap())) {
+          LOG_WARN("failed to upgrade to roaring bitmap", K(ret));
+        }
+      } else if (min_vid_ < min_vid_bound_ || max_vid_ > max_vid_bound_) {
+        if (OB_FAIL(upgrade_to_roaring_bitmap())) {
           LOG_WARN("failed to upgrade to roaring bitmap", K(ret));
         }
       } else if (OB_FAIL(upgrade_to_byte_array())) {
@@ -81,7 +90,7 @@ int ObVecIndexBitmap::add_vid(int64_t vid)
     if (OB_ISNULL(bitmap_)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("bitmap_ is null", K(ret));
-    } else if (vid < min_vid_bound_ || vid > max_vid_bound_) {
+    } else if (OB_UNLIKELY(vid < min_vid_bound_ || vid > max_vid_bound_)) {
       if (OB_FAIL(upgrade_to_roaring_bitmap())) {
         LOG_WARN("failed to upgrade to roaring bitmap", K(ret));
       } else if (OB_FAIL(add_vid(vid))) {
@@ -130,9 +139,10 @@ int ObVecIndexBitmap::upgrade_to_byte_array()
     type_ = BYTE_ARRAY;
     bitmap_ = nullptr;
     capacity_ = 0;
-  } else if (valid_cnt_ != 0) {
-    int64_t vid_range = max_vid_bound_ - min_vid_bound_ + 1;
-    uint64_t bitmap_size = (vid_range + 7) / 8;
+  } else {
+    const uint64_t vid_range = static_cast<uint64_t>(max_vid_bound_)
+                             - static_cast<uint64_t>(min_vid_bound_) + 1;
+    const uint64_t bitmap_size = (vid_range + 7) / 8;
 
     if (bitmap_size > NORMAL_BITMAP_MAX_SIZE) {
       if (OB_FAIL(upgrade_to_roaring_bitmap())) {
@@ -145,23 +155,26 @@ int ObVecIndexBitmap::upgrade_to_byte_array()
         LOG_WARN("failed to alloc bitmap", K(ret), K(bitmap_size));
       } else {
         memset(new_bitmap, 0, sizeof(uint8_t) * bitmap_size);
-        capacity_ = vid_range;
-        for (uint64_t i = 0; i < valid_cnt_; i++) {
+        for (uint64_t i = 0; OB_SUCC(ret) && i < valid_cnt_; i++) {
           int64_t vid = vids_[i];
-          if (vid >= min_vid_bound_ && vid <= max_vid_bound_) {
-            int64_t real_idx = vid - min_vid_bound_;
-            new_bitmap[real_idx >> 3] |= uint8_t(0x1 << (real_idx & 0x7));
-          } else {
+          int64_t real_idx = vid - min_vid_bound_;
+          if (OB_UNLIKELY(real_idx < 0 || static_cast<uint64_t>(real_idx >> 3) >= bitmap_size)) {
             ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("vid out of range", K(ret), K(vid), K(min_vid_bound_), K(max_vid_bound_));
+            LOG_WARN("vid out of bitmap range", K(ret), K(vid), K(min_vid_bound_), K(max_vid_bound_),
+                     K(real_idx), K(bitmap_size));
+          } else {
+            new_bitmap[real_idx >> 3] |= uint8_t(0x1 << (real_idx & 0x7));
           }
         }
-
-        if (OB_SUCC(ret) && OB_NOT_NULL(new_bitmap)) {
+        if (OB_SUCC(ret)) {
+          capacity_ = vid_range;
           allocator_->free(vids_);
           vids_ = nullptr;
           bitmap_ = new_bitmap;
           type_ = BYTE_ARRAY;
+        } else if (OB_NOT_NULL(new_bitmap)) {
+          allocator_->free(new_bitmap);
+          new_bitmap = nullptr;
         }
       }
     }
@@ -264,6 +277,10 @@ void ObVecIndexBitmap::reset()
   type_ = VIDS;
   capacity_ = 0;
   valid_cnt_ = 0;
+  min_vid_ = INT64_MAX;
+  max_vid_ = INT64_MIN;
+  min_vid_bound_ = INT64_MAX;
+  max_vid_bound_ = INT64_MIN;
 }
 
 int ObVecIndexBitmapIter::init(ObVecIndexBitmap *bitmap)

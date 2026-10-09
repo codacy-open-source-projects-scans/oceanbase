@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_OCEANBASE_SCHEMA_OB_SCHEMA_MGR_H_
@@ -46,6 +39,7 @@
 #include "share/schema/ob_ai_model_mgr.h"
 #include "share/schema/ob_ccl_rule_mgr.h"
 #include "share/schema/ob_sensitive_rule_mgr.h"
+#include "share/schema/ob_java_policy_mgr.h"
 
 namespace oceanbase
 {
@@ -231,6 +225,8 @@ public:
   inline int64_t get_schema_version() const { return schema_version_; }
   inline void set_default_tablegroup_id(const uint64_t default_tablegroup_id) { default_tablegroup_id_ = default_tablegroup_id; }
   inline uint64_t get_default_tablegroup_id() const { return default_tablegroup_id_; }
+  inline void set_default_tablespace_id(const uint64_t default_tablespace_id) { default_tablespace_id_ = default_tablespace_id; }
+  inline uint64_t get_default_tablespace_id() const { return default_tablespace_id_; }
   inline int set_database_name(const common::ObString &database_name)
   { return deep_copy_str(database_name, database_name_); }
   inline const char *get_database_name() const { return extract_str(database_name_); }
@@ -244,6 +240,7 @@ private:
   uint64_t database_id_;
   int64_t schema_version_;
   uint64_t default_tablegroup_id_;
+  uint64_t default_tablespace_id_;
   common::ObString database_name_;
   common::ObNameCaseMode name_case_mode_;
 };
@@ -301,9 +298,24 @@ public:
                                          || partition_status_ == PARTITION_STATUS_PHYSICAL_SPLITTING; }
   bool has_self_partition() const { return false; }
 
-  bool is_sharding_none() const { return sharding_ == OB_PARTITION_SHARDING_NONE; }
-  bool is_sharding_partition() const { return sharding_ == OB_PARTITION_SHARDING_PARTITION; }
-  bool is_sharding_adaptive() const { return sharding_ == OB_PARTITION_SHARDING_ADAPTIVE; }
+  bool is_sharding_none() const { return sharding_.case_compare(OB_PARTITION_SHARDING_NONE) == 0; }
+  bool is_sharding_partition() const { return sharding_.case_compare(OB_PARTITION_SHARDING_PARTITION) == 0; }
+  bool is_sharding_adaptive() const { return sharding_.case_compare(OB_PARTITION_SHARDING_ADAPTIVE) == 0; }
+  bool is_sharding_subpartition() const { return sharding_.case_compare(OB_PARTITION_SHARDING_SUBPARTITION) == 0; }
+  bool is_scope_server() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_SERVER)
+           || (scope_.empty() && is_sharding_none());
+  }
+  bool is_scope_zone() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_ZONE);
+  }
+  bool is_scope_cluster() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_CLUSTER)
+           || (scope_.empty() && (is_sharding_partition() || is_sharding_adaptive() || is_sharding_subpartition()));
+  }
 private:
   uint64_t tenant_id_;
   uint64_t tablegroup_id_;
@@ -790,6 +802,21 @@ public:
       const common::ObNameCaseMode &case_mode,
       const ObAiModelSchema *&ai_model_schema) const;
 
+  // java policy
+  int get_java_policy_schema(
+      const uint64_t tenant_id,
+      const uint64_t key,
+      const ObSimpleJavaPolicySchema *&java_policy_schema) const;
+
+  int get_java_policy_schemas_in_tenant(
+      const uint64_t tenant_id,
+      common::ObIArray<const ObSimpleJavaPolicySchema *> &schema_array) const;
+
+  int get_java_policy_schemas_of_grantee(
+    const uint64_t tenant_id,
+    const uint64_t grantee_id,
+    common::ObIArray<const ObSimpleJavaPolicySchema *> &schema_array) const;
+
   // other
   int get_tenant_schemas(common::ObIArray<const ObSimpleTenantSchema *> &tenant_schemas) const;
    int get_tenant_ids(common::ObIArray<uint64_t> &tenant_ids) const;
@@ -823,6 +850,10 @@ public:
   int check_database_exists_in_tablegroup(
       const uint64_t tenant_id,
       const uint64_t tablegroup_id,
+      bool &not_empty) const;
+  int check_database_exists_in_tablespace(
+      const uint64_t tenant_id,
+      const uint64_t tablespace_id,
       bool &not_empty) const;
   int get_aux_schemas(const uint64_t tenant_id,
                       const uint64_t data_table_id,
@@ -980,6 +1011,11 @@ private:
   int add_sensitive_rules(const common::ObIArray<ObSensitiveRuleSchema> &sensitive_rule_schemas);
   int add_sensitive_rule(const ObSensitiveRuleSchema &sensitive_rule_schema);
   int del_sensitive_rule(const ObTenantSensitiveRuleId &id);
+
+  // java policy
+  int add_java_policys(const common::ObIArray<ObSimpleJavaPolicySchema> &java_policy_schemas);
+  int add_java_policy(const ObSimpleJavaPolicySchema &java_policy_schema);
+  int del_java_policy(const ObTenantJavaPolicyId &id);
 private:
   common::ObArenaAllocator local_allocator_;
   common::ObIAllocator &allocator_;
@@ -1046,6 +1082,7 @@ private:
   TableInfos mlog_infos_;
   ObExternalResourceMgr external_resource_mgr_;
   ObAiModelMgr ai_model_mgr_;
+  ObJavaPolicyMgr java_policy_mgr_;
 };
 
 }//end of namespace schema

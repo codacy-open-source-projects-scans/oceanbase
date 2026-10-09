@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -2248,6 +2241,38 @@ int ObDbmsStatsUtils::set_trx_lock_timeout(sqlclient::ObISQLConnection *conn,
     LOG_WARN("failed to set trx lock timeout", K(ret), K(trx_lock_timeout));
   } else {
     need_restore = true;
+  }
+  return ret;
+}
+
+int ObDbmsStatsUtils::get_all_part_ids(const ObTableSchema &table_schema,
+                                       ObIArray<int64_t> &all_part_ids)
+{
+  int ret = OB_SUCCESS;
+  if (!table_schema.is_partitioned_table()) {
+    if (OB_FAIL(all_part_ids.push_back(table_schema.get_table_id()))) {
+      LOG_WARN("failed to push back table id", K(ret));
+    }
+  } else {
+    ObArenaAllocator allocator("GetAllPartIds", MTL_ID());
+    ObSEArray<PartInfo, 4> part_infos;
+    ObSEArray<PartInfo, 4> subpart_infos;
+    ObSEArray<int64_t, 4> part_ids;
+    ObSEArray<int64_t, 4> subpart_ids;
+    if (OB_FAIL(ObDbmsStatsUtils::get_part_infos(table_schema,
+                                                 allocator,
+                                                 part_infos,
+                                                 subpart_infos,
+                                                 part_ids,
+                                                 subpart_ids))) {
+      LOG_WARN("failed to get part infos", K(ret));
+    } else if (OB_FAIL(all_part_ids.push_back(-1))) {
+      LOG_WARN("failed to push back -1", K(ret));
+    } else if (OB_FAIL(append(all_part_ids, part_ids))) {
+      LOG_WARN("failed to append part ids", K(ret));
+    } else if (OB_FAIL(append(all_part_ids, subpart_ids))) {
+      LOG_WARN("failed to append subpart ids", K(ret));
+    }
   }
   return ret;
 }

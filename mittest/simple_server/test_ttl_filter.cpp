@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -66,7 +59,7 @@ void ObTTLFilterTest::build_ttl_filter_info(const int64_t filter_value,
   TTLFilterInfoHelper::mock_ttl_filter_info(
       trans_id,
       1,
-      static_cast<int64_t>(ObTTLFilterInfo::ObTTLFilterColType::ROWSCN),
+      static_cast<int64_t>(ObTTLFilterColType::ROWSCN),
       filter_value,
       col_idx,
       ttl_filter_info);
@@ -113,7 +106,7 @@ void ObTTLFilterTest::build_filter(const ObTTLFilterInfo &ttl_filter_info, ObTTL
   ASSERT_EQ(OB_SUCCESS, ttl_filter_info_array.append_with_deep_copy(ttl_filter_info));
   ASSERT_EQ(OB_SUCCESS,
             filter.init_ttl_filter_for_unittest(
-                schema_rowkey_cnt_, cols_desc_, &cols_param_, ttl_filter_info_array));
+                schema_rowkey_cnt_, cols_desc_, ttl_filter_info_array));
 }
 
 void ObTTLFilterTest::build_filter(const ObTTLFilterInfoArray &ttl_filter_info_array,
@@ -121,7 +114,7 @@ void ObTTLFilterTest::build_filter(const ObTTLFilterInfoArray &ttl_filter_info_a
 {
   ASSERT_EQ(OB_SUCCESS,
             filter.init_ttl_filter_for_unittest(
-                schema_rowkey_cnt_, cols_desc_, &cols_param_, ttl_filter_info_array));
+                schema_rowkey_cnt_, cols_desc_, ttl_filter_info_array));
 }
 
 TEST_F(ObTTLFilterTest, basic)
@@ -129,7 +122,7 @@ TEST_F(ObTTLFilterTest, basic)
   get_index_table_cols_desc();
   get_index_table_cols_param(false);
 
-  ObMDSFilterMgr mds_filter_mgr(nullptr);
+  ObMDSFilterMgr mds_filter_mgr(allocator_);
   ObDatumRow row;
   bool filtered = false;
 
@@ -138,7 +131,7 @@ TEST_F(ObTTLFilterTest, basic)
 
   ObTTLFilterInfo ttl_filter_info1;
   build_ttl_filter_info(1000, 2, ttl_filter_info1);
-  ObTTLFilter ttl_filter1(mds_filter_mgr);
+  ObTTLFilter ttl_filter1(mds_filter_mgr.get_filter_allocator());
   build_filter(ttl_filter_info1, ttl_filter1);
 
 #define CHECK_TTL_FILTER_ROW(scn_val, ttl_filter, expected) \

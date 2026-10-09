@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -51,22 +44,11 @@ int ObNewColumnCommonDecoder::batch_decode(
 int ObNewColumnCommonDecoder::decode_vector(ObVectorDecodeCtx &vector_ctx) const
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(vector_ctx.default_datum_)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("Unexpected null datum", K(ret));
+  if (OB_FAIL(vector_ctx.fill_from_default_datum())) {
+    LOG_WARN("Failed to fill vector from default datum", K(ret), K(vector_ctx));
   } else {
-#define FOREACH_SET_VEC(FORMAT)                                                                     \
-  for (int64_t idx = 0; idx < vector_ctx.row_cap_; ++idx) {                                         \
-    const int64_t vec_idx = idx + vector_ctx.vec_offset_;                                           \
-    static_cast<FORMAT *>(vector_ctx.get_vector())->set_datum(vec_idx, *vector_ctx.default_datum_); \
+    LOG_DEBUG("[NEW_COLUMN_DECODE] decode vector", KPC(vector_ctx.default_datum_), K(lbt()));
   }
-    if (VEC_DISCRETE == vector_ctx.get_format()) {
-      FOREACH_SET_VEC(ObDiscreteFormat)
-    } else {
-      FOREACH_SET_VEC(ObFixedLengthBase)
-    }
-  }
-  LOG_DEBUG("[NEW_COLUMN_DECODE] decode vector", KPC(vector_ctx.default_datum_), K(lbt()));
   return ret;
 }
 
@@ -121,16 +103,22 @@ int ObNewColumnCommonDecoder::get_null_count(
 
 int ObNewColumnCommonDecoder::read_distinct(
     const ObColumnParam *col_param,
+    ObIAllocator &allocator,
     storage::ObGroupByCellBase &group_by_cell) const
 {
   int ret = OB_SUCCESS;
-  common::ObDatum *datums = group_by_cell.get_group_by_col_datums_to_fill();
-  if (OB_FAIL(datums[0].from_obj(col_param->get_orig_default_value(), ObDatum::get_obj_datum_map_type(col_param->get_orig_default_value().get_type())))) {
-    LOG_WARN("Failed to from storage datum", K(ret), K(col_param->get_orig_default_value()));
+  if (OB_ISNULL(col_param)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("Unexpected null column param", K(ret));
   } else {
-    group_by_cell.set_distinct_cnt(1);
+    common::ObDatum *datums = group_by_cell.get_group_by_col_datums_to_fill();
+    if (OB_FAIL(get_default_datum(*col_param, allocator, datums[0]))) {
+      LOG_WARN("Failed to get default datum", K(ret), KPC(col_param));
+    } else {
+      group_by_cell.set_distinct_cnt(1);
+    }
+    LOG_DEBUG("[NEW_COLUMN_DECODE] read distinct", K(group_by_cell.get_group_by_col_offset()), KPC(datums), K(lbt()));
   }
-  LOG_DEBUG("[NEW_COLUMN_DECODE] read distinct", K(group_by_cell.get_group_by_col_offset()), KPC(datums), K(lbt()));
   return ret;
 }
 

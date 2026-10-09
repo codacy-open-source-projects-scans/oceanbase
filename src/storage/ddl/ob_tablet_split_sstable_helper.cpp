@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -117,6 +110,25 @@ ObSSTableSplitHelper::~ObSSTableSplitHelper()
   is_inited_ = false;
 }
 
+int ObSSTableSplitHelper::get_merge_type(const ObSSTable &sstable, compaction::ObMergeType &merge_type)
+{
+  int ret = OB_SUCCESS;
+  merge_type = ObMergeType::INVALID_MERGE_TYPE;
+  if (sstable.is_major_sstable()) {
+    merge_type = sstable.is_meta_major_sstable()
+               ? ObMergeType::META_MAJOR_MERGE
+               : ObMergeType::MAJOR_MERGE;
+  } else if (sstable.is_minor_sstable()) {
+    merge_type = ObMergeType::MINOR_MERGE;
+  } else {
+    // mds mini / minor sstable use mds mini merge type in ObTabletSplitUtil::build_mds_sstable
+    // inc major type sstable and ddl sstable are not supported for sstable split
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("sstable type is not supported for sstable split", K(ret), K(sstable));
+  }
+  return ret;
+}
+
 int ObSSTableSplitHelper::prepare_index_builder_ctxs(
     ObIAllocator &allocator,
     const ObTabletSplitParam &param,
@@ -128,6 +140,7 @@ int ObSSTableSplitHelper::prepare_index_builder_ctxs(
 {
   int ret = OB_SUCCESS;
   index_builder_ctx_arr.reset();
+  ObMergeType merge_type;
   if (OB_UNLIKELY(!param.is_valid()
       || !split_ctx.is_valid()
       || !sstable.is_valid()
@@ -135,6 +148,8 @@ int ObSSTableSplitHelper::prepare_index_builder_ctxs(
       || (sstable.is_column_store_sstable() && (cg_schema == nullptr || !cg_schema->is_valid())))) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret), K(param), K(sstable), K(clipped_storage_schema), KPC(cg_schema));
+  } else if (OB_FAIL(get_merge_type(sstable, merge_type))) {
+    LOG_WARN("fail to get merge type from sstable", K(ret));
   } else {
     ObTabletHandle tablet_handle;
     compaction::ObExecMode exec_mode = GCTX.is_shared_storage_mode() ?
@@ -145,7 +160,6 @@ int ObSSTableSplitHelper::prepare_index_builder_ctxs(
       tablet_handle.reset();
       ObSplitIndexBuilderCtx index_builder_ctx;
       const ObTabletID dst_tablet_id = param.dest_tablets_id_.at(j);
-      const ObMergeType merge_type = sstable.is_major_sstable() ? MAJOR_MERGE : MINOR_MERGE;
       const int64_t snapshot_version = sstable.is_major_sstable() ?
         sstable.get_snapshot_version() : sstable.get_end_scn().get_val_for_tx();
       int32_t transfer_epoch = -1;
@@ -337,11 +351,6 @@ int ObSSTableSplitWriteHelper::prepare_macro_block_writer(
       ObMacroBlockWriter *macro_block_writer = nullptr;
       ObISSTableObjectCleaner *object_cleaner = nullptr;
       const ObTabletID &dst_tablet_id = param_->dest_tablets_id_.at(i);
-      const ObMergeType merge_type = sstable_->is_major_sstable() ? MAJOR_MERGE : MINOR_MERGE;
-      const int64_t snapshot_version = sstable_->is_major_sstable() ?
-          sstable_->get_snapshot_version() : sstable_->get_end_scn().get_val_for_tx();
-      compaction::ObExecMode exec_mode = GCTX.is_shared_storage_mode() ?
-          compaction::ObExecMode::EXEC_MODE_OUTPUT : compaction::ObExecMode::EXEC_MODE_LOCAL;
       const ObSplitIndexBuilderCtx &index_builder_ctx = index_builder_ctx_arr.at(i);
       const ObMacroSeqParam &macro_seq_param = macro_seq_param_arr.at(i);
       if (OB_UNLIKELY(!index_builder_ctx.is_valid())) {
@@ -483,6 +492,11 @@ int ObSSTableSplitWriteHelper::fill_tail_column_datums(
       } else {
         write_row.storage_datums_[i].set_nop();
       }
+    }
+    // old server will not set merge engine type, so we need to set it here.
+    if (OB_SUCC(ret) && write_row.is_merge_engine_unknown_row()
+        && OB_FAIL(context_->tablet_handle_.get_obj()->get_original_merge_engine_type(write_row.merge_engine_type_))) {
+      LOG_WARN("failed to get original merge engine type", K(ret));
     }
   }
   return ret;
@@ -872,7 +886,7 @@ int ObColSSTableSplitWriteHelper::prepare_index_read_info(
   } else if (OB_UNLIKELY(!init_param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret), K(init_param));
-  } else if (init_param.sstable_->is_cg_sstable()) {
+  } else if (init_param.sstable_->is_normal_cg_sstable()) {
     // rowkey cg/all cg.
     if (OB_FAIL(MTL(ObTenantCGReadInfoMgr *)->get_index_read_info(index_read_info_))) {
       LOG_WARN("failed to get index read info from ObTenantCGReadInfoMgr", K(ret));
@@ -896,7 +910,7 @@ int ObColSSTableSplitWriteHelper::prepare_split_rowids(
   } else if (OB_UNLIKELY(!col_init_param.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arg", K(ret), K(col_init_param));
-  } else if (col_init_param.sstable_->is_cg_sstable()) {
+  } else if (col_init_param.sstable_->is_normal_cg_sstable()) {
     if (OB_FAIL(end_partkey_rowids_.assign(col_init_param.end_partkey_rowids_))) {
       LOG_WARN("failed to assign end partkey rowids", K(ret));
     }
@@ -994,16 +1008,16 @@ int ObColSSTableSplitWriteHelper::prepare_sstable_cg_infos(
     LOG_WARN("get multi version column descs failed", K(ret), K(clipped_storage_schema));
   } else {
     table_cg_idx = sstable.get_column_group_id();
-    const int64_t column_groups_cnt = clipped_storage_schema.get_column_group_count();
-    if (OB_UNLIKELY(table_cg_idx < 0 || table_cg_idx >= column_groups_cnt)) {
+    if (OB_FAIL(clipped_storage_schema.get_cg_schema_with_column_group_idx(table_cg_idx, cg_schema))) {
+      LOG_WARN("fail to get column group schema", K(ret), K(table_cg_idx), K(clipped_storage_schema));
+    } else if (OB_ISNULL(cg_schema)) {
       ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected column group id", K(ret), K(table_cg_idx), K(column_groups_cnt), K(clipped_storage_schema));
+      LOG_WARN("get unexpected null cg schema", K(ret), K(table_cg_idx), K(clipped_storage_schema));
     } else if (sstable.is_cg_sstable()) {
-      cg_schema = &clipped_storage_schema.get_column_groups().at(table_cg_idx);
+      // do nothing
     } else {
       const ObCOSSTableV2 &co_sstable = static_cast<const ObCOSSTableV2&>(sstable);
-      cg_schema = &clipped_storage_schema.get_column_groups().at(table_cg_idx);
-      if (cg_schema->is_rowkey_column_group() && co_sstable.is_all_cg_base()) {
+      if (cg_schema->is_rowkey_column_group() && HIDDEN_ROWKEY_COLUMN_GROUP_IDX != table_cg_idx && co_sstable.is_all_cg_base()) {
         cg_schema = nullptr;
         if (OB_UNLIKELY(!co_sstable.is_cgs_empty_co_table())) {
           ret = OB_ERR_UNEXPECTED;

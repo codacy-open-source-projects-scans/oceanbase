@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_BLOCKSSTABLE_OB_MACRO_BLOCK_H_
@@ -71,7 +64,7 @@ public:
       const ObMicroBlockDesc &micro_block_desc,
       const bool is_leaf_index_block,
       int64_t &data_offset);
-  int get_macro_block_meta(ObDataMacroBlockMeta &macro_meta);
+  int get_macro_block_meta(ObDataMacroBlockMeta &macro_meta, const uint64_t data_version);
   int add_pre_warm_state(const bool micro_block_need_pre_warm);
   int get_pre_warm_state(const int micro_block_idx, bool &need_pre_warm) const;
   OB_INLINE bool need_pre_warm() const { return need_pre_warm_; }

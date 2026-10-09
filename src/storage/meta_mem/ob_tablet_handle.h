@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_TABLET_HANDLE
@@ -143,36 +136,6 @@ private:
   ObTabletHandle *transfer_src_handle_;
   SplitExtraTabletHandleArray split_extra_tablet_handles_;
   DISALLOW_COPY_AND_ASSIGN(ObTabletTableIterator);
-};
-
-struct ObGetTableParam final
-{
-public:
-  ObGetTableParam() : frozen_version_(-1), sample_info_(), tablet_iter_(), refreshed_merge_(nullptr), need_split_dst_table_(true) {}
-  ~ObGetTableParam() { reset(); }
-  bool is_valid() const { return tablet_iter_.is_valid(); }
-  void reset()
-  {
-    frozen_version_ = -1;
-    sample_info_.reset();
-    tablet_iter_.reset();
-    refreshed_merge_ = nullptr;
-    need_split_dst_table_ = true;
-  }
-  TO_STRING_KV(K_(frozen_version), K_(sample_info), K_(tablet_iter), K_(need_split_dst_table));
-public:
-  int64_t frozen_version_;
-  common::SampleInfo sample_info_;
-  ObTabletTableIterator tablet_iter_;
-
-  // when tablet has been refreshed, to notify other ObMultipleMerge in ObTableScanIterator re-inited
-  // before rescan.
-  void *refreshed_merge_;
-
-  // true means maybe need split dst table, which is always safe because get_read_tables will check by mds again;
-  // false means no need split dst table, which is for optimization and UNSAFE
-  bool need_split_dst_table_;
-  DISALLOW_COPY_AND_ASSIGN(ObGetTableParam);
 };
 
 } // namespace storage

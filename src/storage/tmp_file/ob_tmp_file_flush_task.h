@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TMP_FILE_OB_TMP_FILE_FLUSH_TASK_H_
@@ -57,6 +50,9 @@ public:
   void set_page_cnt(int32_t page_cnt) { page_cnt_ = page_cnt; }
   int32_t get_page_idx() const { return page_idx_; }
   int32_t get_page_cnt() const { return page_cnt_; }
+  int64_t get_schedule_delay_us() const { return schedule_delay_us_; }
+  int64_t get_io_wait_us() const { return io_wait_us_; }
+  int64_t get_queue_wait_us() const { return queue_wait_us_; }
   int get_ret_code() const { return ATOMIC_LOAD(&ret_code_); }
   int get_write_ret() const { return ATOMIC_LOAD(&write_ret_); }
   bool is_finished() const { return ATOMIC_LOAD(&is_finished_); }
@@ -86,6 +82,10 @@ private:
   int32_t size_;
   char *buf_;
   int64_t create_ts_;
+  int64_t io_submit_ts_;
+  int64_t schedule_delay_us_;
+  int64_t io_wait_us_;
+  int64_t queue_wait_us_;
   ObFIFOAllocator *allocator_;
   ObTmpFileBlockHandle tmp_file_block_handle_;
   common::ObIOHandle io_handle_;

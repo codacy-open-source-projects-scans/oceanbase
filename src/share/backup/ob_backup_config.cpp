@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -452,12 +445,6 @@ int ObDataBackupDestConfigParser::check_before_update_inner_config(obrpc::ObSrvR
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("set backup dest during upgrade is not supported", K(ret), K_(tenant_id), K_(config_items));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "set backup dest during upgrade is not supported");
-#ifdef OB_BUILD_SHARED_STORAGE
-    } else if (GCTX.is_shared_storage_mode() && backup_dest_tmp.is_storage_type_file()) {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("setting data_backup_dest to NFS is not supported in shared storage mode", K(ret), K_(tenant_id), K_(config_items));
-      LOG_USER_ERROR(OB_NOT_SUPPORTED, "set data_backup_dest to NFS in shared storage mode is");
-#endif
     } else if (OB_FAIL(ObBackupStorageInfoOperator::get_backup_dest_status(
                        trans, tenant_id_, backup_dest_tmp, is_cleaning))) {
       if (OB_ENTRY_NOT_EXIST == ret) {
@@ -518,6 +505,8 @@ int ObDataBackupDestConfigParser::update_data_backup_dest_config_(common::ObISQL
   } else if (!config_items_.at(0).value_.empty()) {
     if (OB_FAIL(dest.set(config_items_.at(0).value_.ptr()))) {
       LOG_WARN("fail to set backup dest", K(ret), K_(tenant_id), K_(config_items));
+    } else if (OB_FAIL(ObIBackupConfigItemParser::set_default_checksum_type(dest))) {
+      LOG_WARN("fail to set default checksum type", K(ret), K(dest));
     } else if (OB_FAIL(dest.get_backup_dest_str(backup_dest_str, sizeof(backup_dest_str)))) {
       LOG_WARN("fail to get_backup_dest_str", K(ret), K(dest));
     }
@@ -723,12 +712,6 @@ int ObLogArchiveDestConfigParser::check_before_update_inner_config(obrpc::ObSrvR
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("set backup dest during upgrade is not supported", K(ret), K_(tenant_id), K_(backup_dest));
       LOG_USER_ERROR(OB_NOT_SUPPORTED, "set backup dest during upgrade is not supported");
-#ifdef OB_BUILD_SHARED_STORAGE
-    } else if (GCTX.is_shared_storage_mode() && backup_dest.is_storage_type_file()) {
-      ret = OB_NOT_SUPPORTED;
-      LOG_WARN("setting log_archive_dest to NFS is not supported in shared storage mode", K(ret), K_(tenant_id), K_(backup_dest));
-      LOG_USER_ERROR(OB_NOT_SUPPORTED, "set log_archive_dest to NFS in shared storage mode is");
-#endif
     } else if (OB_FAIL(ObBackupStorageInfoOperator::get_backup_dest_status(
                         trans, tenant_id_, backup_dest, is_cleaning))) {
       if (OB_ENTRY_NOT_EXIST == ret) {

@@ -1,12 +1,5 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "storage/compaction/ob_sstable_merge_history.h"
 
@@ -213,7 +206,11 @@ int64_t ObMergeStaticInfo::to_string(char* buf, const int64_t buf_len) const
       }
     }
     J_COMMA();
-    J_KV(K_(kept_snapshot_info), K_(participant_table_info), K_(mds_filter_info_str), K_(window_decision_log_info));
+    J_KV(K_(kept_snapshot_info), K_(participant_table_info), K_(window_decision_log_info));
+    if ('\0' != mds_filter_info_str_[0]) {
+      J_COMMA();
+      J_KV(K_(mds_filter_info_str));
+    }
     J_OBJ_END();
   }
   return pos;

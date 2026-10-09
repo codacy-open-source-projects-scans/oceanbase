@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_COMPACTION_OB_TABLET_MERGE_CTX_H_
@@ -21,9 +14,6 @@
 #include "storage/ob_tenant_tablet_stat_mgr.h"
 #include "storage/compaction/ob_tablet_merge_info.h"
 #include "storage/compaction/ob_basic_tablet_merge_ctx.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/incremental/ob_ls_inc_sstable_uploader.h"
-#endif
 
 namespace oceanbase
 {
@@ -90,6 +80,7 @@ private:
   int pre_process_tx_data_table_merge();
 
   void try_schedule_compaction_after_mini(storage::ObTabletHandle &tablet_handle);
+  void try_schedule_minor_merge_after_mini(storage::ObTabletHandle &tablet_handle);
   void record_uncommitted_sstable_cnt();
   int try_report_tablet_stat_after_mini();
 };
@@ -127,6 +118,7 @@ protected:
   }
   virtual int prepare_compaction_filter() override
   { return alloc_mds_info_compaction_filter(); }
+  virtual int64_t get_recycle_version() const override;
 };
 } // namespace compaction
 } // namespace oceanbase

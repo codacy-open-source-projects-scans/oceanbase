@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_LIB_OB_NAME_DEF_H_
@@ -231,6 +224,7 @@
 #define N_SYS_EXTRACT_UTC "sys_extract_utc"
 #define N_TZ_OFFSET "tz_offset"
 #define N_FROM_TZ "from_tz"
+#define N_NEW_TIME "new_time"
 #define N_SCAN_PARAM "scan_param"
 #define N_SCAN_FLAG "scan_flag"
 #define N_GET_PARAM "get_param"
@@ -284,6 +278,7 @@
 #define N_LINK_TABLE_NAME "link_table_name"
 #define N_QB_NAME "qb_name"
 #define N_AUTOINC_NEXTVAL "nextval"
+#define N_RANDOM_PART_NEXTVAL "random_part_nextval"
 #define N_TABLET_AUTOINC_NEXTVAL "tablet_autoinc"
 #define N_SEQ_NEXTVAL "seq_value"
 #define N_RESERVED_CELL_COUNT "reserved_cell_count"
@@ -560,6 +555,7 @@
 #define N_FORMAT "format"
 #define N_TO_CLOB "to_clob"
 #define N_TO_BLOB "to_blob"
+#define N_IMAGE_TYPE "image_type"
 #define N_EMPTY_CLOB "empty_clob"
 #define N_EMPTY_BLOB "empty_blob"
 #define N_TO_TIMESTAMP "to_timestamp"
@@ -870,6 +866,7 @@
 #define N_CONNECT_BY_ROOT "connect_by_root"
 #define N_SYS_CONNECT_BY_PATH "sys_connect_by_path"
 #define N_CHR "chr"
+#define N_NCHR "nchr"
 #define N_EXP "exp"
 #define N_CALC_UROWID "calc_urowid"
 #define N_NAME_CONST "name_const"
@@ -901,6 +898,7 @@
 #define N_ENCRYPT "encrypt"
 #define N_ENHANCED_AES_ENCRYPT "enhanced_aes_encrypt"
 #define N_ENHANCED_AES_DECRYPT "enhanced_aes_decrypt"
+#define N_CATALOG "catalog"
 #define N_CURRENT_CATALOG "current_catalog"
 #define N_CHECK_CATALOG_ACCESS "check_catalog_access"
 #define N_CHECK_LOCATION_ACCESS "check_location_access"
@@ -1146,6 +1144,7 @@
 #define N_XMLSEQUENCE                       "xmlsequence"
 #define N_DELETEXML                         "deletexml"
 #define N_NLS_INITCAP                       "nls_initcap"
+#define N_NLS_CHARSET_ID                    "nls_charset_id"
 #define N_PRIV_SQL_UDT_CONSTRUCT            "_udt_construct"
 #define N_PRIV_UDT_ATTR_ACCESS              "_udt_attr_access"
 #define N_TEMP_TABLE_SSID                   "temp_table_ssid"
@@ -1264,6 +1263,8 @@
 #define N_AUDIT_LOG_FILTER_REMOVE_FILTER    "audit_log_filter_remove_filter"
 #define N_AUDIT_LOG_FILTER_SET_USER         "audit_log_filter_set_user"
 #define N_AUDIT_LOG_FILTER_REMOVE_USER      "audit_log_filter_remove_user"
+#define N_AUDIT_LOG_ENCRYPTION_PASSWOR_SET  "audit_log_encryption_password_set"
+#define N_AUDIT_LOG_ENCRYPTION_PASSWORD_GET "audit_log_encryption_password_get"
 #define N_CAN_ACCESS_TRIGGER                "can_access_trigger"
 #define N_SPLIT_PART                        "split_part"
 #define N_RB_ITERATE                        "rb_iterate"
@@ -1271,6 +1272,7 @@
 #define N_RB_BUILD                          "rb_build"
 #define N_MYSQL_PROC_INFO                   "mysql_proc_info"
 #define N_GET_MYSQL_ROUTINE_PARAMETER_TYPE_STR   "get_mysql_routine_parameter_type_str"
+#define N_GET_ROUTINE_PARAM_TYPE_STR       "get_routine_param_type_str"
 #define N_ORA_LOGIN_USER                    "ora_login_user"
 #define N_CALC_ODPS_SIZE                  "calc_odps_size"
 #define N_PRIV_ST_GEOHASH                   "_st_geohash"
@@ -1306,11 +1308,13 @@
 #define N_EDIT_DISTANCE_UTF8                     "editDistanceUTF8"
 #define N_FORMAT_DATE_TIME                  "formatDateTime"
 #define N_TO_UNIX_TIMESTAMP                  "toUnixTimestamp"
+#define N_PARSE_DATE_TIME             "parseDateTime"
 #define N_IS_NAN                            "isNaN"
 #define N_MD5_CONCAT_WS                     "md5_concat_ws"
 #define N_COLLECT_FILE_LIST                 "collect_file_list"
 #define N_TO_TYPE_NAME                      "to_type_name"
 #define N_LOAD_FILE                         "load_file"
+#define N_RAND_CANONICAL                    "randCanonical"
 // Inner functions for search index
 #define N_SEARCH_INDEX_INNER_PATH           "search_index_inner_path"
 #define N_SEARCH_INDEX_INNER_VALUE          "search_index_inner_value"

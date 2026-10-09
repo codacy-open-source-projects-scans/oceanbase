@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "lib/ob_errno.h"
@@ -26,6 +19,7 @@
 #include "share/ob_license_utils.h"
 #include "share/search_index/ob_search_index_builder_util.h"
 #include "share/compaction_ttl/ob_compaction_ttl_util.h"
+#include "share/compaction/ob_compaction_queuing_utils.h"
 #include "share/search_index/ob_search_index_config_filter.h"
 
 namespace oceanbase
@@ -293,11 +287,20 @@ int ObCreateTableResolver::add_udt_hidden_column(ObTableSchema &table_schema,
 int ObCreateTableResolver::set_temp_table_info(ObTableSchema &table_schema, ParseNode *commit_option_node)
 {
   int ret = OB_SUCCESS;
+  uint64_t data_version = 0;
+  bool enable_no_strong_routing = false;
+  if (OB_NOT_NULL(session_info_)) {
+    ObTenantConfigGuard tenant_config(TENANT_CONF(session_info_->get_effective_tenant_id()));
+    enable_no_strong_routing = tenant_config.is_valid()
+                               ? tenant_config->_enable_gtt_non_forced_routing
+                               : false;
+  }
+  bool need_strong_routing = !(is_oracle_mode() && !is_old_oracle_temp_table_ && enable_no_strong_routing);
   if (OB_ISNULL(session_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("session info is null", KR(ret));
   } else if (FALSE_IT(session_info_->set_has_temp_table_flag())) {
-  } else if (OB_FAIL(session_info_->set_session_temp_table_used(true))) {
+  } else if (OB_FAIL(session_info_->set_session_temp_table_used(*session_info_, true, need_strong_routing))) {
     LOG_WARN("fail to set session temp table used", KR(ret));
   } else if (OB_FAIL(set_table_name(table_name_))) {
       LOG_WARN("failed to set table name", K(ret), K(table_name_));
@@ -525,7 +528,9 @@ int ObCreateTableResolver::set_default_merge_engine_type_(share::schema::ObTable
 int ObCreateTableResolver::set_default_delta_format_(share::schema::ObTableSchema &table_schema)
 {
   int ret = OB_SUCCESS;
-  if (!table_schema.is_user_table()) {
+  if (ObRowStoreType::MAX_ROW_STORE != table_schema.get_minor_row_store_type()) {
+    // user explicitly specified delta_format via table option
+  } else if (!table_schema.is_user_table()) {
     table_schema.set_minor_row_store_type(ObStoreFormat::DEFAULT_MINOR_ROW_STORE_TYPE);
   } else if (OB_ISNULL(session_info_)) {
     ret = OB_INVALID_ARGUMENT;
@@ -540,7 +545,16 @@ int ObCreateTableResolver::set_default_delta_format_(share::schema::ObTableSchem
       ObTenantConfigGuard tenant_config(TENANT_CONF(tenant_id));
       if (OB_LIKELY(tenant_config.is_valid())) {
         ObString delta_format = tenant_config->default_delta_format.get_value_string();
-        OZ(ObStoreFormat::resolve_delta_row_store_type(delta_format, row_store_type));
+        ObRowStoreType default_row_store_type = ObRowStoreType::MAX_ROW_STORE;
+        OZ(ObStoreFormat::resolve_delta_row_store_type(delta_format, default_row_store_type));
+        if (OB_FAIL(ret)) {
+        } else if (ObStoreFormat::is_row_store_type_with_encoding(default_row_store_type)
+                   && table_schema.is_partial_update_merge_engine()) {
+          LOG_DEBUG("default_delta_format 'encoding' does not take effect on partial_update merge engine table",
+                    K(delta_format), K(default_row_store_type));
+        } else {
+          row_store_type = default_row_store_type;
+        }
       } else {
         LOG_WARN("invalid tenant config, delta format is set to flat", K(tenant_id));
       }
@@ -860,6 +874,8 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
             if (!table_schema.is_sys_table()) {
               pctfree_ = 0; // set default pctfree value for non-sys table
             }
+            // sentinel to detect whether user explicitly specified delta_format in table options
+            table_schema.set_minor_row_store_type(ObRowStoreType::MAX_ROW_STORE);
             if (OB_FAIL(ret)) {
             } else if (OB_FAIL(set_default_micro_index_clustered_(table_schema))) {
               SQL_RESV_LOG(WARN, "set table options (micro_index_clustered) failed", K(ret));
@@ -869,12 +885,23 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
               SQL_RESV_LOG(WARN, "set table options (micro_block_format_version) failed", K(ret));
             } else if (OB_FAIL(set_default_merge_engine_type_(table_schema))) {
               SQL_RESV_LOG(WARN, "set default merge engine type failed", K(ret));
-            } else if (OB_FAIL(set_default_delta_format_(table_schema))) {
-              SQL_RESV_LOG(WARN, "set default delta format failed", K(ret));
             } else if (OB_FAIL(set_default_skip_index_level_(table_schema))) {
               SQL_RESV_LOG(WARN, "set default skip index level failed", K(ret));
             } else if (OB_FAIL(resolve_table_options(create_table_node->children_[4], false))) {
               SQL_RESV_LOG(WARN, "resolve table options failed", K(ret));
+            } else if (FALSE_IT(share::ObCompactionQueuingUtil::assign_random_table_mode_for_test(
+                user_specified_table_mode_, is_external_table_, is_oracle_temp_table_,
+                OB_ISNULL(session_info_) ? OB_INVALID_TENANT_ID : session_info_->get_effective_tenant_id(),
+                table_mode_, table_schema))) {
+            }
+            // merge_engine must be decided before set_default_delta_format,
+            // because default_delta_format 'encoding' does not take effect on partial_update merge engine table
+            else if (OB_FAIL(set_default_delta_format_(table_schema))) {
+              SQL_RESV_LOG(WARN, "set default delta format failed", K(ret));
+            } else if (ObStoreFormat::is_row_store_type_with_encoding(table_schema.get_minor_row_store_type())
+                       && table_schema.is_partial_update_merge_engine()) {
+              ret = OB_NOT_SUPPORTED;
+              LOG_USER_ERROR(OB_NOT_SUPPORTED, "delta format 'encoding' on partial_update merge engine table");
             } else if (is_oracle_temp_table_ && !is_old_oracle_temp_table_ && !tablegroup_name_.trim().empty()) {
               // 禁止临时表指定 TABLEGROUP
               ret = OB_NOT_SUPPORTED;
@@ -1089,10 +1116,31 @@ int ObCreateTableResolver::resolve(const ParseNode &parse_tree)
                                create_table_stmt->get_create_table_arg().schema_))) {
         LOG_WARN("fail to resolve hint", K(ret));
       }
+      // Merge SELECT-side append/direct hints into the CREATE stmt.
+      // The SELECT sub-tree has already been resolved; its fully-merged hints
+      // are stored in params_.query_ctx_->query_hint_.get_global_hint().
+      // We read them back here rather than re-running resolve_hints(),
+      // which would overwrite the CREATE-level parallel hint.
+      if (OB_SUCC(ret)) {
+        if (OB_ISNULL(params_.query_ctx_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("query ctx is null when merging select-side append/direct hint", K(ret));
+        } else {
+          const ObGlobalHint &sel_global_hint = params_.query_ctx_->query_hint_.get_global_hint();
+          // has_direct_load() already encodes no_direct's precedence over append/direct,
+          // so the CTAS decision stays in sync with ObGlobalHint and with the inner
+          // INSERT...SELECT we generate (which carries this same global hint).
+          if (sel_global_hint.has_direct_load()) {
+            if (sel_global_hint.has_append()) {
+              create_table_stmt->set_has_append_hint(true);
+            }
+            create_table_stmt->set_direct_load_hint(sel_global_hint.direct_load_hint_);
+          }
+        }
+      }
     }
 
-    // check storage cache policy for partitioned table
-    // because we only know the if the table is partitioned table after resolve_table_options
+    // Storage cache policy check (only know partition status after resolve_table_options)
     if (OB_SUCC(ret) && GCTX.is_shared_storage_mode() && is_mysql_mode) {
       ObTableSchema &table_schema = create_table_stmt->get_create_table_arg().schema_;
       if (OB_FAIL(check_create_stmt_storage_cache_policy(table_schema.get_storage_cache_policy(), &table_schema))) {
@@ -2712,7 +2760,7 @@ int ObCreateTableResolver::generate_index_arg(const bool process_heap_table_prim
     SQL_RESV_LOG(WARN, "set index name failed", K(ret), K_(index_name));
   } else if (OB_FAIL(set_index_option_to_arg())) {
     SQL_RESV_LOG(WARN, "set index option failed", K(ret));
-  } else if(OB_FAIL(set_storing_column())) {
+  } else if(OB_FAIL(set_storing_column(process_heap_table_primary_key))) {
     SQL_RESV_LOG(WARN, "set storing column failed", K(ret));
   } else {
     ObIndexType type = INDEX_TYPE_IS_NOT;
@@ -2971,15 +3019,43 @@ int ObCreateTableResolver::set_index_option_to_arg()
   return ret;
 }
 
-int ObCreateTableResolver::set_storing_column()
+int ObCreateTableResolver::set_storing_column(const bool process_heap_table_primary_key)
 {
   int ret = OB_SUCCESS;
+
+  ObCreateTableStmt *create_table_stmt = static_cast<ObCreateTableStmt*>(stmt_);
+
+  if (OB_ISNULL(create_table_stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("create table stmt is null", K(ret));
+  }
+
   for (int64_t i = 0; OB_SUCC(ret) && i < store_column_names_.count(); ++i) {
     ret = index_arg_.store_columns_.push_back(store_column_names_.at(i));
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < hidden_store_column_names_.count(); ++i) {
     ret = index_arg_.hidden_store_columns_.push_back(hidden_store_column_names_.at(i));
   }
+
+  // if process create heap table, add ttl column to storing column
+  if (OB_FAIL(ret)) {
+  } else if (process_heap_table_primary_key) {
+    ObTableSchema &table_schema = create_table_stmt->get_create_table_arg().schema_;
+    if (table_schema.get_ttl_flag().is_user_ttl_column()) {
+      int64_t ttl_column_id = table_schema.get_ttl_flag().get_curr_ttl_column_id();
+      const ObColumnSchemaV2 *ttl_column = table_schema.get_column_schema(ttl_column_id);
+      if (OB_ISNULL(ttl_column)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null ttl column", K(ret), K(ttl_column_id));
+      } else if (!ttl_column->is_rowkey_column()) {
+        const ObString &ttl_column_name = ttl_column->get_column_name_str();
+        if (OB_FAIL(index_arg_.store_columns_.push_back(ttl_column_name))) {
+          LOG_WARN("fail to add ttl column to storing column", K(ret), K(ttl_column->get_column_name()));
+        }
+      }
+    }
+  }
+
   return ret;
 }
 
@@ -3371,7 +3447,10 @@ int ObCreateTableResolver::resolve_index_node(const ParseNode *node)
                 ret = OB_NOT_SUPPORTED;
                 LOG_WARN("index column is vector column, but is not vector index is not supported", K(ret));
                 LOG_USER_ERROR(OB_NOT_SUPPORTED, "vector column index but not vector index is");
-              } else if (column_schema->is_key_forbid_lob() && static_cast<int64_t>(INDEX_KEYNAME::FTS_KEY) != node->value_ && static_cast<int64_t>(INDEX_KEYNAME::VEC_KEY) != node->value_) {
+              } else if (column_schema->is_key_forbid_lob() &&
+                  static_cast<int64_t>(INDEX_KEYNAME::FTS_KEY) != node->value_ &&
+                  static_cast<int64_t>(INDEX_KEYNAME::VEC_KEY) != node->value_ &&
+                  static_cast<int64_t>(INDEX_KEYNAME::SEARCH_KEY) != node->value_) {
                 if (column_schema->is_hidden()) {
                   //functional index in mysql mode
                   ret = OB_ERR_FUNCTIONAL_INDEX_ON_LOB;
@@ -3409,7 +3488,8 @@ int ObCreateTableResolver::resolve_index_node(const ParseNode *node)
                 if (OB_SUCC(ret)) {
                   if ((index_data_length += length) > OB_MAX_USER_ROW_KEY_LENGTH
                       && static_cast<int64_t>(INDEX_KEYNAME::FTS_KEY) != node->value_
-                      && static_cast<int64_t>(INDEX_KEYNAME::VEC_KEY) != node->value_) {
+                      && static_cast<int64_t>(INDEX_KEYNAME::VEC_KEY) != node->value_
+                      && static_cast<int64_t>(INDEX_KEYNAME::SEARCH_KEY) != node->value_) {
                     // text or varchar column is bigger than 16k will be blocked
                     ret = OB_ERR_TOO_LONG_KEY_LENGTH;
                     LOG_USER_ERROR(OB_ERR_TOO_LONG_KEY_LENGTH, OB_MAX_USER_ROW_KEY_LENGTH);
@@ -3908,7 +3988,11 @@ int ObCreateTableResolver::resolve_table_charset_info(const ParseNode *node) {
   }
 
   if (OB_SUCC(ret)) {
-    if (CHARSET_INVALID == charset_type_ && CS_TYPE_INVALID == collation_type_) {
+    ObCharsetCompatType charset_compat_type = CHARSET_COMPAT_MYSQL57;
+    if (OB_ISNULL(session_info_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("session info is NULL", K(ret));
+    } else if (CHARSET_INVALID == charset_type_ && CS_TYPE_INVALID == collation_type_) {
       // The database character set and collation affect these aspects of server operation:
       //
       // For CREATE TABLE statements, the database character set and collation are used as default
@@ -3929,7 +4013,9 @@ int ObCreateTableResolver::resolve_table_charset_info(const ParseNode *node) {
         charset_type_ = database_schema->get_charset_type();
         collation_type_ = database_schema->get_collation_type();
       }
-    } else if (OB_FAIL(ObCharset::check_and_fill_info(charset_type_, collation_type_))) {
+    } else if (OB_FAIL(session_info_->get_charset_compat_type(charset_compat_type))) {
+      LOG_WARN("fail to get charset compat type", K(ret));
+    } else if (OB_FAIL(ObCharset::check_and_fill_info(charset_type_, collation_type_, charset_compat_type))) {
       SQL_RESV_LOG(WARN, "fail to fill collation info", K(ret));
     }
   }
@@ -3995,8 +4081,8 @@ int ObCreateTableResolver::resolve_auto_partition(const ParseNode *partition_nod
             SQL_RESV_LOG(WARN, "param, the param can't be zero", K(ret), K(buf));
           } else if (ObPartitionOption::MIN_AUTO_PART_SIZE_BY_USER > part_size) {
             ret = OB_NOT_SUPPORTED;
-            SQL_RESV_LOG(WARN, "auto part size must be greater than or equal to 128MB", K(ret), K(buf));
-            LOG_USER_ERROR(OB_NOT_SUPPORTED, "auto part size less than 128MB");
+            SQL_RESV_LOG(WARN, "auto part size must be greater than or equal to 1MB", K(ret), K(buf));
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "auto part size less than 1MB");
           }
         }
       } else if (T_AUTO == part_size_node->type_) {

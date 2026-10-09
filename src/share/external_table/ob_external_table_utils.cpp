@@ -1,17 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL
 #include "share/external_table/ob_external_table_utils.h"
 
+#include "lib/random/ob_random.h"
+#include "sql/ob_sql_utils.h"
 #include "share/external_table/ob_external_table_file_rpc_processor.h"
 #include "share/schema/ob_schema_getter_guard.h"
 #include "share/schema/ob_schema_struct.h"
@@ -25,6 +20,7 @@
 #include "plugin/interface/ob_plugin_external_intf.h"
 #include "sql/engine/basic/ob_consistent_hashing_load_balancer.h"
 #include "lib/restore/ob_object_device.h"
+#include "lib/hash_func/murmur_hash.h"
 #include "src/share/ob_device_manager.h"
 
 namespace oceanbase
@@ -37,6 +33,41 @@ namespace share
 const char *ObExternalTableUtils::dummy_file_name()
 {
   return "#######DUMMY_FILE#######";
+}
+
+int ObExternalTableUtils::adjust_string_length_for_external_table(const char *data,
+                                                                  const int64_t src_length,
+                                                                  const int64_t max_length,
+                                                                  const bool is_byte_length,
+                                                                  const bool enable_hive_compat,
+                                                                  int64_t &out_length)
+{
+  int ret = OB_SUCCESS;
+  out_length = src_length;
+  if (OB_ISNULL(data)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid string data", K(ret), KP(data), K(src_length), K(max_length));
+  } else {
+    const bool over_limit
+        = src_length > max_length
+          && (is_byte_length
+              || ObCharset::strlen_char(CS_TYPE_UTF8MB4_BIN, data, src_length) > max_length);
+    if (over_limit) {
+      if (!enable_hive_compat) {
+        ret = OB_ERR_DATA_TOO_LONG;
+        LOG_WARN("data too long", K(ret), K(src_length), K(max_length));
+      } else if (is_byte_length) {
+        out_length = max_length;
+      } else {
+        out_length = ObCharset::charpos(CS_TYPE_UTF8MB4_BIN, data, src_length, max_length);
+        if (OB_UNLIKELY(out_length < 0 || out_length > src_length)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid truncated length", K(ret), K(out_length), K(src_length), K(max_length));
+        }
+      }
+    }
+  }
+  return ret;
 }
 
 int ObExternalTableUtils::get_tenant_compat_version(schema::ObSchemaGetterGuard &schema_guard,
@@ -412,6 +443,7 @@ int ObExternalTableUtils::prepare_single_scan_task(const uint64_t tenant_id,
                                                     ObIAllocator &allocator,
                                                     ObIArray<ObIExtTblScanTask *> &scan_tasks,
                                                     bool is_file_on_disk,
+                                                    bool is_shared_file_on_disk,
                                                     ObExecContext &ctx)
 {
   int ret = OB_SUCCESS;
@@ -437,7 +469,8 @@ int ObExternalTableUtils::prepare_single_scan_task(const uint64_t tenant_id,
     }
   } else if (OB_FAIL(prepare_single_scan_task_(tenant_id, das_ctdef, das_rtdef,exec_ctx,
                                                 partition_ids, ranges, allocator,
-                                                scan_tasks, is_file_on_disk, ctx))) {
+                                                scan_tasks, is_file_on_disk,
+                                                is_shared_file_on_disk, ctx))) {
     LOG_WARN("failed to prepare single scan range");
   }
   return ret;
@@ -452,6 +485,7 @@ int ObExternalTableUtils::prepare_single_scan_task_(const uint64_t tenant_id,
                                                      ObIAllocator &allocator,
                                                      ObIArray<ObIExtTblScanTask *> &scan_tasks,
                                                      bool is_file_on_disk,
+                                                     bool is_shared_file_on_disk,
                                                      ObExecContext &ctx)
 {
   int ret = OB_SUCCESS;
@@ -490,19 +524,31 @@ int ObExternalTableUtils::prepare_single_scan_task_(const uint64_t tenant_id,
                                                                         all_locations))) {
         //For recovered cluster, the file addr may not in the cluster. Then igore it.
         LOG_WARN("filter files in location failed", K(ret));
+    } else if (is_shared_file_on_disk
+               && OB_FAIL(ObExternalTableUtils::dedup_shared_local_files(file_urls, allocator))) {
+      LOG_WARN("deduplicate shared local files failed", K(ret));
     } else {
       scan_tasks.reset();
     }
   }
   bool is_odps_external_table = false;
   ObODPSGeneralFormat::ApiMode odps_api_mode;
+  bool use_odps_jni_connector = true;
+  int8_t unused_mode = 0;
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObSQLUtils::get_odps_api_mode(table_format_or_properties, is_odps_external_table, odps_api_mode))) {
     LOG_WARN("failed to check is odps external table or not", K(ret), K(table_format_or_properties));
+  } else if (OB_FAIL(ObSQLUtils::parse_odps_jni_params_from_format_str(
+          table_format_or_properties, use_odps_jni_connector, unused_mode))) {
+    LOG_WARN("failed to parse odps jni params from format str", K(ret));
   } else if (!file_urls.empty() && is_odps_external_table) {
     const ExprFixedArray &ext_file_column_expr = das_ctdef.pd_expr_spec_.ext_file_column_exprs_;
-    if (!GCONF._use_odps_jni_connector) {
+    if (!use_odps_jni_connector) {
 #if defined (OB_BUILD_CPP_ODPS)
+      if (odps_api_mode != ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("storage api is not supported", K(ret));
+      }
       for (int64_t i = 0; OB_SUCC(ret) && i < file_urls.count(); ++i) {
         const ObExternalFileInfo &external_info = file_urls.at(i);
         ObOdpsScanTask *scan_task = NULL;
@@ -786,11 +832,23 @@ int ObExternalTableUtils::assign_odps_file_to_sqcs(
   int64_t table_total_row_count = 0;
   ObString session_str;
   ObString part_str;
+  bool use_odps_jni_connector = true;
+  int8_t odps_data_transfer_mode = 0;
+  if (OB_SUCC(ret)) {
+    const ObString &format_str = scan_ops.at(0)->tsc_ctdef_.scan_ctdef_.external_file_format_str_.str_;
+    if (OB_FAIL(ObSQLUtils::parse_odps_jni_params_from_format_str(
+            format_str, use_odps_jni_connector, odps_data_transfer_mode))) {
+      LOG_WARN("failed to parse odps jni params from format str", K(ret));
+    }
+  }
 
   if (OB_SUCC(ret)) {
-    if (!GCONF._use_odps_jni_connector) {
+    if (!use_odps_jni_connector) {
 #if defined (OB_BUILD_CPP_ODPS)
-      if (OB_FAIL(fetch_odps_all_partitions_info_for_task_assign(
+      if (odps_api_mode != ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_WARN("storage api is not supported", K(ret));
+      } else if (OB_FAIL(fetch_odps_all_partitions_info_for_task_assign(
                                               dfo.get_allocator(),
                                               scan_ops.at(0),
                                               exec_ctx,
@@ -820,10 +878,11 @@ int ObExternalTableUtils::assign_odps_file_to_sqcs(
       } else {
         ObSqlString part_spec_str;
         int64_t part_count = files.count();
+        int64_t dummy_part_count = 0;
         for (int64_t i = 0; OB_SUCC(ret) && i < part_count; ++i) {
           const ObExternalFileInfo &external_info = files.at(i);
           if (0 == external_info.file_url_.compare(ObExternalTableUtils::dummy_file_name())) {
-            // do nothing
+            ++dummy_part_count;
           } else if (OB_FAIL(part_spec_str.append(external_info.file_url_))){
             LOG_WARN("failed to append file url", K(ret), K(external_info.file_url_));
           } else if (i < part_count - 1 && OB_FAIL(part_spec_str.append("#"))) {
@@ -834,9 +893,11 @@ int ObExternalTableUtils::assign_odps_file_to_sqcs(
         } else if (OB_FAIL(ob_write_string(dfo.get_allocator(), part_spec_str.string(), part_str, true))) {
           LOG_WARN("failed to write string", K(ret), K(part_spec_str));
         }
-
         const ExprFixedArray& exprs = scan_ops.at(0)->tsc_ctdef_.scan_ctdef_.pd_expr_spec_.ext_file_column_exprs_;
+        LOG_TRACE("odps need partitions", K(part_str));
         if (OB_FAIL(ret)) {
+        } else if (dummy_part_count == part_count) {
+          // do nothing
         } else if(odps_api_mode == sql::ObODPSGeneralFormat::ApiMode::BYTE) {
           if (OB_FAIL(ObOdpsPartitionJNIDownloaderMgr::fetch_storage_api_split_by_byte(
             exec_ctx,
@@ -877,7 +938,7 @@ int ObExternalTableUtils::assign_odps_file_to_sqcs(
   if (OB_FAIL(ret)) {
     /* do nothing */
   } else {
-    if (!GCONF._use_odps_jni_connector || odps_api_mode == sql::ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
+    if (!use_odps_jni_connector || odps_api_mode == sql::ObODPSGeneralFormat::ApiMode::TUNNEL_API) {
       if (one_partition_per_thread) {
         int64_t sqc_idx = 0;
         int64_t sqc_count = sqcs.count();
@@ -983,7 +1044,8 @@ int ObExternalTableUtils::fetch_odps_all_partitions_info_for_task_assign(
 }
 
 int ObExternalTableUtils::split_qc_for_odps_to_sqcs_storage_api_byte(int64_t split_task_count,
-    const ObString& session_str, const ObString &new_file_urls, ObIArray<ObPxSqcMeta> &sqcs, ObIAllocator &range_allocator)
+    const ObString& session_str, const ObString &new_file_urls, ObIArray<ObPxSqcMeta> &sqcs,
+    ObIAllocator &range_allocator)
 {
   int ret = OB_SUCCESS;
   int64_t sqc_count = sqcs.count();
@@ -1013,7 +1075,8 @@ int ObExternalTableUtils::split_qc_for_odps_to_sqcs_storage_api_byte(int64_t spl
 }
 
 int ObExternalTableUtils::split_qc_for_odps_to_sqcs_storage_api_row(int64_t table_total_row_count,
-    const ObString& session_str, const ObString &new_file_urls, ObIArray<ObPxSqcMeta> &sqcs, int parallel, ObIAllocator &range_allocator)
+    const ObString& session_str, const ObString &new_file_urls, ObIArray<ObPxSqcMeta> &sqcs, int parallel,
+    ObIAllocator &range_allocator)
 {
   int ret = OB_SUCCESS;
   int64_t sqc_count = sqcs.count();
@@ -1573,10 +1636,114 @@ int ObExternalTableUtils::filter_files_in_locations(common::ObIArray<share::ObEx
   return ret;
 }
 
+// Group files by logical path via hashmap (O(N)), then pick one candidate per group via murmur hash
+// for shared-file de-duplication and load balancing across observers.
+int ObExternalTableUtils::dedup_shared_local_files(common::ObIArray<share::ObExternalFileInfo> &files,
+                                                   common::ObIAllocator &allocator)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<ObSEArray<int64_t, 4>, 16> groups; // dim0: hash group idx, dim1: file idx
+  hash::ObHashMap<ObString, int64_t> path_to_group;
+  ObSEArray<ObExternalFileInfo, 16> dedup_files;
+  if (files.empty()) {
+    // do nothing
+  } else if (OB_FAIL(path_to_group.create(files.count(), "SharedFileDdp"))) {
+    LOG_WARN("failed to create path_to_group map", K(ret), K(files.count()));
+  }
+  // 1. group files by file_url_
+  for (int64_t i = 0; OB_SUCC(ret) && i < files.count(); ++i) {
+    // file_addr_ / file_url_ should be already split by the caller that
+    // the file_url_ should be the bare logical path and can be used as the grouping key directly.
+    const ObString &logical_path = files.at(i).file_url_;
+    int64_t group_idx = -1;
+    int tmp_ret = path_to_group.get_refactored(logical_path, group_idx);
+    if (OB_HASH_NOT_EXIST == tmp_ret) {
+      group_idx = groups.count();
+      ObSEArray<int64_t, 4> new_group;
+      if (OB_FAIL(new_group.push_back(i))) {
+        LOG_WARN("failed to push initial group member", K(ret), K(logical_path));
+      } else if (OB_FAIL(groups.push_back(new_group))) {
+        LOG_WARN("failed to push shared local file group", K(ret), K(logical_path));
+      } else if (OB_FAIL(path_to_group.set_refactored(logical_path, group_idx))) {
+        LOG_WARN("failed to record group index", K(ret), K(logical_path));
+      }
+    } else if (OB_SUCCESS == tmp_ret) {
+      const ObExternalFileInfo &first_file = files.at(groups.at(group_idx).at(0));
+      const ObExternalFileInfo &candidate = files.at(i);
+      if (first_file.file_size_ != candidate.file_size_) {
+        // sfile:// contract: same logical path across observers must point to identical data.
+        // A size mismatch means the user's deployment is broken (paths diverged), so surface a
+        // user-facing error that names both observers and their reported sizes.
+        char first_addr_buf[OB_IP_PORT_STR_BUFF] = {0};
+        char cand_addr_buf[OB_IP_PORT_STR_BUFF] = {0};
+        char err_msg[OB_MAX_ERROR_MSG_LEN] = {0};
+        if (OB_TMP_FAIL(first_file.file_addr_.ip_port_to_string(first_addr_buf, sizeof(first_addr_buf)))) {
+          LOG_WARN("fail to get file addr string", K(tmp_ret));
+        } else if (OB_TMP_FAIL(candidate.file_addr_.ip_port_to_string(cand_addr_buf, sizeof(cand_addr_buf)))) {
+          LOG_WARN("fail to get file addr string", K(tmp_ret));
+        }
+        snprintf(err_msg, sizeof(err_msg),
+                 "sfile '%.*s' has inconsistent size across observers: %s reports %ld bytes, %s reports %ld bytes",
+                 logical_path.length(), logical_path.ptr(),
+                 first_addr_buf, first_file.file_size_,
+                 cand_addr_buf, candidate.file_size_);
+        ret = OB_INVALID_EXTERNAL_FILE;
+        LOG_USER_ERROR(OB_INVALID_EXTERNAL_FILE, err_msg);
+        LOG_WARN("shared local file size is inconsistent", K(ret), K(logical_path),
+                 K(first_file), K(candidate));
+      } else if (OB_INVALID_TIMESTAMP != first_file.modify_time_
+                 && OB_INVALID_TIMESTAMP != candidate.modify_time_
+                 && first_file.modify_time_ != candidate.modify_time_) {
+        // Modify-time jitter across shared filesystems is tolerated; file size is the cheap hard check.
+        // Content digest is not compared because local/shared file backends usually cannot provide
+        // a stable low-cost digest without reading file contents.
+        LOG_INFO("shared local file modify time is inconsistent", K(logical_path),
+                 K(first_file), K(candidate));
+      }
+      if (OB_SUCC(ret) && OB_FAIL(groups.at(group_idx).push_back(i))) {
+        LOG_WARN("failed to push shared local file candidate", K(ret), K(logical_path));
+      }
+    } else {
+      ret = tmp_ret;
+      LOG_WARN("failed to lookup path_to_group", K(ret), K(logical_path));
+    }
+  }
+  // 2. pick one candidate file for each group (de-duplication and load balancing)
+  for (int64_t i = 0; OB_SUCC(ret) && i < groups.count(); ++i) {
+    ObSEArray<int64_t, 4> &group = groups.at(i);
+    if (OB_UNLIKELY(group.empty())) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("empty shared local file candidate group", K(ret));
+    } else {
+      const ObExternalFileInfo &first_file = files.at(group.at(0));
+      const ObString &logical_path = first_file.file_url_;
+      const uint64_t hash_value = common::murmurhash(logical_path.ptr(), logical_path.length(), 0);
+      const int64_t selected_idx = group.at(hash_value % group.count());
+      ObExternalFileInfo selected_file;
+      if (OB_FAIL(selected_file.deep_copy(allocator, files.at(selected_idx)))) {
+        LOG_WARN("failed to copy selected shared local file", K(ret), K(logical_path));
+      // assign consecutive file_id_ after de-duplication
+      } else if (FALSE_IT(selected_file.file_id_ = dedup_files.count() + 1)) {
+      } else if (OB_FAIL(dedup_files.push_back(selected_file))) {
+        LOG_WARN("failed to push selected shared local file", K(ret), K(selected_file));
+      } else {
+        LOG_INFO("deduplicate shared local file", K(logical_path), K(group.count()), K(selected_file));
+      }
+    }
+  }
+
+  if (OB_SUCC(ret) && OB_FAIL(files.assign(dedup_files))) {
+    LOG_WARN("failed to assign deduplicated shared local files", K(ret));
+  }
+  path_to_group.destroy();
+  return ret;
+}
+
 int ObExternalTableUtils::collect_local_files_on_servers(
     const uint64_t tenant_id,
     const ObString &location,
     const ObString &pattern,
+    const schema::ObExternalFilePatternType pattern_type,
     const ObExprRegexpSessionVariables &regexp_vars,
     ObIArray<ObAddr> &all_servers,
     ObIArray<ObString> &file_urls,
@@ -1644,6 +1811,7 @@ int ObExternalTableUtils::collect_local_files_on_servers(
       ObLoadExternalFileListReq req;
       req.location_ = location;
       req.pattern_ = pattern;
+      req.pattern_type_ = pattern_type;
       req.regexp_vars_ = regexp_vars;
 
       if (OB_ISNULL(async_cb = OB_NEWx(ObRpcAsyncLoadExternalTableFileCallBack, (&allocator), (&context)))) {
@@ -1731,6 +1899,7 @@ int ObExternalTableUtils::collect_external_file_list(
     const ObString &location,
     const ObString &access_info,
     const ObString &pattern,
+    const schema::ObExternalFilePatternType pattern_type,
     const ObString &properties,
     const bool &is_partitioned_table,
     const sql::ObExprRegexpSessionVariables &regexp_vars,
@@ -1812,8 +1981,9 @@ int ObExternalTableUtils::collect_external_file_list(
         OZ(basic_file_infos.push_back(basic_file_info));
       }
 #else
-      ret = OB_ERR_UNEXPECTED;
+      ret = OB_NOT_SUPPORTED;
       LOG_WARN("not support odps driver", K(ret));
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "external odps table cpp in opensource");
 #endif
     } else {
 #if defined (OB_BUILD_JNI_ODPS)
@@ -1916,20 +2086,23 @@ int ObExternalTableUtils::collect_external_file_list(
     ObArray<ObString> content_digests;
     ObSEArray<ObAddr, 8> all_servers;
     share::schema::ObSchemaGetterGuard schema_guard;
+    ObString file_location = location;
+    bool is_shared = false;
     OZ (GCTX.location_service_->external_table_get(tenant_id, all_servers));
-    const bool is_local_storage = ObSQLUtils::is_external_files_on_local_disk(location);
+    OZ (normalize_shared_file_location(allocator, file_location, is_shared));
+    const bool is_local_storage = ObSQLUtils::is_external_files_on_local_disk(file_location);
     if (OB_SUCC(ret) && full_path.length() > 0
             && *(full_path.ptr() + full_path.length() - 1) != '/' ) {
       OZ (full_path.append("/"));
     }
     if (OB_FAIL(ret)) {
     } else if (is_local_storage) {
-      OZ(collect_local_files_on_servers(tenant_id, location, pattern, regexp_vars, all_servers,
+      OZ(collect_local_files_on_servers(tenant_id, file_location, pattern, pattern_type, regexp_vars, all_servers,
                                         file_urls, file_sizes, modify_times, content_digests,
                                         full_path, allocator));
     } else {
       OZ(ObExternalTableFileManager::get_external_file_list_on_device(
-        location, pattern, regexp_vars, file_urls, file_sizes, modify_times, content_digests,
+        file_location, pattern, pattern_type, regexp_vars, file_urls, file_sizes, modify_times, content_digests,
         access_info, allocator));
       for (int64_t i = 0; OB_SUCC(ret) && i < file_urls.count(); i++) {
         ObSqlString tmp_file_url;
@@ -2022,6 +2195,53 @@ int ObExternalFileListArrayOpWithFilter::func(const dirent *entry)
   return ret;
 }
 
+int ObCommonDirStatsCollectorOp::func(const dirent *entry)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(entry)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid list entry, entry is null", K(ret));
+  } else if (OB_ISNULL(entry->d_name)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid list entry, d_name is null", K(ret));
+  } else {
+    const ObString file_name(entry->d_name);
+    if (file_name.case_compare(".") == 0 || file_name.case_compare("..") == 0
+        || file_name.case_compare("_SUCCESS") == 0) {
+      // skip . and .. and _SUCCESS
+    } else {
+      cur_file_count_++;
+      cur_total_size_ += get_size();
+      const int64_t modify_time = get_extra_info().last_modified_time_ms_;
+      if (modify_time > cur_max_modify_time_) {
+        cur_max_modify_time_ = modify_time;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObCommonDirStatsCollectorOp::finish_current_dir()
+{
+  int ret = OB_SUCCESS;
+  // Convert modify time from milliseconds to microseconds (OceanBase uses microseconds)
+  if (OB_FAIL(file_nums_.push_back(cur_file_count_))) {
+    LOG_WARN("fail to push file count", K(ret), K(cur_file_count_));
+  } else if (OB_FAIL(data_sizes_.push_back(cur_total_size_))) {
+    LOG_WARN("fail to push data size", K(ret), K(cur_total_size_));
+  } else if (OB_FAIL(modify_times_.push_back(cur_max_modify_time_ * 1000LL))) {
+    // Modify time should store in millseconds.
+    LOG_WARN("fail to push modify time",
+             K(ret),
+             K(cur_max_modify_time_));
+  } else {
+    cur_file_count_ = 0;
+    cur_total_size_ = 0;
+    cur_max_modify_time_ = 0;
+  }
+  return ret;
+}
+
 int ObLocalFileListArrayOpWithFilter::func(const dirent *entry)
 {
   int ret = OB_SUCCESS;
@@ -2050,6 +2270,9 @@ int ObLocalFileListArrayOpWithFilter::func(const dirent *entry)
     } else {
       filter_path = full_path.string();
       filter_path += origin_path_.length();  // 只匹配location下的子路径
+      if (!filter_path.empty() && '/' == filter_path[0]) {
+        filter_path += 1;
+      }
     }
 
     if (OB_FAIL(ret)) {
@@ -2074,6 +2297,10 @@ int ObLocalFileListArrayOpWithFilter::func(const dirent *entry)
         OB_LOG(WARN, "fail to push filename to array", K(ret), K(tmp_file));
       } else if (OB_FAIL(file_size_.push_back(get_size()))) {
         OB_LOG(WARN, "fail to push size to array", K(ret), K(tmp_file));
+      } else if (OB_FAIL(modify_times_.push_back(get_extra_info().last_modified_time_ms_))) {
+        OB_LOG(WARN, "fail to push extra info to array", K(ret));
+      } else if (OB_FAIL(content_digests_.push_back(ObString()))) {
+        OB_LOG(WARN, "fail to push content digest", K(ret));
       }
     }
   }
@@ -2087,6 +2314,7 @@ int ObExternalTableUtils::collect_external_file_list_with_cache(
     const ObIArray<int64_t> &part_id,
     const ObString &access_info,
     const ObString &pattern,
+    const schema::ObExternalFilePatternType pattern_type,
     ObIAllocator &allocator,
     int64_t refresh_interval_ms,
     ObIArray<ObHiveFileDesc> &hive_file_desc,
@@ -2104,6 +2332,7 @@ int ObExternalTableUtils::collect_external_file_list_with_cache(
               tenant_id,
               part_id,
               pattern,
+              pattern_type,
               access_info,
               tmp_allocator,
               refresh_interval_ms,
@@ -2113,10 +2342,7 @@ int ObExternalTableUtils::collect_external_file_list_with_cache(
   }
 
   ObHiveFileDesc *desc = NULL;
-  if (reorder_part_id.count() < tmp_external_table_files.count()) {
-    // 可能是个空分区， tmp_external_table_files 就为空
-    // 但会存在 part_id
-    // 所以 part_id 的个数需要大于等于文件个数
+  if (reorder_part_id.count() != tmp_external_table_files.count()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("fail to check count", K(reorder_part_id.count()), K(tmp_external_table_files.count()));
   }
@@ -2145,6 +2371,37 @@ int ObExternalTableUtils::collect_external_file_list_with_cache(
   return ret;
 }
 
+int ObExternalTableUtils::fetch_external_table_simple_stats(
+    const ObString &location,
+    const ObString &access_info,
+    const ObIArray<ObString> &partition_values,
+    ObIArray<int64_t> &file_nums,
+    ObIArray<int64_t> &data_sizes,
+    ObIArray<int64_t> &modify_times)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObExternalTableFileManager::get_external_table_simple_stats(location,
+                                                                          access_info,
+                                                                          partition_values,
+                                                                          file_nums,
+                                                                          data_sizes,
+                                                                          modify_times))) {
+    LOG_WARN("fail to fetch external table simple stats", K(ret), K(location), K(access_info));
+  }
+  return ret;
+}
+
+int ObExternalTableUtils::get_part_col_names(const ObTableSchema &table_schema,
+                                             ObIArray<ObString> &part_col_names)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObExternalTableFileManager::get_instance().get_part_col_names(table_schema,
+                                                                            part_col_names))) {
+    LOG_WARN("failed to get part col names", K(ret));
+  }
+  return ret;
+}
+
 int ObExternalTableUtils::collect_partitions_info_with_cache(
     const ObTableSchema &table_schema,
     ObSqlSchemaGuard &sql_schema_guard,
@@ -2153,7 +2410,6 @@ int ObExternalTableUtils::collect_partitions_info_with_cache(
     ObIArray<sql::HivePartitionInfo*> &partition_infos)
 {
   int ret = OB_SUCCESS;
-
   if (OB_FAIL(ObExternalTableFileManager::get_instance().get_partitions_info_with_cache(
           table_schema,
           sql_schema_guard,
@@ -2181,6 +2437,12 @@ bool ObExternalTableUtils::is_skipped_insert_column(const schema::ObColumnSchema
   return is_skip;
 }
 
+bool ObExternalTableUtils::is_hidden_external_column(const ObString &column_name)
+{
+  return column_name.case_compare(OB_HIDDEN_FILE_ID_COLUMN_NAME) == 0
+         || column_name.case_compare(OB_HIDDEN_LINE_NUMBER_COLUMN_NAME) == 0;
+}
+
 int ObExternalTableUtils::concat_external_file_location(const ObString &location,
                                                         const ObString &sub_path,
                                                         ObSqlString &full_path)
@@ -2197,7 +2459,7 @@ int ObExternalTableUtils::concat_external_file_location(const ObString &location
       OZ (full_path.append(sub_path));
     } else if (*(full_path.ptr() + full_path.length() - 1) == '/'
           && sub_path[0] == '/') {
-      OZ (full_path.append(sub_path.ptr() + 1));
+      OZ (full_path.append(sub_path.ptr() + 1, sub_path.length() - 1));
     } else {
       OZ (full_path.append(sub_path));
     }
@@ -2242,7 +2504,7 @@ int ObExternalTableUtils::resolve_location_for_load_and_select_into(ObSchemaGett
         ObSqlString full_path_str;
         if (OB_FAIL(concat_external_file_location(location_url, sub_path, full_path_str))) {
           LOG_WARN("failed to concat file location", K(ret), K(location_url), K(sub_path));
-        } else if (OB_FAIL(ob_write_string(allocator, full_path_str.string(), full_path))) {
+        } else if (OB_FAIL(ob_write_string(allocator, full_path_str.string(), full_path, true))) {
           LOG_WARN("failed to write string", K(ret));
         } else if (OB_NOT_NULL(access_info)) {
           if (OB_FAIL(ob_write_string(allocator, schema_ptr->get_location_access_info(), *access_info))) {
@@ -2255,14 +2517,37 @@ int ObExternalTableUtils::resolve_location_for_load_and_select_into(ObSchemaGett
   return ret;
 }
 
+int ObExternalTableUtils::normalize_shared_file_location(ObIAllocator &allocator,
+                                                         ObString &location,
+                                                         bool &is_shared)
+{
+  int ret = OB_SUCCESS;
+  is_shared = ObSQLUtils::is_external_shared_files_on_local_disk(location);
+  if (is_shared) {
+    const int64_t shared_prefix_len = STRLEN(OB_SHARED_FILE_PREFIX);
+    ObSqlString tmp_location;
+    if (OB_FAIL(tmp_location.append(OB_FILE_PREFIX))) {
+      LOG_WARN("failed to append file prefix", K(ret));
+    } else if (OB_FAIL(tmp_location.append(ObString(location.length() - shared_prefix_len,
+                                                    location.ptr() + shared_prefix_len)))) {
+      LOG_WARN("failed to append shared file path", K(ret), K(location));
+    } else if (OB_FAIL(ob_write_string(allocator, tmp_location.string(), location, true))) {
+      LOG_WARN("failed to write normalized shared file location", K(ret));
+    }
+  }
+  return ret;
+}
+
 int ObExternalTableUtils::get_external_file_location(const ObTableSchema &table_schema,
                                                      ObSchemaGetterGuard &schema_guard,
                                                      ObIAllocator &allocator,
-                                                     ObString &file_location)
+                                                     ObString &file_location,
+                                                     bool *is_shared_file_on_disk)
 {
   int ret = OB_SUCCESS;
   const uint64_t tenant_id = table_schema.get_tenant_id();
   const uint64_t location_id = table_schema.get_external_location_id();
+  bool is_shared = false;
   if (OB_INVALID_ID != location_id) {
     const ObLocationSchema *location_schema = NULL;
     if (OB_FAIL(schema_guard.get_location_schema_by_id(tenant_id, location_id, location_schema))) {
@@ -2278,6 +2563,11 @@ int ObExternalTableUtils::get_external_file_location(const ObTableSchema &table_
     }
   } else {
     file_location = table_schema.get_external_file_location();
+  }
+  // Collapse sfile:// into file:// here so only this entry surfaces the shared semantic via the out-param.
+  OZ (normalize_shared_file_location(allocator, file_location, is_shared));
+  if (OB_NOT_NULL(is_shared_file_on_disk)) {
+    *is_shared_file_on_disk = is_shared;
   }
   return ret;
 }
@@ -2353,6 +2643,7 @@ int ObExternalTableUtils::remove_external_file_list(const uint64_t tenant_id,
                                                     const ObString &location,
                                                     const ObString &access_info,
                                                     const ObString &pattern,
+                                                    const schema::ObExternalFilePatternType pattern_type,
                                                     const sql::ObExprRegexpSessionVariables &regexp_vars,
                                                     ObIAllocator &allocator)
 {
@@ -2374,7 +2665,7 @@ int ObExternalTableUtils::remove_external_file_list(const uint64_t tenant_id,
       ObSqlString full_path;
       full_path.append(location);
       if (!is_del_all) {
-        OZ(collect_external_file_list(nullptr, tenant_id, -1, location, access_info, pattern, "",
+        OZ(collect_external_file_list(nullptr, tenant_id, -1, location, access_info, pattern, pattern_type, "",
                                       false, regexp_vars, allocator, full_path, basic_file_infos));
       }
       if (OB_SUCC(ret)) {
@@ -2718,6 +3009,7 @@ int ObExternalFileInfoCollector::collect_dirs_with_spec_level(
 
 int ObExternalFileInfoCollector::get_file_list(const common::ObString &path,
                                                const common::ObString &pattern,
+                                               const schema::ObExternalFilePatternType pattern_type,
                                                const ObExprRegexpSessionVariables &regexp_vars,
                                                common::ObIArray<common::ObString> &file_urls,
                                                common::ObIArray<int64_t> &file_sizes,
@@ -2739,7 +3031,7 @@ int ObExternalFileInfoCollector::get_file_list(const common::ObString &path,
   if (OB_UNLIKELY(!storage_info_->is_valid())) {
     ret = OB_NOT_INIT;
     LOG_WARN("not init", KR(ret), K_(storage_info));
-  } else if (!pattern.empty() && OB_FAIL(filter.init(pattern, regexp_vars))) {
+  } else if (!pattern.empty() && OB_FAIL(filter.init(pattern, pattern_type, regexp_vars))) {
     LOG_WARN("fail to init filter", K(ret));
   } else if (OB_FAIL(ob_write_string(allocator_, path, path_cstring, true /*c_style*/))) {
     LOG_WARN("fail to copy string", KR(ret), K(path));
@@ -2774,12 +3066,26 @@ int ObExternalFileInfoCollector::get_file_list(const common::ObString &path,
       }
     }
     ObArray<int64_t> useless_size;
+    ObArray<int64_t> useless_modify_times;
+    ObArray<ObString> useless_content_digests;
     for (int64_t i = 0; OB_SUCC(ret) && OB_SUCC(THIS_WORKER.check_status()) && i < file_dirs.count(); i++) {
       ObString file_dir = file_dirs.at(i);
-      ObLocalFileListArrayOpWithFilter dir_op(file_dirs, useless_size, file_dir, path_cstring, NULL,
+      ObLocalFileListArrayOpWithFilter dir_op(file_dirs,
+                                              useless_size,
+                                              useless_modify_times,
+                                              useless_content_digests,
+                                              file_dir,
+                                              path_cstring,
+                                              NULL,
                                               allocator_);
-      ObLocalFileListArrayOpWithFilter file_op(file_urls, file_sizes, file_dir, path_cstring,
-                                               pattern.empty() ? NULL : &filter, allocator_);
+      ObLocalFileListArrayOpWithFilter file_op(file_urls,
+                                               file_sizes,
+                                               modify_times,
+                                               content_digests,
+                                               file_dir,
+                                               path_cstring,
+                                               pattern.empty() ? NULL : &filter,
+                                               allocator_);
       dir_op.set_dir_flag();
       if (OB_FAIL(ObExternalIoAdapter::list_files(file_dir, storage_info_, file_op))) {
         LOG_WARN("fail to list files", KR(ret), K(file_dir), KPC(storage_info_));
@@ -2790,9 +3096,6 @@ int ObExternalFileInfoCollector::get_file_list(const common::ObString &path,
         LOG_WARN("too many files and dirs to visit", K(ret));
       }
     }
-    OZ(convert_to_full_file_urls(path, file_urls, temp_file_urls));
-    OZ(collect_files_content_digest(temp_file_urls, content_digests));
-    OZ(collect_files_modify_time(temp_file_urls, modify_times));
   } else {
     ObExternalFileListArrayOpWithFilter file_op(file_urls, file_sizes, modify_times,
                                                 content_digests, pattern.empty() ? NULL : &filter,
@@ -2800,12 +3103,94 @@ int ObExternalFileInfoCollector::get_file_list(const common::ObString &path,
     if (OB_FAIL(ObExternalIoAdapter::list_files(path_cstring, storage_info_, file_op))) {
       LOG_WARN("fail to list files", KR(ret), K(path_cstring), KPC(storage_info_));
     } else if (!file_op.is_valid_content_digests() || !file_op.is_valid_modify_times()) {
+      LOG_WARN("didn't fetch modify time and content_digests by list, run fallback code", K(path));
       OZ(convert_to_full_file_urls(path, file_urls, temp_file_urls));
       if (!file_op.is_valid_content_digests()) {
         OZ(collect_files_content_digest(temp_file_urls, content_digests));
       }
       if (!file_op.is_valid_modify_times()) {
         OZ(collect_files_modify_time(temp_file_urls, modify_times));
+      }
+    }
+  }
+
+  if (file_sizes.count() != modify_times.count() || file_sizes.count() != content_digests.count()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("modify_time and content_digests must be fetched by list",
+             K(ret),
+             K(file_sizes.count()),
+             K(modify_times.count()),
+             K(content_digests.count()));
+  }
+  return ret;
+}
+
+int ObExternalFileInfoCollector::fetch_simple_stats(const common::ObString &path,
+                                                    const common::ObIArray<ObString> &partition_values,
+                                                    ObIArray<int64_t> &file_nums,
+                                                    ObIArray<int64_t> &data_sizes,
+                                                    ObIArray<int64_t> &modify_times)
+{
+  int ret = OB_SUCCESS;
+  ObString path_cstring;
+  CONSUMER_GROUP_FUNC_GUARD(PRIO_IMPORT);
+
+  if (OB_UNLIKELY(!storage_info_->is_valid())) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("not init", KR(ret), K_(storage_info));
+  } else if (OB_FAIL(ob_write_string(allocator_, path, path_cstring, true /*c_style*/))) {
+    LOG_WARN("fail to copy string", KR(ret), K(path));
+  } else {
+    if (partition_values.count() == 0) {
+      // Non-partitioned table
+      ObCommonDirStatsCollectorOp stats_op(file_nums, data_sizes, modify_times);
+      if (OB_STORAGE_HDFS == storage_type_ || OB_STORAGE_FILE == storage_type_) {
+        bool is_dir = false;
+        OZ (ObExternalIoAdapter::is_directory(path_cstring, storage_info_, is_dir));
+        if (!is_dir) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_WARN("external location is not a directory", K(ret), K(path_cstring));
+        }
+      }
+
+      // Object storage (OSS/COS/S3) using list_files to collect stats directly.
+      if (OB_FAIL(ret)) {
+      } else {
+        ObCommonDirStatsCollectorOp stats_op(file_nums, data_sizes, modify_times);
+        if (OB_FAIL(ObExternalIoAdapter::list_files(path_cstring, storage_info_, stats_op))) {
+          LOG_WARN("fail to list directories", KR(ret), K(path_cstring), KPC(storage_info_));
+        } else if (OB_FAIL(stats_op.finish_current_dir())) {
+          LOG_WARN("fail to finish current dir", KR(ret));
+        }
+      }
+    } else {
+      // Partitioned table
+      ObCommonDirStatsCollectorOp stats_op(file_nums, data_sizes, modify_times);
+      for (int64_t i = 0; OB_SUCC(ret) && i < partition_values.count(); ++i) {
+        ObSqlString partition_path;
+        if (OB_FAIL(partition_path.assign(path_cstring))) {
+          LOG_WARN("fail to assign path", K(ret), K(path_cstring));
+        } else if (partition_path.length() > 0
+                   && *(partition_path.ptr() + partition_path.length() - 1) != '/'
+                   && OB_FAIL(partition_path.append("/"))) {
+          LOG_WARN("fail to append slash", K(ret));
+        } else if (OB_FAIL(partition_path.append(partition_values.at(i)))) {
+          LOG_WARN("fail to append partition value", K(ret), K(partition_values.at(i)));
+        } else {
+          ObString partition_path_str;
+          if (OB_FAIL(ob_write_string(allocator_,
+                                      partition_path.string(),
+                                      partition_path_str,
+                                      true /*c_style*/))) {
+            LOG_WARN("fail to copy partition path", K(ret), K(partition_path));
+          } else if (OB_FAIL(ObExternalIoAdapter::list_files(partition_path_str,
+                                                                   storage_info_,
+                                                                   stats_op))) {
+            LOG_WARN("fail to list directories", KR(ret), K(partition_path_str), KPC(storage_info_));
+          } else if (OB_FAIL(stats_op.finish_current_dir())) {
+            LOG_WARN("fail to finish current dir", KR(ret), K(partition_path_str));
+          }
+        }
       }
     }
   }
@@ -2863,6 +3248,49 @@ int ObExternalTableUtils::get_credential_field_name(ObSqlString &str, int64_t op
   } else {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid opt", K(ret), K(opt));
+  }
+  return ret;
+}
+
+int ObExternalTableUtils::generate_file_sample_indices(const int64_t total_files,
+                                                       const double sample_percent,
+                                                       bool &is_file_sample,
+                                                       int64_t &target_count,
+                                                       ObIArray<int64_t> &indices)
+{
+  int ret = OB_SUCCESS;
+  is_file_sample = false;
+  target_count = 0;
+  indices.reset();
+  if (total_files <= 0 || sample_percent <= 0) {
+    // nothing to sample
+  } else {
+    const double sample_rate = sample_percent / 100.0;
+    target_count
+        = std::max(1L,
+                   static_cast<int64_t>(std::ceil(static_cast<double>(total_files) * sample_rate)));
+    if (target_count >= total_files) {
+      is_file_sample = false;
+    } else {
+      is_file_sample = true;
+      common::hash::ObHashSet<int64_t> selected_set;
+      if (OB_FAIL(selected_set.create(target_count * 2))) {
+        LOG_WARN("failed to create hash set for file sample", K(ret), K(target_count));
+      } else {
+        ObRandom rng;
+        rng.seed(static_cast<uint64_t>(ObTimeUtility::current_time()));
+        while (OB_SUCC(ret) && indices.count() < target_count) {
+          int64_t r = std::abs(rng.get()) % total_files;
+          if (OB_HASH_NOT_EXIST == selected_set.exist_refactored(r)) {
+            OZ (selected_set.set_refactored(r));
+            OZ (indices.push_back(r));
+          }
+        }
+      }
+      if (selected_set.created()) {
+        selected_set.destroy();
+      }
+    }
   }
   return ret;
 }

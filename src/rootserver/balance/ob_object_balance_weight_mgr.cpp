@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX BALANCE
@@ -169,7 +162,8 @@ int ObObjectBalanceWeightMgr::check_if_obj_weight_is_expired_(
       tablegroup_schema))) { // the tablegroup_id is also recorded in the table_id column
     LOG_WARN("get tablegroup schema failed", KR(ret), K(obj_key));
   } else if (OB_NOT_NULL(tablegroup_schema)) {
-    if (!tablegroup_schema->is_sharding_none()) {
+    if (tablegroup_schema->is_scope_cluster()) {
+      // only support tablegroup level weight for scope server/zone tablegroup
       is_expired = true;
     } else {
       // tablegroup level weight is valid, do nothing

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_COLUMN_STORE_OB_CO_SSTABLE_ROW_SCANNER_H_
@@ -77,6 +70,7 @@ public:
                K_(reverse_scan),
                K_(is_limit_end),
                K_(use_row_store_projector),
+               K_(need_getter_project),
                K_(state),
                K_(blockscan_state),
                K_(group_by_project_idx),
@@ -222,6 +216,7 @@ private:
   bool reverse_scan_;
   bool is_limit_end_;
   mutable bool use_row_store_projector_;
+  bool need_getter_project_;
   ScanState state_;
   BlockScanState blockscan_state_;
   int32_t group_by_project_idx_;

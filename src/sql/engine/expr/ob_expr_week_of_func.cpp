@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -754,24 +747,26 @@ int vector_weekofyear(const ObExpr &expr, ObEvalCtx &ctx, const ObBitVector &ski
           LOG_WARN("get date and usec from vec failed", K(ret));
         } else if (OB_UNLIKELY(ObTimeConverter::ZERO_DATE == date)) {
           res_vec->set_null(idx);
-        } else if (ObTimeConverter::could_calc_days_to_year_quickly(date)) {
-          ObTimeConverter::days_to_year_ydays(date, year, dt_yday);
         } else {
-          ObTime ob_time(DT_TYPE_DATE);
-          if (OB_FAIL(ObTimeConverter::date_to_ob_time(date, ob_time))) {
-            LOG_WARN("failed to convert date to ob_time", K(ret), K(date));
+          if (ObTimeConverter::could_calc_days_to_year_quickly(date)) {
+            ObTimeConverter::days_to_year_ydays(date, year, dt_yday);
           } else {
-            year = ob_time.parts_[DT_YEAR];
-            dt_yday = ob_time.parts_[DT_YDAY];
+            ObTime ob_time(DT_TYPE_DATE);
+            if (OB_FAIL(ObTimeConverter::date_to_ob_time(date, ob_time))) {
+              LOG_WARN("failed to convert date to ob_time", K(ret), K(date));
+            } else {
+              year = ob_time.parts_[DT_YEAR];
+              dt_yday = ob_time.parts_[DT_YDAY];
+            }
           }
-        }
-        if (OB_SUCC(ret)) {
-          if (year <= 0) {
-            res_vec->set_null(idx);
-          } else {
-            DateType wday = WDAY_OFFSET[date % DAYS_PER_WEEK][EPOCH_WDAY];
-            ObTimeConverter::to_week(DT_WEEK_GE_4_BEGIN, year, dt_yday, wday, week, delta);
-            res_vec->set_int(idx, week);
+          if (OB_SUCC(ret)) {
+            if (year <= 0) {
+              res_vec->set_null(idx);
+            } else {
+              DateType wday = WDAY_OFFSET[date % DAYS_PER_WEEK][EPOCH_WDAY];
+              ObTimeConverter::to_week(DT_WEEK_GE_4_BEGIN, year, dt_yday, wday, week, delta);
+              res_vec->set_int(idx, week);
+            }
           }
         }
       });
@@ -970,24 +965,26 @@ int ObExprWeek::vector_week(const ObExpr &expr, ObEvalCtx &ctx, const ObBitVecto
             LOG_WARN("get_date_usec_from_vec failed", K(ret), K(date), K(usec), K(tz_offset));
           } else if (OB_UNLIKELY(ObTimeConverter::ZERO_DATE == date)) {
             res_vec->set_null(idx);
-          } else if (ObTimeConverter::could_calc_days_to_year_quickly(date)) {
-            ObTimeConverter::days_to_year_ydays(date, year, dt_yday);
           } else {
-            ObTime ob_time(DT_TYPE_DATE);
-            if (OB_FAIL(ObTimeConverter::date_to_ob_time(date, ob_time))) {
-              LOG_WARN("failed to convert date to ob_time", K(ret), K(date));
+            if (ObTimeConverter::could_calc_days_to_year_quickly(date)) {
+              ObTimeConverter::days_to_year_ydays(date, year, dt_yday);
             } else {
-              year = ob_time.parts_[DT_YEAR];
-              dt_yday = ob_time.parts_[DT_YDAY];
+              ObTime ob_time(DT_TYPE_DATE);
+              if (OB_FAIL(ObTimeConverter::date_to_ob_time(date, ob_time))) {
+                LOG_WARN("failed to convert date to ob_time", K(ret), K(date));
+              } else {
+                year = ob_time.parts_[DT_YEAR];
+                dt_yday = ob_time.parts_[DT_YDAY];
+              }
             }
-          }
-          if (OB_SUCC(ret)) {
-            if (year <= 0) {
-              res_vec->set_null(idx);
-            } else {
-              DateType wday = WDAY_OFFSET[date % DAYS_PER_WEEK][EPOCH_WDAY];
-              ObTimeConverter::to_week(DT_WEEK_ZERO_BEGIN + DT_WEEK_SUN_BEGIN, year, dt_yday, wday, week, /*unused*/delta);
-              res_vec->set_int(idx, week);
+            if (OB_SUCC(ret)) {
+              if (year <= 0) {
+                res_vec->set_null(idx);
+              } else {
+                DateType wday = WDAY_OFFSET[date % DAYS_PER_WEEK][EPOCH_WDAY];
+                ObTimeConverter::to_week(DT_WEEK_ZERO_BEGIN + DT_WEEK_SUN_BEGIN, year, dt_yday, wday, week, /*unused*/delta);
+                res_vec->set_int(idx, week);
+              }
             }
           }
         });

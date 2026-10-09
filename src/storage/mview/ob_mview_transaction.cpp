@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -91,45 +84,12 @@ int ObMViewTransaction::ObSessionParamSaved::save(
         }
       }
       if (OB_SUCC(ret) && nullptr != mv_solidified_session_var) {
-        ObSEArray<const ObSessionSysVar*, 8> mv_solidified_diff_vars;
-        ObSEArray<ObObj, 8> cur_var_vals;
-        if (OB_FAIL(mv_solidified_session_var->get_different_vars_from_session(session_info_,
-                                               mv_solidified_diff_vars, cur_var_vals))) {
-          LOG_WARN("fail to get different vars from session", KR(ret), KP(mv_solidified_session_var));
-        } else if (mv_solidified_diff_vars.count() > 0) {
-          if (cur_var_vals.count() != mv_solidified_diff_vars.count()) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("unexpected array size", K(ret), K(cur_var_vals.count()), K(mv_solidified_diff_vars.count()));
-          } else {
-            ARRAY_FOREACH(mv_solidified_diff_vars, i) {
-              const ObSessionSysVar *var = mv_solidified_diff_vars.at(i);
-              if (OB_ISNULL(var)) {
-                ret = OB_ERR_UNEXPECTED;
-                LOG_WARN("var is NULL", KR(ret));
-              } else {
-                ObSessionSysVar tmp_var;
-                tmp_var.type_ = var->type_;
-                if (OB_FAIL(cur_session_vars_.push_back(tmp_var))) {
-                  LOG_WARN("fail to push back sys var", KR(ret));
-                } else {
-                  // Deep copy the old variable value after push_back to avoid dangling pointer issues
-                  ObSessionSysVar &pushed_var = cur_session_vars_.at(cur_session_vars_.count() - 1);
-                  if (OB_FAIL(deep_copy_obj(allocator_, cur_var_vals.at(i), pushed_var.val_))) {
-                    LOG_WARN("fail to deep copy old var val", KR(ret));
-                    cur_session_vars_.pop_back();
-                  } else if (OB_FAIL(session_info_->update_sys_variable(var->type_, var->val_))) {
-                    LOG_WARN("fail to update sys var", KR(ret), K(var->type_));
-                  }
-                }
-              }
-              // for debug
-              if (OB_SUCC(ret)) {
-                LOG_INFO("use solidified var to update sys var", K(var->type_), K(var->val_));
-              }
-            }
-          }
+        if (OB_FAIL(mv_solidified_session_var->apply_different_vars_to_session(*session_info_,
+                                                                               &allocator_,
+                                                                               &cur_session_vars_))) {
+          LOG_WARN("fail to apply solidified vars to session", KR(ret), KP(mv_solidified_session_var));
         }
-        LOG_DEBUG("update sys var", K(mv_solidified_diff_vars), K(mv_solidified_diff_vars.count()));
+        LOG_DEBUG("update sys var", K(cur_session_vars_.count()));
       }
     }
   }
@@ -160,15 +120,9 @@ int ObMViewTransaction::ObSessionParamSaved::restore()
     database_id_ = OB_INVALID_ID;
     session_info_->get_ddl_info().reset();
     // restore cur session vars
-    if (cur_session_vars_.count() > 0) {
-      ARRAY_FOREACH(cur_session_vars_, i) {
-        const ObSessionSysVar &var = cur_session_vars_.at(i);
-        if (OB_FAIL(session_info_->update_sys_variable(var.type_, var.val_))) {
-          LOG_WARN("fail to update sys var", KR(ret), K(var.type_));
-        }
-        // for debug
-        LOG_INFO("restore sys var", K(var.type_), K(var.val_));
-      }
+    if (cur_session_vars_.count() > 0
+        && OB_FAIL(sql::ObLocalSessionVar::restore_saved_session_vars(*session_info_, cur_session_vars_))) {
+      LOG_WARN("fail to restore saved session vars", KR(ret));
     }
     session_info_ = nullptr;
   }
@@ -184,7 +138,9 @@ ObMViewTransaction::ObSessionSavedForInner::ObSessionSavedForInner()
     session_info_(nullptr),
     session_saved_value_(nullptr),
     database_id_(OB_INVALID_ID),
-    database_name_(nullptr)
+    database_name_(nullptr),
+    audit_record_(),
+    origin_audit_record_(nullptr)
 {
 }
 
@@ -225,6 +181,8 @@ int ObMViewTransaction::ObSessionSavedForInner::save(ObSQLSessionInfo *session_i
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to alloc memory", KR(ret));
     }
+    origin_audit_record_ = &session_info->get_raw_audit_record();
+    session_info->switch_audit_record_ptr(&audit_record_);
     // save session
     if (OB_SUCC(ret)) {
       if (OB_FAIL(session_info->save_session(*session_saved_value))) {
@@ -277,6 +235,9 @@ int ObMViewTransaction::ObSessionSavedForInner::save(ObSQLSessionInfo *session_i
         allocator_.free(database_name_buf);
         database_name_buf = nullptr;
       }
+      if (OB_NOT_NULL(origin_audit_record_)) {
+        session_info->switch_audit_record_ptr(origin_audit_record_);
+      }
     }
   }
   return ret;
@@ -309,6 +270,9 @@ int ObMViewTransaction::ObSessionSavedForInner::restore()
         allocator_.free(database_name_);
         database_name_ = nullptr;
       }
+    }
+    if (OB_NOT_NULL(origin_audit_record_)) {
+      session_info_->switch_audit_record_ptr(origin_audit_record_);
     }
     session_info_ = nullptr;
   }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_RECOVER_TABLE_SERVICE_H
@@ -20,9 +13,6 @@
 #include "share/ob_common_rpc_proxy.h"
 #include "share/scn.h"
 #include "rootserver/backup/ob_backup_task_scheduler.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "close_modules/shared_storage/storage/high_availability/ob_ss_restore_scheduler.h"
-#endif
 namespace oceanbase
 {
 
@@ -76,14 +66,7 @@ public:
   int idle();
   int check_stop() const override;
   void wakeup();
-#ifdef OB_BUILD_SHARED_STORAGE
-  int check_leader();
-  int end_transaction(common::ObMySQLTransaction &trans, const int upstream_ret);
-  virtual int switch_to_leader() override;
-#else
-  // In SN mode, use base class implementation
   virtual int switch_to_leader() override { return ObTenantThreadHelper::switch_to_leader(); }
-#endif
 
 private:
   bool inited_;
@@ -98,10 +81,6 @@ private:
   ObRestoreScheduler restore_scheduler_;
   ObRecoverTableJobScheduler recover_table_scheduler_;
   ObImportTableJobScheduler import_table_scheduler_;
-#ifdef OB_BUILD_SHARED_STORAGE
-  ObSSRestoreScheduler ss_restore_scheduler_;
-  int64_t proposal_id_;
-#endif
   DISALLOW_COPY_AND_ASSIGN(ObRestoreService);
 };
 

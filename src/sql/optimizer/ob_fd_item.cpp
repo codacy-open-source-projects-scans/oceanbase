@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_JO
@@ -219,8 +212,7 @@ int ObFdItemFactory::get_parent_exprs_ptr(const ObIArray<ObRawExpr *> &parent_ex
       if (OB_ISNULL(parent_sets_.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get null fd parent set", K(ret));
-      } else if (parent_exprs.count() == parent_sets_.at(i)->count() &&
-                 ObOptimizerUtil::subset_exprs(*parent_sets_.at(i), parent_exprs)) {
+      } else if (ObOptimizerUtil::same_exprs(*parent_sets_.at(i), parent_exprs)) {
         parent_exprs_ptr = parent_sets_.at(i);
         find = true;
       }

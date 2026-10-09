@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -1973,16 +1966,19 @@ int ObTenantDDLService::create_tenant_sys_tablets_in_trans_(
     ObTableCreator table_creator(tenant_id,
                                  frozen_scn,
                                  trans);
+    schema::ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, schema_service_);
     ObNewTableTabletAllocator new_table_tablet_allocator(
                               tenant_id,
-                              schema_guard,
+                              schema_guard_wrapper,
                               sql_proxy_);
     common::ObArray<share::ObLSID> ls_id_array;
     const ObTablegroupSchema *dummy_tablegroup_schema = NULL;
     ObArray<const share::schema::ObTableSchema*> table_schemas;
     ObArray<uint64_t> index_tids;
     ObArray<bool> need_create_empty_majors;
-    if (OB_FAIL(table_creator.init(false/*need_tablet_cnt_check*/))) {
+    if (OB_FAIL(schema_guard_wrapper.init(schema_guard))) {
+      LOG_WARN("fail to init schema guard wrapper", KR(ret));
+    } else if (OB_FAIL(table_creator.init(false/*need_tablet_cnt_check*/))) {
       LOG_WARN("fail to init tablet creator", KR(ret), K(tenant_id));
     } else if (OB_FAIL(new_table_tablet_allocator.init())) {
       LOG_WARN("fail to init new table tablet allocator", KR(ret));
@@ -2336,7 +2332,7 @@ int ObTenantDDLService::add_extra_tenant_init_config_(
   ObString config_name_spf_batch_rescan("_enable_spf_batch_rescan");
   ObString config_value_spf_batch_rescan("true");
   ObString config_name_batch_rescan_flag("_enable_das_batch_rescan_flag");
-  ObString config_value_batch_rescan_flag("15");
+  ObString config_value_batch_rescan_flag("2047");
   ObString config_name_enable_mlog_auto_maintenance("enable_mlog_auto_maintenance");
   ObString config_value_enable_mlog_auto_maintenance("true");
   ObString config_name_prexec_prepare_with_params("_prexec_prepare_with_params");
@@ -2521,7 +2517,7 @@ int ObTenantDDLService::set_new_tenant_options(
   int ret = OB_SUCCESS;
   common::ObArray<common::ObZone> zones_in_pool;
   alter_locality_op = ALTER_LOCALITY_OP_INVALID;
-  if (OB_FAIL(set_raw_tenant_options(arg, new_tenant_schema))) {
+  if (OB_FAIL(set_raw_tenant_options(arg, schema_guard, new_tenant_schema))) {
     LOG_WARN("fail to set raw tenant options", K(ret));
   } else if (arg.alter_option_bitset_.has_member(obrpc::ObModifyTenantArg::LOCALITY)) {
     common::ObArray<share::schema::ObZoneRegion> zone_region_list;
@@ -2798,6 +2794,7 @@ int ObTenantDDLService::check_alter_tenant_locality_type(
 
 int ObTenantDDLService::set_raw_tenant_options(
     const ObModifyTenantArg &arg,
+    ObSchemaGetterGuard &schema_guard,
     ObTenantSchema &new_tenant_schema)
 {
   int ret = OB_SUCCESS;
@@ -2854,6 +2851,26 @@ int ObTenantDDLService::set_raw_tenant_options(
             LOG_WARN("failed to set default tablegroup name", K(ret));
           } else if (OB_FAIL(ddl_service_->set_default_tablegroup_id(new_tenant_schema))) {
             LOG_WARN("failed to set default tablegroup id", K(ret));
+          }
+          break;
+        }
+        case ObModifyTenantArg::DEFAULT_TABLESPACE: {
+          ObSchemaGetterGuard *current_schema_guard = &schema_guard;
+          ObSchemaGetterGuard tenant_schema_guard;
+          if (OB_SYS_TENANT_ID == schema_guard.get_tenant_id() &&
+              schema_guard.get_tenant_id() != new_tenant_schema.get_tenant_id()) {
+            if (OB_FAIL(get_tenant_schema_guard_with_version_in_inner_table(new_tenant_schema.get_tenant_id(), tenant_schema_guard))) {
+              LOG_WARN("failed to get tenant schema guard", K(ret));
+            } else {
+              current_schema_guard = &tenant_schema_guard;
+            }
+          }
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(new_tenant_schema.set_default_tablespace_name(
+              alter_tenant_schema.get_default_tablespace_name()))) {
+            LOG_WARN("failed to set default tablespace name", K(ret));
+          } else if (OB_FAIL(ddl_service_->set_default_tablespace_id(new_tenant_schema, *current_schema_guard))) {
+            LOG_WARN("failed to set default tablespace id", K(ret));
           }
           break;
         }
@@ -4243,6 +4260,13 @@ int ObTenantDDLService::update_mysql_tenant_sys_var(
       SET_TENANT_VARIABLE(SYS_VAR_COLLATION_SERVER, val_buf);
       SET_TENANT_VARIABLE(SYS_VAR_CHARACTER_SET_DATABASE, val_buf);
       SET_TENANT_VARIABLE(SYS_VAR_CHARACTER_SET_SERVER, val_buf);
+      if (CS_TYPE_UTF8MB4_0900_AI_CI == tenant_schema.get_collation_type()) {
+        SET_TENANT_VARIABLE(SYS_VAR_CHARACTER_SET_CLIENT, val_buf);
+        SET_TENANT_VARIABLE(SYS_VAR_CHARACTER_SET_RESULTS, val_buf);
+        SET_TENANT_VARIABLE(SYS_VAR_CHARACTER_SET_CONNECTION, val_buf);
+        SET_TENANT_VARIABLE(SYS_VAR_COLLATION_CONNECTION, val_buf);
+        SET_TENANT_VARIABLE(SYS_VAR_DEFAULT_COLLATION_FOR_UTF8MB4, val_buf);
+      }
     } // end HEAP_VAR
   }
   return ret;

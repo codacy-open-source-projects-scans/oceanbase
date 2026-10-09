@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX RS
 
@@ -187,9 +180,13 @@ int ObMviewAlterService::alter_mview_attributes(
         }
         if (mv_arg.is_alter_refresh_dop()) {
           if (mv_arg.get_refresh_dop() != mview_info.get_refresh_dop()) {
-            new_container_schema.set_dop(mv_arg.get_refresh_dop());
             mview_info.set_refresh_dop(mv_arg.get_refresh_dop());
             need_alter_mview_info = true;
+          }
+        }
+        if (mv_arg.is_alter_table_dop()) {
+          if (mv_arg.get_table_dop() != new_container_schema.get_dop()) {
+            new_container_schema.set_dop(mv_arg.get_table_dop());
           }
         }
         if (mv_arg.is_alter_nested_refresh_mode()) {
@@ -199,12 +196,21 @@ int ObMviewAlterService::alter_mview_attributes(
             need_alter_mview_refresh_job = true;
           }
         }
+        if (mv_arg.is_alter_compat_version()) {
+          if (mv_arg.get_compat_version() != mview_info.get_compat_version()) {
+            mview_info.set_compat_version(mv_arg.get_compat_version());
+            need_alter_mview_info = true;
+          }
+        }
 
-        if (OB_FAIL(ddl_operator.alter_table_options(schema_guard, new_container_schema,
+        ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, &ddl_operator.get_multi_schema_service());
+        if (OB_FAIL(schema_guard_wrapper.init(schema_guard))) {
+          LOG_WARN("fail to init schema guard wrapper", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(ddl_operator.alter_table_options(schema_guard_wrapper, new_container_schema,
                                                      *container_table_schema, false, trans))) {
           LOG_WARN("failed to update container schema", KR(ret), K(new_mview_schema));
         } else if (need_alter_mview_schema &&
-                   OB_FAIL(ddl_operator.alter_table_options(schema_guard, new_mview_schema,
+                   OB_FAIL(ddl_operator.alter_table_options(schema_guard_wrapper, new_mview_schema,
                                                             *orig_table_schema, false, trans))) {
           LOG_WARN("failed to update mview schema", KR(ret), K(new_mview_schema));
         } else if (need_alter_mview_refresh_job &&
@@ -333,8 +339,11 @@ int ObMviewAlterService::alter_mlog_attributes(const uint64_t tenant_id,
           }
         }
 
+        ObSchemaGuardWrapper schema_guard_wrapper(tenant_id, &ddl_operator.get_multi_schema_service());
         if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(ddl_operator.alter_table_options(schema_guard, new_mlog_schema,
+        } else if (OB_FAIL(schema_guard_wrapper.init(schema_guard))) {
+          LOG_WARN("fail to init schema guard wrapper", KR(ret), K(tenant_id));
+        } else if (OB_FAIL(ddl_operator.alter_table_options(schema_guard_wrapper, new_mlog_schema,
                                                      *mlog_table_schema, false, trans))) {
           LOG_WARN("failed to update container schema", KR(ret), K(new_mlog_schema));
         } else if (need_alter_mlog_purge_job &&
@@ -377,25 +386,38 @@ int ObMviewAlterService::update_mlog_in_modify_column(
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < new_mlog_schema.get_column_count(); ++i) {
       ObColumnSchemaV2 *new_mlog_column = new_mlog_schema.get_column_schema_by_idx(i);
+      const ObColumnSchemaV2 *orig_mlog_column = mlog_schema->get_column_schema_by_idx(i);
       const ObColumnSchemaV2 *base_table_column = NULL;
-      if (OB_ISNULL(new_mlog_column)) {
+      if (OB_ISNULL(new_mlog_column) || OB_ISNULL(orig_mlog_column)) {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("get null mlog column", K(ret));
+        LOG_WARN("get null mlog column", K(ret), KP(new_mlog_column), KP(orig_mlog_column));
       } else if (is_mlog_special_column(new_mlog_column->get_column_id())) {
         // do nothing
       } else if (OB_ISNULL(base_table_column = new_table_schema.get_column_schema(new_mlog_column->get_column_id()))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("get null base column", K(ret));
-      } else if (new_mlog_column->get_meta_type() == base_table_column->get_meta_type() &&
-                 new_mlog_column->get_accuracy() == base_table_column->get_accuracy() &&
-                 new_mlog_column->get_sub_data_type() == base_table_column->get_sub_data_type()) {
-        // do nothing
-      } else if (FALSE_IT(new_mlog_column->set_meta_type(base_table_column->get_meta_type()))) {
-      } else if (FALSE_IT(new_mlog_column->set_accuracy(base_table_column->get_accuracy()))) {
-      } else if (FALSE_IT(new_mlog_column->set_sub_data_type(base_table_column->get_sub_data_type()))) {
-      } else if (OB_FAIL(ddl_operator.update_column_and_column_group(trans, *mlog_schema, *mlog_schema,
-                                                                     *new_mlog_column, false))) {
-        LOG_WARN("fail to update mlog column", K(ret));
+      } else if (OB_FAIL(new_mlog_column->assign(*base_table_column))) {
+        LOG_WARN("fail to assign base column to mlog column", K(ret), KPC(base_table_column));
+      } else {
+        new_mlog_column->set_autoincrement(orig_mlog_column->is_autoincrement());
+        new_mlog_column->set_is_hidden(orig_mlog_column->is_hidden());
+        new_mlog_column->set_rowkey_position(orig_mlog_column->get_rowkey_position());
+        new_mlog_column->set_index_position(orig_mlog_column->get_index_position());
+        new_mlog_column->set_prev_column_id(orig_mlog_column->get_prev_column_id());
+        new_mlog_column->set_next_column_id(orig_mlog_column->get_next_column_id());
+        new_mlog_column->set_table_id(orig_mlog_column->get_table_id());
+        new_mlog_column->set_column_id(orig_mlog_column->get_column_id());
+        new_mlog_column->set_column_flags(orig_mlog_column->get_column_flags());
+        new_mlog_column->set_order_in_rowkey(orig_mlog_column->get_order_in_rowkey());
+        new_mlog_column->set_tbl_part_key_pos(orig_mlog_column->get_tbl_part_key_pos());
+        if (OB_FAIL(new_mlog_column->set_cur_default_value(orig_mlog_column->get_cur_default_value(), orig_mlog_column->is_default_expr_v2_column()))) {
+          LOG_WARN("fail to set mlog column current default value", K(ret));
+        } else if (OB_FAIL(new_mlog_column->set_orig_default_value(orig_mlog_column->get_orig_default_value()))) {
+          LOG_WARN("fail to set mlog column original default value", K(ret));
+        } else if (OB_FAIL(ddl_operator.update_column_and_column_group(trans, *mlog_schema, *mlog_schema,
+                                                                       *new_mlog_column, false))) {
+          LOG_WARN("fail to update mlog column", K(ret));
+        }
       }
     }
     if (OB_SUCC(ret)) {
@@ -542,7 +564,9 @@ int ObMviewAlterService::rebuild_container_schema_with_new_table(
 {
   int ret = OB_SUCCESS;
   ObSchemaChecker schema_checker;
-  if (OB_FAIL(schema_checker.init(schema_guard, orig_mv_schema.get_tenant_id()))) {
+  ObSqlSchemaGuard sql_schema_guard;
+  sql_schema_guard.set_schema_guard(&schema_guard);
+  if (OB_FAIL(schema_checker.init(sql_schema_guard, orig_mv_schema.get_tenant_id()))) {
     LOG_WARN("fail to init schema checker", K(ret));
   } else if (OB_FAIL(schema_checker.add_ddl_tmp_schema(&new_table_schema))) {
     LOG_WARN("fail to add ddl tmp schema", K(ret));

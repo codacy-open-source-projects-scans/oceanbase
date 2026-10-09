@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -18,6 +11,7 @@
 #include "share/ob_dml_sql_splicer.h"//ObDMLSqlSplicer
 #include "share/ob_unit_table_operator.h"
 #include "observer/ob_server_struct.h"
+#include "rootserver/ob_tenant_event_def.h"
 
 using namespace oceanbase;
 using namespace oceanbase::common;
@@ -663,6 +657,13 @@ int ObBalanceJobTableOperator::update_job_balance_strategy(
   } else if (!is_single_row(affected_rows)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("expect single row", KR(ret), K(sql), K(affected_rows));
+  }
+  if (OB_SUCC(ret)) {
+    using namespace oceanbase::tenant_event;
+    TENANT_EVENT(tenant_id, BALANCE, UPDATE_JOB_STRATEGY,
+        ObTimeUtility::current_time(), ret, 0,
+        job_id.id(), ObString(job_status.to_str()),
+        ObString(old_strategy.str()), ObString(new_strategy.str()));
   }
   LOG_INFO("update job strategy", KR(ret), K(sql));
   return ret;

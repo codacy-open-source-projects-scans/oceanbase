@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -34,7 +27,8 @@ OB_SERIALIZE_MEMBER((ObDASMatchCtDef, ObIDASSearchCtDef),
                     match_operator_,
                     minimum_should_match_,
                     ir_ctdef_idx_,
-                    pushdown_must_filter_op_ctdef_idx_);
+                    pushdown_must_filter_op_ctdef_idx_,
+                    is_msm_unresolved_expr_);
 
 OB_SERIALIZE_MEMBER((ObDASMatchRtDef, ObIDASSearchRtDef));
 
@@ -103,6 +97,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
     // empty query tokens
     ObDASDummyOp *dummy_op = nullptr;
     ObDASDummyOpParam dummy_op_param;
+    dummy_op_param.set_is_scoring(ctdef->is_scoring());
     if (OB_FAIL(search_ctx.create_op(dummy_op_param, dummy_op))) {
       LOG_WARN("failed to create dummy op", KR(ret));
     } else {
@@ -132,6 +127,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
       const ObString &query_token = query_tokens.at(i);
       ObDASTokenOp *token_op = nullptr;
       ObDASTokenOpParam token_op_param;
+      token_op_param.set_is_scoring(ctdef->is_scoring());
       token_op_param.ir_ctdef_ = ctdef->get_ir_ctdef();
       token_op_param.ir_rtdef_ = get_ir_rtdef();
       token_op_param.block_max_param_ = &block_max_param_;
@@ -149,6 +145,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
     } else if (ObMatchOperator::MATCH_OPERATOR_AND == match_operator_datum->get_int()) {
       ObDASConjunctionOp *conjunction_op = nullptr;
       ObDASConjunctionOpParam conjunction_op_param(token_ops);
+      conjunction_op_param.set_is_scoring(ctdef->is_scoring());
       if (OB_FAIL(search_ctx.create_op(conjunction_op_param, conjunction_op))) {
         LOG_WARN("failed to create conjunction op", KR(ret));
       } else {
@@ -161,6 +158,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
         if (minimum_should_match > 1) {
           ObDASBMWOp *bmw_op = nullptr;
           ObDASBMWOpParam bmw_op_param(token_ops, minimum_should_match, allocator_);
+          bmw_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(bmw_op_param, bmw_op))) {
             LOG_WARN("failed to create bmw op", KR(ret));
           } else {
@@ -170,6 +168,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
           ObDASBMMOp *bmm_op = nullptr;
           ObDASBMMOpParam bmm_op_param(
               token_ops, query_optional_, pushdown_filter_op_, allocator_);
+          bmm_op_param.set_is_scoring(ctdef->is_scoring());
           if (OB_FAIL(search_ctx.create_op(bmm_op_param, bmm_op))) {
             LOG_WARN("failed to create bmm op", KR(ret));
           } else {
@@ -183,6 +182,7 @@ int ObDASMatchRtDef::generate_op(ObDASSearchCost lead_cost, ObDASSearchCtx &sear
             minimum_should_match,
             false,
             lead_cost);
+        disjunction_op_param.set_is_scoring(ctdef->is_scoring());
         if (OB_FAIL(search_ctx.create_op(disjunction_op_param, disjunction_op))) {
           LOG_WARN("failed to create disjunction op", KR(ret));
         } else {

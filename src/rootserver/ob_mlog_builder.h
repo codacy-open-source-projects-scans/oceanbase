@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_MLOG_BUILDER_H_
@@ -21,6 +14,40 @@ namespace oceanbase
 namespace rootserver
 {
 class ObDDLService;
+
+class MLogColumnUtils
+{
+public:
+  MLogColumnUtils();
+  ~MLogColumnUtils();
+  int add_base_table_columns(const common::ObIArray<ObString> &store_columns,
+                             common::ObRowDesc &row_desc,
+                             const share::schema::ObTableSchema &base_table_schema,
+                             const bool need_not_null_default = false);
+  int add_base_table_pk_columns(common::ObRowDesc &row_desc,
+                                share::schema::ObSchemaGetterGuard &schema_guard,
+                                const share::schema::ObTableSchema &base_table_schema);
+  int add_base_table_part_key_columns(common::ObRowDesc &row_desc,
+                                      const share::schema::ObTableSchema &base_table_schema);
+  int add_special_columns();
+  int construct_mlog_table_columns(share::schema::ObTableSchema &mlog_schema);
+private:
+  int check_column_type(const ObColumnSchemaV2 &column_schema);
+  int add_sequence_column();
+  int add_dmltype_column();
+  int add_old_new_column();
+  int implicit_add_base_table_part_key_columns(
+      const common::ObPartitionKeyInfo &part_key_info,
+      common::ObRowDesc &row_desc,
+      const share::schema::ObTableSchema &base_table_schema);
+  int alloc_column(ObColumnSchemaV2 *&column);
+public:
+  ObArray<ObColumnSchemaV2 *> mlog_table_column_array_;
+private:
+  ObArenaAllocator allocator_;
+  int64_t rowkey_count_;
+};
+
 class ObMLogBuilder
 {
 public:
@@ -51,39 +78,6 @@ public:
                            share::schema::ObTableSchema &mlog_schema);
 
 private:
-  class MLogColumnUtils
-  {
-  public:
-    MLogColumnUtils();
-    ~MLogColumnUtils();
-    int check_column_type(const ObColumnSchemaV2 &column_schema);
-    int add_base_table_columns(const obrpc::ObCreateMLogArg &create_mlog_arg,
-                               common::ObRowDesc &row_desc,
-                               const share::schema::ObTableSchema &base_table_schema);
-    int add_base_table_pk_columns(common::ObRowDesc &row_desc,
-                                  share::schema::ObSchemaGetterGuard &schema_guard,
-                                  const share::schema::ObTableSchema &base_table_schema);
-    int add_base_table_part_key_columns(common::ObRowDesc &row_desc,
-                                        const share::schema::ObTableSchema &base_table_schema);
-    int add_special_columns();
-    int construct_mlog_table_columns(share::schema::ObTableSchema &mlog_schema);
-  private:
-    int add_sequence_column();
-    int add_dmltype_column();
-    int add_old_new_column();
-    int implicit_add_base_table_part_key_columns(
-        const common::ObPartitionKeyInfo &part_key_info,
-        common::ObRowDesc &row_desc,
-        const share::schema::ObTableSchema &base_table_schema);
-    int alloc_column(ObColumnSchemaV2 *&column);
-  public:
-    ObArray<ObColumnSchemaV2 *> mlog_table_column_array_;
-  private:
-    ObArenaAllocator allocator_;
-    int64_t rowkey_count_;
-  };
-
-private:
   int set_basic_infos(share::schema::ObSchemaGetterGuard &schema_guard,
                       const obrpc::ObCreateMLogArg &create_mlog_arg,
                       const share::schema::ObTableSchema &base_table_schema,
@@ -95,6 +89,7 @@ private:
   int set_table_options(const obrpc::ObCreateMLogArg &create_mlog_arg,
                         const share::schema::ObTableSchema &base_table_schema,
                         share::schema::ObTableSchema &mlog_schema);
+  static int check_enable_mlog_compaction_purge(const uint64_t tenant_id, bool &is_enable);
 
 private:
   ObDDLService &ddl_service_;

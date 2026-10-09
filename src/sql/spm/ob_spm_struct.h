@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_SPM_OB_SPM_STRUCT_H_
@@ -56,17 +49,6 @@ public:
     MEMSET(receive_ts_, 0, RECORDS_SIZE * sizeof(int64_t));
     MEMSET(elapsed_t_, 0, RECORDS_SIZE * sizeof(int64_t));
     ref_count_ = 0;
-  }
-
-  bool check_executing_evo_plan_exists()
-  {
-    bool find = false;
-    for (int i = 0; !find && i < RECORDS_SIZE && 0 != receive_ts_[i]; ++i) {
-      if (true == use_evo_plan_[i] && 0 == elapsed_t_[i]) {
-        find = true;
-      }
-    }
-    return find;
   }
 
   int32_t get_serialize_size() const {  return 4 + 8 + RECORDS_SIZE * 9; }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_INC_DDL_MERGE_TASK_UTILS
@@ -38,7 +31,10 @@ public:
       const transaction::ObTxSEQ &seq_no,
       const int64_t snapshot_version,
       const uint64_t data_format_version,
-      const bool is_replay);
+      const bool is_replay,
+      const share::SCN &start_scn /*only worked when is_replay is true*/);
+  static int freeze_ddl_kv(const ObTabletHandle &tablet_handle);
+  static int freeze_ddl_kv(ObLS *ls, const ObTabletID &tablet_id);
   static int update_tablet_table_store(
         ObLS *ls,
         ObTabletHandle &tablet_handle);

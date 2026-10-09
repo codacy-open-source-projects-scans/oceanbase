@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_SN_LS_RESTORE_STATE_H
@@ -83,7 +76,7 @@ public:
 private:
   // Set restore status to EMPTY for those committed tablets whose restore status is FULL,
   // but transfer table is not replaced.
-  int set_empty_for_transfer_tablets_();
+  int set_empty_for_transfer_or_split_tablets_();
   int report_total_tablet_cnt_();
 
 private:
@@ -103,6 +96,20 @@ public:
 
   // Check if log has been recovered to restore_scn.
   virtual int check_recover_finish(bool &is_finish) const override;
+
+  // Whether a tablet's clog_checkpoint_scn is acceptable given restore_scn.
+  //
+  // The LS_TX_CTX_TABLET (49401) carries a +1 bookkeeping offset in its
+  // sstable end_scn -- see ObTxCtxMemtable::flush(), which sets the
+  // freeze sstable end_scn to MAX(callbacked, max_end_scn_ + 1). That
+  // offset propagates to tablet_meta.clog_checkpoint_scn_ but does not
+  // correspond to a real log or data scn (the tx ctx sstable only stores
+  // transaction context snapshots). So it is safe for the tx ctx tablet's
+  // clog_checkpoint_scn to exceed restore_scn, and this check exempts it.
+  static bool is_tablet_clog_checkpoint_acceptable_for_restore(
+      const common::ObTabletID &tablet_id,
+      const share::SCN &clog_checkpoint_scn,
+      const share::SCN &restore_scn);
 
 private:
   int leader_quick_restore_();

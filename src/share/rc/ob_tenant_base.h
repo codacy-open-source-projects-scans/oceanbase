@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TENANT_BASE_H_
@@ -94,6 +87,7 @@ class ObTenantMdsService;
   class ObTenantMetaMemMgr;
   class ObTenantStorageMetaService;
   class ObTenantFTPluginMgr;
+  class ObFTDictMgr;
   class ObTenantFreezeInfoMgr;
   class ObStorageHAService;
   class ObStorageHAHandlerService;
@@ -252,7 +246,7 @@ namespace observer
   class ObSessionTmpTableCleaner;
 }
 
-// for ObTenantSwitchGuard 临时使用>>>>>>>>
+// for ObTenantSwitchGuard 临时使用
 namespace observer
 {
   class ObAllVirtualTabletInfo;
@@ -265,6 +259,7 @@ namespace observer
 namespace storage {
   class MockTenantModuleEnv;
   class ObStorageHADiagMgr;
+  class ObRsRandomPartitionScheduler;
 }
 #ifdef OB_BUILD_SHARED_STORAGE
 namespace sslog
@@ -298,10 +293,12 @@ template<typename T> class ObCatalogClientPoolMgr;
 class ObTabletSplitTaskCache;
 #endif
 class ObBackupDestIOPermissionMgr;
+class ObInspectionService;
 namespace schema
 {
   class ObTenantSchemaService;
   class ObAddIntervalPartitionController;
+  class ObSchemaHistoryRecycleService;
 }
 namespace detector
 {
@@ -383,6 +380,7 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       common::ObDiagnosticInfoContainer*,            \
       ObTimerService*,                               \
       omt::ObSharedTimer*,                           \
+      storage::ObDDLDagMonitorMgr*,                  \
       oceanbase::sql::ObTenantSQLSessionMgr*,        \
       storage::ObTenantMetaMemMgr*,                  \
       storage::ObTenantFTPluginMgr*,                 \
@@ -463,7 +461,6 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       sql::ObTenantSqlMemoryManager*,                \
       sql::dtl::ObDTLIntermResultManager*,           \
       sql::ObPlanMonitorNodeList*,                   \
-      storage::ObDDLDagMonitorMgr*,          \
       sql::ObDataAccessService*,                     \
       sql::ObDASIDService*,                          \
       share::schema::ObTenantSchemaService*,         \
@@ -471,7 +468,7 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       storage::checkpoint::ObCheckPointService *,    \
       storage::checkpoint::ObTabletGCService *,      \
       archive::ObArchiveService*,                    \
-      compaction::ObTenantTabletScheduler*,          \
+      storage::ObEmptyReadBucket*,                   \
       compaction::ObTenantMediumChecker*,            \
       storage::ObTenantCompactionMemPool*,           \
       TenantCompactionObjMgr                         \
@@ -498,7 +495,7 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       ObTestModule*,                                 \
       oceanbase::common::sqlclient::ObTenantOciEnvs*, \
       rootserver::ObHeartbeatService*,              \
-      storage::ObEmptyReadBucket*,                  \
+      compaction::ObTenantTabletScheduler*,         \
       rootserver::ObDBMSSchedService*,              \
       TenantErrsimModule                            \
       TenantErrsimEvent                             \
@@ -512,6 +509,7 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       rootserver::ObCloneScheduler*,                \
       share::ObIndexUsageInfoMgr*,                  \
       storage::ObTabletMemtableMgrPool*,            \
+      storage::ObFTDictMgr*,                        \
       rootserver::ObMViewMaintenanceService*,       \
       SSWriterService                               \
       AtomicFileMgr                                 \
@@ -558,7 +556,10 @@ using ObHMSClientUnifyPoolMgr = share::ObCatalogClientPoolMgr<oceanbase::share::
       observer::ObTenantTabletCleanupService*,        \
       storage::ObTenantStartupStatus*,                \
       observer::ObTabletReplicaInfoCacheMgr*  ,       \
-      ObCurlRestClientPoolMgr*                       \
+      ObCurlRestClientPoolMgr*,                      \
+      share::schema::ObSchemaHistoryRecycleService*, \
+      storage::ObRsRandomPartitionScheduler*,        \
+      share::ObInspectionService*                    \
   )
 
 
@@ -1133,33 +1134,17 @@ inline ObTenantSimpleGuard _make_tenant_simple_guard()
     } while(0)
 
 
-#define mtl_sop_borrow(type)                                                                                    \
-  ({                                                                                                            \
-    type *iter = MTL(common::ObServerObjectPool<type>*)->borrow_object();                                       \
-    (iter);                                                                                                     \
-  })
+  template<typename T>
+  inline int mtl_sop_borrow(T *&ptr)
+  {
+    return MTL(common::ObServerObjectPool<T>*)->borrow_object(ptr);
+  }
 
-#define mtl_sop_return(type, ptr)                                                                               \
-  do {                                                                                                          \
-    MTL(common::ObServerObjectPool<type>*)->return_object(ptr);                                                 \
-  } while (false)
-
-#define mtl_sop_borrow_checked(type)                                                                                    \
-  ({                                                                                                            \
-    type *iter = MTL(common::ObServerObjectPool<type>*)->borrow_object();                                       \
-    if (OB_NOT_NULL(iter)) {                                                                                    \
-      storage::ObStorageLeakChecker::get_instance().handle_hold(iter); \
-    }                                                                                                           \
-    (iter);                                                                                                     \
-  })
-
-#define mtl_sop_return_checked(type, iter)                                                                               \
-  do {                                                                                                          \
-    if (OB_NOT_NULL(iter)) {                                                                                    \
-      storage::ObStorageLeakChecker::get_instance().handle_reset(iter); \
-    }                                                                                                           \
-    MTL(common::ObServerObjectPool<type>*)->return_object(iter);                                                 \
-  } while (false)
+  template<typename T>
+  inline void mtl_sop_return(T *ptr)
+  {
+    MTL(common::ObServerObjectPool<T>*)->return_object(ptr);
+  }
 
 } // end of namespace share
 

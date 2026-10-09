@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_VALUE_ROW_ITERATOR_
@@ -24,6 +17,7 @@
 #include "blocksstable/ob_datum_rowkey.h"
 #include "blocksstable/ob_datum_row_iterator.h"
 #include "storage/access/ob_table_access_context.h"
+#include "access/ob_tablet_read_tables.h"
 
 namespace oceanbase
 {
@@ -93,7 +87,7 @@ private:
   Projector output_projector_;
   ObTableAccessParam access_param_;
   ObTableAccessContext access_ctx_;
-  ObGetTableParam get_table_param_;
+  ObTabletReadTables tablet_read_tables_;
   ObRelativeTable *relative_table_;
   common::ObIAllocator &allocator_;
   CachedIteratorNode *cached_iter_node_;

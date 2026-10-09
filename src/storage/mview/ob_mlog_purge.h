@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -63,23 +56,34 @@ public:
 
   int init(sql::ObExecContext &exec_ctx,
            const ObMLogPurgeParam &purge_param,
-           const bool purge_data_by_sql = true);
+           const bool called_in_refresh = false);
   int purge();
 
 private:
   int prepare_for_purge();
   int do_purge();
-  int get_and_check_mlog_database_schema(
-      const share::schema::ObDatabaseSchema *&database_schema);
+  int update_last_purge_scn();
+  bool need_purge() const
+  {
+    return ObMLogPurgeMethod::SQL == purge_method_ ||
+           ObMLogPurgeMethod::COMPACTION == purge_method_;
+  }
+  int start_trans(ObMViewTransaction &trans, uint64_t database_id, const ObString &database_name);
+  int register_mds(ObMViewTransaction &trans);
+  int update_mlog_info(int64_t start_time, int64_t end_time, int64_t total_affected_rows);
+  int get_database_info(ObIAllocator &allocator, uint64_t &database_id, ObString &database_name);
 
+private:
+  static const int64_t MLOG_PURGE_BATCH_ROW_LIMIT = 100000;
 private:
   sql::ObExecContext *ctx_;
   ObMLogPurgeParam purge_param_;
-  ObMViewTransaction trans_;
   share::schema::ObMLogInfo mlog_info_;
   bool is_oracle_mode_;
-  bool need_purge_;
-  bool purge_data_by_sql_;
+  bool called_in_refresh_;
+  bool need_real_purge_;
+  common::ObTabletID tablet_id_;
+  ObMLogPurgeMethod purge_method_;
   share::SCN purge_scn_;
   ObSqlString purge_sql_;
   bool is_inited_;

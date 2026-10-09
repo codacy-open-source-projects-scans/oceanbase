@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOG_EXCHANGE_H
@@ -54,15 +47,18 @@ public:
       calc_part_id_expr_(NULL),
       hash_dist_exprs_(plan.get_allocator()),
       popular_values_(plan.get_allocator()),
+      popular_values_ratio_(0.0),
       dist_method_(ObPQDistributeMethod::LOCAL), // pull to local
       unmatch_row_dist_method_(ObPQDistributeMethod::LOCAL),
       null_row_dist_method_(ObNullDistributeMethod::NONE),
       slave_mapping_type_(SlaveMappingType::SM_NONE),
       use_scatter_channel_for_pkey_hash_(false),
+      slave_mapping_id_(0),
       gi_info_(),
       px_batch_op_(NULL),
       px_batch_op_id_(OB_INVALID_ID),
       px_batch_op_type_(log_op_def::LOG_OP_INVALID),
+      spf_child_idx_(OB_INVALID_ID),
       partition_id_expr_(NULL),
       ddl_slice_id_expr_(NULL),
       random_expr_(NULL),
@@ -155,6 +151,7 @@ public:
   virtual int compute_plan_type() override;
   SlaveMappingType get_slave_mapping_type() { return slave_mapping_type_; }
   bool is_slave_mapping() const { return SlaveMappingType::SM_NONE != slave_mapping_type_; }
+  int64_t get_slave_mapping_id() const { return slave_mapping_id_; }
   ObLogicalOperator *get_px_batch_op() { return px_batch_op_; }
   void set_px_batch_op(ObLogicalOperator *op) { px_batch_op_ = op; }
   int64_t get_px_batch_op_id() { return px_batch_op_id_; }
@@ -162,6 +159,8 @@ public:
   log_op_def::ObLogOpType get_px_batch_op_type() { return px_batch_op_type_;}
   void set_px_batch_op_type(log_op_def::ObLogOpType px_batch_op_type)
   { px_batch_op_type_ = px_batch_op_type; }
+  int64_t get_spf_child_idx() { return spf_child_idx_; }
+  void set_spf_child_idx(int64_t idx) { spf_child_idx_ = idx; }
 
   void set_rollup_hybrid(bool is_rollup_hybrid) { is_rollup_hybrid_ = is_rollup_hybrid; }
   bool is_rollup_hybrid() { return is_rollup_hybrid_; }
@@ -284,12 +283,15 @@ private:
   ObRawExpr *calc_part_id_expr_;
   ObSqlArray<ObExchangeInfo::HashExpr> hash_dist_exprs_;
   ObSqlArray<ObObj> popular_values_; // for hybrid hash distr
+  double popular_values_ratio_;      // fraction of hot rows, used for hybrid hash exchange cost estimation
 
   ObPQDistributeMethod::Type dist_method_;
   ObPQDistributeMethod::Type unmatch_row_dist_method_;
   ObNullDistributeMethod::Type null_row_dist_method_;
   SlaveMappingType slave_mapping_type_;
   bool use_scatter_channel_for_pkey_hash_;
+  // unique id for slave mapping pair in the plan, start from 1
+  int64_t slave_mapping_id_;
 
   //granule info
   ObAllocGIInfo gi_info_;
@@ -297,6 +299,7 @@ private:
   ObLogicalOperator *px_batch_op_;
   int64_t px_batch_op_id_;
   log_op_def::ObLogOpType px_batch_op_type_;
+  int64_t spf_child_idx_;  // child index in SPF (subplan filter), 1-based
   ObOpPseudoColumnRawExpr *partition_id_expr_;
   ObRawExpr *ddl_slice_id_expr_;
 

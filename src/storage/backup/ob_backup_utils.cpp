@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -29,6 +22,7 @@
 #include "storage/compaction/ob_partition_merge_policy.h"
 #include "storage/backup/ob_backup_meta_cache.h"
 #include "share/backup/ob_backup_path.h"
+#include "share/ls/ob_ls_operator.h"
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -43,6 +37,8 @@ namespace backup {
 
 /* ObBackupUtils */
 int ObBackupUtils::calc_start_replay_scn(
+    const uint64_t tenant_id,
+    common::ObISQLClient &sql_client,
     const share::ObBackupSetTaskAttr &set_task_attr,
     const storage::ObBackupLSMetaInfosDesc &ls_meta_infos,
     const share::ObTenantArchiveRoundAttr &round_attr,
@@ -52,12 +48,46 @@ int ObBackupUtils::calc_start_replay_scn(
   SCN tmp_start_replay_scn = set_task_attr.start_scn_;
   // To ensure that restore can be successfully initiated,
   // we need to avoid clearing too many logs and the start_replay_scn less than the start_scn of the first piece.
-  // so we choose the minimum palf_base_info.prev_log_info_.scn firstly, to ensure keep enough logs.
-  // Then we choose the max(minimum palf_base_info.prev_log_info_.scn, round_attr.start_scn) as the start_replay_scn,
-  // to ensure the start_replay_scn is greater than the start scn of first piece
+  // For each LS, we pick the lower bound of "from where archive logs are actually needed":
+  //   - normally, palf_base_info.prev_log_info_.scn_ is a safe (smaller-or-equal) approximation
+  //     of that lower bound;
+  //   - but if PalfBaseInfo is still the default placeholder (log_id == 0 && lsn == 0 && scn is min),
+  //     it means the LS has never executed advance_base_info (e.g. just migrated in), so
+  //     prev_log_info.scn_ is a fake 0 which would pull the global min down to 0 and then bumped up
+  //     to round_attr.start_scn_, possibly pointing to pieces that have already been recycled.
+  //     Fall back to the LS's create_scn from __all_ls in that case.
+  // Then we choose the max(minimum, round_attr.start_scn) as the start_replay_scn,
+  // to ensure the start_replay_scn is greater than the start scn of first piece.
+  const palf::LSN init_lsn(0);
   ARRAY_FOREACH_X(ls_meta_infos.ls_meta_packages_, i, cnt, OB_SUCC(ret)) {
-    const palf::PalfBaseInfo &palf_base_info = ls_meta_infos.ls_meta_packages_.at(i).palf_meta_;
-    tmp_start_replay_scn = SCN::min(tmp_start_replay_scn, palf_base_info.prev_log_info_.scn_);
+    const storage::ObLSMetaPackage &ls_meta_package = ls_meta_infos.ls_meta_packages_.at(i);
+    const palf::PalfBaseInfo &palf_base_info = ls_meta_package.palf_meta_;
+    const palf::LogInfo &prev_log_info = palf_base_info.prev_log_info_;
+    SCN ls_lower_bound = prev_log_info.scn_;
+    const bool is_default_palf_base_info = (0 == prev_log_info.log_id_
+                                            && prev_log_info.lsn_ == init_lsn
+                                            && prev_log_info.scn_.is_min());
+    if (is_default_palf_base_info) {
+      const share::ObLSID &ls_id = ls_meta_package.ls_meta_.ls_id_;
+      share::ObLSAttr ls_attr;
+      share::ObLSAttrOperator ls_attr_operator(tenant_id, &sql_client);
+      if (OB_FAIL(ls_attr_operator.get_ls_attr(ls_id, false /*for_update*/, sql_client,
+                                               ls_attr, false /*only_existing_ls*/))) {
+        LOG_WARN("PalfBaseInfo is default placeholder, but failed to query create_scn from __all_ls",
+            K(ret), K(tenant_id), K(ls_id), K(palf_base_info));
+      } else if (!ls_attr.get_create_scn().is_valid_and_not_min()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("PalfBaseInfo is default placeholder, but create_scn from __all_ls is invalid",
+            K(ret), K(tenant_id), K(ls_id), K(palf_base_info), K(ls_attr));
+      } else {
+        ls_lower_bound = ls_attr.get_create_scn();
+        LOG_INFO("PalfBaseInfo is default placeholder, fallback to create_scn for start_replay_scn calc",
+            K(ls_id), K(palf_base_info), "create_scn", ls_attr.get_create_scn());
+      }
+    }
+    if (OB_SUCC(ret)) {
+      tmp_start_replay_scn = SCN::min(tmp_start_replay_scn, ls_lower_bound);
+    }
   }
   if (OB_SUCC(ret)) {
     start_replay_scn = SCN::max(tmp_start_replay_scn, round_attr.start_scn_);
@@ -553,6 +583,7 @@ int ObBackupUtils::check_tablet_minor_sstable_validity_(const storage::ObTabletH
   ObTabletID tablet_id;
   SCN start_scn = SCN::min_scn();
   SCN clog_checkpoint_scn = SCN::min_scn();
+  const int64_t emergency_table_cnt = compaction::ObPartitionMergePolicy::OB_EMERGENCY_TABLE_CNT;
   if (OB_ISNULL(tablet = tablet_handle.get_obj())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid tablet handle", K(ret), K(tablet_handle));
@@ -573,6 +604,11 @@ int ObBackupUtils::check_tablet_minor_sstable_validity_(const storage::ObTabletH
   if (OB_FAIL(ret)) {
   } else if (minor_sstable_array.empty()) {
     // do nothing
+  } else if (minor_sstable_array.count() >= emergency_table_cnt) {
+    ret = OB_TOO_MANY_SSTABLE;
+    LOG_ERROR("too many minor sstables in tablet, cannot backup",
+        K(ret), K(tablet_id), "minor_sstable_count", minor_sstable_array.count(),
+        "limit", emergency_table_cnt);
   } else if (OB_ISNULL(last_table_ptr = minor_sstable_array.at(minor_sstable_array.count() - 1).get_sstable())) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get invalid table ptr", K(ret), K(minor_sstable_array));
@@ -982,12 +1018,6 @@ int ObBackupTabletStat::prepare_tablet_sstables(const uint64_t tenant_id, const 
     } else {
       const ObITable::TableKey &table_key = sstable_ptr->get_key();
       if (OB_SUCC(ret)) {
-        if (GCTX.is_shared_storage_mode() && sstable_ptr->is_ddl_dump_sstable()) {
-          ObBackupOtherBlocksMgr &other_block_mgr = stat->other_block_mgr_;
-          if (OB_FAIL(other_block_mgr.init(tenant_id, tablet_id, table_key, *sstable_ptr))) {
-            LOG_WARN("failed to init backup other blocks mgr", K(ret), K(tenant_id), K(tablet_id), K(table_key), KPC(sstable_ptr));
-          }
-        }
       }
     }
   }
@@ -2440,17 +2470,8 @@ int ObBackupTabletProvider::prepare_tablet_(const uint64_t tenant_id, const shar
         LOG_WARN("table should not be null", K(ret));
       } else {
         const ObITable::TableKey &table_key = sstable_ptr->get_key();
-        if (GCTX.is_shared_storage_mode() && table_key.is_ddl_dump_sstable()) {
-          if (OB_FAIL(fetch_ddl_macro_id_in_ss_mode_(tablet_id, tablet_ref->tablet_handle_, table_key, *sstable_ptr, total_count))) {
-            LOG_WARN("failed to fetch ddl macro id in ss mode", K(ret));
-          } else {
-            has_ss_ddl = true;
-            ss_ddl_table_key = table_key;
-          }
-        } else {
-          if (OB_FAIL(fetch_all_logic_macro_block_id_(tablet_id, tablet_ref->tablet_handle_, table_key, *sstable_ptr, total_count))) {
-            LOG_WARN("failed to fetch all logic macro block id", K(ret), K(tablet_id), KPC(tablet_ref), K(table_key));
-          }
+        if (OB_FAIL(fetch_all_logic_macro_block_id_(tablet_id, tablet_ref->tablet_handle_, table_key, *sstable_ptr, total_count))) {
+          LOG_WARN("failed to fetch all logic macro block id", K(ret), K(tablet_id), KPC(tablet_ref), K(table_key));
         }
       }
     }
@@ -2846,7 +2867,7 @@ int ObBackupTabletProvider::fetch_ddl_macro_id_in_ss_mode_(const common::ObTable
 {
   int ret = OB_SUCCESS;
   ObBackupOtherBlockIdIterator other_block_iter;
-  if (!GCTX.is_shared_storage_mode() && !table_key.is_ddl_dump_sstable()) {
+  if (!table_key.is_ddl_dump_sstable()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("table key is not ddl dump sstable", K(ret), K(table_key));
   } else if (OB_FAIL(other_block_iter.init(tablet_id, sstable))) {

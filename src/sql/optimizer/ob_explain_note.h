@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_SQL_OPTI_EXPLAIN_NOTE_DEF_H_
@@ -52,6 +45,7 @@ namespace sql
 #define NON_STANDARD_COMPARISON_SETTING "Non-standard comparison level is set to %s because of %s"
 #define INSERTUP_OPT_FOR_COLUMN_STROE_ENABLED  "Optimization of insert on duplicate key update for column store is enabled"
 #define INSERTUP_OPT_FOR_COLUMN_STROE_DISABLED  "Optimization of insert on duplicate key update for column store is disabled, because %s"
+#define LIMIT_RELIABLE_STRATEGY_WIN_NOTE "Streaming strategy is selected to enable early termination optimization for LIMIT."
 
 }
 }

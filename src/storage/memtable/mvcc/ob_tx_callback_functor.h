@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_MEMTABLE_MVCC_OB_TX_CALLBACK_FUNCTOR
@@ -540,13 +533,14 @@ private:
 class ObGetMemtableKeyWTimeoutFunctor : public ObITxCallbackFunctor
 {
 public:
-  ObGetMemtableKeyWTimeoutFunctor(transaction::ObMemtableKeyArray &memtable_key_arr, const int64_t timeout)
-    : timeout_(timeout),
+  ObGetMemtableKeyWTimeoutFunctor(transaction::ObMemtableKeyArray &memtable_key_arr)
+    : start_ts_(ObTimeUtility::current_time()),
     memtable_key_arr_(memtable_key_arr) {}
 
   virtual bool is_iter_end(ObITransCallback *callback) const override
   {
-    return ObTimeUtility::current_time() >= timeout_;
+    // It can only take up to 300ms
+    return ObTimeUtility::current_time() - start_ts_ >= 300 * 1000L;
   }
 
     virtual int operator()(ObITransCallback *callback) override
@@ -563,7 +557,7 @@ public:
   VIRTUAL_TO_STRING_KV(K_(memtable_key_arr));
 
 private:
-  int64_t timeout_;
+  int64_t start_ts_;
   transaction::ObMemtableKeyArray &memtable_key_arr_;
 };
 

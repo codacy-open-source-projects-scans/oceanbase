@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_OBSERVER_DBMS_SCHED_TABLE_OPERATOR_H_
@@ -58,7 +51,7 @@ public:
     uint64_t tenant_id, ObDBMSSchedJobInfo &job_info, int64_t next_date, ObAddr execute_addr);
 
   int update_for_start_execute(
-    uint64_t tenant_id, ObDBMSSchedJobInfo &job_info);
+    uint64_t tenant_id, ObDBMSSchedJobInfo &job_info, uint64_t session_id);
 
   int update_for_missed(ObDBMSSchedJobInfo &job_info);
   int update_for_zone_not_exist(ObDBMSSchedJobInfo &job_info);

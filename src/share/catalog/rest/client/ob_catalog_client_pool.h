@@ -1,14 +1,7 @@
 /**
-* Copyright (c) 2023 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*/
+ * Copyright (c) 2023 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #ifndef _SHARE_OB_CATALOG_CLIENT_POOL_H
 #define _SHARE_OB_CATALOG_CLIENT_POOL_H
@@ -19,6 +12,7 @@
 #include "lib/lock/ob_spin_lock.h"
 #include "lib/alloc/alloc_assist.h"
 #include "lib/allocator/ob_mod_define.h"
+#include "lib/allocator/ob_sql_mem_leak_checker.h"
 #include "lib/oblog/ob_log_module.h"
 #include "lib/rc/ob_rc.h"
 #include "lib/rc/context.h"
@@ -338,6 +332,7 @@ private:
   int create_client(ClientInstance *&obj)
   {
     int ret = OB_SUCCESS;
+    DISABLE_SQL_MEMLEAK_GUARD;
     obj = nullptr;
     if (OB_ISNULL(allocator_)) {
       ret = OB_NOT_INIT;
@@ -350,6 +345,7 @@ private:
       } else {
         obj = new(ptr) ClientInstance(allocator_);
         if (OB_FAIL(obj->init(properties_))) {
+          obj->~ClientInstance();
           allocator_->free(ptr);
           SHARE_LOG(WARN, "failed to init object", K(ret));
         } else {
@@ -701,6 +697,7 @@ private:
                   const ObString &properties, ObCatalogClientPool<ClientInstance> *&pool)
   {
     int ret = OB_SUCCESS;
+    DISABLE_SQL_MEMLEAK_GUARD;
     pool = nullptr;
     if (OB_ISNULL(allocator_)) {
       ret = OB_NOT_INIT;

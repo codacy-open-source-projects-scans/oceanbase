@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TRANSFORM_PRE_PROCESS_H_
@@ -593,11 +586,30 @@ private:
                          hash::ObHashSet<uint64_t, hash::NoPthreadDefendMode> &expr_set,
                          bool is_nullside);
 
+  // Break shared exprs on the null-producing side in two passes. We must collect the
+  // whole dangerous chain first and then copy top-down, because copying a child first
+  // can still leave it shared after the parent is copied later.
   int do_remove_shared_expr(hash::ObHashSet<uint64_t, hash::NoPthreadDefendMode> &expr_set,
                             ObIArray<ObRawExpr *> &padnull_exprs,
                             bool is_nullside,
                             ObRawExpr *&expr,
                             bool &has_nullside_column);
+
+  // Mark exprs that must be copied. A parent must also be copied once any child needs
+  // copying, otherwise later child replacement would still be wired through the old
+  // shared parent.
+  int collect_remove_shared_expr(hash::ObHashSet<uint64_t, hash::NoPthreadDefendMode> &expr_set,
+                                 ObIArray<ObRawExpr *> &padnull_exprs,
+                                 bool is_nullside,
+                                 ObRawExpr *expr,
+                                 ObIArray<ObRawExpr *> &copy_exprs,
+                                 bool &has_nullside_column,
+                                 bool &need_copy_tree);
+
+  // Copy from parent to child so that child rewrites are attached to the new parent
+  // tree instead of mutating pointers that are still shared elsewhere.
+  int copy_remove_shared_expr(ObIArray<ObRawExpr *> &copy_exprs,
+                              ObRawExpr *&expr);
 
   int check_nullside_expr(ObRawExpr *expr, bool &bret);
 
@@ -646,7 +658,8 @@ private:
                              ObIArray<ObRawExpr*> &column_ref_remove_const_exprs,
                              ObIArray<ObRawExpr*> &query_ref_exprs,
                              ObIArray<ObRawExpr*> &query_ref_remove_const_exprs,
-                             bool &trans_happened);
+                             bool &trans_happened,
+                             bool is_rollup = false);
   int formalize_limit_expr_oracle(ObDMLStmt &stmt);
   int formalize_limit_expr_mysql(ObDMLStmt &stmt);
   int replace_remove_const_exprs(ObSelectStmt *stmt,

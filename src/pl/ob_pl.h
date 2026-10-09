@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_PL_OB_PL_H_
@@ -70,6 +63,7 @@ class ObPLCacheCtx;
 class ObPLExecuteCache;
 class ObPLExecInfo;
 class ObPLAllocator1;
+class ObOraJavaRoutineInfo;
 
 class ObPLProfilerTimeStack;
 
@@ -128,6 +122,7 @@ class ObPLFunctionBase
   static const int64_t IS_UDT_CONS = 9; // udt constructor
   static const int64_t HAS_DEBUG_PRIV = 10;
   static const int64_t IS_PRAGMA_INTERFACE = 11;
+  static const int64_t IS_EXTERNAL_ROUTINE = 12;
 
 public:
   ObPLFunctionBase()
@@ -188,7 +183,7 @@ public:
     ret_type_.set_enum_set_ctx(enum_set_ctx);
     return ret_type_.set_type_info(type_info);
   }
-  inline bool is_function()
+  inline bool is_function() const
   {
     return STANDALONE_FUNCTION == proc_type_
           || PACKAGE_FUNCTION == proc_type_
@@ -229,6 +224,24 @@ public:
   inline void clean_debug_priv() {
     flag_.del_member(HAS_DEBUG_PRIV);
   }
+  inline bool is_external_routine() const {
+    return flag_.has_member(IS_EXTERNAL_ROUTINE);
+  }
+  inline void set_external_routine() {
+    flag_.add_member(IS_EXTERNAL_ROUTINE);
+  }
+  inline const ObString &get_external_routine_entry() const {
+    return external_routine_entry_;
+  }
+  inline void set_external_routine_entry(const ObString &external_routine_entry){
+    external_routine_entry_ = external_routine_entry;
+  }
+  inline const ObExternalRoutineType &get_external_routine_type() const {
+    return external_routine_type_;
+  }
+  inline void set_external_routine_type(const ObExternalRoutineType &external_routine_type) {
+    external_routine_type_ = external_routine_type;
+  }
 
 private:
   //基础信息
@@ -244,6 +257,8 @@ private:
   ObPLDataType ret_type_;
   int64_t arg_count_; //参数一定在符号表的最前面
   ObPLFlag flag_;
+  ObExternalRoutineType external_routine_type_;
+  ObString external_routine_entry_;
 
   DISALLOW_COPY_AND_ASSIGN(ObPLFunctionBase);
 };
@@ -568,6 +583,9 @@ public:
 
   int is_readonly_arg(int64_t var_idx) const { return readonly_args_.has_member(var_idx); }
 
+  inline ObOraJavaRoutineInfo *get_ora_java_routine_info() const { return ora_java_routine_info_; }
+  inline void set_ora_java_routine_info(ObOraJavaRoutineInfo *info) { ora_java_routine_info_ = info; }
+
   TO_STRING_KV(K_(ns),
                K_(ref_count),
                K_(tenant_schema_version),
@@ -581,7 +599,9 @@ public:
                K_(priv_user),
                K_(stat),
                K_(stack_size),
-               K_(pre_calc_default_values));
+               K_(pre_calc_default_values),
+               "external_routine_type", get_external_routine_type(),
+               "external_routine_entry", get_external_routine_entry());
 
 private:
   static int check_can_pre_calc_default_value(bool &can_calc, const ObRawExpr &expr);
@@ -612,6 +632,7 @@ private:
   bool is_special_pkg_invoke_right_;
   common::ObSEArray<ObObjParam, 4> pre_calc_default_values_;
   common::ObBitSet<common::OB_DEFAULT_BITSET_SIZE> readonly_args_;
+  ObOraJavaRoutineInfo *ora_java_routine_info_ = nullptr;
 
   DISALLOW_COPY_AND_ASSIGN(ObPLFunction);
 };
@@ -733,7 +754,9 @@ struct ObPLExecCtx : public ObPLINS
       nocopy_params_(nocopy_params), guard_(guard),
       local_expr_alloc_("PLBlockExpr", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
       tmp_alloc_for_copy_param_("PLTmpAlloc", OB_MALLOC_NORMAL_BLOCK_SIZE, MTL_ID()),
-      saved_sql_code_info_()
+      saved_sql_code_info_(),
+      calc_once_results_(),
+      param_store_for_sql_(nullptr), mem_context_(nullptr)
   {
     if (NULL != exec_ctx && NULL != exec_ctx_->get_my_session()) {
       pl_ctx_ = exec_ctx_->get_my_session()->get_pl_context();
@@ -743,6 +766,8 @@ struct ObPLExecCtx : public ObPLINS
       result_allocator_ = &local_expr_alloc_;
     }
   }
+
+  ~ObPLExecCtx();
 
   static uint32_t allocator_offset_bits() { return offsetof(ObPLExecCtx, allocator_) * 8; }
   static uint32_t exec_ctx_offset_bits() { return offsetof(ObPLExecCtx, exec_ctx_) * 8; }
@@ -788,6 +813,13 @@ struct ObPLExecCtx : public ObPLINS
     }
   }
 
+
+  int get_calc_once_result(int64_t idx, ObObjParam *& result);
+  int set_calc_once_result(int64_t idx, ObObjParam *result);
+  int get_param_store_for_sql(ObIAllocator &allocator, ParamStore *&param_store);
+  int get_spi_result_set(ObSPIResultSet *&spi_result_set);
+  int get_mem_context_for_sql(lib::MemoryContext &mem_context);
+
   common::ObIAllocator *allocator_; // Symbol Allocator
   sql::ObExecContext *exec_ctx_;
   ParamStore *params_; // param stroe, 对应PL Function的符号表
@@ -803,6 +835,9 @@ struct ObPLExecCtx : public ObPLINS
   ObArenaAllocator local_expr_alloc_;
   ObArenaAllocator tmp_alloc_for_copy_param_;
   ObPLSqlCodeInfo saved_sql_code_info_;
+  common::hash::ObHashMap<int64_t, ObObjParam*, common::hash::NoPthreadDefendMode> calc_once_results_;
+  ParamStore *param_store_for_sql_;
+  lib::MemoryContext mem_context_;
 };
 
 // backup and restore ObExecContext attributes
@@ -870,7 +905,8 @@ public:
     cur_complex_obj_count_(INT64_MAX),
     is_agg_func_(is_agg_func),
     has_tx_cursor_(false),
-    tx_cursor_idx_set_()
+    tx_cursor_idx_set_(),
+    is_eh_registered_(false)
   { }
   virtual ~ObPLExecState();
 
@@ -964,6 +1000,8 @@ public:
   ObPLContext *get_top_pl_context() { return top_context_; }
   ExecCtxBak &get_exec_ctx_bak() { return self_exec_ctx_bak_; }
   void try_clear_complex_obj();
+  void set_eh_registered(bool v) { is_eh_registered_ = v; }
+  bool is_eh_registered() { return is_eh_registered_; }
 
   TO_STRING_KV(K_(inner_call),
                K_(top_call),
@@ -1002,6 +1040,7 @@ private:
   bool is_agg_func_;
   bool has_tx_cursor_;
   hash::ObHashSet<int64_t>* tx_cursor_idx_set_; // for tx cursor idx
+  bool is_eh_registered_;
 
 };
 
@@ -1246,6 +1285,17 @@ public:
 
   ObIArray<ObPLExecState *> &get_exec_stack() { return exec_stack_; }
 
+  bool is_in_trigger_context() const
+  {
+    bool bret = false;
+    for (int64_t i = exec_stack_.count() - 1; !bret && i >= 0; --i) {
+      if (OB_NOT_NULL(exec_stack_.at(i)) && exec_stack_.at(i)->is_for_trigger()) {
+        bret = true;
+      }
+    }
+    return bret;
+  }
+
   ObPLExecState *get_current_state()
   {
     return exec_stack_.empty() ? NULL : exec_stack_.at(exec_stack_.count() - 1);
@@ -1304,6 +1354,8 @@ public:
   void set_disable_pl_exec_cache(bool disable_pl_exec_cache) { disable_pl_exec_cache_ = disable_pl_exec_cache; }
   bool get_disable_pl_exec_cache() const { return disable_pl_exec_cache_; }
   ObPLEnableCallParamDefendCheck &get_enable_call_param_defend_check() { return enable_call_param_defend_check_; }
+
+  void register_stack_frames();
 
 private:
   ObPLContext* get_stack_pl_ctx();
@@ -1398,6 +1450,7 @@ struct PlTransformTreeCtx
   bool is_ps_mode_;
   int64_t total_param_nums_;
   ObPlanCacheCtx *ps_pc_ctx_;
+  bool local_not_param_;  // 局部不参数化标志，仅影响当前子树
   PlTransformTreeCtx() :
     allocator_(NULL),
     params_(NULL),
@@ -1413,7 +1466,8 @@ struct PlTransformTreeCtx
     raw_param_num_(0),
     is_ps_mode_(false),
     total_param_nums_(0),
-    ps_pc_ctx_(nullptr)
+    ps_pc_ctx_(nullptr),
+    local_not_param_(false)
   {}
 };
 
@@ -1570,11 +1624,19 @@ public:
   static int check_session_alive(const ObBasicSessionInfo &session);
 
   bool forbid_anony_parameter(ObSQLSessionInfo &session, bool is_ps_mode, bool forbid);
-  bool parameter_ps_anonymous_block(ObExecContext &ctx,
+  int parameter_ps_anonymous_block(ObExecContext &ctx,
                                             ObIAllocator &allocator,
                                             ParseResult &parse_result,
                                             ObString &no_param_sql,
                                             ObPlanCacheCtx &pc_ctx);
+  static int parameter_ps_call_stmt(ObSQLSessionInfo &session,
+                              ParseResult &parse_result,
+                              ObPlanCacheCtx &pc_ctx,
+                              ObString &no_param_sql,
+                              ObIAllocator &allocator,
+                              ParamStore &param_store);
+
+  static int external_execute(ObPLExecCtx *ctx, int64_t argc, int64_t *argv);
 
 private:
   common::ObMySQLProxy *sql_proxy_;
@@ -1742,13 +1804,33 @@ public:
   ObArray<int64_t> subprogram_path_;
 };
 
+class ObSPIResultSetCache
+{
+  static constexpr int64_t SPI_RESULT_SET_BUFFER_SIZE = 4;
+public:
+  ObSPIResultSetCache(ObIAllocator &alloc) :
+    alloc_(alloc),
+    spi_result_set_(nullptr),
+    used_cnt_(0) {}
+  ~ObSPIResultSetCache()
+  {
+
+  }
+  int get_spi_result_set(ObSPIResultSet *&spi_result_set);
+  void desc_cnt() { used_cnt_--; }
+private:
+  ObIAllocator &alloc_;
+  ObSPIResultSet *spi_result_set_;
+  int64_t used_cnt_;
+};
 
 class ObPLExecuteCache
 {
 public:
   ObPLExecuteCache(common::ObArenaAllocator &alloc)
     : alloc_(alloc),
-      pl_exec_info_map_()
+      pl_exec_info_map_(),
+      spi_result_set_cache_(alloc)
   {}
   ~ObPLExecuteCache();
 
@@ -1769,9 +1851,12 @@ public:
                               bool is_subroutine,
                               ObPLExecInfo *&pl_exec_info);
 
+  inline ObSPIResultSetCache &get_spi_result_set_cache() { return spi_result_set_cache_; }
+
 private:
   common::ObArenaAllocator &alloc_;
   common::hash::ObHashMap<ObPLExecCacheKey, ObPLExecInfo*, common::hash::NoPthreadDefendMode> pl_exec_info_map_;
+  ObSPIResultSetCache spi_result_set_cache_;
 };
 
 class ObPLASHGuard

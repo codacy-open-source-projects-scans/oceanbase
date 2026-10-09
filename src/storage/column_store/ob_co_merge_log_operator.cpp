@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file is for define of plugin vector index util
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -26,7 +18,6 @@ int ObCOMergeLogFileWriter::init(ObIAllocator &allocator, ObBasicTabletMergeCtx 
 {
   int ret = OB_SUCCESS;
   ObCOTabletMergeCtx &co_ctx = static_cast<ObCOTabletMergeCtx &>(ctx);
-  const common::ObIArray<ObStorageColumnGroupSchema> &cg_array = ctx.get_schema()->get_column_groups();
   ObCOMergeLogFileMgr *mgr = nullptr;
   ObCOMergeLogFile *log_file = nullptr;
   if (IS_INIT) {
@@ -51,7 +42,7 @@ int ObCOMergeLogFileWriter::init(ObIAllocator &allocator, ObBasicTabletMergeCtx 
     LOG_WARN("failed to get log file", K(ret));
   } else if (OB_FAIL(init_buffer_writer(log_buffer_writer_, *log_file, nullptr/*projector*/))) {
     LOG_WARN("failed to init log buffer writer", K(ret));
-  } else if (OB_FAIL(init_row_buffer_writers(cg_array))) {
+  } else if (OB_FAIL(init_row_buffer_writers(*ctx.get_schema()))) {
     LOG_WARN("failed to init row buffer writers", K(ret));
   } else {
     log_id_ = 1;
@@ -63,44 +54,60 @@ int ObCOMergeLogFileWriter::init(ObIAllocator &allocator, ObBasicTabletMergeCtx 
   return ret;
 }
 
-int ObCOMergeLogFileWriter::init_row_buffer_writers(const common::ObIArray<ObStorageColumnGroupSchema> &cg_array)
+int ObCOMergeLogFileWriter::init_row_buffer_writers(const ObStorageSchema &schema)
 {
   int ret = OB_SUCCESS;
   ObCOMergeLogFile *file = nullptr;
   ObCOMergeProjector *projector = nullptr;
   ObCOMergeLogBufferWriter *buffer_writer = nullptr;
-  if (cg_count_ > cg_array.count()) {
+  ObStorageCGSchemaIterator cg_iterator(schema);
+
+  if (cg_count_ > cg_iterator.get_column_group_count()) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("cg count not match", K(ret), K(cg_count_), "cg_array count", cg_array.count());
+    LOG_WARN("cg count not match", K(ret), K(cg_count_), K(cg_iterator));
   }
-  for (int64_t i = 0; OB_SUCC(ret) && i < cg_count_; ++i) {
-    const ObStorageColumnGroupSchema &cg_schema = cg_array.at(i);
+
+  while (OB_SUCC(ret)) {
+    const ObStorageColumnGroupSchema *cg_schema = nullptr;
+    int64_t cg_idx = -1; // column group id in table key
+    int64_t iter_idx = -1;
+    if (OB_FAIL(cg_iterator.next(cg_schema, cg_idx, iter_idx))) {
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("failed to get next cg schema", K(ret));
+      }
+      break;
+    } else if (iter_idx >= cg_count_) {
+      break; // when co major only use row store, the cg schema cnt in iterator is bigger than cg count
+    }
+
     projector = nullptr;
     buffer_writer = nullptr;
-    if (OB_FAIL(mgr_->get_row_file(i, file))) {
-      LOG_WARN("failed to get row file fd", K(ret), K(i));
+    if (OB_FAIL(mgr_->get_row_file(iter_idx, file))) {
+      LOG_WARN("failed to get row file fd", K(ret), K(iter_idx));
     } else if (!file->is_valid()) { // no row file // skip current cg
       // check rowkey cg or all cg
-      if (cg_schema.is_all_column_group() || cg_schema.is_rowkey_column_group()) {
+      if (cg_schema->is_all_column_group() || cg_schema->is_rowkey_column_group()) {
         // do nothing
       } else {
         ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected cg schema", K(ret), K(file), K(i), K(cg_schema));
+        LOG_WARN("unexpected cg schema", K(ret), K(file), K(iter_idx), KPC(cg_schema));
       }
     } else {
       if (1 == cg_count_) { // row store // no need projector
       } else if (OB_ISNULL(projector = OB_NEWx(ObCOMergeProjector, allocator_))) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
-        LOG_WARN("failed to new projector", K(ret), K(i));
-      } else if (OB_FAIL(projector->init(cg_schema, *allocator_))) {
-        LOG_WARN("failed to init projector", K(ret), K(i), K(cg_schema));
+        LOG_WARN("failed to new projector", K(ret), K(iter_idx));
+      } else if (OB_FAIL(projector->init(*cg_schema, *allocator_))) {
+        LOG_WARN("failed to init projector", K(ret), K(iter_idx), KPC(cg_schema));
       }
       if (FAILEDx(init_buffer_writer(buffer_writer, *file, projector))) {
-        LOG_WARN("failed to init buffer writer", K(ret), K(i), K(cg_schema));
+        LOG_WARN("failed to init buffer writer", K(ret), K(iter_idx), KPC(cg_schema));
       }
     }
     if (OB_SUCC(ret)) {
-      row_buffer_writers_[i] = buffer_writer;
+      row_buffer_writers_[iter_idx] = buffer_writer;
     } else{
       if (OB_NOT_NULL(projector)) {
         projector->~ObCOMergeProjector();
@@ -185,9 +192,13 @@ int ObCOMergeLogFileWriter::close()
   return ret;
 }
 
-int ObCOMergeLogFileWriter::write_merge_log(const ObMergeLog &log, const blocksstable::ObDatumRow *full_row)
+int ObCOMergeLogFileWriter::write_merge_log(
+    const ObMergeLog &log,
+    const ObMergeVectorStore *vector_store,
+    const blocksstable::ObDatumRow *full_row)
 {
   int ret = OB_SUCCESS;
+  UNUSED(vector_store); // TODO
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObCOMergeLogFileWriter has not been inited", K(ret));
@@ -341,11 +352,15 @@ int ObCOMergeLogFileReader::inner_row_read(int64_t &log_id)
   return ret;
 }
 
-int ObCOMergeLogFileReader::get_next_log(ObMergeLog &mergelog, const blocksstable::ObDatumRow *&row)
+int ObCOMergeLogFileReader::get_next_log(
+    ObMergeLog &mergelog,
+    const ObMergeVectorStore *&vector_store,
+    const blocksstable::ObDatumRow *&row)
 {
   int ret = OB_SUCCESS;
   int64_t log_id = 0;
   int64_t row_log_id = 0;
+  vector_store = nullptr;
   row = nullptr;
   mergelog.reset();
   const int64_t start_time = common::ObTimeUtility::current_time();

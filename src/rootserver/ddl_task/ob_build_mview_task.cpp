@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -252,6 +245,7 @@ int ObBuildMViewTask::clean_on_fail()
     drop_table_arg.table_type_ = MATERIALIZED_VIEW;
     drop_table_arg.session_id_ = 100;
     drop_table_arg.exec_tenant_id_ = tenant_id_;
+    drop_table_arg.force_drop_ = database_schema->is_in_recyclebin();
     table_item.database_name_ = database_schema->get_database_name();
     table_item.table_name_ = mview_schema->get_table_name();
     if (OB_FAIL(drop_table_arg.tables_.push_back(table_item))) {
@@ -370,6 +364,7 @@ int ObBuildMViewTask::build_mlog_impl(const obrpc::ObMVRequiredColumnsInfo &requ
   ObSchemaGetterGuard schema_guard;
   const ObTableSchema *base_table_schema = nullptr;
   const ObTableSchema *mlog_schema = nullptr;
+  uint64_t data_version = 0;
 
   if (root_service_ == nullptr) {
     ret = OB_ERR_UNEXPECTED;
@@ -398,6 +393,7 @@ int ObBuildMViewTask::build_mlog_impl(const obrpc::ObMVRequiredColumnsInfo &requ
                K(mlog_schema->get_table_id()));
     } else if (has_mlog_task) {
       ret = OB_EAGAIN;
+      LOG_INFO("base table has mlog task, skip build mlog", KR(ret), KPC(mlog_schema));
     }
   }
   if (OB_SUCC(ret)) {
@@ -417,6 +413,14 @@ int ObBuildMViewTask::build_mlog_impl(const obrpc::ObMVRequiredColumnsInfo &requ
   if (OB_FAIL(ret)) {
   } else if (OB_NOT_NULL(mlog_schema) && missing_columns.empty()) {
     // if the base table already has a mlog, and all of its required columns are already in the mlog, skip
+  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id_, data_version))) {
+    LOG_WARN("fail to get tenant data version", KR(ret), K(data_version));
+  } else if (NULL != mlog_schema && data_version >= DATA_VERSION_4_6_1_0) {
+    if (OB_FAIL(ObMViewUtils::add_missing_columns_to_mlog(tenant_id_, missing_columns,
+                                                          schema_guard, base_table_schema))) {
+      LOG_WARN("failed to add missing columns to mlog", KR(ret), K(tenant_id_), K(base_table_id),
+                K(missing_columns));
+    }
   } else {
     ObSEArray<ObString, 16> final_missing_columns;
     if (OB_NOT_NULL(mlog_schema)) {

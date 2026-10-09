@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // define the feature list here whose behavior is different in MySQL5.7, MySQL8.0 or OB
@@ -50,4 +43,14 @@ DEF_COMPAT_CONTROL_FEATURE(MYSQL_CTE_PRIV_CHECK, "add CTE privilege check",
     MOCK_CLUSTER_VERSION_4_3_5_5, CLUSTER_VERSION_4_4_0_0,
     MOCK_CLUSTER_VERSION_4_4_2_1, CLUSTER_VERSION_4_5_0_0,
     CLUSTER_VERSION_4_6_0_0)
+DEF_COMPAT_CONTROL_FEATURE(ORACLE_UTL_NETWORK_PKG_PRIV_CHECK,
+    "require EXECUTE privilege on UTL_TCP/UTL_HTTP/UTL_SMTP",
+    MOCK_CLUSTER_VERSION_4_4_2_2, CLUSTER_VERSION_4_5_0_0,
+    CLUSTER_VERSION_4_6_1_0)
+DEF_COMPAT_CONTROL_FEATURE(MYSQL_VIEW_DEFINER_PRIV_CHECK_ENHANCE, "enable mysql view definer privilege check",
+    CLUSTER_VERSION_4_6_1_0)
+DEF_COMPAT_CONTROL_FEATURE(MVIEW_REFRESH_PRIV_CHECK,
+    "check ALTER privilege on mview before refresh",
+    MOCK_CLUSTER_VERSION_4_4_2_2, CLUSTER_VERSION_4_5_0_0,
+    CLUSTER_VERSION_4_6_1_0)
 #endif

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -43,17 +36,43 @@ int ObOptimizer::optimize(ObDMLStmt &stmt, ObLogPlan *&logical_plan)
     LOG_WARN("invalid arguments", K(ret), K(query_ctx), K(session), K(target_stmt));
   } else if (OB_FAIL(init_env_info(*target_stmt))) {
     LOG_WARN("failed to init px info", K(ret));
-  } else if (!target_stmt->is_reverse_link() &&
-             OB_FAIL(generate_plan_for_temp_table(*target_stmt))) {
-    LOG_WARN("failed to generate plan for temp table", K(ret));
-  } else if (OB_ISNULL(plan = ctx_.get_log_plan_factory().create(ctx_, stmt))) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("failed to create plan", K(ret));
-  } else if (OB_FAIL(plan->generate_plan())) {
-    LOG_WARN("failed to perform optimization", K(ret));
-  } else if (OB_FAIL(plan->add_extra_dependency_table())) {
-    LOG_WARN("failed to add extra dependency tables", K(ret));
   }
+  if (OB_SUCC(ret)) {
+    bool need_retry = false;
+    int64_t retry_count = 0;
+    const int64_t MAX_RETRY_COUNT = 1; // Only retry once for nested SQL optimization
+    do {
+      need_retry = false;
+
+      // Clean up temp table infos when retrying
+      if (retry_count > 0) {
+        ctx_.get_temp_table_infos().reuse();
+      }
+      if (!target_stmt->is_reverse_link() &&
+                OB_FAIL(generate_plan_for_temp_table(*target_stmt))) {
+        LOG_WARN("failed to generate plan for temp table", K(ret));
+      } else if (OB_ISNULL(plan = ctx_.get_log_plan_factory().create(ctx_, stmt))) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("failed to create plan", K(ret));
+      } else if (OB_FAIL(plan->generate_plan())) {
+        LOG_WARN("failed to perform optimization", K(ret));
+      } else if (ctx_.need_retry_plan() && retry_count < MAX_RETRY_COUNT) {
+        // Check if plan needs to be regenerated (set by LogPlan)
+        // Skip add_extra_dependency_table() since current plan will be discarded
+        need_retry = true;
+        retry_count++;
+
+        // Clear retry flag and set flag to disable basic-first strategy for retry
+        ctx_.set_need_retry_plan(false);
+        ctx_.set_nested_sql_try_basic_first(false);
+
+        LOG_TRACE("[NESTED_SQL_DEBUG] Plan needs regeneration, retrying with DAS", K(retry_count));
+      } else if (OB_FAIL(plan->add_extra_dependency_table())) {
+        LOG_WARN("failed to add extra dependency tables", K(ret));
+      }
+    } while (need_retry && OB_SUCC(ret));
+  }
+
   if (OB_SUCC(ret)) {
     if (ctx_.get_exec_ctx()->get_sql_ctx()->is_remote_sql_ &&
         ctx_.get_phy_plan_type() != OB_PHY_PLAN_LOCAL) {
@@ -853,13 +872,20 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
   bool enable_spf_batch_rescan = session.is_spf_mlj_group_rescan_enabled();
   bool enable_px_ordered_coord = GCONF._enable_px_ordered_coord;
   int64_t das_batch_rescan_flag = tenant_config.is_valid() ? tenant_config->_enable_das_batch_rescan_flag : 0;
+  // when use tracepoint, enable all batch rescan only for tenant default
+  if ((OB_E(EventTable::EN_DAS_GROUP_RESCAN_TEST_MODE) OB_SUCCESS) != OB_SUCCESS) {
+    das_batch_rescan_flag = INT64_MAX;
+  }
   // disabled when config is not valid
   int64_t rtf_creator_max_row_count = tenant_config.is_valid() ? tenant_config->_rtf_creator_max_row_count : INT64_MAX;
   int64_t rtf_user_min_partition_count = tenant_config.is_valid() ? tenant_config->_rtf_user_min_partition_count : -1;
   bool enable_distributed_das_scan = tenant_config.is_valid() ? tenant_config->_enable_distributed_das_scan : true;
   bool enable_index_merge = tenant_config.is_valid() ? tenant_config->_enable_index_merge : false;
+  bool enable_separate_spf_for_select_items = tenant_config.is_valid() ? tenant_config->_enable_separate_spf_for_select_items : false;
   const ObOptParamHint &opt_params = ctx_.get_global_hint().opt_params_;
   bool aggr_pushdown_allowed = false;
+  int64_t udf_cost_factor = 100;
+  double udf_sel = 0.005;
 
   if (OB_ISNULL(query_ctx)) {
     ret = OB_ERR_UNEXPECTED;
@@ -892,7 +918,10 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     LOG_WARN("failed to get pushdown storage level opt param", K(ret));
   } else if (OB_FAIL(stmt.check_has_cursor_expression(has_cursor_expr))) {
     LOG_WARN("fail to check cursor expression info", K(ret));
-  } else if (OB_FAIL(session.is_storage_estimation_enabled(storage_estimation_enabled))) {
+  } else if (OB_FAIL(opt_params.get_sys_var(ObOptParamHint::_ENABLE_STORAGE_CARDINALITY_ESTIMATION,
+                                            &session,
+                                            share::SYS_VAR__ENABLE_STORAGE_CARDINALITY_ESTIMATION,
+                                            storage_estimation_enabled))) {
     LOG_WARN("fail to get storage_estimation_enabled", K(ret));
   } else if (OB_FAIL(opt_params.get_bool_opt_param(ObOptParamHint::ENABLE_DAS_KEEP_ORDER, das_keep_order_enabled))) {
     LOG_WARN("failed to check das keep order enabled", K(ret));
@@ -934,8 +963,18 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     LOG_WARN("failed to get das batch rescan flag", K(ret));
   } else if (OB_FAIL(opt_params.get_bool_opt_param(ObOptParamHint::ENABLE_INDEX_MERGE, enable_index_merge))) {
     LOG_WARN("failed to get opt param enable index merge", K(ret));
-  } else if(OB_FAIL(session.if_aggr_pushdown_allowed(aggr_pushdown_allowed))) {
+  } else if (OB_FAIL(opt_params.get_bool_opt_param(ObOptParamHint::ENABLE_SEPARATE_SPF_FOR_SELECT_ITEMS, enable_separate_spf_for_select_items))) {
+    LOG_WARN("failed to get opt param enable separate spf for select items", K(ret));
+  } else if (OB_FAIL(session.if_aggr_pushdown_allowed(aggr_pushdown_allowed))) {
     LOG_WARN("failed to get sys var enable aggr pushdown", K(ret));
+  } else if (OB_FAIL(session.get_udf_cost_factor(udf_cost_factor))) {
+    LOG_WARN("failed to get sys var udf cost coefficient", K(ret));
+  } else if (OB_FAIL(opt_params.get_integer_opt_param(ObOptParamHint::UDF_COST_FACTOR, udf_cost_factor))) {
+    LOG_WARN("failed to get opt param udf cost coefficient", K(ret));
+  } else if (OB_FAIL(session.get_udf_selectivity(udf_sel))) {
+    LOG_WARN("failed to get sys var udf selectivity", K(ret));
+  } else if (OB_FAIL(opt_params.get_double_opt_param(ObOptParamHint::UDF_SELECTIVITY, udf_sel))) {
+    LOG_WARN("failed to get opt param udf selectivity", K(ret));
   } else {
     ctx_.init_batch_rescan_flags(enable_use_batch_nlj, enable_spf_batch_rescan,
       query_ctx->optimizer_features_enable_version_, das_batch_rescan_flag);
@@ -955,6 +994,7 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     ctx_.set_rtf_creator_max_row_count(rtf_creator_max_row_count);
     ctx_.set_rtf_user_min_partition_count(rtf_user_min_partition_count);
     ctx_.set_enable_index_merge(enable_index_merge);
+    ctx_.set_enable_separate_spf_for_select_items(enable_separate_spf_for_select_items);
     if (query_ctx->get_query_hint().has_outline_data()) {
       ctx_.set_push_join_pred_into_view_enabled(true);
     } else {
@@ -1000,6 +1040,11 @@ int ObOptimizer::extract_opt_ctx_basic_flags(const ObDMLStmt &stmt, ObSQLSession
     if (session.is_enable_new_query_range() && ObSQLUtils::is_min_cluster_version_ge_425_or_435()) {
       ctx_.set_enable_new_query_range(true);
     }
+    if (tenant_config.is_valid()) {
+      ctx_.set_enable_nested_sql_local_optimize(tenant_config->_enable_nested_sql_local_optimize);
+    }
+    ctx_.set_udf_cost_factor(static_cast<double>(udf_cost_factor) / 100.0);
+    ctx_.set_udf_selectivity(udf_sel);
   }
   return ret;
 }

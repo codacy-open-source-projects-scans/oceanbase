@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_RPC
@@ -35,7 +28,6 @@
 #include "share/rpc/ob_async_rpc_proxy.h"
 #include "storage/meta_mem/ob_tablet_pointer.h"
 #ifdef OB_BUILD_SHARED_STORAGE
-#include "close_modules/shared_storage/storage/high_availability/ob_migration_warmup_struct.h"
 #include "close_modules/shared_storage/storage/shared_storage/micro_cache/ob_ss_micro_cache_common_meta.h"
 #include "close_modules/shared_storage/storage/shared_storage/prewarm/ob_ha_prewarm_struct.h"
 #include "close_modules/shared_storage/storage/shared_storage/ob_ss_micro_cache.h"
@@ -366,7 +358,9 @@ public:
   void reset();
   int assign(const ObCopySSTableMacroRangeInfoArg &arg);
 
-  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(tablet_id), K_(copy_table_key_array), K_(macro_range_max_marco_count));
+  TO_STRING_KV(K_(tenant_id), K_(ls_id), K_(tablet_id),
+      "copy_table_key_array", ObTableKeyArrayLogWrap(copy_table_key_array_),
+      K_(macro_range_max_marco_count));
   uint64_t tenant_id_;
   share::ObLSID ls_id_;
   common::ObTabletID tablet_id_;
@@ -1720,7 +1714,6 @@ public:
   virtual ~ObNotifySSWriterDoBackfillP() {}
 protected:
   int process();
-  int notify_sswriter_do_backfill_();
 };
 #endif
 

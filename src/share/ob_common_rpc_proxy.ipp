@@ -29,8 +29,11 @@
   RPC_S(PRD recover_restore_table_ddl, obrpc::OB_RECOVER_RESTORE_TABLE_DDL, (ObRecoverRestoreTableDDLArg));
   RPC_S(PRD parallel_create_table, obrpc::OB_PARALLEL_CREATE_TABLE, (ObCreateTableArg), ObCreateTableRes);
   RPC_S(PRD alter_table, obrpc::OB_ALTER_TABLE, (ObAlterTableArg), ObAlterTableRes);
+  RPC_S(PRD parallel_alter_table, obrpc::OB_PARALLEL_ALTER_TABLE, (ObAlterTableArg), ObAlterTableRes);
+  RPC_S(PRD alter_view, obrpc::OB_ALTER_VIEW, (ObAlterViewArg), ObAlterViewRes);
   RPC_S(PRD set_comment, obrpc::OB_PARALLEL_SET_COMMENT, (ObSetCommentArg), ObParallelDDLRes);
   RPC_S(PRD split_global_index_tablet, obrpc::OB_SPLIT_GLOBAL_INDEX_TABLET, (ObAlterTableArg));
+  RPC_S(PRD alter_random_distribution_partition, obrpc::OB_ALTER_RANDOM_DISTRIBUTION_PARTITION, (ObAlterTableArg), obrpc::ObAlterRandomPartitionRes);
   RPC_S(PRD create_hidden_table, obrpc::OB_CREATE_HIDDEN_TABLE, (obrpc::ObCreateHiddenTableArg), ObCreateHiddenTableRes);
   RPC_S(PRD create_hidden_table_v2, obrpc::OB_CREATE_HIDDEN_TABLE_V2, (obrpc::ObCreateHiddenTableArgV2), ObCreateHiddenTableRes);
   RPC_S(PRD alter_database, obrpc::OB_ALTER_DATABASE, (ObAlterDatabaseArg));
@@ -329,7 +332,15 @@
   //----Functions for managing external resource----
   RPC_S(PRD create_external_resource, obrpc::OB_CREATE_EXTERNAL_RESOURCE, (ObCreateExternalResourceArg), obrpc::ObCreateExternalResourceRes);
   RPC_S(PRD drop_external_resource, obrpc::OB_DROP_EXTERNAL_RESOURCE, (ObDropExternalResourceArg), obrpc::ObDropExternalResourceRes);
+  RPC_S(PRD ora_upload_jar_external_resource, obrpc::OB_ORA_UPLOAD_JAR, (ObOraUploadJarArg), obrpc::ObOraUploadJarRes);
+  RPC_S(PRD ora_drop_jar_external_resource, obrpc::OB_ORA_DROP_JAR, (ObOraDropJarArg), obrpc::ObOraDropJarRes);
   //----End of functions for managing external resource----
+
+  //----Functions for managing java_policy----
+  RPC_S(PRD create_java_policy, obrpc::OB_CREATE_JAVA_POLICY, (ObCreateJavaPolicyArg), obrpc::ObCreateJavaPolicyRes);
+  RPC_S(PRD drop_java_policy, obrpc::OB_DROP_JAVA_POLICY, (ObDropJavaPolicyArg), obrpc::ObDropJavaPolicyRes);
+  RPC_S(PRD modify_java_policy, obrpc::OB_MODIFY_JAVA_POLICY, (ObModifyJavaPolicyArg), obrpc::ObModifyJavaPolicyRes);
+  //----End of functions for managing java_policy----
 
   //----Functions for managing ai model----
   RPC_S(PRD create_ai_model, obrpc::OB_CREATE_AI_MODEL, (ObCreateAiModelArg));

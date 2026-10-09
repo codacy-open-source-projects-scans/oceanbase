@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_MDS_ROW_ITERATOR
@@ -17,10 +10,10 @@
 #include "lib/utility/ob_print_utils.h"
 #include "common/row/ob_row_iterator.h"
 #include "storage/access/ob_multiple_merge.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "storage/access/ob_table_access_param.h"
 #include "storage/access/ob_table_access_context.h"
 #include "storage/access/ob_table_scan_range.h"
-#include "storage/meta_mem/ob_tablet_handle.h"
 #include "storage/multi_data_source/adapter_define/mds_dump_node.h"
 
 namespace oceanbase
@@ -66,7 +59,7 @@ public:
   TO_STRING_KV(K_(is_inited),
                K_(access_param),
                K_(access_ctx),
-               K_(get_table_param),
+               K_(tablet_read_tables),
                K_(table_scan_range),
                KP_(table_scan_param),
                KP_(multiple_merge));
@@ -74,7 +67,7 @@ private:
   bool is_inited_;
   ObTableAccessParam access_param_;
   ObTableAccessContext access_ctx_;
-  ObGetTableParam get_table_param_; // no need?
+  ObTabletReadTables tablet_read_tables_; // no need?
   ObTableScanRange table_scan_range_;
   ObTableScanParam *table_scan_param_;
   ObMultipleMerge *multiple_merge_;

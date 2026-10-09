@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 
@@ -120,6 +113,7 @@ private:
   inline void set_dag_stage(const ObDagMacroWriterStage stage) { dag_stage_ = stage; }
   inline ObDagMacroWriterStage get_dag_stage() const { return dag_stage_; }
   int append_macro_block(const ObCGBlock &cg_block);
+  void print_all_micro_blocks_rowkey(const ObCGBlock &cg_block, ObIAllocator &rowkey_allocator);
   int reuse_micro_blocks(ObDagMicroBlockIterator &micro_block_iter, ObIAllocator &allocator);
   bool is_reuse_macro_block(const ObCGBlock &cg_block, const int64_t macro_block_fill_ratio) const;
   bool is_almost_full_macro_block(const int64_t macro_block_fill_threshold) const;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEABASE_STORAGE_PHYSICAL_COPY_CTX_
@@ -98,8 +91,7 @@ struct ObPhysicalCopyCtx final
                K_(ls_id),
                K_(tablet_id),
                K_(src_info),
-               KP_(bandwidth_throttle),
-               KP_(svr_rpc_proxy),
+               K_(ha_svc_ctx),
                K_(is_leader_restore),
                K_(restore_action),
                KP_(restore_base_info),
@@ -123,8 +115,7 @@ struct ObPhysicalCopyCtx final
   share::ObLSID ls_id_;
   common::ObTabletID tablet_id_;
   ObStorageHASrcInfo src_info_;
-  common::ObInOutBandwidthThrottle *bandwidth_throttle_;
-  obrpc::ObStorageRpcProxy *svr_rpc_proxy_;
+  ObStorageHAServiceCtx ha_svc_ctx_;
   bool is_leader_restore_;
   ObTabletRestoreAction::ACTION restore_action_;
   const ObRestoreBaseInfo *restore_base_info_;

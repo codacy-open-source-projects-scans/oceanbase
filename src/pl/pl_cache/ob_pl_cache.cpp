@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX PL_CACHE
@@ -349,6 +342,7 @@ int ObPLObjectValue::init(const ObILibCacheObject &cache_obj, ObPLCacheCtx &pc_c
         LOG_WARN("fail to push back param info", K(ret));
       }
     }
+    enable_share_cache_for_null_param_ = pc_ctx.session_info_->enable_pl_null_literal_parameterization();
   }
   return ret;
 }
@@ -455,6 +449,7 @@ void ObPLObjectValue::reset()
   params_info_.reset();
 
   pl_routine_obj_ = nullptr;
+  enable_share_cache_for_null_param_ = false;
 }
 
 int64_t ObPLObjectValue::get_mem_size()
@@ -738,6 +733,11 @@ int ObPLDependencyCheck::resolve_and_check_synonym(ObSchemaChecker &schema_check
           exist = true;
         }
       }
+      for (int64_t i = 0; !exist && i < stored_sys_schema_objs_.count(); i++) {
+        if (stored_sys_schema_objs_.at(i)->schema_id_ == object_id) {
+          exist = true;
+        }
+      }
       if (!exist) {
         ret = OB_OLD_SCHEMA_VERSION;
         LOG_WARN("exist object which name as current synonym", K(ret), K(object_id), K(synonym_info));
@@ -784,7 +784,7 @@ int ObPLDependencyCheck::get_synonym_schema_version(ObPLCacheBasicCtx &pc_ctx,
           if (OB_FAIL(ret)) {
           } else if (exist) {
             ret = OB_OLD_SCHEMA_VERSION;
-            LOG_WARN("exist object which name as current synonym", K(ret), KPC(synonym_info));
+            LOG_WARN("exist object which name as current synonym", K(ret), K(pcv_schema), KPC(synonym_info));
           } else {
             OZ (resolve_and_check_synonym(schema_checker, tenant_id, pcv_schema.invoker_db_id_, *session_info, *synonym_info));
             OX (new_version = synonym_info->get_schema_version());
@@ -796,7 +796,7 @@ int ObPLDependencyCheck::get_synonym_schema_version(ObPLCacheBasicCtx &pc_ctx,
       }
     } else if (OB_ISNULL(synonym_info)) {
       ret = OB_OLD_SCHEMA_VERSION;
-      LOG_WARN("can not get newer synonym_info", K(ret));
+      LOG_WARN("can not get newer synonym_info", K(ret), K(pcv_schema));
     }
   }
   return ret;
@@ -948,8 +948,8 @@ int ObPLDependencyCheck::match_dep_schema(const ObPLCacheBasicCtx &pc_ctx,
                  && !stored_schema_array.at(i)->match_compare(schema_array.at(i))) {
         // check whether common table name is same as system table in oracle mode
         is_same = false;
-        set_expired_schema_version(*stored_schema_objs_.at(i));
-        LOG_WARN("mismatched schema objs", K(*stored_schema_objs_.at(i)), K(stored_schema_objs_.at(i)), K(i));
+        set_expired_schema_version(*stored_schema_array.at(i));
+        LOG_WARN("mismatched schema objs", K(*stored_schema_array.at(i)), K(stored_schema_array.at(i)), K(i));
       } else {
         // do nothing
       }
@@ -1120,9 +1120,15 @@ bool ObPLObjectValue::match_params_info(const Ob2DArray<ObPlParamInfo,
     int64_t N = infos.count();
     for (int64_t i = 0; is_same && i < N; ++i) {
       if (true == is_same && params_info_.at(i).flag_.need_to_check_type_) {
-        if (infos.at(i).type_ != params_info_.at(i).type_
-           || infos.at(i).scale_ != params_info_.at(i).scale_
-           || infos.at(i).col_type_ != params_info_.at(i).col_type_
+        if (infos.at(i).type_ != params_info_.at(i).type_) {
+          if (enable_share_cache_for_null_param_
+            && !params_info_.at(i).flag_.need_strict_type_match_
+            && ObNullType == params_info_.at(i).type_) {
+            is_same = true;
+          } else {
+            is_same = false;
+          }
+        } else if (infos.at(i).col_type_ != params_info_.at(i).col_type_
            || (params_info_.at(i).flag_.need_to_check_extend_type_
                && infos.at(i).ext_real_type_ != params_info_.at(i).ext_real_type_)
            || (params_info_.at(i).flag_.is_boolean_ != infos.at(i).flag_.is_boolean_)) {
@@ -1178,6 +1184,30 @@ int ObPLObjectValue::match_complex_type_info(const ObPlParamInfo &param_info,
   return ret;
 }
 
+bool ObPLObjectValue::check_param_type_compatible_for_cache(
+    const ObPlParamInfo &param_info,
+    const ObObjParam &param)
+{
+  bool is_compatible = false;
+  ObObjType src_type = param.get_param_meta().get_type();
+  ObObjType dst_type = param_info.type_;
+  ObCollationType src_cs_type = param.get_param_meta().get_collation_type();
+  ObCollationType dst_cs_type = param_info.col_type_;
+#define IS_LOB_TYPE(type) (ObLobType == (type) || ObLongTextType == (type))
+  if (ObNullType == param.get_param_meta().get_type()) {
+    is_compatible = true;  // parameterized null param can match any type
+  } else if (param_info.type_ == ObNullType
+      || !param_info.is_null_deduced_type_
+      || (IS_LOB_TYPE(param.get_param_meta().get_type()) && CS_TYPE_BINARY == src_cs_type)
+      || (IS_LOB_TYPE(param_info.type_) && CS_TYPE_BINARY == dst_cs_type)) {
+    is_compatible = false;
+  } else {
+    is_compatible = common::cast_supported(src_type, src_cs_type, dst_type, dst_cs_type);
+  }
+  return is_compatible;
+#undef IS_LOB_TYPE
+}
+
 int ObPLObjectValue::match_param_info(const ObPlParamInfo &param_info,
                                               const ObObjParam &param,
                                               bool &is_same) const
@@ -1195,9 +1225,14 @@ int ObPLObjectValue::match_param_info(const ObPlParamInfo &param_info,
                 K(param.get_type()));
     }
 
-    if (param.get_collation_type() != param_info.col_type_) {
-      is_same = false;
-    } else if (param.get_param_meta().get_type() != param_info.type_) {
+    if (param.get_param_meta().get_type() != param_info.type_) {
+      if (enable_share_cache_for_null_param_
+        && !param_info.flag_.need_strict_type_match_) {
+        is_same = check_param_type_compatible_for_cache(param_info, param);
+      } else {
+        is_same = false;
+      }
+    } else if (param.get_collation_type() != param_info.col_type_) {
       is_same = false;
     } else if (param.is_ext()) {
       ObDataType data_type;
@@ -1207,7 +1242,9 @@ int ObPLObjectValue::match_param_info(const ObPlParamInfo &param_info,
         LOG_WARN("fail to match complex type info", K(ret), K(param), K(param_info));
       }
       LOG_DEBUG("ext match param info", K(data_type), K(param_info), K(is_same), K(ret));
-    } else if (param_info.is_oracle_null_value_ && !param.is_null()) {
+    }
+    if (!is_same) {
+    } else if (param_info.is_oracle_null_value_ && !ObSQLUtils::is_oracle_null_with_normal_type(param)) {
       is_same = false;
     } else if (ObSQLUtils::is_oracle_null_with_normal_type(param)
                &&!param_info.is_oracle_null_value_) { //Typed nulls can only match plans with the same type of nulls.
@@ -1215,7 +1252,6 @@ int ObPLObjectValue::match_param_info(const ObPlParamInfo &param_info,
     } else if (param_info.flag_.is_boolean_ != param.is_boolean()) { //bool type not match int type
       is_same = false;
     } else {
-      is_same = (param.get_scale() == param_info.scale_);
       if (is_same && param.is_number() && PL_INTEGER_TYPE == param_info.pl_type_) {
         is_same = param.get_number().is_valid_int();
       }
@@ -1394,6 +1430,7 @@ int ObPLObjectSet::inner_get_cache_obj(ObILibCacheCtx &ctx,
     bool is_old_version = false;
     bool is_same = true;
     bool match_params = true;
+    pl_object_value->enable_share_cache_for_null_param_ = pc_ctx.session_info_->enable_pl_null_literal_parameterization();
     if (OB_FAIL(pl_object_value->match_params_info(pc_ctx.cache_params_, match_params))) {
       LOG_WARN("failed to match params info", K(ret));
     } else if (!match_params) {
@@ -1493,6 +1530,7 @@ int ObPLObjectSet::inner_add_cache_obj(ObILibCacheCtx &ctx,
     LOG_WARN("failed to get all dep schema", K(ret));
   } else {
     DLIST_FOREACH(pl_object_value, object_value_sets_) {
+      pl_object_value->enable_share_cache_for_null_param_ = pc_ctx.session_info_->enable_pl_null_literal_parameterization();
       if (true == pl_object_value->match_params_info(cache_object->get_params_info())) {
         bool is_dup = false;
         // check if already have same cache obj

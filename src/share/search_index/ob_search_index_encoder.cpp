@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -78,6 +71,14 @@ int ObSearchIndexPathEncoder::encode_type(ObJsonNodeType json_type, uint8_t &enc
     }
     case ObJsonNodeType::J_MYSQL_DATETIME: {
       enc_type = TYPE_MYSQL_DATETIME;
+      break;
+    }
+    case ObJsonNodeType::J_OBJECT: {
+      enc_type = TYPE_OBJECT;
+      break;
+    }
+    case ObJsonNodeType::J_ARRAY: {
+      enc_type = TYPE_ARRAY;
       break;
     }
     default: {
@@ -471,10 +472,34 @@ int ObSearchIndexValueEncoder::encode_value(ObIAllocator &allocator,
     }
     case ObVarcharType: {
       ObEncParam enc_param;
-      if (OB_FAIL(init_string_enc_param(obj_type, obj_meta.get_collation_type(), 0, true, true,
-                                        enc_param))) {
+      ObCollationType cs_type = obj_meta.get_collation_type();
+      ObString str_value = datum.get_string();
+      if (OB_FAIL(normalize_string_for_encoding(allocator, str_value, cs_type))) {
+        LOG_WARN("fail to normalize string for encoding", K(ret));
+      } else if (OB_FAIL(init_string_enc_param(obj_type, cs_type, 0, true, true, enc_param))) {
         LOG_WARN("fail to init string enc param", K(ret));
-      } else if (OB_FAIL(encode_string(allocator, datum.get_string(), value, enc_param))) {
+      } else if (OB_FAIL(encode_string(allocator, str_value, value, enc_param))) {
+        LOG_WARN("fail to encode string", K(ret));
+      }
+      break;
+    }
+    case ObTinyTextType:
+    case ObTextType:
+    case ObMediumTextType:
+    case ObLongTextType: {
+      ObEncParam enc_param;
+      ObCollationType cs_type = obj_meta.get_collation_type();
+      ObString str_value = datum.get_string();
+      bool has_lob_header = obj_meta.has_lob_header();
+      sql::ObDatumMeta datum_meta(obj_meta.get_type(), cs_type, obj_meta.get_scale());
+      if (OB_FAIL(sql::ObTextStringHelper::read_real_string_data(allocator, datum, datum_meta,
+                                                                 has_lob_header, str_value))) {
+        LOG_WARN("fail to get real data", K(ret), K(str_value));
+      } else if (OB_FAIL(normalize_string_for_encoding(allocator, str_value, cs_type))) {
+        LOG_WARN("fail to normalize string for encoding", K(ret));
+      } else if (OB_FAIL(init_string_enc_param(ObVarcharType, cs_type, 0, true, true, enc_param))) {
+        LOG_WARN("fail to init string enc param", K(ret));
+      } else if (OB_FAIL(encode_string(allocator, str_value, value, enc_param))) {
         LOG_WARN("fail to encode string", K(ret));
       }
       break;
@@ -863,6 +888,11 @@ int ObSearchIndexValueEncoder::encode_string(ObIAllocator &allocator,
   } else if (OB_FAIL(ObOrderPerservingEncoder::encode_from_string_varlen(string_value, mem,
       max_buf_len, to_len, enc_param))) {
     LOG_WARN("failed to encode from string varlen", K(ret));
+  } else if (OB_UNLIKELY(to_len < 0)) {
+    // Defensive check: sortkey_var_len may return (size_t)-1 for unsupported collations
+    // (e.g. when strnxfrm_varlen is NULL), which wraps to a negative int64_t.
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("encode_from_string_varlen returned negative length", K(ret), K(to_len), K(string_value));
   } else {
     // truncate encoded value length to SEARCH_INDEX_VALUE_LENGTH
     to_len = MIN(to_len, SEARCH_INDEX_VALUE_LENGTH);
@@ -908,6 +938,26 @@ int ObSearchIndexValueEncoder::encode_value(common::ObIAllocator &allocator,
   return ret;
 }
 
+int ObSearchIndexValueEncoder::normalize_string_for_encoding(ObIAllocator &allocator,
+                                                             ObString &str_value,
+                                                             ObCollationType &cs_type)
+{
+  int ret = OB_SUCCESS;
+  ObCharsetType charset = ObCharset::charset_type_by_coll(cs_type);
+  if (CHARSET_UTF16 == charset || CHARSET_UTF16LE == charset) {
+    ObString converted;
+    if (OB_FAIL(ObCharset::charset_convert(allocator, str_value, cs_type,
+                                           CS_TYPE_UTF8MB4_BIN, converted))) {
+      LOG_WARN("fail to convert charset to utf8mb4", K(ret), K(cs_type));
+    } else {
+      str_value = converted;
+      cs_type = ObCharset::is_bin_sort(cs_type) ? CS_TYPE_UTF8MB4_BIN
+                                                : CS_TYPE_UTF8MB4_GENERAL_CI;
+    }
+  }
+  return ret;
+}
+
 bool ObSearchIndexValueEncoder::string_safety_to_compare(const ObString &str)
 {
   // TODO: optimize this by collation type.
@@ -924,8 +974,63 @@ bool ObSearchIndexValueEncoder::string_column_may_truncate(const ObObjMeta &colu
     // TODO: optimize this by collation type.
     // value encoded length worst case is 7x expansion + 20 bytes safety buffer
     truncated = column_length > (SEARCH_INDEX_VALUE_LENGTH - 20) / 7;
+  } else if (ob_is_text_tc(obj_type)) {
+    truncated = true;
   }
   return truncated;
+}
+
+bool ObSearchIndexValueEncoder::is_supported_column_type(const ObObjType type)
+{
+  bool bret = false;
+  switch (type) {
+    // signed integers
+    case ObTinyIntType:
+    case ObSmallIntType:
+    case ObMediumIntType:
+    case ObInt32Type:
+    case ObIntType:
+    // unsigned integers
+    case ObUTinyIntType:
+    case ObUSmallIntType:
+    case ObUMediumIntType:
+    case ObUInt32Type:
+    case ObUInt64Type:
+    // floating point
+    case ObFloatType:
+    case ObUFloatType:
+    case ObDoubleType:
+    case ObUDoubleType:
+    // string types
+    case ObVarcharType:
+    case ObCharType:
+    case ObTinyTextType:
+    case ObTextType:
+    case ObMediumTextType:
+    case ObLongTextType:
+    // date/time types
+    case ObDateType:
+    case ObMySQLDateType:
+    case ObDateTimeType:
+    case ObTimestampType:
+    case ObMySQLDateTimeType:
+    case ObTimeType:
+    case ObYearType:
+    // number types
+    case ObNumberType:
+    case ObUNumberType:
+    case ObDecimalIntType:
+    // json
+    case ObJsonType:
+    // collection/array
+    case ObCollectionSQLType:
+      bret = true;
+      break;
+    default:
+      bret = false;
+      break;
+  }
+  return bret;
 }
 
 } // namespace share

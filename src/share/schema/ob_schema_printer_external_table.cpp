@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -85,11 +78,26 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
       SHARE_SCHEMA_LOG(WARN, "fail to print LOCATION", K(ret));
     }
   }
+
+  uint64_t tenant_id = table_schema.get_tenant_id();
+  uint64_t data_version = 0;
+  if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
+    LOG_WARN("failed to get data version", K(ret), K(tenant_id));
+  } else if (!use_properties && !pattern.empty()) {
+    const char *pattern_fmt = nullptr;
+    if (table_schema.get_external_file_pattern_type() == GLOB_EXTERNAL_FILE_PATTERN) {
+      pattern_fmt = "\nGLOB_PATTERN='%.*s'";
+    } else if (data_version < DATA_VERSION_4_6_1_0) {
+      pattern_fmt = "\nPATTERN='%.*s'";
+    } else {
+      pattern_fmt = "\nREGEXP_PATTERN='%.*s'";
+    }
+    if (OB_FAIL(databuff_printf(buf, buf_len, pos, pattern_fmt, pattern.length(), pattern.ptr()))) {
+      SHARE_SCHEMA_LOG(WARN, "fail to print PATTERN", K(ret));
+    }
+  }
+
   if (OB_FAIL(ret)) {
-    // do nothing
-  } else if (!use_properties && !pattern.empty() &&
-      OB_FAIL(databuff_printf(buf, buf_len, pos, "\nPATTERN='%.*s'", pattern.length(), pattern.ptr()))) {
-    SHARE_SCHEMA_LOG(WARN, "fail to print PATTERN", K(ret));
   } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\nAUTO_REFRESH = %s", table_schema.get_external_table_auto_refresh() == 0 ? "OFF" :
                                                                                 table_schema.get_external_table_auto_refresh() == 1 ? "IMMEDIATE" : "INTERVAL"))) {
     SHARE_SCHEMA_LOG(WARN, "fail to print AUTO REFRESH", K(ret));
@@ -98,13 +106,7 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
       SHARE_SCHEMA_LOG(WARN, "fail to print PATTERN", K(ret));
     }
   }
-  uint64_t tenant_id = table_schema.get_tenant_id();
-  uint64_t data_version = 0;
-  if (table_schema.is_sys_table() || table_schema.is_vir_table()) {
-    // skip for sys/vir table
-  } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
-    LOG_WARN("failed to get data version", K(ret), K(tenant_id));
-  }
+
    // 2. print file format
   if (OB_SUCC(ret)) {
     ObExternalFileFormat format;
@@ -127,7 +129,10 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
     }
 
     int64_t default_escaped_char = ObDataInFileStruct::DEFAULT_FIELD_ESCAPED_CHAR;
-    bool is_default_escaped_char_none = true;
+    int64_t default_enclosed_char = ObDataInFileStruct::DEFAULT_FIELD_ENCLOSED_CHAR;
+    ObString default_field_term_str = ObDataInFileStruct::DEFAULT_FIELD_TERM_STR;
+    bool is_standard_csv_format = true;
+    bool default_escaped_char_is_none = true;
     uint64_t compat_version = 0;
     if (OB_FAIL(ret)) {
     } else if (OB_FAIL(share::ObExternalTableUtils::get_tenant_compat_version(schema_guard_,
@@ -136,10 +141,20 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
       LOG_WARN("failed to get tenant compat version", K(ret), K(tenant_id));
     } else if (OB_FAIL(ObCompatControl::check_feature_enable(
                                 compat_version,
+                                ObCompatFeatureType::STANDARD_CSV_FORMAT_IN_EXTERNAL_TABLE,
+                                is_standard_csv_format))) {
+      LOG_WARN("failed to check standard csv format feature", K(ret), K(compat_version));
+    } else if (OB_FAIL(ObCompatControl::check_feature_enable(
+                                compat_version,
                                 ObCompatFeatureType::DEFAULT_CSV_ESCAPE_CHAR_IS_NONE,
-                                is_default_escaped_char_none))) {
-      LOG_WARN("failed to check default csv escape char feature", K(ret), K(compat_version));
-    } else if (is_default_escaped_char_none) {
+                                default_escaped_char_is_none))) {
+      LOG_WARN("failed to check default csv escape char is none feature", K(ret), K(compat_version));
+
+    } else if (is_standard_csv_format) {
+      default_escaped_char = INT64_MAX;
+      default_enclosed_char = '"';
+      default_field_term_str = ",";
+    } else if (default_escaped_char_is_none) {
       default_escaped_char = INT64_MAX;
     }
 
@@ -151,13 +166,13 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
       if (OB_FAIL(0 != csv.line_term_str_.case_compare(ObDataInFileStruct::DEFAULT_LINE_TERM_STR) &&
                         databuff_printf(buf, buf_len, pos, "\n  LINE_DELIMITER = %.*s,", origin_format.origin_line_term_str_.length(), origin_format.origin_line_term_str_.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print LINE_DELIMITER", K(ret));
-      } else if (OB_FAIL(0 != csv.field_term_str_.case_compare(ObDataInFileStruct::DEFAULT_FIELD_TERM_STR) &&
+      } else if (OB_FAIL(0 != csv.field_term_str_.case_compare(default_field_term_str) &&
                         databuff_printf(buf, buf_len, pos, "\n  FIELD_DELIMITER = %.*s,", origin_format.origin_field_term_str_.length(), origin_format.origin_field_term_str_.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print FIELD_DELIMITER", K(ret));
       } else if (OB_FAIL(default_escaped_char != csv.field_escaped_char_ &&
                         databuff_printf(buf, buf_len, pos, "\n  ESCAPE = %.*s,", origin_format.origin_field_escaped_str_.length(), origin_format.origin_field_escaped_str_.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print ESCAPE", K(ret));
-      } else if (OB_FAIL(ObDataInFileStruct::DEFAULT_FIELD_ENCLOSED_CHAR != csv.field_enclosed_char_ &&
+      } else if (OB_FAIL(default_enclosed_char != csv.field_enclosed_char_ &&
                         databuff_printf(buf, buf_len, pos, "\n  FIELD_OPTIONALLY_ENCLOSED_BY = %.*s,", origin_format.origin_field_enclosed_str_.length(), origin_format.origin_field_enclosed_str_.ptr()))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print FIELD_OPTIONALLY_ENCLOSED_BY", K(ret));
       } else if (OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  ENCODING = '%s',", ObCharset::charset_name(csv.cs_type_)))) {
@@ -188,8 +203,8 @@ int ObSchemaPrinter::print_external_table_file_info(const ObTableSchema &table_s
         OB_FAIL(databuff_printf(buf, buf_len, pos, "\n  BINARY_FORMAT = %.*s,",
                                          static_cast<int>(STRLEN(binary_format)), binary_format))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print binary format", K(ret));
-      } else if (OB_FAIL(!csv.ignore_last_empty_col_ &&
-                        databuff_printf(buf, buf_len, pos, "\n  IGNORE_LAST_EMPTY_COLUMN = FALSE,"))) {
+      } else if (OB_FAIL(csv.ignore_last_empty_col_ &&
+                        databuff_printf(buf, buf_len, pos, "\n  IGNORE_LAST_EMPTY_COLUMN = TRUE,"))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print IGNORE_LAST_EMPTY_COLUMN", K(ret));
       } else if (OB_FAIL(csv.parallel_parse_on_single_file_ && databuff_printf(buf, buf_len, pos, "\n  PARALLEL_PARSE_ON_SINGLE_FILE = TRUE,"))) {
         SHARE_SCHEMA_LOG(WARN, "fail to print PARALLEL_PARSE_ON_SINGLE_FILE", K(ret));

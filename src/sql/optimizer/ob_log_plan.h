@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOG_PLAN_H
@@ -336,6 +329,9 @@ public:
 
   int generate_raw_plan();
 
+  int need_regenerate_plan_for_nested_sql(bool &need_retry);
+  int check_all_table_scans_use_das(ObLogicalOperator *op, bool &has_non_das_normal_table);
+
   virtual int generate_plan();
 
   int do_post_plan_processing();
@@ -514,7 +510,8 @@ public:
                                             const ObDMLStmt *stmt,
                                             ObJoinType join_type,
                                             ObRawExpr  &expr,
-                                            common::ObIArray<common::ObObj> &popular_values) const;
+                                            common::ObIArray<common::ObObj> &popular_values,
+                                            double &popular_values_ratio) const;
   int get_source_table_info(ObLogicalOperator &child_op,
                                uint64_t source_table_id,
                                ObShardingInfo *&sharding_info,
@@ -1393,9 +1390,9 @@ public:
   int check_contains_recursive_cte(ObIArray<ObLogicalOperator*> &child_ops,
                                    bool &is_recursive_cte);
 
-  int init_subplan_filter_child_ops(const ObIArray<ObLogicalOperator*> &subquery_ops,
-                                    const ObIArray<std::pair<int64_t, ObRawExpr*>> &params,
-                                    ObIArray<ObLogicalOperator*> &dist_subquery_ops);
+  int check_if_subplan_filter_match_bc2host(ObLogicalOperator *top,
+                                            const ObIArray<ObLogicalOperator*> &subquery_ops,
+                                            bool &is_bc2host_none);
 
   int check_if_subplan_filter_match_partition_wise(ObLogicalOperator *top,
                                                    const ObIArray<ObLogicalOperator*> &subquery_ops,
@@ -1446,6 +1443,9 @@ public:
                                      const ObIArray<ObAliasRefRawExpr *> *project_refs = NULL);
 
   int allocate_subplan_filter_for_on_condition(ObIArray<ObRawExpr*> &subquery_exprs, ObLogicalOperator* &top);
+
+  bool is_simple_rescan_subquery(const ObDMLStmt *stmt) const;
+
 
   int partial_limit_pushdown(ObLogicalOperator *&top,
                              const int64_t limit_count,
@@ -1577,6 +1577,8 @@ public:
   {
     return pushdown_filters_;
   }
+  inline void set_for_update_suppressed(bool v) { for_update_view_ctx_.suppressed_ = v; }
+  inline bool is_for_update_suppressed() const { return for_update_view_ctx_.suppressed_; }
 
   int init_onetime_subquery_info();
 
@@ -1635,7 +1637,7 @@ public:
   int allocate_output_expr_for_values_op(ObLogicalOperator &values_op);
 
   inline ObRawExprCopier *get_onetime_copier() { return onetime_copier_; }
-
+  inline ObRawExprReplacer *get_onetime_replacer() { return &onetime_replacer_; }
   int get_rowkey_exprs(const uint64_t table_id,
                        const uint64_t ref_table_id,
                        ObIArray<ObRawExpr*> &keys);
@@ -2010,6 +2012,8 @@ private: // member functions
                                              int64_t &proxy_stat);
 
   int set_connect_by_property(JoinPath *join_path, ObLogJoin &log_join);
+  int get_table_for_update_info_from_view(const TableItem *view_table,
+                                          IndexDMLInfo *&index_dml_info);
   static int calc_intersect_servers(const ObIArray<ObCandiTableLoc*> &phy_tbl_loc_info_list,
                                     ObList<ObAddr, ObArenaAllocator> &candidate_server_list);
   int calc_and_set_exec_pwj_map(ObLocationConstraintContext &location_constraint) const;
@@ -2024,7 +2028,8 @@ private: // member functions
                                   ObOptColumnStatHandle &handle) const;
   int get_popular_values_hash(common::ObIAllocator &allocator,
                               ObOptColumnStatHandle &handle,
-                              common::ObIArray<ObObj> &popular_values) const;
+                              common::ObIArray<ObObj> &popular_values,
+                              double &popular_values_ratio) const;
   int adjust_expr_properties_for_external_table(ObRawExpr *col_expr, ObRawExpr *&expr) const;
 
   int compute_duplicate_table_replicas(ObLogicalOperator *op);
@@ -2060,6 +2065,7 @@ public:
   static bool check_multivalue_index_in_node(const ObIndexMergeNode *node);
   // Helper function to find hybrid search table scan in plan tree
   static int find_hybrid_search_table_scan(ObLogicalOperator *op, ObLogTableScan *&out_tsc);
+  inline int64_t generate_slave_mapping_id() { return optimizer_context_.generate_slave_mapping_id(); }
 private:
   static const int64_t IDP_PATHNUM_THRESHOLD = 5000;
 protected: // member variable
@@ -2205,6 +2211,62 @@ private:
   // 为select into分配了range shuffle后, 在分配select into算子时不应再分配exchange算子
   bool has_allocated_range_shuffle_;
   bool need_accurate_cardinality_;
+
+  // Carries the plan-local state needed by `FOR UPDATE` to lock a base table through a view.
+  // e.g. `select * from (select /*+no_merge*/ * from t1) v where rownum <= 1 FOR UPDATE;`
+  // The core problem: the outer query sees only view columns,
+  // but the lock needs the base table's rowkey (and part exprs if exists).
+  // This class bridges that gap by
+  // (1) map rowkey columns and part exprs of the base table to the view columns,
+  //     and build an IndexDMLInfo for generating a `FOR UPDATE` op upon the outer stmt
+  // (2) suppressed_ prevents the inner subplan from also generating a FOR_UPDATE op.
+  class ForUpdateViewCtx {
+  public:
+    explicit ForUpdateViewCtx(common::ObIAllocator &alloc)
+        : suppressed_(false), pulled_part_exprs_(alloc)
+    {}
+
+    static int find_lock_target(const ObSelectStmt *view_stmt,
+                                const TableItem *&lock_table);
+    int build_rowkey_index_columns(const ObSelectStmt *select_stmt,
+                                   const TableItem *view_table,
+                                   const TableItem *lock_table,
+                                   const share::schema::ObTableSchema &table_schema,
+                                   IndexDMLInfo *index_dml_info);
+    int build_pulled_part_expr(ObRawExprFactory &expr_factory,
+                               const ObSelectStmt *select_stmt,
+                               const ObSelectStmt *view_stmt,
+                               const TableItem *view_table,
+                               const TableItem *lock_table,
+                               const share::schema::ObTableSchema &table_schema,
+                               IndexDMLInfo *index_dml_info);
+    bool find_pulled_part_expr(int64_t table_id,
+                               int64_t ref_table_id,
+                               share::schema::ObPartitionLevel &level,
+                               ObRawExpr *&part_expr,
+                               ObRawExpr *&subpart_expr) const;
+
+    bool suppressed_;  // do not allocate FOR_UPDATE op for this plan if true
+
+  private:
+    static int get_view_column_for_base(const ObSelectStmt *select_stmt,
+                                        const TableItem *view_table,
+                                        const TableItem *lock_table,
+                                        uint64_t column_id,
+                                        ObColumnRefRawExpr *&column_expr);
+
+    struct PulledPartExpr {
+      int64_t table_id_;
+      int64_t ref_table_id_;
+      share::schema::ObPartitionLevel part_level_;
+      ObRawExpr *part_expr_;
+      ObRawExpr *subpart_expr_;
+      TO_STRING_KV(K_(table_id), K_(ref_table_id), K_(part_level), KPC_(part_expr), KPC_(subpart_expr));
+    };
+    ObSqlArray<PulledPartExpr> pulled_part_exprs_;
+  };
+  ForUpdateViewCtx for_update_view_ctx_;
+
   DISALLOW_COPY_AND_ASSIGN(ObLogPlan);
 };
 

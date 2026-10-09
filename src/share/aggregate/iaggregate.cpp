@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -75,6 +68,8 @@ extern int init_var_samp_aggregate(RuntimeContext &agg_ctx, const int64_t agg_co
                                    ObIAllocator &allocator, IAggregate *&agg);
 extern int init_stddev_samp_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
                                    ObIAllocator &allocator, IAggregate *&agg);
+extern int init_window_funnel_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
+                                        ObIAllocator &allocator, IAggregate *&agg);
 extern int init_wm_concat_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
                                     ObIAllocator &allocator, IAggregate *&agg);
 extern int init_string_prefix_max_aggregate(RuntimeContext &agg_ctx, const int64_t agg_col_id,
@@ -133,6 +128,7 @@ int init_aggregates(RuntimeContext &agg_ctx, ObIAllocator &allocator,
         INIT_AGGREGATE_CASE(T_FUN_ARG_MAX, arg_max, i);
         INIT_AGGREGATE_CASE(T_FUN_VAR_SAMP, var_samp, i);
         INIT_AGGREGATE_CASE(T_FUN_STDDEV_SAMP, stddev_samp, i);
+        INIT_AGGREGATE_CASE(T_FUN_WINDOW_FUNNEL, window_funnel, i);
         INIT_AGGREGATE_CASE(T_FUN_GROUP_ID, grouping, i);
         INIT_AGGREGATE_CASE(T_FUN_WM_CONCAT, wm_concat, i);
         INIT_AGGREGATE_CASE(T_FUN_KEEP_WM_CONCAT, wm_concat, i);
@@ -140,6 +136,8 @@ int init_aggregates(RuntimeContext &agg_ctx, ObIAllocator &allocator,
         INIT_AGGREGATE_CASE(T_FUN_ANY, any, i);
         INIT_AGGREGATE_CASE(T_FUN_ARBITRARY, any, i);
         INIT_AGGREGATE_CASE(T_FUN_SYS_COUNT_INROW, count, i);
+        INIT_AGGREGATE_CASE(T_FUN_SYS_EXT_MIN, min, i);
+        INIT_AGGREGATE_CASE(T_FUN_SYS_EXT_MAX, max, i);
       default: {
         ret = OB_NOT_SUPPORTED;
         SQL_LOG(WARN, "not supported aggregate function", K(ret), K(aggr_info.expr_->type_));
@@ -164,6 +162,7 @@ int init_aggregates(RuntimeContext &agg_ctx, ObIAllocator &allocator,
 
 #define RTSIZE(vec_tc) sizeof(RTCType<vec_tc>)
 const int64_t constexpr string_reserved_size = sizeof(char *) + sizeof(int32_t); // <char *, len>
+const int64_t constexpr ptr_reserved_size = sizeof(void *);
 static const int32_t reserved_sizes[] = {
   0,                                    // NULL
   RTSIZE(VEC_TC_INTEGER),               // integer
@@ -254,6 +253,8 @@ static int32_t agg_cell_tmp_res_size(RuntimeContext &agg_ctx, int64_t agg_col_id
     case T_FUN_ARBITRARY:
     case T_FUN_INNER_PREFIX_MIN:
     case T_FUN_INNER_PREFIX_MAX:
+    case T_FUN_SYS_EXT_MIN:
+    case T_FUN_SYS_EXT_MAX:
     case T_FUN_MIN:
     case T_FUN_MAX: {
       VecValueTypeClass vec_tc = info.expr_->get_vec_value_tc();
@@ -291,6 +292,11 @@ static int32_t agg_cell_tmp_res_size(RuntimeContext &agg_ctx, int64_t agg_col_id
     case T_FUN_ARG_MAX:
     case T_FUN_ARG_MIN: {
       ret_size = arg_minmax_agg_tmp_size(info);
+      break;
+    }
+    case T_FUN_WINDOW_FUNNEL: {
+      ret_size = 2 * ptr_reserved_size;
+      break;
     }
     case T_FUN_VAR_SAMP:
     case T_FUN_STDDEV_SAMP: {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -540,7 +533,7 @@ int build_white_filter(
     // build white_filter_executor
     pd_filter_node.op_type_ = op_type;
 
-    if (OB_ISNULL(white_filter = OB_NEWx(ObSemiStructWhiteFilterExecutor, &allocator, allocator, pd_filter_node, pd_operator))) {
+    if (OB_ISNULL(white_filter = OB_NEWx(ObSemiStructWhiteFilterExecutor, &allocator, allocator, pd_filter_node, &pd_operator))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("fail to allocate white filter", KR(ret));
     } else if (OB_FAIL(white_filter->init_bitmap(row_cnt, res_bitmap))) {

@@ -1424,7 +1424,6 @@ constexpr int OB_USER_OUTOF_DATA_DISK_SPACE = -6330;
 constexpr int OB_ARB_DEGRADE = -6331;
 constexpr int OB_OBJ_LOCK_WRONG_WORKER = -6332;
 constexpr int OB_ERR_TEMP_TABLE_BUSY = -6333;
-constexpr int OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING = -6334;
 constexpr int OB_ELECTION_WARN_LOGBUF_FULL = -7000;
 constexpr int OB_ELECTION_WARN_LOGBUF_EMPTY = -7001;
 constexpr int OB_ELECTION_WARN_NOT_RUNNING = -7002;
@@ -1523,6 +1522,8 @@ constexpr int OB_ERR_COMPARE_VARRAY_LOB_ATTR = -7432;
 constexpr int OB_ERR_XML_PARENT_ALREADY_CONTAINS_CHILD = -7433;
 constexpr int OB_ERR_CONVERSION_OF_UNIT = -7434;
 constexpr int OB_ERR_PARAM_OUT_OF_RANGE = -7435;
+constexpr int OB_ERR_XML_WRONG_DOCUMENT = -7436;
+constexpr int OB_ERR_XML_VALUE_TOO_LARGE_FOR_TYPE = -7437;
 constexpr int OB_ERR_BAD_VEC_INDEX_COLUMN = -7601;
 constexpr int OB_ERR_VSAG_MEM_LIMIT_EXCEEDED = -7603;
 constexpr int OB_ERR_VSAG_RETURN_ERROR = -7604;
@@ -1622,6 +1623,9 @@ constexpr int OB_LS_ARCHIVE_MAX_SCN_LESS_THAN_CHECKPOINT = -9154;
 constexpr int OB_BACKUP_WAIT_SS_LS_CONSISTENCY_TIMEOUT = -9157;
 constexpr int OB_OBJECT_STORAGE_INVALID_OBJECT_TYPE = -9158;
 constexpr int OB_BACKUP_SET_NOT_FOUND = -9159;
+constexpr int OB_INC_MAJOR_COUNT_REACH_LIMIT = -9160;
+constexpr int OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED = -9161;
+constexpr int OB_BACKUP_NOT_FIND_ANY_SET_OR_PIECE = -9162;
 constexpr int OB_ERR_RESIZE_FILE_TO_SMALLER = -9200;
 constexpr int OB_MARK_BLOCK_INFO_TIMEOUT = -9201;
 constexpr int OB_NOT_READY_TO_EXTEND_FILE = -9202;
@@ -1959,6 +1963,13 @@ constexpr int OB_ERR_MVIEW_CAN_NOT_USE_DIRECT_LOAD = -9835;
 constexpr int OB_ERR_FORALL_BULK_INDEX_IN_INTO_CLAUSE = -9836;
 constexpr int OB_ERR_FORALL_INVLIAD_IN_BIND_VARIABLE = -9837;
 constexpr int OB_ERR_BULK_SQL_ATTRS_NOT_SINGLE_INDEX = -9838;
+constexpr int OB_ERR_JAVA_SESSION_STATE_CHANGED = -9839;
+constexpr int OB_ERR_OBJECT_HAS_TYPE_OR_TABLE_DEPENDENT = -9840;
+constexpr int OB_ERR_PL_DOM_HANDLE_INVALID = -9841;
+constexpr int OB_ERR_PL_PARSER_HANDLE_INVALID = -9842;
+constexpr int OB_ERR_MISSING_EXPRESSION = -9843;
+constexpr int OB_ERR_MISSING_RIGHT_PARENTHESIS = -9844;
+constexpr int OB_ERR_INVALID_RELATIONAL_OPERATOR = -9845;
 constexpr int OB_ERR_KV_GLOBAL_INDEX_ROUTE = -10500;
 constexpr int OB_TTL_NOT_ENABLE = -10501;
 constexpr int OB_TTL_COLUMN_NOT_EXIST = -10502;
@@ -2079,6 +2090,10 @@ constexpr int OB_ERR_INVALID_PRIVILEGE_ON_SENSITIVE_RULES = -11127;
 constexpr int OB_AP_QUERY_NEED_RETRY = -11128;
 constexpr int OB_KAFKA_ERROR = -11129;
 constexpr int OB_KAFKA_NEED_RETRY = -11130;
+constexpr int OB_ERR_INVALID_USERENV_PARAMETER = -11131;
+constexpr int OB_SRF_NOT_ALLOWED = -11132;
+constexpr int OB_AI_REMOTE_SERVICE_ERROR = -11133;
+constexpr int OB_NOT_SUPPORTED_FOR_PARALLEL_DDL = -11134;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR = -20000;
 constexpr int OB_SP_RAISE_APPLICATION_ERROR_NUM = -21000;
 constexpr int OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN = -22998;
@@ -2462,7 +2477,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_INVALID_ZERO_DATE__USER_ERROR_MSG "invalid zero date in no_zero_date mode"
 #define OB_LS_NOT_IN_LEARNER_LIST__USER_ERROR_MSG "ls not in learner list"
 #define OB_MEMORY_LEAK__USER_ERROR_MSG "observer has memory leak"
-#define OB_OUT_OF_MAX_EXECUTION_TIME__USER_ERROR_MSG "Query execution was interrupted, maximum statement execution time exceeded. maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
+#define OB_OUT_OF_MAX_EXECUTION_TIME__USER_ERROR_MSG "Query execution was interrupted, maximum statement execution time exceeded, maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
 #define OB_ERR_MAX_EXECUTION_TIME_TRUNCATED__USER_ERROR_MSG "Max execution time is truncated to the range [0, 4294967295]"
 #define OB_NON_RO_SELECT_DISABLE_TIMER__USER_ERROR_MSG "Select is not a read only statement, disabling timer"
 #define OB_IMPORT_NOT_IN_SERVER__USER_ERROR_MSG "Import not in service"
@@ -2840,7 +2855,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_FIELD_TYPE_NOT_ALLOWED_AS_PARTITION_FIELD__USER_ERROR_MSG "Field \'%.*s\' is of a not allowed type for this type of partitioning"
 #define OB_ERR_TOO_LONG_IDENT__USER_ERROR_MSG "Identifier name \'%.*s\' is too long"
 #define OB_ERR_WRONG_TYPE_FOR_VAR__USER_ERROR_MSG "Incorrect argument type to variable '%.*s'"
-#define OB_WRONG_USER_NAME_LENGTH__USER_ERROR_MSG "String '%.*s' is too long for user name (should be no longer than 64)"
+#define OB_WRONG_USER_NAME_LENGTH__USER_ERROR_MSG "String '%.*s' is too long for user name (should be no longer than %ld)"
 #define OB_ERR_PRIV_USAGE__USER_ERROR_MSG "Incorrect usage of DB GRANT and GLOBAL PRIVILEGES"
 #define OB_ILLEGAL_GRANT_FOR_TABLE__USER_ERROR_MSG "Illegal GRANT/REVOKE command; please consult the manual to see which privileges can be used"
 #define OB_ERR_REACH_AUTOINC_MAX__USER_ERROR_MSG "Failed to read auto-increment value from storage engine"
@@ -3018,7 +3033,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_DUPLICATED_UNIQUE_KEY__USER_ERROR_MSG "Duplicate entry \'%s\' for key \'%.*s\'"
 #define OB_DOUBLE_OVERFLOW__USER_ERROR_MSG "result Double value is out of range"
 #define OB_ERR_NO_SYS_PRIVILEGE__USER_ERROR_MSG "insufficient privileges"
-#define OB_ERR_NO_LOGIN_PRIVILEGE__USER_ERROR_MSG "user %.*s lacks CREATE SESSION privilege; logon denied"
+#define OB_ERR_NO_LOGIN_PRIVILEGE__USER_ERROR_MSG "user %.*s lacks %.*s privilege; logon denied"
 #define OB_ERR_CANNOT_REVOKE_PRIVILEGES_YOU_DID_NOT_GRANT__USER_ERROR_MSG "No such grant defined"
 #define OB_ERR_SYSTEM_PRIVILEGES_NOT_GRANTED_TO__USER_ERROR_MSG "system privileges not granted to '%.*s'"
 #define OB_ERR_ONLY_SELECT_AND_ALTER_PRIVILEGES_ARE_VALID_FOR_SEQUENCES__USER_ERROR_MSG "only SELECT and ALTER privileges are valid for sequences"
@@ -3750,7 +3765,6 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ARB_DEGRADE__USER_ERROR_MSG "logstream has been degraded due to error"
 #define OB_OBJ_LOCK_WRONG_WORKER__USER_ERROR_MSG "object lock worker thread wrong"
 #define OB_ERR_TEMP_TABLE_BUSY__USER_ERROR_MSG "attempt to access a transactional temp table already in use"
-#define OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING__USER_ERROR_MSG "mvcc write callback freeze clock order descending"
 #define OB_ELECTION_WARN_LOGBUF_FULL__USER_ERROR_MSG "The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_EMPTY__USER_ERROR_MSG "The log buffer is empty"
 #define OB_ELECTION_WARN_NOT_RUNNING__USER_ERROR_MSG "The object is not running"
@@ -3948,6 +3962,8 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_XML_PARENT_ALREADY_CONTAINS_CHILD__USER_ERROR_MSG "Parent %.*s already contains child entry %s%.*s"
 #define OB_ERR_CONVERSION_OF_UNIT__USER_ERROR_MSG "conversion error between the specified unit and standard unit"
 #define OB_ERR_PARAM_OUT_OF_RANGE__USER_ERROR_MSG "value is out of range"
+#define OB_ERR_XML_WRONG_DOCUMENT__USER_ERROR_MSG "A node is used in a different document than the one that created it"
+#define OB_ERR_XML_VALUE_TOO_LARGE_FOR_TYPE__USER_ERROR_MSG "attribute or element value is larger than specified in type"
 #define OB_ERR_INVALID_VECTOR_DIM__USER_ERROR_MSG "inconsistent dimension: expected %u got %u"
 #define OB_ERR_BAD_VEC_INDEX_COLUMN__USER_ERROR_MSG "Column '%.*s' cannot be part of VECTOR index"
 #define OB_ERR_ARRAY_TYPE_MISMATCH__USER_ERROR_MSG "array type mismatch found between definition(%.*s) and data(%.*s)"
@@ -3965,7 +3981,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_INIT_MD5_ERROR__USER_ERROR_MSG "Init MD5 fail"
 #define OB_OUT_OF_ELEMENT__USER_ERROR_MSG "Out of element"
 #define OB_UPDATE_MD5_ERROR__USER_ERROR_MSG "Update MD5 fail"
-#define OB_FILE_LENGTH_INVALID__USER_ERROR_MSG "Invalid OSS file length"
+#define OB_FILE_LENGTH_INVALID__USER_ERROR_MSG "Invalid file length"
 #define OB_NOT_READ_ALL_DATA__USER_ERROR_MSG "Read all data fail"
 #define OB_BUILD_MD5_ERROR__USER_ERROR_MSG "Build MD5 fail"
 #define OB_MD5_NOT_MATCH__USER_ERROR_MSG "OSS file MD5 not match"
@@ -4113,6 +4129,9 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_BACKUP_WAIT_SS_LS_CONSISTENCY_TIMEOUT__USER_ERROR_MSG "backup wait shared storage ls consistency timeout"
 #define OB_OBJECT_STORAGE_INVALID_OBJECT_TYPE__USER_ERROR_MSG "the object type is invalid"
 #define OB_BACKUP_SET_NOT_FOUND__USER_ERROR_MSG "available data backup set is not found"
+#define OB_INC_MAJOR_COUNT_REACH_LIMIT__USER_ERROR_MSG "number of inc major has reached limit"
+#define OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED__USER_ERROR_MSG "backup failed because sslog table size exceeded the threshold while garbage collection was disabled during backup. Please retry backup later after sslog table space is reclaimed"
+#define OB_BACKUP_NOT_FIND_ANY_SET_OR_PIECE__USER_ERROR_MSG "can not find any backup set or archive piece"
 #define OB_ERR_RESIZE_FILE_TO_SMALLER__USER_ERROR_MSG "Extend ssblock file to smaller is not allowed"
 #define OB_MARK_BLOCK_INFO_TIMEOUT__USER_ERROR_MSG "Mark blocks timeout(5s) in auto extend process when alloc block fail"
 #define OB_NOT_READY_TO_EXTEND_FILE__USER_ERROR_MSG "Auto extend param is not ready to start extending file"
@@ -4453,6 +4472,13 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_FORALL_BULK_INDEX_IN_INTO_CLAUSE__USER_ERROR_MSG "FORALL bulk index cannot be used in INTO clause"
 #define OB_ERR_FORALL_INVLIAD_IN_BIND_VARIABLE__USER_ERROR_MSG "FORALL bulk IN-bind variables cannot be used here"
 #define OB_ERR_BULK_SQL_ATTRS_NOT_SINGLE_INDEX__USER_ERROR_MSG "bulk SQL attributes must use a single index"
+#define OB_ERR_JAVA_SESSION_STATE_CHANGED__USER_ERROR_MSG "class %.*s has changed, Java session state cleared"
+#define OB_ERR_OBJECT_HAS_TYPE_OR_TABLE_DEPENDENT__USER_ERROR_MSG "cannot change object with type or table dependents"
+#define OB_ERR_PL_DOM_HANDLE_INVALID__USER_ERROR_MSG "PL/SQL DOM handle accesses node that is no longer available"
+#define OB_ERR_PL_PARSER_HANDLE_INVALID__USER_ERROR_MSG "invalid PL/SQL XML parser handle"
+#define OB_ERR_MISSING_EXPRESSION__USER_ERROR_MSG "missing expression"
+#define OB_ERR_MISSING_RIGHT_PARENTHESIS__USER_ERROR_MSG "missing right parenthesis"
+#define OB_ERR_INVALID_RELATIONAL_OPERATOR__USER_ERROR_MSG "invalid relational operator"
 #define OB_ERR_KV_GLOBAL_INDEX_ROUTE__USER_ERROR_MSG "incorrect route for obkv global index, client router should refresh."
 #define OB_TTL_NOT_ENABLE__USER_ERROR_MSG "TTL feature is not enabled"
 #define OB_TTL_COLUMN_NOT_EXIST__USER_ERROR_MSG "TTL column '%.*s' not exists"
@@ -4610,6 +4636,28 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_AP_QUERY_NEED_RETRY__USER_ERROR_MSG "AP query will retry with column replica"
 #define OB_KAFKA_ERROR__USER_ERROR_MSG "kafka server throw error: ErrorMsg=%s"
 #define OB_KAFKA_NEED_RETRY__USER_ERROR_MSG "retry with kafka error"
+#define OB_ERR_INVALID_USERENV_PARAMETER__USER_ERROR_MSG "invalid USERENV parameter"
+#define OB_SRF_NOT_ALLOWED__USER_ERROR_MSG "set-returning functions '%.*s' usage are not allowed"
+#define OB_AI_REMOTE_SERVICE_ERROR__USER_ERROR_MSG "AI REMOTE SERVICE ERROR: %.*s"
+#define OB_NOT_SUPPORTED_FOR_PARALLEL_DDL__USER_ERROR_MSG "Operation not supported in parallel DDL path"
+#define OB_CDC_STREAM_ALREADY_EXISTS__USER_ERROR_MSG "CDC stream '%.*s' already exists"
+#define OB_CDC_STREAM_NOT_FOUND__USER_ERROR_MSG "CDC stream '%.*s' not found"
+#define OB_CDC_STREAM_STATE_NOT_MATCH__USER_ERROR_MSG "CDC stream '%.*s' state not match"
+#define OB_CDC_STREAM_INVALID_ARGUMENT__USER_ERROR_MSG "Invalid CDC stream argument: %.*s"
+#define OB_CDC_CLIENT_CHANNEL_OCCUPIED__USER_ERROR_MSG "CDC channel conflict on stream %ld channel %d (owned by client %ld)"
+#define OB_CDC_CLIENT_PARAM_MISMATCH__USER_ERROR_MSG "CDC client '%.*s' already registered with different stream/channels"
+#define OB_CDC_CLIENT_CHANNEL_OUT_OF_RANGE__USER_ERROR_MSG "CDC channel %d out of range [0, %d) for stream %ld"
+#define OB_CDC_CLIENT_NOT_ACTIVE__USER_ERROR_MSG "CDC client %ld is not in Active state"
+#define OB_CDC_CHANNEL_INVALID__USER_ERROR_MSG "CDC channel %d not in client %ld channel_list"
+#define OB_CDC_INVALID_ARGUMENT__USER_ERROR_MSG "Invalid CDC ACK argument: %.*s"
+#define OB_CDC_METADB_UNAVAILABLE__USER_ERROR_MSG "CDC MetaDB write failed for stream %ld"
+#define OB_CDC_NO_ACTIVE_ONLINE_SERVER__USER_ERROR_MSG "CDC no active online server available for stream resume"
+#define OB_CDC_TOKEN_VERSION_NOT_MATCH__USER_ERROR_MSG "CDC connection rejected due to token version conflict"
+#define OB_CDC_FLOW_CONTROL__USER_ERROR_MSG "CDC flow control triggered"
+#define OB_CDC_EPOCH_MISMATCH__USER_ERROR_MSG "CDC epoch mismatch"
+#define OB_CDC_SEQ_GAP__USER_ERROR_MSG "CDC non-contiguous sequence gap"
+#define OB_CDC_STREAM_RUNTIME_FAILED__USER_ERROR_MSG "CDC stream runtime FAILED, rebalance dispatch retry budget exhausted"
+#define OB_CDC_NOT_LEADER__USER_ERROR_MSG "CDC server is not leader, current leader: %s:%d"
 #define OB_SP_RAISE_APPLICATION_ERROR__USER_ERROR_MSG "%.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__USER_ERROR_MSG "error number argument to raise_application_error of '%d' is out of range"
 #define OB_CLOB_ONLY_SUPPORT_WITH_MULTIBYTE_FUN__USER_ERROR_MSG "CLOB or NCLOB in multibyte character set not supported"
@@ -5365,8 +5413,8 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_LS_NOT_IN_LEARNER_LIST__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -4410, ls not in learner list"
 #define OB_MEMORY_LEAK__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -4411, observer has memory leak"
 #define OB_MEMORY_LEAK__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -4411, observer has memory leak"
-#define OB_OUT_OF_MAX_EXECUTION_TIME__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -4412, Query execution was interrupted, maximum statement execution time exceeded. maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
-#define OB_OUT_OF_MAX_EXECUTION_TIME__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -4412, Query execution was interrupted, maximum statement execution time exceeded. maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
+#define OB_OUT_OF_MAX_EXECUTION_TIME__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -4412, Query execution was interrupted, maximum statement execution time exceeded, maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
+#define OB_OUT_OF_MAX_EXECUTION_TIME__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -4412, Query execution was interrupted, maximum statement execution time exceeded, maybe you can adjust the session variable max_execution_time or max_execution_time hint, and try again"
 #define OB_ERR_MAX_EXECUTION_TIME_TRUNCATED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -4413, Max execution time is truncated to the range [0, 4294967295]"
 #define OB_ERR_MAX_EXECUTION_TIME_TRUNCATED__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -4413, Max execution time is truncated to the range [0, 4294967295]"
 #define OB_NON_RO_SELECT_DISABLE_TIMER__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -4414, Select is not a read only statement, disabling timer"
@@ -6121,8 +6169,8 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_TOO_LONG_IDENT__OBE_USER_ERROR_MSG "OBE-00972: identifier \'%.*s\' is too long"
 #define OB_ERR_WRONG_TYPE_FOR_VAR__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5180, Incorrect argument type to variable '%.*s'"
 #define OB_ERR_WRONG_TYPE_FOR_VAR__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -5180, Incorrect argument type to variable '%.*s'"
-#define OB_WRONG_USER_NAME_LENGTH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5181, String '%.*s' is too long for user name (should be no longer than 64)"
-#define OB_WRONG_USER_NAME_LENGTH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -5181, String '%.*s' is too long for user name (should be no longer than 64)"
+#define OB_WRONG_USER_NAME_LENGTH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5181, String '%.*s' is too long for user name (should be no longer than %ld)"
+#define OB_WRONG_USER_NAME_LENGTH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -5181, String '%.*s' is too long for user name (should be no longer than %ld)"
 #define OB_ERR_PRIV_USAGE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5182, Incorrect usage of DB GRANT and GLOBAL PRIVILEGES"
 #define OB_ERR_PRIV_USAGE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -5182, Incorrect usage of DB GRANT and GLOBAL PRIVILEGES"
 #define OB_ILLEGAL_GRANT_FOR_TABLE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -5183, Illegal GRANT/REVOKE command; please consult the manual to see which privileges can be used"
@@ -6477,8 +6525,8 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_DOUBLE_OVERFLOW__OBE_USER_ERROR_MSG "OBE-01426: Double value overflow"
 #define OB_ERR_NO_SYS_PRIVILEGE__ORA_USER_ERROR_MSG "ORA-01031: insufficient privileges"
 #define OB_ERR_NO_SYS_PRIVILEGE__OBE_USER_ERROR_MSG "OBE-01031: insufficient privileges"
-#define OB_ERR_NO_LOGIN_PRIVILEGE__ORA_USER_ERROR_MSG "ORA-01045: user %.*s lacks CREATE SESSION privilege; logon denied"
-#define OB_ERR_NO_LOGIN_PRIVILEGE__OBE_USER_ERROR_MSG "OBE-01045: user %.*s lacks CREATE SESSION privilege; logon denied"
+#define OB_ERR_NO_LOGIN_PRIVILEGE__ORA_USER_ERROR_MSG "ORA-01045: user %.*s lacks %.*s privilege; logon denied"
+#define OB_ERR_NO_LOGIN_PRIVILEGE__OBE_USER_ERROR_MSG "OBE-01045: user %.*s lacks %.*s privilege; logon denied"
 #define OB_ERR_CANNOT_REVOKE_PRIVILEGES_YOU_DID_NOT_GRANT__ORA_USER_ERROR_MSG "ORA-01927: cannot REVOKE privileges you did not grant"
 #define OB_ERR_CANNOT_REVOKE_PRIVILEGES_YOU_DID_NOT_GRANT__OBE_USER_ERROR_MSG "OBE-01927: cannot REVOKE privileges you did not grant"
 #define OB_ERR_SYSTEM_PRIVILEGES_NOT_GRANTED_TO__ORA_USER_ERROR_MSG "ORA-01952: system privileges not granted to '%.*s'"
@@ -7941,8 +7989,6 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_OBJ_LOCK_WRONG_WORKER__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -6332, object lock worker thread wrong"
 #define OB_ERR_TEMP_TABLE_BUSY__ORA_USER_ERROR_MSG "ORA-14450: attempt to access a transactional temp table already in use"
 #define OB_ERR_TEMP_TABLE_BUSY__OBE_USER_ERROR_MSG "OBE-14450: attempt to access a transactional temp table already in use"
-#define OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -6334, mvcc write callback freeze clock order descending"
-#define OB_MVCC_WRITE_CALLBACK_FREEZE_CLOCK_ORDER_DESCENDING__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -6334, mvcc write callback freeze clock order descending"
 #define OB_ELECTION_WARN_LOGBUF_FULL__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -7000, The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_FULL__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -7000, The log buffer is full"
 #define OB_ELECTION_WARN_LOGBUF_EMPTY__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -7001, The log buffer is empty"
@@ -8337,6 +8383,10 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_CONVERSION_OF_UNIT__OBE_USER_ERROR_MSG "OBE-13291: conversion error between the specified unit and standard unit"
 #define OB_ERR_PARAM_OUT_OF_RANGE__ORA_USER_ERROR_MSG "ORA-13011: value is out of range"
 #define OB_ERR_PARAM_OUT_OF_RANGE__OBE_USER_ERROR_MSG "OBE-13011: value is out of range"
+#define OB_ERR_XML_WRONG_DOCUMENT__ORA_USER_ERROR_MSG "ORA-31013: A node is used in a different document than the one that created it"
+#define OB_ERR_XML_WRONG_DOCUMENT__OBE_USER_ERROR_MSG "OBE-31013: A node is used in a different document than the one that created it"
+#define OB_ERR_XML_VALUE_TOO_LARGE_FOR_TYPE__ORA_USER_ERROR_MSG "ORA-22814: attribute or element value is larger than specified in type"
+#define OB_ERR_XML_VALUE_TOO_LARGE_FOR_TYPE__OBE_USER_ERROR_MSG "OBE-22814: attribute or element value is larger than specified in type"
 #define OB_ERR_INVALID_VECTOR_DIM__ORA_USER_ERROR_MSG "ORA-00932: inconsistent dimension: expected %u got %u"
 #define OB_ERR_INVALID_VECTOR_DIM__OBE_USER_ERROR_MSG "OBE-00932: inconsistent dimension: expected %u got %u"
 #define OB_ERR_BAD_VEC_INDEX_COLUMN__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -7601, Column '%.*s' cannot be part of VECTOR index"
@@ -8371,8 +8421,8 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_OUT_OF_ELEMENT__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9005, Out of element"
 #define OB_UPDATE_MD5_ERROR__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9006, Update MD5 fail"
 #define OB_UPDATE_MD5_ERROR__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9006, Update MD5 fail"
-#define OB_FILE_LENGTH_INVALID__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9007, Invalid OSS file length"
-#define OB_FILE_LENGTH_INVALID__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9007, Invalid OSS file length"
+#define OB_FILE_LENGTH_INVALID__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9007, Invalid file length"
+#define OB_FILE_LENGTH_INVALID__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9007, Invalid file length"
 #define OB_NOT_READ_ALL_DATA__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9008, Read all data fail"
 #define OB_NOT_READ_ALL_DATA__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9008, Read all data fail"
 #define OB_BUILD_MD5_ERROR__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9009, Build MD5 fail"
@@ -8667,6 +8717,12 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_OBJECT_STORAGE_INVALID_OBJECT_TYPE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9158, the object type is invalid"
 #define OB_BACKUP_SET_NOT_FOUND__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9159, available data backup set is not found"
 #define OB_BACKUP_SET_NOT_FOUND__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9159, available data backup set is not found"
+#define OB_INC_MAJOR_COUNT_REACH_LIMIT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9160, number of inc major has reached limit"
+#define OB_INC_MAJOR_COUNT_REACH_LIMIT__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9160, number of inc major has reached limit"
+#define OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9161, backup failed because sslog table size exceeded the threshold while garbage collection was disabled during backup. Please retry backup later after sslog table space is reclaimed"
+#define OB_BACKUP_SSLOG_TABLE_SIZE_EXCEEDED__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9161, backup failed because sslog table size exceeded the threshold while garbage collection was disabled during backup. Please retry backup later after sslog table space is reclaimed"
+#define OB_BACKUP_NOT_FIND_ANY_SET_OR_PIECE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9162, can not find any backup set or archive piece"
+#define OB_BACKUP_NOT_FIND_ANY_SET_OR_PIECE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9162, can not find any backup set or archive piece"
 #define OB_ERR_RESIZE_FILE_TO_SMALLER__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9200, Extend ssblock file to smaller is not allowed"
 #define OB_ERR_RESIZE_FILE_TO_SMALLER__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -9200, Extend ssblock file to smaller is not allowed"
 #define OB_MARK_BLOCK_INFO_TIMEOUT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -9201, Mark blocks timeout(5s) in auto extend process when alloc block fail"
@@ -9347,6 +9403,20 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_FORALL_INVLIAD_IN_BIND_VARIABLE__OBE_USER_ERROR_MSG "PLS-00440: FORALL bulk IN-bind variables cannot be used here"
 #define OB_ERR_BULK_SQL_ATTRS_NOT_SINGLE_INDEX__ORA_USER_ERROR_MSG "PLS-00431: bulk SQL attributes must use a single index"
 #define OB_ERR_BULK_SQL_ATTRS_NOT_SINGLE_INDEX__OBE_USER_ERROR_MSG "PLS-00431: bulk SQL attributes must use a single index"
+#define OB_ERR_JAVA_SESSION_STATE_CHANGED__ORA_USER_ERROR_MSG "ORA-29549: class %.*s has changed, Java session state cleared"
+#define OB_ERR_JAVA_SESSION_STATE_CHANGED__OBE_USER_ERROR_MSG "OBE-29549: class %.*s has changed, Java session state cleared"
+#define OB_ERR_OBJECT_HAS_TYPE_OR_TABLE_DEPENDENT__ORA_USER_ERROR_MSG "ORA-22933: cannot change object with type or table dependents"
+#define OB_ERR_OBJECT_HAS_TYPE_OR_TABLE_DEPENDENT__OBE_USER_ERROR_MSG "OBE-22933: cannot change object with type or table dependents"
+#define OB_ERR_PL_DOM_HANDLE_INVALID__ORA_USER_ERROR_MSG "ORA-31181: PL/SQL DOM handle accesses node that is no longer available"
+#define OB_ERR_PL_DOM_HANDLE_INVALID__OBE_USER_ERROR_MSG "OBE-31181: PL/SQL DOM handle accesses node that is no longer available"
+#define OB_ERR_PL_PARSER_HANDLE_INVALID__ORA_USER_ERROR_MSG "ORA-64500: invalid PL/SQL XML parser handle"
+#define OB_ERR_PL_PARSER_HANDLE_INVALID__OBE_USER_ERROR_MSG "OBE-64500: invalid PL/SQL XML parser handle"
+#define OB_ERR_MISSING_EXPRESSION__ORA_USER_ERROR_MSG "ORA-00936: missing expression"
+#define OB_ERR_MISSING_EXPRESSION__OBE_USER_ERROR_MSG "OBE-00936: missing expression"
+#define OB_ERR_MISSING_RIGHT_PARENTHESIS__ORA_USER_ERROR_MSG "ORA-00907: missing right parenthesis"
+#define OB_ERR_MISSING_RIGHT_PARENTHESIS__OBE_USER_ERROR_MSG "OBE-00907: missing right parenthesis"
+#define OB_ERR_INVALID_RELATIONAL_OPERATOR__ORA_USER_ERROR_MSG "ORA-00920: invalid relational operator"
+#define OB_ERR_INVALID_RELATIONAL_OPERATOR__OBE_USER_ERROR_MSG "OBE-00920: invalid relational operator"
 #define OB_ERR_KV_GLOBAL_INDEX_ROUTE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -10500, incorrect route for obkv global index, client router should refresh."
 #define OB_ERR_KV_GLOBAL_INDEX_ROUTE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -10500, incorrect route for obkv global index, client router should refresh."
 #define OB_TTL_NOT_ENABLE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -10501, TTL feature is not enabled"
@@ -9661,6 +9731,50 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_KAFKA_ERROR__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11129, kafka server throw error: ErrorMsg=%s"
 #define OB_KAFKA_NEED_RETRY__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11130, retry with kafka error"
 #define OB_KAFKA_NEED_RETRY__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11130, retry with kafka error"
+#define OB_ERR_INVALID_USERENV_PARAMETER__ORA_USER_ERROR_MSG "ORA-02003: invalid USERENV parameter"
+#define OB_ERR_INVALID_USERENV_PARAMETER__OBE_USER_ERROR_MSG "OBE-02003: invalid USERENV parameter"
+#define OB_SRF_NOT_ALLOWED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11132, set-returning functions '%.*s' usage are not allowed"
+#define OB_SRF_NOT_ALLOWED__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11132, set-returning functions '%.*s' usage are not allowed"
+#define OB_AI_REMOTE_SERVICE_ERROR__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11133, AI REMOTE SERVICE ERROR: %.*s"
+#define OB_AI_REMOTE_SERVICE_ERROR__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11133, AI REMOTE SERVICE ERROR: %.*s"
+#define OB_NOT_SUPPORTED_FOR_PARALLEL_DDL__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -11134, Operation not supported in parallel DDL path"
+#define OB_NOT_SUPPORTED_FOR_PARALLEL_DDL__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -11134, Operation not supported in parallel DDL path"
+#define OB_CDC_STREAM_ALREADY_EXISTS__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12000, CDC stream '%.*s' already exists"
+#define OB_CDC_STREAM_ALREADY_EXISTS__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12000, CDC stream '%.*s' already exists"
+#define OB_CDC_STREAM_NOT_FOUND__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12001, CDC stream '%.*s' not found"
+#define OB_CDC_STREAM_NOT_FOUND__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12001, CDC stream '%.*s' not found"
+#define OB_CDC_STREAM_STATE_NOT_MATCH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12002, CDC stream '%.*s' state not match"
+#define OB_CDC_STREAM_STATE_NOT_MATCH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12002, CDC stream '%.*s' state not match"
+#define OB_CDC_STREAM_INVALID_ARGUMENT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12003, Invalid CDC stream argument: %.*s"
+#define OB_CDC_STREAM_INVALID_ARGUMENT__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12003, Invalid CDC stream argument: %.*s"
+#define OB_CDC_CLIENT_CHANNEL_OCCUPIED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12004, CDC channel conflict on stream %ld channel %d (owned by client %ld)"
+#define OB_CDC_CLIENT_CHANNEL_OCCUPIED__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12004, CDC channel conflict on stream %ld channel %d (owned by client %ld)"
+#define OB_CDC_CLIENT_PARAM_MISMATCH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12005, CDC client '%.*s' already registered with different stream/channels"
+#define OB_CDC_CLIENT_PARAM_MISMATCH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12005, CDC client '%.*s' already registered with different stream/channels"
+#define OB_CDC_CLIENT_CHANNEL_OUT_OF_RANGE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12006, CDC channel %d out of range [0, %d) for stream %ld"
+#define OB_CDC_CLIENT_CHANNEL_OUT_OF_RANGE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12006, CDC channel %d out of range [0, %d) for stream %ld"
+#define OB_CDC_CLIENT_NOT_ACTIVE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12007, CDC client %ld is not in Active state"
+#define OB_CDC_CLIENT_NOT_ACTIVE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12007, CDC client %ld is not in Active state"
+#define OB_CDC_CHANNEL_INVALID__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12008, CDC channel %d not in client %ld channel_list"
+#define OB_CDC_CHANNEL_INVALID__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12008, CDC channel %d not in client %ld channel_list"
+#define OB_CDC_INVALID_ARGUMENT__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12009, Invalid CDC ACK argument: %.*s"
+#define OB_CDC_INVALID_ARGUMENT__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12009, Invalid CDC ACK argument: %.*s"
+#define OB_CDC_METADB_UNAVAILABLE__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12010, CDC MetaDB write failed for stream %ld"
+#define OB_CDC_METADB_UNAVAILABLE__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12010, CDC MetaDB write failed for stream %ld"
+#define OB_CDC_NO_ACTIVE_ONLINE_SERVER__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12011, CDC no active online server available for stream resume"
+#define OB_CDC_NO_ACTIVE_ONLINE_SERVER__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12011, CDC no active online server available for stream resume"
+#define OB_CDC_TOKEN_VERSION_NOT_MATCH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12012, CDC connection rejected due to token version conflict"
+#define OB_CDC_TOKEN_VERSION_NOT_MATCH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12012, CDC connection rejected due to token version conflict"
+#define OB_CDC_FLOW_CONTROL__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12013, CDC flow control triggered"
+#define OB_CDC_FLOW_CONTROL__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12013, CDC flow control triggered"
+#define OB_CDC_EPOCH_MISMATCH__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12014, CDC epoch mismatch"
+#define OB_CDC_EPOCH_MISMATCH__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12014, CDC epoch mismatch"
+#define OB_CDC_SEQ_GAP__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12015, CDC non-contiguous sequence gap"
+#define OB_CDC_SEQ_GAP__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12015, CDC non-contiguous sequence gap"
+#define OB_CDC_STREAM_RUNTIME_FAILED__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12016, CDC stream runtime FAILED, rebalance dispatch retry budget exhausted"
+#define OB_CDC_STREAM_RUNTIME_FAILED__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12016, CDC stream runtime FAILED, rebalance dispatch retry budget exhausted"
+#define OB_CDC_NOT_LEADER__ORA_USER_ERROR_MSG "ORA-00600: internal error code, arguments: -12017, CDC server is not leader, current leader: %s:%d"
+#define OB_CDC_NOT_LEADER__OBE_USER_ERROR_MSG "OBE-00600: internal error code, arguments: -12017, CDC server is not leader, current leader: %s:%d"
 #define OB_SP_RAISE_APPLICATION_ERROR__ORA_USER_ERROR_MSG "ORA%06ld: %.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR__OBE_USER_ERROR_MSG "ORA%06ld: %.*s"
 #define OB_SP_RAISE_APPLICATION_ERROR_NUM__ORA_USER_ERROR_MSG "ORA-21000: error number argument to raise_application_error of '%d' is out of range"
@@ -9680,7 +9794,7 @@ constexpr int OB_ERR_INVALID_DATE_MSG_FMT_V2 = -4219;
 #define OB_ERR_INVALID_DATE_MSG_FMT_V2__ORA_USER_ERROR_MSG "ORA-01861: Incorrect datetime value for column '%.*s' at row %ld"
 #define OB_ERR_INVALID_DATE_MSG_FMT_V2__OBE_USER_ERROR_MSG "OBE-01861: Incorrect datetime value for column '%.*s' at row %ld"
 
-extern int g_all_ob_errnos[2527];
+extern int g_all_ob_errnos[2560];
 
   const char *ob_error_name(const int oberr);
   const char* ob_error_cause(const int oberr);

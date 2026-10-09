@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_MICRO_BLOCK_ROW_LOCK_CHECKER_H_
@@ -61,7 +54,7 @@ protected:
       ObStoreRowLockState& lock_state,
       bool &need_stop);
   virtual void check_row_in_major_sstable(bool &need_stop);
-  int check_mds_filter(const int64_t current, const int64_t trans_version, const bool is_ghost_row, bool &fitered);
+  int check_mds_filter(const int64_t current, const int64_t trans_version, const bool is_ghost_row, const bool is_lock_row, bool &fitered);
   inline void check_base_version(const int64_t trans_version, bool &is_filtered);
 protected:
   bool check_exist_;

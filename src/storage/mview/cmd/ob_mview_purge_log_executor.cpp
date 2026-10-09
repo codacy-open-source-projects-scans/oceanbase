@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -54,13 +47,8 @@ int ObMViewPurgeLogExecutor::execute(ObExecContext &ctx, const ObMViewPurgeLogAr
     purge_param.tenant_id_ = tenant_id_;
     purge_param.master_table_id_ = master_table_id_;
     purge_param.purge_log_parallel_ = arg.purge_log_parallel_;
-    bool purge_data_by_sql = true;
-    if (OB_NOT_NULL(session_info_->get_job_info())) {
-      // backend job, use ttl to purge mlog
-      purge_data_by_sql = false;
-    }
-    if (OB_FAIL(purger.init(ctx, purge_param, purge_data_by_sql))) {
-      LOG_WARN("fail to init mlog purger", KR(ret), K(purge_param), K(purge_data_by_sql));
+    if (OB_FAIL(purger.init(ctx, purge_param))) {
+      LOG_WARN("fail to init mlog purger", KR(ret), K(purge_param));
     } else if (OB_FAIL(purger.purge())) {
       LOG_WARN("fail to do purge", KR(ret), K(purge_param));
     }

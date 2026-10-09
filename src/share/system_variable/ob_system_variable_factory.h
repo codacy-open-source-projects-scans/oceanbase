@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SYSTEM_VARIABLE_OB_SYSTEM_VARIABLE_FACTORY_
@@ -471,7 +464,7 @@ public:
 class ObSysVarMaxExecutionTime : public ObIntSysVar
 {
 public:
-  ObSysVarMaxExecutionTime() : ObIntSysVar(NULL, NULL, NULL, NULL, NULL) {}
+  ObSysVarMaxExecutionTime() : ObIntSysVar(ObSysVarOnCheckFuncs::check_and_convert_max_execution_time, NULL, NULL, NULL, NULL) {}
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_MAX_EXECUTION_TIME; }
   inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(63); }
 };
@@ -6113,12 +6106,19 @@ public:
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_OB_ENABLE_PL_ASYNC_COMMIT; }
   inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(843); }
 };
+class ObSysVarJsonFloatFullPrecision : public ObBoolSysVar
+{
+public:
+  ObSysVarJsonFloatFullPrecision() : ObBoolSysVar(NULL, NULL, NULL, NULL, NULL) {}
+  inline virtual ObSysVarClassType get_type() const { return SYS_VAR_JSON_FLOAT_FULL_PRECISION; }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(844); }
+};
 class ObSysVarCachingSha2PasswordDigestRounds : public ObIntSysVar
 {
 public:
   ObSysVarCachingSha2PasswordDigestRounds() : ObIntSysVar(ObSysVarOnCheckFuncs::check_and_convert_caching_sha2_password_digest_rounds, NULL, NULL, NULL, NULL) {}
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_CACHING_SHA2_PASSWORD_DIGEST_ROUNDS; }
-  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(844); }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(845); }
 };
 class ObSysVarApQueryRoutePolicy : public ObEnumSysVar
 {
@@ -6127,21 +6127,35 @@ public:
 public:
   ObSysVarApQueryRoutePolicy() : ObEnumSysVar(AP_QUERY_ROUTE_POLICY_NAMES, NULL, NULL, NULL, NULL, NULL) {}
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_AP_QUERY_ROUTE_POLICY; }
-  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(845); }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(846); }
 };
 class ObSysVarApQueryCostThreshold : public ObIntSysVar
 {
 public:
   ObSysVarApQueryCostThreshold() : ObIntSysVar(NULL, NULL, NULL, NULL, NULL) {}
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_AP_QUERY_COST_THRESHOLD; }
-  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(846); }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(847); }
 };
 class ObSysVarApQueryReplicaFallback : public ObBoolSysVar
 {
 public:
   ObSysVarApQueryReplicaFallback() : ObBoolSysVar(NULL, NULL, NULL, NULL, NULL) {}
   inline virtual ObSysVarClassType get_type() const { return SYS_VAR_AP_QUERY_REPLICA_FALLBACK; }
-  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(847); }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(848); }
+};
+class ObSysVarObUdfCostFactor : public ObIntSysVar
+{
+public:
+  ObSysVarObUdfCostFactor() : ObIntSysVar(NULL, NULL, NULL, NULL, NULL) {}
+  inline virtual ObSysVarClassType get_type() const { return SYS_VAR_OB_UDF_COST_FACTOR; }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(849); }
+};
+class ObSysVarObUdfSelectivity : public ObNumericSysVar
+{
+public:
+  ObSysVarObUdfSelectivity() : ObNumericSysVar(NULL, NULL, NULL, NULL, NULL) {}
+  inline virtual ObSysVarClassType get_type() const { return SYS_VAR_OB_UDF_SELECTIVITY; }
+  inline virtual const common::ObObj &get_global_default_value() const { return ObSysVariables::get_default_value(850); }
 };
 
 
@@ -6166,7 +6180,7 @@ private:
 
 public:
   const static int64_t MYSQL_SYS_VARS_COUNT = 99;
-  const static int64_t OB_SYS_VARS_COUNT = 749;
+  const static int64_t OB_SYS_VARS_COUNT = 752;
   const static int64_t OB_SYS_DEFAULT_VALUE_CHANGED_SERIALIZED_VAR_COUNT = 10;
   const static int64_t ALL_SYS_VARS_COUNT = MYSQL_SYS_VARS_COUNT + OB_SYS_VARS_COUNT;
   const static int64_t INVALID_MAX_READ_STALE_TIME = -1;

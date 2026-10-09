@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -16,6 +9,7 @@
 #include "sql/das/iter/ob_das_vec_scan_utils.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "share/vector_index/ob_plugin_vector_index_utils.h"
+#include "sql/das/iter/ob_das_profile_iter.h"
 
 namespace oceanbase
 {
@@ -80,6 +74,32 @@ int ObDASVecIndexHNSWScanIter::inner_init(ObDASIterParam &param)
   return ret;
 }
 
+int ObDASVecIndexHNSWScanIter::do_table_scan()
+{
+  int ret = OB_SUCCESS;
+  common::ObOpProfile<common::ObMetric> *my_profile = nullptr;
+  if (OB_FAIL(ObDASProfileIter::init_runtime_profile(
+          common::ObProfileId::HYBRID_SEARCH_VEC_HNSW_SCAN, my_profile))) {
+    LOG_WARN("failed to init runtime profile for hnsw scan", KR(ret));
+  } else {
+    profile_ = my_profile;
+  }
+  return ret;
+}
+
+int ObDASVecIndexHNSWScanIter::rescan()
+{
+  int ret = OB_SUCCESS;
+  common::ObOpProfile<common::ObMetric> *my_profile = nullptr;
+  if (OB_FAIL(ObDASProfileIter::init_runtime_profile(
+          common::ObProfileId::HYBRID_SEARCH_VEC_HNSW_SCAN, my_profile))) {
+    LOG_WARN("failed to init runtime profile for hnsw scan", KR(ret));
+  } else {
+    profile_ = my_profile;
+  }
+  return ret;
+}
+
 int ObDASVecIndexHNSWScanIter::init_sort()
 {
   int ret = OB_SUCCESS;
@@ -104,6 +124,7 @@ int ObDASVecIndexHNSWScanIter::inner_reuse()
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
+  profile_ = nullptr;
 
   if (!com_aux_vec_iter_first_scan_ && OB_FAIL(reuse_com_aux_vec_iter())) {
     LOG_WARN("failed to reuse com aux vec iter", K(ret));
@@ -117,7 +138,6 @@ int ObDASVecIndexHNSWScanIter::inner_reuse()
   }
 
   query_cond_ = nullptr;
-  only_complete_data_ = false;
   first_post_filter_search_ = true;
 
   // memory reset
@@ -143,6 +163,7 @@ int ObDASVecIndexHNSWScanIter::inner_release()
 {
   int ret = OB_SUCCESS;
   int tmp_ret = OB_SUCCESS;
+  profile_ = nullptr;
 
   if (OB_NOT_NULL(delta_buf_iter_) && OB_FAIL(delta_buf_iter_->release())) {
     LOG_WARN("failed to release delta buf iter", K(ret));
@@ -234,6 +255,7 @@ void ObDASVecIndexHNSWScanIter::reset_adaptor_vid_iter_for_next_iteration()
 int ObDASVecIndexHNSWScanIter::inner_get_next_rows(int64_t &count, int64_t capacity)
 {
   int ret = OB_SUCCESS;
+  common::ObProfileSwitcher switcher(profile_);
 
   reset_adaptor_vid_iter_for_next_iteration();
   if (OB_FAIL(process_adaptor_state(true))) {
@@ -304,7 +326,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force(
                         ObVectorQueryAdaptorResultContext *ada_ctx,
                         ObPluginVectorIndexAdaptor* adaptor,
                         int64_t *&brute_vids,
-                        int& brute_cnt,
+                        int64_t& brute_cnt,
                         bool& need_complete_data,
                         bool check_need_complete_data)
 {
@@ -325,7 +347,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_
                         ObVectorQueryAdaptorResultContext *ada_ctx,
                         ObPluginVectorIndexAdaptor* adaptor,
                         int64_t *&brute_vids,
-                        int& brute_cnt,
+                        int64_t& brute_cnt,
                         bool& need_complete_data,
                         bool check_need_complete_data)
 {
@@ -335,10 +357,10 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_
   ObVecIdxQueryResult dist_result;
 
   uint64_t limit = limit_;
-  uint64_t capaticy = limit > brute_cnt ? brute_cnt : limit;
+  const uint64_t capacity = (brute_cnt <= 0) ? 0 : min(limit, static_cast<uint64_t>(brute_cnt));
   ObArenaAllocator &allocator = mem_context_->get_arena_allocator();
-  ObSimpleMaxHeap max_heap(&allocator, capaticy);
-  if (capaticy == 0) {
+  ObSimpleMaxHeap max_heap(&allocator, capacity);
+  if (capacity == 0) {
     ret = OB_ITER_END;
   } else if (OB_ISNULL(adaptor)) {
     ret = OB_BAD_NULL_ERROR;
@@ -356,7 +378,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_
   } else if (dist_result.distances_.count() == 1) {
     const float* distances = dist_result.distances_.at(0);
     ObVectorIndexSegmentHandle &segment = dist_result.segments_.at(0);
-    for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
+    for (int64_t i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
       double distance = distances[i];
       if (distance != -1 && distance <= distance_threshold_) {
         max_heap.push(brute_vids[i], distance, segment.get());
@@ -366,7 +388,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_not_
     }
   } else {
     const int64_t segment_cnt = dist_result.segments_.count();
-    for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
+    for (int64_t i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
       double distance = -1;
       int64_t k = 0;
       for (; k < segment_cnt && (distance = dist_result.distances_.at(k)[i]) == -1; ++k);
@@ -455,6 +477,7 @@ int ObDASVecIndexHNSWScanIter::init_brute_force_params(ObVectorQueryAdaptorResul
   } else {
     ctx.limit = get_reorder_count_for_brute_force(query_cond_->ef_search_, limit_, search_param_);
     ctx.search_vec = query_cond_->query_vector_;
+    SET_METRIC_VAL(common::ObMetricId::HS_VEC_HNSW_BQ_REORDER_LIMIT, ctx.limit);
   }
 
   return ret;
@@ -463,7 +486,7 @@ int ObDASVecIndexHNSWScanIter::init_brute_force_params(ObVectorQueryAdaptorResul
 int ObDASVecIndexHNSWScanIter::query_brute_force_distances(ObPluginVectorIndexAdaptor* adaptor,
                                                   const ObString& search_vec,
                                                   int64_t* brute_vids,
-                                                  int brute_cnt,
+                                                  int64_t brute_cnt,
                                                   ObVecIdxQueryResult& dist_result)
 {
   INIT_SUCC(ret);
@@ -472,7 +495,8 @@ int ObDASVecIndexHNSWScanIter::query_brute_force_distances(ObPluginVectorIndexAd
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments", K(ret), KP(adaptor), KP(brute_vids), K(brute_cnt));
   } else {
-    dist_result.brute_cnt = brute_cnt;
+    dist_result.brute_cnt = static_cast<int>(brute_cnt);
+    common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_VSAG_QUERY_TIME);
     if (OB_FAIL(adaptor->vsag_query_vids(reinterpret_cast<float *>(const_cast<char*>(search_vec.ptr())),
                                          brute_vids, brute_cnt, dist_result, search_vec.length()))) {
       LOG_WARN("failed to brute force query", K(ret), K(brute_cnt));
@@ -484,7 +508,7 @@ int ObDASVecIndexHNSWScanIter::query_brute_force_distances(ObPluginVectorIndexAd
 
 int ObDASVecIndexHNSWScanIter::merge_and_sort_brute_force_results_bq(const ObVecIdxQueryResult& dist_result,
                                                             int64_t* brute_vids,
-                                                            int brute_cnt,
+                                                            int64_t brute_cnt,
                                                             ObSimpleMaxHeap& snap_heap,
                                                             ObSimpleMaxHeap& incr_heap,
                                                             bool& need_complete_data,
@@ -500,7 +524,7 @@ int ObDASVecIndexHNSWScanIter::merge_and_sort_brute_force_results_bq(const ObVec
       need_complete_data = check_need_complete_data ? true : false;
     } else {
       const int64_t segment_cnt = dist_result.segments_.count();
-      for (int i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
+      for (int64_t i = 0; i < brute_cnt && OB_SUCC(ret) && !need_complete_data; ++i) {
         double distance = -1;
         int64_t k = 0;
         for (; k < segment_cnt && (distance = dist_result.distances_.at(k)[i]) == -1; ++k);
@@ -541,6 +565,7 @@ int ObDASVecIndexHNSWScanIter::build_brute_force_result_iterator_bq(ObPluginVect
     uint64_t snap_size = snap_heap.get_size();
     uint64_t incr_size = incr_heap.get_size();
     uint64_t total_size = snap_size + incr_size;
+    SET_METRIC_VAL(common::ObMetricId::HS_VEC_HNSW_BQ_REORDER_HEAP_SIZE, total_size);
 
     if (total_size == 0) {
       ret = OB_ITER_END;
@@ -625,7 +650,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_bq(
                         ObVectorQueryAdaptorResultContext *ada_ctx,
                         ObPluginVectorIndexAdaptor* adaptor,
                         int64_t *&brute_vids,
-                        int& brute_cnt,
+                        int64_t& brute_cnt,
                         bool& need_complete_data,
                         bool check_need_complete_data)
 {
@@ -635,7 +660,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter_brute_force_bq(
   if (OB_FAIL(init_brute_force_params(ada_ctx, adaptor, ctx))) {
     LOG_WARN("failed to init brute force params", K(ret));
   } else {
-    uint64_t capacity = ctx.limit > brute_cnt ? brute_cnt : ctx.limit;
+    const uint64_t capacity = (brute_cnt <= 0) ? 0 : min(ctx.limit, static_cast<uint64_t>(brute_cnt));
     if (capacity == 0) {
       ret = OB_ITER_END;
     } else {
@@ -675,7 +700,7 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter(
 
   if (go_brute_force_ && bitmap_->type_ == ObVecIndexBitmap::VIDS) {
     int64_t *brute_vids = bitmap_->get_vids();
-    int brute_cnt = bitmap_->get_valid_cnt();
+    int64_t brute_cnt = bitmap_->get_valid_cnt();
 
     bool need_complete_data = false;
     if (OB_FAIL(process_adaptor_state_pre_filter_brute_force(ada_ctx, adaptor, brute_vids, brute_cnt, need_complete_data, true))) {
@@ -710,9 +735,13 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_pre_filter(
         query_cond_->query_scn_ = snapshot_scan_param_.snapshot_.core_.version_;
         query_cond_->scan_param_ = &snapshot_scan_param_;
       }
-
-      if (FAILEDx(adaptor->query_result(ls_id_, ada_ctx, query_cond_, adaptor_vid_iter_))) {
-        LOG_WARN("failed to query result.", K(ret));
+      {
+        common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_VSAG_QUERY_TIME);
+        if (FAILEDx(adaptor->query_result(ls_id_, ada_ctx, query_cond_, adaptor_vid_iter_))) {
+          LOG_WARN("failed to query result.", K(ret));
+        }
+      }
+      if (OB_FAIL(ret)) {
       } else if (PVQ_REFRESH == ada_ctx->get_status()) {
         if (OB_FAIL(ObPluginVectorIndexUtils::query_need_refresh_memdata(adaptor, ls_id_, ada_ctx->get_ls_leader()))) {
           if (ret != OB_SCHEMA_EAGAIN) {
@@ -735,7 +764,11 @@ int ObDASVecIndexHNSWScanIter::init_pre_filter(ObVectorQueryAdaptorResultContext
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("bitmap is null", K(ret));
   } else if (bitmap_->type_ == ObVecIndexBitmap::VIDS) {
-    if (OB_FAIL(bitmap_->upgrade_to_byte_array())) {
+    if (bitmap_->min_vid_ < bitmap_->min_vid_bound_ || bitmap_->max_vid_ > bitmap_->max_vid_bound_) {
+      if (OB_FAIL(bitmap_->upgrade_to_roaring_bitmap())) {
+        LOG_WARN("failed to upgrade to roaring bitmap", K(ret));
+      }
+    } else if (OB_FAIL(bitmap_->upgrade_to_byte_array())) {
       LOG_WARN("failed to upgrade to byte array", K(ret));
     }
   }
@@ -747,7 +780,10 @@ int ObDASVecIndexHNSWScanIter::init_pre_filter(ObVectorQueryAdaptorResultContext
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("bitmap_ is null", K(ret));
     } else {
-      uint64_t capacity = (bitmap_->max_vid_bound_ - bitmap_->min_vid_bound_ + 7) / 8 * 8;
+      const uint64_t vid_range = static_cast<uint64_t>(bitmap_->max_vid_bound_)
+                               - static_cast<uint64_t>(bitmap_->min_vid_bound_) + 1;
+      const uint64_t bitmap_size = (vid_range + 7) / 8;
+      const uint64_t capacity = bitmap_size * 8;
       if (OB_FAIL(ada_ctx->init_prefilter(bitmap_->bitmap_, bitmap_->min_vid_bound_, bitmap_->max_vid_bound_, capacity, bitmap_->valid_cnt_))) {
         LOG_WARN("init prefilter with byte array bitmap failed", K(ret));
       }
@@ -777,7 +813,11 @@ int ObDASVecIndexHNSWScanIter::process_adaptor_state_post_filter(
   int64_t iter_scan_total_num = 0;
   if (first_post_filter_search_ && OB_FAIL(process_adaptor_state_post_filter_once(ada_ctx, adaptor))) {
     LOG_WARN("failed to process adaptor state post filter once.", K(ret), K(vec_index_type_), K(vec_idx_try_path_));
-  } else if (!first_post_filter_search_ && OB_FAIL(adaptor->query_next_result(ada_ctx, query_cond_, adaptor_vid_iter_))) {
+  } else if (!first_post_filter_search_) {
+    common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_VSAG_QUERY_TIME);
+    if (OB_FAIL(adaptor->query_next_result(ada_ctx, query_cond_, adaptor_vid_iter_))) {
+      LOG_WARN("failed to query next result.", K(ret));
+    }
   } else if (first_post_filter_search_ && OB_FALSE_IT(first_post_filter_search_ = false)) {
   }
   return ret;
@@ -877,6 +917,7 @@ int ObDASVecIndexHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cu
   int ret = OB_SUCCESS;
   switch(cur_state) {
     case ObVidAdaLookupStatus::STATES_INIT: {
+      common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_DELTA_BUF_TABLE_SCAN_TIME);
       ObNewRowIterator *real_delta_buf_iter = delta_buf_iter_->get_output_result_iter();
       if (OB_FAIL(adaptor.check_delta_buffer_table_readnext_status(&ada_ctx, real_delta_buf_iter, delta_buf_scan_param_.snapshot_.core_.version_))) {
         LOG_WARN("failed to check delta buffer table readnext status.", K(ret));
@@ -884,12 +925,15 @@ int ObDASVecIndexHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cu
       break;
     }
     case ObVidAdaLookupStatus::QUERY_ROWKEY_VEC: {
+      INC_METRIC_VAL(common::ObMetricId::HS_VEC_HNSW_COMP_DELTA_COUNT, 1);
+      common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_COMP_DELTA_TIME);
       if (OB_FAIL(adaptor.complete_delta_buffer_table_data(&ada_ctx))) {
         LOG_WARN("failed to complete delta buffer table data.", K(ret));
       }
       break;
     }
     case ObVidAdaLookupStatus::QUERY_INDEX_ID_TBL: {
+      common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_INDEX_ID_TABLE_SCAN_TIME);
       ObNewRowIterator *real_index_id_iter = index_id_iter_->get_output_result_iter();
       if (!index_id_scan_param_.snapshot_.is_valid() || !index_id_scan_param_.snapshot_.core_.version_.is_valid()) {
         ret = OB_ERR_UNEXPECTED;
@@ -900,6 +944,7 @@ int ObDASVecIndexHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cu
       break;
     }
     case ObVidAdaLookupStatus::QUERY_SNAPSHOT_TBL: {
+      common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_SNAPSHOT_TABLE_SCAN_TIME);
       if (OB_FAIL(adaptor.check_snapshot_table_wait_status(&ada_ctx))) {
         LOG_WARN("failed to check snapshot table wait status.", K(ret));
       }
@@ -913,8 +958,11 @@ int ObDASVecIndexHNSWScanIter::call_pva_interface(const ObVidAdaLookupStatus& cu
       }
       if (!ada_ctx.get_ls_leader() && OB_FAIL(prepare_follower_query_cond(*query_cond_))) {
         LOG_WARN("fail to prepare query cond of follower", K(ret));
-      } else if (OB_FAIL(adaptor.query_result(ls_id_, &ada_ctx, query_cond_, adaptor_vid_iter_))) {
-        LOG_WARN("failed to query result.", K(ret));
+      } else {
+        common::ScopedTimer timer(common::ObMetricId::HS_VEC_HNSW_VSAG_QUERY_TIME);
+        if (OB_FAIL(adaptor.query_result(ls_id_, &ada_ctx, query_cond_, adaptor_vid_iter_))) {
+          LOG_WARN("failed to query result.", K(ret));
+        }
       }
       break;
     }

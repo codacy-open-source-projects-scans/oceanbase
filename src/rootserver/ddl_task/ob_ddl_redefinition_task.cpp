@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -20,7 +13,6 @@
 #include "pl/sys_package/ob_dbms_stats.h"
 #include "storage/ob_partition_pre_split.h"
 #include "storage/mview/ob_mview_mds.h"
-#include "storage/mview/ob_mview_refresh_helper.h"
 #include "rootserver/mview/ob_mview_utils.h"
 
 using namespace oceanbase::lib;
@@ -302,9 +294,7 @@ int ObDDLRedefinitionSSTableBuildTask::procress_mview_complete_refresh_(
   const ObTableSchema *mview_table_schema = nullptr;
   ObSqlString sql_string;
   ObCurTraceId::set(trace_id_); // reset trace id again to avoid trace id use 0x10 prefix
-  uint64_t mview_target_data_sync_scn = OB_INVALID_SCN_VAL;
   const uint64_t mview_table_id = mview_refresh_info_.mview_table_id_;
-  const bool nested_consistent_refresh = mview_refresh_info_.mview_target_data_sync_scn_.is_valid();
   if (OB_UNLIKELY(!is_inited_ || OB_ISNULL(GCTX.sql_proxy_))) {
     ret = OB_NOT_INIT;
     LOG_WARN("ddl redefinition sstable build task not inited", K(ret));
@@ -317,20 +307,18 @@ int ObDDLRedefinitionSSTableBuildTask::procress_mview_complete_refresh_(
   } else if (OB_ISNULL(mview_table_schema)) {
     ret = OB_TABLE_NOT_EXIST;
     LOG_WARN("mview table not exist", K(ret), K(tenant_id_), K(mview_refresh_info_));
-  } else if (nested_consistent_refresh &&
-             OB_FALSE_IT(mview_target_data_sync_scn =
-             mview_refresh_info_.mview_target_data_sync_scn_.get_val_for_tx())) {
-  } else if (nested_consistent_refresh &&
-             OB_FAIL(ObMViewRefreshHelper::collect_deps_and_check_satisfy(
-                     tenant_id_, mview_table_id, mview_target_data_sync_scn,
-                     snapshot_version_, *GCTX.sql_proxy_, schema_guard))) {
-      LOG_WARN("fail to check satisfied", K(ret), K(oracle_mode),
-                K(mview_table_id), K(mview_target_data_sync_scn), K(snapshot_version_));
-  } else if (OB_FAIL(ObMViewUtils::generate_mview_complete_refresh_sql(tenant_id_, mview_table_id,
-                      data_table_id_, schema_guard, snapshot_version_, mview_target_data_sync_scn,
-                      execution_id_, task_id_, parallelism_,
-                      true/*use_schema_version_hint_for_src_table*/,
-                      based_schema_object_infos_, mview_refresh_info_.select_sql_, sql_string))) {
+  } else if (OB_FAIL(ObMViewUtils::generate_mview_complete_refresh_sql(tenant_id_,
+                                                                       mview_table_id,
+                                                                       data_table_id_,
+                                                                       schema_guard,
+                                                                       mview_refresh_info_.select_sql_,
+                                                                       execution_id_,
+                                                                       task_id_,
+                                                                       parallelism_,
+                                                                       true /*use_schema_version_hint_for_src_table*/,
+                                                                       mview_refresh_info_.need_gather_stats_info_,
+                                                                       based_schema_object_infos_,
+                                                                       sql_string))) {
     LOG_WARN("fail to generate build mview replica sql", K(ret), K(mview_refresh_info_));
   }
   add_event_info(ret, "ddl redefinition sstable build task generate innersql for mview");
@@ -390,10 +378,8 @@ int ObDDLRedefinitionSSTableBuildTask::procress_mview_complete_refresh_(
       arg.start_ts_ = ObTimeUtil::current_time();
       arg.mview_op_type_ = MVIEW_OP_TYPE::COMPLETE_REFRESH;
       arg.read_snapshot_ = snapshot_version_;
-      if (mview_target_data_sync_scn != OB_INVALID_SCN_VAL &&
-          OB_FAIL(arg.target_data_sync_scn_.convert_for_tx(mview_target_data_sync_scn))) {
-        LOG_WARN("fail to convert to scn", K(ret), K(mview_target_data_sync_scn), K(arg));
-      } else if (OB_FAIL(trans.start(user_sql_proxy, tenant_id_))) {
+      arg.target_data_sync_scn_ = mview_refresh_info_.mview_target_data_sync_scn_;
+      if (OB_FAIL(trans.start(user_sql_proxy, tenant_id_))) {
         LOG_WARN("fail to start trans", K(ret), K(tenant_id_));
       } else if (OB_FAIL(ObMViewMdsOpHelper::register_mview_mds(tenant_id_, arg, trans))) {
         LOG_WARN("register mview mds failed", K(ret), K(tenant_id_), K(arg));
@@ -1324,6 +1310,88 @@ int ObDDLRedefinitionTask::sync_auto_increment_position()
   return ret;
 }
 
+int ObDDLRedefinitionTask::sync_identity_column_sequence_value()
+{
+  int ret = OB_SUCCESS;
+  ObRootService *root_service = GCTX.root_service_;
+  ObSchemaGetterGuard hold_buf_src_tenant_schema_guard;
+  ObSchemaGetterGuard hold_buf_dst_tenant_schema_guard;
+  ObSchemaGetterGuard *src_tenant_schema_guard = nullptr;
+  ObSchemaGetterGuard *dst_tenant_schema_guard = nullptr;
+  const ObTableSchema *data_table_schema = nullptr;
+  const ObTableSchema *dest_table_schema = nullptr;
+  bool is_oracle_mode = false;
+  if (OB_UNLIKELY(!is_inited_)) {
+    ret = OB_NOT_INIT;
+    LOG_WARN("ObDDLRedefinitionTask has not been inited", K(ret));
+  } else if (OB_ISNULL(root_service)) {
+    ret = OB_ERR_SYS;
+    LOG_WARN("root service is nullptr", K(ret));
+  } else if (OB_UNLIKELY(tenant_id_ != dst_tenant_id_)) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("identity column sequence value sync is not supported across tenants", K(ret), K(tenant_id_), K(dst_tenant_id_));
+  } else if (OB_FAIL(ObDDLUtil::get_tenant_schema_guard(tenant_id_, dst_tenant_id_,
+      hold_buf_src_tenant_schema_guard, hold_buf_dst_tenant_schema_guard,
+      src_tenant_schema_guard, dst_tenant_schema_guard))) {
+    LOG_WARN("get tenant schema guard failed", K(ret), K(tenant_id_), K(dst_tenant_id_));
+  } else if (OB_FAIL(src_tenant_schema_guard->get_table_schema(tenant_id_, object_id_, data_table_schema))) {
+    LOG_WARN("get data table schema failed", K(ret), K(tenant_id_), K(object_id_));
+  } else if (OB_ISNULL(data_table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("data_table_schema is NULL", KR(ret), K_(tenant_id), K_(object_id));
+  } else if (OB_FAIL(dst_tenant_schema_guard->get_table_schema(dst_tenant_id_, target_object_id_, dest_table_schema))) {
+    LOG_WARN("get data table schema failed", KR(ret), K(dst_tenant_id_), K(target_object_id_));
+  } else if (OB_ISNULL(dest_table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("data_table_schema is NULL", K(ret), K_(dst_tenant_id), K_(target_object_id));
+  } else if (OB_FAIL(data_table_schema->check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("check_if_oracle_compat_mode failed", K(ret), K(is_oracle_mode));
+  } else if (!is_oracle_mode) {
+    // do nothing
+  } else {
+    ObArray<uint64_t> column_ids;
+    if (OB_FAIL(data_table_schema->get_column_ids(column_ids))) {
+      LOG_WARN("get column ids failed", K(ret), K(object_id_));
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && i < column_ids.count(); ++i) {
+      uint64_t cur_column_id = column_ids.at(i);
+      const ObColumnSchemaV2 *cur_column_schema = data_table_schema->get_column_schema(cur_column_id);
+      const ObColumnSchemaV2 *dst_column_schema = NULL;
+      if (OB_ISNULL(cur_column_schema)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("current column schema is null", K(ret), K(target_object_id_), K(cur_column_id));
+      } else if (cur_column_schema->is_identity_column() &&
+                 nullptr != (dst_column_schema = dest_table_schema->get_column_schema(
+                               cur_column_schema->get_column_name())) &&
+                 dst_column_schema->is_identity_column()) {
+        const int64_t save_timeout_ts = THIS_WORKER.get_timeout_ts();
+        THIS_WORKER.set_timeout_ts(ObTimeUtility::current_time() + max(GCONF.rpc_timeout, 1000 * 1000 * 20L));
+        ObDDLService &ddl_service = root_service->get_ddl_service();
+        ObDDLOperator ddl_operator(ddl_service.get_schema_service(), *GCTX.sql_proxy_);
+        const ObSequenceSchema *src_sequence_schema = NULL;
+        if (OB_FAIL(src_tenant_schema_guard->get_sequence_schema(tenant_id_,
+                                                                 cur_column_schema->get_sequence_id(),
+                                                                 src_sequence_schema))) {
+          LOG_WARN("get sequence schema fail", K(ret), KPC(cur_column_schema));
+        } else if (OB_ISNULL(src_sequence_schema)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("sequence schema is null", K(ret), K(tenant_id_),
+                   K(cur_column_schema->get_sequence_id()), KPC(cur_column_schema));
+        } else if (OB_FAIL(ddl_operator.sync_sequence_value(tenant_id_,
+                                                            cur_column_schema->get_sequence_id(),
+                                                            dst_column_schema->get_sequence_id(),
+                                                            src_sequence_schema->get_sequence_option()))) {
+          LOG_WARN("fail to sync sequence value", K(ret), K(tenant_id_), K(object_id_),
+                   K(target_object_id_), KPC(cur_column_schema), KPC(dst_column_schema),
+                   KPC(src_sequence_schema));
+        }
+        THIS_WORKER.set_timeout_ts(save_timeout_ts);
+      }
+    }
+  }
+  return ret;
+}
+
 int ObDDLRedefinitionTask::modify_autoinc(const ObDDLTaskStatus next_task_status)
 {
   int ret = OB_SUCCESS;
@@ -1687,9 +1755,10 @@ bool ObDDLRedefinitionTask::check_need_sync_stats_history() {
 bool ObDDLRedefinitionTask::check_need_sync_stats() {
   // bugfix:
   // shouldn't sync stats if the ddl task is from load data's direct_load
-  return ObDDLType::DDL_DIRECT_LOAD != task_type_
-      && ObDDLType::DDL_DIRECT_LOAD_INSERT != task_type_
-      && ObDDLType::DDL_MVIEW_COMPLETE_REFRESH != task_type_;
+  return (ObDDLType::DDL_DIRECT_LOAD != task_type_ &&
+          ObDDLType::DDL_DIRECT_LOAD_INSERT != task_type_ &&
+          ObDDLType::DDL_MVIEW_COMPLETE_REFRESH != task_type_) ||
+         direct_load_need_sync_stats_info_;
 }
 
 int ObDDLRedefinitionTask::sync_stats_info()
@@ -2104,14 +2173,27 @@ int ObDDLRedefinitionTask::sync_column_stats_info_accross_tenant(common::ObMySQL
     if (OB_FAIL(ret)) {
     } else if (target_column_stats.empty()) {
       LOG_INFO("column stats are empty, no need to sync", K_(tenant_id), K_(dst_tenant_id), K_(object_id), K_(target_object_id));
-    } else if (OB_FAIL(stat_svr.update_column_stat(dst_tenant_schema_guard,
+    } else {
+      const int64_t BATCH_SIZE = 256;
+      ObSEArray<ObOptColumnStat *, 256> batch_column_stats;
+      for (int64_t i = 0; OB_SUCC(ret) && i < target_column_stats.count(); i++) {
+        if (OB_FAIL(batch_column_stats.push_back(target_column_stats.at(i)))) {
+          LOG_WARN("failed to push back column stat", K(ret));
+        } else if (batch_column_stats.count() >= BATCH_SIZE || i == target_column_stats.count() - 1) {
+          if (OB_FAIL(stat_svr.update_column_stat(dst_tenant_schema_guard,
                                                    dst_tenant_id_,
                                                    allocator,
                                                    trans.get_connection(),
-                                                   target_column_stats,
+                                                   batch_column_stats,
                                                    ObTimeUtility::current_time(),
                                                    false /* need update histogram table */))) {
-      LOG_WARN("failed to update column stats", K(ret), K_(dst_tenant_id), K_(target_object_id));
+            LOG_WARN("failed to update column stats", K(ret), K_(dst_tenant_id), K_(target_object_id),
+                     K(i), K(target_column_stats.count()));
+          } else {
+            batch_column_stats.reuse();
+          }
+        }
+      }
     }
   }
 
@@ -2545,7 +2627,7 @@ int ObDDLRedefinitionTask::check_and_do_sync_tablet_autoinc_seq(ObSchemaGetterGu
     LOG_WARN("error unexpected, table schema must not be nullptr", K(ret), K(target_object_id_));
   } else if (OB_FAIL(table_schema->check_has_fts_index_aux(new_schema_guard, has_fts_index))) {
     LOG_WARN("failed to check has fts index", K(ret), KPC(table_schema));
-  } else if (has_fts_index && table_schema->is_table_with_hidden_pk_column()
+  } else if (has_fts_index && (table_schema->is_table_with_hidden_pk_column() || table_schema->is_random_part())
       && !(DDL_ALTER_PARTITION_BY == task_type_ || DDL_DROP_PRIMARY_KEY == task_type_)
       && OB_FAIL(sync_tablet_autoinc_seq())) {
     LOG_WARN("fail to sync tablet autoinc seq", K(ret));

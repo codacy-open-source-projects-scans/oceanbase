@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -214,7 +207,7 @@ int ObIcebergDeleteBitmapBuilder::OrcDeleteFileReader::open_delete_file(
                                   scan_param->external_file_access_info_, delete_file.file_url_,
                                   ObString::make_empty_string(), file_size,
                                   delete_file.modification_time_);
-  ObExternalFileCacheOptions cache_options(options->enable_page_cache_,
+  ObExternalFileCacheOptions cache_options(options->enable_memory_cache_,
                                             options->enable_disk_cache_);
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(file_access_driver.open(file_info, cache_options))) {
@@ -348,7 +341,7 @@ int ObIcebergDeleteBitmapBuilder::ParquetDeleteFileReader::open_delete_file(
                                     scan_param->external_file_access_info_, delete_file.file_url_,
                                     ObString::make_empty_string(), file_size,
                                     delete_file.modification_time_);
-    ObExternalFileCacheOptions cache_options(options->enable_page_cache_,
+    ObExternalFileCacheOptions cache_options(options->enable_memory_cache_,
                                             options->enable_disk_cache_);
     if (OB_SUCC(ret)) {
       if (options->enable_prebuffer_) {
@@ -494,7 +487,7 @@ int ObIcebergDeleteBitmapBuilder::PuffinDeleteFileReader::open_delete_file(
                                     ObString::make_empty_string(),
                                     delete_file.file_size_,
                                     delete_file.modification_time_);
-    ObExternalFileCacheOptions cache_options(options->enable_page_cache_,
+    ObExternalFileCacheOptions cache_options(options->enable_memory_cache_,
                                              options->enable_disk_cache_);
 
     if (OB_FAIL(file_access_driver.open(file_info, cache_options))) {

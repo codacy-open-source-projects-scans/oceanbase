@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SRC_SHARE_SCHEMA_OB_UDT_INFO_H_
@@ -418,7 +411,7 @@ public:
   int transform_to_pl_type(common::ObIAllocator &allocator,
                            ObSchemaGetterGuard &schema_guard,
                            const pl::ObUserDefinedType *&pl_type) const;
-  int transform_to_pl_type(const ObUDTTypeAttr* attr_info, pl::ObPLDataType &pl_type) const;
+  int transform_to_pl_type(const ObUDTTypeAttr* attr_info, ObSchemaGetterGuard &schema_guard, pl::ObPLDataType &pl_type) const;
   int transform_to_pl_type(const ObUDTCollectionType *coll_info, pl::ObPLDataType &pl_type) const;
 
   //getter

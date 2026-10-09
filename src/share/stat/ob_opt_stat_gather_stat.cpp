@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -86,7 +79,10 @@ ObOptStatGatherStat::ObOptStatGatherStat() :
   stat_refresh_failed_list_(),
   properties_(),
   table_gather_progress_(),
-  consecutive_failed_count_(0)
+  consecutive_failed_count_(0),
+  need_flush_cache_(false),
+  invalidate_plan_(false),
+  plan_expired_before_(-1)
 {
 }
 
@@ -103,7 +99,10 @@ ObOptStatGatherStat::ObOptStatGatherStat(ObOptStatTaskInfo &task_info) :
   properties_(),
   table_gather_progress_(),
   consecutive_failed_count_(0),
-  gather_audit_()
+  gather_audit_(),
+  need_flush_cache_(false),
+  invalidate_plan_(false),
+  plan_expired_before_(-1)
 {
 }
 
@@ -126,6 +125,9 @@ int ObOptStatGatherStat::assign(const ObOptStatGatherStat &other)
   properties_ = other.properties_;
   table_gather_progress_ = other.table_gather_progress_;
   gather_audit_ = other.gather_audit_;
+  need_flush_cache_ = other.need_flush_cache_;
+  invalidate_plan_ = other.invalidate_plan_;
+  plan_expired_before_ = other.plan_expired_before_;
   return ret;
 }
 
@@ -244,6 +246,66 @@ int ObOptStatRunningMonitor::add_table_info(const common::ObTableStatParam &tabl
       tmp_properties_str.assign_ptr(buf, static_cast<int32_t>(properties_sql_str.length()));
       ObOptStatGatherStatList::instance().update_gather_stat_info(tmp_db_name, tmp_tab_name,
                                                                   tmp_properties_str, opt_stat_gather_stat_);
+    }
+  }
+  return ret;
+}
+
+int ObOptStatRunningMonitor::add_table_info(const common::ObCatalogTableStatParam &table_param,
+                                           double stale_percent)
+{
+  int ret = OB_SUCCESS;
+  ObString tmp_db_name;
+  ObString tmp_tab_name;
+  ObString tmp_properties_str;
+  if (OB_FAIL(ob_write_string(allocator_,
+                              table_param.table_identity_.db_name_,
+                              tmp_db_name))) {
+    LOG_WARN("failed to write string", K(ret));
+  } else if (OB_FAIL(ob_write_string(allocator_,
+                                     table_param.table_identity_.tab_name_,
+                                     tmp_tab_name))) {
+    LOG_WARN("failed to write string", K(ret));
+  } else {
+    // External tables don't have table_id, use OB_INVALID_ID
+    opt_stat_gather_stat_.set_table_id(OB_INVALID_ID);
+    ObSqlString properties_sql_str;
+    char *buf = NULL;
+    const char *sample_type = "ROW";
+    if (table_param.gather_options_.sample_info_.is_fast_sample()) {
+      sample_type = "FAST";
+    } else if (table_param.gather_options_.sample_info_.is_block_sample()) {
+      sample_type = "BLOCK";
+    }
+    if (OB_FAIL(properties_sql_str.append_fmt(
+            "GRANULARITY:%.*s;METHOD_OPT:%.*s;DEGREE:%ld;ESTIMATE_PERCENT:%lf;SAMPLE_TYPE:%s;"
+            "SAMPLE_SEED:%ld;STALE_PERCENT:%lf;CATALOG_ID:%lu;CATALOG_NAME:%.*s",
+            table_param.gather_options_.granularity_.length(),
+            table_param.gather_options_.granularity_.ptr(),
+            table_param.gather_options_.method_opt_.length(),
+            table_param.gather_options_.method_opt_.ptr(),
+            table_param.gather_options_.degree_,
+            table_param.gather_options_.sample_info_.is_sample_
+                ? table_param.gather_options_.sample_info_.percent_
+                : 100.0,
+            sample_type,
+            table_param.gather_options_.sample_info_.seed_,
+            stale_percent,
+            table_param.table_identity_.catalog_id_,
+            table_param.table_identity_.catalog_name_.length(),
+            table_param.table_identity_.catalog_name_.ptr()))) {
+      LOG_WARN("failed to append fmt", K(ret));
+    } else if (OB_ISNULL(buf
+                         = static_cast<char *>(allocator_.alloc(properties_sql_str.length())))) {
+      ret = OB_ALLOCATE_MEMORY_FAILED;
+      LOG_WARN("memory is not enough", K(ret), K(properties_sql_str));
+    } else {
+      MEMCPY(buf, properties_sql_str.ptr(), properties_sql_str.length());
+      tmp_properties_str.assign_ptr(buf, static_cast<int32_t>(properties_sql_str.length()));
+      ObOptStatGatherStatList::instance().update_gather_stat_info(tmp_db_name,
+                                                                  tmp_tab_name,
+                                                                  tmp_properties_str,
+                                                                  opt_stat_gather_stat_);
     }
   }
   return ret;
@@ -380,6 +442,17 @@ void ObOptStatGatherStatList::update_gather_stat_audit(const ObString &audit,
 {
   ObSpinLockGuard guard(lock_);
   stat_value.set_gather_audit(audit.ptr(), audit.length());
+}
+
+void ObOptStatGatherStatList::update_need_flush_cache(bool need_flush_cache,
+                                                      bool invalidate_plan,
+                                                      int64_t plan_expired_before,
+                                                      ObOptStatGatherStat &stat_value)
+{
+  ObSpinLockGuard guard(lock_);
+  stat_value.set_need_flush_cache(need_flush_cache);
+  stat_value.set_invalidate_plan(invalidate_plan);
+  stat_value.set_plan_expired_before(plan_expired_before);
 }
 
 int ObOptStatGatherStatList::list_to_array(common::ObIAllocator &allocator,

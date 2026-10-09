@@ -1,14 +1,7 @@
 
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_storage_ha_utils.h"
@@ -17,7 +10,6 @@
 #include "storage/high_availability/ob_transfer_service.h"
 #include "storage/high_availability/ob_transfer_lock_utils.h"
 #include "observer/ob_server_event_history_table_operator.h"
-#include "storage/high_availability/ob_storage_ha_diagnose_mgr.h"
 #include "storage/reorganization_info_table/ob_tablet_reorg_info_table_operation.h"
 
 using namespace oceanbase::common;
@@ -49,7 +41,6 @@ ObTxFinishTransfer::ObTxFinishTransfer()
       cond_(),
       sql_proxy_(NULL),
       round_(0),
-      diagnose_result_msg_(share::ObStorageHACostItemName::MAX_NAME),
       data_version_(0),
       ls_transfer_info_(nullptr)
 {}
@@ -108,7 +99,6 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
   observer::ObInnerSQLConnection *conn = NULL;
   SCN start_scn;
   SCN finish_scn;
-  bool is_majority_passed = false;
   share::ObRsMgr *rs_mgr = GCTX.rs_mgr_;
   obrpc::ObSrvRpcProxy *svr_rpc_proxy = GCTX.srv_rpc_proxy_;
   int64_t result = OB_SUCCESS;
@@ -117,7 +107,6 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
   ObLSLocation ls_location;
   bool is_leader = false;
   bool is_ready = false;
-  bool src_is_ready = false;
   ObTransferService *transfer_service = NULL;
   const int64_t CONFIG_CHANGE_TIMEOUT = 10 * 1000 * 1000L;
   ObLSHandle ls_handle;
@@ -125,12 +114,8 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
   transaction::tablelock::ObTableLockOwnerID lock_owner_id;
   ObTimeoutCtx timeout_ctx;
   round_ = round;
-  const int64_t start_ts = ObTimeUtil::current_time();
-  process_perf_diagnose_info_(ObStorageHACostItemName::TRANSFER_FINISH_BEGIN,
-      start_ts, tablet_list.count(), round_, false/*is_report*/);
-  diagnose_result_msg_ = share::ObStorageHACostItemName::MAX_NAME;
-  const bool is_shared_storage = GCTX.is_shared_storage_mode();
-
+  diag_.reset();
+  diag_.set_cost_item(ObStorageHACostItemName::TRANSFER_FINISH_BEGIN);
   if (!task_id.is_valid() || OB_INVALID_ID == tenant_id || !src_ls_id.is_valid() || !dest_ls_id.is_valid()) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("get invalid args", K(ret), K(task_id), K(tenant_id), K(src_ls_id), K(dest_ls_id));
@@ -221,8 +206,7 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
         LOG_INFO("transfer in tablet not ready", K(ret), K(tenant_id), K(dest_ls_id));
         transfer_service->wakeup();
       } else {
-        process_perf_diagnose_info_(ObStorageHACostItemName::CHECK_LS_LOGICAL_TABLE_REPLACED_LATER,
-            0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
+        diag_.set_cost_item(ObStorageHACostItemName::CHECK_LS_LOGICAL_TABLE_REPLACED_LATER);
         // 4. The leader node of dest_ls registers the multi-source transaction
         // ObInnerSQLConnection->register_multi_source_data, and the type is TX_FINISH_TRANSFER_IN (two-way barrier)
         //    The content of the log is src_ls_id, dest_ls_id, tablet_list. This step requires forcibly flushing the redo
@@ -262,18 +246,8 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
         // incremented (in TX_START_TRASNFER_IN)
         if (FAILEDx(wait_transfer_tablet_status_normal_(tenant_id, dest_ls_id, tablet_list, start_scn, timeout_ctx, finish_scn))) {
           LOG_WARN("failed to wait tablet status normal", K(ret), K(tenant_id), K(dest_ls_id), K(tablet_list));
-        } else if (OB_FAIL(wait_all_ls_replica_replay_scn_(task_id, tenant_id, dest_ls_id,
-            addr_list, finish_scn, timeout_ctx, is_majority_passed))) {
-          LOG_WARN("failed to check ls replica replay scn",
-              K(ret),
-              K(tenant_id),
-              K(dest_ls_id),
-              K(addr_list),
-              K(finish_scn));
-        } else if (!is_majority_passed) {
-          ret = OB_TIMEOUT;
-          LOG_WARN("majority replay scn not passed", K(ret));
         }
+
         // 6. The leader of dest_ls registers a multi-source transaction,
         // and the type is TX_FINISH_TRANSFER_OUT. The contents of the log are src_ls_id, dest_ls_id, finish_scn, and
         // tablet_id_list.
@@ -298,22 +272,18 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
         // 8. unlock table lock on src ls for tablet (must be successful)
         else if (OB_FAIL(ObTransferLockUtil::unlock_tablet_on_src_ls_for_table_lock(
                       trans, tenant_id, src_ls_id, lock_owner_id, table_lock_tablet_list))) {
-          diagnose_result_msg_ = share::ObStorageHACostItemName::UNLOCK_TABLET_FOR_LOCK;
           LOG_WARN("failed to unlock tablet on src ls for table lock", KR(ret),
               K(tenant_id), K(src_ls_id), K(lock_owner_id), K(table_lock_tablet_list));
+          diag_.record_error(ret, ObStorageHACostItemName::UNLOCK_TABLET_FOR_LOCK);
         }
         // 9. unlock member list
         else {
-          process_perf_diagnose_info_(ObStorageHACostItemName::UNLOCK_TABLET_FOR_LOCK,
-              0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
+          diag_.set_cost_item(ObStorageHACostItemName::UNLOCK_TABLET_FOR_LOCK);
           if (OB_FAIL(unlock_ls_member_and_learner_list_(tenant_id, dest_ls_id, member_list, learner_list, lock_status,
-              true/*need_check_palf_leader*/, dest_ls_id, CONFIG_CHANGE_TIMEOUT))) {
-            diagnose_result_msg_ = share::ObStorageHACostItemName::UNLOCK_LS_MEMBER_LIST;
+            true/*need_check_palf_leader*/, dest_ls_id, CONFIG_CHANGE_TIMEOUT))) {
             LOG_WARN("failed to unlock ls member and learner list", K(ret), K(tenant_id), K(dest_ls_id), K(member_list));
-          } else {
-            process_perf_diagnose_info_(ObStorageHACostItemName::UNLOCK_LS_MEMBER_LIST,
-                0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
           }
+          diag_.update_cost_item(ret, ObStorageHACostItemName::UNLOCK_LS_MEMBER_LIST);
         }
 
 #ifdef ERRSIM
@@ -330,16 +300,12 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
         if (OB_TMP_FAIL(commit_trans_(is_commit, trans))) {
           if (OB_SUCCESS == ret) {
             ret = tmp_ret;
-            diagnose_result_msg_ = share::ObStorageHACostItemName::FINISH_TRANS_COMMIT;
           }
         } else if (is_commit) {
           round = 0;
           ObTransferUtils::reset_related_info(dest_ls_id);
         }
-        if (OB_SUCC(ret)) {
-          process_perf_diagnose_info_(ObStorageHACostItemName::FINISH_TRANS_COMMIT,
-              0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
-        }
+        diag_.update_cost_item(ret, ObStorageHACostItemName::FINISH_TRANS_COMMIT);
         // 11. After the dest_ls leader succeeds,
         // it will report the corresponding results to RS.
         // This step does not guarantee success.
@@ -361,16 +327,11 @@ int ObTxFinishTransfer::do_tx_transfer_doing_(const ObTransferTaskID &task_id, c
   }
 #endif
   if (OB_FAIL(ret)) {
-    if (OB_TMP_FAIL(ObStorageHADiagMgr::add_transfer_error_diagnose_info(task_id, dest_ls_id,
-        ObStorageHADiagTaskType::TRANSFER_DOING, round_, ret, diagnose_result_msg_))) {
-      LOG_WARN("failed to add error diagnose info", K(tmp_ret), K(ret), K(task_id), K(dest_ls_id), K(round_));
-    }
+    diag_.record_error(ret, ObStorageHACostItemName::TRANSFER_FINISH_END);
+  } else if (is_ready) {
+    diag_.set_cost_item(ObStorageHACostItemName::TRANSFER_FINISH_END);
   }
-
-  if (OB_SUCC(ret) && is_ready) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::TRANSFER_FINISH_END,
-        0/*start_ts*/, tablet_list.count(), round_, true/*is_report*/);
-  }
+  ObTransferUtils::merge_transfer_diag(dest_ls_id, task_id, diag_);
   return ret;
 }
 
@@ -407,12 +368,7 @@ int ObTxFinishTransfer::unlock_src_and_dest_ls_member_and_learner_list_(const ui
 #endif
 
   }
-  UNUSEDx(member_list);
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::UNLOCK_SRC_AND_DEST_LS_MEMBER_LIST, round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::UNLOCK_SRC_AND_DEST_LS_MEMBER_LIST;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::UNLOCK_SRC_AND_DEST_LS_MEMBER_LIST);
   return ret;
 }
 
@@ -477,11 +433,7 @@ int ObTxFinishTransfer::wait_transfer_tablet_status_normal_(
       }
     }
   }
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::WAIT_TRANSFER_TABLET_STATUS_NORMAL, 0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::WAIT_TRANSFER_TABLET_STATUS_NORMAL;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::WAIT_TRANSFER_TABLET_STATUS_NORMAL);
   return ret;
 }
 
@@ -563,11 +515,7 @@ int ObTxFinishTransfer::check_ls_logical_table_replaced(const uint64_t tenant_id
   } else {
     LOG_INFO("check ls logical table replace", K(tenant_id), K(dest_ls_id), K(addr_list), K(tablet_list), K(all_backfilled));
   }
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::CHECK_LS_LOGICAL_TABLE_REPLACED, 0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::CHECK_LS_LOGICAL_TABLE_REPLACED;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::CHECK_LS_LOGICAL_TABLE_REPLACED);
   return ret;
 }
 
@@ -649,11 +597,7 @@ int ObTxFinishTransfer::do_tx_finish_transfer_in_(const ObTransferTaskID &task_i
     }
 #endif
   }
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::REGISTER_TRANSFER_FINISH_IN, 0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::REGISTER_TRANSFER_FINISH_IN;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::REGISTER_TRANSFER_FINISH_IN);
   return ret;
 }
 
@@ -704,11 +648,7 @@ int ObTxFinishTransfer::do_tx_finish_transfer_out_(const ObTransferTaskID &task_
 #endif
     DEBUG_SYNC(AFTER_FINISH_TRANSFER_OUT);
   }
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::REGISTER_TRANSFER_OUT, 0/*start_ts*/, tablet_list.count(), round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::REGISTER_TRANSFER_OUT;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::REGISTER_TRANSFER_OUT);
   return ret;
 }
 
@@ -750,11 +690,7 @@ int ObTxFinishTransfer::wait_all_ls_replica_replay_scn_(const ObTransferTaskID &
 #endif
 
   DEBUG_SYNC(AFTER_DOING_TRANSFER_WAIT_REPLAY_SCN);
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::WAIT_ALL_LS_REPLICA_REPLAY_FINISH_SCN, round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::WAIT_ALL_LS_REPLICA_REPLAY_FINISH_SCN;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::WAIT_ALL_LS_REPLICA_REPLAY_FINISH_SCN);
   return ret;
 }
 
@@ -868,11 +804,7 @@ int ObTxFinishTransfer::lock_ls_member_and_learner_list_(const uint64_t tenant_i
 
     DEBUG_SYNC(AFTER_DOING_TRANSFER_LOCK_MEMBER_LIST);
   }
-  if (OB_SUCC(ret)) {
-    process_perf_diagnose_info_(ObStorageHACostItemName::LOCK_LS_MEMBER_LIST_IN_DOING, round_, false/*is_report*/);
-  } else {
-    diagnose_result_msg_ = share::ObStorageHACostItemName::LOCK_LS_MEMBER_LIST_IN_DOING;
-  }
+  diag_.update_cost_item(ret, ObStorageHACostItemName::LOCK_LS_MEMBER_LIST_IN_DOING);
   return ret;
 }
 
@@ -1154,48 +1086,6 @@ int ObTxFinishTransfer::write_server_event_(const int32_t result, const ObSqlStr
   return ret;
 }
 
-void ObTxFinishTransfer::process_perf_diagnose_info_(
-    const ObStorageHACostItemName name,
-    const int64_t start_ts,
-    const int64_t tablet_count,
-    const int64_t round, const bool is_report) const
-{
-  int ret = OB_SUCCESS;
-  ObArenaAllocator alloc;
-  ObTransferPerfDiagInfo info;
-  ObStorageHATimestampItem item;
-  item.name_ = name;
-  item.type_ = ObStorageHACostItemType::FLUENT_TIMESTAMP_TYPE;
-  item.retry_id_ = round;
-  item.timestamp_ = ObTimeUtil::current_time();
-  common::ObTabletID tablet_id;
-  share::ObStorageHADiagTaskKey key;
-  if (OB_FAIL(info.init(&alloc, MTL_ID()))) {
-    LOG_WARN("fail to init info", K(ret));
-  } else if (OB_FAIL(info.add_item(item))) {
-    LOG_WARN("fail to add item", K(ret), K(item));
-  } else if (OB_FAIL(ObStorageHADiagMgr::construct_diagnose_info_key(task_id_, ObStorageHADiagModule::TRANSFER_PERF_DIAGNOSE,
-      ObStorageHADiagTaskType::TRANSFER_DOING, ObStorageHADiagType::PERF_DIAGNOSE, round, tablet_id, key))) {
-    LOG_WARN("failed to construct error diagnose info key", K(ret), K(task_id_), K(round), K(tablet_id));
-  } else if (OB_FAIL(ObStorageHADiagMgr::construct_diagnose_info(task_id_, dest_ls_id_,
-      ObStorageHADiagTaskType::TRANSFER_DOING, round, OB_SUCCESS, ObStorageHADiagModule::TRANSFER_PERF_DIAGNOSE, info))) {
-    LOG_WARN("failed to construct diagnose info", K(ret), K(task_id_), K(round), K(dest_ls_id_));
-  } else if (OB_FAIL(ObStorageHADiagMgr::add_transfer_perf_diagnose_info(key, start_ts, tablet_count, is_report, info))) {
-    LOG_WARN("failed to add perf diagnose info", K(ret), K(key), K(tablet_count), K(round), K(info), K(start_ts), K(is_report));
-  }
-}
-
-void ObTxFinishTransfer::process_perf_diagnose_info_(
-    const ObStorageHACostItemName name,
-    const int64_t round,
-    const bool is_report) const
-{
-  // start_ts and tablet_count only need to be effective on the first call
-  // needn't to update in the later
-  process_perf_diagnose_info_(name,
-      0/*start_ts*/, 0/*tablet_count*/, round_, false/*is_report*/);
-}
-
 int ObTxFinishTransfer::check_addr_list_is_match_(
     const common::ObMemberList &member_list,
     const common::GlobalLearnerList &learner_list,
@@ -1237,7 +1127,6 @@ int ObTxFinishTransfer::check_addr_list_is_match_(
       }
     }
   }
-
   return ret;
 }
 

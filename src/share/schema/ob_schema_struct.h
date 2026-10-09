@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OCEANBASE_SCHEMA_SCHEMA_STRUCT_H
@@ -106,6 +99,7 @@ namespace schema
         LOG_WARN("fail to load all sys vars", KR(ret)); \
       } else if (OB_FAIL(session_info.load_default_configs_in_pc())) { \
         LOG_WARN("fail to load default configs in pc", KR(ret)); \
+      } else if (FALSE_IT(session_info.get_ddl_info().get_inner_ddl_info().set_ddl_check_default_value(true))) { \
       } else if (OB_FAIL(FUNC(args, expr_factory, exec_ctx, allocator))) { \
         LOG_WARN("fail to build expr", KR(ret)); \
       } \
@@ -212,9 +206,11 @@ static const uint64_t OB_MIN_ID  = 0;//used for lower_bound
 
 #define EXTERNAL_TABLE_AUTO_REFRESH_IMMEDIATE_FLAG (INT64_C(1) << 2)
 #define EXTERNAL_TABLE_AUTO_REFRESH_INTERVAL_FLAG (INT64_C(1) << 3)
-#define ORCL_TEMP_TABLE_V2_INDEX_TABLE_FLAG (INT64_C(1) << 4)
 #define EXTERNAL_TABLE_AUTO_REFRESH_FLAG_OFFSET 2
 #define EXTERNAL_TABLE_AUTO_REFRESH_FLAG_BITS 2
+#define ORCL_TEMP_TABLE_V2_INDEX_TABLE_FLAG (INT64_C(1) << 4)
+#define FULLTEXT_DICT_FLAG (INT64_C(1) << 5)
+#define MLOG_PURGE_BY_COMPACTION_FLAG (INT64_C(1) << 6)
 
 // schema array size
 static const int64_t SCHEMA_SMALL_MALLOC_BLOCK_SIZE = 64;
@@ -238,6 +234,13 @@ enum ObTableDefType
   TABLE_DEF_TYPE_INTERNAL = 0,
   TABLE_DEF_TYPE_USER = 1,
   TABLE_DEF_TYPE_MAX = 2,
+};
+
+enum ObExternalFilePatternType
+{
+  REGEXP_EXTERNAL_FILE_PATTERN = 0,
+  GLOB_EXTERNAL_FILE_PATTERN = 1,
+  MAX_EXTERNAL_FILE_PATTERN_TYPE
 };
 //level of patition
 enum ObPartitionLevel
@@ -266,6 +269,7 @@ enum ObPartitionFuncType
   PARTITION_FUNC_TYPE_LIST,
   PARTITION_FUNC_TYPE_LIST_COLUMNS,
   PARTITION_FUNC_TYPE_INTERVAL,
+  PARTITION_FUNC_TYPE_RANDOM,
   PARTITION_FUNC_TYPE_MAX,
 };
 
@@ -299,7 +303,8 @@ inline bool is_range_part(const ObPartitionFuncType part_type)
 {
   return PARTITION_FUNC_TYPE_RANGE == part_type
       || PARTITION_FUNC_TYPE_RANGE_COLUMNS == part_type
-      || PARTITION_FUNC_TYPE_INTERVAL == part_type;
+      || PARTITION_FUNC_TYPE_INTERVAL == part_type
+      || PARTITION_FUNC_TYPE_RANDOM == part_type;
 }
 
 inline bool is_range_columns_part(const ObPartitionFuncType part_type)
@@ -318,6 +323,10 @@ inline bool is_list_part(const ObPartitionFuncType part_type)
       || PARTITION_FUNC_TYPE_LIST_COLUMNS == part_type;
 }
 
+inline bool is_random_part(const ObPartitionFuncType part_type)
+{
+  return PARTITION_FUNC_TYPE_RANDOM == part_type;
+}
 int is_sys_table_name(uint64_t database_id, const common::ObString &table_name, bool &is_sys_table);
 
 
@@ -529,6 +538,7 @@ enum ObPartitionStatus
   PARTITION_STATUS_MERGE = 2,
   PARTITION_STATUS_PHYSICAL_SPLITTING = 3,  // deprecated
   PARTITION_STATUS_SPLIT = 4,
+  PARTITION_STATUS_INACTIVE = 5,
   PARTITION_STATUS_MAX,
 };
 
@@ -644,7 +654,7 @@ public:
   static const int64_t SCHEMA_VERSION_INC_STEP = 8;
 public:
   ObSchemaVersionGenerator()
-    : ObIDGenerator(SCHEMA_VERSION_INC_STEP) {}
+    : ObIDGenerator(SCHEMA_VERSION_INC_STEP), wasted_cnt_(0) {}
   virtual ~ObSchemaVersionGenerator() {}
 
   int init(const int64_t start_version, const int64_t end_version);
@@ -653,6 +663,10 @@ public:
   int get_current_version(int64_t &current_version) const;
   int get_end_version(int64_t &end_version) const;
   int get_version_cnt(int64_t &version_cnt) const;
+  void inc_wasted_cnt() { ++wasted_cnt_; }
+  int64_t get_wasted_cnt() const { return wasted_cnt_; }
+private:
+  int64_t wasted_cnt_;
 };
 typedef ObSchemaVersionGenerator TSISchemaVersionGenerator;
 
@@ -1421,6 +1435,8 @@ typedef enum {
   ICEBERG_TABLE_SCHEMA = 49,
   SENSITIVE_RULE_SCHEMA = 50,
   JAVA_POLICY_SCHEMA = 51,
+  AI_PROVIDER_SCHEMA = 52,
+  AI_GATEWAY_SCHEMA = 53,
   ///<<< add schema type before this line
   OB_MAX_SCHEMA
 } ObSchemaType;
@@ -1614,6 +1630,8 @@ enum class ObObjectType {
   LOCATION        = 18,
   AI_MODEL        = 19,
   SENSITIVE_RULE  = 20,
+  AI_PROVIDER     = 21,
+  AI_GATEWAY      = 22,
   MAX_TYPE,
 };
 struct ObSchemaObjVersion
@@ -1973,7 +1991,8 @@ public:
   template<typename DSTSCHEMA>
   static int set_charset_and_collation_options(common::ObCharsetType src_charset_type,
                                                common::ObCollationType src_collation_type,
-                                               DSTSCHEMA &dst);
+                                               DSTSCHEMA &dst,
+                                               common::ObCharsetCompatType compat_type = common::CHARSET_COMPAT_MYSQL57);
   static common::ObCollationType get_cs_type_with_cmp_mode(const common::ObNameCaseMode mode);
 
   ObSchema *get_buffer() const { return buffer_; }
@@ -2019,7 +2038,8 @@ protected:
 template<typename DSTSCHEMA>
 int ObSchema::set_charset_and_collation_options(common::ObCharsetType src_charset_type,
                                                 common::ObCollationType src_collation_type,
-                                                DSTSCHEMA &dst)
+                                                DSTSCHEMA &dst,
+                                                common::ObCharsetCompatType compat_type)
 {
   int ret = common::OB_SUCCESS;
   if (dst.get_charset_type() == common::CHARSET_INVALID
@@ -2036,7 +2056,7 @@ int ObSchema::set_charset_and_collation_options(common::ObCharsetType src_charse
   } else {
     common::ObCharsetType charset_type = dst.get_charset_type();
     common::ObCollationType collation_type = dst.get_collation_type();
-    if (OB_FAIL(common::ObCharset::check_and_fill_info(charset_type, collation_type))) {
+    if (OB_FAIL(common::ObCharset::check_and_fill_info(charset_type, collation_type, compat_type))) {
       SHARE_SCHEMA_LOG(WARN, "fail to check charset collation",
                        K(charset_type), K(collation_type), K(ret));
     } else {
@@ -2297,6 +2317,8 @@ public:
   inline void set_storage_format_work_version(const int64_t storage_format_work_version);
   void set_default_tablegroup_id(const uint64_t tablegroup_id) { default_tablegroup_id_ = tablegroup_id; }
   int set_default_tablegroup_name(const common::ObString &tablegroup_name) { return deep_copy_str(tablegroup_name, default_tablegroup_name_); }
+  void set_default_tablespace_id(const uint64_t tablespace_id) { default_tablespace_id_ = tablespace_id; }
+  int set_default_tablespace_name(const common::ObString &tablespace_name) { return deep_copy_str(tablespace_name, default_tablespace_name_); }
   inline void set_compatibility_mode(const common::ObCompatibilityMode compatibility_mode) { compatibility_mode_ = compatibility_mode; }
 
   //get methods
@@ -2346,6 +2368,8 @@ public:
       common::ObIArray<common::ObZone> &zone_list) const;
   inline uint64_t get_default_tablegroup_id() const { return default_tablegroup_id_; }
   inline const common::ObString &get_default_tablegroup_name() const { return default_tablegroup_name_; }
+  inline uint64_t get_default_tablespace_id() const { return default_tablespace_id_; }
+  inline const common::ObString &get_default_tablespace_name() const { return default_tablespace_name_; }
   inline common::ObCompatibilityMode get_compatibility_mode() const { return compatibility_mode_; }
 
   inline bool is_oracle_tenant() const
@@ -2381,7 +2405,8 @@ public:
                K_(read_only), K_(locality_str),
                K_(zone_replica_attr_array), K_(primary_zone_array), K_(previous_locality_str),
                K_(default_tablegroup_id), K_(default_tablegroup_name), K_(compatibility_mode), K_(drop_tenant_time),
-               K_(status), K_(in_recyclebin), K_(arbitration_service_status));
+               K_(status), K_(in_recyclebin), K_(arbitration_service_status),
+               K_(default_tablespace_id), K_(default_tablespace_name));
 private:
   uint64_t tenant_id_;
   int64_t schema_version_;
@@ -2403,6 +2428,8 @@ private:
   common::ObString previous_locality_str_;
   uint64_t default_tablegroup_id_;
   common::ObString default_tablegroup_name_;
+  uint64_t default_tablespace_id_;
+  common::ObString default_tablespace_name_;
   common::ObCompatibilityMode compatibility_mode_;//创建后不可修改
   int64_t drop_tenant_time_;
   ObTenantStatus status_;
@@ -2459,6 +2486,8 @@ public:
   inline void set_read_only(const bool read_only) { read_only_ = read_only; }
   void set_default_tablegroup_id(const uint64_t tablegroup_id) { default_tablegroup_id_ = tablegroup_id; }
   int set_default_tablegroup_name(const common::ObString &tablegroup_name) { return deep_copy_str(tablegroup_name, default_tablegroup_name_); }
+  void set_default_tablespace_id(const uint64_t tablespace_id) { default_tablespace_id_ = tablespace_id; }
+  int set_default_tablespace_name(const common::ObString &tablespace_name) { return deep_copy_str(tablespace_name, default_tablespace_name_); }
   inline void set_in_recyclebin(const bool in_recyclebin) { in_recyclebin_ = in_recyclebin; }
   inline bool is_hidden() const
   {
@@ -2481,6 +2510,8 @@ public:
   inline bool is_read_only() const { return read_only_; }
   inline uint64_t get_default_tablegroup_id() const { return default_tablegroup_id_; }
   inline const common::ObString &get_default_tablegroup_name() const { return default_tablegroup_name_; }
+  inline uint64_t get_default_tablespace_id() const { return default_tablespace_id_; }
+  inline const common::ObString &get_default_tablespace_name() const { return default_tablespace_name_; }
   inline bool is_in_recyclebin() const { return in_recyclebin_; }
   inline bool is_or_in_recyclebin() const
   { return in_recyclebin_ || is_recyclebin_database_id(database_id_); }
@@ -2507,7 +2538,8 @@ public:
   virtual void reset();
   TO_STRING_KV(K_(tenant_id), K_(database_id), K_(schema_version), K_(database_name),
     K_(charset_type), K_(collation_type), K_(name_case_mode), K_(comment), K_(read_only),
-    K_(default_tablegroup_id), K_(default_tablegroup_name), K_(in_recyclebin));
+    K_(default_tablegroup_id), K_(default_tablegroup_name), K_(in_recyclebin),
+    K_(default_tablespace_id), K_(default_tablespace_name));
 
 private:
   uint64_t tenant_id_;
@@ -2522,6 +2554,8 @@ private:
   bool read_only_;
   uint64_t default_tablegroup_id_;
   common::ObString default_tablegroup_name_;
+  uint64_t default_tablespace_id_;
+  common::ObString default_tablespace_name_;
   bool in_recyclebin_;
 };
 
@@ -2550,6 +2584,8 @@ public:
   { return share::schema::is_key_part(part_func_type_); }
   inline bool is_list_part() const
   { return share::schema::is_list_part(part_func_type_); }
+  inline bool is_random_part() const
+  { return share::schema::is_random_part(part_func_type_); }
   inline bool is_valid_split_part_type() const
   {
     return is_range_part() && !is_interval_part();
@@ -2601,6 +2637,9 @@ public:
   int enable_auto_partition(const int64_t auto_part_size, const ObPartitionFuncType part_func_type);
   void forbid_auto_partition(const bool is_partitioned_table);
   bool is_enable_auto_part() const { return auto_part_ &&  auto_part_size_ >= MIN_AUTO_PART_SIZE; }
+  int enable_random_partition(const int64_t auto_random_size);
+  bool is_enable_random_part() const { return is_random_part() && is_enable_auto_part(); }
+
   TO_STRING_KV(K_(part_func_type), K_(part_func_expr), K_(part_num),
                K_(auto_part), K_(auto_part_size));
 private:
@@ -2608,7 +2647,7 @@ private:
 
 public:
   static const int64_t MIN_AUTO_PART_SIZE = 1LL; // 1
-  static const int64_t MIN_AUTO_PART_SIZE_BY_USER = 1LL * 1024 * 1024; // 8MB
+  static const int64_t MIN_AUTO_PART_SIZE_BY_USER = 1LL * 1024 * 1024; // 1MB
 
 private:
   ObPartitionFuncType part_func_type_;
@@ -2821,6 +2860,7 @@ public:
         && status_ == other.status_;
   }
   ObPartitionStatus get_status() const { return status_; }
+  void set_status(const ObPartitionStatus &status) { status_ = status; }
   void set_is_empty_partition_name(bool is_empty) { is_empty_partition_name_ = is_empty; }
   bool is_empty_partition_name() const { return is_empty_partition_name_; }
 
@@ -2841,7 +2881,7 @@ public:
   const common::ObString &get_external_location() const
   { return external_location_; }
   VIRTUAL_TO_STRING_KV(K_(tenant_id), K_(table_id), K_(part_id), K_(name), K_(low_bound_val),
-                       K_(high_bound_val), K_(list_row_values), K_(part_idx),
+                       K_(high_bound_val), K_(list_row_values), K_(status), K_(part_idx),
                        K_(is_empty_partition_name), K_(tablet_id), K_(external_location),
                        K_(split_source_tablet_id), K_(part_storage_cache_policy_type));
 protected:
@@ -3121,6 +3161,7 @@ public:
   inline bool is_key_part() const { return part_option_.is_key_part(); }
   inline bool is_key_subpart() const { return sub_part_option_.is_key_part(); }
   inline bool is_range_part() const { return part_option_.is_range_part(); }
+  inline bool is_random_part() const { return part_option_.is_random_part(); }
   inline bool is_interval_part() const { return part_option_.is_interval_part(); }
   inline bool is_range_subpart() const { return sub_part_option_.is_range_part(); }
 
@@ -3131,12 +3172,15 @@ public:
 
   inline bool is_valid_split_part_type() const { return part_option_.is_valid_split_part_type();}
   inline bool is_auto_partitioned_table() const { return part_option_.get_auto_part() &&
-                                                         part_option_.is_valid_auto_part_size(); }
+                                                         part_option_.is_valid_auto_part_size() &&
+                                                         !part_option_.is_random_part();}
+  inline bool is_range_or_random_part() const {return is_range_part() || is_random_part();}
   inline const ObPartitionOption &get_part_option() const { return part_option_; }
   inline ObPartitionOption &get_part_option() { return part_option_; }
   inline const ObPartitionOption &get_sub_part_option() const { return sub_part_option_; }
   inline ObPartitionOption &get_sub_part_option() { return sub_part_option_; }
   inline int64_t get_auto_part_size() const { return part_option_.get_auto_part_size(); }
+
 
   // deal with partition schema from ddl resolver
   int try_generate_hash_part();
@@ -3501,6 +3545,40 @@ public:
   inline virtual uint64_t get_database_id() const { return 0; }
   inline virtual void set_database_id(const uint64_t database_id) { UNUSED(database_id); }
   inline virtual void set_table_id(const uint64_t tablegroup_id) override { tablegroup_id_ = tablegroup_id; }
+  static bool is_sharding_scope_matched(const common::ObString &sharding, const common::ObString &scope)
+  {
+    bool is_matched = false;
+    if (scope.empty()) {
+      is_matched = true;
+    } else if (0 == sharding.case_compare(OB_PARTITION_SHARDING_NONE)) {
+      is_matched = true;
+    } else if (0 == sharding.case_compare(OB_PARTITION_SHARDING_PARTITION)
+               || 0 == sharding.case_compare(OB_PARTITION_SHARDING_ADAPTIVE)
+               || 0 == sharding.case_compare(OB_PARTITION_SHARDING_SUBPARTITION)) {
+      if (0 == scope.case_compare(OB_TABLEGROUP_SCOPE_CLUSTER)) {
+        is_matched = true;
+      }
+    }
+    return is_matched;
+  }
+  bool is_sharding_none() const { return sharding_.case_compare(OB_PARTITION_SHARDING_NONE) == 0; }
+  bool is_sharding_partition() const { return sharding_.case_compare(OB_PARTITION_SHARDING_PARTITION) == 0; }
+  bool is_sharding_adaptive() const { return sharding_.case_compare(OB_PARTITION_SHARDING_ADAPTIVE) == 0; }
+  bool is_sharding_subpartition() const { return sharding_.case_compare(OB_PARTITION_SHARDING_SUBPARTITION) == 0; }
+  bool is_scope_server() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_SERVER)
+           || (scope_.empty() && is_sharding_none());
+  }
+  bool is_scope_zone() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_ZONE);
+  }
+  bool is_scope_cluster() const
+  {
+    return 0 == scope_.case_compare(OB_TABLEGROUP_SCOPE_CLUSTER)
+           || (scope_.empty() && (is_sharding_partition() || is_sharding_adaptive() || is_sharding_subpartition()));
+  }
   inline int64_t get_part_func_expr_num() const { return part_func_expr_num_; }
   inline void set_part_func_expr_num(const int64_t part_func_expr_num) { part_func_expr_num_ = part_func_expr_num; }
   inline int64_t get_sub_part_func_expr_num() const { return sub_part_func_expr_num_; }
@@ -3611,6 +3689,27 @@ public:
              const uint64_t tenant_id,
              const ObRowkey &transition_point,
              const ObRowkey &interval_range);
+
+  static int check_global_index_match_primary_subpart(
+             const share::schema::ObSimpleTableSchemaV2 &index_schema,
+             const share::schema::ObSimpleTableSchemaV2 &primary_table_schema,
+             bool &is_matched);
+
+  static int check_subpart_matched_within_table(
+             const share::schema::ObSimpleTableSchemaV2 &table_schema,
+             bool &is_matched);
+
+  // Compare partition values in two partition arrays (for range/list partitions)
+  // This is a common utility used by compare_partition_option, check_global_index_match_primary_subpart, etc.
+  template <typename PARTITION1, typename PARTITION2>
+  static int compare_partition_value_array(
+             const bool is_oracle_mode,
+             PARTITION1 * const *part_array1,
+             PARTITION2 * const *part_array2,
+             const int64_t part_num,
+             const ObPartitionFuncType part_func_type,
+             bool &is_matched,
+             common::ObSqlString *user_error = NULL);
 
   static int check_interval_partition_table_with_context(
              const ObRowkey &transition_point_obj,
@@ -5168,12 +5267,12 @@ public:
   inline common::ObIArray<uint64_t> &get_trigger_list() { return trigger_list_; }
   inline const common::ObIArray<uint64_t> &get_trigger_list() const { return trigger_list_; }
   inline void reset_trigger_list() { trigger_list_.reset(); }
-  inline const char *get_old_password() const { return extract_str(old_password_); }
-  inline const common::ObString &get_old_password_str() const { return old_password_; }
-  inline int set_old_password(const char *passwd) { return deep_copy_str(passwd, old_password_); }
-  inline int set_old_password(const common::ObString &passwd) { return deep_copy_str(passwd, old_password_); }
-  inline int64_t get_old_password_start_time() const { return old_password_start_time_; }
+  inline int set_old_password(const char *old_password) { return deep_copy_str(old_password, old_password_); }
+  inline int set_old_password(const common::ObString &old_password) { return deep_copy_str(old_password, old_password_); }
   inline void set_old_password_start_time(int64_t ts) { old_password_start_time_ = ts; }
+  inline const char* get_old_password() const { return extract_str(old_password_); }
+  inline const common::ObString& get_old_password_str() const { return old_password_; }
+  inline int64_t get_old_password_start_time() const { return old_password_start_time_; }
 private:
   int add_proxy_info_(ObProxyInfo **&arr, uint64_t &capacity, uint64_t &cnt, const ObProxyInfo &proxy_info);
   int assign_proxy_info_array_(ObProxyInfo **src_arr,
@@ -6127,6 +6226,7 @@ struct ObNeedPriv
              const common::ObString &catalog = ObString(),
              const common::ObString &sensitive_rule = ObString())
       : db_(db), table_(table), priv_level_(priv_level), priv_set_(priv_set),
+        grantee_id_(common::OB_INVALID_ID),
         is_sys_table_(is_sys_table), obj_type_(share::schema::ObObjectType::INVALID),
         is_for_update_(is_for_update), priv_check_type_(priv_check_type),
         columns_(), check_any_column_priv_(false), catalog_(catalog),
@@ -6144,6 +6244,7 @@ struct ObNeedPriv
             const common::ObString &catalog = ObString(),
             const common::ObString &sensitive_rule = ObString())
     : db_(db), table_(table), priv_level_(priv_level), priv_set_(priv_set),
+      grantee_id_(common::OB_INVALID_ID),
       is_sys_table_(is_sys_table), obj_type_(obj_type),
       is_for_update_(is_for_update), priv_check_type_(priv_check_type),
       columns_(), check_any_column_priv_(false), catalog_(catalog),
@@ -6151,8 +6252,8 @@ struct ObNeedPriv
   { }
 
   ObNeedPriv()
-      : db_(), table_(), priv_level_(OB_PRIV_INVALID_LEVEL), priv_set_(0), is_sys_table_(false),
-        obj_type_(share::schema::ObObjectType::INVALID), is_for_update_(false),
+      : db_(), table_(), priv_level_(OB_PRIV_INVALID_LEVEL), priv_set_(0), grantee_id_(common::OB_INVALID_ID),
+        is_sys_table_(false), obj_type_(share::schema::ObObjectType::INVALID), is_for_update_(false),
         priv_check_type_(OB_PRIV_CHECK_ALL), columns_(), check_any_column_priv_(false),
         catalog_(), sensitive_rule_()
   { }
@@ -6161,6 +6262,7 @@ struct ObNeedPriv
   common::ObString table_;
   ObPrivLevel priv_level_;
   ObPrivSet priv_set_;
+  uint64_t grantee_id_;
   bool is_sys_table_; // May be used to represent the table of schema metadata
   share::schema::ObObjectType obj_type_;
   bool is_for_update_;
@@ -6172,8 +6274,8 @@ struct ObNeedPriv
   // If check_any_column_priv_ true, then check the table has any column with the priv_set.
   common::ObString catalog_;
   common::ObString sensitive_rule_;
-  TO_STRING_KV(K_(db), K_(table), K_(columns), K_(priv_set), K_(priv_level), K_(is_sys_table), K_(is_for_update),
-               K_(priv_check_type), K_(catalog), K_(sensitive_rule));
+  TO_STRING_KV(K_(db), K_(table), K_(columns), K_(priv_set), K_(priv_level), K_(grantee_id),
+               K_(is_sys_table), K_(is_for_update), K_(priv_check_type), K_(catalog), K_(sensitive_rule));
 };
 
 struct ObStmtNeedPrivs
@@ -6667,6 +6769,7 @@ protected:
   common::ObString format_sql_text_;
   common::ObString format_sql_id_;
   bool format_outline_;
+  common::ObString pattern_rules_;
 };
 
 class ObDbLinkBaseInfo : public ObSchema
@@ -8134,7 +8237,9 @@ int ObPartitionUtils::check_partition_value(
             find_equal_item = true;
           }
         } //end for (int64_t j = 0
-        if (!find_equal_item) {
+        if (!find_equal_item && is_equal) {
+          // set the error message only if is_equal is still true
+          // avoid overriding more precise error reasons already set in the inner loop
           is_equal = false;
           ASSIGN_PARTITION_ERROR(user_error, "list_part partition value not equal");
           SHARE_SCHEMA_LOG(TRACE,"list_part partition value not equal");
@@ -8144,6 +8249,51 @@ int ObPartitionUtils::check_partition_value(
   } else {
     ret = common::OB_INVALID_ARGUMENT;
     SHARE_SCHEMA_LOG(WARN, "invalid part_type", K(ret), K(part_type));
+  }
+  return ret;
+}
+
+template<typename PARTITION1, typename PARTITION2>
+int ObPartitionUtils::compare_partition_value_array(
+    const bool is_oracle_mode,
+    PARTITION1 * const *part_array1,
+    PARTITION2 * const *part_array2,
+    const int64_t part_num,
+    const ObPartitionFuncType part_func_type,
+    bool &is_matched,
+    common::ObSqlString *user_error)
+{
+  int ret = common::OB_SUCCESS;
+  is_matched = true;
+  if (is_hash_part(part_func_type) || is_key_part(part_func_type)) {
+    // for hash/key just need to compare part func type and part num, already done outside
+    is_matched = true;
+  } else if (is_range_part(part_func_type) || is_list_part(part_func_type)) {
+    if (OB_ISNULL(part_array1) || OB_ISNULL(part_array2)) {
+      ret = common::OB_ERR_UNEXPECTED;
+      SHARE_SCHEMA_LOG(WARN, "partition array is null", KR(ret), KP(part_array1), KP(part_array2));
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < part_num && is_matched; i++) {
+        if (OB_ISNULL(part_array1[i]) || OB_ISNULL(part_array2[i])) {
+          ret = common::OB_ERR_UNEXPECTED;
+          SHARE_SCHEMA_LOG(WARN, "partition is null", KR(ret), K(i),
+              "part1_is_null", OB_ISNULL(part_array1[i]),
+              "part2_is_null", OB_ISNULL(part_array2[i]));
+        } else {
+          // use base class reference to allow template to work with different derived types
+          const ObBasePartition &base_part1 = *part_array1[i];
+          const ObBasePartition &base_part2 = *part_array2[i];
+          if (OB_FAIL(check_partition_value(
+                        is_oracle_mode, base_part1, base_part2,
+                        part_func_type, is_matched, user_error))) {
+            SHARE_SCHEMA_LOG(WARN, "fail to check partition value", KR(ret), K(i));
+          }
+        }
+      }
+    }
+  } else {
+    ret = common::OB_NOT_SUPPORTED;
+    SHARE_SCHEMA_LOG(WARN, "unsupported partition func type", KR(ret), K(part_func_type));
   }
   return ret;
 }
@@ -8518,7 +8668,6 @@ public:
   };
 
 
-  static const int64_t DEFAULT_PARAM_VALUES[MAX_PARAMS];
   static const int64_t INVALID_PARAM_VALUES[MAX_PARAMS];
   static const char *PARAM_VALUE_NAMES[MAX_PARAMS];
 
@@ -8562,11 +8711,8 @@ public:
   inline ObTenantProfileId get_tenant_profile_id() const { return ObTenantProfileId(tenant_id_, profile_id_); }
 
   int set_value(const int64_t type, const int64_t value);
-  int set_default_value(const int64_t type);
-  int set_default_values();
   int set_default_values_v2();
   int set_invalid_values();
-  static int get_default_value(const int64_t type, int64_t &value);
 
   inline const char *get_password_verify_function() const { return extract_str(password_verify_function_); }
   inline const common::ObString &get_password_verify_function_str() const { return password_verify_function_; }

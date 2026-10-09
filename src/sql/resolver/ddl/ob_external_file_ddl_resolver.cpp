@@ -1,18 +1,12 @@
 /**
-* Copyright (c) 2021 OceanBase
-* OceanBase CE is licensed under Mulan PubL v2.
-* You can use this software according to the terms and conditions of the Mulan PubL v2.
-* You may obtain a copy of Mulan PubL v2 at:
-*          http://license.coscl.org.cn/MulanPubL-2.0
-* THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-* EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-* MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-* See the Mulan PubL v2 for more details.
-*/
+ * Copyright (c) 2021 OceanBase
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 #define USING_LOG_PREFIX SQL_RESV
 
 #include "ob_ddl_resolver.h"
+#include "share/external_table/ob_external_table_utils.h"
 
 namespace oceanbase
 {
@@ -31,19 +25,33 @@ int ObDDLResolver::resolve_external_file_format(const ParseNode *format_node,
   int ret = OB_SUCCESS;
   bool has_file_format = false;
   ObDataInFileStruct data_in_file_struct;
-  bool default_csv_escape_char_is_none = true;
+  bool enable_standard_csv_format = true;
+  OZ(params.session_info_->check_feature_enable(
+                      ObCompatFeatureType::STANDARD_CSV_FORMAT_IN_EXTERNAL_TABLE,
+                      enable_standard_csv_format));
+  bool default_escaped_char_is_none = true;
   OZ(params.session_info_->check_feature_enable(
                       ObCompatFeatureType::DEFAULT_CSV_ESCAPE_CHAR_IS_NONE,
-                      default_csv_escape_char_is_none));
-  // feature version >= 4.5.1.0, default escaped char is none in external table and url table
-  if (OB_SUCC(ret) && default_csv_escape_char_is_none) {
+                      default_escaped_char_is_none));
+  // feature version >= 4.5.1.0, use standard CSV format in external table and url table
+  if (OB_FAIL(ret)) {
+  } else if (enable_standard_csv_format) {
+    data_in_file_struct.field_escaped_char_ = INT64_MAX;
+    data_in_file_struct.field_escaped_str_ = "";
+    data_in_file_struct.field_term_str_ = ",";
+    data_in_file_struct.field_enclosed_char_ = '"';
+    data_in_file_struct.field_enclosed_str_ = "\"";
+  } else if (default_escaped_char_is_none) {
     data_in_file_struct.field_escaped_char_ = INT64_MAX;
     data_in_file_struct.field_escaped_str_ = "";
   }
+
   if (OB_SUCC(ret) && OB_FAIL(format.csv_format_.init_format(data_in_file_struct,
                                             OB_MAX_COLUMN_NUMBER,
                                             CS_TYPE_UTF8MB4_BIN))) {
     LOG_WARN("failed to init csv format", K(ret));
+  } else if (enable_standard_csv_format) {
+    format.csv_format_.ignore_last_empty_col_ = false;
   }
   // resolve file type and encoding type
   if (OB_SUCC(ret)) {
@@ -120,15 +128,30 @@ int ObDDLResolver::resolve_external_file_pattern(const ParseNode *option_node,
                                                 bool is_external_table,
                                                 common::ObIAllocator &allocator,
                                                 const ObSQLSessionInfo *session_info,
-                                                ObString &pattern)
+                                                ObString &pattern,
+                                                share::schema::ObExternalFilePatternType &pattern_type)
 {
   int ret = OB_SUCCESS;
+  uint64_t data_version = 0;
   if (!is_external_table) {
     ret = OB_NOT_SUPPORTED;
     ObSqlString err_msg;
     err_msg.append_fmt("Using PATTERN as a CREATE TABLE option");
     LOG_USER_ERROR(OB_NOT_SUPPORTED, err_msg.ptr());
     LOG_WARN("using PATTERN as a table option is support in external table only", K(ret));
+  } else if (OB_ISNULL(option_node)
+             || (T_EXTERNAL_FILE_PATTERN != option_node->type_
+                 && T_EXTERNAL_FILE_GLOB_PATTERN != option_node->type_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid external file pattern option", K(ret), KP(option_node));
+  } else if (option_node->type_ == T_EXTERNAL_FILE_GLOB_PATTERN
+             && OB_FAIL(GET_MIN_DATA_VERSION(session_info->get_effective_tenant_id(), data_version))) {
+    LOG_WARN("failed to get data version", K(ret));
+  } else if (option_node->type_ == T_EXTERNAL_FILE_GLOB_PATTERN
+             && data_version < DATA_VERSION_4_6_1_0) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("glob pattern is not supported before 4.6.1.0 data version", K(ret), K(data_version));
+    LOG_USER_ERROR(OB_NOT_SUPPORTED, "glob pattern is not supported before 4.6.1.0");
   } else if (option_node->num_child_ != 1 || OB_ISNULL(option_node->children_[0])) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected child num", K(option_node->num_child_));
@@ -139,6 +162,9 @@ int ObDDLResolver::resolve_external_file_pattern(const ParseNode *option_node,
     LOG_USER_ERROR(OB_ERR_REGEXP_ERROR, err_msg.ptr());
     LOG_WARN("empty regular expression", K(ret));
   } else {
+    pattern_type = option_node->type_ == T_EXTERNAL_FILE_GLOB_PATTERN
+                     ? share::schema::GLOB_EXTERNAL_FILE_PATTERN
+                     : share::schema::REGEXP_EXTERNAL_FILE_PATTERN;
     pattern = ObString(option_node->children_[0]->str_len_,
                       option_node->children_[0]->str_value_);
     if (OB_FAIL(ObSQLUtils::convert_sql_text_to_schema_for_storing(allocator,

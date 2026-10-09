@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_COMMON_OB_BITMAP_H_
@@ -24,7 +17,7 @@ namespace common
 OB_INLINE int64_t popcount64(uint64_t v)
 {
   int64_t cnt = 0;
-#if __POPCNT__
+#if __POPCNT__ || defined(__aarch64__)
   cnt = __builtin_popcountl(v);
 #else
   if (0 != v) {
@@ -122,7 +115,11 @@ public:
   {
     return is_inited_;
   }
-  OB_INLINE uint8_t *get_data() const
+  OB_INLINE uint8_t *get_data()
+  {
+    return data_;
+  }
+  OB_INLINE const uint8_t *get_data() const
   {
     return data_;
   }

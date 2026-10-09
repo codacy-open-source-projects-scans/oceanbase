@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -135,6 +128,7 @@ int ObP2PDatahubMsgBase::process_msg_internal(bool &need_free)
     }
     need_free = true;
   } else {
+    need_free = false;
     need_merge = false; // set success, not need to merge
     int reg_dm_ret = OB_SUCCESS;
 #ifdef ERRSIM
@@ -186,13 +180,12 @@ int ObP2PDatahubMsgBase::proc_filter_empty<IntegerFixedVec>(IntegerFixedVec *res
   return ret;
 }
 
-template <>
-int ObP2PDatahubMsgBase::proc_filter_empty<IntegerUniVec>(IntegerUniVec *res_vec,
-                                                          const ObBitVector &skip,
-                                                          const EvalBound &bound,
-                                                          int64_t &total_count,
-                                                          int64_t &filter_count)
-{
+template <typename ResVec>
+int ObP2PDatahubMsgBase::proc_filter_empty(ResVec *res_vec,
+                                           const ObBitVector &skip,
+                                           const EvalBound &bound,
+                                           int64_t &total_count,
+                                           int64_t &filter_count) {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObBitVector::flip_foreach(
           skip, bound, [&](int64_t idx) __attribute__((always_inline)) {

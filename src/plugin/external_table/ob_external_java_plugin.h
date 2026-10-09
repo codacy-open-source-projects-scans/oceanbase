@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
@@ -16,7 +9,7 @@
 
 #include "lib/guard/ob_shared_guard.h"
 #include "plugin/interface/ob_plugin_external_intf.h"
-#include "lib/jni_env/ob_java_helper.h"
+#include "lib/jni_env/ob_java_vm_manager.h"
 #include "plugin/external_table/ob_external_jni_utils.h"
 
 namespace oceanbase {
@@ -40,6 +33,8 @@ public:
   ObJavaDataSourceFactoryHelper() = default;
   ~ObJavaDataSourceFactoryHelper() = default;
 
+  /// Thread-safe and idempotent. Starts the JVM and caches the DataSourceFactory class on
+  /// the first call; later calls are no-ops. Safe to call lazily from any worker thread.
   int init();
 
   int list_plugins(ObIAllocator &allocator, ObIArray<ObString> &data_source_names);
@@ -49,19 +44,23 @@ public:
   int export_arrow_stream(jobject record_batch_reader_object, ArrowArrayStream &arrow_stream);
   int import_record_batch(struct ArrowArray *array_c, struct ArrowSchema *schema_c, jobject &vector_schema_root_ret);
 private:
+  bool init_done_ = false; // guarded by init_mutex_, read via ATOMIC_LOAD for DCL fast path
   ObJavaGlobalRef data_source_factory_class_;
   jmethodID create_data_source_method_ = nullptr;
   jmethodID export_arrow_stream_method_ = nullptr;
   jmethodID import_record_batch_method_ = nullptr;
+  lib::ObMutex init_mutex_{common::ObLatchIds::JAVA_DATASOURCE_INIT_MUTEX};
 };
 
 class ObJavaExternalPlugin final : public ObIExternalDescriptor
 {
 public:
+  static constexpr const char *PLUGIN_NAME = "java";
+
   ObJavaExternalPlugin() = default;
   ~ObJavaExternalPlugin() override;
 
-  const char *name() const { return "java"; }
+  const char *name() const { return PLUGIN_NAME; }
 
   int init(ObPluginParam *) override;
   int deinit(ObPluginParam *) override;
@@ -78,8 +77,18 @@ public:
                          const ObString &plugin_name,
                          ObExternalDataEngine *&data_engine) override;
 
+  /// @copydoc ObIExternalDescriptor::discover_sub_plugins
+  /// Starts the JVM, asks the Java DataSourceFactory for the available data source names
+  /// (odps, jdbc, ...) and registers each one as an external plugin. Runs at most once.
+  int discover_sub_plugins(ObPluginParam *param) override;
+
 private:
   ObJavaDataSourceFactoryHelper data_source_factory_;
+
+  // Guards one-time discovery of data source sub-plugins. Discovery is global (the set of
+  // data sources is process-wide), so the flag/lock are static.
+  static bool         sub_plugins_discovered_;
+  static lib::ObMutex sub_plugins_discover_mutex_;
 };
 
 class ObJavaExternalDataEngine final : public ObExternalDataEngine

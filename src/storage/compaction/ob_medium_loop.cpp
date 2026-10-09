@@ -1,13 +1,5 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
-#include "ob_schedule_tablet_func.h"
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #define USING_LOG_PREFIX STORAGE_COMPACTION
 #include "ob_medium_loop.h"
 #include "storage/compaction/ob_tenant_tablet_scheduler.h"
@@ -16,10 +8,6 @@
 #include "storage/compaction/ob_tenant_compaction_progress.h"
 #include "share/ob_tablet_meta_table_compaction_operator.h"
 #include "storage/tx_storage/ob_ls_service.h"
-#ifdef OB_BUILD_SHARED_STORAGE
-#include "storage/compaction_v2/ob_ss_compact_helper.h"
-#include "storage/compaction_v2/ob_ss_schedule_tablet_func.h"
-#endif
 
 namespace oceanbase
 {
@@ -65,46 +53,6 @@ int ObMediumLoop::init(const int64_t batch_size)
   return ret;
 }
 
-class ObScheduleTabletFuncGuard final
-{
-public:
-  ObScheduleTabletFuncGuard(const int64_t merge_version, int64_t &loop_cnt) {
-    func_ = NULL;
-#ifdef OB_BUILD_SHARED_STORAGE
-    ss_func_ = NULL;
-    if (GCTX.is_shared_storage_mode()) {
-      ss_func_ = MTL_NEW(ObSSScheduleTabletFunc, "SS_ScheTablet", merge_version, ObAdaptiveMergePolicy::AdaptiveMergeReason::NONE, true, loop_cnt);
-      func_ = ss_func_;
-    } else {
-      func_ = MTL_NEW(ObScheduleTabletFunc, "SN_SchedTablet", merge_version, ObAdaptiveMergePolicy::AdaptiveMergeReason::NONE, loop_cnt);
-    }
-  #else
-    func_ = MTL_NEW(ObScheduleTabletFunc, "SN_SchedTablet", merge_version, ObAdaptiveMergePolicy::AdaptiveMergeReason::NONE, loop_cnt);
-  #endif
-  }
-  ObScheduleTabletFunc *get_func() const { return func_; }
-  ~ObScheduleTabletFuncGuard() {
-#ifdef OB_BUILD_SHARED_STORAGE
-    if (ss_func_) {
-      ss_func_->~ObSSScheduleTabletFunc();
-      mtl_free(ss_func_);
-      ss_func_ = nullptr;
-      func_ = nullptr;
-    }
-#endif
-    if (func_) {
-      func_->~ObScheduleTabletFunc();
-      mtl_free(func_);
-      func_ = nullptr;
-    }
-  }
-private:
-  ObScheduleTabletFunc *func_;
-#ifdef OB_BUILD_SHARED_STORAGE
-  ObSSScheduleTabletFunc *ss_func_;
-#endif
-};
-
 int ObMediumLoop::loop()
 {
   int ret = OB_SUCCESS;
@@ -112,13 +60,11 @@ int ObMediumLoop::loop()
 
   ObLSHandle ls_handle;
   ObLS *ls = nullptr;
-  // merge_version_ may be larger than loop_version_ by other thread,
-  // keep using merge_version_ can make the medium loop faster
-  ObScheduleTabletFuncGuard func_guard(merge_version_, loop_cnt_);
-  ObScheduleTabletFunc *func = func_guard.get_func();
-  if (OB_ISNULL(func)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc SchedTabletFunc fail", K(ret));
+  ObScheduleTabletFunc func(merge_version_, ObAdaptiveMergePolicy::AdaptiveMergeReason::NONE, loop_cnt_);
+  if (is_during_tenant_major()) {
+    if (OB_FAIL(func.refresh_mlog_purge_scn_cache(merge_version_))) {
+      LOG_WARN("failed to refresh or init mlog purge scn map", KR(ret), K(func));
+    }
   }
   ObLSID ls_id;
   schedule_stats_.all_ls_weak_read_ts_ready_ = true;
@@ -134,8 +80,8 @@ int ObMediumLoop::loop()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("ls is null", K(ret), K(ls));
     } else if (FALSE_IT(ls_id = ls->get_ls_id())) {
-    } else if (OB_TMP_FAIL(loop_in_ls(ls_handle, *func))) {
-      LOG_TRACE("failed to loop ls", KR(ret), KPC(ls), KPC(func));
+    } else if (OB_TMP_FAIL(loop_in_ls(ls_handle, func))) {
+      LOG_TRACE("failed to loop ls", KR(ret), KPC(ls), K(func));
       ls_tablet_iter_.skip_cur_ls(); // for any errno, skip cur ls
       ls_tablet_iter_.update_merge_finish(false);
       if (OB_SIZE_OVERFLOW == tmp_ret) {
@@ -146,16 +92,14 @@ int ObMediumLoop::loop()
     }
     if (OB_SUCC(ret) && ls_tablet_iter_.need_report_scn()) {
       // loop tablet_meta table to update smaller report_scn because of migration
-      tmp_ret = update_report_scn_as_ls_leader(*ls, *func);
+      tmp_ret = update_report_scn_as_ls_leader(*ls, func);
 #ifndef ERRSIM
       LOG_INFO("try to update report scn as ls leader", K(tmp_ret), K(ls_id)); // low printing frequency
 #endif
     }
   } // while
   LOG_TRACE("finish schedule ls medium merge", K(tmp_ret), K(ret), K_(ls_tablet_iter), K(ls_id));
-  if (OB_NOT_NULL(func)) {
-    add_event_and_diagnose(*func);
-  }
+  add_event_and_diagnose(func);
   return ret;
 }
 
@@ -174,6 +118,12 @@ int ObMediumLoop::loop_in_ls(
       ls_tablet_iter_.update_merge_finish(false);
       schedule_stats_.all_ls_weak_read_ts_ready_ = false;
     }
+  } else if (!is_during_tenant_major() &&
+              func.get_ls_status().is_leader_ &&
+                OB_FAIL(func.refresh_mlog_purge_scn_cache(
+                  func.get_ls_status().weak_read_ts_.get_val_for_tx()))) {
+    LOG_WARN("failed to refresh or init mlog purge scn map", KR(ret), K(ls_id),
+             K(func));
   } else {
     ObTabletHandle tablet_handle;
     ObTablet *tablet = nullptr;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_PUSH_DOWN_DISTINCT_RULE_H
@@ -64,7 +57,11 @@ public:
 struct ObDistinctPushdownContext : public RewriterContext
 {
   ObDistinctPushdownContext()
-      : RewriterContext(), enable_reshuffle_(false), enable_place_distinct_(false), benefit_from_reshuffle_(false)
+      : RewriterContext(),
+        enable_reshuffle_(false),
+        enable_place_distinct_(false),
+        benefit_from_reshuffle_(false),
+        in_broadcast_side_path_(false)
   {}
   virtual ~ObDistinctPushdownContext() {}
 
@@ -75,6 +72,7 @@ struct ObDistinctPushdownContext : public RewriterContext
     enable_reshuffle_ = false;
     enable_place_distinct_ = false;
     benefit_from_reshuffle_ = false;
+    in_broadcast_side_path_ = false;
   }
 
   int merge_with(const common::ObIArray<ObRawExpr*> &lower_distinct_exprs,
@@ -115,7 +113,16 @@ struct ObDistinctPushdownContext : public RewriterContext
   // we should disable reshuffle to avoid unnecessary shuffle operations.
   bool benefit_from_reshuffle_;
 
-  TO_STRING_KV(K_(distinct_exprs), K_(enable_reshuffle), K_(enable_place_distinct), K_(benefit_from_reshuffle));
+  // Whether current pushdown path is still inside join-broadcast side before crossing
+  // the real BROADCAST/BC2HOST exchange node.
+  // When true, placing distinct must be disabled on this path.
+  bool in_broadcast_side_path_;
+
+  TO_STRING_KV(K_(distinct_exprs),
+               K_(enable_reshuffle),
+               K_(enable_place_distinct),
+               K_(benefit_from_reshuffle),
+               K_(in_broadcast_side_path));
 };
 
 struct ObDistinctPushdownResult {

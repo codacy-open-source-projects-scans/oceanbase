@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_BLOCKSSTABLE_OB_STORAGE_OBJECT_TYPE_H_
@@ -69,6 +62,7 @@ enum class ObStorageObjectType : uint8_t
     SHARED_MINI_V2_META_MACRO = 85,
     SHARED_MINOR_V2_DATA_MACRO = 86,
     SHARED_MINOR_V2_META_MACRO = 87,
+    SHARED_TABLET_MACRO_DIFF = 88,
     MAX
 };
 static constexpr uint8_t SS_OBJECT_MAX_TYPE_VAL = static_cast<uint8_t>(ObStorageObjectType::MAX);
@@ -1419,6 +1413,22 @@ public:
 #endif
   virtual int opt_to_string(char *buf, const int64_t buf_len, int64_t &pos, const ObStorageObjectOpt &opt) const;
   virtual int get_object_id(const ObStorageObjectOpt &opt, MacroBlockId &object_id) const;
+};
+
+/**
+ * ---------------------------------------ObSharedTabletMacroDiffType----------------------------------------
+ */
+class ObSharedTabletMacroDiffType : public ObStorageObjectTypeBase
+{
+public:
+  ObSharedTabletMacroDiffType() : ObStorageObjectTypeBase(ObStorageObjectType::SHARED_TABLET_MACRO_DIFF) {}
+  virtual ~ObSharedTabletMacroDiffType() {}
+  virtual bool is_tablet_meta() const { return true; }
+  virtual bool is_shared() const { return true; }
+  virtual bool is_direct_read() const { return true; }
+  virtual uint8_t write_strategy() const { return 1; }
+  virtual bool is_path_include_inner_tablet() const { return true; }
+  virtual bool is_valid(const MacroBlockId &file_id) const;
 };
 
 } // end namespace blocksstable

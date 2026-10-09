@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_DEPS_OBJIT_INCLUDE_OBJIT_OB_LLVM_HELPER_H_
@@ -37,6 +30,7 @@ class BasicBlock;
 class LandingPadInst;
 class SwitchInst;
 class DWARFContext;
+class PHINode;
 };
 
 namespace oceanbase
@@ -53,6 +47,7 @@ class ObJitAllocator;
 class ObDIRawData;
 class ObDWARFContext;
 }
+
 
 class ObDIRawData
 {
@@ -346,6 +341,24 @@ private:
 //  llvm::SwitchInst *v_;
 };
 
+class ObLLVMPhi : public ObLLVMValue
+{
+public:
+  ObLLVMPhi() : ObLLVMValue(nullptr) {}
+  virtual ~ObLLVMPhi() {}
+
+  TO_STRING_KV(KP_(v))
+
+  inline llvm::PHINode *get_v() { return reinterpret_cast<llvm::PHINode *>(v_); }
+  inline void set_v(llvm::PHINode *v) { v_ = reinterpret_cast<llvm::Value *>(v); }
+
+public:
+  int add_incoming(ObLLVMValue &value, ObLLVMBasicBlock &block);
+
+private:
+//  llvm::PHINode *v_;
+};
+
 class ObLLVMDIScope;
 class ObLLVMHelper
 {
@@ -377,6 +390,8 @@ public:
   void dump_module();
   void dump_debuginfo();
   int verify_module();
+  void ensure_registered();
+  void unregister_eh_frame();
   int get_function_address(const common::ObString &name, uint64_t &addr);
   static void add_symbol(const common::ObString &name, void *value);
 
@@ -413,6 +428,7 @@ public:
   int create_add(ObLLVMValue &value1, const int64_t &value2, ObLLVMValue &result);
   int create_sub(ObLLVMValue &value1, ObLLVMValue &value2, ObLLVMValue &result);
   int create_sub(ObLLVMValue &value1, const int64_t &value2, ObLLVMValue &result);
+  int create_or(ObLLVMValue &value1, ObLLVMValue &value2, ObLLVMValue &result);
   int create_ret(ObLLVMValue &value);
   int create_gep(const common::ObString &name, ObLLVMValue &value, common::ObIArray<int64_t> &idxs, ObLLVMValue &result);
   int create_gep(const common::ObString &name, ObLLVMValue &value, common::ObIArray<ObLLVMValue> &idxs, ObLLVMValue &result);
@@ -435,7 +451,7 @@ public:
                  ObLLVMType &type,
                  ObIArray<std::pair<ObLLVMValue, ObLLVMBasicBlock>> &incoming,
                  ObLLVMValue &result);
-
+  int create_phi(const common::ObString &name, ObLLVMType &type, ObLLVMPhi &result);
   int create_global_string(const common::ObString &str, ObLLVMValue &result);
   int set_insert_point(const ObLLVMBasicBlock &block);
   int set_insert_point(ObLLVMValue &value);
@@ -486,6 +502,15 @@ private:
   common::ObIAllocator &allocator_;
   core::JitContext *jc_;
   core::ObOrcJit *jit_;
+};
+
+class ObLLVMRegisterGuard
+{
+public:
+  explicit ObLLVMRegisterGuard(ObLLVMHelper &h) : h_(h) { h_.ensure_registered(); }
+  virtual ~ObLLVMRegisterGuard() { h_.unregister_eh_frame(); }
+private:
+  ObLLVMHelper &h_;
 };
 
 typedef common::ObFastArray<ObLLVMType, 8> ObLLVMTypeArray;
@@ -596,6 +621,8 @@ private:
   int64_t DebugLen;
   core::ObDWARFContext *Context;
 };
+
+
 
 }
 }

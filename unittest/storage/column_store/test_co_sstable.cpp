@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -416,7 +409,7 @@ TEST_F(TestCOSSTable, empty_co_table_test)
   ObCOSSTableV2 *co_table = static_cast<ObCOSSTableV2 *>(co_table_handle.get_table());
   EXPECT_EQ(0, co_table->meta_->cg_sstables_.count());
   EXPECT_EQ(true, co_table->is_empty());
-  EXPECT_EQ(storage_schema.get_column_group_count(), co_table->get_cs_meta().column_group_cnt_);
+  EXPECT_EQ(storage_schema.column_group_array_.count(), co_table->get_cs_meta().column_group_cnt_);
 }
 
 TEST_F(TestCOSSTable, copy_from_old_sstable_test)

@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
 
 #include "ob_vsag_adaptor.h"
 #include <map>
+#include <stdexcept>
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
 #include "vsag/dataset.h"
@@ -22,6 +16,7 @@
 #include "vsag/options.h"
 #include "vsag/factory.h"
 #include "lib/utility/ob_print_utils.h"
+#include "lib/utility/ob_tracepoint.h"
 #include "lib/oblog/ob_log.h"
 #include "lib/worker.h"
 #include "lib/allocator/ob_allocator.h"
@@ -200,6 +195,7 @@ public:
                             char *extra_infos);
   int get_raw_vector_by_ids(const int64_t *ids, int64_t count, float *&vectors, void *allocator = nullptr, int64_t dim = 0);
   int get_vid_bound(int64_t &min_vid, int64_t &max_vid);
+  int check_id_exist(int64_t id, bool &exist);
   uint64_t estimate_memory(const uint64_t row_count, const bool is_build);
   int knn_search(const vsag::DatasetPtr &query, int64_t topk,
                  const std::string &parameters, const float *&dist,
@@ -222,6 +218,7 @@ public:
   inline int get_max_degree() const { return max_degree_; }
   inline int get_ef_construction() const { return ef_construction_; }
   inline int get_index_type() const { return (int)index_type_; }
+  void set_index_type(IndexType t) { index_type_ = t; }
   const char *get_dtype() const { return dtype_; }
   const char *get_metric() const { return metric_; }
   inline int get_ef_search() const { return ef_search_; }
@@ -404,6 +401,24 @@ int HnswIndexHandler::get_vid_bound(int64_t &min_vid, int64_t &max_vid)
   return ret;
 }
 
+int HnswIndexHandler::check_id_exist(int64_t id, bool &exist)
+{
+  int ret = OB_SUCCESS;
+  try {
+    exist = index_->CheckIdExist(id);
+  } catch (const std::runtime_error &e) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("[OBVSAG] CheckIdExist not supported or runtime error", K(ret), K(id), K(e.what()));
+  } catch (const std::exception &e) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("[OBVSAG] CheckIdExist unexpected exception", K(ret), K(id), K(e.what()));
+  } catch (...) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("[OBVSAG] CheckIdExist unknown exception", K(ret), K(id));
+  }
+  return ret;
+}
+
 uint64_t HnswIndexHandler::estimate_memory(const uint64_t row_count, const bool is_build)
 {
 
@@ -499,8 +514,10 @@ int HnswIndexHandler::knn_search(const vsag::DatasetPtr &query, int64_t topk,
                                  bitmap == nullptr ? nullptr : vsag_filter,
                                  vsag_allocator, input_iter, is_last_search);
   tl::expected<std::shared_ptr<vsag::Dataset>, vsag::Error> result = index_->KnnSearch(query, topk, search_param);
+  // may be iter_ctx is alloc, but query failed.
+  // so we need to store it always, and release by upper layer
+  iter_ctx = search_param.iter_ctx;
   if (result.has_value()) {
-    iter_ctx = search_param.iter_ctx;
     result.value()->Owner(false);
     ids = result.value()->GetIds();
     dist = result.value()->GetDistances();
@@ -638,7 +655,7 @@ int construct_vsag_create_param(
     uint8_t create_type, const char *dtype, const char *metric, int dim,
     int max_degree, int ef_construction, int ef_search, void *allocator,
     int extra_info_size, int16_t refine_type, int16_t bq_bits_query,
-    bool bq_use_fht, bool store_raw_vector, char *result_param_str)
+    bool bq_use_fht, bool store_raw_vector, bool use_reorder, char *result_param_str)
 {
   int ret = OB_SUCCESS;
   bool is_hgraph_type = get_is_hgraph_type(create_type);
@@ -701,7 +718,7 @@ int construct_vsag_create_param(
                                      ",\"max_degree\":%d",
                                      max_degree))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(max_degree));
-  } else if (create_type == HGRAPH_TYPE && store_raw_vector &&
+  } else if (create_type == HGRAPH_TYPE &&
              OB_FAIL(databuff_printf(result_param_str, buf_len, pos,
                                  ",\"store_raw_vector\":true"))) {
     LOG_WARN("failed to fill store_raw_vector", K(ret));
@@ -716,12 +733,17 @@ int construct_vsag_create_param(
                                      ",\"build_thread_count\":%d",
                                      0))) {
     LOG_WARN("failed to fill result_param_str", K(ret));
-  } else if (create_type == HNSW_BQ_TYPE &&
+  } else if (is_hgraph_type &&
+             OB_FAIL(databuff_printf(result_param_str, buf_len, pos,
+                                     ",\"label_remap_type\":\"%s\"",
+                                     "robin"))) {
+    LOG_WARN("failed to fill result_param_str", K(ret));
+  } else if (use_reorder && create_type == HNSW_BQ_TYPE &&
              OB_FAIL(databuff_printf(
                  result_param_str, buf_len, pos,
                  ",\"use_reorder\":true"))) {
     LOG_WARN("failed to fill result_param_str", K(ret));
-  } else if (create_type == HNSW_BQ_TYPE &&
+  } else if (use_reorder && create_type == HNSW_BQ_TYPE &&
              OB_FAIL(databuff_printf(
                  result_param_str, buf_len, pos,
                  ",\"ignore_reorder\":true"))) {
@@ -769,7 +791,7 @@ int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, co
   const bool deserialize_without_footer = true;
   const bool deserialize_without_buffer = true;
   bool use_quantization = create_type == IPIVF_TYPE ? false : true;
-  const uint32_t term_id_limit = 500000;
+  const uint32_t term_id_limit = 1000000;
   const uint32_t DEFAULT_AVG_DOC_TERM_LENGTH = 120;
   if (avg_doc_term_length == 0) {
     avg_doc_term_length = DEFAULT_AVG_DOC_TERM_LENGTH;
@@ -824,7 +846,8 @@ int construct_vsag_sindi_create_param(uint8_t create_type, const char *dtype, co
 int construct_vsag_search_param(uint8_t create_type,
                                 int64_t ef_search,
                                 bool use_extra_info_filter,
-                                char *result_param_str)
+                                char *result_param_str,
+                                float timeout_ms)
 {
   int ret = OB_SUCCESS;
   bool is_hgraph_type = get_is_hgraph_type(create_type);
@@ -847,6 +870,11 @@ int construct_vsag_search_param(uint8_t create_type,
                         pos,
                         ",\"skip_ratio\":%f", 0.7))) {
     LOG_WARN("failed to fill result_param_str", K(ret), K(index_type_str));
+  } else if (timeout_ms > 0.0 && OB_FAIL(databuff_printf(result_param_str,
+                        buf_len,
+                        pos,
+                        ",\"timeout_ms\":%.4f", timeout_ms))) {
+    LOG_WARN("failed to fill result_param_str timeout_ms", K(ret), K(timeout_ms));
   } else if (is_hgraph_type && OB_FAIL(databuff_printf(result_param_str,
                         buf_len,
                         pos,
@@ -934,7 +962,7 @@ int create_index(VectorIndexPtr &index_handler,
     if (OB_FAIL(construct_vsag_create_param(
         uint8_t(index_type), dtype, metric, dim, max_degree,
         ef_construction, ef_search, allocator, extra_info_size,
-        refine_type, bq_bits_query, bq_use_fht, store_raw_vector, result_param_str))) {
+        refine_type, bq_bits_query, bq_use_fht, store_raw_vector, true, result_param_str))) {
       LOG_WARN("construct_vsag_create_param fail", K(ret), K(index_type));
     } else {
       const std::string input_json_str(result_param_str);
@@ -1078,6 +1106,43 @@ int build_index(VectorIndexPtr &index_handler, uint32_t *lens, uint32_t *dims, f
     }
     if (OB_FAIL(handler->build_index(dataset))) {
       LOG_WARN("[OBVSAG] build index error happend", K(ret));
+    }
+  }
+  return ret;
+}
+
+int tune_index(VectorIndexPtr &index_handler, int new_index_type)
+{
+  int ret = OB_SUCCESS;
+  if (index_handler == nullptr) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("[OBVSAG] tune null pointer", K(index_handler));
+  } else {
+    HnswIndexHandler *hnsw = static_cast<HnswIndexHandler *>(index_handler);
+    int max_degree = static_cast<int>(hnsw->get_max_degree());
+    char result_param_str[1024];
+    if (OB_FAIL(construct_vsag_create_param(
+            new_index_type, hnsw->get_dtype(), hnsw->get_metric(), hnsw->get_dim(),
+            max_degree, hnsw->get_ef_construction(), hnsw->get_ef_search(),
+            hnsw->get_allocator(), static_cast<int>(hnsw->get_extra_info_size()),
+            hnsw->get_refine_type(), hnsw->get_bq_bits_query(), hnsw->get_bq_use_fht(),
+            (new_index_type == HGRAPH_TYPE), false, result_param_str))) {
+      LOG_WARN("[OBVSAG] construct_vsag_create_param for tune failed", K(ret), K(new_index_type), KP(index_handler));
+    } else {
+      std::string params_str(result_param_str);
+      tl::expected<bool, Error> result = hnsw->get_index()->Tune(params_str, true /* disable_future_tuning */);
+      if (result.has_value()) {
+        if (!result.value()) {
+          ret = OB_ERR_VSAG_RETURN_ERROR;
+          LOG_WARN("[OBVSAG] tune returned false", K(ret), KP(index_handler), K(new_index_type));
+        } else {
+          hnsw->set_index_type(static_cast<IndexType>(new_index_type));
+          LOG_INFO("[OBVSAG] tune returned true, index_type updated", K(ret), KP(index_handler), K(new_index_type));
+        }
+      } else {
+        ret = vsag_errcode2ob(result.error().type);
+        LOG_WARN("[OBVSAG] tune error", K(ret), K(result.error().type), KP(index_handler), K(new_index_type));
+      }
     }
   }
   return ret;
@@ -1233,7 +1298,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
                int64_t &result_size, int ef_search, bool need_extra_info,
                const char *&extra_infos, void *invalid, bool reverse_filter,
                bool use_extra_info_filter, void *allocator, float valid_ratio,
-               float distance_threshold)
+               float distance_threshold, float timeout_ms)
 {
   int ret = OB_SUCCESS;
   if (index_handler == nullptr || query_vector == nullptr) {
@@ -1254,7 +1319,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
       int64_t ef_search_threshold = AMPLIFICATION_FACTOR * topk > EF_SEARCH_LIMIT ? AMPLIFICATION_FACTOR * topk : EF_SEARCH_LIMIT;
       ef_search = ef_search < ef_search_threshold ? ef_search : ef_search_threshold;
     }
-    if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str))) {
+    if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str, timeout_ms))) {
       LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter), K(topk));
     } else {
       const std::string input_json_string(result_param_str);
@@ -1275,7 +1340,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
                int64_t &result_size, int ef_search, bool need_extra_info,
                const char *&extra_infos, void *invalid, bool reverse_filter,
                bool use_extra_info_filter, float valid_ratio, void *&iter_ctx,
-               bool is_last_search, void *allocator)
+               bool is_last_search, void *allocator, float timeout_ms)
 {
   int ret = OB_SUCCESS;
   if (index_handler == nullptr || query_vector == nullptr) {
@@ -1296,7 +1361,7 @@ int knn_search(VectorIndexPtr &index_handler, float *query_vector,
       int64_t ef_search_threshold = AMPLIFICATION_FACTOR * topk > EF_SEARCH_LIMIT ? AMPLIFICATION_FACTOR * topk : EF_SEARCH_LIMIT;
       ef_search = ef_search < ef_search_threshold ? ef_search : ef_search_threshold;
     }
-    if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str))) {
+    if (OB_FAIL(construct_vsag_search_param(uint8_t(index_type), ef_search, use_extra_info_filter, result_param_str, timeout_ms))) {
       LOG_WARN("[OBVSAG] construct_vsag_search_param fail", K(ret), K(index_type), K(ef_search), K(use_extra_info_filter), K(topk));
     } else {
       const std::string input_json_string(result_param_str);
@@ -1453,6 +1518,21 @@ uint64_t estimate_memory(VectorIndexPtr &index_handler, const uint64_t row_count
     estimate_memory_size = hnsw->estimate_memory(row_count, is_build);
   }
   return estimate_memory_size;
+}
+
+int check_id_exist(VectorIndexPtr &index_handler, int64_t id, bool &exist)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(index_handler)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("[OBVSAG] null pointer addr", K(ret), KP(index_handler));
+  } else {
+    HnswIndexHandler *hnsw = static_cast<HnswIndexHandler *>(index_handler);
+    if (OB_FAIL(hnsw->check_id_exist(id, exist))) {
+      LOG_WARN("[OBVSAG] check_id_exist error happend", K(ret), K(id));
+    }
+  }
+  return ret;
 }
 
 int immutable_optimize(VectorIndexPtr& index_handler)

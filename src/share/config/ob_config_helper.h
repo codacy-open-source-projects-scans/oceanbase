@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_CONFIG_OB_CONFIG_HELPER_H_
@@ -457,6 +450,17 @@ public:
   bool check(const ObConfigItem &t) const;
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigAuditLogStrategyChecker);
+};
+
+class ObConfigAuditLogEncryptionChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigAuditLogEncryptionChecker() {}
+  virtual ~ObConfigAuditLogEncryptionChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigAuditLogEncryptionChecker);
 };
 
 class ObConfigWorkAreaPolicyChecker
@@ -1113,6 +1117,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigEnableHashRollupChecker);
 };
 
+class ObConfigVecHashAlgoChecker: public ObConfigChecker
+{
+public:
+  ObConfigVecHashAlgoChecker() {}
+  virtual ~ObConfigVecHashAlgoChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigVecHashAlgoChecker);
+};
+
 class ObConfigPxNodePolicyChecker: public ObConfigChecker
 {
 public:
@@ -1310,6 +1324,17 @@ public:
 private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigEvictOldSSTablePolicyChecker);
 };
+
+class ObConfigFunctionRoundDialectChecker : public ObConfigChecker
+{
+public:
+  ObConfigFunctionRoundDialectChecker() {}
+  virtual ~ObConfigFunctionRoundDialectChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigFunctionRoundDialectChecker);
+};
+
 // Checker for comma-separated string list (e.g., "item1,item2,item3" or single "item")
 class ObConfigCommaSeparatedStringChecker : public ObConfigChecker
 {
@@ -1321,6 +1346,16 @@ private:
   DISALLOW_COPY_AND_ASSIGN(ObConfigCommaSeparatedStringChecker);
 };
 
+class ObConfigSchemaHistoryArchiveExpireTimeChecker
+  : public ObConfigChecker
+{
+public:
+  ObConfigSchemaHistoryArchiveExpireTimeChecker() {}
+  virtual ~ObConfigSchemaHistoryArchiveExpireTimeChecker() {}
+  bool check(const ObConfigItem &t) const;
+private:
+  DISALLOW_COPY_AND_ASSIGN(ObConfigSchemaHistoryArchiveExpireTimeChecker);
+};
 } // namespace common
 } // namespace oceanbase
 

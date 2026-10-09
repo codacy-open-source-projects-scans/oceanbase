@@ -946,16 +946,6 @@ def check_enable_logonly_replica(cur, query_cur):
   else:
     logging.info('check enable_logonly_replica success')
 
-# 检查是否开启了app_trace_id，如果开启了app_trace_id则不允许升级到44x版本
-def check_enable_record_trace_id(cur, query_cur):
-  sql = """select count(1) from GV$OB_PARAMETERS where name like '%enable_record_trace_id%' and value like '%true%'"""
-  (desc, results) = query_cur.exec_query(sql)
-  if 0 != results[0][0]:
-    fail_list.append("enable_record_trace_id should be false")
-    logging.info('check enable_record_trace_id failed, can not upgrade because enable_record_trace_id should be false')
-  else:
-    logging.info('check enable_record_trace_id success')
-
 # 检查cs_encoding格式是否兼容，对小于4.3.3版本的cpu不支持avx2指令集的集群，我们要求升级前schema上不存在cs_encoding的存储格式
 # 注意：这里对混布集群 / schema上row_format进行了ddl变更的场景无法做到完全的防御
 def check_cs_encoding_arch_dependency_compatiblity(query_cur, cpu_arch):
@@ -1098,6 +1088,68 @@ def check_cos_archive_and_backup(query_cur):
   else:
     logging.info("check upgrade for cos:// prefix in archive, backup and restore task failed")
 
+# 检查是否存在列存表上创建的向量索引, 如果存在则不允许升级到新版本
+def check_vector_index_exist_on_column_table(query_cur):
+  batch_size = 20
+  sql = """select distinct value from GV$OB_PARAMETERS where name='min_observer_version'"""
+  (desc, results) = query_cur.exec_query(sql)
+  if len(results) != 1:
+    fail_list.append('min_observer_version is not sync')
+  elif len(results[0]) != 1:
+    fail_list.append('column cnt not match')
+  else:
+    min_cluster_version = get_version(results[0][0])
+    if min_cluster_version < get_version("4.3.3.0"):
+      logging.info("Cluster version < 4.3.3.0, skip vector index check")
+    else:
+      sql = "select tenant_id from oceanbase.__all_tenant"
+      (desc, results) = query_cur.exec_query(sql)
+      for row in results:
+        tenant_id = row[0]
+        sql = """
+          SELECT DISTINCT data_table_id
+          FROM oceanbase.__all_virtual_vector_index_info
+          WHERE tenant_id = {0} AND data_table_id > 0
+        """.format(tenant_id)
+        (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
+        data_table_ids = []
+        for result in results:
+          data_table_ids.append(result[0])
+        if len(data_table_ids) == 0:
+          logging.info("check vector index exist success in tenant {0}, no vector index found".format(tenant_id))
+        else:
+          found_on_column_table = False
+          for i in range(0, len(data_table_ids), batch_size):
+            batch_ids = data_table_ids[i:i + batch_size]
+            table_id_str = ','.join(map(str, batch_ids))
+            sql = """
+              SELECT t.tenant_id, t.table_id, t.table_name, t.database_id
+              FROM oceanbase.__all_virtual_table t
+              WHERE t.tenant_id = {0}
+                AND t.table_id IN ({1})
+                AND t.table_type = 3
+                AND t.data_table_id = 0
+                AND t.column_store = 1
+                AND EXISTS (
+                  SELECT 1
+                  FROM oceanbase.__all_virtual_column_group cg
+                  WHERE cg.tenant_id = t.tenant_id
+                    AND cg.table_id = t.table_id
+                    AND cg.column_group_type NOT IN (0, 1)
+                )
+              LIMIT 1
+            """.format(tenant_id, table_id_str)
+            (desc, results) = query_cur.exec_query(sql, print_when_succ=False)
+            if len(results) > 0:
+              fail_list.append("exist vector index on column table in the cluster, upgrade to current version is not supported")
+              logging.info("check vector index exist failed, found vector index on column table in tenant {0}".format(tenant_id))
+              found_on_column_table = True
+              break
+          if found_on_column_table:
+            break
+          else:
+            logging.info("check vector index exist success in tenant {0}".format(tenant_id))
+
 
 # 开始升级前的检查
 def do_check(my_host, my_port, my_user, my_passwd, timeout, upgrade_params, cpu_arch):
@@ -1143,7 +1195,7 @@ def do_check(my_host, my_port, my_user, my_passwd, timeout, upgrade_params, cpu_
       # all check func should execute before check_fail_list
       check_direct_load_job_exist(cur, query_cur)
       check_enable_logonly_replica(cur, query_cur)
-      check_enable_record_trace_id(cur, query_cur)
+      check_vector_index_exist_on_column_table(query_cur)
       check_fail_list()
       modify_server_permanent_offline_time(cur)
     except Exception as e:

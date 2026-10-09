@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_i_tablet_mds_customized_interface.h"
@@ -67,6 +60,45 @@ int ObITabletMdsCustomizedInterface::get_latest_split_data(
     } else if (CLICK_FAIL((cross_ls_get_latest<ObTabletSplitMdsUserData>(
         src,
         ReadSplitDataOp(data),
+        writer,
+        trans_stat,
+        trans_version,
+        read_seq)))) {
+      if (OB_EMPTY_RESULT != ret) {
+        MDS_LOG_GET(WARN, "fail to cross ls get latest", K(lbt()));
+      }
+    }
+  }
+  return ret;
+  #undef PRINT_WRAPPER
+}
+
+int ObITabletMdsCustomizedInterface::get_latest_random_part_data(
+    ObTabletRandomMdsUserData &data,
+    mds::MdsWriter &writer,
+    mds::TwoPhaseCommitState &trans_stat,
+    share::SCN &trans_version,
+    const int64_t read_seq) const
+{
+  #define PRINT_WRAPPER KR(ret), K(data)
+  MDS_TG(10_ms);
+  int ret = OB_SUCCESS;
+  if (OB_UNLIKELY(!check_is_inited_())) {
+    ret = OB_NOT_INIT;
+    MDS_LOG_GET(WARN, "not inited");
+  } else {
+    ObITabletMdsInterface *src = nullptr;
+    ObTabletHandle src_tablet_handle;
+    if (get_tablet_meta_().has_transfer_table()) {
+      if (CLICK_FAIL(get_src_tablet_handle_and_base_ptr_(src_tablet_handle, src))) {
+        MDS_LOG(WARN, "fail to get src tablet handle", K(ret), K(get_tablet_meta_()));
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (CLICK_FAIL((cross_ls_get_latest<ObTabletRandomMdsUserData>(
+        src,
+        ReadRandomPartDataOp(data),
         writer,
         trans_stat,
         trans_version,

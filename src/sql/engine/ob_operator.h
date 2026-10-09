@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENGINE_OB_OPERATOR_H_
@@ -133,6 +126,10 @@ public:
 
   int assign(const ObBatchRescanParams &other);
   int deep_copy_param(const common::ObObjParam &org_param, common::ObObjParam &new_param);
+  // for subplan filter extract params for subplan with px batch rescan
+  int extract_params_by_range(const common::ObIArray<int64_t> &param_end_idxs_per_child,
+                               int64_t child_idx,
+                               ObBatchRescanParams &output);
 public:
   common::ObArenaAllocator allocator_;
   common::ObSArray<sql::ObTMArray<common::ObObjParam>> params_;
@@ -348,6 +345,7 @@ public:
   bool need_check_output_datum_;
   bool use_rich_format_;
   ObCompressorType compress_type_;
+  bool is_block_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObOpSpec);

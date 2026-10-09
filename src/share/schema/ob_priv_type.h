@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SCHEMA_OB_PRIV_TYPE_H_
@@ -156,6 +149,11 @@ enum OB_PRIV_SHIFT
 #define OB_PRIV_ACCESS_AI_MODEL OB_PRIV_GET_TYPE(OB_PRIV_ACCESS_AI_MODEL_SHIFT)
 #define OB_PRIV_CREATE_SENSITIVE_RULE   OB_PRIV_GET_TYPE(OB_PRIV_CREATE_SENSITIVE_RULE_SHIFT)
 #define OB_PRIV_PLAINACCESS             OB_PRIV_GET_TYPE(OB_PRIV_PLAINACCESS_SHIFT)
+#define OB_PRIV_APPLICATION_PASSWORD_ADMIN OB_PRIV_GET_TYPE(OB_PRIV_APPLICATION_PASSWORD_ADMIN_SHIFT)
+
+#define OB_PRIV_REGISTER      OB_PRIV_CREATE
+#define OB_PRIV_UNREGISTER    OB_PRIV_DROP
+#define OB_PRIV_ACCESS        OB_PRIV_SELECT
 
 #define OB_PRIV_ALL                                                             \
   (OB_PRIV_ALTER | OB_PRIV_CREATE | OB_PRIV_CREATE_USER | OB_PRIV_DELETE |      \
@@ -172,7 +170,7 @@ enum OB_PRIV_SHIFT
    OB_PRIV_TRIGGER | OB_PRIV_EVENT | OB_PRIV_CREATE_CATALOG |                   \
    OB_PRIV_USE_CATALOG | OB_PRIV_LOCK_TABLE | OB_PRIV_CREATE_SENSITIVE_RULE |   \
    OB_PRIV_CREATE_LOCATION | OB_PRIV_CREATE_AI_MODEL | OB_PRIV_ALTER_AI_MODEL | \
-   OB_PRIV_DROP_AI_MODEL | OB_PRIV_ACCESS_AI_MODEL)
+   OB_PRIV_DROP_AI_MODEL | OB_PRIV_ACCESS_AI_MODEL | OB_PRIV_APPLICATION_PASSWORD_ADMIN)
 
 #define OB_PRIV_CATALOG_ACC                                                   \
   (OB_PRIV_USE_CATALOG | OB_PRIV_ALTER | OB_PRIV_CREATE | OB_PRIV_DELETE |    \
@@ -207,6 +205,19 @@ enum OB_PRIV_SHIFT
 #define OB_PRIV_AI_MODEL_ACC                                                    \
   (OB_PRIV_CREATE_AI_MODEL | OB_PRIV_ALTER_AI_MODEL | OB_PRIV_DROP_AI_MODEL |  \
    OB_PRIV_ACCESS_AI_MODEL)
+
+
+// AI PROVIDER/GATEWAY object-level privileges reuse the global ALTER/CREATE/DROP
+// shift bits. They carry the AI-object meaning ONLY under OB_PRIV_AI_OBJECT_LEVEL
+// and are scoped by obj_name + obj_type in __all_obj_mysql_privilege, so they never
+// mix with user/db/table-level ALTER/CREATE/DROP. Any code that traverses or prints
+// a priv_set must branch on priv_level (e.g. SHOW GRANTS handles AI level separately).
+#define OB_PRIV_AI_PROVIDER_ACC \
+  (OB_PRIV_REGISTER | OB_PRIV_ALTER | OB_PRIV_UNREGISTER | OB_PRIV_ACCESS)
+
+#define OB_PRIV_AI_GATEWAY_ACC \
+  (OB_PRIV_CREATE | OB_PRIV_ALTER | OB_PRIV_DROP | OB_PRIV_ACCESS)
+
 // CREATE_SENSITIVE_RULE is not actually a sensitive-rule level priv
 // This is to prevent setting ALL_PRIVILEGES = PLAINACCESS when processing sensitive-rule level privs
 #define OB_PRIV_SENSITIVE_RULE_ACC \

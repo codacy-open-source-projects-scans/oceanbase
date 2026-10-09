@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -31,9 +24,13 @@
 #include "share/external_table/ob_external_table_utils.h"
 #include "storage/mview/cmd/ob_mview_executor_util.h"
 #include "storage/ob_partition_pre_split.h"
+#include "storage/tablet/ob_tablet_to_global_temporary_table_operator.h"
 #include "share/schema/ob_add_interval_part_controller.h"
+#include "share/schema/ob_dependency_info.h"
 #include "sql/engine/cmd/ob_interval_partition_utils.h"
 #include "storage/tablet/ob_session_tablet_helper.h"
+#include "share/stat/ob_dbms_stats_utils.h"
+#include "share/ob_get_compat_mode.h"
 
 namespace oceanbase
 {
@@ -41,6 +38,9 @@ using namespace common;
 using namespace share;
 using namespace share::schema;
 using namespace observer;
+
+ERRSIM_POINT_DEF(EN_CTAS_FAIL_AFTER_INSERT);
+
 namespace sql
 {
 
@@ -518,6 +518,14 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
 
         DEBUG_SYNC(BEFORE_EXECUTE_CTAS_CLEAR_SESSION_ID);
 
+        #ifdef ERRSIM
+        if (OB_SUCC(ret)) {
+          if (OB_FAIL(EN_CTAS_FAIL_AFTER_INSERT ? : OB_SUCCESS)) {
+            LOG_WARN("errsim: ctas fail after insert", K(ret));
+          }
+        }
+        #endif
+
         //4, 刷新schema, 将table的sess id重置为0
         if (OB_SUCC(ret)) {
           obrpc::ObAlterTableRes res;
@@ -588,13 +596,27 @@ int ObCreateTableExecutor::execute_ctas(ObExecContext &ctx,
           my_session->update_last_active_time();
           if (OB_LIKELY(need_clean)) {
             int tmp_ret = OB_SUCCESS;
-            obrpc::ObDDLRes res;
-            drop_table_arg.compat_mode_ = ORACLE_MODE == my_session->get_compatibility_mode() ?
-              lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL;
-            if (OB_SUCCESS != (tmp_ret = common_rpc_proxy->drop_table(drop_table_arg, res))) {
-              LOG_WARN("failed to drop table", K(drop_table_arg), K(ret));
+            // For GTT v2 (TMP_TABLE_ORA_SESS_V2/TMP_TABLE_ORA_TRX_V2), clean up session tablets
+            // before dropping schema to avoid orphan tablet records.
+            if (create_table_arg.schema_.is_oracle_tmp_table_v2()
+                && OB_INVALID_ID != create_table_res.table_id_) {
+              if (OB_TMP_FAIL(storage::ObSessionTabletDeleteHelper::delete_session_tablets_by_table_id(
+                    *my_session, tenant_id, create_table_res.table_id_))) {
+                LOG_WARN("failed to delete session tablets for ctas cleanup", K(tmp_ret),
+                         K(tenant_id), K(create_table_res.table_id_));
+              }
+            }
+            if (OB_TMP_FAIL(tmp_ret)) {
+              LOG_WARN("failed to clean session tablets, skip drop table", K(tmp_ret));
             } else {
-              LOG_INFO("table is created and dropped due to error ", K(ret));
+              obrpc::ObDDLRes res;
+              drop_table_arg.compat_mode_ = ORACLE_MODE == my_session->get_compatibility_mode() ?
+                lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL;
+              if (OB_SUCCESS != (tmp_ret = common_rpc_proxy->drop_table(drop_table_arg, res))) {
+                LOG_WARN("failed to drop table", K(drop_table_arg), K(ret));
+              } else {
+                LOG_INFO("table is created and dropped due to error ", K(ret));
+              }
             }
           }
         } else {
@@ -691,6 +713,7 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
               file_location,
               access_info,
               table_schema.get_external_file_pattern(),
+              table_schema.get_external_file_pattern_type(),
               table_schema.get_external_properties(),
               table_schema.is_partitioned_table(),
               regexp_vars,
@@ -703,6 +726,10 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
     create_table_arg.is_inner_ = my_session->is_inner();
     create_table_arg.consumer_group_id_ = THIS_WORKER.get_group_id();
     const_cast<obrpc::ObCreateTableArg&>(create_table_arg).ddl_stmt_str_ = first_stmt;
+    if (table_schema.is_materialized_view()) {
+      // for the first complete refresh task
+      create_table_arg.parallelism_ = (stmt.get_has_parallel_hint() ? stmt.get_parallelism() : 0);
+    }
     if (OB_ISNULL(task_exec_ctx = GET_TASK_EXECUTOR_CTX(ctx))) {
       ret = OB_NOT_INIT;
       LOG_WARN("get task executor context failed", K(ret));
@@ -781,10 +808,16 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
         const uint64_t part_id = -1;
         bool collect_statistics_on_create = false;
         bool is_odps_external_table = false;
+        share::schema::ObSchemaGetterGuard schema_guard;
         if (OB_FAIL(GCTX.schema_service_->async_refresh_schema(tenant_id,
                                                                res.schema_version_))) {
           LOG_WARN("failed to async refresh schema", KR(ret));
-        } else if (OB_FAIL(ObSQLUtils::is_odps_external_table(tenant_id, res.table_id_, is_odps_external_table))) {
+        } else if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
+          LOG_WARN("failed to get schema guard", K(ret));
+        } else if (OB_FAIL(ObSQLUtils::is_odps_external_table(schema_guard,
+                                                              tenant_id,
+                                                              res.table_id_,
+                                                              is_odps_external_table))) {
           LOG_WARN("failed to check is odps external table or not", K(ret));
         } else if (is_odps_external_table) {
           sql::ObExternalFileFormat ex_format;
@@ -800,6 +833,7 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
         if (OB_SUCC(ret) && !is_hive_table) {
           OZ(ObExternalTableFileManager::get_instance().update_inner_table_file_list(
               ctx,
+              schema_guard,
               tenant_id,
               res.table_id_,
               basic_file_infos,
@@ -900,6 +934,61 @@ int ObAlterTableExecutor::refresh_schema_for_table(
   }
   return ret;
 }
+static void check_column_op_types(const obrpc::ObAlterTableArg &arg,
+                                   bool &has_add, bool &has_drop)
+{
+  has_add = false;
+  has_drop = false;
+  const AlterTableSchema &alter_table_schema = arg.alter_table_schema_;
+  ObTableSchema::const_column_iterator it = alter_table_schema.column_begin();
+  ObTableSchema::const_column_iterator it_end = alter_table_schema.column_end();
+  for (; it != it_end && !(has_add && has_drop); ++it) {
+    if (OB_NOT_NULL(*it)) {
+      const AlterColumnSchema *alter_col = static_cast<const AlterColumnSchema *>(*it);
+      if (OB_DDL_ADD_COLUMN == alter_col->alter_type_) {
+        has_add = true;
+      } else if (OB_DDL_DROP_COLUMN == alter_col->alter_type_) {
+        has_drop = true;
+      }
+    }
+  }
+}
+
+static int check_can_parallel_alter_table_(
+       obrpc::ObAlterTableArg &arg,
+       const ObTableSchema *&orig_table_schema,
+       ObSchemaGetterGuard &schema_guard,
+       bool &can_parallel_alter)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = false;
+  const char *reason = nullptr;
+  bool has_add = false, has_drop = false;
+  if (arg.data_version_ < DATA_VERSION_4_6_1_0) {
+    reason = "data version not supported";
+  } else if (OB_ISNULL(orig_table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("orig table schema is null", KR(ret));
+  } else if (OB_FAIL(check_alter_table_arg_for_parallel(arg, can_parallel_alter, reason))) {
+    LOG_WARN("fail to check alter table arg for parallel", KR(ret));
+  } else if (!can_parallel_alter) {
+    // arg level check failed, reason already set by check_alter_table_arg_for_parallel
+  } else if (FALSE_IT(check_column_op_types(arg, has_add, has_drop))) {
+  } else if (has_drop
+             && OB_FAIL(check_drop_column_can_parallel(arg, *orig_table_schema, schema_guard, can_parallel_alter, reason))) {
+    LOG_WARN("fail to check drop column can parallel", KR(ret));
+  } else if (can_parallel_alter
+             && has_add
+             && OB_FAIL(check_add_column_can_parallel(arg, *orig_table_schema, can_parallel_alter, reason))) {
+    LOG_WARN("fail to check add column can parallel", KR(ret));
+  }
+  if (OB_SUCC(ret) && !can_parallel_alter) {
+    LOG_TRACE("cannot do parallel alter table, fall back to serial",
+              "reason", reason != nullptr ? reason : "unknown",
+              "table_name", arg.alter_table_schema_.get_origin_table_name());
+  }
+  return ret;
+}
 
 /* 从 3100 开始的版本 alter table 逻辑是将建索引和其他操作放到同一个 rpc 里发到 rs，返回后对每个创建的索引进行同步等，如果一个索引创建失败，则回滚全部索引
    mysql 模式下支持 alter table 同时做建索引操作和其他操作，需要保证 rs 在处理 drop index 之后再处理 add index
@@ -924,6 +1013,9 @@ int ObAlterTableExecutor::alter_table_rpc_v2(
   if (OB_ISNULL(my_session)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid argument", K(ret));
+  } else if (OB_ISNULL(common_rpc_proxy)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("common rpc proxy should not be null", KR(ret));
   } else {
     alter_table_arg.compat_mode_ = ORACLE_MODE == my_session->get_compatibility_mode() ?
             lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL;
@@ -974,7 +1066,11 @@ int ObAlterTableExecutor::alter_table_rpc_v2(
       }
     }
     ObPartitionPreSplit pre_split;
-    if (FAILEDx(populate_based_schema_obj_info_(alter_table_arg))) {
+    bool &can_parallel_alter = alter_table_arg.is_parallel_;
+    can_parallel_alter = false;
+    SMART_VAR(ObSchemaGetterGuard, schema_guard) {
+    const ObTableSchema *orig_table_schema = nullptr;
+    if (FAILEDx(populate_based_schema_obj_info_(orig_table_schema, alter_table_arg, schema_guard))) {
       LOG_WARN("fail to populate based schema obj info", KR(ret));
     } else if (OB_FAIL(pre_split.get_global_index_pre_split_schema_if_need(alter_table_schema.get_tenant_id(),
                                                             alter_table_arg.session_id_,
@@ -984,17 +1080,45 @@ int ObAlterTableExecutor::alter_table_rpc_v2(
       LOG_WARN("fail to get global index pre split schema if need", K(ret), K(alter_table_arg));
       //overwrite ret code
       ret = OB_SUCCESS;
-    } else if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, alter_table_arg.data_version_))) {
-      LOG_WARN("fail to get data version", KR(ret), K(tenant_id));
     }
+    if (FAILEDx(GET_MIN_DATA_VERSION(tenant_id, alter_table_arg.data_version_))) {
+      LOG_WARN("fail to get data version", KR(ret), K(tenant_id));
+    } else if (OB_FAIL(check_can_parallel_alter_table_(alter_table_arg, orig_table_schema, schema_guard, can_parallel_alter))) {
+      LOG_WARN("fail to check can parallel alter table", KR(ret));
+    }
+    } // end SMART_VAR(ObSchemaGetterGuard, schema_guard)
     DEBUG_SYNC(BEFORE_SEND_ALTER_TABLE);
 
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(common_rpc_proxy->alter_table(alter_table_arg, res))) {
-      LOG_WARN("rpc proxy alter table failed", KR(ret), "dst", common_rpc_proxy->get_server(), K(alter_table_arg));
-    } else {
-      // 在回滚时不会重试，也不检查 schema version
-      alter_table_arg.based_schema_object_infos_.reset();
+    } else if (can_parallel_alter) {
+      ObTimeoutCtx ctx;
+      if (OB_FAIL(ctx.set_timeout(common_rpc_proxy->get_timeout()))) {
+        LOG_WARN("fail to set timeout ctx", KR(ret));
+      } else if (OB_FAIL(common_rpc_proxy->parallel_alter_table(alter_table_arg, res))) {
+        if (OB_NOT_SUPPORTED_FOR_PARALLEL_DDL == ret) {
+          // RS returns OB_NOT_SUPPORTED_FOR_PARALLEL_DDL when the operation
+          // cannot be handled in parallel path; fall back to serial path.
+          ret = OB_SUCCESS;
+          can_parallel_alter = false;
+          LOG_INFO("parallel alter table not supported, fall back to serial path");
+        } else {
+          LOG_WARN("rpc proxy parallel alter table failed", KR(ret), "dst", common_rpc_proxy->get_server(), K(alter_table_arg));
+        }
+      } else {
+        alter_table_arg.based_schema_object_infos_.reset();
+        if (OB_FAIL(ObSchemaUtils::try_check_parallel_ddl_schema_in_sync(
+            ctx, my_session, tenant_id, res.schema_version_, false/*skip_consensus*/))) {
+          LOG_WARN("fail to check parallel ddl schema in sync", KR(ret));
+        }
+      }
+    }
+    if (OB_SUCC(ret) && !can_parallel_alter) {
+      if (OB_FAIL(common_rpc_proxy->alter_table(alter_table_arg, res))) {
+        LOG_WARN("rpc proxy alter table failed", KR(ret), "dst", common_rpc_proxy->get_server(), K(alter_table_arg));
+      } else {
+        // 在回滚时不会重试，也不检查 schema version
+        alter_table_arg.based_schema_object_infos_.reset();
+      }
     }
     DEBUG_SYNC(AFTER_SEND_ALTER_TABLE);
   }
@@ -1160,7 +1284,7 @@ int ObAlterTableExecutor::execute_alter_external_table(ObExecContext &ctx, ObAlt
       OZ (ObExternalTableUtils::get_external_file_location(arg.alter_table_schema_, schema_guard, ctx.get_allocator(), file_location));
       OZ (ObExternalTableUtils::get_external_file_location_access_info(arg.alter_table_schema_, schema_guard, access_info));
       if (OB_SUCC(ret) && ObSQLUtils::is_external_files_on_local_disk(file_location)) {
-        OZ (ObSQLUtils::check_location_access_priv(access_info, ctx.get_my_session()));
+        OZ (ObSQLUtils::check_location_access_priv(file_location, ctx.get_my_session()));
       }
       ObSqlString full_path;
       bool is_opt_hive_table = false;
@@ -1188,6 +1312,7 @@ int ObAlterTableExecutor::execute_alter_external_table(ObExecContext &ctx, ObAlt
                     file_location,
                     access_info,
                     arg.alter_table_schema_.get_external_file_pattern(),
+                    arg.alter_table_schema_.get_external_file_pattern_type(),
                     arg.alter_table_schema_.get_external_properties(),
                     arg.alter_table_schema_.is_partitioned_table(),
                     regexp_vars, ctx.get_allocator(),
@@ -1198,8 +1323,14 @@ int ObAlterTableExecutor::execute_alter_external_table(ObExecContext &ctx, ObAlt
         ObSEArray<ObAddr, 8> all_servers;
         ObSEArray<uint64_t, 64> updated_part_ids;
         OZ (GCTX.location_service_->external_table_get(stmt.get_tenant_id(), all_servers));
-        OZ (ObExternalTableFileManager::get_instance().update_inner_table_file_list(ctx, stmt.get_tenant_id(),
-                    arg.alter_table_schema_.get_table_id(), basic_file_infos, updated_part_ids, has_partition_changed));
+        OZ(ObExternalTableFileManager::get_instance().update_inner_table_file_list(
+            ctx,
+            schema_guard,
+            stmt.get_tenant_id(),
+            arg.alter_table_schema_.get_table_id(),
+            basic_file_infos,
+            updated_part_ids,
+            has_partition_changed));
         for (int64_t i = 0; OB_SUCC(ret) && i < updated_part_ids.count(); i++) {
           OZ (ObExternalTableFileManager::get_instance().flush_external_file_cache(stmt.get_tenant_id(),
                     arg.alter_table_schema_.get_table_id(), updated_part_ids.at(i), all_servers));
@@ -1310,8 +1441,12 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
           }
         }
         ObArray<share::ObExternalTableBasicFileInfo> basic_file_infos;
+        // 此处的ctx.get_sql_ctx()->schema_guard_没初始化
+        ObSchemaGetterGuard schema_guard;
         if (OB_FAIL(ret)) {
-        } else if (alter_table_arg.alter_part_type_ == ObAlterTableArg::ADD_PARTITION && alter_table_arg.alter_table_schema_.is_external_table()) {
+        } else if ((alter_table_arg.alter_part_type_ == ObAlterTableArg::ADD_PARTITION
+                    || alter_table_arg.alter_part_type_ == ObAlterTableArg::DROP_PARTITION)
+                   && alter_table_arg.alter_table_schema_.is_external_table()) {
           ObExprRegexpSessionVariables regexp_vars;
           ObSqlString full_path;
           CK (alter_table_arg.alter_table_schema_.get_part_array());
@@ -1319,8 +1454,7 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
           OZ (full_path.append(alter_table_arg.alter_table_schema_.get_part_array()[0]->get_external_location()));
           ObString file_location;
           ObString access_info;
-          // 此处的ctx.get_sql_ctx()->schema_guard_没初始化
-          ObSchemaGetterGuard schema_guard;
+
           if (OB_ISNULL(GCTX.schema_service_)) {
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("pointer is null", K(ret), KP(GCTX.schema_service_));
@@ -1351,6 +1485,7 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
                     full_file_location.string(),
                     access_info,
                     alter_table_arg.alter_table_schema_.get_external_file_pattern(),
+                    alter_table_arg.alter_table_schema_.get_external_file_pattern_type(),
                     alter_table_arg.alter_table_schema_.get_external_properties(),
                     alter_table_arg.alter_table_schema_.is_partitioned_table(),
                     regexp_vars,
@@ -1381,9 +1516,15 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
             if (alter_table_arg.alter_part_type_ == ObAlterTableArg::ADD_PARTITION) {
               if (res.res_arg_array_.size() > 0) {
                 int64_t part_id = res.res_arg_array_.at(0).part_object_id_;
-                OZ (ObExternalTableFileManager::get_instance().update_inner_table_file_list(
-                  ctx, tenant_id, alter_table_arg.alter_table_schema_.get_table_id(),
-                  basic_file_infos, updated_part_ids, has_partition_changed, part_id));
+                OZ(ObExternalTableFileManager::get_instance().update_inner_table_file_list(
+                    ctx,
+                    schema_guard,
+                    tenant_id,
+                    alter_table_arg.alter_table_schema_.get_table_id(),
+                    basic_file_infos,
+                    updated_part_ids,
+                    has_partition_changed,
+                    part_id));
               } else {
                 ret = OB_ERR_UNEXPECTED;
                 LOG_WARN("unexpected error", K(ret));
@@ -1392,9 +1533,15 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
               if (res.res_arg_array_.size() > 0) {
                 int64_t part_id = res.res_arg_array_.at(0).part_object_id_;
                 ObSEArray<ObAddr, 8> all_servers;
-                OZ (ObExternalTableFileManager::get_instance().update_inner_table_file_list(
-                  ctx, tenant_id, alter_table_arg.alter_table_schema_.get_table_id(),
-                  basic_file_infos, updated_part_ids, has_partition_changed, part_id));
+                OZ(ObExternalTableFileManager::get_instance().update_inner_table_file_list(
+                    ctx,
+                    schema_guard,
+                    tenant_id,
+                    alter_table_arg.alter_table_schema_.get_table_id(),
+                    basic_file_infos,
+                    updated_part_ids,
+                    has_partition_changed,
+                    part_id));
                 OZ (GCTX.location_service_->external_table_get(tenant_id, all_servers));
                 OZ (ObExternalTableFileManager::get_instance().flush_external_file_cache(tenant_id, alter_table_arg.alter_table_schema_.get_table_id(), part_id, all_servers));
               } else {
@@ -2328,6 +2475,8 @@ int ObDropTableExecutor::execute(ObExecContext &ctx, ObDropTableStmt &stmt)
     } else if (FALSE_IT(tmp_arg.foreign_key_checks_ = is_oracle_mode() || (is_mysql_mode() && foreign_key_checks))) {
     } else if (FALSE_IT(tmp_arg.compat_mode_ = ORACLE_MODE == my_session->get_compatibility_mode() ?
         lib::Worker::CompatMode::ORACLE : lib::Worker::CompatMode::MYSQL)) {
+    } else if (OB_FAIL(ObDbmsStatsUtils::cancel_async_gather_stats(ctx))) {
+      LOG_WARN("failed to cancel async gather stats before drop table", KR(ret), K(tenant_id));
     } else {
       bool is_parallel_drop = false;
       if (!((data_version >= MOCK_DATA_VERSION_4_2_5_1 && data_version < DATA_VERSION_4_3_0_0)
@@ -2525,7 +2674,9 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       int64_t affected_rows = 0;
       bool use_parallel_truncate = false;
       const uint64_t tenant_id = truncate_table_arg.tenant_id_;
-      if (OB_FAIL(check_use_parallel_truncate(truncate_table_arg, use_parallel_truncate))) {
+      if (OB_FAIL(ObDbmsStatsUtils::cancel_async_gather_stats(ctx))) {
+        LOG_WARN("failed to cancel async gather stats before truncate table", KR(ret), K(tenant_id));
+      } else if (OB_FAIL(check_use_parallel_truncate(truncate_table_arg, use_parallel_truncate))) {
         LOG_WARN("fail to check use parallel truncate", KR(ret), K(truncate_table_arg));
       } else if (!use_parallel_truncate) {
         if (OB_FAIL(common_rpc_proxy->truncate_table(truncate_table_arg, res))) {
@@ -2579,32 +2730,11 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
             || stmt.get_oracle_temp_table_type() == share::schema::TMP_TABLE_ORA_TRX_V2) {
       //do nothing
     } else if (stmt.get_oracle_temp_table_type() == share::schema::TMP_TABLE_ORA_SESS_V2) {
-      const int64_t sequence = my_session->get_gtt_session_scope_unique_id();
       const uint64_t tenant_id = truncate_table_arg.tenant_id_;
       const uint64_t table_id = truncate_table_arg.table_id_;
-      const uint64_t session_id = my_session->get_sessid_for_table();
-      share::schema::ObSchemaGetterGuard schema_guard;
-      const share::schema::ObTableSchema *table_schema = nullptr;
-      common::ObMySQLTransaction trans;
-      if (OB_FAIL(trans.start(GCTX.sql_proxy_, tenant_id))) {
-        LOG_WARN("failed to begin transaction", K(ret), K(tenant_id));
-      } else if (OB_FAIL(GCTX.schema_service_->get_tenant_schema_guard(tenant_id, schema_guard))) {
-        LOG_WARN("fail to get tenant schema guard", K(ret), K(tenant_id));
-      } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, table_id, table_schema))) {
-        LOG_WARN("fail to get table schema", K(ret), K(tenant_id), K(table_id));
-      } else if (OB_ISNULL(table_schema)) {
-        ret = OB_TABLE_NOT_EXIST;
-        LOG_WARN("table is not exist", K(ret), K(tenant_id), K(table_id));
-      } else if (OB_FAIL(truncate_oracle_temp_table_v2(*my_session, schema_guard, *table_schema, sequence, session_id, trans))) {
-        LOG_WARN("failed to truncate oracle temp table", K(ret), K(tenant_id), K(table_id), K(sequence), K(session_id));
-      }
-      if (trans.is_started()) {
-        int tmp_ret = OB_SUCCESS;
-        bool is_commit = (OB_SUCCESS == ret);
-        if (OB_TMP_FAIL(trans.end(is_commit))) {
-          LOG_WARN("failed to end transaction", KR(ret), KR(tmp_ret));
-          ret = is_commit ? tmp_ret : ret;
-        }
+      if (OB_FAIL(storage::ObSessionTabletDeleteHelper::delete_session_tablets_by_table_id(
+            *my_session, tenant_id, table_id))) {
+        LOG_WARN("failed to delete session tablets by table id", K(ret), K(tenant_id), K(table_id));
       }
     } else {
       ObSqlString sql;
@@ -2640,84 +2770,6 @@ int ObTruncateTableExecutor::execute(ObExecContext &ctx, ObTruncateTableStmt &st
       "table_info", truncate_table_arg.table_name_,
       "schema_id", res.schema_id_);
     SQL_ENG_LOG(INFO, "finish truncate table execute.", K(ret), "ddl_event_info", ObDDLEventInfo());
-  }
-  return ret;
-}
-
-int ObTruncateTableExecutor::truncate_oracle_temp_table_v2(
-    sql::ObSQLSessionInfo &my_session,
-    share::schema::ObSchemaGetterGuard &schema_guard,
-    const share::schema::ObTableSchema &table_schema,
-    const int64_t sequence,
-    const uint64_t session_id,
-    common::ObMySQLTransaction &trans)
-{
-  int ret = OB_SUCCESS;
-  const uint64_t tenant_id = table_schema.get_tenant_id();
-  const bool is_data_table = !table_schema.is_oracle_tmp_table_v2_index_table();
-  ObSessionTabletInfoKey info_key(table_schema.get_table_id(), sequence, session_id);
-  ObSessionTabletInfo session_tablet_info;
-  ObSEArray<storage::ObSessionTabletInfo *, 1> tablet_infos;
-  if (false == trans.is_started()) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("transaction is not started", K(ret));
-  } else if (OB_FAIL(my_session.get_gtt_tablet_info_map().get_session_tablet(info_key, session_tablet_info))) {
-    if (OB_ENTRY_NOT_EXIST != ret) {
-      LOG_WARN("failed to get session tablet", K(ret));
-    } else {
-      ret = OB_SUCCESS;
-      LOG_INFO("session tablet not exist, may be already removed", K(ret), K(info_key));
-    }
-  } else if (OB_FAIL(my_session.get_gtt_tablet_info_map().remove_session_tablet(table_schema.get_table_id()))) {
-    LOG_WARN("failed to remove session tablet", K(ret));
-  } else if (OB_FAIL(tablet_infos.push_back(&session_tablet_info))) {
-    LOG_WARN("failed to push back tablet info", KR(ret), K(session_tablet_info));
-  } else {
-    storage::ObSessionTabletDeleteHelper tablet_delete_helper(tenant_id, tablet_infos, trans);
-    if (OB_FAIL(tablet_delete_helper.do_work())) {
-      LOG_WARN("failed to delete session tablet", K(ret));
-    } else {
-      LOG_INFO("succeed to remove session tablet", K(tenant_id), K(session_tablet_info));
-    }
-  }
-  if (OB_SUCC(ret) && is_data_table) {
-    ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
-    if (OB_FAIL(table_schema.get_simple_index_infos(simple_index_infos))) {
-      LOG_WARN("fail to get simple index infos", K(ret), K(table_schema));
-    } else {
-      for (int64_t i = 0; OB_SUCC(ret) && i < simple_index_infos.count(); i++) {
-        const share::schema::ObTableSchema *index_schema = nullptr;
-        if (OB_FAIL(schema_guard.get_table_schema(tenant_id, simple_index_infos.at(i).table_id_, index_schema))) {
-          LOG_WARN("failed to get index table schema", K(ret), K(tenant_id), K(simple_index_infos.at(i).table_id_));
-        } else if (OB_ISNULL(index_schema)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("index table schema is null", K(ret), K(simple_index_infos.at(i).table_id_));
-        } else if (OB_FAIL(truncate_oracle_temp_table_v2(my_session, schema_guard, *index_schema, sequence, session_id, trans))) {
-          LOG_WARN("failed to truncate oracle temp table", K(ret));
-        }
-      }
-      if (OB_SUCC(ret) && table_schema.has_lob_aux_table()) {
-        const uint64_t aux_lob_meta_tid = table_schema.get_aux_lob_meta_tid();
-        const uint64_t aux_lob_piece_tid = table_schema.get_aux_lob_piece_tid();
-        const share::schema::ObTableSchema *aux_lob_meta_schema = nullptr;
-        const share::schema::ObTableSchema *aux_lob_piece_schema = nullptr;
-        if (OB_FAIL(schema_guard.get_table_schema(tenant_id, aux_lob_meta_tid, aux_lob_meta_schema))) {
-          LOG_WARN("failed to get aux lob meta table schema", K(ret), K(tenant_id), K(aux_lob_meta_tid));
-        } else if (OB_ISNULL(aux_lob_meta_schema)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("aux lob meta table schema is null", K(ret), K(aux_lob_meta_tid));
-        } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id, aux_lob_piece_tid, aux_lob_piece_schema))) {
-          LOG_WARN("failed to get aux lob piece table schema", K(ret), K(tenant_id), K(aux_lob_piece_tid));
-        } else if (OB_ISNULL(aux_lob_piece_schema)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("aux lob piece table schema is null", K(ret), K(aux_lob_piece_tid));
-        } else if (OB_FAIL(truncate_oracle_temp_table_v2(my_session, schema_guard, *aux_lob_meta_schema, sequence, session_id, trans))) {
-          LOG_WARN("failed to truncate oracle temp table", K(ret), K(aux_lob_meta_tid));
-        } else if (OB_FAIL(truncate_oracle_temp_table_v2(my_session, schema_guard, *aux_lob_piece_schema, sequence, session_id, trans))) {
-          LOG_WARN("failed to truncate oracle temp table", K(ret), K(aux_lob_piece_tid));
-        }
-      }
-    }
   }
   return ret;
 }
@@ -3072,13 +3124,16 @@ int ObOptimizeAllExecutor::execute(ObExecContext &ctx, ObOptimizeAllStmt &stmt)
   return ret;
 }
 
-int ObAlterTableExecutor::populate_based_schema_obj_info_(obrpc::ObAlterTableArg &alter_table_arg) {
+int ObAlterTableExecutor::populate_based_schema_obj_info_(
+    const share::schema::ObTableSchema *&orig_table,
+    obrpc::ObAlterTableArg &alter_table_arg,
+    share::schema::ObSchemaGetterGuard &guard)
+{
   int ret = OB_SUCCESS;
+  orig_table = nullptr;
   const uint64_t table_id = alter_table_arg.alter_table_schema_.get_table_id();
   if (OB_INVALID_ID != table_id) {
     const uint64_t tenant_id = alter_table_arg.alter_table_schema_.get_tenant_id();
-    SMART_VAR(ObSchemaGetterGuard, guard) {
-    const ObTableSchema *orig_table = nullptr;
     if (OB_FAIL(ObMultiVersionSchemaService::get_instance().get_tenant_schema_guard(
                 tenant_id, guard))) {
       LOG_WARN("fail to get tenant schema guard", KR(ret), K(tenant_id));
@@ -3089,7 +3144,7 @@ int ObAlterTableExecutor::populate_based_schema_obj_info_(obrpc::ObAlterTableArg
       LOG_WARN("table not exits", KR(ret), K(table_id));
     } else {
       bool find = false;
-      for (int i = 0; i < OB_SUCC(ret) && alter_table_arg.based_schema_object_infos_.count(); ++i) {
+      for (int i = 0; OB_SUCC(ret) && i < alter_table_arg.based_schema_object_infos_.count(); ++i) {
         ObBasedSchemaObjectInfo &based_schema_object_info =
                                 alter_table_arg.based_schema_object_infos_.at(i);
         if (based_schema_object_info.schema_id_ == alter_table_arg.table_id_) {
@@ -3112,7 +3167,6 @@ int ObAlterTableExecutor::populate_based_schema_obj_info_(obrpc::ObAlterTableArg
         }
       }
     }
-    } // end smart var
   }
   return ret;
 }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -346,6 +339,7 @@ OB_DEF_SERIALIZE(ObRemoteTask)
   OB_UNIS_ENCODE(remote_sql_info_->sql_from_pl_);
   OB_UNIS_ENCODE(ls_list_);
   OB_UNIS_ENCODE(detectable_id_);
+  OB_UNIS_ENCODE(remote_sql_info_->is_ps_cursor_);
   return ret;
 }
 
@@ -392,6 +386,7 @@ OB_DEF_SERIALIZE_SIZE(ObRemoteTask)
     OB_UNIS_ADD_LEN(remote_sql_info_->sql_from_pl_);
     OB_UNIS_ADD_LEN(ls_list_);
     OB_UNIS_ADD_LEN(detectable_id_);
+    OB_UNIS_ADD_LEN(remote_sql_info_->is_ps_cursor_);
   }
   return len;
 }
@@ -478,6 +473,7 @@ OB_DEF_DESERIALIZE(ObRemoteTask)
       OB_UNIS_DECODE(remote_sql_info_->sql_from_pl_);
       OB_UNIS_DECODE(ls_list_);
       OB_UNIS_DECODE(detectable_id_);
+      OB_UNIS_DECODE(remote_sql_info_->is_ps_cursor_);
     }
   }
   return ret;

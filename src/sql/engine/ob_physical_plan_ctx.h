@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_PHYSICAL_PLAN_CTX_H
@@ -77,7 +70,8 @@ struct ObRemoteSqlInfo
     ps_param_cnt_(0),
     remote_sql_(),
     ps_params_(nullptr),
-    sql_from_pl_(false)
+    sql_from_pl_(false),
+    is_ps_cursor_(false)
   {
   }
 
@@ -90,6 +84,19 @@ struct ObRemoteSqlInfo
   common::ObString remote_sql_;
   ParamStore *ps_params_;
   bool sql_from_pl_;
+  // TRUE if the remote sql originates from a PS cursor open. The original node
+  // bypasses the PC_PL_MODE restriction for UDR via is_ps_cursor_; this flag
+  // carries that intent across the RPC so the remote node re-applies UDR too.
+  bool is_ps_cursor_;
+};
+
+// How timeout is chosen for this statement: query_timeout, max_exec_timeout, or fallback to query_timeout (need warn).
+enum ObTimeoutStrategy
+{
+  OB_TIMEOUT_STRATEGY_UNDEFINED = 0,               // undefined strategy, need to be set later
+  OB_TIMEOUT_STRATEGY_QUERY_TIMEOUT = 1,           // use query_timeout directly
+  OB_TIMEOUT_STRATEGY_MAX_EXEC_TIME = 2,           // use max_execution_time directly (readonly select)
+  OB_TIMEOUT_STRATEGY_QUERY_TIMEOUT_FALLBACK = 3   // would use max_exec but fallback to query_timeout (non-readonly select), show warning at response
 };
 
 /* refer to a group of array params
@@ -124,6 +131,7 @@ public:
     // with another allocator should call destroy here.
     subschema_ctx_.destroy();
     all_local_session_vars_.destroy();
+    autoinc_params_.destroy();
   }
   inline void set_tenant_id(uint64_t tenant_id) { tenant_id_ = tenant_id; }
   inline void set_show_seed(bool show_seed) { is_show_seed_ = show_seed; }
@@ -582,6 +590,8 @@ public:
   inline bool get_is_direct_insert_plan() const { return is_direct_insert_plan_; }
   inline void set_enable_adaptive_pc(bool v) { enable_adaptive_pc_ = v; }
   inline bool enable_adaptive_pc() const { return enable_adaptive_pc_; }
+  void set_timeout_strategy(ObTimeoutStrategy strategy) { timeout_strategy_ = strategy; }
+  ObTimeoutStrategy get_timeout_strategy() const { return timeout_strategy_; }
   bool is_param_datum_frame_inited() const { return param_frame_ptrs_.count() > 0; }
   void get_param_frame_info(int64_t param_idx,
                             ObDatum *&datum,
@@ -751,6 +761,7 @@ private:
   bool is_direct_insert_plan_; // for direct load: insert into/overwrite select
   bool check_pdml_affected_rows_; // now only worked for pdml checking affected_rows
   bool enable_adaptive_pc_;
+  ObTimeoutStrategy timeout_strategy_;
 
   // for iceberg table dml
   ObArray<iceberg::DataFile*> iceberg_data_files_;

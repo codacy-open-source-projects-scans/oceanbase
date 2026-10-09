@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -707,8 +700,14 @@ int ObDropVecIVFIndexTask::create_drop_index_task(
   } else if (OB_FAIL(guard.get_table_schema(tenant_id_, index_schema->get_data_table_id(), data_table_schema))) {
     LOG_WARN("fail to get data table schema", K(ret), K(index_schema->get_data_table_id()));
   } else if (OB_UNLIKELY(nullptr == database_schema || nullptr == data_table_schema)) {
-    ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("unexpected error, schema is nullptr", K(ret), KP(database_schema), KP(data_table_schema));
+    if (OB_ISNULL(data_table_schema) && drop_index_arg_.is_hidden_) {
+      task_id = -1;
+      LOG_INFO("hidden data_table maybe removed when offline ddl is failed, skip drop",
+        K(ret), K(index_tid), K(index_name));
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected error, schema is nullptr", K(ret), KP(database_schema), KP(data_table_schema));
+    }
   } else if (is_domain_index && OB_FAIL(drop_index_sql.assign(drop_index_arg_.ddl_stmt_str_))) {
     LOG_WARN("assign user drop index sql failed", K(ret));
   } else {
@@ -788,6 +787,7 @@ int ObDropVecIVFIndexTask::cleanup_impl()
     } else if (OB_FAIL(owner_id.convert_from_value(ObLockOwnerType::DEFAULT_OWNER_TYPE, task_id_))) {
       LOG_WARN("fail to get owner id", K(ret), K(task_id_));
     } else if (OB_FAIL(ObDDLLock::unlock_for_add_drop_index(*data_table_schema,
+                                                            nullptr /* specified_data_tablet_ids */,
                                                             0 /* index_table_id */, // not support global vector index
                                                             false /* is_global_index = false */,
                                                             owner_id,

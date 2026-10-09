@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -379,32 +372,16 @@ int ObVecIVFIndexBuildTask::check_health()
   } else {
     ObMultiVersionSchemaService &schema_service = root_service_->get_schema_service();
     ObSchemaGetterGuard schema_guard;
-    const ObTableSchema *index_schema = nullptr;
     bool is_data_table_exist = false;
-    bool is_all_indexes_exist = false;
     if (OB_FAIL(schema_service.get_tenant_schema_guard(tenant_id_, schema_guard))) {
       LOG_WARN("get tenant schema guard failed", K(ret), K(tenant_id_));
     } else if (OB_FAIL(schema_guard.check_table_exist(tenant_id_,
                                                       object_id_,
                                                       is_data_table_exist))) {
       LOG_WARN("check data table exist failed", K(ret), K(tenant_id_), K(object_id_));
-    } else if (OB_FAIL(check_aux_table_schemas_exist(is_all_indexes_exist))) {
-      LOG_WARN("check aux index table exist failed", K(ret), K(tenant_id_));
-    } else if (status != ObDDLTaskStatus::FAIL && (!is_data_table_exist || !is_all_indexes_exist)) {
+    } else if (status != ObDDLTaskStatus::FAIL && (!is_data_table_exist)) {
       ret = OB_TABLE_NOT_EXIST;
-      LOG_WARN("data table or index table not exist",
-        K(ret), K(is_data_table_exist), K(is_all_indexes_exist));
-    } else if (OB_FAIL(schema_guard.get_table_schema(tenant_id_,
-                                                     index_table_id_,
-                                                     index_schema))) {
-      LOG_WARN("get table schema failed", K(ret), K(tenant_id_), K(index_table_id_));
-    } else if (OB_ISNULL(index_schema)) {
-      ret = OB_SCHEMA_ERROR;
-      LOG_WARN("fail to get index_schema", K(ret), K(index_table_id_));
-    } else if (ObIndexStatus::INDEX_STATUS_INDEX_ERROR == index_schema->get_index_status()) {
-      ret = OB_SUCCESS == ret_code_ ? OB_ERR_ADD_INDEX : ret_code_;
-      LOG_WARN("index status error", K(ret), K(index_table_id_),
-          K(index_schema->get_index_status()));
+      LOG_WARN("data table not exist", K(ret), K(is_data_table_exist));
     }
     if (OB_FAIL(ret) && !ObIDDLTask::in_ddl_retry_white_list(ret)
       && static_cast<ObDDLTaskStatus>(task_status_) != ObDDLTaskStatus::FAIL) {
@@ -1310,23 +1287,18 @@ int ObVecIVFIndexBuildTask::wait_aux_table_complement()
     }
   }
   if (state_finished || OB_FAIL(ret)) {
-    ObDDLTaskStatus next_status;
+    ObDDLTaskStatus next_status = task_status_;
+    ObDDLTaskStatus old_status = task_status_;
     if (child_task_failed || OB_FAIL(ret)) {
-      if (!ObIDDLTask::in_ddl_retry_white_list(ret)) {
-        const ObDDLTaskStatus old_status = static_cast<ObDDLTaskStatus>(task_status_);
-        const ObDDLTaskStatus new_status = ObDDLTaskStatus::FAIL;
-        (void)switch_status(new_status, false, ret);
-        ret = OB_SUCCESS; // allow clean up
-      }
-    } else if (OB_SUCC(ret)) {
-      if (OB_FAIL(get_next_status(next_status))) {
-        LOG_WARN("failed to get next status", K(ret));
-      } else {
-        (void)switch_status(next_status, true, ret);
-        LOG_INFO("wait aux table complement finished", K(ret), K(parent_task_id_),
-            K(task_id_), K(*this));
-      }
+      next_status = ObIDDLTask::in_ddl_retry_white_list(ret) ? next_status : ObDDLTaskStatus::FAIL;
+    } else if (OB_FAIL(get_next_status(next_status))) {
+      next_status = ObDDLTaskStatus::FAIL;
+      LOG_WARN("failed to get next status", K(ret), K(next_status));
     }
+    (void)switch_status(next_status, next_status != ObDDLTaskStatus::FAIL, ret);
+    FLOG_INFO("wait aux table complement finished", K(ret), K(parent_task_id_),
+        K(task_id_), K(old_status), K(next_status), K(*this));
+    ret = OB_SUCCESS;
   }
   return ret;
 }
@@ -2272,6 +2244,7 @@ int ObVecIVFIndexBuildTask::cleanup_impl()
       LOG_WARN("failed to get owner id", K(ret), K(task_id_));
     } else if (!is_skip_unlock &&
                OB_FAIL(ObDDLLock::unlock_for_add_drop_index(*data_schema,
+                                                            nullptr,
                                                             index_table_id,
                                                             false,
                                                             owner_id,

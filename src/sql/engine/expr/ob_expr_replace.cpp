@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -86,10 +79,8 @@ int ObExprReplace::calc_result_typeN(ObExprResType &type,
                              common::ObExprTypeCtx &type_ctx) const
 {
   int ret = OB_SUCCESS;
-  if (3 != param_num && !lib::is_oracle_mode()) {
-    ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("Replace() should have three arguments in MySql Mode", K(ret), K(param_num), K(lib::is_oracle_mode()));
-  } else if (2 != param_num && 3 != param_num) {
+  // ADB compatibility: REPLACE(str, search) with 2 params is equivalent to REPLACE(str, search, '')
+  if (2 != param_num && 3 != param_num) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("Replace() should have three arguments in Oracle Mode", K(ret), K(param_num), K(lib::is_oracle_mode()));
   } else if (OB_ISNULL(types_array) || OB_ISNULL(type_ctx.get_session())) {
@@ -600,8 +591,14 @@ int ObExprReplace::replace_vector_inner(VECTOR_EVAL_FUNC_ARG_DECL)
   bool is_text_tc = ob_is_text_tc(expr.datum_meta_.type_);
 
 #if OB_USE_MULTITARGET_CODE
-  ObStringSearcher string_searcher_entity;
-  void *string_searcher = &string_searcher_entity;
+  void *string_searcher = nullptr;
+  char tmp_buf[sizeof(ObStringSearcher)] = {0};
+  if (common::is_arch_supported(ObTargetArch::AVX2)) {
+    ObStringSearcher *string_searcher_entity = new (tmp_buf) ObStringSearcher();
+    string_searcher = string_searcher_entity;
+  } else {
+    string_searcher = nullptr;
+  }
 #else
   void *string_searcher = nullptr;
 #endif
@@ -685,9 +682,14 @@ int ObExprReplace::replace_vector_inner(VECTOR_EVAL_FUNC_ARG_DECL)
 
 DEF_SET_LOCAL_SESSION_VARS(ObExprReplace, raw_expr) {
   int ret = OB_SUCCESS;
-  SET_LOCAL_SYSVAR_CAPACITY(2);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
-  EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_OB_COMPATIBILITY_VERSION);
+  if (is_mysql_mode()) {
+    SET_LOCAL_SYSVAR_CAPACITY(2);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_OB_COMPATIBILITY_VERSION);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_COLLATION_CONNECTION);
+  } else {
+    SET_LOCAL_SYSVAR_CAPACITY(1);
+    EXPR_ADD_LOCAL_SYSVAR(share::SYS_VAR_OB_COMPATIBILITY_VERSION);
+  }
   return ret;
 }
 

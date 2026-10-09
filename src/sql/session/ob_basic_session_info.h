@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OBPROXY_BASIC_SESSION_INFO_H
@@ -306,7 +299,7 @@ public:
                                   common::ObWrapperAllocator> SysVarNameValMap;
   typedef lib::ObLockGuard<common::ObRecursiveMutex> LockGuard;
 
-  class TableStmtType
+  class TableStmtType // unused code
   {
     OB_UNIS_VERSION_V(1);
   public:
@@ -331,15 +324,6 @@ public:
     inline bool is_mutating() const
     {
       return stmt_type_ != stmt::T_SELECT;
-    }
-    inline void skip_mutating(stmt::StmtType &saved_stmt_type)
-    {
-      saved_stmt_type = get_stmt_type();
-      set_stmt_type(stmt::T_SELECT);
-    }
-    inline void restore_mutating(stmt::StmtType saved_stmt_type)
-    {
-      set_stmt_type(saved_stmt_type);
     }
     inline stmt::StmtType get_stmt_type() const
     {
@@ -454,8 +438,6 @@ public:
       cur_query_len_ = 0;
       cur_query_buf_len_ = 0;
       cur_query_ = NULL;
-      total_stmt_tables_.reset();
-      cur_stmt_tables_.reset();
       read_uncommited_ = false;
       inc_autocommit_ = false;
       need_serial_exec_ = false;
@@ -466,8 +448,6 @@ public:
     volatile int64_t cur_query_len_;
 //  int64_t cur_query_start_time_;          // 用于计算事务超时时间，如果在base_save_session接口中操作
                                             // 会导致start_trans报事务超时失败，不放在基类中。
-    common::ObSEArray<TableStmtType, 4> total_stmt_tables_;
-    common::ObSEArray<TableStmtType, 2> cur_stmt_tables_;
 //  bool in_transaction_;                   // 对应TransSavedValue的trans_flags_，不放在基类中。
     bool read_uncommited_;
     bool inc_autocommit_;
@@ -497,13 +477,11 @@ public:
     inline void reset()
     {
       BaseSavedValue::reset();
-      tx_result_.reset();
       cur_query_start_time_ = 0;
       in_transaction_ = false;
       stmt_type_ = sql::stmt::StmtType::T_NONE;
     }
   public:
-    transaction::ObTxExecResult tx_result_;
     int64_t cur_query_start_time_;
     bool in_transaction_;
     sql::stmt::StmtType stmt_type_;
@@ -521,14 +499,12 @@ public:
       BaseSavedValue::reset();
       tx_desc_ = NULL;
       trans_flags_.reset();
-      tx_result_.reset();
       nested_count_ = -1;
       xid_.reset();
     }
   public:
     transaction::ObTxDesc *tx_desc_;
     TransFlags trans_flags_;
-    transaction::ObTxExecResult tx_result_;
     int64_t nested_count_;
     transaction::ObXATransID xid_;
   };
@@ -625,6 +601,7 @@ public:
   bool get_local_ob_enable_parameter_anonymous_block() const;
   bool get_local_ob_enable_ps_parameter_anonymous_block() const;
   bool get_local_cursor_sharing_mode() const;
+  bool get_local_json_float_full_precision() const;
   ObLengthSemantics get_local_nls_length_semantics() const;
   ObLengthSemantics get_actual_nls_length_semantics() const;
   int64_t get_local_ob_org_cluster_id() const;
@@ -768,6 +745,11 @@ public:
   int get_query_timeout(int64_t &query_timeout) const
   {
     query_timeout = sys_vars_cache_.get_ob_query_timeout();
+    return common::OB_SUCCESS;
+  }
+  int get_max_execution_time(int64_t &max_execution_time) const
+  {
+    max_execution_time = sys_vars_cache_.get_max_execution_time();
     return common::OB_SUCCESS;
   }
   int64_t get_query_timeout_ts() const; //获取当前query超时的绝对时间
@@ -1310,6 +1292,8 @@ public:
   int is_serial_set_order_forced(bool &force_set_order, bool is_oracle_mode) const;
   int is_old_charset_aggregation_enabled(bool &is_enable) const;
   int is_storage_estimation_enabled(bool &storage_estimation_enabled) const;
+  int get_udf_cost_factor(int64_t &cost_factor) const;
+  int get_udf_selectivity(double &sel) const;
   bool is_use_trace_log() const
   {
     return sys_vars_cache_.get_ob_enable_trace_log();
@@ -1670,18 +1654,14 @@ public:
   bool is_nested_session() const { return nested_count_ > 0; }
   int64_t get_nested_count() const { return nested_count_; }
   void set_nested_count(int64_t nested_count) { nested_count_ = nested_count; }
-  int save_base_session(BaseSavedValue &saved_value, bool skip_cur_stmt_tables = false);
-  int restore_base_session(BaseSavedValue &saved_value, bool skip_cur_stmt_tables = false);
-  int save_basic_session(StmtSavedValue &saved_value, bool skip_cur_stmt_tables = false);
+  int save_base_session(BaseSavedValue &saved_value);
+  int restore_base_session(BaseSavedValue &saved_value);
+  int save_basic_session(StmtSavedValue &saved_value);
   int restore_basic_session(StmtSavedValue &saved_value);
-  int begin_nested_session(StmtSavedValue &saved_value, bool skip_cur_stmt_tables = false);
+  int begin_nested_session(StmtSavedValue &saved_value);
   int end_nested_session(StmtSavedValue &saved_value);
   int begin_autonomous_session(TransSavedValue &saved_value);
   int end_autonomous_session(TransSavedValue &saved_value);
-  int init_stmt_tables();
-  int merge_stmt_tables();
-  int skip_mutating(uint64_t table_id, stmt::StmtType &saved_stmt_type);
-  int restore_mutating(uint64_t table_id, stmt::StmtType saved_stmt_type);
   int set_start_stmt();
   int set_end_stmt();
   bool has_start_stmt() { return nested_count_ >= 0; }
@@ -1746,12 +1726,13 @@ public:
   int set_enable_role_ids(const ObIArray<uint64_t>& role_ids);
   int load_default_sys_variable(common::ObIAllocator &allocator, int64_t var_idx);
 
-  int set_session_temp_table_used(const bool is_used);
+  int set_session_temp_table_used(ObSQLSessionInfo &session, const bool is_used, const bool need_strong_routing);
   int get_session_temp_table_used(bool &is_used) const;
   int get_enable_optimizer_null_aware_antijoin(bool &is_enabled) const;
   void update_tenant_config_version(int64_t v) { cached_tenant_config_version_ = v; };
   static int check_optimizer_features_enable_valid(const ObObj &val);
   int get_compatibility_control(share::ObCompatType &compat_type) const;
+  int get_charset_compat_type(common::ObCharsetCompatType &charset_compat_type) const;
   int get_compatibility_version(uint64_t &compat_version) const;
   int get_security_version(uint64_t &security_version) const;
   uint64_t get_current_default_catalog() const;
@@ -1784,9 +1765,9 @@ protected:
   int process_session_debug_sync(const common::ObObj &val, const bool is_global,
                                 const bool is_update_sys_var);
   // session切换接口
-  int base_save_session(BaseSavedValue &saved_value, bool skip_cur_stmt_tables = false);
+  int base_save_session(BaseSavedValue &saved_value);
   int base_restore_session(BaseSavedValue &saved_value);
-  int stmt_save_session(StmtSavedValue &saved_value, bool skip_cur_stmt_tables = false);
+  int stmt_save_session(StmtSavedValue &saved_value);
   int stmt_restore_session(StmtSavedValue &saved_value);
   int trans_save_session(TransSavedValue &saved_value);
   int trans_restore_session(TransSavedValue &saved_value);
@@ -2058,7 +2039,9 @@ public:
         security_version_(0),
         ob_enable_ps_parameter_anonymous_block_(false),
         plsql_can_transform_sql_to_assign_(false),
-        ob_enable_pl_async_commit_(false)
+        max_execution_time_(MAX_EXECUTION_TIME_MIN),
+        ob_enable_pl_async_commit_(false),
+        json_float_full_precision_(false)
     {
       for (int64_t i = 0; i < ObNLSFormatEnum::NLS_MAX; ++i) {
         MEMSET(nls_formats_buf_[i], 0, MAX_NLS_FORMAT_STR_LEN);
@@ -2134,6 +2117,8 @@ public:
       collation_database_ = CS_TYPE_INVALID;
       plsql_optimize_level_ = 0;
       ob_enable_pl_async_commit_ = false;
+      max_execution_time_  = MAX_EXECUTION_TIME_MIN;
+      json_float_full_precision_ = false;
     }
 
     inline bool operator==(const SysVarsCacheData &other) const {
@@ -2193,7 +2178,9 @@ public:
             character_set_client_ == other.character_set_client_ &&
             collation_database_ == other.collation_database_ &&
             plsql_optimize_level_ == other.plsql_optimize_level_ &&
-            ob_enable_pl_async_commit_ == other.ob_enable_pl_async_commit_;
+            ob_enable_pl_async_commit_ == other.ob_enable_pl_async_commit_ &&
+            max_execution_time_ == other.max_execution_time_;
+            json_float_full_precision_ == other.json_float_full_precision_;
       bool equal2 = true;
       for (int64_t i = 0; i < ObNLSFormatEnum::NLS_MAX; ++i) {
         if (nls_formats_[i] != other.nls_formats_[i]) {
@@ -2310,7 +2297,7 @@ public:
                  K_(optimizer_use_sql_plan_baselines), K_(optimizer_capture_sql_plan_baselines),
                  K_(is_result_accurate), K_(character_set_results),
                  K_(character_set_connection), K_(ob_pl_block_timeout), K_(ob_plsql_ccflags),
-                 K_(iso_nls_currency), K_(log_row_value_option), K_(ob_max_read_stale_time), K_(default_lob_inrow_threshold));
+                 K_(iso_nls_currency), K_(log_row_value_option), K_(ob_max_read_stale_time), K_(default_lob_inrow_threshold), K_(max_execution_time));
   public:
     static const int64_t MAX_NLS_FORMAT_STR_LEN = 256;
 
@@ -2386,7 +2373,9 @@ public:
     uint64_t security_version_;
     bool ob_enable_ps_parameter_anonymous_block_;
     bool plsql_can_transform_sql_to_assign_;
+    int64_t max_execution_time_;
     bool ob_enable_pl_async_commit_;
+    bool json_float_full_precision_;
   private:
     char nls_formats_buf_[ObNLSFormatEnum::NLS_MAX][MAX_NLS_FORMAT_STR_LEN];
   };
@@ -2461,7 +2450,7 @@ private:
     DEF_SYS_VAR_BIT_ENUM(plsql_optimize_level, 62)
     DEF_SYS_VAR_BIT_ENUM(ob_enable_pl_async_commit, 63)
     DEF_SYS_VAR_BIT_ENUM(json_float_full_precision, 64)
-
+    DEF_SYS_VAR_BIT_ENUM(max_execution_time, 65)
     BIT_MAX_POSITION = 128  // max position is 128 now
   };
 #undef DEF_SYS_VAR_BIT_ENUM
@@ -2617,6 +2606,8 @@ private:
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, character_set_client);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, collation_database);
     DEF_SYS_VAR_CACHE_FUNCS(int64_t, plsql_optimize_level);
+    DEF_SYS_VAR_CACHE_FUNCS(int64_t, max_execution_time);
+    DEF_SYS_VAR_CACHE_FUNCS(bool, json_float_full_precision);
     void set_autocommit_info(bool inc_value)
     {
       inc_data_.autocommit_ = inc_value;
@@ -2743,7 +2734,6 @@ private:
    *******************************************/
 protected:
   transaction::ObTxDesc *tx_desc_;
-  transaction::ObTxExecResult tx_result_; // TODO: move to QueryCtx/ExecCtx
   // reserved read snapshot version for current or previous stmt in the txn. And
   // it is used for multi-version garbage colloector to collect ative snapshot.
   // While it may be empty for the txn with ac = 1 and remote execution whose
@@ -2758,7 +2748,6 @@ public:
   transaction::ObTransID get_tx_id() const { return tx_desc_ != NULL ? tx_desc_->get_tx_id() : transaction::ObTransID(); }
   transaction::ObTxDesc /*Nullable*/ *&get_tx_desc() { return tx_desc_; }
   const transaction::ObTxDesc /*Nullable*/ *get_tx_desc() const { return tx_desc_; }
-  transaction::ObTxExecResult &get_trans_result() { return tx_result_; }
   bool associated_xa() const { return associated_xa_; }
   int associate_xa(const transaction::ObXATransID &xid) { associated_xa_ = true; return xid_.set(xid); }
   void disassociate_xa() { associated_xa_ = false; xid_.reset(); }
@@ -2767,8 +2756,8 @@ public:
   void shadow_top_query_string() { shadow_top_query_string_ = true; }
   bool has_top_query_string() const { return thread_data_.top_query_len_ > 0 && thread_data_.top_query_ != nullptr; }
 private:
-  common::ObSEArray<TableStmtType, 2> total_stmt_tables_;
-  common::ObSEArray<TableStmtType, 1> cur_stmt_tables_;
+  common::ObSEArray<TableStmtType, 2> total_stmt_tables_;  // unused code, keep for compatibility
+  common::ObSEArray<TableStmtType, 1> cur_stmt_tables_;  // unused code, keep for compatibility
   char ssl_cipher_buff_[64];
   // following 3 params are used to diagnosis session leak.
   char sess_bt_buff_[MAX_SESS_BT_BUFF_SIZE];
@@ -2878,6 +2867,7 @@ protected:
   // Configurations that will influence execution plan.
   ObConfigInfoInPC inf_pc_configs_;
   common::ObString client_identifier_;
+  common::ObSEArray<uint64_t, 4> enable_role_ids_;
 
   //为了性能做的系统变量本地缓存值
 public:
@@ -2970,7 +2960,6 @@ private:
   // just used to plan cache key
   bool config_use_rich_format_;
 
-  common::ObSEArray<uint64_t, 4> enable_role_ids_;
   uint64_t sys_var_config_hash_val_;
   char thread_name_[OB_THREAD_NAME_BUF_LEN];
   bool is_real_inner_session_;
@@ -2987,6 +2976,7 @@ private:
   bool route_to_column_replica_;
 public:
   bool get_enable_hyperscan_regexp_engine() const;
+  bool get_enable_re2_regexp_engine() const;
   int8_t get_min_const_integer_precision() const;
   bool get_extend_sql_plan_monitor_metrics() const;
   bool get_rowsets_enabled() const;
@@ -3097,6 +3087,11 @@ inline bool ObBasicSessionInfo::get_local_ob_enable_parameter_anonymous_block() 
 inline bool ObBasicSessionInfo::get_local_ob_enable_ps_parameter_anonymous_block() const
 {
   return sys_vars_cache_.get_ob_enable_ps_parameter_anonymous_block();
+}
+
+inline bool ObBasicSessionInfo::get_local_json_float_full_precision() const
+{
+  return sys_vars_cache_.get_json_float_full_precision();
 }
 
 inline ObLengthSemantics ObBasicSessionInfo::get_local_nls_length_semantics() const

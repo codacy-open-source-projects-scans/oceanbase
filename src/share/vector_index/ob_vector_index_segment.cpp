@@ -1,24 +1,21 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
 
 #include "ob_vector_index_segment.h"
 #include "lib/roaringbitmap/ob_roaringbitmap.h"
+#include "lib/utility/ob_tracepoint.h"
 #include "share/vector_index/ob_plugin_vector_index_adaptor.h"
 #include "share/vector_index/ob_plugin_vector_index_utils.h"
 #include "storage/tx_storage/ob_access_service.h"
 #include "storage/ddl/ob_direct_load_struct.h"
 #include "src/share/vector_index/ob_plugin_vector_index_util.h"
+
+ERRSIM_POINT_DEF(ERRSIM_VEC_ENABLE_SEARCH_TIMEOUT_MS, "When set, add timeout_ms to VSAG search param to limit search time.");
+ERRSIM_POINT_DEF(ERRSIM_VEC_ENABLE_SEGMENT_EF_REDUCTION, "When set, reduce ef_search proportionally across segments to improve QPS in multi-segment searches.");
 
 namespace oceanbase
 {
@@ -31,6 +28,47 @@ int64_t ObVecIdxVBitmapData::instacnce_cnt_ = 0;
 int64_t ObVectorIndexSegmentBuilder::instacnce_cnt_ = 0;
 int64_t ObVecIdxSnapshotData::instacnce_cnt_ = 0;
 int64_t ObVecIdxFrozenData::instacnce_cnt_ = 0;
+
+// Compute actual per-segment ef_search and query_limit when segment ef-reduction is active.
+// When ERRSIM_VEC_ENABLE_SEGMENT_EF_REDUCTION is not set, returns original values unchanged.
+static void calc_segment_ef_params(const ObVectorQueryConditions *query_cond,
+                                   int segment_cnt,
+                                   int64_t &actual_ef_search,
+                                   int64_t &actual_query_limit)
+{
+  const int eff_seg = (segment_cnt > 1 && ERRSIM_VEC_ENABLE_SEGMENT_EF_REDUCTION != OB_SUCCESS)
+                      ? segment_cnt : 1;
+  if (eff_seg > 1) {
+    // Distribute query_limit evenly across segments, then apply 2.5x empirical headroom factor.
+    int64_t q = (query_cond->query_limit_ + eff_seg - 1) / eff_seg;
+    q = q * 5 / 2;
+    actual_ef_search  = MAX(q, query_cond->ef_search_ / eff_seg);
+    actual_query_limit = q;
+  } else {
+    actual_ef_search  = query_cond->ef_search_;
+    actual_query_limit = query_cond->query_limit_;
+  }
+}
+
+// Compute per-segment timeout_ms from optimizer selectivity and configured ef_search.
+// Returns 0 when ERRSIM_VEC_ENABLE_SEARCH_TIMEOUT_MS is not set or segment_cnt <= 1.
+static float calc_vsag_search_timeout_ms(int64_t ef_search,
+                                         double selectivity,
+                                         int segment_cnt)
+{
+  float timeout_ms = 0.0f;
+  if (ERRSIM_VEC_ENABLE_SEARCH_TIMEOUT_MS != OB_SUCCESS && segment_cnt > 1) {
+    double s = MAX(0.0, MIN(1.0, selectivity));
+    // [TODO] 计算公式还可以继续优化
+    // Linear calibration: coef(sel=0.1)=0.02, coef(sel=0.3)=0.0125 ms/ef-step
+    const double TIMEOUT_COEF_INTERCEPT = 0.02375; // selectivity=0 时的基础系数
+    const double TIMEOUT_COEF_SLOPE     = 0.0375;  // 选择率越高，则所需时间越少。每单位 selectivity 的系数减少量
+    const double TIMEOUT_COEF_SCALE     = 8.0;     // segment个数越多，所需时间越少。缩放因子，以 8 个 segment 为基准。
+    double coef = (TIMEOUT_COEF_INTERCEPT - TIMEOUT_COEF_SLOPE * s) * TIMEOUT_COEF_SCALE;
+    timeout_ms = static_cast<float>(coef * ef_search / segment_cnt);
+  }
+  return timeout_ms;
+}
 
 ObVectorIndexSegmentHandle::ObVectorIndexSegmentHandle(const ObVectorIndexSegmentHandle &other)
   : segment_(nullptr)
@@ -594,6 +632,19 @@ void ObVectorIndexSegment::reset()
   is_inited_ = false;
 }
 
+int ObVectorIndexSegment::check_id_exist(const int64_t vid, bool &exist) const
+{
+  int ret = OB_SUCCESS;
+  exist = false;
+  if (! is_inited() || OB_ISNULL(index_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("segment is not inited or index is null", K(ret), K(vid), KP(this));
+  } else if (OB_FAIL(obvectorutil::check_id_exist(index_, vid, exist))) {
+    LOG_WARN("check_id_exist failed", K(ret), K(vid), KP(this));
+  }
+  return ret;
+}
+
 int64_t ObVectorIndexSegment::get_serialize_meta_size() const
 {
   int ret = OB_SUCCESS;
@@ -989,7 +1040,12 @@ void ObVectorIndexSegmentBuilder::free(ObIAllocator &allocator)
   skip_cnt_ = 0;
   has_build_ = false;
   need_vid_check_ = false;
+  build_finished_ = false;
   is_inited_ = false;
+  for (int64_t i = 0; i < merge_source_seg_handles_.count(); ++i) {
+    merge_source_seg_handles_.at(i).reset();
+  }
+  merge_source_seg_handles_.reset();
 }
 
 ObVectorIndexSegmentBuilder::~ObVectorIndexSegmentBuilder()
@@ -1419,7 +1475,9 @@ int ObVectorIndexSegmentBuilder::check_vid_range(const int64_t vid, bool &has_sk
 {
   int ret = OB_SUCCESS;
   has_skip_vid = false;
+  ++total_cnt_;
   if (! need_vid_check_) { // skip check
+    ++add_cnt_;
   } else if (! vid_bound_.is_valid()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("vid bound is invalid", K(vid_bound_));
@@ -1428,52 +1486,94 @@ int ObVectorIndexSegmentBuilder::check_vid_range(const int64_t vid, bool &has_sk
     // const bool in_ii_bitmap = roaring::api::roaring64_bitmap_contains(ibitmap_->insert_bitmap_, vid);
     // const bool in_vi_bitmap = roaring::api::roaring64_bitmap_contains(vbitmap_->insert_bitmap_, vid);
     // const bool in_vd_bitmap = roaring::api::roaring64_bitmap_contains(vbitmap_->delete_bitmap_, vid);
-    ++total_cnt_;
     if (! in_vid_bound) {
       has_skip_vid = true;
       ++skip_cnt_;
     } else {
-      ++add_cnt_;
+      if (merge_source_seg_handles_.count() > 0) {
+        bool any_exist = false;
+        for (int64_t i = 0; OB_SUCC(ret) && !any_exist && i < merge_source_seg_handles_.count(); ++i) {
+          const ObVectorIndexSegmentHandle &handle = merge_source_seg_handles_.at(i);
+          int64_t seg_min_vid = INT64_MAX;
+          int64_t seg_max_vid = 0;
+          bool exist = false;
+          if (! handle.is_valid() || ! handle->is_inited()) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("merge source seg handle is invalid", K(ret), K(i), K(handle));
+          } else if (OB_FAIL(handle->get_vid_bound(seg_min_vid, seg_max_vid))) {
+            LOG_WARN("merge source get_vid_bound failed", K(ret), K(vid), K(i), K(handle));
+          } else if (vid < seg_min_vid || vid > seg_max_vid) {
+            // vid is out of this segment's index range, try next source segment
+          } else if (OB_FAIL(handle->check_id_exist(vid, exist))) {
+            LOG_WARN("merge source check_id_exist failed", K(ret), K(vid), K(i), K(handle));
+          } else if (exist) {
+            any_exist = true;
+          }
+        }
+        if (OB_SUCC(ret)) {
+          if (! any_exist) {
+            has_skip_vid = true;
+            ++skip_cnt_;
+          } else {
+            ++add_cnt_;
+          }
+        }
+      } else {
+        ++add_cnt_;
+      }
     }
   }
   return ret;
 }
 
-int ObVectorIndexSegmentBuilder::add_index(float* vecs, int64_t* ids, int dim, char *extra_info, int size)
+int ObVectorIndexSegmentBuilder::add_index(float* vecs, int64_t* ids, int dim, char *extra_info, int size, int64_t extra_info_actual_size)
 {
   int ret = OB_SUCCESS;
+  char *curr_extra_info = nullptr;
   for (int i = 0; i < size && OB_SUCC(ret); ++i) {
     bool has_skip_vid = false;
     const int64_t vid = ids[i];
     if (OB_FAIL(check_vid_range(vid, has_skip_vid))) {
       LOG_WARN("check vid range fail", K(ret), KP(ids), K(size));
     } else if (has_skip_vid) {
-    } else if (OB_FAIL(segment_handle_->add_index(vecs, ids + i, dim, extra_info, 1))) {
-      LOG_WARN("failed to add index.", K(ret), K(dim), K(size));
-    } else if (OB_NOT_NULL(ibitmap_) && OB_NOT_NULL(ibitmap_->insert_bitmap_)) {
-      lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ibitmap_->tenant_id_, "VIBitmap"));
-      TCWLockGuard lock_guard(ibitmap_->rwlock_);
-      ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ibitmap_->insert_bitmap_, vid));
+    } else {
+      curr_extra_info = (OB_NOT_NULL(extra_info) && extra_info_actual_size > 0)
+                        ? (extra_info + i * extra_info_actual_size) : extra_info;
+      if (OB_FAIL(segment_handle_->add_index(vecs + i * dim, ids + i, dim, curr_extra_info, 1))) {
+        LOG_WARN("failed to add index.", K(ret), K(dim), K(size));
+      } else if (OB_NOT_NULL(ibitmap_) && OB_NOT_NULL(ibitmap_->insert_bitmap_)) {
+        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ibitmap_->tenant_id_, "VIBitmap"));
+        TCWLockGuard lock_guard(ibitmap_->rwlock_);
+        ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ibitmap_->insert_bitmap_, vid));
+      }
     }
   }
   return ret;
 }
 
-int ObVectorIndexSegmentBuilder::add_index(uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos)
+int ObVectorIndexSegmentBuilder::add_index(uint32_t *lens, uint32_t *dims, float *vals, int64_t *ids, int size, char *extra_infos, int64_t extra_info_actual_size)
 {
   int ret = OB_SUCCESS;
+  uint32_t curr_offset = 0;
+  char *curr_extra_infos = nullptr;
   for (int i = 0; i < size && OB_SUCC(ret); ++i) {
     bool has_skip_vid = false;
     const int64_t vid = ids[i];
     if (OB_FAIL(check_vid_range(vid, has_skip_vid))) {
       LOG_WARN("check vid range fail", K(ret), KP(ids), K(size));
-    } else if (has_skip_vid){
-    } else if (OB_FAIL(segment_handle_->add_index(lens, dims, vals, ids + i, 1, extra_infos))) {
-      LOG_WARN("failed to add index.", K(ret), K(size));
-    } else if (OB_NOT_NULL(ibitmap_) && OB_NOT_NULL(ibitmap_->insert_bitmap_)) {
-      lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ibitmap_->tenant_id_, "VIBitmap"));
-      TCWLockGuard lock_guard(ibitmap_->rwlock_);
-      ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ibitmap_->insert_bitmap_, vid));
+    } else if (has_skip_vid) {
+      curr_offset += lens[i];
+    } else {
+      curr_extra_infos = (OB_NOT_NULL(extra_infos) && extra_info_actual_size > 0)
+                         ? (extra_infos + i * extra_info_actual_size) : extra_infos;
+      if (OB_FAIL(segment_handle_->add_index(lens + i, dims + curr_offset, vals + curr_offset, ids + i, 1, curr_extra_infos))) {
+        LOG_WARN("failed to add index.", K(ret), K(size));
+      } else if (OB_NOT_NULL(ibitmap_) && OB_NOT_NULL(ibitmap_->insert_bitmap_)) {
+        lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ibitmap_->tenant_id_, "VIBitmap"));
+        TCWLockGuard lock_guard(ibitmap_->rwlock_);
+        ROARING_TRY_CATCH(roaring::api::roaring64_bitmap_add(ibitmap_->insert_bitmap_, vid));
+      }
+      curr_offset += lens[i];
     }
   }
   return ret;
@@ -1520,9 +1620,10 @@ int ObVecIdxSnapshotData::get_snap_index_row_cnt(int64_t &count) const
   count = 0;
   for (int64_t i = 0; OB_SUCC(ret) && i < meta_.incrs_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.incrs_.at(i);
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
     int64_t seg_vec_cnt = 0;
-    if (! seg_meta.segment_handle_.is_valid()) { // skip
-    } else if (OB_FAIL(seg_meta.segment_handle_->get_index_number(seg_vec_cnt))) {
+    if (! segment_handle.is_valid()) { // skip
+    } else if (OB_FAIL(segment_handle->get_index_number(seg_vec_cnt))) {
       LOG_WARN("cal_distance_by_id fail", K(ret), K(i), K(seg_meta));
     } else {
       LOG_DEBUG("segment vector count", K(seg_vec_cnt), K(count));
@@ -1531,9 +1632,10 @@ int ObVecIdxSnapshotData::get_snap_index_row_cnt(int64_t &count) const
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < meta_.bases_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.bases_.at(i);
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
     int64_t seg_vec_cnt = 0;
-    if (! seg_meta.segment_handle_.is_valid()) { // skip
-    } else if (OB_FAIL(seg_meta.segment_handle_->get_index_number(seg_vec_cnt))) {
+    if (! segment_handle.is_valid()) { // skip
+    } else if (OB_FAIL(segment_handle->get_index_number(seg_vec_cnt))) {
       LOG_WARN("cal_distance_by_id fail", K(ret), K(i), K(seg_meta));
     } else {
       LOG_DEBUG("segment vector count", K(seg_vec_cnt), K(count));
@@ -1548,14 +1650,16 @@ int64_t ObVecIdxSnapshotData::get_snap_mem_used() const
   int64_t hold = 0;
   for (int64_t i = 0; i < meta_.incrs_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.incrs_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      hold += seg_meta.segment_handle_->get_mem_used();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      hold += segment_handle->get_mem_used();
     }
   }
   for (int64_t i = 0; i < meta_.bases_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.bases_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      hold += seg_meta.segment_handle_->get_mem_used();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      hold += segment_handle->get_mem_used();
     }
   }
   return hold;
@@ -1566,14 +1670,16 @@ int64_t ObVecIdxSnapshotData::get_snap_mem_hold() const
   int64_t hold = 0;
   for (int64_t i = 0; i < meta_.incrs_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.incrs_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      hold += seg_meta.segment_handle_->get_mem_hold();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      hold += segment_handle->get_mem_hold();
     }
   }
   for (int64_t i = 0; i < meta_.bases_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.bases_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      hold += seg_meta.segment_handle_->get_mem_hold();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      hold += segment_handle->get_mem_hold();
     }
   }
   return hold;
@@ -1586,14 +1692,16 @@ bool ObVecIdxSnapshotData::check_incr_mem_over_percentage(const int64_t incr_mem
   int64_t base_hold = 0;
   for (int64_t i = 0; i < meta_.incrs_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.incrs_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      incr_hold += seg_meta.segment_handle_->get_mem_used();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      incr_hold += segment_handle->get_mem_used();
     }
   }
   for (int64_t i = 0; i < meta_.bases_.count(); ++i) {
     const ObVectorIndexSegmentMeta &seg_meta = meta_.bases_.at(i);
-    if (seg_meta.segment_handle_.is_valid()) {
-      base_hold += seg_meta.segment_handle_->get_mem_used();
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
+    if (segment_handle.is_valid()) {
+      base_hold += segment_handle->get_mem_used();
     }
   }
   return base_hold > 0 && incr_memory_percentage > 0 && incr_hold * 100 > incr_memory_percentage * (incr_hold + base_hold);
@@ -1638,8 +1746,11 @@ bool ObVecIdxSnapshotData::check_incr_can_merge_base() const
 ObVectorIndexAlgorithmType ObVecIdxSnapshotData::get_snap_index_type() const
 {
   ObVectorIndexAlgorithmType index_type = VIAT_MAX;
-  if (meta_.bases_.count() > 0 && meta_.bases_.at(0).segment_handle_.is_valid()) {
-    index_type = meta_.bases_.at(0).segment_handle_->get_index_type();
+  if (meta_.bases_.count() > 0) {
+    const ObVectorIndexSegmentHandle segment_handle = meta_.bases_.at(0).segment_handle_;
+    if (segment_handle.is_valid()) {
+      index_type = segment_handle->get_index_type();
+    }
   }
   return index_type;
 }
@@ -1649,9 +1760,11 @@ int ObVecIdxSnapshotData::get_snap_vid_bound(int64_t &min_vid, int64_t &max_vid)
   int ret = OB_SUCCESS;
   for (int64_t i = 0; OB_SUCC(ret) && i < meta_.incrs_.count(); ++i) {
     ObVectorIndexSegmentMeta &seg_meta = meta_.incrs_.at(i);
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
     int64_t seg_min_vid = INT64_MAX;
     int64_t seg_max_vid = 0;
-    if (OB_FAIL(seg_meta.segment_handle_->get_vid_bound(seg_min_vid, seg_max_vid))) {
+    if (! segment_handle.is_valid()) { // skip
+    } else if (OB_FAIL(segment_handle->get_vid_bound(seg_min_vid, seg_max_vid))) {
       LOG_WARN("get_vid_bound fail", K(ret), K(i), K(seg_meta));
     } else {
       min_vid = OB_MIN(min_vid, seg_min_vid);
@@ -1660,9 +1773,11 @@ int ObVecIdxSnapshotData::get_snap_vid_bound(int64_t &min_vid, int64_t &max_vid)
   }
   for (int64_t i = 0; OB_SUCC(ret) && i < meta_.bases_.count(); ++i) {
     ObVectorIndexSegmentMeta &seg_meta = meta_.bases_.at(i);
+    const ObVectorIndexSegmentHandle segment_handle = seg_meta.segment_handle_;
     int64_t seg_min_vid = INT64_MAX;
     int64_t seg_max_vid = 0;
-    if (OB_FAIL(seg_meta.segment_handle_->get_vid_bound(seg_min_vid, seg_max_vid))) {
+    if (! segment_handle.is_valid()) { // skip
+    } else if (OB_FAIL(segment_handle->get_vid_bound(seg_min_vid, seg_max_vid))) {
       LOG_WARN("get_vid_bound fail", K(ret), K(i), K(seg_meta));
     } else {
       min_vid = OB_MIN(min_vid, seg_min_vid);
@@ -1694,6 +1809,7 @@ int ObVecIdxSnapshotData::build_meta(
       seg_meta.end_key_buf_, OB_VECTOR_INDEX_SNAPSHOT_KEY_LENGTH, seg_meta.end_key_))) {
     LOG_WARN("get end key fail", K(ret), K(index_type), K(tablet_id), K(snapshot_version));
   } else {
+    TCWLockGuard snap_mem_lock_guard(mem_data_rwlock_);
     seg_meta.seg_type_ = builder_->seg_type_;
     seg_meta.index_type_ = index_type;
     builder_->segment_handle_->set_is_base();
@@ -1740,15 +1856,13 @@ int ObVecIdxSnapshotData::build_finished(ObIAllocator &allocator)
     } else if (OB_FAIL(builder_->segment_handle_->get_vid_bound(min_vid, max_vid))) {
       LOG_WARN("get_vid_bound fail", K(ret), K(builder_->segment_handle_));
     } else {
+      builder_->segment_handle_->set_read_vid_bound(ObVidBound(min_vid, max_vid));
       last_res_seg_info_.mem_used_ = builder_->segment_handle_->get_mem_used();
       last_res_seg_info_.min_vid_ = min_vid;
       last_res_seg_info_.max_vid_ = max_vid;
     }
-    builder_->segment_handle_.reset();
     builder_->free(allocator);
-    builder_->~ObVectorIndexSegmentBuilder();
-    allocator.free(builder_);
-    builder_ = nullptr;
+    builder_->set_build_finished(true);
   }
   return ret;
 }
@@ -1836,6 +1950,11 @@ int ObVecIdxSnapshotData::load_segment(ObIAllocator &allocator, ObPluginVectorIn
   param.seg_meta_ = &seg_meta;
   if (OB_FAIL(ObVectorIndexSegment::deserialize(seg_meta.segment_handle_, tenant_id, adaptor, param))) {
     LOG_WARN("serialize index failed.", K(ret));
+  } else {
+    LOG_INFO("load segment success", K(ret), K(seg_meta));
+  }
+  if (OB_FAIL(ret)) {
+    seg_meta.segment_handle_.reset();
   }
   return ret;
 }
@@ -1866,6 +1985,9 @@ int ObVecIdxSnapshotData::load_segment(ObPluginVectorIndexAdaptor *adaptor,
     }
   }
 
+  if (OB_FAIL(ret)) {
+    seg_meta.segment_handle_.reset();
+  }
   if (OB_NOT_NULL(snap_data_iter)) {
     int tmp_ret = MTL(ObAccessService*)->revert_scan_iter(snap_data_iter);
     if (tmp_ret != OB_SUCCESS) {
@@ -1959,8 +2081,11 @@ int ObVecIdxSnapshotData::load_segment(
   int ret = OB_SUCCESS;
   ObHNSWDeserializeCallback callback(adaptor);
   ObVectorIndexSerializer index_seri(*param.allocator_);
-  if (OB_FAIL(index_seri.deserialize(meta_, param, callback, tenant_id))) {
-    LOG_WARN("serialize index failed.", K(ret));
+  if (meta_.bases_.count() == 1 && meta_.bases_.at(0).segment_handle_.is_valid()) {
+    // already loaded by other thread, so skip this load
+    LOG_INFO("snap data base segment is valid, so skip", KPC(this));
+  } else if (OB_FAIL(index_seri.deserialize(meta_, param, callback, tenant_id))) {
+    LOG_WARN("deserialize index failed.", K(ret));
   } else if (OB_FAIL(get_snap_vid_bound(vid_bound_.min_vid_, vid_bound_.max_vid_))) {
     LOG_WARN("get snap vid bound fail", K(ret), K(meta_));
   }
@@ -2005,7 +2130,8 @@ ObVecIdxFrozenData::~ObVecIdxFrozenData()
   FLOG_INFO("destruct ObVecIdxFrozenData", K(instacnce_cnt), KP(this));
 }
 
-int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result)
+
+int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result, int segment_cnt)
 {
   int ret = OB_SUCCESS;
   int64_t vec_cnt = 0;
@@ -2026,6 +2152,16 @@ int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result)
     lib::ObMallocHookAttrGuard malloc_guard(lib::ObMemAttr(ctx_->tenant_id_, "VIndexVsagADP"));
     lib::ObLightBacktraceGuard light_backtrace_guard(false);
     result.mem_ctx_ = segment_querier_->handle_->mem_ctx_;
+    int64_t actual_ef_search = 0;
+    int64_t actual_query_limit = 0;
+    calc_segment_ef_params(query_cond_, segment_cnt, actual_ef_search, actual_query_limit);
+
+    const float timeout_ms = calc_vsag_search_timeout_ms(
+        query_cond_->ef_search_, static_cast<double>(selectivity_), segment_cnt);
+
+    LOG_TRACE("multi-segment knn_search ef_search adjust",
+      K(segment_cnt), K(query_cond_->ef_search_), K(actual_ef_search),
+      K(actual_query_limit), K(timeout_ms), K(selectivity_));
     if (! query_cond_->is_post_with_filter_) {
       if (is_sparse_vector_) {
         ObCostGuard incr_cost_guard(this, "sparse_pre", query_cond_->ob_sparse_drop_ratio_search_, query_cond_->query_limit_);
@@ -2051,23 +2187,24 @@ int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result)
           LOG_WARN("knn search sparse vector failed.", K(ret));
         }
       } else {
-        ObCostGuard dense_cost_guard(this, "pre", query_cond_->ef_search_, query_cond_->query_limit_);
+        ObCostGuard dense_cost_guard(this, "pre", actual_ef_search, actual_query_limit);
         if (OB_FAIL(obvectorutil::knn_search(segment_querier_->handle_->index_,
           query_vector_,
           dim_,
-          query_cond_->query_limit_,
+          actual_query_limit,
           result.distances_,
           result.vids_,
           result.extra_info_buf_ptr_,
           result.total_,
-          query_cond_->ef_search_,
+          actual_ef_search,
           segment_querier_->filter_,
           segment_querier_->reverse_filter_,
           segment_querier_->is_extra_info_filter(),
           valid_ratio_,
           &ctx_->search_allocator_,
           query_cond_->extra_column_count_ > 0,
-          query_cond_->distance_threshold_))) {
+          query_cond_->distance_threshold_,
+          timeout_ms))) {
           LOG_WARN("knn search dense vector failed.", K(ret));
         }
       }
@@ -2075,16 +2212,16 @@ int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result)
       ret = OB_NOT_SUPPORTED;
       LOG_WARN("spare vector is not support iterative filter", K(ret));
     } else {
-      ObCostGuard delta_cost_guard(this, "post", query_cond_->ef_search_, query_cond_->query_limit_);
+      ObCostGuard delta_cost_guard(this, "post", actual_ef_search, actual_query_limit);
       if (OB_FAIL(obvectorutil::knn_search(segment_querier_->handle_->index_,
         query_vector_,
         dim_,
-        query_cond_->query_limit_,
+        actual_query_limit,
         result.distances_,
         result.vids_,
         result.extra_info_buf_ptr_,
         result.total_,
-        query_cond_->ef_search_,
+        actual_ef_search,
         segment_querier_->filter_,
         segment_querier_->reverse_filter_,
         segment_querier_->is_extra_info_filter(),
@@ -2092,14 +2229,15 @@ int ObVectorIndexSegQueryHandler::knn_search(ObVsagQueryResult &result)
         &ctx_->search_allocator_,
         query_cond_->extra_column_count_ > 0,
         segment_querier_->iter_ctx_,
-        query_cond_->is_last_search_))) {
+        query_cond_->is_last_search_,
+        timeout_ms))) {
         LOG_WARN("knn search delta failed.", K(ret));
       }
     }
     LOG_TRACE("search_result", K(ret),
         "vids", ObArrayWrap<int64_t>(result.vids_, result.total_),
-        KPC(segment_querier_), K(query_cond_->query_limit_),
-        K(query_cond_->ef_search_), K(query_cond_->is_last_search_),
+        KPC(segment_querier_), K(actual_query_limit),
+        K(query_cond_->ef_search_), K(actual_ef_search), K(query_cond_->is_last_search_),
         K(query_cond_->extra_column_count_), K(query_cond_->distance_threshold_));
 
     if (OB_SUCC(ret) && query_cond_->distance_threshold_ != FLT_MAX && result.total_ > 0) {

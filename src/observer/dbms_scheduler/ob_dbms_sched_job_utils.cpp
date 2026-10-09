@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -285,6 +278,7 @@ int ObDBMSSchedJobInfo::deep_copy(ObIAllocator &allocator, const ObDBMSSchedJobI
   max_failures_ = other.max_failures_;
   func_type_ = other.func_type_;
   this_exec_date_ = other.this_exec_date_;
+  this_exec_sess_id_ = other.this_exec_sess_id_;
 
   OZ (ob_write_string(allocator, other.lowner_, lowner_));
   OZ (ob_write_string(allocator, other.powner_, powner_));
@@ -715,7 +709,7 @@ int ObDBMSSchedJobUtils::update_dbms_sched_job_info(common::ObISQLClient &sql_cl
       LOG_WARN("add column failed", KR(ret), K(job_attribute_value.get_string()));
     }
   } else if (0 == job_attribute_name.case_compare("max_run_duration") || 0 == job_attribute_name.case_compare("duration")) {
-    const int MAX_RUN_DURATION_LEN = 16;
+    const int MAX_RUN_DURATION_LEN = 32;
     char max_run_duration_buf[MAX_RUN_DURATION_LEN];
     int64_t pos = job_attribute_value.get_string().to_string(max_run_duration_buf, MAX_RUN_DURATION_LEN);
     int64_t max_run_duration = atoll(max_run_duration_buf);

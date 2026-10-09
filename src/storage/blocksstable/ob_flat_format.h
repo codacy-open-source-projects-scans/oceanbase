@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_BLOCKSSTABLE_OB_FLAT_FORMAT_H_
 #define OCEANBASE_STORAGE_BLOCKSSTABLE_OB_FLAT_FORMAT_H_
 
+#include "common/ob_store_format.h"
 #include "share/ob_define.h"
 #include "ob_datum_row.h"
 
@@ -209,7 +203,6 @@ public:
 
   constexpr static int64_t ROW_HEADER_VERSION_1 = 0;
   constexpr static int64_t ROW_HEADER_VERSION_2 = 1;
-
   OB_INLINE uint8_t get_version() const { return version_; }
   OB_INLINE void set_version(const uint8_t version) { version_ = version; }
   OB_INLINE ObDmlRowFlag get_row_flag() const { return ObDmlRowFlag(row_flag_); }
@@ -229,8 +222,20 @@ public:
   OB_INLINE void set_column_count(const uint16_t column_count) { column_cnt_ = column_count; }
 
   OB_INLINE void clear_header_mask() { header_info_mask_ = 0; }
-  OB_INLINE void clear_reserved_bits() { reserved8_ = 0; }
-
+  OB_INLINE void set_merge_engine_type(const ObMergeEngineType merge_engine)
+  {
+    if (merge_engine == ObMergeEngineType::OB_MERGE_ENGINE_MAX) {
+      merge_engine_type_ = 0;
+      merge_engine_valid_ = false;
+    } else {
+      merge_engine_type_ = static_cast<uint8_t>(merge_engine);
+      merge_engine_valid_ = true;
+    }
+  }
+  OB_INLINE ObMergeEngineType get_merge_engine_type() const
+  {
+    return merge_engine_valid_ ? static_cast<ObMergeEngineType>(merge_engine_type_) : ObMergeEngineType::OB_MERGE_ENGINE_UNKNOWN;
+  }
   OB_INLINE void set_rowkey_count(const uint8_t rowkey_cnt) { rowkey_cnt_ = rowkey_cnt; }
   OB_INLINE uint8_t get_rowkey_count() const { return rowkey_cnt_; }
 
@@ -349,10 +354,11 @@ private:
     {
       uint8_t offset_type_ : 2; // cluster offset
       uint8_t single_cluster_ : 1;
-      uint8_t reserved_ : 5;
+      uint8_t merge_engine_valid_ : 1;
+      uint8_t reserved_ : 4;
     };
   };
-  uint8_t reserved8_;
+  uint8_t merge_engine_type_;
   int64_t trans_id_;
 };
 

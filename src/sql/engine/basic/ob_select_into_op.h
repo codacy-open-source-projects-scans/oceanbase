@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_SQL_ENGINE_BASIC_OB_SELECT_INTO_OP_H_
@@ -37,6 +30,7 @@
 #include "sql/engine/basic/ob_external_file_writer.h"
 #include "sql/resolver/dml/ob_select_stmt.h"
 #include "sql/engine/table/ob_odps_table_utils.h"
+#include "lib/number/ob_number_v2.h"
 
 namespace oceanbase
 {
@@ -161,8 +155,7 @@ public:
       curr_partition_num_(0),
       external_properties_(),
       format_type_(ObExternalFileFormat::FormatType::CSV_FORMAT),
-      is_odps_cpp_table_(false),
-      is_odps_java_table_(false),
+      use_odps_jni_connector_(false),
 #ifdef OB_BUILD_CPP_ODPS
       upload_(NULL),
       record_writer_(NULL),
@@ -176,7 +169,8 @@ public:
       arrow_alloc_(),
       parquet_writer_schema_(nullptr),
       orc_schema_(nullptr),
-      array_helpers_()
+      array_helpers_(),
+      export_csv_header_(false)
   {
   }
 
@@ -389,7 +383,11 @@ private:
                                 parquet::Int96 &res);
   int init_orc_env();
   int setup_orc_schema();
-  int orc_type_mapping_of_ob_type(ObDatumMeta& meta, int max_length, std::unique_ptr<orc::Type>& orc_type);
+  int orc_type_mapping_of_ob_type(ObDatumMeta &meta,
+                                  int max_length,
+                                  std::unique_ptr<orc::Type> &orc_type,
+                                  const ObExpr *expr = nullptr,
+                                  ObEvalCtx *eval_ctx = nullptr);
   int create_orc_schema(std::unique_ptr<orc::Type> &schema);
   int into_outfile_batch_orc(const ObBatchRows &brs, ObExternalFileWriter *data_writer);
   int build_orc_cell(const ObDatumMeta &datum_meta,
@@ -410,9 +408,16 @@ private:
                                 const bool is_strict_mode,
                                 const ObDateSqlMode date_sql_mode);
   bool file_need_split(int64_t file_size);
-  int check_oracle_number(ObObjType obj_type, int16_t &precision, int8_t scale);
+  int check_oracle_number(ObObjType obj_type,
+                          int16_t &precision,
+                          int8_t &scale,
+                          const ObExpr *expr = nullptr,
+                          ObEvalCtx *eval_ctx = nullptr);
+  int deduce_oracle_number_export_ps_from_nmb(const common::number::ObNumber &nmb,
+                                              int16_t &precision,
+                                              int8_t &scale);
 
-  #ifdef OB_BUILD_CPP_ODPS
+#ifdef OB_BUILD_CPP_ODPS
   int recursive_fill_list_record(shared_ptr<apsara::odps::sdk::ODPSArray> odps_array,
                                  ObODPSArrayHelper *array_helper,
                                  ObIAllocator &alloc,
@@ -427,6 +432,8 @@ private:
                                   const bool is_strict_mode,
                                   const ObDateSqlMode date_sql_mode);
   #endif
+  int init_csv_writer(ObCsvFileWriter &data_writer);
+  int export_csv_header(ObCsvFileWriter &data_writer);
 public:
   static int check_secure_file_path(ObString file_name);
 private:
@@ -465,8 +472,7 @@ private:
   int curr_partition_num_;
   ObExternalFileFormat external_properties_;
   ObExternalFileFormat::FormatType format_type_;
-  bool is_odps_cpp_table_;
-  bool is_odps_java_table_;
+  bool use_odps_jni_connector_;
 #ifdef OB_BUILD_CPP_ODPS
   apsara::odps::sdk::IUploadPtr upload_;
   apsara::odps::sdk::IRecordWriterPtr record_writer_;
@@ -488,6 +494,7 @@ private:
   ObOrcMemPool orc_alloc_;
   std::unique_ptr<orc::Type> orc_schema_;
   ObSEArray<ObODPSArrayHelper*, 8> array_helpers_;
+  bool export_csv_header_;
 };
 
 

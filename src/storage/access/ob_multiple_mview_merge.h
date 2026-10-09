@@ -1,12 +1,5 @@
 // Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// SPDX-License-Identifier: Apache-2.0
 
 #ifndef OCEANBASE_STORAGE_OB_MULTIPLE_MVIEW_MERGE_
 #define OCEANBASE_STORAGE_OB_MULTIPLE_MVIEW_MERGE_
@@ -21,6 +14,7 @@ namespace oceanbase
 {
 namespace storage
 {
+struct ObTabletReadTables;
 
 struct ObBaseTableAccessInfo
 {
@@ -65,7 +59,7 @@ protected:
   int get_incr_row(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param,
+      ObTabletReadTables &tablet_read_tables,
       ObMultipleMerge &merge,
       blocksstable::ObDatumRow &row);
   ObMviewBaseMerge *base_data_merge_;
@@ -85,7 +79,7 @@ private:
   int open_base_data_merge(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param,
+      ObTabletReadTables &tablet_read_tables,
       const ObDatumRowkey &rowkey);
   int set_old_new_row_flag(
       const ObTableAccessParam &param,
@@ -110,10 +104,10 @@ private:
 class Classname final : public BaseClass, public ObMviewIncrMerge {                                    \
 public:                                                                                                \
   virtual int switch_param(ObTableAccessParam &param, ObTableAccessContext &context,                   \
-                           ObGetTableParam &get_table_param) override                                  \
+                           ObTabletReadTables &tablet_read_tables) override                                  \
   {                                                                                                    \
     int ret = OB_SUCCESS;                                                                              \
-    if (OB_FAIL(BaseClass::switch_param(param, context, get_table_param))) {                           \
+    if (OB_FAIL(BaseClass::switch_param(param, context, tablet_read_tables))) {                           \
       STORAGE_LOG(WARN, "Failed to switch param", K(ret));                                             \
     } else if (nullptr != base_data_merge_) {                                                          \
       is_table_store_refreshed_ = true;                                                                \
@@ -138,7 +132,7 @@ public:                                                                         
 protected:                                                                                             \
   virtual int inner_get_next_row(blocksstable::ObDatumRow &row) override                               \
   {                                                                                                    \
-    return ObMviewIncrMerge::get_incr_row(*access_param_, *access_ctx_, *get_table_param_, *this, row);\
+    return ObMviewIncrMerge::get_incr_row(*access_param_, *access_ctx_, *tablet_read_tables_, *this, row);\
   }                                                                                                    \
   virtual int calc_scan_range() override                                                               \
   {                                                                                                    \
@@ -183,22 +177,24 @@ public:
   int switch_param(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param);
+      ObTabletReadTables &tablet_read_tables);
   static int alloc_mview_merge(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param,
+      ObTabletReadTables &tablet_read_tables,
       ObTableScanRange &table_scan_range,
       ObTableScanParam &scan_param,
+      const ObQRIterType &iter_type,
       ObMviewMergeWrapper *&merge_wrapper,
       ObMviewMerge *&mview_merge);
 private:
   int get_mview_merge(
       ObTableAccessParam &param,
       ObTableAccessContext &context,
-      ObGetTableParam &get_table_param,
+      ObTabletReadTables &tablet_read_tables,
       ObTableScanRange &table_scan_range,
       ObTableScanParam &scan_param,
+      const ObQRIterType &iter_type,
       ObMviewMerge *&version_merge);
   ObMviewMerge *merges_[T_MAX_ITER_TYPE];
 };

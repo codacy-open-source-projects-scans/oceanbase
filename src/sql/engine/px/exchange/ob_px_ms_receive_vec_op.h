@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENGINE_PX_EXCHANGE_OB_PX_MS_RECEIVE_VEC_OP_H_
@@ -311,7 +304,7 @@ private:
   int process_dump(const common::ObIArray<ObTempRowStore *> &full_dump_array,
                    const common::ObIArray<ObTempRowStore *> &part_dump_array);
 
-  OB_INLINE virtual int64_t get_channel_count() { return task_channels_.count(); }
+  OB_INLINE int64_t get_channel_count() { return task_channels_.count(); }
 private:
   friend class OrderedAggCodeStore;
   bool use_ordered_aggr_opt() const
@@ -341,8 +334,12 @@ private:
   int setup_and_copy_encoded_exprs(const int64_t size, const int64_t aggr_code);
   template<typename ColumnFmt>
   int do_decode_expr(ObExpr *from_expr, ObExpr *to_expr, const int64_t size);
+  static void set_adaptive_block_size(ObTempRowStore &row_store, const int64_t n_channel);
 private:
   static const int64_t MAX_INPUT_NUMBER = 10000L;
+  // When channel count exceeds this threshold, adaptive block sizing is enabled to
+  // reduce minimum undumpable memory in merge sort receive operator.
+  static const int64_t ADAPTIVE_BLOCK_CHANNEL_THRESHOLD = 64L;
   dtl::ObDtlChannelLoop *ptr_row_msg_loop_;
   ObPxInterruptP interrupt_proc_;
   ObRowHeap<ObCompactRowCompare, ObCompactRow> row_heap_;

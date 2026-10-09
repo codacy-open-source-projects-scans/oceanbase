@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "share/scn.h"
@@ -235,7 +228,7 @@ bool ObTabletAbortTransferHelper::check_can_do_tx_end(
   int64_t pos = 0;
   ObTransferUtils::set_transfer_module();
 
-  LOG_INFO("check can do finish transfer in tx end", K(is_willing_to_commit), K(for_replay), K(log_scn));
+  LOG_INFO("check can do abort transfer in tx end", K(is_willing_to_commit), K(for_replay), K(log_scn));
   if (OB_ISNULL(buf) || buf_len < 0 || (for_replay && !log_scn.is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("check can replay finish transfer in commit get invalid argument", K(ret), KP(buf), K(buf_len), K(for_replay), K(log_scn));

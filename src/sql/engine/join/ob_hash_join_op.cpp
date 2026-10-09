@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -738,6 +731,18 @@ int ObHashJoinOp::do_sync_wait_all()
       }
     }
     LOG_TRACE("debug shared hash join wait all to drain", K(ret));
+    if (OB_FAIL(ret)) {
+      ObHashJoinInput *hj_input = static_cast<ObHashJoinInput*>(input_);
+      if (OB_ISNULL(hj_input)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("unexpected status: hash join input is null", K(ret));
+      } else if (0 == hj_input->shared_hj_info_ || OB_ISNULL(hj_input->get_shared_hj_info())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("unexpected status: hash join shared info is null", K(ret));
+      } else {
+        hj_input->set_error_code(ret);
+      }
+    }
   }
   return ret;
 }
@@ -1181,6 +1186,8 @@ int ObHashJoinOp::reuse_for_next_chunk()
   } else {
     // reuse buckets
     PartHashJoinTable &hash_table = hash_table_;
+
+    cur_tuple_ = nullptr;
 
     int64_t row_count = profile_.get_row_count();
     if (row_count > hash_table.row_count_) {
@@ -5575,6 +5582,7 @@ int ObHashJoinOp::find_next_matched_tuple(ObHashJoinStoredJoinRow *&tuple)
   }
   while (OB_SUCC(ret)) {
     if (cur_row_idx_ >= left_part_rows_->count()) {
+      cur_tuple_ = nullptr;
       ret = OB_ITER_END;
       break;
     }
@@ -5722,6 +5730,7 @@ int ObHashJoinOp::find_next_unmatched_tuple(ObHashJoinStoredJoinRow *&tuple)
   }
   while (OB_SUCC(ret)) {
     if (cur_row_idx_ >= left_part_rows_->count()) {
+      cur_tuple_ = nullptr;
       ret = OB_ITER_END;
       break;
     }
@@ -5738,7 +5747,6 @@ int ObHashJoinOp::fill_left_join_result_batch()
 {
   int ret = OB_SUCCESS;
   PartHashJoinTable &htable = hash_table_;
-  ObHashJoinStoredJoinRow *tuple = cur_tuple_;
   int64_t batch_idx = 0;
   if (brs_.size_ > 0) {
     brs_.skip_->reset(brs_.size_);

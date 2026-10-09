@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef __OCEANBASE_SQL_ENGINE_PX_UTIL_H__
@@ -37,7 +30,6 @@ enum ObBcastOptimization {
   BC_TO_SERVER,
 };
 
-typedef common::hash::ObHashMap<uint64_t, int64_t, common::hash::NoPthreadDefendMode> ObTabletIdxMap;
 
 // 监听各类事件，如 root dfo 调度事件，etc
 class ObIPxCoordEventListener
@@ -219,7 +211,7 @@ public:
   static int alloc_distribution_of_reference_child(const ObIArray<ObTableLocation> *table_locations,
                                                    ObExecContext &exec_ctx,
                                                    ObDfo &parent);
-  static int find_reference_child(ObDfo &parent, ObDfo *&reference_child);
+  static int find_reference_child(ObDfo &parent, int64_t slave_mapping_id, ObDfo *&reference_child);
   static int add_pdml_merge_gindex_locations(const ObTableModifySpec &dml_op,
                                              ObExecContext &ctx,
                                              ObDfo &dfo);
@@ -571,8 +563,9 @@ public:
     int64_t tablet_idx_;
     uint64_t hash_value_;
     int64_t worker_id_;
+    int64_t gi_task_set_idx_;
     ObPxTabletInfo tablet_info_;
-    TO_STRING_KV(K_(tablet_id), K_(tablet_idx), K_(hash_value), K_(worker_id), K_(tablet_info));
+    TO_STRING_KV(K_(tablet_id), K_(tablet_idx), K_(hash_value), K_(worker_id), K_(tablet_info), K_(gi_task_set_idx));
   };
 public:
   ObPxAffinityByRandom(bool order_partitions, bool partition_random_affinitize)
@@ -585,7 +578,8 @@ public:
       int64_t tablet_idx,
       int64_t worker_cnt,
       uint64_t tenant_id,
-      ObPxTabletInfo &tablet_row_info);
+      ObPxTabletInfo &tablet_row_info,
+      int64_t gi_task_set_idx = -1);
   int do_random(bool use_partition_info, uint64_t tenant_id);
   const ObIArray<TabletHashValue> &get_result() { return tablet_hash_values_; }
   static int get_tablet_info(int64_t tablet_id, ObIArray<ObPxTabletInfo> &tablets_info, ObPxTabletInfo &partition_info);
@@ -625,7 +619,7 @@ private:
                                        ObDfo &parent, int64_t sqc_count, uint64_t tenant_id);
 
   // for SlaveMappingType::SM_PPWJ_HASH_HASH
-  static int build_ppwj_slave_mn_map(ObDfo &parent, ObDfo &child, uint64_t tenant_id);
+  static int build_ppwj_slave_mn_map(ObExecContext &ctx, ObDfo &parent, ObDfo &child, uint64_t tenant_id);
 
   // for SlaveMappingType::SM_PPWJ_BCAST_NONE && SlaveMappingType::SM_PPWJ_NONE_BCAST
   static int build_ppwj_bcast_slave_mn_map(ObDfo &parent, ObDfo &child, uint64_t tenant_id);
@@ -642,13 +636,108 @@ private:
   // for PARTITION_RANDOM and PARTITION_HASH with likely_data_skew_
   static int build_pkey_scatter_ch_mn_map(ObDfo &parent, ObDfo &child, uint64_t tenant_id);
 
-  // for child with ObPQDistributeMethod::Type::PARTITION_HASH or PARTITION_RANGE
+  // for child with ObPQDistributeMethod::Type::PARTITION_HASH
   static int build_pkey_affinitized_ch_mn_map(ObDfo &parent, ObDfo &child, uint64_t tenant_id);
+  // for child with ObPQDistributeMethod::Type::PARTITION_RANGE
+  static int build_pkey_weighted_affinitized_ch_mn_map(ObExecContext &ctx, ObDfo &parent, ObDfo &child, uint64_t tenant_id);
   static int build_affinitized_partition_map_by_sqcs(common::ObIArray<ObPxSqcMeta> &sqcs,
                                                      ObDfo &child,
                                                      ObIArray<int64_t> &prefix_task_counts,
                                                      int64_t total_task_count,
                                                      ObPxPartChMapArray &map);
+  typedef common::hash::ObHashMap<uint64_t, int64_t> PartRowCountMap;
+  static int build_weighted_affinitized_partition_map_by_sqcs(
+      common::ObIArray<ObPxSqcMeta> &sqcs,
+      ObDfo &child,
+      ObIArray<int64_t> &prefix_task_counts,
+      int64_t total_task_count,
+      ObPxPartChMapArray &map,
+      const PartRowCountMap *part_row_count_map);
+
+  // ---------- for online ddl get partition rows statistics  ----------
+  struct AffinitizedPartitionRowMeta {
+    ObDASTabletLoc *loc_ = nullptr;
+    int64_t row_count_ = 0;
+    double need_threads_num_ = 0.0;
+    TO_STRING_KV(KP(loc_), K(row_count_), K(need_threads_num_));
+  };
+  struct AffinitizedRowMetaDescCmp {
+    bool operator()(const AffinitizedPartitionRowMeta &a, const AffinitizedPartitionRowMeta &b) const
+    {
+      if (a.need_threads_num_ != b.need_threads_num_) {
+        return a.need_threads_num_ > b.need_threads_num_;
+      }
+      const int64_t ida = OB_NOT_NULL(a.loc_) ? a.loc_->tablet_id_.id() : 0;
+      const int64_t idb = OB_NOT_NULL(b.loc_) ? b.loc_->tablet_id_.id() : 0;
+      return ida < idb;
+    }
+  };
+  typedef ObSEArray<AffinitizedPartitionRowMeta, 64> AffinitizedPartRowMetaArray;
+  static int64_t affinitized_zigzag_channel_idx(const int64_t part_idx, const int64_t T)
+  {
+    int64_t ch = 0;
+    if (T <= 1) {
+      ch = 0;
+    } else {
+      const int64_t period = 2 * T;
+      const int64_t pos = part_idx % period;
+      ch = (pos < T) ? pos : (2 * T - 1 - pos);
+    }
+    return ch;
+  }
+  static int dispatch_parts_zigzag(
+      const int64_t thread_cnt,
+      const int64_t prefix_task_count,
+      AffinitizedPartRowMetaArray &metas_by_row_desc,
+      ObPxPartChMapArray &map,
+      const int64_t task_idx_base);
+  static int dispatch_parts_abundant(
+      const int64_t t_available,
+      const int64_t prefix_task_count,
+      const int64_t task_offset,
+      AffinitizedPartRowMetaArray &metas,
+      ObPxPartChMapArray &map);
+  static int dispatch_affinitized_partition_map_by_weight_for_one_sqc(
+      const int64_t thread_cnt,
+      const int64_t prefix_task_count,
+      AffinitizedPartRowMetaArray &row_metas,
+      ObPxPartChMapArray &map);
+  // 单个 SQC 内的几何均分 / round-robin 分配
+  static int dispatch_affinitized_partition_map_for_one_sqc(
+      const DASTabletLocArray &locations,
+      const int64_t sqc_task_count,
+      const int64_t prefix_task_count,
+      ObPxPartChMapArray &map);
+  // DDL 建局部索引统计信息收集辅助函数
+  static int get_ddl_local_index_part_arrays(
+      ObExecContext &ctx,
+      const uint64_t tenant_id,
+      bool &local_index_and_one_level,
+      uint64_t &data_table_id,
+      int64_t &part_num,
+      share::schema::ObPartition **&data_parts,
+      share::schema::ObPartition **&index_parts,
+      share::schema::ObSchemaGetterGuard &schema_guard);
+  static int build_part_id_arrays(
+      const int64_t part_num,
+      share::schema::ObPartition **data_parts,
+      share::schema::ObPartition **index_parts,
+      ObIArray<int64_t> &data_part_ids,
+      ObIArray<int64_t> &idx_part_ids);
+  static int collect_part_stats_to_idx_map(
+      const uint64_t tenant_id,
+      const uint64_t data_table_id,
+      const int64_t part_num,
+      const ObIArray<int64_t> &data_part_ids,
+      const ObIArray<int64_t> &idx_part_ids,
+      bool &part_row_count_valid,
+      PartRowCountMap &out_part_row_count_map);
+  static int try_collect_ddl_local_index_part_row_counts(
+      ObExecContext &ctx,
+      const ObDfo &child,
+      const uint64_t tenant_id,
+      bool &part_row_count_valid,
+      PartRowCountMap &out_part_row_count_map);
 
 private:
   static int build_partition_map_by_sqcs(common::ObIArray<ObPxSqcMeta> &sqcs,
@@ -666,10 +755,6 @@ using DTLChannelPredFunc = std::function<void(dtl::ObDtlChannel*)>;
 class ObDtlChannelUtil
 {
 public:
-  static int link_ch_set(dtl::ObDtlChSet &ch_set,
-                        common::ObIArray<dtl::ObDtlChannel*> &channels,
-                        DTLChannelPredFunc pred,
-                        dtl::ObDtlFlowControl *dfc = nullptr);
   static int get_receive_dtl_channel_set(
               const int64_t sqc_id,
               const int64_t task_id,
@@ -706,14 +791,6 @@ public:
   static int get_sm_transmit_dtl_channel_set(
               const int64_t sqc_id,
               const int64_t task_id,
-              dtl::ObDtlChTotalInfo &ch_total_info,
-              dtl::ObDtlChSet &ch_set);
-  static int get_transmit_bf_dtl_channel_set(
-              const int64_t sqc_id,
-              dtl::ObDtlChTotalInfo &ch_total_info,
-              dtl::ObDtlChSet &ch_set);
-  static int get_receive_bf_dtl_channel_set(
-              const int64_t sqc_id,
               dtl::ObDtlChTotalInfo &ch_total_info,
               dtl::ObDtlChSet &ch_set);
 };

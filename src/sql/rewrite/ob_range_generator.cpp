@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -2863,8 +2856,10 @@ int ObRangeGenerator::generate_tmp_search_index_domain_param(const ObRangeNode &
           ObObj elem_obj;
           elem_obj.set_meta_type(elem_meta);
           if (arr_obj->is_null(i)) {
-            ret = OB_NOT_SUPPORTED;
-            LOG_WARN("get unexpected null", K(ret));
+            objs_ptr[i].set_null();
+            if (OB_FAIL(tmp_in_param->in_param_.push_back(&objs_ptr[i]))) {
+              LOG_WARN("failed to push back array element", K(ret));
+            }
           } else if (OB_FAIL(arr_obj->elem_at(i, elem_obj))) {
             LOG_WARN("failed to get array element", K(ret), K(i));
           } else {
@@ -2987,7 +2982,9 @@ int ObRangeGenerator::fill_search_index_range_column(const int64_t col_idx,
       range_obj = path_obj;
     }
   } else if (share::SEARCH_INDEX_VALUE == col_idx) {
-    if (is_json_value) {
+    if (value.is_null()) {
+      range_obj.set_null();
+    } else if (is_json_value) {
       ObString encoded_value;
       ObIJsonBase* j_base = reinterpret_cast<ObIJsonBase*>(value.get_ext());
       if (OB_ISNULL(j_base)) {

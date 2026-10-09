@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -17,6 +10,7 @@
 #include "sql/optimizer/ob_opt_est_cost_model_vector.h"
 #include "sql/optimizer/ob_opt_est_parameter_vector.h"
 #include "sql/engine/expr/ob_expr_result_type_util.h"
+#include "sql/engine/cmd/ob_load_data_parser.h"
 using namespace oceanbase::common;
 using namespace oceanbase::share;
 using namespace oceanbase;
@@ -73,6 +67,14 @@ int ObCostTableScanInfo::assign(const ObCostTableScanInfo &est_cost_info)
     LOG_WARN("failed to to assign column group infos", K(ret));
   } else if (OB_FAIL(index_back_column_group_infos_.assign(est_cost_info.index_back_column_group_infos_))) {
     LOG_WARN("failed to to assign column group infos", K(ret));
+  } else if (OB_FAIL(real_range_exprs_.assign(est_cost_info.real_range_exprs_))) {
+    LOG_WARN("failed to assign real range exprs", K(ret));
+  } else if (OB_FAIL(precise_range_filters_.assign(est_cost_info.precise_range_filters_))) {
+    LOG_WARN("failed to assign precise range filters", K(ret));
+  } else if (OB_FAIL(unprecise_range_filters_.assign(est_cost_info.unprecise_range_filters_))) {
+    LOG_WARN("failed to assign unprecise range filters", K(ret));
+  } else if (OB_FAIL(functional_lookup_exprs_.assign(est_cost_info.functional_lookup_exprs_))) {
+    LOG_WARN("failed to assign functional lookup exprs", K(ret));
   } else {
     table_id_ = est_cost_info.table_id_;
     ref_table_id_ = est_cost_info.ref_table_id_;
@@ -91,6 +93,7 @@ int ObCostTableScanInfo::assign(const ObCostTableScanInfo &est_cost_info)
     pushdown_prefix_filter_sel_ = est_cost_info.pushdown_prefix_filter_sel_;
     postfix_filter_sel_ = est_cost_info.postfix_filter_sel_;
     table_filter_sel_ = est_cost_info.table_filter_sel_;
+    non_partition_filter_sel_ = est_cost_info.non_partition_filter_sel_;
     join_filter_sel_ = est_cost_info.join_filter_sel_;
     ss_prefix_ndv_ = est_cost_info.ss_prefix_ndv_;
     ss_postfix_range_filters_sel_ = est_cost_info.ss_postfix_range_filters_sel_;
@@ -107,6 +110,7 @@ int ObCostTableScanInfo::assign(const ObCostTableScanInfo &est_cost_info)
     rescan_server_list_ = est_cost_info.rescan_server_list_;
     limit_rows_ = est_cost_info.limit_rows_;
     total_range_cnt_ = est_cost_info.total_range_cnt_;
+    unique_range_rowcnt_ = est_cost_info.unique_range_rowcnt_;
     // no need to copy table scan param
   }
   return ret;
@@ -127,9 +131,13 @@ void ObTableMetaInfo::assign(const ObTableMetaInfo &table_meta_info)
   has_opt_stat_ = table_meta_info.has_opt_stat_;
   micro_block_count_ = table_meta_info.micro_block_count_;
   table_type_ = table_meta_info.table_type_;
+  is_broadcast_table_ = table_meta_info.is_broadcast_table_;
   lake_table_format_ = table_meta_info.lake_table_format_;
   lake_table_file_count_ = table_meta_info.lake_table_file_count_;
   lake_table_snapshot_id_ = table_meta_info.lake_table_snapshot_id_;
+  external_format_type_ = table_meta_info.external_format_type_;
+  total_file_size_ = table_meta_info.total_file_size_;
+  schema_row_width_ = table_meta_info.schema_row_width_;
 }
 
 int ObCostTableScanInfo::has_exec_param(const ObIArray<ObRawExpr *> &exprs, bool &bool_ret) const
@@ -180,11 +188,14 @@ void ObIndexMetaInfo::assign(const ObIndexMetaInfo &index_meta_info)
   index_micro_block_size_ = index_meta_info.index_micro_block_size_;
   index_part_count_ = index_meta_info.index_part_count_;
   index_part_size_ = index_meta_info.index_part_size_;
-  index_part_count_ = index_meta_info.index_part_count_;
   index_column_count_ = index_meta_info.index_column_count_;
   is_index_back_ = index_meta_info.is_index_back_;
   is_unique_index_ = index_meta_info.is_unique_index_;
   is_global_index_ = index_meta_info.is_global_index_;
+  is_geo_index_ = index_meta_info.is_geo_index_;
+  is_fulltext_index_ = index_meta_info.is_fulltext_index_;
+  is_multivalue_index_ = index_meta_info.is_multivalue_index_;
+  is_vector_index_ = index_meta_info.is_vector_index_;
   index_micro_block_count_ = index_meta_info.index_micro_block_count_;
   is_search_index_ = index_meta_info.is_search_index_;
 }
@@ -1019,6 +1030,15 @@ int ObOptEstCostModel::cost_exchange_in(const ObExchInCostInfo &cost_info,
     per_dop_rows = cost_info.rows_ * cost_info.server_cnt_ / cost_info.parallel_;
   } else if (ObPQDistributeMethod::BROADCAST == cost_info.dist_method_) {
     per_dop_rows = cost_info.rows_;
+  } else if (ObPQDistributeMethod::HYBRID_HASH_BROADCAST == cost_info.dist_method_) {
+    // each worker receives all hot rows plus its hash-distributed share of cold rows
+    double hot_rows  = cost_info.rows_ * cost_info.popular_values_ratio_;
+    double cold_rows = cost_info.rows_ - hot_rows;
+    per_dop_rows = hot_rows + cold_rows / cost_info.parallel_;
+  } else if (ObPQDistributeMethod::HYBRID_HASH_RANDOM == cost_info.dist_method_) {
+    // hot rows are already local (no receive cost); each worker gets its share of cold rows
+    double cold_rows = cost_info.rows_ * (1.0 - cost_info.popular_values_ratio_);
+    per_dop_rows = cold_rows / cost_info.parallel_;
   } else {
     per_dop_rows = cost_info.rows_ / cost_info.parallel_;
   }
@@ -1030,6 +1050,10 @@ int ObOptEstCostModel::cost_exchange_in(const ObExchInCostInfo &cost_info,
     if (ObPQDistributeMethod::BROADCAST == cost_info.dist_method_) {
       //每个线程都需要拷贝一份当前机器收到的数据
       cost += ObOptEstCostModel::cost_material(per_dop_rows, cost_info.width_);
+    } else if (ObPQDistributeMethod::HYBRID_HASH_BROADCAST == cost_info.dist_method_) {
+      // each worker needs to copy the full set of hot rows it received
+      double hot_rows = cost_info.rows_ * cost_info.popular_values_ratio_;
+      cost += ObOptEstCostModel::cost_material(hot_rows, cost_info.width_);
     }
     if (!cost_info.sort_keys_.empty() && per_dop_rows > 0) {
       double merge_degree = 0;
@@ -1067,6 +1091,18 @@ int ObOptEstCostModel::cost_exchange_out(const ObExchOutCostInfo &cost_info,
              ObPQDistributeMethod::BROADCAST == cost_info.dist_method_) {
     per_dop_ser_rows = cost_info.rows_ / cost_info.parallel_;
     per_dop_trans_rows = cost_info.rows_ * cost_info.server_cnt_ / cost_info.parallel_;
+  } else if (ObPQDistributeMethod::HYBRID_HASH_BROADCAST == cost_info.dist_method_) {
+    // hot rows are broadcast to all servers; cold rows are hash-distributed
+    double hot_rows  = cost_info.rows_ * cost_info.popular_values_ratio_;
+    double cold_rows = cost_info.rows_ - hot_rows;
+    per_dop_ser_rows   = cost_info.rows_ / cost_info.parallel_;
+    per_dop_trans_rows = hot_rows  * cost_info.server_cnt_ / cost_info.parallel_
+                       + cold_rows / cost_info.parallel_;
+  } else if (ObPQDistributeMethod::HYBRID_HASH_RANDOM == cost_info.dist_method_) {
+    // hot rows stay at current worker (no network cost); cold rows are hash-distributed
+    double cold_rows = cost_info.rows_ * (1.0 - cost_info.popular_values_ratio_);
+    per_dop_ser_rows   = cold_rows / cost_info.parallel_;
+    per_dop_trans_rows = cold_rows / cost_info.parallel_;
   } else {
     per_dop_ser_rows = cost_info.rows_ / cost_info.parallel_;
     per_dop_trans_rows = per_dop_ser_rows;
@@ -1305,12 +1341,11 @@ int ObOptEstCostModel::cost_table(const ObCostTableScanInfo &est_cost_info,
     LOG_WARN("get unexpected error", K(parallel), K(part_cnt), K(ret));
   } else if (OB_NOT_NULL(est_cost_info.table_meta_info_)
              && EXTERNAL_TABLE == est_cost_info.table_meta_info_->table_type_) {
-    //TODO [ExternalTable] need refine
-    double phy_query_range_row_count = est_cost_info.phy_query_range_row_count_;
-    cost = 4.0 * phy_query_range_row_count / parallel;
-    OPT_TRACE_COST_MODEL(KV(cost),"=","4.0 * ", KV(phy_query_range_row_count), " / ", KV(parallel));
+    if (OB_FAIL(cost_external_table(est_cost_info, parallel, cost))) {
+      LOG_WARN("failed to estimate external table cost", K(ret));
+    }
   } else if (OB_FAIL(cost_basic_table(est_cost_info,
-                                      part_cnt / parallel,
+                                      (est_cost_info.is_rescan_) ? std::max(1.0, part_cnt / parallel) : part_cnt / parallel,
                                       cost))) {
     LOG_WARN("failed to estimate table cost", K(ret));
   } else { /*do nothing*/ }
@@ -1332,9 +1367,9 @@ int ObOptEstCostModel::cost_table_for_parallel(const ObCostTableScanInfo &est_co
     LOG_WARN("unexpected virtual table", K(ret), K(est_cost_info.ref_table_id_));
   } else if (OB_NOT_NULL(est_cost_info.table_meta_info_)
              && EXTERNAL_TABLE == est_cost_info.table_meta_info_->table_type_) {
-    //TODO [ExternalTable] need refine
-    double phy_query_range_row_count = est_cost_info.phy_query_range_row_count_;
-    cost = 4.0 * phy_query_range_row_count / parallel;
+    if (OB_FAIL(cost_external_table(est_cost_info, parallel, cost))) {
+      LOG_WARN("failed to estimate external table cost", K(ret));
+    }
   } else if (OB_FAIL(cost_basic_table(est_cost_info,
                                       part_cnt_per_dop,
                                       table_cost))) {
@@ -1357,6 +1392,105 @@ int ObOptEstCostModel::cost_px(int64_t parallel, double &px_cost)
     /* do nothing */
   } else {
     px_cost = 0.1 * parallel * parallel;
+  }
+  return ret;
+}
+
+int ObOptEstCostModel::cost_external_table(const ObCostTableScanInfo &est_cost_info,
+                                           int64_t parallel,
+                                           double &cost)
+{
+  int ret = OB_SUCCESS;
+  cost = 0.0;
+  if (OB_UNLIKELY(parallel < 1)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("invalid parallel", K(ret), K(parallel));
+  } else {
+    int64_t format_type = ObExternalFileFormat::INVALID_FORMAT;
+    int64_t total_file_size = 0;
+    int64_t schema_row_width = 0;
+    if (OB_NOT_NULL(est_cost_info.table_meta_info_)) {
+      format_type = est_cost_info.table_meta_info_->external_format_type_;
+      total_file_size = est_cost_info.table_meta_info_->total_file_size_;
+      schema_row_width = est_cost_info.table_meta_info_->schema_row_width_;
+    }
+    double row_count = est_cost_info.phy_query_range_row_count_;
+    if (format_type == ObExternalFileFormat::ODPS_FORMAT || total_file_size <= 0) {
+      // ODPS or no file size available: fallback to legacy formula
+      cost = 4.0 * row_count / parallel;
+      OPT_TRACE_COST_MODEL(KV(cost), "= 4.0 *", KV(row_count), "/", KV(parallel));
+    } else {
+      // column_ratio reflects the fraction of columns accessed.
+      // Both access_bytes and schema_row_width use get_estimate_width_from_type
+      // so the ratio is consistent regardless of actual data distribution.
+      double column_ratio = 1.0;
+      if (schema_row_width > 0) {
+        int64_t access_bytes = 0;
+        for (int64_t i = 0; i < est_cost_info.access_column_items_.count(); ++i) {
+          const ColumnItem &col_item = est_cost_info.access_column_items_.at(i);
+          if (OB_ISNULL(col_item.expr_) || !col_item.expr_->is_referred_by_normal()
+              || col_item.expr_->is_hidden_column()) {
+            // skip non-user columns
+          } else {
+            bool is_range_col = false;
+            for (int64_t j = 0; !is_range_col && j < est_cost_info.range_columns_.count(); ++j) {
+              if (est_cost_info.range_columns_.at(j).column_id_ == col_item.column_id_) {
+                is_range_col = true;
+              }
+            }
+            if (!is_range_col) {
+              access_bytes += static_cast<int64_t>(
+                  ObOptEstCost::get_estimate_width_from_type(col_item.expr_->get_result_type()));
+            }
+          }
+        }
+        if (access_bytes > 0 && access_bytes < schema_row_width) {
+          column_ratio = static_cast<double>(access_bytes) / schema_row_width;
+        }
+      }
+      double normal_filter_sel = est_cost_info.non_partition_filter_sel_;
+      double cpu_filter_sel = normal_filter_sel * est_cost_info.join_filter_sel_;
+      double cpu_per_byte = cost_params_.get_external_table_cpu_per_byte_cost(sys_stat_);
+      double io_per_byte = 0.0;
+      if (OB_NOT_NULL(est_cost_info.table_meta_info_)
+          && est_cost_info.table_meta_info_->is_local_external_storage_) {
+        io_per_byte = cost_params_.get_external_table_local_io_per_byte_cost(sys_stat_);
+      } else {
+        io_per_byte = cost_params_.get_external_table_network_io_per_byte_cost(sys_stat_);
+      }
+      double io_filter_sel = 1.0;
+      // Parquet/ORC can skip data only at row-group granularity.  Estimate the probability that
+      // a row group must still be read when each row passes normal filters with probability sel:
+      //   P(read row group) = 1 - P(no row in row group passes) = 1 - (1 - sel) ^ rows_per_rg.
+      // Runtime join filters are excluded here because they are applied after reading data.
+      if ((format_type == ObExternalFileFormat::PARQUET_FORMAT
+           || format_type == ObExternalFileFormat::ORC_FORMAT)
+          && normal_filter_sel < 1.0) {
+        double table_row_count = 0.0;
+        if (OB_NOT_NULL(est_cost_info.table_meta_info_)) {
+          table_row_count = static_cast<double>(est_cost_info.table_meta_info_->table_row_count_);
+        }
+        if (table_row_count > 0.0 && total_file_size > 0) {
+          double avg_row_size = static_cast<double>(total_file_size) / table_row_count;
+          static const double DEFAULT_ROW_GROUP_SIZE = 128.0 * 1024 * 1024; // 128MB
+          double rows_per_rg = DEFAULT_ROW_GROUP_SIZE / avg_row_size;
+          if (rows_per_rg > 1.0) {
+            io_filter_sel = 1.0 - pow(1.0 - normal_filter_sel, rows_per_rg);
+          }
+        }
+      }
+      double cpu_bytes = static_cast<double>(total_file_size) * column_ratio * cpu_filter_sel;
+      double io_bytes = static_cast<double>(total_file_size) * column_ratio * io_filter_sel;
+      double cpu_cost = cpu_per_byte * cpu_bytes;
+      double io_cost = io_per_byte * io_bytes;
+      cost = (cpu_cost + io_cost) / parallel;
+      OPT_TRACE_COST_MODEL(KV(cost), "= (",
+                           KV(cpu_per_byte), "*", KV(total_file_size), "*", KV(column_ratio),
+                           "*", KV(normal_filter_sel), "*", KV(est_cost_info.join_filter_sel_),
+                           " + ", KV(io_per_byte), "*", KV(total_file_size), "*", KV(column_ratio),
+                           "*", KV(io_filter_sel),
+                           ") /", KV(parallel));
+    }
   }
   return ret;
 }
@@ -1409,7 +1543,7 @@ int ObOptEstCostModel::cost_basic_table(const ObCostTableScanInfo &est_cost_info
     cost += index_back_cost;
     OPT_TRACE_COST_MODEL(KV(cost), "+=", KV(index_back_cost));
     // calc one parallel scan cost
-    cost *= part_cnt_per_dop;
+    cost *= (est_cost_info.is_rescan_) ? std::max(1.0, part_cnt_per_dop) : part_cnt_per_dop;
     OPT_TRACE_COST_MODEL(KV(cost), "*=", KV(part_cnt_per_dop));
     // calc das rescan scan rpc cost
     cost += das_rpc_cost;
@@ -2492,7 +2626,7 @@ int ObOptEstCostModel::cost_one_qual(const ObRawExpr *expr, double &cost)
        || expr->is_spatial_expr()) {
     cost += cost_params_.get_comparison_cost(sys_stat_, ObGeometryTC);
   } else if (expr->is_udf_expr()) {
-    cost += cost_params_.get_comparison_cost(sys_stat_, ObUserDefinedSQLTC);
+    cost += udf_cost_factor_ * cost_params_.get_comparison_cost(sys_stat_, ObUserDefinedSQLTC);
   } else if (expr->is_json_expr()) {
     cost += cost_params_.get_comparison_cost(sys_stat_, ObJsonTC);
   } else if (ob_is_lob_locator(expr->get_result_type().get_type()) ||
@@ -2611,7 +2745,7 @@ int ObOptEstCostModel::calc_pred_cost_per_row(const ObRawExpr *expr,
        || expr->is_xml_expr()) {
       cost += cost_params_.get_comparison_cost(sys_stat_, ObGeometryTC) / rows;
     } else if (expr->is_udf_expr()) {
-      cost += cost_params_.get_comparison_cost(sys_stat_, ObUserDefinedSQLTC) / rows;
+      cost += udf_cost_factor_ * cost_params_.get_comparison_cost(sys_stat_, ObUserDefinedSQLTC) / rows;
     } else if (ob_is_lob_locator(expr->get_result_type().get_type())) {
       cost += cost_params_.get_comparison_cost(sys_stat_, ObLobTC) / rows;
     } else if (T_OP_DIV == expr->get_expr_type()) {

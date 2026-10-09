@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -328,7 +321,7 @@ int ObTabletMemtableMgr::create_memtable_(const CreateMemtableArg &arg,
              KP(this),
              K(arg),
              K(logstream_freeze_clock));
-  } else if (FALSE_IT(new_tablet_memtable->set_delete_insert_flag(arg.is_delete_insert_))) {
+  } else if (FALSE_IT(new_tablet_memtable->set_original_merge_engine_type(arg.original_merge_engine_type_))) {
   } else if (FALSE_IT(new_tablet_memtable->set_micro_block_format_version(arg.micro_block_format_version_))) {
   } else if (OB_FAIL(resolve_boundary_(new_tablet_memtable, arg))) {
     LOG_WARN("failed to add memtable", K(ret), K(ls_id), K(tablet_id_), K(memtable_handle));

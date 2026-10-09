@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -2014,11 +2007,10 @@ int ObSearchIndexRangeCtx::init(const ObTableSchema *base_table_schema,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null param", K(ret), K(column_item));
   } else {
+    int64_t column_idx = -1;
     const uint64_t column_id = column_item.column_id_;
-    const int64_t column_idx = base_table_schema->get_column_idx(column_id);
-    if (column_idx < 0) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("failed to get column idx", K(ret), K(column_id));
+    if (OB_FAIL(base_table_schema->get_store_column_idx(column_id, column_idx))) {
+      LOG_WARN("failed to get store column idx", K(ret), K(column_id));
     } else {
       column_idx_ = column_idx;
       column_meta_.column_id_ = column_id;
@@ -2026,7 +2018,8 @@ int ObSearchIndexRangeCtx::init(const ObTableSchema *base_table_schema,
       column_meta_.column_type_ = col_type;
       if (col_type.is_lob_locator()) {
         column_meta_.column_type_.set_type(ObLongTextType);
-      } else if (ob_is_string_tc(col_type.get_type())) {
+        need_constraint_ = true;
+      } else if (ob_is_string_type(col_type.get_type())) {
         const ObLength column_length = col_type.get_length();
         need_constraint_ = ObSearchIndexValueEncoder::string_column_may_truncate(col_type, column_length);
       } else if (ob_is_json_tc(col_type.get_type())) {
@@ -2042,6 +2035,10 @@ int ObSearchIndexRangeCtx::init(const ObTableSchema *base_table_schema,
           LOG_WARN("collection info is null", K(ret));
         } else {
           need_constraint_ = ObSearchIndexConstraint::need_array_string_constraint(*coll_info);
+          const ObString def_str = coll_info->get_def_string();
+          if (!def_str.empty() && OB_FAIL(ob_write_string(allocator, def_str, array_type_path_))) {
+            LOG_WARN("failed to copy array type path", K(ret), K(def_str));
+          }
         }
       }
       if (ob_is_json(column_meta_.column_type_.get_type())) {
@@ -2061,6 +2058,8 @@ int ObSearchIndexRangeCtx::init(const ObTableSchema *base_table_schema,
                 LOG_WARN("failed to parse json column filter", K(ret), K(column_comment));
                 json_filter_->~ObSearchIndexConfigFilter();
                 json_filter_ = nullptr;
+              } else {
+                cons_encode_type_ = json_filter_->get_type_mask();
               }
             }
           }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_SHARE_RESOURCE_MANAGER_RES_MGR_PROXY_H_
@@ -156,6 +149,12 @@ public:
     const common::ObString &value,
     const common::ObString &consumer_group,
     const sql::ObSQLSessionInfo &session);
+  int replace_database_mapping_rule(
+    common::ObMySQLTransaction &trans,
+    uint64_t tenant_id,
+    const common::ObString &attribute,
+    const common::ObString &value,
+    const common::ObString &consumer_group);
   int update_resource_mapping_version(common::ObMySQLTransaction &trans, uint64_t tenant_id);
   int get_function_mapping_info(
       ObMySQLTransaction &trans,
@@ -182,6 +181,10 @@ public:
       uint64_t tenant_id,
       const common::ObString &plan,
       common::ObIArray<ObResourceUserMappingRule> &rules);
+  int get_all_resource_mapping_rules_by_database(
+      uint64_t tenant_id,
+      const common::ObString &plan,
+      common::ObIArray<ObResourceMappingRule> &rules);
   int check_if_consumer_group_exist(
       uint64_t tenant_id,
       const common::ObString &consumer_group,
@@ -245,9 +248,21 @@ private:
       common::ObMySQLTransaction &trans,
       uint64_t tenant_id,
       int64_t &group_id);
+  int get_tenant_consumer_group_count(
+      common::ObMySQLTransaction &trans,
+      uint64_t tenant_id,
+      int64_t &count);
+  int get_observer_consumer_group_count(int64_t &count);
+  int check_consumer_group_limit(
+      common::ObMySQLTransaction &trans,
+      uint64_t tenant_id);
   int check_if_user_exist(
       uint64_t tenant_id,
       const common::ObString &user_name,
+      bool &exist);
+  int check_if_database_exist(
+      uint64_t tenant_id,
+      const common::ObString &database_name,
       bool &exist);
   int check_if_column_exist(
       uint64_t tenant_id,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -17,6 +10,7 @@
 #include "sql/engine/expr/ob_json_param_type.h"
 #include "sql/engine/expr/ob_expr_demote_cast.h"
 #include "lib/geo/ob_sdo_geo_object.h"
+#include "share/aggregate/util.h"
 
 namespace oceanbase
 {
@@ -152,24 +146,13 @@ int ObRawExprPrinter::print_select_expr(ObRawExpr *expr)
 int ObRawExprPrinter::print(ObRawExpr *expr)
 {
   int ret = OB_SUCCESS;
+  bool print_alias = false;
   if (OB_ISNULL(buf_) || OB_ISNULL(pos_) || OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("stmt_ is NULL of buf_ is NULL or pos_ is NULL or expr is NULL", K(ret));
-  } else if (!expr->get_alias_column_name().empty()
-      && !expr->is_column_ref_expr()
-      && !expr->is_aggr_expr()
-      && !expr->is_pseudo_column_expr()
-     // quertionmark 是一个const expr，如果是prepare，需要打印成:0这样的东西，不能用alias来代替
-      && T_QUESTIONMARK != expr->get_expr_type()
-      && scope_ != T_DBLINK_SCOPE
-      && scope_ != T_FIELD_LIST_SCOPE
-      && scope_ != T_GROUP_SCOPE
-      && scope_ != T_WHERE_SCOPE
-      && scope_ != T_NONE_SCOPE
-      && scope_ != T_ORDER_SCOPE
-      && (scope_ == T_HAVING_SCOPE && lib::is_mysql_mode())) {
-    //expr is a alias column ref
-    //alias column target list
+  } else if (OB_FAIL(print_alias_for_expr(expr, scope_, print_alias))) {
+    LOG_WARN("failed to check if print alias for expr", K(ret));
+  } else if (print_alias) {
     PRINT_IDENT_WITH_QUOT(expr->get_alias_column_name());
   } else {
     switch (expr->get_expr_class()) {
@@ -251,6 +234,11 @@ int ObRawExprPrinter::print(ObRawExpr *expr)
     case ObRawExpr::EXPR_PSEUDO_COLUMN: {
       ObPseudoColumnRawExpr *pse_expr = static_cast<ObPseudoColumnRawExpr *>(expr);
       PRINT_EXPR(pse_expr);
+      break;
+    }
+    case ObRawExpr::EXPR_OP_PSEUDO_COLUMN: {
+      ObOpPseudoColumnRawExpr *op_pse_expr = static_cast<ObOpPseudoColumnRawExpr *>(expr);
+      PRINT_EXPR(op_pse_expr);
       break;
     }
     case ObRawExpr::EXPR_SET_OP: {
@@ -1081,6 +1069,32 @@ int ObRawExprPrinter::print(ObCaseOpRawExpr *expr)
   return ret;
 }
 
+int ObRawExprPrinter::print_window_funnel(ObAggFunRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (expr->get_real_param_count() < 4) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("get unexpected error", K(ret), K(expr->get_param_count()),
+                                      K(expr->get_real_param_count()), K(expr));
+  } else {
+    DATA_PRINTF("window_funnel(");
+    // window_funnel(window, mode, timestamp, cond1, cond2, ...)
+    // params:(timestamp, window, mode, cond1, cond2, ...)
+    PRINT_EXPR(expr->get_real_param_exprs().at(share::aggregate::WINDOW_FUNNEL_WINDOW_EXPR_IDX));
+    DATA_PRINTF(", ");
+    PRINT_EXPR(expr->get_real_param_exprs().at(share::aggregate::WINDOW_FUNNEL_MODE_EXPR_IDX));
+    DATA_PRINTF(",");
+    PRINT_EXPR(expr->get_real_param_exprs().at(share::aggregate::WINDOW_FUNNEL_TIMESTAMP_EXPR_IDX));
+    for (int64_t i = share::aggregate::WINDOW_FUNNEL_CONDITION_START_IDX;
+          OB_SUCC(ret) && i < expr->get_real_param_count(); ++i) {
+      DATA_PRINTF(",");
+      PRINT_EXPR(expr->get_real_param_exprs().at(i));
+    }
+    DATA_PRINTF(")");
+  }
+  return ret;
+}
+
 int ObRawExprPrinter::print_ora_json_arrayagg(ObAggFunRawExpr *expr)
 {
   int ret = OB_SUCCESS;
@@ -1247,6 +1261,8 @@ int ObRawExprPrinter::print(ObAggFunRawExpr *expr)
       SET_SYMBOL_IF_EMPTY("any");
     case T_FUN_ARBITRARY:
       SET_SYMBOL_IF_EMPTY("arbitrary");
+    case T_FUN_AVG_WEIGHTED:
+      SET_SYMBOL_IF_EMPTY("avgWeighted");
     case T_FUN_APPROX_COUNT_DISTINCT_SYNOPSIS:
       SET_SYMBOL_IF_EMPTY("approx_count_distinct_synopsis");
     case T_FUN_APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE:
@@ -1255,6 +1271,10 @@ int ObRawExprPrinter::print(ObAggFunRawExpr *expr)
       SET_SYMBOL_IF_EMPTY("sum_opnsize");
     case T_FUN_SYS_COUNT_INROW:
       SET_SYMBOL_IF_EMPTY("sys_count_inrow");
+    case T_FUN_SYS_EXT_MIN:
+      SET_SYMBOL_IF_EMPTY("sys_ext_min");
+    case T_FUN_SYS_EXT_MAX:
+      SET_SYMBOL_IF_EMPTY("sys_ext_max");
     case T_FUN_PL_AGG_UDF:{
       if (type == T_FUN_PL_AGG_UDF) {
         if (OB_ISNULL(expr->get_pl_agg_udf_expr()) ||
@@ -1315,6 +1335,12 @@ int ObRawExprPrinter::print(ObAggFunRawExpr *expr)
             DATA_PRINTF(" respect nulls");
           }
         }
+      }
+      break;
+    }
+    case T_FUN_WINDOW_FUNNEL: {
+      if (OB_FAIL(print_window_funnel(expr))) {
+        LOG_WARN("fail to print window_funnel.", K(ret));
       }
       break;
     }
@@ -4100,6 +4126,8 @@ int ObRawExprPrinter::print(ObWinFunRawExpr *expr)
         SET_SYMBOL_IF_EMPTY("arg_max");
       case T_FUN_ARG_MIN:
         SET_SYMBOL_IF_EMPTY("arg_min");
+      case T_FUN_AVG_WEIGHTED:
+        SET_SYMBOL_IF_EMPTY("avgWeighted");
       case T_FUN_PL_AGG_UDF: {
         ObString database;
         if (OB_ISNULL(expr->get_agg_expr())) {
@@ -4189,6 +4217,23 @@ int ObRawExprPrinter::print(ObWinFunRawExpr *expr)
           LOG_WARN("failed to print order items.", K(ret));
         } else {/* do nothing. */  }
         DATA_PRINTF(")");
+        break;
+      }
+      case T_FUN_WINDOW_FUNNEL: {
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(print_window_funnel(expr->get_agg_expr()))) {
+          LOG_WARN("failed to print window_funnel.", K(ret));
+        } else {
+          DATA_PRINTF(" over(");
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(print_partition_exprs(expr))) {
+            LOG_WARN("failed to print partition exprs.", K(ret));
+          } else if (OB_FAIL(print_order_items(expr))) {
+            LOG_WARN("failed to print order items.", K(ret));
+          } else {
+            DATA_PRINTF(")");
+          }
+        }
         break;
       }
       case T_WIN_FUN_CUME_DIST: {
@@ -4549,6 +4594,28 @@ int ObRawExprPrinter::print(ObPseudoColumnRawExpr *expr)
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected pseudo column type", K(type));
       }
+    }
+  }
+  return ret;
+}
+
+int ObRawExprPrinter::print(ObOpPseudoColumnRawExpr *expr)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(buf_) || OB_ISNULL(pos_) || OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("stmt_ is NULL of buf_ is NULL or pos_ is NULL or expr is NULL", K(ret));
+  } else {
+    const char *name = expr->get_name();
+    if (OB_ISNULL(name)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("op pseudo column name is NULL", K(ret));
+    } else if (T_PSEUDO_DUP_EXPR == expr->get_expr_type()) {
+      DATA_PRINTF("dup(");
+      DATA_PRINTF("%s", name);
+      DATA_PRINTF(")");
+    } else {
+      DATA_PRINTF("%s", name);
     }
   }
   return ret;
@@ -5790,6 +5857,49 @@ int ObRawExprPrinter::print_array_map(ObSysFunRawExpr *expr, const char *func_na
       PRINT_EXPR(expr->get_param_expr(i));
     }
     DATA_PRINTF(")");
+  }
+  return ret;
+}
+
+int ObRawExprPrinter::print_alias_for_expr(ObRawExpr* expr, ObStmtScope scope, bool &print_alias)
+{
+  int ret = OB_SUCCESS;
+  print_alias = false;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("expr is NULL", K(ret));
+
+  } else if (lib::is_mysql_mode() &&
+             !expr->get_alias_column_name().empty() &&
+             !expr->is_column_ref_expr() &&
+             !expr->is_aggr_expr() &&
+             !expr->is_pseudo_column_expr() &&
+             // quertionmark 是一个const expr，如果是prepare，需要打印成:0这样的东西，不能用alias来代替
+             T_QUESTIONMARK != expr->get_expr_type() &&
+             (scope == T_HAVING_SCOPE ||
+             (scope == T_GROUP_SCOPE && expr->is_const_or_param_expr()))) {
+    //expr is a alias column ref
+    //alias column target list
+    print_alias = true;
+  }
+  return ret;
+}
+
+
+int ObRawExprPrinter::print_quote_for_const(ObRawExpr* expr, ObStmtScope scope, bool &print_quote)
+{
+  int ret = OB_SUCCESS;
+  print_quote = false;
+  bool print_alias = false;
+  if (OB_ISNULL(expr)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret));
+  } else if (OB_FAIL(print_alias_for_expr(expr, scope, print_alias))) {
+    LOG_WARN("failed to check if print alias for expr", K(ret));
+  } else if (print_alias) {
+    // print alias, no need to print quote
+  } else if (expr->is_const_or_param_expr()) {
+    print_quote = expr->get_result_type().is_numeric_type();
   }
   return ret;
 }

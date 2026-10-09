@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SERVER
 
@@ -92,12 +85,12 @@ int ObTableLoadStoreTableCtx::get_table_data_desc(
       }
       case ObTableLoadInputDataType::ADAPTIVE_FULL_ROW: {
         table_data_desc.rowkey_column_num_ =
-          (!schema_->is_table_without_pk_ ? schema_->rowkey_column_count_ : 0);
+          (!schema_->is_table_without_pk_ || schema_->is_random_part_ ? schema_->rowkey_column_count_ : 0);
         table_data_desc.column_count_ =
-          (!schema_->is_table_without_pk_ ? schema_->store_column_count_
+          (!schema_->is_table_without_pk_ || schema_->is_random_part_ ? schema_->store_column_count_
                                           : schema_->store_column_count_ - 1);
         table_data_desc.row_flag_.reset();
-        table_data_desc.row_flag_.uncontain_hidden_pk_ = schema_->is_table_without_pk_;
+        table_data_desc.row_flag_.uncontain_hidden_pk_ = schema_->is_table_without_pk_ && !schema_->is_random_part_;
         break;
       }
       case ObTableLoadInputDataType::ROWKEY: {
@@ -449,6 +442,7 @@ int ObTableLoadStoreDataTableCtx::init_insert_table_ctx(const ObDirectLoadTransP
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new ObDirectLoadInsertDataTableContext
     ObDirectLoadInsertDataTableContext *insert_data_table_ctx = nullptr;
     if (OB_ISNULL(insert_table_ctx_ = insert_data_table_ctx =
@@ -538,6 +532,7 @@ int ObTableLoadStoreDataTableCtx::open_insert_table_ctx(
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new insert_data_table_ctx
     if (OB_ISNULL(insert_data_table_ctx =
                     OB_NEWx(ObDirectLoadInsertDataTableContext, (&allocator)))) {
@@ -799,6 +794,7 @@ int ObTableLoadStoreLobTableCtx::init_insert_table_ctx(const ObDirectLoadTransPa
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new ObDirectLoadInsertLobTableContext
     ObDirectLoadInsertLobTableContext *insert_lob_table_ctx = nullptr;
     if (OB_ISNULL(data_table_ctx_->insert_table_ctx_)) {
@@ -879,6 +875,7 @@ int ObTableLoadStoreLobTableCtx::open_insert_table_ctx(
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new ObDirectLoadInsertDataTableContext
     ObDirectLoadInsertDataTableContext *insert_lob_table_ctx = nullptr;
     if (OB_ISNULL(insert_lob_table_ctx =
@@ -1116,6 +1113,7 @@ int ObTableLoadStoreIndexTableCtx::init_insert_table_ctx(const ObDirectLoadTrans
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new ObDirectLoadInsertDataTableContext
     ObDirectLoadInsertDataTableContext *insert_data_table_ctx = nullptr;
     if (OB_ISNULL(insert_table_ctx_ = insert_data_table_ctx =
@@ -1191,6 +1189,7 @@ int ObTableLoadStoreIndexTableCtx::open_insert_table_ctx(
     insert_table_param.enable_dag_ = store_ctx_->enable_dag_;
     insert_table_param.dag_ = store_ctx_->dag_exec_ctx_.dag_;
     insert_table_param.is_inc_major_log_ = store_ctx_->ctx_->param_.enable_inc_major_;
+    insert_table_param.merge_engine_type_ = schema_->merge_engine_type_;
     // new insert_index_table_ctx
     if (OB_ISNULL(insert_index_table_ctx =
                     OB_NEWx(ObDirectLoadInsertDataTableContext, (&allocator)))) {

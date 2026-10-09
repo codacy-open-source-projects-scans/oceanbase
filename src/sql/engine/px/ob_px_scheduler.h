@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENGINE_PX_OB_PX_SCHUDULER_H_
@@ -232,9 +225,6 @@ public:
 
   // root dfo 的调度特殊路径
   int on_dfo_pair_thread_inited(ObExecContext &ctx, ObDfo &child, ObDfo &parent);
-  static int mark_rpc_filter(ObExecContext &ctx,
-                             ObJoinFilterDataCtx &bf_ctx,
-                             int64_t &each_group_size);
   // begin DATAHUB msg processing
   int on_piece_msg(ObExecContext &ctx, const ObBarrierPieceMsg &pkt);
   int on_piece_msg(ObExecContext &ctx, const ObWinbufPieceMsg &pkt);

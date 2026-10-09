@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef OCEABASE_STORAGE_FINISH_TRANSFER_H_
 #define OCEABASE_STORAGE_FINISH_TRANSFER_H_
@@ -23,13 +16,13 @@
 #include "lib/lock/ob_thread_cond.h"
 #include "share/transfer/ob_transfer_info.h"
 #include "share/ob_balance_define.h"
+#include "share/storage/ob_ha_inflight_diag.h"
 #include "storage/ob_storage_async_rpc.h"
 #include "ob_transfer_struct.h"
 
 namespace oceanbase {
 namespace storage {
 
-struct ObLockOwner {};
 
 class ObTxFinishTransfer {
 public:
@@ -271,17 +264,6 @@ private:
       const ObSqlString &extra_info,
       const share::ObTransferStatus &status) const;
 
-  void process_perf_diagnose_info_(
-      const ObStorageHACostItemName name,
-      const int64_t start_ts,
-      const int64_t tablet_count,
-      const int64_t round, const bool is_report) const;
-
-  void process_perf_diagnose_info_(
-      const ObStorageHACostItemName name,
-      const int64_t round,
-      const bool is_report) const;
-
   int check_addr_list_is_match_(
       const common::ObMemberList &src_member_list,
       const common::GlobalLearnerList &src_learner_list,
@@ -301,9 +283,13 @@ private:
   common::ObThreadCond cond_;
   common::ObMySQLProxy *sql_proxy_;
   int64_t round_;
-  share::ObStorageHACostItemName diagnose_result_msg_;
   uint64_t data_version_;
   ObTransferLSInfo *ls_transfer_info_;
+  // Per-doing-round diagnostic accumulator. Reset at the start of
+  // do_tx_transfer_doing_, stamped by each sub-step (successful cost items
+  // and first-wins error), and submitted once at the end to the src-LS
+  // transfer handler via ObTransferUtils::merge_transfer_diag.
+  share::ObHAInflightDiagState diag_;
   DISALLOW_COPY_AND_ASSIGN(ObTxFinishTransfer);
 };
 

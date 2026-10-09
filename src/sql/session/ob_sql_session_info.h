@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_SESSION_OB_SQL_SESSION_INFO_
@@ -28,6 +21,7 @@
 #include "lib/time/ob_cur_time.h"
 #include "lib/lock/ob_recursive_mutex.h"
 #include "lib/hash/ob_link_hashmap.h"
+#include "lib/utility/ob_tracepoint.h"
 #include "lib/mysqlclient/ob_server_connection_pool.h"
 #include "lib/stat/ob_session_stat.h"
 #include "rpc/obmysql/ob_mysql_packet.h"
@@ -49,6 +43,7 @@
 #include "storage/tablet/ob_session_tablet_info_map.h"
 #include "share/ob_service_name_proxy.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_job_utils.h"
+#include "lib/json_type/ob_json_parse.h"
 #include "sql/plan_cache/ob_plan_cache_util.h"
 
 namespace oceanbase
@@ -68,6 +63,7 @@ struct ObPLExecRecursionCtx;
 struct ObPLSqlCodeInfo;
 class ObPLContext;
 class ObDbmsCursorInfo;
+class ObOraJavaSessionState;
 #ifdef OB_BUILD_ORACLE_PL
 namespace debugger
 {
@@ -600,9 +596,23 @@ typedef common::hash::ObHashMap<common::ObString, ObInnerContextMap *,
                                 2> ObContextsMap;
 typedef common::LinkHashNode<SessionInfoKey> SessionInfoHashNode;
 typedef common::LinkHashValue<SessionInfoKey> SessionInfoHashValue;
+// Resource isolation level for multi-level group_id tracking (SQL-level vs DB-level)
+enum ResourceIsolationLevel {
+  ISOLATION_SQL = 0,   // hint / column rules
+  ISOLATION_DB  = 1,   // database mapping
+  ISOLATION_MAX
+};
+
+struct GroupIsolationInfo {
+  int64_t expect_group_id_;
+  bool group_id_not_expected_;
+  GroupIsolationInfo() : expect_group_id_(common::OB_INVALID_ID), group_id_not_expected_(false) {}
+  void reset() { expect_group_id_ = common::OB_INVALID_ID; group_id_not_expected_ = false; }
+};
+
 // ObBasicSessionInfo存储系统变量及其相关变量，并存储远程执行SQL task时，需要序列化到远端的状态
 // ObPsInfoMgr存储prepared statement相关信息
-// ObSQLSessionInfo存储其他执行时状态信息，远程执行SQL执行计划时，**不需要**序列化到远端
+// ObSQLSessionInfo存储其他执行时状态信息；远程执行时同步 application context 等状态
 class ObSQLSessionInfo: public common::ObVersionProvider, public ObBasicSessionInfo, public SessionInfoHashValue
 {
   // master version is 3, 42x version is 2.
@@ -629,6 +639,53 @@ public:
     USER_SESSION,
     INNER_SESSION
   };
+  class ObAuditRecordDataWrapper
+  {
+  public:
+    ObAuditRecordDataWrapper() : audit_record_(), audit_record_ptr_(&audit_record_) {}
+    ~ObAuditRecordDataWrapper() { reset(); }
+    void reset()
+    {
+      audit_record_.reset();
+      audit_record_ptr_ = &audit_record_;
+    }
+    void switch_audit_record_ptr(ObAuditRecordData *audit_record_ptr)
+    {
+#ifdef OB_BUILD_DEBUG
+      if (OB_ISNULL(audit_record_ptr)) {
+        OB_ASSERT(false);
+      }
+#endif
+      audit_record_ptr_ = audit_record_ptr;
+    }
+    ObAuditRecordData &get_audit_record() { return *audit_record_ptr_; }
+    const ObAuditRecordData &get_audit_record() const { return *audit_record_ptr_; }
+  private:
+    ObAuditRecordData audit_record_; // top sql audit record
+    ObAuditRecordData *audit_record_ptr_; // current sql audit record
+  };
+  class ObAuditRecordDataWrapperGuard
+  {
+  public:
+    ObAuditRecordDataWrapperGuard(ObSQLSessionInfo *session, ObAuditRecordData &audit_record_ptr)
+      : session_(session),
+        origin_audit_record_ptr_(nullptr)
+    {
+      if (OB_NOT_NULL(session_)) {
+        origin_audit_record_ptr_ = &session_->get_raw_audit_record();
+        session_->switch_audit_record_ptr(&audit_record_ptr);
+      }
+    }
+    ~ObAuditRecordDataWrapperGuard()
+    {
+      if (OB_NOT_NULL(session_) && OB_NOT_NULL(origin_audit_record_ptr_)) {
+        session_->switch_audit_record_ptr(origin_audit_record_ptr_);
+      }
+    }
+  private:
+    ObSQLSessionInfo *session_;
+    ObAuditRecordData *origin_audit_record_ptr_;
+  };
   // for switch stmt.
   class StmtSavedValue : public ObBasicSessionInfo::StmtSavedValue
   {
@@ -645,7 +702,6 @@ public:
     inline void reset()
     {
       ObBasicSessionInfo::StmtSavedValue::reset();
-      audit_record_.reset();
       session_type_ = INVALID_TYPE;
       inner_flag_ = false;
       is_ignore_stmt_ = false;
@@ -657,7 +713,6 @@ public:
       db_name_.reset();
     }
   public:
-    ObAuditRecordData audit_record_;
     SessionType session_type_;
     bool inner_flag_;
     bool is_ignore_stmt_;
@@ -806,7 +861,13 @@ public:
                                  force_unstreaming_cursor_(false),
                                  conf_enable_sql_audit_(false),
                                  extend_sql_plan_monitor_metrics_(false),
+                                 json_document_max_depth_(100),
+                                 multimodel_memory_trace_level_(0),
                                  enable_pl_sql_parameterize_(false),
+                                 enable_fast_json_path_lookup_(false),
+                                 enable_pl_null_literal_parameterization_(false),
+                                 enable_database_isolation_mode_(false),
+                                 enable_foreign_key_gts_opt_(false),
                                  session_(session)
     {
     }
@@ -865,7 +926,14 @@ public:
     bool force_unstreaming_cursor() const { return force_unstreaming_cursor_; }
     bool conf_enable_sql_audit() const { return conf_enable_sql_audit_; }
     bool extend_sql_plan_monitor_metrics() const { return extend_sql_plan_monitor_metrics_; }
+
+    int64_t get_json_document_max_depth() const { return ATOMIC_LOAD(&json_document_max_depth_); }
+    int64_t get_multimodel_memory_trace_level() const { return ATOMIC_LOAD(&multimodel_memory_trace_level_); }
     bool enable_pl_sql_parameterize() const { return enable_pl_sql_parameterize_; }
+    bool enable_fast_json_path_lookup() const { return enable_fast_json_path_lookup_; }
+    bool enable_pl_null_literal_parameterization() const { return enable_pl_null_literal_parameterization_; }
+    bool get_enable_database_isolation_mode() const { return enable_database_isolation_mode_; }
+    bool enable_foreign_key_gts_opt() const { return ATOMIC_LOAD(&enable_foreign_key_gts_opt_); }
   private:
     //租户级别配置项缓存session 上，避免每次获取都需要刷新
     bool is_external_consistent_;
@@ -908,7 +976,14 @@ public:
     bool force_unstreaming_cursor_;
     bool conf_enable_sql_audit_;
     bool extend_sql_plan_monitor_metrics_;
+    // JSON and multi-mode related config cache
+    int64_t json_document_max_depth_;
+    int64_t multimodel_memory_trace_level_;
     bool enable_pl_sql_parameterize_;
+    bool enable_fast_json_path_lookup_;
+    bool enable_pl_null_literal_parameterization_;
+    bool enable_database_isolation_mode_;
+    bool enable_foreign_key_gts_opt_;
     ObSQLSessionInfo *session_;
   };
 
@@ -1050,16 +1125,16 @@ public:
   storage::ObSessionTabletInfoMap &get_gtt_tablet_info_map() { return gtt_tablet_info_map_; }
   void gen_gtt_session_scope_unique_id();
   void gen_gtt_trans_scope_unique_id();
-  void set_trans_gtt_v2_sequence(const int64_t sequence) { trans_gtt_v2_sequence_ = sequence;  }
-  int64_t get_trans_gtt_v2_sequence() const { return trans_gtt_v2_sequence_; }
+  void set_trans_gtt_v2_sequence(const int64_t sequence);
+  int64_t get_session_gtt_v2_sequence();
+  int64_t get_trans_gtt_v2_sequence();
   void update_trans_gtt_v2_sequence();
+  uint64_t get_min_data_version_of_init_sess();
   common::ObIArray<uint64_t> &get_gtt_session_scope_ids() { return gtt_session_scope_ids_; }
   common::ObIArray<uint64_t> &get_gtt_trans_scope_ids() { return gtt_trans_scope_ids_; }
   int add_dblink_sequence_schema(ObSequenceSchema *schema);
   int get_dblink_sequence_schema(int64_t sequence_id, const ObSequenceSchema* &schema)const;
 
-  void set_for_trigger_package(bool value) { is_for_trigger_package_ = value; }
-  bool is_for_trigger_package() const { return is_for_trigger_package_; }
   void set_trans_type(transaction::ObTxClass t) { trans_type_ = t; }
   transaction::ObTxClass get_trans_type() const { return trans_type_; }
 
@@ -1295,19 +1370,20 @@ public:
   }
   void reset_audit_record(bool need_retry = false)
   {
+    ObAuditRecordData &audit_record = audit_record_wrapper_.get_audit_record();
     if (!need_retry) {
-      audit_record_.reset();
+      audit_record.reset();
     } else {
       // memset without try_cnt_ and exec_timestamp_
-      int64_t try_cnt = audit_record_.try_cnt_;
-      ObExecTimestamp exec_timestamp = audit_record_.exec_timestamp_;
-      audit_record_.reset();
-      audit_record_.try_cnt_ = try_cnt;
-      audit_record_.exec_timestamp_ = exec_timestamp;
+      int64_t try_cnt = audit_record.try_cnt_;
+      ObExecTimestamp exec_timestamp = audit_record.exec_timestamp_;
+      audit_record.reset();
+      audit_record.try_cnt_ = try_cnt;
+      audit_record.exec_timestamp_ = exec_timestamp;
     }
   }
-  ObAuditRecordData &get_raw_audit_record() { return audit_record_; }
-  const ObAuditRecordData &get_raw_audit_record() const { return audit_record_; }
+  ObAuditRecordData &get_raw_audit_record() { return audit_record_wrapper_.get_audit_record(); }
+  const ObAuditRecordData &get_raw_audit_record() const { return audit_record_wrapper_.get_audit_record(); }
   //在最最终需要push record到audit buffer中时使用该方法，
   //该方法会将一些session中能够拿到的并且重试过程中不会变化的
   //字段初始化
@@ -1320,6 +1396,10 @@ public:
 
   void set_is_remote(bool is_remote) { is_remote_session_ = is_remote; }
   bool is_remote_session() const { return is_remote_session_; }
+  void switch_audit_record_ptr(ObAuditRecordData *audit_record_ptr)
+  {
+    return audit_record_wrapper_.switch_audit_record_ptr(audit_record_ptr);
+  }
 
   int save_session(StmtSavedValue &saved_value);
   int save_sql_session(StmtSavedValue &saved_value);
@@ -1327,7 +1407,7 @@ public:
   int restore_session(StmtSavedValue &saved_value);
   ObExecContext *get_cur_exec_ctx() { return cur_exec_ctx_; }
   const ObExecContext *get_cur_exec_ctx() const { return cur_exec_ctx_; }
-  int begin_nested_session(StmtSavedValue &saved_value, bool skip_cur_stmt_tables = false);
+  int begin_nested_session(StmtSavedValue &saved_value);
   int end_nested_session(StmtSavedValue &saved_value);
 
   //package state related
@@ -1440,6 +1520,7 @@ public:
   ObErrorSyncSysVarEncoder &get_error_sync_sys_var_encoder() { return error_sync_sys_var_encoder_;}
   ObSequenceCurrvalEncoder &get_sequence_currval_encoder() { return sequence_currval_encoder_; }
   ObQueryInfoEncoder &get_query_info_encoder() { return query_info_encoder_; }
+  ObTransGttV2SequenceEncoder &get_trans_gtt_v2_sequence_encoder() { return trans_gtt_v2_sequence_encoder_; }
   ObContextsMap &get_contexts_map() { return contexts_map_; }
   ObSequenceCurrvalMap &get_sequence_currval_map() { return sequence_currval_map_; }
   ObDBlinkSequenceIdMap  &get_dblink_sequence_id_map() { return dblink_sequence_id_map_; }
@@ -1468,10 +1549,55 @@ public:
   }
 
   bool is_encrypt_tenant();
-  int64_t get_expect_group_id() const { return expect_group_id_; }
-  void set_expect_group_id(int64_t group_id) { expect_group_id_ = group_id; }
-	bool get_group_id_not_expected() const { return group_id_not_expected_; }
-  void set_group_id_not_expected(bool value) { group_id_not_expected_ = value; }
+  int64_t get_expect_group_id() const {
+    // SQL level takes precedence over DB level
+    if (group_isolation_arr_[ISOLATION_SQL].expect_group_id_ != common::OB_INVALID_ID) {
+      return group_isolation_arr_[ISOLATION_SQL].expect_group_id_;
+    }
+    return group_isolation_arr_[ISOLATION_DB].expect_group_id_;
+  }
+  void set_expect_group_id(int64_t group_id) {
+    // backward compat: sets SQL level by default
+    group_isolation_arr_[ISOLATION_SQL].expect_group_id_ = group_id;
+  }
+	bool get_group_id_not_expected() const {
+    for (int i = 0; i < ISOLATION_MAX; i++) {
+      if (group_isolation_arr_[i].group_id_not_expected_) return true;
+    }
+    return false;
+  }
+  void set_group_id_not_expected(bool value) {
+    // backward compat: sets all levels
+    for (int i = 0; i < ISOLATION_MAX; i++) {
+      group_isolation_arr_[i].group_id_not_expected_ = value;
+    }
+  }
+  // Level-based API
+  int64_t get_expect_group_id(ResourceIsolationLevel level) const {
+    return group_isolation_arr_[level].expect_group_id_;
+  }
+  void set_expect_group_id(ResourceIsolationLevel level, int64_t id) {
+    group_isolation_arr_[level].expect_group_id_ = id;
+  }
+  bool get_group_id_not_expected(ResourceIsolationLevel level) const {
+    return group_isolation_arr_[level].group_id_not_expected_;
+  }
+  void set_group_id_not_expected(ResourceIsolationLevel level, bool v) {
+    group_isolation_arr_[level].group_id_not_expected_ = v;
+  }
+  void reset_all_group_isolation() {
+    for (int i = 0; i < ISOLATION_MAX; i++) {
+      group_isolation_arr_[i].reset();
+    }
+  }
+  // Proxy specified database name for database level resource isolation
+  const common::ObString& get_proxy_specified_db_name() const { return proxy_specified_db_name_; }
+  void set_proxy_specified_db_name(const common::ObString &db_name) { proxy_specified_db_name_ = db_name; }
+  void reset_proxy_specified_db_name() { proxy_specified_db_name_.reset(); }
+  // Get effective database name for resource isolation: proxy_specified > session database
+  common::ObString get_effective_database_for_isolation() const {
+    return !proxy_specified_db_name_.empty() ? proxy_specified_db_name_ : get_database_name();
+  }
   int is_force_temp_table_inline(bool &force_inline) const;
   int is_force_temp_table_materialize(bool &force_materialize) const;
   int is_temp_table_transformation_enabled(bool &transformation_enabled) const;
@@ -1535,6 +1661,15 @@ public:
   void set_xa_last_result(const int result) { xa_last_result_ = result; }
   // 为了性能优化考虑，租户级别配置项不需要实时获取，缓存在session上，每隔5s触发一次刷新
   void refresh_tenant_config() { cached_tenant_config_info_.refresh(); }
+  bool is_enable_database_isolation_mode()
+  {
+    cached_tenant_config_info_.refresh();
+    bool bret = cached_tenant_config_info_.get_enable_database_isolation_mode();
+    if (OB_SUCCESS != OB_E(::oceanbase::common::EventTable::EN_ENABLE_DATABASE_ISOLATION) OB_SUCCESS) {
+      bret = true;
+    }
+    return bret;
+  }
   bool is_support_external_consistent()
   {
     cached_tenant_config_info_.refresh();
@@ -1603,6 +1738,11 @@ public:
   {
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.enable_insertup_replace_gts_opt();
+  }
+  bool enable_foreign_key_gts_opt()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.enable_foreign_key_gts_opt();
   }
   bool enable_immediate_row_conflict_check()
   {
@@ -1693,6 +1833,12 @@ public:
     cached_tenant_config_info_.refresh();
     return cached_tenant_config_info_.force_enable_plan_tracing();
   }
+
+  bool enable_pl_null_literal_parameterization()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.enable_pl_null_literal_parameterization();
+  }
   const AdaptivePCConf get_adaptive_pc_conf()
   {
     AdaptivePCConf conf;
@@ -1730,6 +1876,25 @@ public:
     return get_local_ob_enable_sql_audit() &&
            cached_tenant_config_info_.conf_enable_sql_audit() &&
            cached_tenant_config_info_.extend_sql_plan_monitor_metrics();
+  }
+
+  // JSON and multi-mode related config access methods
+  int64_t get_cached_json_document_max_depth()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.get_json_document_max_depth();
+  }
+
+  int64_t get_cached_multimodel_memory_trace_level()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.get_multimodel_memory_trace_level();
+  }
+
+  bool is_enable_fast_json_path_lookup()
+  {
+    cached_tenant_config_info_.refresh();
+    return cached_tenant_config_info_.enable_fast_json_path_lookup();
   }
 
   int get_tmp_table_size(uint64_t &size);
@@ -1775,6 +1940,9 @@ public:
   bool is_need_send_feedback_proxy_info() const { return need_send_feedback_proxy_info_; }
   void set_is_lock_session(bool v) { is_lock_session_ = v; }
   bool is_lock_session() const { return is_lock_session_; }
+  void set_is_temporary_table_session(bool v) { is_temporary_table_session_ = v; }
+  bool is_temporary_table_session() const { return is_temporary_table_session_; }
+  void mark_session_temp_table_used(const bool is_used);
   int64_t get_plsql_exec_time();
   int64_t get_plsql_compile_time() { return plsql_compile_time_; }
   void update_pure_sql_exec_time(int64_t elapsed_time);
@@ -1814,26 +1982,7 @@ public:
     if (GCONF._enable_unit_gc_wait && is_obproxy_mode()
         && proxy_version_ >= unit_gc_min_sup_proxy_version_) {
       need_kill = false;
-      bool is_already_set = false;
-      if (OB_FAIL(try_lock_query())) {
-        if (OB_UNLIKELY(OB_EAGAIN != ret)) {
-          SQL_SESSION_LOG(WARN, "fail to try lock query", K(ret));
-        } else {
-          ret = OB_SUCCESS;
-        }
-      } else {
-        // successful lock means that there is no request in the current session
-        if (OB_FAIL(get_session_temp_table_used(is_already_set))) {
-          SQL_SESSION_LOG(WARN, "failed to get session temp table used", K(ret));
-        } else if (!is_already_set && !is_in_transaction()) {
-          need_kill = true;
-        }
-        (void)unlock_query();
-      }
     }
-    // SQL_ENG_LOG(INFO, "can kill session immediately", K(need_kill), K(is_obproxy_mode()),
-    //             K(proxy_version_), K(unit_gc_min_sup_proxy_version_), K(GCONF._enable_unit_gc_wait),
-    //             K(ret));
     return ret;
   }
   int64_t &get_curr_request_id() { return curr_request_id_; }
@@ -1847,6 +1996,10 @@ private:
   void destroy_contexts_map(ObContextsMap &map, common::ObIAllocator &alloc);
   inline int init_mem_context(uint64_t tenant_id);
   inline int64_t get_truncated_sql_len(const ObString &stmt) override;
+  int serialize_remote_extra_sess_state_(char *buf, int64_t buf_len, int64_t &pos);
+  int deserialize_remote_extra_sess_state_(const char *buf, int64_t data_len, int64_t &pos);
+  int calc_remote_extra_sess_state_serialize_size_(int64_t &len);
+  void recalc_curr_session_context_size_();
 
   static const int64_t MAX_STORED_PLANS_COUNT = 10240;
   static const int64_t MAX_IPADDR_LENGTH = 64;
@@ -1856,8 +2009,7 @@ private:
   common::ObWarningBuffer warnings_buf_;
   common::ObWarningBuffer show_warnings_buf_;
   sql::ObEndTransAsyncCallback end_trans_cb_;
-  ObAuditRecordData audit_record_;
-
+  ObAuditRecordDataWrapper audit_record_wrapper_;
   ObPrivSet user_priv_set_;
   ObPrivSet db_priv_set_;
   int64_t curr_trans_start_time_;
@@ -1867,8 +2019,6 @@ private:
   bool has_temp_table_flag_;  //会话是否创建过临时表
   bool has_accessed_session_level_temp_table_;  //是否访问过Session临时表
   bool enable_early_lock_release_;
-  // trigger.
-  bool is_for_trigger_package_;
   transaction::ObTxClass trans_type_;
   const common::ObVersionProvider *version_provider_;
   const ObSQLConfigProvider *config_provider_;
@@ -2026,6 +2176,7 @@ private:
   bool coninfo_set_by_sess_ = false;
   bool need_send_feedback_proxy_info_ = false;
   bool is_lock_session_ = false;
+  bool is_temporary_table_session_ = false;
 
   ObSessInfoEncoder* sess_encoders_[SESSION_SYNC_MAX_TYPE] = {
                             //&usr_var_encoder_,
@@ -2086,6 +2237,12 @@ public:
   void *get_external_resource_schema_cache() { return external_resource_schema_cache_; }
   void set_external_resource_schema_cache(void *cache) { external_resource_schema_cache_ = cache; }
   void set_retry_wait_event_begin_time();
+  pl::ObOraJavaSessionState *get_ora_java_session_state() { return ora_java_session_state_; }
+  void set_ora_java_session_state(pl::ObOraJavaSessionState *ora_java_session_state) { ora_java_session_state_ = ora_java_session_state; }
+  int set_mlog_expected_rows(uint64_t mlog_table_id, int64_t expected_rows);
+  int get_mlog_expected_rows(uint64_t mlog_table_id, int64_t &expected_rows) const;
+  void reset_mlog_expected_rows();
+  bool has_mlog_expected_rows() const { return mlog_expected_rows_map_.created() && mlog_expected_rows_map_.size() > 0; }
 
 private:
   transaction::ObTxnFreeRouteCtx txn_free_route_ctx_;
@@ -2097,10 +2254,15 @@ private:
   oceanbase::sql::ObDblinkCtxInSession dblink_context_;
   int64_t dblink_ctx_acc_cnt_;
   int64_t sql_req_level_; // for sql request between cluster avoid dead lock, such as dblink dead lock
-  int64_t expect_group_id_;
-  // When try packet retry failed, set this flag true and retry at current thread.
-  // This situation is unexpected and will report a warning to user.
-  bool group_id_not_expected_;
+  // Multi-level resource isolation tracking (SQL-level vs DB-level)
+  // SQL-level (hint/column) takes precedence over DB-level (database mapping)
+  GroupIsolationInfo group_isolation_arr_[ISOLATION_MAX];
+  // Proxy specified database name for database level resource isolation.
+  // Memory lifecycle: Pointer references memory from packet's extra_info,
+  // which is valid during request processing. Deep copied by assign() in
+  // Ob20ProtocolProcessor::after_process_mysql_packet. Per-request lifetime,
+  // should be reset after each request.
+  common::ObString proxy_specified_db_name_;
   ObOptimizerTraceImpl optimizer_tracer_;
   //For Oracle Global Temporary Table
   //unique key: obs_id(16bit) + timestamp(48bit)
@@ -2132,11 +2294,14 @@ private:
   int64_t last_update_ccl_cnt_time_;
   int64_t curr_request_id_;  // mark current request id in sql audit
   int64_t trans_gtt_v2_sequence_;
-  // The minimal data version at session creation.
+  // The minimal data version at session creation. Once the session uses an old-version temporary table,
+  // it cannot use a new-version temporary table during an upgrade.
   uint64_t min_data_version_of_init_sess_;
+  common::hash::ObHashMap<uint64_t, int64_t> mlog_expected_rows_map_;
 
   private:
   pl::ObUtlHttp* ob_utl_http_info_ = NULL;
+  pl::ObOraJavaSessionState* ora_java_session_state_ = nullptr;
 
   public:
   pl::ObUtlHttp* get_ob_utl_http_info() {return ob_utl_http_info_;}

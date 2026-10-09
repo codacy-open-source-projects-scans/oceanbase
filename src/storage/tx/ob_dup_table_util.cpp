@@ -1,12 +1,5 @@
 // Copyright (c) 2021 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// SPDX-License-Identifier: Apache-2.0
 
 #include "ob_dup_table_util.h"
 #include "storage/tablet/ob_tablet_iterator.h"
@@ -1093,6 +1086,44 @@ bool ObDupTableLSHandler::is_dup_table_lease_valid()
                 K(is_dup_lease_ls));
 
   return is_dup_lease_ls;
+}
+
+int ObDupTableLSHandler::block_dup_table_lease_for_migration(bool &is_lease_valid)
+{
+  int ret = OB_SUCCESS;
+  is_lease_valid = false;
+  TCRWLock::RLockGuard r_init_guard(init_rw_lock_);
+
+  if (!is_inited_ || OB_ISNULL(lease_mgr_ptr_)) {
+    DUP_TABLE_LOG(INFO, "no need to block dup table lease renewal for migration",
+                  K(ret), K(is_inited_), KP(lease_mgr_ptr_));
+  } else if (OB_FAIL(lease_mgr_ptr_->block_dup_table_lease_for_migration(is_lease_valid))) {
+    DUP_TABLE_LOG(WARN, "block dup table lease renewal for migration failed", K(ret), KPC(this));
+  } else {
+    // Do not gate the mark by current leader role or current duplicated-table tablet existence.
+    // Migration may block before this LS becomes a follower or before duplicated-table tablets
+    // appear, and that future follower renewal path must still observe the mark.
+    DUP_TABLE_LOG(INFO, "block dup table lease renewal for migration", K(ret), K(is_lease_valid),
+                  KPC(this));
+  }
+
+  return ret;
+}
+
+int ObDupTableLSHandler::clear_dup_table_lease_block_for_migration()
+{
+  int ret = OB_SUCCESS;
+  TCRWLock::RLockGuard r_init_guard(init_rw_lock_);
+
+  if (!is_inited_ || OB_ISNULL(lease_mgr_ptr_)) {
+    DUP_TABLE_LOG(INFO, "no need to clear dup table lease renewal block for migration",
+                  K(ret), K(is_inited_), KP(lease_mgr_ptr_));
+  } else if (OB_FAIL(lease_mgr_ptr_->clear_dup_table_lease_block_for_migration())) {
+    DUP_TABLE_LOG(WARN, "clear dup table lease renewal block for migration failed", K(ret),
+                  KPC(this));
+  }
+
+  return ret;
 }
 
 int64_t ObDupTableLSHandler::get_dup_tablet_count()

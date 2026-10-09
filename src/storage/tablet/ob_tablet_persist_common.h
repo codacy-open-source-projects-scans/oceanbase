@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_TABLET_PERSIST_COMMON_H_
@@ -80,7 +73,10 @@ public:
       const int64_t snapshot_version,
       const int64_t start_macro_seq,
       blocksstable::ObIMacroBlockFlushCallback *ddl_redo_callback = nullptr,
-      blocksstable::ObIMacroBlockFlushCallback *ddl_finish_callback = nullptr);
+      blocksstable::ObIMacroBlockFlushCallback *ddl_finish_callback = nullptr,
+      const bool is_inc_major_shared_object = false,
+      const int64_t reorganization_scn = 0);
+
   #ifdef OB_BUILD_SHARED_STORAGE
   // inc_shared tablet meta persistence
   ObTabletPersisterParam(
@@ -114,15 +110,19 @@ public:
       return false;
     #endif
   }
+  bool is_inc_major_shared_object() const
+  {
+    return is_inc_major_shared_object_;
+  }
   bool for_ss_persist() const
   {
-    return is_major_shared_object() || is_inc_shared_object();
+    return is_major_shared_object() || is_inc_major_shared_object() || is_inc_shared_object();
   }
   int get_op_id(int64_t &op_id) const;
 
 
   TO_STRING_KV(K_(data_version), K_(ls_id), K_(ls_epoch), K_(tablet_id), K_(private_transfer_epoch),
-   K_(snapshot_version), K_(start_macro_seq), KP_(ddl_redo_callback), KP_(ddl_finish_callback)
+   K_(snapshot_version), K_(start_macro_seq), K_(is_inc_major_shared_object), KP_(ddl_redo_callback), KP_(ddl_finish_callback)
    #ifdef OB_BUILD_SHARED_STORAGE
    , KPC_(op_handle), KPC_(file), K_(update_reason), K_(sstable_op_id), K_(reorganization_scn), K_(meta_version),
    KP_(src_tablet_block_info)
@@ -136,6 +136,7 @@ public:
   int32_t private_transfer_epoch_;
   int64_t snapshot_version_;
   int64_t start_macro_seq_;
+  bool is_inc_major_shared_object_;
   blocksstable::ObIMacroBlockFlushCallback *ddl_redo_callback_;
   blocksstable::ObIMacroBlockFlushCallback *ddl_finish_callback_;
   #ifdef OB_BUILD_SHARED_STORAGE
@@ -387,7 +388,7 @@ public:
   int do_persist_all_sstables(
       const ObTabletTableStore &old_table_store,
       common::ObArenaAllocator &new_table_store_allocator,
-      /*out*/ ObMultiTimeStats &multi_stats,
+      /*out*/ ObMultiTimeStats *multi_stats,
       /*out*/ ObTabletTableStore &new_table_store,
       /*out*/ int64_t &sst_meta_size_aligned);
   /// @brief: only be called by fully direct load
@@ -682,6 +683,101 @@ int ObTabletPersistCommon::fill_write_info(
     } else {
       write_info.write_callback_ = persister_param.ddl_redo_callback_;
     }
+  }
+  return ret;
+}
+
+template<typename T>
+class ObUncopyableItemArray final
+{
+public:
+  ObUncopyableItemArray(
+    common::ObIAllocator &allocator,
+    const int64_t capacity)
+    : allocator_(allocator),
+      capacity_(capacity),
+      size_(0),
+      data_(nullptr)
+  {
+  }
+  ~ObUncopyableItemArray() { reset(); }
+  void reset();
+  template<typename ...Args>
+  int emplace_back(Args &&...args);
+  int64_t count() const { return size_; }
+  int64_t capacity() const { return capacity_; }
+  T &at(const int64_t idx)
+  {
+    OB_ASSERT(idx >= 0 && idx < size_);
+    return static_cast<T *>(data_)[idx];
+  }
+  const T &at(const int64_t idx) const
+  {
+    OB_ASSERT(idx >= 0 && idx < size_);
+    return static_cast<T *>(data_)[idx];
+  }
+  TO_STRING_KV(K_(allocator),
+               K_(capacity),
+               K_(size),
+               K_(data));
+
+private:
+  int reserve_();
+  DISALLOW_COPY_AND_ASSIGN(ObUncopyableItemArray);
+
+private:
+  common::ObIAllocator &allocator_;
+  const int64_t capacity_;
+  int64_t size_;
+  void *data_;
+};
+
+template<typename T>
+void ObUncopyableItemArray<T>::reset()
+{
+  if (OB_NOT_NULL(data_)) {
+    T *ptr = static_cast<T *>(data_);
+    for (int64_t i = 0; i < size_; ++i) {
+      ptr[i].~T();
+    }
+    allocator_.free(data_);
+    data_ = nullptr;
+  }
+  size_ = 0;
+}
+
+template<typename T>
+template<typename ...Args>
+int ObUncopyableItemArray<T>::emplace_back(Args &&...args)
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_ISNULL(data_) && OB_FAIL(reserve_())) {
+    STORAGE_LOG(WARN, "failed to do reserve", K(ret));
+  } else if (OB_UNLIKELY(size_ >= capacity_)) {
+    ret = OB_SIZE_OVERFLOW;
+    STORAGE_LOG(WARN, "array size overflow", K(ret), K_(size), K_(capacity));
+  } else {
+    new (static_cast<T *>(data_) + size_) T(std::forward<Args>(args)...);
+    ++size_;
+  }
+  return ret;
+}
+
+template<typename T>
+int ObUncopyableItemArray<T>::reserve_()
+{
+  int ret = OB_SUCCESS;
+
+  if (OB_NOT_NULL(data_)) {
+    ret = OB_INIT_TWICE;
+    STORAGE_LOG(WARN, "init twice", K(ret), KP_(data));
+  } else if (OB_UNLIKELY(capacity_ <= 0)) {
+    ret = OB_ERR_UNEXPECTED;
+    STORAGE_LOG(WARN, "unexpected invalid capacity", K(ret), K_(capacity));
+  } else if (OB_ISNULL(data_ = allocator_.alloc(sizeof(T) * capacity_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    STORAGE_LOG(WARN, "failed to allocate memory", K(ret), K(capacity_));
   }
   return ret;
 }

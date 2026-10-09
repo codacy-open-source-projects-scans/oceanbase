@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation support for the json table abstraction.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -1686,8 +1678,32 @@ int XmlTableFunc::init_ctx(ObRegCol &scan_node, JtScanCtx*& ctx)
     } else {
       ObPathVarObject *t_ns = static_cast<ObPathVarObject*>(ctx->context);
       t_iter = new (path_buf) ObPathExprIter(ctx->op_exec_alloc_, ctx->mem_ctx_->allocator_);
-      if (OB_FAIL(t_iter->init(ctx->xpath_ctx_, scan_node.col_info_.path_, ctx->default_ns, doc, t_ns))) {
-        LOG_WARN("fail to init xpath iterator", K(scan_node.col_info_.path_), K(ctx->default_ns), K(ret));
+      // convert xpath string from tenant charset to utf8 if needed,
+      // because ObPathParser uses rapidjson::UTF8<char>::Decode which requires utf8 encoding
+      ObString xpath_str = scan_node.col_info_.path_;
+      const ObSQLSessionInfo *session = ctx->exec_ctx_->get_my_session();
+      if (OB_ISNULL(session)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("session is NULL", K(ret));
+      } else {
+        ObCollationType src_cs_type = session->get_nls_collation();
+        if (ObCharset::charset_type_by_coll(src_cs_type) != CHARSET_UTF8MB4) {
+          ObString utf8_xpath;
+          if (OB_FAIL(ObCharset::charset_convert(*ctx->op_exec_alloc_,
+                                                  xpath_str,
+                                                  src_cs_type,
+                                                  CS_TYPE_UTF8MB4_BIN,
+                                                  utf8_xpath))) {
+            LOG_WARN("fail to convert xpath charset to utf8",
+                K(ret), K(xpath_str), K(src_cs_type));
+          } else {
+            xpath_str = utf8_xpath;
+          }
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(t_iter->init(ctx->xpath_ctx_, xpath_str, ctx->default_ns, doc, t_ns))) {
+        LOG_WARN("fail to init xpath iterator", K(xpath_str), K(ctx->default_ns), K(ret));
       } else if (OB_FAIL(t_iter->open())) {
         ret = OB_ERR_PARSE_XQUERY_EXPR;
         LOG_USER_ERROR(OB_ERR_PARSE_XQUERY_EXPR, t_iter->get_path_str().length(), t_iter->get_path_str().ptr());
@@ -3588,8 +3604,10 @@ int JsonTableFunc::eval_input(ObJsonTableOp &jt, JtScanCtx& ctx, ObEvalCtx &eval
     } else if (OB_FALSE_IT(tmp_allocator.set_baseline_size(j_str.length()))) {
     } else if ((ob_is_string_type(doc_type) || doc_type == ObLobType)
                 && (doc_cs_type != CS_TYPE_BINARY)
-                && (ObCharset::charset_type_by_coll(doc_cs_type) != CHARSET_UTF8MB4)) {
+                && (ObCharset::charset_type_by_coll(doc_cs_type) != CHARSET_UTF8MB4)
+                && j_str.length() > 0) {
       // need convert to utf8 first, we are using GenericInsituStringStream<UTF8<> >
+      // skip when j_str is empty: alloc(0) will return OB_ALLOCATE_MEMORY_FAILED; empty payload needs no convert
       char *buf = nullptr;
       const int64_t factor = 2;
       int64_t buf_len = j_str.length() * factor;
@@ -3610,7 +3628,11 @@ int JsonTableFunc::eval_input(ObJsonTableOp &jt, JtScanCtx& ctx, ObEvalCtx &eval
     ObJsonInType j_in_type = ObJsonExprHelper::get_json_internal_type(doc_type);
     ObJsonInType expect_type = ObJsonInType::JSON_TREE;
     uint32_t parse_flag = lib::is_oracle_mode() ? ObJsonParser::JSN_RELAXED_FLAG : ObJsonParser::JSN_DEFAULT_FLAG;
-
+    sql::ObSQLSessionInfo *session = ctx.exec_ctx_ ? ctx.exec_ctx_->get_my_session() : NULL;
+    bool json_float_full_precision =
+        OB_NOT_NULL(session) ? session->get_local_json_float_full_precision() : false;
+    ADD_FLAG_IF_NEED(json_float_full_precision, parse_flag,
+                     ObJsonParser::JSN_FLOAT_FULL_PRECISION_FLAG);
     // json type input, or has is json check
     bool is_ensure_json = lib::is_oracle_mode() && (doc_type != ObJsonType);
 

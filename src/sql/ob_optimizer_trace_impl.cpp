@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL
@@ -314,6 +307,11 @@ int ObOptimizerTraceImpl::append_ptr(const void *ptr)
   return append_format<32>("ptr:%p", ptr);
 }
 
+int ObOptimizerTraceImpl::append(const void *ptr)
+{
+  return append_ptr(ptr);
+}
+
 int ObOptimizerTraceImpl::append()
 {
   int ret = OB_SUCCESS;
@@ -404,6 +402,9 @@ int ObOptimizerTraceImpl::append(const OpParallelRule& rule)
       break;
     case OP_INHERIT_DOP:
       ret = append("inherit");
+      break;
+    case OP_SERIAL_DOP:
+      ret = append("serial dop");
       break;
     case OP_DOP_RULE_MAX:
       ret = append("max rule");
@@ -585,9 +586,16 @@ int ObOptimizerTraceImpl::append(const Path *path)
     new_line();
     append("tables:", path->parent_);
     if (path->is_access_path()) {
-      new_line();
       const AccessPath& ap = static_cast<const AccessPath&>(*path);
       const ObIndexMetaInfo &index_info = ap.est_cost_info_.index_meta_info_;
+      if (ap.is_inner_path_) {
+        if (ap.is_valid_inner_path_) {
+          append("valid inner path");
+        } else {
+          append("invalid inner path");
+        }
+      }
+      new_line();
       if (ap.is_index_merge_path()) {
         const IndexMergePath& index_merge_path = static_cast<const IndexMergePath&>(ap);
         append("is index merge: True, index merge tree:", index_merge_path.root_);
@@ -623,6 +631,14 @@ int ObOptimizerTraceImpl::append(const Path *path)
       }
       new_line();
       append("output row count before revising:", ap.get_output_row_count());
+    } else if (path->is_subquery_path()) {
+      const SubQueryPath& subquery_path = static_cast<const SubQueryPath&>(*path);
+      append("subquery id:", subquery_path.subquery_id_);
+      if (subquery_path.is_valid_inner_path_) {
+        append(", valid inner path");
+      }
+      new_line();
+      append(subquery_path.root_);
     }
     new_line();
     append("cost:", path->cost_, ",card:", path->parent_->get_output_rows(),

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef SRC_OBSERVER_DBMS_SCHED_JOB_UTILS_H_
@@ -32,6 +25,8 @@
                                                   || (MOCK_DATA_VERSION_4_4_2_0 <= data_version && DATA_VERSION_4_5_0_0 > data_version) \
                                                   || (DATA_VERSION_4_5_1_0 <= data_version))
 #define DATA_VERSION_SUPPORT_JOB_CONFIG(data_version) (DATA_VERSION_4_5_1_0 <= data_version)
+#define DATA_VERSION_SUPPORT_EXECUTE_SESSION_ID(data_version) (MOCK_DATA_VERSION_4_4_2_1 <= data_version && DATA_VERSION_4_5_0_0 > data_version) \
+                                                  || (DATA_VERSION_4_6_0_0 <= data_version)
 
 
 namespace oceanbase
@@ -159,7 +154,8 @@ public:
     this_exec_date_(0),
     this_exec_addr_(),
     this_exec_trace_id_(),
-    job_config_() {}
+    job_config_(),
+    this_exec_sess_id_() {}
 
   TO_STRING_KV(K(tenant_id_),
                K(user_id_),
@@ -197,7 +193,8 @@ public:
                K(this_exec_date_),
                K(this_exec_addr_),
                K(this_exec_trace_id_),
-               K(job_config_));
+               K(job_config_),
+               K(this_exec_sess_id_));
 
   bool valid()
   {
@@ -221,6 +218,7 @@ public:
   int64_t  get_end_date() { return end_date_; }
   int64_t  get_auto_drop() { return auto_drop_; }
   int64_t  get_this_exec_date() { return this_exec_date_; }
+  uint64_t get_this_exec_sess_id() { return this_exec_sess_id_; }
   ObDBMSSchedFuncType get_func_type() const;
 
   bool is_completed() { return 0 == state_.case_compare("COMPLETED"); }
@@ -254,6 +252,9 @@ public:
   bool is_trigger_part_balance_job() const { return ObDBMSSchedFuncType::NODE_BALANCE_JOB == get_func_type(); }
   bool is_dynamic_partition_job() const {return ObDBMSSchedFuncType::DYNAMIC_PARTITION_MANAGE_JOB == get_func_type(); }
   bool is_daily_maintenance_job() const {return ObDBMSSchedFuncType::DAILY_MAINTENANCE_JOB == get_func_type(); }
+  bool is_recycle_schema_history_job() const { return ObDBMSSchedFuncType::SCHEMA_HISTORY_RECYCLE_JOB == get_func_type(); }
+  bool is_inspection_job() const { return ObDBMSSchedFuncType::RUN_INSPECTION_JOB == get_func_type(); }
+  bool is_purge_recyclebin_job() const { return ObDBMSSchedFuncType::PURGE_RECYCLEBIN_JOB == get_func_type(); }
   bool is_user_job() const { return ObDBMSSchedFuncType::USER_JOB == get_func_type(); }
   bool is_shadow() const { return ObDBMSSchedFuncSet::instance_.is_shadow(get_func_type()); }
   bool is_once_job() const { return (interval_ts_ == 0 && (repeat_interval_.empty() || 0 == repeat_interval_.case_compare("null"))); }
@@ -310,6 +311,7 @@ public:
   common::ObString this_exec_addr_;
   common::ObString this_exec_trace_id_;
   common::ObString job_config_;
+  uint64_t this_exec_sess_id_;
 
 public:
   static const int64_t JOB_SCHEDULER_FLAG_DATE_EXPRESSION_JOB_CLASS = 1;

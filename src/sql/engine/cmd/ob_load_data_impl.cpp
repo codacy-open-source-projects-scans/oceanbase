@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX  SQL_ENG
@@ -953,7 +946,7 @@ int ObLoadDataSPImpl::exec_shuffle(int64_t task_id, ObShuffleTaskHandle *handle)
   int64_t tenant_id = OB_INVALID_TENANT_ID;
   void *expr_buf = NULL;
   ObLoadFileBuffer *expr_buffer = NULL;
-  ObArrayHashMap<ObTabletID, ObDataFrag *> part_buf_mgr;
+  common::ObArrayHashMap<ObTabletID, ObDataFrag *> part_buf_mgr;
   ObSEArray<ObString, 32> insert_values;
   int64_t parsed_line_num = 0;
   ObStringBuf str_buf("LoadDataStrBuf", OB_MALLOC_MIDDLE_BLOCK_SIZE);

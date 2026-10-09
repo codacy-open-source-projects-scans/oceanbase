@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -42,22 +35,8 @@ int ObDASSearchCtx::init(
 {
   int ret = OB_SUCCESS;
   void *buf = nullptr;
-  int64_t logical_row_cnt = -1;
-  int64_t physical_row_cnt = -1;
-  const ObAccessService *access_service = nullptr;
-  const ObDASScanCtDef *scan_ctdef = nullptr;
-  ObDASScanRtDef *scan_rtdef = nullptr;
-  const int64_t timeout_us = THIS_WORKER.get_timeout_remain();
-  const common::ObTabletID &tablet_id = root_das_task_.get_scan_param().tablet_id_;
-  common::ObNewRange scan_range;
-  ObSimpleBatch batch;
-  ObTableScanParam est_param;
-  ObSEArray<ObEstRowCountRecord, 1> est_records;
-  ObTableScanRange table_scan_range;
-  if (OB_ISNULL(scan_rtdef = static_cast<ObDASScanRtDef *>(root_das_task_.get_rtdef())) ||
-      OB_ISNULL(scan_ctdef = static_cast<const ObDASScanCtDef *>(root_das_task_.get_ctdef())) ||
-      OB_ISNULL(eval_ctx_ = root_das_task_.get_rtdef()->eval_ctx_) ||
-      OB_ISNULL(access_service = MTL(ObAccessService *))) {
+  if (OB_ISNULL(root_das_task_.get_rtdef()) ||
+      OB_ISNULL(eval_ctx_ = root_das_task_.get_rtdef()->eval_ctx_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr", K(ret));
   } else if (OB_FAIL(rowid_meta_.init(rowid_exprs, 0))) {
@@ -72,8 +51,46 @@ int ObDASSearchCtx::init(
     output_ = &output;
     use_dynamic_pruning_ = use_dynamic_pruning;
     rowid_type_ = DAS_ROWID_TYPE_UINT64; // TODO: determine by actual rowid type
+    if (OB_FAIL(refresh_table_row_count())) {
+      LOG_WARN("failed to estimate table row count", K(ret));
+    } else if (!is_valid()) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected invalid search ctx", K(ret));
+    }
+  }
+  if (OB_FAIL(ret)) {
+    eval_ctx_ = nullptr;
+    mock_skip_ = nullptr;
+    rowid_exprs_ = nullptr;
+    output_ = nullptr;
+    table_row_count_.reset();
+    rowid_meta_.reset();
+  }
+  return ret;
+}
 
-    // tablet full row count estimation
+int ObDASSearchCtx::refresh_table_row_count()
+{
+  int ret = OB_SUCCESS;
+  int64_t logical_row_cnt = -1;
+  int64_t physical_row_cnt = -1;
+  const ObAccessService *access_service = nullptr;
+  const ObDASScanCtDef *scan_ctdef = nullptr;
+  ObDASScanRtDef *scan_rtdef = nullptr;
+  const int64_t timeout_us = THIS_WORKER.get_timeout_remain();
+  const common::ObTabletID &tablet_id = root_das_task_.get_scan_param().tablet_id_;
+  common::ObNewRange scan_range;
+  ObSimpleBatch batch;
+  ObTableScanParam est_param;
+  ObSEArray<ObEstRowCountRecord, 1> est_records;
+  ObTableScanRange table_scan_range;
+
+  if (OB_ISNULL(scan_rtdef = static_cast<ObDASScanRtDef *>(root_das_task_.get_rtdef())) ||
+      OB_ISNULL(scan_ctdef = static_cast<const ObDASScanCtDef *>(root_das_task_.get_ctdef())) ||
+      OB_ISNULL(access_service = MTL(ObAccessService *))) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected nullptr in refresh_table_row_count", K(ret));
+  } else {
     est_param.index_id_ = scan_ctdef->ref_table_id_;
     est_param.scan_flag_ = scan_rtdef->scan_flag_;
     est_param.tablet_id_ = tablet_id;
@@ -84,15 +101,14 @@ int ObDASSearchCtx::init(
     scan_range.set_whole_range();
     batch.type_ = ObSimpleBatch::T_SCAN;
     batch.range_ = &scan_range;
-
     if (OB_FAIL(table_scan_range.init(est_param, batch, allocator_))) {
-      LOG_WARN("failed to init table scan range", K(ret));
-    } else if (OB_FAIL(access_service->estimate_row_count(est_param, table_scan_range, timeout_us, est_records, logical_row_cnt, physical_row_cnt))) {
-      LOG_WARN("failed to estimate row count", K(ret));
-    } else if (FALSE_IT(table_row_count_ = ObDASSearchCost(logical_row_cnt))) {
-    } else if (!is_valid()) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("unexpected invalid search ctx", K(ret));
+      LOG_WARN("failed to init table scan range for partition row count", K(ret), K(tablet_id));
+    } else if (OB_FAIL(access_service->estimate_row_count(
+                       est_param, table_scan_range, timeout_us, est_records,
+                       logical_row_cnt, physical_row_cnt))) {
+      LOG_WARN("failed to estimate partition row count", K(ret), K(tablet_id));
+    } else {
+      table_row_count_ = ObDASSearchCost(logical_row_cnt);
     }
   }
   return ret;
@@ -260,10 +276,23 @@ int ObDASSearchCtx::estimate_row_count(const ObDASScalarScanCtDef *ctdef, const 
     est_param.ls_id_ = ls_id_;
     est_param.schema_version_ = ctdef->schema_version_;
     est_param.frozen_version_ = GET_BATCH_ROWS_READ_SNAPSHOT_VERSION;
-    batch.type_ = ObSimpleBatch::T_SCAN;
-    batch.range_ = &rtdef->key_ranges_.at(0);
+    common::SQLScanRangeArray scan_range_array;
+    if (1 == rtdef->key_ranges_.count()) {
+      batch.type_ = ObSimpleBatch::T_SCAN;
+      batch.range_ = &rtdef->key_ranges_.at(0);
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < rtdef->key_ranges_.count(); ++i) {
+        if (OB_FAIL(scan_range_array.push_back(rtdef->key_ranges_.at(i)))) {
+          LOG_WARN("failed to push back key range for estimate", K(ret), K(i));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        batch.type_ = ObSimpleBatch::T_MULTI_SCAN;
+        batch.ranges_ = &scan_range_array;
+      }
+    }
 
-    if (OB_FAIL(table_scan_range.init(est_param, batch, allocator_))) {
+    if (FAILEDx(table_scan_range.init(est_param, batch, allocator_))) {
       LOG_WARN("failed to init table scan range", K(ret));
     } else if (OB_FAIL(access_service->estimate_row_count(est_param, table_scan_range, timeout_us, est_records, logical_row_cnt, physical_row_cnt))) {
       LOG_WARN("failed to estimate row count", K(ret));

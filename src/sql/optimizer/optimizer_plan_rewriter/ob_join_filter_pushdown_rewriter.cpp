@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -84,6 +77,8 @@ struct NoWindowPredicate {
 };
 
 // Helper functor for filtering out special expressions
+
+ERRSIM_POINT_DEF(ENABLE_CONST_RF);
 struct NoSpecialExprPredicate {
   int operator()(JoinFilterMetaInfo* rtf, bool &result) const {
     int ret = OB_SUCCESS;
@@ -91,7 +86,7 @@ struct NoSpecialExprPredicate {
     if (OB_ISNULL(rtf) || OB_ISNULL(rtf->use_expr_) || OB_ISNULL(rtf->create_expr_)) {
       result = false;
     } else {
-      result = !rtf->use_expr_->get_relation_ids().is_empty() && !rtf->use_expr_->is_nested_expr() && !rtf->create_expr_->is_nested_expr()
+      result = (ENABLE_CONST_RF || !rtf->use_expr_->get_relation_ids().is_empty()) && !rtf->use_expr_->is_nested_expr() && !rtf->create_expr_->is_nested_expr()
                 && rtf->use_expr_->is_deterministic() && !rtf->use_expr_->has_flag(CNT_ROWNUM);
     }
     return ret;
@@ -410,7 +405,7 @@ struct NoSpecialExprPredicate {
       } else {
         // do prune and update for left child first
         RewriterResult *dummy_result = NULL;
-        if (OB_FAIL(this->dispatch_visit(joinnode->get_child(0), NULL, dummy_result))) {
+        if (OB_FAIL(SMART_CALL(this->visit(joinnode->get_child(0), NULL, dummy_result)))) {
           LOG_WARN("failed to visit left child", K(ret));
         } else {
           bool has_valid_producer = false;
@@ -539,7 +534,7 @@ struct NoSpecialExprPredicate {
       if (OB_FAIL(ret)) {
       } else {
         RewriterResult *dummy_result2 = NULL;
-        if (OB_FAIL(this->dispatch_visit(joinnode->get_child(1), NULL, dummy_result2))) {
+        if (OB_FAIL(SMART_CALL(this->visit(joinnode->get_child(1), NULL, dummy_result2)))) {
           LOG_WARN("failed to visit right child", K(ret));
         }
       }
@@ -1508,9 +1503,9 @@ struct NoSpecialExprPredicate {
             // only push to right side of nested-loop join if
             // left is at most scalar
             // or is nlj withoug params down
-          } else if (OB_FAIL((this->dispatch_visit(left_child, to_left_context, result)))) {
+          } else if (OB_FAIL(SMART_CALL(this->visit(left_child, to_left_context, result)))) {
             LOG_WARN("failed to rewrite child", K(ret), K(joinnode->get_name()));
-          } else if (OB_FAIL((this->dispatch_visit(right_child, to_right_context, result)))) {
+          } else if (OB_FAIL(SMART_CALL(this->visit(right_child, to_right_context, result)))) {
             LOG_WARN("failed to rewrite child", K(ret), K(joinnode->get_name()));
           }
         }
@@ -1703,7 +1698,7 @@ struct NoSpecialExprPredicate {
         LOG_WARN("failed to filter by predicate", K(ret));
       } else {
         for (int64_t i = 0; OB_SUCC(ret) && i < subplanfilter->get_num_of_child(); ++i) {
-          if (OB_FAIL((this->dispatch_visit(subplanfilter->get_child(i), i == 0 ? context : NULL, result)))) {
+          if (OB_FAIL(SMART_CALL(this->visit(subplanfilter->get_child(i), i == 0 ? context : NULL, result)))) {
             LOG_WARN("failed to rewrite child", K(ret));
           }
         }
@@ -1765,7 +1760,7 @@ struct NoSpecialExprPredicate {
                                                               child_select_exprs,
                                                               child_op->get_table_set()))) {
               LOG_WARN("failed to map context", K(ret));
-            } else if (OB_FAIL(this->dispatch_visit(child_op, pushdown_context, result))) {
+            } else if (OB_FAIL(SMART_CALL(this->visit(child_op, pushdown_context, result)))) {
               LOG_WARN("failed to rewrite child", K(ret));
             }
           }
@@ -2015,7 +2010,7 @@ struct NoSpecialExprPredicate {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("failed to alloc pushdown context", K(ret));
       } else {
-        new_context = new (ptr) JoinFilterPushdownContext();
+        new_context = new (ptr) JoinFilterPushdownContext(*allocator);
       }
       return ret;
     }

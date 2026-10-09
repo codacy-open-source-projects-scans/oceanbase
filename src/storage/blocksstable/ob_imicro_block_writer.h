@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_BLOCKSSTABLE_OB_IMICRO_BLOCK_WRITER_H_
@@ -56,7 +49,7 @@ struct ObMicroBlockDesc
   bool has_lob_out_row_;
   bool is_last_row_last_flag_;
   bool is_first_row_first_flag_;
-  bool single_version_rows_;  // only used for delta sstable
+  bool single_version_rows_;  // Whether all rows in this block have one single version (Attention!! The first rowkey may have other versions in previous block)
 
   ObMicroBlockDesc() { reset(); }
   bool is_valid() const;
@@ -195,6 +188,9 @@ public:
   virtual int get_pre_agg_param(const int64_t col_idx, ObMicroDataPreAggParam &pre_agg_param) const;
   void set_block_size_upper_bound(const int64_t &size) { block_size_upper_bound_ = size; }
   int build_micro_block_desc(ObMicroBlockDesc &micro_block_desc);
+  /// Serialize header into the reserved prefix at get_block_buf() for consumers that
+  /// parse a contiguous raw micro block (e.g. index block cache prewarm before compress).
+  int serialize_micro_header_into_block_buffer(ObMicroBlockDesc &micro_block_desc);
   int build_micro_block_desc_in_unittest(ObMicroBlockDesc &micro_block_desc); // only for unittest
   int32_t get_row_count_delta() const { return row_count_delta_; }
   int64_t get_micro_block_merge_verify_level() const

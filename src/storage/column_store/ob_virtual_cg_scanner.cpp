@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX STORAGE
 #include "ob_virtual_cg_scanner.h"
@@ -82,6 +75,8 @@ int ObVirtualCGScanner::switch_context(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
     LOG_WARN("ObVirtualCGScanner not inited", K(ret));
+  } else if (OB_FAIL(init_agg_group(iter_param, access_ctx))) {
+    LOG_WARN("Fail to init agg group", K(ret));
   } else {
     iter_param_ = &iter_param;
     access_ctx_ = &access_ctx;
@@ -201,7 +196,12 @@ int ObVirtualCGScanner::init_agg_group(const ObTableIterParam &iter_param, ObTab
   } else {
     ObAggregatedStore *agg_store = static_cast<ObAggregatedStore *>(access_ctx.block_row_store_);
     ObCGAggCells *agg_cells = nullptr;
-    agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    if (nullptr == agg_group_) {
+      agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    } else {
+      agg_cells = static_cast<ObCGAggCells *>(agg_group_);
+      agg_cells->reuse();
+    }
     if (OB_ISNULL(agg_cells)) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("Failed to alloc memory", K(ret));
@@ -326,7 +326,12 @@ int ObDefaultCGScanner::init_agg_group(const ObTableIterParam &iter_param, ObTab
   } else {
     ObAggregatedStore *agg_store = static_cast<ObAggregatedStore *>(access_ctx.block_row_store_);
     ObCGAggCells *agg_cells = nullptr;
-    agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    if (nullptr == agg_group_) {
+      agg_cells = OB_NEWx(ObCGAggCells, access_ctx.stmt_allocator_);
+    } else {
+      agg_cells = static_cast<ObCGAggCells *>(agg_group_);
+      agg_cells->reuse();
+    }
     if (OB_ISNULL(agg_cells)) {
       ret = common::OB_ALLOCATE_MEMORY_FAILED;
       STORAGE_LOG(WARN, "failed to alloc mermory", K(ret));
@@ -433,6 +438,8 @@ int ObDefaultCGScanner::switch_context(
     LOG_WARN("unexpected state, agg group is null", K(ret), K(iter_param));
   } else if (OB_FAIL(wrapper.get_merge_row_cnt(iter_param, total_row_count_))) {
     STORAGE_LOG(WARN, "fail to get ddl merge row cnt", K(ret), K(iter_param), K(total_row_count_), K(wrapper));
+  } else if (OB_FAIL(init_agg_group(iter_param, access_ctx))) {
+    LOG_WARN("Fail to init agg group", K(ret));
   } else {
     query_range_valid_row_count_ = 0;
     iter_param_ = &iter_param;
@@ -560,9 +567,9 @@ int ObDefaultCGScanner::do_filter(sql::ObPushdownFilterExecutor *filter, const s
   if (filter->is_filter_node()) {
     if (filter->is_filter_black_node()) {
       sql::ObPhysicalFilterExecutor *black_filter = static_cast<sql::ObPhysicalFilterExecutor *>(filter);
-      sql::ObPushdownOperator &pushdown_op = black_filter->get_op();
-      if (pushdown_op.enable_rich_format_ &&
-          OB_FAIL(storage::init_exprs_uniform_header(black_filter->get_cg_col_exprs(), pushdown_op.get_eval_ctx(), 1))) {
+      sql::ObPushdownOperator *pushdown_op = black_filter->get_op();
+      if (pushdown_op->enable_rich_format_ &&
+          OB_FAIL(storage::init_exprs_uniform_header(black_filter->get_cg_col_exprs(), pushdown_op->get_eval_ctx(), 1))) {
         LOG_WARN("Failed to init exprs vector header", K(ret));
       } else if (OB_FAIL(black_filter->filter(default_row_.storage_datums_, filter->get_col_count(), skip_bit, filtered))) {
         LOG_WARN("Failed to filter row with black filter", K(ret), K(default_row_), KPC(black_filter));
@@ -655,6 +662,21 @@ int ObDefaultCGGroupByScanner::init(
     output_exprs_ = iter_param.output_exprs_;
     group_by_cell_ = (static_cast<ObVectorStore*>(access_ctx.block_row_store_))->get_group_by_cell();
     set_cg_idx(iter_param.cg_idx_);
+  }
+  return ret;
+}
+
+int ObDefaultCGGroupByScanner::switch_context(
+    const ObTableIterParam &iter_param,
+    ObTableAccessContext &access_ctx,
+    ObSSTableWrapper &wrapper)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ObDefaultCGScanner::switch_context(iter_param, access_ctx, wrapper))) {
+    LOG_WARN("Fail to switch context for cg row scanner", K(ret));
+  } else {
+    // point to valid group by cell in block row store, can not ignore this assignment
+    group_by_cell_ = (static_cast<ObVectorStore*>(access_ctx.block_row_store_))->get_group_by_cell();
   }
   return ret;
 }

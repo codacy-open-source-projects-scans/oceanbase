@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_simple_cluster_test_base.h"
@@ -28,7 +21,7 @@ int set_trace_id(char *buf)
 }
 
 
-void init_log_and_gtest(int argc, char **argv)
+void init_log_and_gtest(int argc, char **argv, const bool delete_log_files)
 {
   if (argc < 1) {
     abort();
@@ -42,12 +35,14 @@ void init_log_and_gtest(int argc, char **argv)
   std::string app_gtest_log_name = app_name + "_gtest.log";
   std::string app_trace_log_name = app_name + "_trace.log";
 
-  system(("rm -rf " + app_log_name + "*").c_str());
-  system(("rm -rf " + app_rs_log_name + "*").c_str());
-  system(("rm -rf " + app_ele_log_name + "*").c_str());
-  system(("rm -rf " + app_gtest_log_name + "*").c_str());
-  system(("rm -rf " + app_trace_log_name + "*").c_str());
-  system(("rm -rf " + app_name + "_*").c_str());
+  if (delete_log_files) {
+    system(("rm -rf " + app_log_name + "*").c_str());
+    system(("rm -rf " + app_rs_log_name + "*").c_str());
+    system(("rm -rf " + app_ele_log_name + "*").c_str());
+    system(("rm -rf " + app_gtest_log_name + "*").c_str());
+    system(("rm -rf " + app_trace_log_name + "*").c_str());
+    system(("rm -rf " + app_name + "_*").c_str());
+  }
 
   init_gtest_output(app_gtest_log_name);
   OB_LOGGER.set_file_name(app_log_name.c_str(), true, false, app_rs_log_name.c_str(), app_ele_log_name.c_str(), app_trace_log_name.c_str());
@@ -154,7 +149,7 @@ int ObSimpleClusterTestBase::start()
   OB_LOGGER.set_enable_log_limit(false);
   oceanbase::palf::election::GLOBAL_INIT_ELECTION_MODULE();
   oceanbase::palf::election::INIT_TS = 1;
-  oceanbase::palf::election::MAX_TST = 100 * 1000;
+  oceanbase::palf::election::MAX_TST = 1000 * 1000; // 1s, align with production default
   GCONF.enable_perf_event = false;
   GCONF.enable_sql_audit = true;
   GCONF.enable_record_trace_log = false;

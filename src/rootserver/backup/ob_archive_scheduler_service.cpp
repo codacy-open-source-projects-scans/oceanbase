@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -390,7 +383,7 @@ void ObArchiveSchedulerService::set_checkpoint_interval_(const int64_t interval_
     } else if (max_idle_us > MAX_IDLE_INTERVAL_US) {
       idle_time_us = min(MAX_IDLE_INTERVAL_US, max(lag_target / 2, MIN_IDLE_INTERVAL_US));
     } else {
-      idle_time_us = max_idle_us;
+      idle_time_us = min(max_idle_us, max(MIN_IDLE_INTERVAL_US, lag_target / 2));
     }
   }
 
@@ -430,8 +423,6 @@ int ObArchiveSchedulerService::open_archive_mode(const uint64_t tenant_id, const
     } else {
       if (OB_FAIL(open_tenant_archive_mode_(archive_tenant_ids))) {
         LOG_WARN("failed to open archive mode for indicated tenants", K(ret), K(archive_tenant_ids));
-      } else if (1 == archive_tenant_ids.count()) {
-        notify_start_archive_(archive_tenant_ids.at(0));
       }
     }
   } else {
@@ -441,8 +432,6 @@ int ObArchiveSchedulerService::open_archive_mode(const uint64_t tenant_id, const
       LOG_WARN("normal tenant can only open archive mode for itself.", K(ret), K(tenant_id), K(archive_tenant_ids));
     } else if (OB_FAIL(open_tenant_archive_mode_(tenant_id))) {
       LOG_WARN("failed to open archive mode", K(ret), K(tenant_id));
-    } else {
-      notify_start_archive_(tenant_id);
     }
   }
 
@@ -479,6 +468,7 @@ int ObArchiveSchedulerService::open_tenant_archive_mode_(
 int ObArchiveSchedulerService::open_tenant_archive_mode_(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   ObArchiveHandler tenant_scheduler;
   bool is_no_logging = false;
   if (OB_FAIL(ObDDLUtil::get_no_logging_param(tenant_id, is_no_logging))) {
@@ -493,6 +483,8 @@ int ObArchiveSchedulerService::open_tenant_archive_mode_(const uint64_t tenant_i
     LOG_WARN("failed to init tenant archive scheduler", K(ret), K(tenant_id));
   } else if (OB_FAIL(tenant_scheduler.open_archive_mode())) {
     LOG_WARN("failed to open archive mode", K(ret), K(tenant_id));
+  } else if (OB_TMP_FAIL(notify_start_archive_(tenant_id))) {
+    LOG_WARN("fail to notify start archive", K(tmp_ret), K(tenant_id));
   }
   return ret;
 }
@@ -519,8 +511,6 @@ int ObArchiveSchedulerService::close_archive_mode(
     } else {
       if (OB_FAIL(close_tenant_archive_mode_(archive_tenant_ids))) {
         LOG_WARN("failed to close archive mode for indicated tenants", K(ret), K(archive_tenant_ids));
-      } else if (1 == archive_tenant_ids.count()) {
-        notify_start_archive_(archive_tenant_ids.at(0));
       }
     }
   } else {
@@ -530,8 +520,6 @@ int ObArchiveSchedulerService::close_archive_mode(
       LOG_WARN("normal tenant can only close archive mode for itself.", K(ret), K(tenant_id), K(archive_tenant_ids));
     } else if (OB_FAIL(close_tenant_archive_mode_(tenant_id))) {
       LOG_WARN("failed to close archive mode", K(ret), K(tenant_id));
-    } else {
-      notify_start_archive_(tenant_id);
     }
   }
 
@@ -554,16 +542,19 @@ int ObArchiveSchedulerService::close_tenant_archive_mode_(const common::ObIArray
 int ObArchiveSchedulerService::close_tenant_archive_mode_(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
+  int tmp_ret = OB_SUCCESS;
   ObArchiveHandler tenant_scheduler;
   if (OB_FAIL(tenant_scheduler.init(tenant_id, schema_service_, *rpc_proxy_, *sql_proxy_))) {
     LOG_WARN("failed to init tenant archive scheduler", K(ret), K(tenant_id));
   } else if (OB_FAIL(tenant_scheduler.close_archive_mode())) {
     LOG_WARN("failed to close archive mode", K(ret), K(tenant_id));
+  } else if (OB_TMP_FAIL(notify_start_archive_(tenant_id))) {
+    LOG_WARN("fail to notify start archive", K(tmp_ret), K(tenant_id));
   }
   return ret;
 }
 
-void ObArchiveSchedulerService::notify_start_archive_(const uint64_t tenant_id)
+int ObArchiveSchedulerService::notify_start_archive_(const uint64_t tenant_id)
 {
   int ret = OB_SUCCESS;
   common::ObAddr leader_addr;
@@ -579,4 +570,5 @@ void ObArchiveSchedulerService::notify_start_archive_(const uint64_t tenant_id)
   } else if (OB_FAIL(GCTX.srv_rpc_proxy_->to(leader_addr).by(tenant_id).notify_start_archive(arg))) {
     LOG_WARN("failed to notify tenant archive scheduler service", KR(ret), K(leader_addr), K(tenant_id), K(arg));
   }
+  return ret;
 }

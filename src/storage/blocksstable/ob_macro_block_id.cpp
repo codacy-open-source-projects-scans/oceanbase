@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -23,6 +16,10 @@ namespace oceanbase
 using namespace common;
 namespace blocksstable
 {
+
+const uint64_t MacroBlockId::MACRO_BLOCK_ID_VERSION_V1;
+const uint64_t MacroBlockId::MACRO_BLOCK_ID_VERSION_V2;
+
 MacroBlockId::MacroBlockId()
   : first_id_(0),
     second_id_(INT64_MAX),
@@ -92,7 +89,9 @@ bool MacroBlockId::is_valid() const
   bool is_valid = true;
 
   if (id_mode_ == (uint64_t)ObMacroBlockIdMode::ID_MODE_LOCAL) {
-    is_valid &= MACRO_BLOCK_ID_VERSION_V2 == version_ && id_mode_ < (uint64_t)ObMacroBlockIdMode::ID_MODE_MAX;
+    is_valid &= (MACRO_BLOCK_ID_VERSION_V2 == version_
+              || (MACRO_BLOCK_ID_VERSION_V1 == version_ && 0 == fourth_id_));
+    is_valid &= id_mode_ < (uint64_t)ObMacroBlockIdMode::ID_MODE_MAX;
     is_valid &= second_id_ >= AUTONOMIC_BLOCK_INDEX && second_id_ < INT64_MAX && third_id_ >= 0;
   } else if (id_mode_ == (uint64_t)ObMacroBlockIdMode::ID_MODE_BACKUP) {
     // BACKUP_MODE use BACKUP_MACRO_BLOCK_ID_VERSION
@@ -492,7 +491,7 @@ DEFINE_SERIALIZE(MacroBlockId)
   if (NULL == buf || buf_len <= 0 || (buf_len - new_pos) < ser_len) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid arguments.", K(ret), KP(buf), K(buf_len), K(new_pos), K(ser_len));
-  } else if (OB_UNLIKELY(!is_valid() || version_ != MACRO_BLOCK_ID_VERSION_V2)) { // serialize must use new version
+  } else if (OB_UNLIKELY(!is_valid())) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("invalid macro block id.", K(ret), K(*this));
   } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, first_id_))) {
@@ -501,7 +500,8 @@ DEFINE_SERIALIZE(MacroBlockId)
     LOG_WARN("serialize second id failed.", K(ret), K(new_pos), K(buf_len), K(ser_len), K(*this));
   } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, third_id_))) {
     LOG_WARN("serialize third id failed.", K(ret), K(new_pos), K(buf_len), K(ser_len), K(*this));
-  } else if (OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, fourth_id_))) {
+  } else if (version_ != MacroBlockId::MACRO_BLOCK_ID_VERSION_V1
+          && OB_FAIL(serialization::encode_i64(buf, buf_len, new_pos, fourth_id_))) {
     LOG_WARN("serialize forth id failed.", K(ret), K(new_pos), K(buf_len), K(ser_len), K(*this));
   } else {
     pos = new_pos;
@@ -523,6 +523,8 @@ DEFINE_DESERIALIZE(MacroBlockId)
   } else if (OB_FAIL(serialization::decode_i64(buf, data_len, new_pos, &third_id_))) {
     LOG_WARN("decode third_id_ failed.", K(ret), K(new_pos), K(data_len), K(*this));
   } else if (version_ == MACRO_BLOCK_ID_VERSION_V1) {
+    // In-memory MacroBlockId always uses V2; V1 exists only on persisted bytes for backward compatibility
+    // (three int64s on wire, no fourth_id).
     version_ = MACRO_BLOCK_ID_VERSION_V2;
     fourth_id_ = 0;
   } else if (version_ == MACRO_BLOCK_ID_VERSION_V2) {
@@ -547,7 +549,9 @@ DEFINE_GET_SERIALIZE_SIZE(MacroBlockId)
   len += serialization::encoded_length_i64(first_id_);
   len += serialization::encoded_length_i64(second_id_);
   len += serialization::encoded_length_i64(third_id_);
-  len += serialization::encoded_length_i64(fourth_id_);
+  if (MacroBlockId::MACRO_BLOCK_ID_VERSION_V1 != version_) {
+    len += serialization::encoded_length_i64(fourth_id_);
+  }
   return len;
 }
 

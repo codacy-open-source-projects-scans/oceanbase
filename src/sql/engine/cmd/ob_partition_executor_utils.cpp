@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -131,7 +124,7 @@ int ObPartitionExecutorUtils::calc_values_exprs(ObExecContext &ctx,
                                      stmt.get_part_values_exprs(), is_subpart))) {
         LOG_WARN("failed to set list part rows", K(ret));
       }
-    } else if (table_schema.is_range_part()) {
+    } else if (table_schema.is_range_or_random_part()) {
       if (OB_FAIL(set_range_part_high_bound(ctx, stmt_type, table_schema, stmt, is_subpart))) {
         LOG_WARN("failed to set range part high bound", K(ret));
       } else if (OB_FAIL(check_increasing_range_value(table_schema.get_part_array(),
@@ -512,7 +505,7 @@ int ObPartitionExecutorUtils::calc_values_exprs(
       if (OB_FAIL(cast_list_expr_to_obj(ctx, stmt, is_subpart))) {
         LOG_WARN("cast expr to obj fail", K(ret));
       }
-    } else if ((!is_subpart && tablegroup_schema.is_range_part()) ||
+    } else if ((!is_subpart && tablegroup_schema.is_range_or_random_part()) ||
       (is_subpart && tablegroup_schema.is_range_subpart())) {
       ObSEArray<ObObj, OB_DEFAULT_ARRAY_SIZE> range_partition_obj;
       if (OB_FAIL(cast_range_expr_to_obj(ctx, stmt, is_subpart, range_partition_obj))) {
@@ -523,7 +516,7 @@ int ObPartitionExecutorUtils::calc_values_exprs(
         ObSubPartition **subpart_array = tablegroup_schema.get_def_subpart_array();
         if (is_subpart && tablegroup_schema.is_range_subpart()) {
           ret = check_increasing_range_value(subpart_array, part_num, stmt::T_CREATE_TABLE);
-        } else if (!is_subpart && tablegroup_schema.is_range_part()) {
+        } else if (!is_subpart && tablegroup_schema.is_range_or_random_part()) {
           ret = check_increasing_range_value(part_array, part_num, stmt::T_CREATE_TABLE);
         }
         if (OB_FAIL(ret)) {

@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
 
 #include "ob_granule_util.h"
+#include "sql/ob_sql_utils.h"
 #include "sql/engine/px/ob_px_sqc_handler.h"
 #include "sql/engine/px/ob_granule_pump.h"
 #include "src/sql/engine/px/ob_dfo.h"
@@ -677,7 +671,13 @@ int ObGranuleUtil::split_granule_for_external_table(ObGranulePumpArgs &args,
                    external_file_format.format_type_) {
       LOG_TRACE("odps external table granule switch", K(ret),
                 K(external_table_files.count()), K(external_table_files));
-      if (!GCONF._use_odps_jni_connector) {
+      bool use_odps_jni_connector = true;
+      int8_t unused_mode = 0;
+      if (OB_FAIL(ObSQLUtils::parse_odps_jni_params_from_format_str(
+              tsc->tsc_ctdef_.scan_ctdef_.external_file_format_str_.str_,
+              use_odps_jni_connector, unused_mode))) {
+        LOG_WARN("failed to parse odps jni params from format str", K(ret));
+      } else if (!use_odps_jni_connector) {
 #if defined(OB_BUILD_CPP_ODPS)
         if (OB_FAIL(
                 split_granule_for_odps_by_line_tunnel_partition_for_range_prepare(

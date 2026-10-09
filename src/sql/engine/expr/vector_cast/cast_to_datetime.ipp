@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #include "sql/engine/expr/vector_cast/vector_cast.h"
 #include "sql/engine/expr/ob_datum_cast.h"
@@ -596,6 +589,9 @@ struct ToDatetimeCastImpl
                 }
                 if (CAST_FAIL(ObTimeConverter::str_to_ob_time_with_date(in_val, ob_time_, NULL, date_sql_mode_, cvrt_ctx_.need_truncate_, digits_))) {
                   SQL_LOG(WARN, "failed to convert string to datetime", K(ret));
+                } else if (OB_SUCCESS != warning) {
+                  // str_to_ob_time_with_date failed but CAST_FAIL converted error to warning,
+                  // ob_time_ is invalid, skip ob_time_to_datetime, out_val stays 0
                 } else if (CM_IS_ERROR_ON_SCALE_OVER(expr.extra_)
                           &&  (out_val == ObTimeConverter::ZERO_DATE
                               || out_val == ObTimeConverter::ZERO_DATETIME)) {

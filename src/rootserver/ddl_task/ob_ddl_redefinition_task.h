@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_DDL_REDEFINITION_TASK_H
@@ -136,7 +129,7 @@ public:
     has_synced_stats_info_(false), update_autoinc_job_ret_code_(INT64_MAX), update_autoinc_job_time_(0),
     check_table_empty_job_ret_code_(INT64_MAX), check_table_empty_job_time_(0),
     is_sstable_complete_task_submitted_(false), sstable_complete_request_time_(0), replica_builder_(),
-    check_dag_exit_tablets_map_(), check_dag_exit_retry_cnt_(0)
+    check_dag_exit_tablets_map_(), check_dag_exit_retry_cnt_(0), direct_load_need_sync_stats_info_(false)
      {}
   virtual ~ObDDLRedefinitionTask() {}
   virtual int process() = 0;
@@ -181,6 +174,7 @@ protected:
   int add_constraint_ddl_task(const int64_t constraint_id);
   int add_fk_ddl_task(const int64_t fk_id);
   int sync_auto_increment_position();
+  int sync_identity_column_sequence_value();
   int modify_autoinc(const share::ObDDLTaskStatus next_task_status);
   int finish();
   int check_health();
@@ -310,6 +304,8 @@ protected:
   ObDDLReplicaBuildExecutor replica_builder_;
   common::hash::ObHashMap<common::ObTabletID, common::ObTabletID> check_dag_exit_tablets_map_; // for dag complement data ddl only.
   int64_t check_dag_exit_retry_cnt_;
+  // True when gather stats is disabled in direct load
+  bool direct_load_need_sync_stats_info_;
 };
 
 }  // end namespace rootserver

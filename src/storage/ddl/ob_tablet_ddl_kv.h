@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_DDL_OB_TABLET_DDL_KV_H_
@@ -350,9 +343,6 @@ public:
     int64_t &row_count) const;
 
   int64_t get_merge_slice_idx() const { return merge_slice_idx_; }
-  OB_INLINE int64_t get_column_group_cnt() const { return column_group_cnt_; }
-  OB_INLINE int64_t get_column_cnt() const { return full_column_cnt_; }
-  OB_INLINE ObCOSSTableBaseType get_co_base_type() const { return co_base_type_; }
 
   // for inc_ddl_kv only
   template<class _callback>
@@ -382,9 +372,6 @@ public:
                        K_(merge_slice_idx),
                        K_(seq_no),
                        K_(ddl_kv_type),
-                       K_(column_group_cnt),
-                       K_(full_column_cnt),
-                       K_(co_base_type),
                        K_(ddl_snapshot_version));
 
 private:
@@ -427,9 +414,6 @@ private:
   ObArray<common::ObArenaAllocator *> ddl_memtable_arena_allocators_;
   int64_t merge_slice_idx_; // record max slice idx can be merged, require all data begin from start_scn
   ObDDLKVType ddl_kv_type_;
-  int64_t column_group_cnt_;
-  int64_t full_column_cnt_;
-  ObCOSSTableBaseType co_base_type_;
 };
 
 template<class _callback>

@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file is for define of plugin vector index util
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE_COMPACTION
@@ -146,6 +138,7 @@ int ObCOMergeLogConsumer<CallbackImpl>::consume_all_merge_log(ObCOMergeLogIterat
   ObMergeLog curr_log;
   ObMergeLog compact_log;
   const blocksstable::ObDatumRow *row = nullptr;
+  const ObMergeVectorStore *vector_store = nullptr;
   while (OB_SUCC(ret)) {
     if (OB_UNLIKELY(!MERGE_SCHEDULER_PTR->could_major_merge_start())) {
       ret = OB_CANCELED;
@@ -163,7 +156,7 @@ int ObCOMergeLogConsumer<CallbackImpl>::consume_all_merge_log(ObCOMergeLogIterat
       ret = OB_SUCCESS;
       continue;
 #endif
-    } else if (OB_FAIL(iter.get_next_log(curr_log, row))) {
+    } else if (OB_FAIL(iter.get_next_log(curr_log, vector_store, row))) {
       if (OB_ITER_END != ret) {
         LOG_WARN("fail to get next log", K(ret));
       } else {
@@ -171,7 +164,7 @@ int ObCOMergeLogConsumer<CallbackImpl>::consume_all_merge_log(ObCOMergeLogIterat
         break;
       }
     } else if (compact_log.is_valid() && !curr_log.is_continuous(compact_log)) {
-      if (OB_FAIL(callback.consume(compact_log, row/*no used*/))) {
+      if (OB_FAIL(callback.consume(compact_log, vector_store, row/*no used*/))) {
         LOG_WARN("failed to consume compact merge log", K(ret), K(compact_log));
       } else {
         compact_log.reset();
@@ -181,12 +174,12 @@ int ObCOMergeLogConsumer<CallbackImpl>::consume_all_merge_log(ObCOMergeLogIterat
     if (OB_FAIL(ret)) {
     } else if (curr_log.is_range_mergelog()) {
       compact_log = curr_log;
-    } else if (OB_FAIL(callback.consume(curr_log, row))) {
+    } else if (OB_FAIL(callback.consume(curr_log, vector_store, row))) {
       LOG_WARN("failed to consume merge log", K(ret), K(curr_log), KPC(row));
     }
   }
   if (OB_FAIL(ret)) {
-  } else if (compact_log.is_valid() && OB_FAIL(callback.consume(compact_log, row/*no used*/))) {
+  } else if (compact_log.is_valid() && OB_FAIL(callback.consume(compact_log, vector_store, row/*no used*/))) {
     LOG_WARN("failed to consume merge log", K(ret), K(compact_log));
   } else if (OB_FAIL(iter.close())) {
     LOG_WARN("failed to close merge log iter", K(ret));
@@ -628,6 +621,7 @@ int ObCOMergeLogBufferReader::read_next_piece(ObCOMergeLogPieceHeader *&header)
 int ObCOMergeLogFileMgr::init(
     const common::ObIArray<ObStorageColumnGroupSchema> &cg_array,
     const int64_t file_block_size,
+    const bool has_all_column_group,
     const bool skip_base_cg)
 {
   int ret = OB_SUCCESS;
@@ -648,6 +642,7 @@ int ObCOMergeLogFileMgr::init(
   } else {
     ObCOMergeLogFile* objects = reinterpret_cast<ObCOMergeLogFile*>(
       static_cast<char*>(buf) + sizeof(ObCOMergeLogFile*) * row_file_count_);
+    // TODO(@DanLing) the tmp file is not worked yet, debug later
     for (int64_t i = 0; OB_SUCC(ret) && i < row_file_count_; ++i) {
       row_files_[i] = new (objects + i) ObCOMergeLogFile();
       if (skip_base_cg && row_file_count_ > 1 &&

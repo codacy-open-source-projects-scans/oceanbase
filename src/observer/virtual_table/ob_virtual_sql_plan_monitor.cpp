@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -42,6 +35,7 @@ ObVirtualSqlPlanMonitor::ObVirtualSqlPlanMonitor() :
     rt_start_idx_(INT64_MAX),
     rt_end_idx_(INT64_MIN),
     fetch_profile_(false),
+    raw_profile_as_lob_(false),
     enable_filter_pushdown_(false),
     cur_monitor_node_(nullptr)
 {
@@ -84,6 +78,7 @@ void ObVirtualSqlPlanMonitor::reset()
   fetch_profile_ = false;
   enable_filter_pushdown_ = false;
   cur_monitor_node_ = nullptr;
+  raw_profile_as_lob_ = false;
 }
 
 int ObVirtualSqlPlanMonitor::inner_open()
@@ -100,6 +95,19 @@ int ObVirtualSqlPlanMonitor::inner_open()
     if (column_id == RAW_PROFILE) {
       fetch_profile_ = true;
       break;
+    }
+  }
+
+  if (OB_SUCC(ret) && fetch_profile_) {
+    const ObColumnSchemaV2 *col_schema = NULL;
+    if (OB_ISNULL(table_schema_)) {
+      ret = OB_ERR_UNEXPECTED;
+      SERVER_LOG(WARN, "table_schema of __all_virtual_sql_plan_monitor is NULL", K(ret));
+    } else if (OB_ISNULL(col_schema = table_schema_->get_column_schema(RAW_PROFILE))) {
+      ret = OB_ERR_UNEXPECTED;
+      SERVER_LOG(WARN, "column schema of RAW_PROFILE is NULL", K(ret));
+    } else {
+      raw_profile_as_lob_ = is_lob_storage(col_schema->get_data_type());
     }
   }
 
@@ -933,6 +941,9 @@ int ObVirtualSqlPlanMonitor::convert_node_to_row(ObMonitorNode &node, ObNewRow *
       case RAW_PROFILE: {
         if (OB_ISNULL(node.raw_profile_)) {
           cells[cell_idx].set_null();
+        } else if (raw_profile_as_lob_) {
+          cells[cell_idx].set_lob_value(ObLongTextType, node.raw_profile_, node.raw_profile_len_);
+          cells[cell_idx].set_collation_type(CS_TYPE_BINARY);
         } else {
           cells[cell_idx].set_varchar(node.raw_profile_, node.raw_profile_len_);
           cells[cell_idx].set_collation_type(ObCharset::get_default_collation(

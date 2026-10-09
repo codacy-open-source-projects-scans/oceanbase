@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OPTIMIZER_UTIL_H
@@ -1168,11 +1161,18 @@ public:
                                                      ObRawExpr *&target_expr,
                                                      bool &is_match,
                                                      ObExprEqualCheckContext *equal_ctx,
-                                                     const bool skip_extract_real_dep_expr);
+                                                     const bool skip_extract_real_dep_expr,
+                                                     const bool need_diag = false);
   static int check_match_to_type(ObRawExpr *to_type_expr,
                                  ObRawExpr *candi_expr,
                                  bool &is_same,
                                  ObExprEqualCheckContext *equal_ctx);
+  static int check_gen_col_similar(const ObRawExpr *depend_expr,
+                                     const ObRawExpr *target_expr,
+                                     bool &is_similar);
+  static int try_log_func_index_gen_col_similar(ObRawExpr *depend_expr,
+                                                  ObRawExpr *target_expr,
+                                                  const bool need_diag = false);
 
   /**
    * This interface is specifically designed for query range, used to retrieve the column c1 that can extract the range from nvl(c1, 1) = 1.
@@ -1206,6 +1206,7 @@ public:
                                ObSQLSessionInfo *session_info,
                                const bool need_merge_type,
                                ObIArray<ObSelectStmt*> &child_querys,
+                               const bool aggregate_collation_for_comparison,
                                ObIArray<ObExprResType> &res_types);
 
   static int try_add_cast_to_set_child_list(ObIAllocator *allocator,
@@ -1527,6 +1528,8 @@ public:
 
   static int check_contain_part_id_columnref_expr(const ObRawExpr *expr, bool &contains);
 
+  static int check_contain_pl_composite_expr(const ObRawExpr *expr, bool &contains);
+
   static int allocate_group_id_expr(ObLogPlan *log_plan, ObRawExpr *&group_id_expr);
 
   static int allocate_identify_seq_expr(ObOptimizerContext &opt_ctx, ObRawExpr *&identify_seq_expr);
@@ -1766,6 +1769,8 @@ public:
 
   static int check_contains_assignment(const ObDMLStmt* stmt,
                                        bool &contains_assignment);
+
+  static bool is_branch_expr(const ObRawExpr *expr);
 private:
   //disallow construct
   ObOptimizerUtil();

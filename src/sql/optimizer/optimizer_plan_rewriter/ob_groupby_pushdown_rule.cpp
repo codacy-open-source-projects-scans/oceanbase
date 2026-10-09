@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -24,6 +17,7 @@
 #include "sql/optimizer/ob_logical_operator.h"
 #include "sql/optimizer/ob_log_operator_factory.h"
 #include "sql/optimizer/ob_optimizer_context.h"
+#include "lib/utility/ob_tracepoint.h"
 #include "sql/resolver/expr/ob_raw_expr.h"
 #include "lib/utility/ob_macro_utils.h"
 #include "sql/rewrite/ob_transform_utils.h"
@@ -79,10 +73,14 @@ int ObGroupByPushdownContext::assign(const ObGroupByPushdownContext &other)
     LOG_WARN("failed to assign aggr exprs", K(ret));
   } else if (OB_FAIL(groupby_exprs_.assign(other.groupby_exprs_))) {
     LOG_WARN("failed to assign groupby exprs", K(ret));
+  } else if (OB_FAIL(mask_aggr_infos_.assign(other.mask_aggr_infos_))) {
+    LOG_WARN("failed to assign mask aggr infos", K(ret));
   } else {
     need_count_ = other.need_count_;
     enable_reshuffle_ = other.enable_reshuffle_;
     enable_place_groupby_ = other.enable_place_groupby_;
+    benefit_from_reshuffle_ = other.benefit_from_reshuffle_;
+    in_broadcast_side_path_ = other.in_broadcast_side_path_;
   }
   return ret;
 }
@@ -768,7 +766,7 @@ int ObGroupByPushDownPlanRewriter::can_pushdown_groupby(ObLogGroupBy *groupby, b
   } else if (!stmt->is_select_stmt()) {
     can_push = false;
     OPT_TRACE("stmt is not select stmt, can not push");
-  } else if (groupby->has_rollup()) {
+  } else if (groupby->has_rollup() || groupby->get_grouping_set_info() != NULL) {
     can_push = false;
     OPT_TRACE("groupby has rollup, can not push");
   } else if (groupby->get_algo() == MERGE_AGGREGATE && groupby->get_group_by_exprs().count() != 0) {
@@ -777,11 +775,12 @@ int ObGroupByPushDownPlanRewriter::can_pushdown_groupby(ObLogGroupBy *groupby, b
   } else if (!groupby->is_distributed()) {
     can_push = false;
     OPT_TRACE("groupby is not distributed, can not push");
-  } else if (groupby->is_three_stage_aggr()) {
+  } else if (groupby->is_three_stage_aggr() || groupby->is_three_stage_expand_aggr()) {
     can_push = false;
     OPT_TRACE("groupby is three stage aggr, skip");
   } else {
     // 2. 收集聚合函数
+    bool is_valid_aggr = true;
     for (int64_t i = 0; OB_SUCC(ret) && i < groupby->get_aggr_funcs().count(); ++i) {
       ObRawExpr *raw_expr = groupby->get_aggr_funcs().at(i);
       ObAggFunRawExpr *aggr_expr = NULL;
@@ -794,11 +793,17 @@ int ObGroupByPushDownPlanRewriter::can_pushdown_groupby(ObLogGroupBy *groupby, b
       } else if (OB_FALSE_IT(aggr_expr = static_cast<ObAggFunRawExpr *>(raw_expr))) {
       } else if (OB_FAIL(aggr_items.push_back(aggr_expr))) {
         LOG_WARN("failed to push back aggr expr", K(ret));
+      } else if ((OB_E(EventTable::EN_PARTIAL_GROUP_BY_PUSHDOWN_CONTROLER) OB_SUCCESS) == OB_SUCCESS &&
+                 raw_expr->get_expr_type() != T_FUN_MIN && raw_expr->get_expr_type() != T_FUN_MAX) {
+        is_valid_aggr = false;
+        can_push = false;
+        OPT_TRACE("aggr type is not min/max, cannot push down partial groupby");
+        break;
       }
     }
     // 3. 检查是否满足 only_full_group_by
     bool is_only_full_group_by = false;
-    if (OB_FAIL(ret)) {
+    if (OB_FAIL(ret) || !is_valid_aggr) {
       // do nothing
     } else if (OB_FAIL(ObTransformUtils::check_stmt_is_only_full_group_by(
                         static_cast<const ObSelectStmt*>(stmt),
@@ -821,28 +826,6 @@ int ObGroupByPushDownPlanRewriter::can_pushdown_groupby(ObLogGroupBy *groupby, b
     } else if (has_lob) {
       can_push = false;
       OPT_TRACE("groupby exprs contains lob type, can not push");
-    }
-
-    // 5. 检查 filter / 聚合函数 里面有没有 onetime 表达式 （这是一个workaround）
-    for (int64_t i = 0; OB_SUCC(ret) && can_push && i < groupby->get_filter_exprs().count(); ++i) {
-      ObRawExpr *filter_expr = groupby->get_filter_exprs().at(i);
-      if (OB_ISNULL(filter_expr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null filter expr", K(ret));
-      } else if (filter_expr->has_flag(CNT_ONETIME)) {
-        can_push = false;
-        OPT_TRACE("filter expr contains onetime expr, can not push");
-      }
-    }
-    for (int64_t i = 0; OB_SUCC(ret) && can_push && i < groupby->get_aggr_funcs().count(); ++i) {
-      ObRawExpr *aggr_expr = groupby->get_aggr_funcs().at(i);
-      if (OB_ISNULL(aggr_expr)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null aggr expr", K(ret));
-      } else if (aggr_expr->has_flag(CNT_ONETIME)) {
-        can_push = false;
-        OPT_TRACE("aggr expr contains onetime expr, can not push");
-      }
     }
   }
 
@@ -915,10 +898,18 @@ int ObGroupByPushDownPlanRewriter::rewrite_groupby_node(ObLogGroupBy *groupby,
       }
       // 将改写发生后的替换关系存起来，后续有一个阶段会集中替换聚合表达式(ObLogPlan::perform_group_by_pushdown)
       for (int64_t i = 0; OB_SUCC(ret) && i < groupby->get_aggr_funcs().count(); ++i) {
-        if (OB_FAIL(groupby->get_plan()->
-                    add_overwrite_group_replaced_exprs(
-                      std::pair<ObRawExpr *, ObRawExpr *>(groupby->get_aggr_funcs().at(i),
-                                                          result->new_aggr_exprs_.at(i))))) {
+        bool need_cast = false;
+        if (OB_FAIL(ObTransformUtils::check_need_add_cast(opt_ctx_.get_expr_factory(),
+                                                          old_aggr_exprs.at(i)->get_result_type(),
+                                                          result->new_aggr_exprs_.at(i)->get_result_type(),
+                                                          opt_ctx_.get_session_info(),
+                                                          need_cast))) {
+          LOG_WARN("failed to check need add cast", K(ret));
+        } else if (OB_UNLIKELY(need_cast)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected result type", K(ret), KPC(old_aggr_exprs.at(i)), KPC(result->new_aggr_exprs_.at(i)));
+        } else if (OB_FAIL(groupby->get_plan()->add_overwrite_group_replaced_exprs(std::pair<ObRawExpr *, ObRawExpr *>(
+                   groupby->get_aggr_funcs().at(i), result->new_aggr_exprs_.at(i))))) {
           LOG_WARN("failed push back overwrite mapping expr pair");
         }
       }
@@ -988,6 +979,9 @@ int ObGroupByPushDownPlanRewriter::compute_push_through_join_params(ObLogJoin *j
       bool disable_reshuffle = join->get_dist_method() != DistAlgo::DIST_BC2HOST_NONE
                               && join->get_dist_method() != DistAlgo::DIST_BROADCAST_NONE
                               && join->get_dist_method() != DistAlgo::DIST_NONE_BROADCAST;
+      bool left_is_broadcast_side = join->get_dist_method() == DistAlgo::DIST_BROADCAST_NONE
+                                    || join->get_dist_method() == DistAlgo::DIST_BC2HOST_NONE;
+      bool right_is_broadcast_side = join->get_dist_method() == DistAlgo::DIST_NONE_BROADCAST;
       left_ctx.reset();
       right_ctx.reset();
       can_push_to_left = try_push_to_left;
@@ -1000,6 +994,8 @@ int ObGroupByPushDownPlanRewriter::compute_push_through_join_params(ObLogJoin *j
       right_ctx.enable_place_groupby_ = true;
       left_ctx.benefit_from_reshuffle_ = true;
       right_ctx.benefit_from_reshuffle_ = true;
+      left_ctx.in_broadcast_side_path_ = left_is_broadcast_side;
+      right_ctx.in_broadcast_side_path_ = right_is_broadcast_side;
       if (OB_FAIL(distribute_groupby_exprs(ctx->groupby_exprs_,
                                            left_child,
                                            right_child,
@@ -1165,11 +1161,11 @@ int ObGroupByPushDownPlanRewriter::generate_mask_aggr_param_expr(ObItemType aggr
 }
 
 int ObGroupByPushDownPlanRewriter::distribute_aggr_expr(ObRawExpr *aggr_expr,
-                                                          ObLogicalOperator *left_child,
-                                                          ObLogicalOperator *right_child,
-                                                          ObGroupByPushdownContext &left_ctx,
-                                                          ObGroupByPushdownContext &right_ctx,
-                                                          bool &is_from_single_side)
+                                                        ObLogicalOperator *left_child,
+                                                        ObLogicalOperator *right_child,
+                                                        ObGroupByPushdownContext &left_ctx,
+                                                        ObGroupByPushdownContext &right_ctx,
+                                                        bool &is_from_single_side)
 {
   int ret = OB_SUCCESS;
   is_from_single_side = true;
@@ -1381,6 +1377,11 @@ int ObGroupByPushDownPlanRewriter::try_rewrite_as_mask_aggr_expr(ObRawExpr *aggr
         LOG_WARN("failed to add replaced expr", K(ret));
       } else if (OB_FAIL(copier.copy_on_replace(case_when_expr, rewrited_expr))) {
         LOG_WARN("failed to copy on replace", K(ret));
+      } else if (OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(opt_ctx_.get_expr_factory(),
+                                                                        aggr_expr,
+                                                                        rewrited_expr,
+                                                                        opt_ctx_.get_session_info()))) {
+        LOG_WARN("failed to add cast for replace if need", K(ret));
       } else if (OB_FAIL(result->new_aggr_exprs_.push_back(rewrited_expr))) {
         LOG_WARN("failed to push back new expr", K(ret));
       } else {
@@ -1645,6 +1646,11 @@ int ObGroupByPushDownPlanRewriter::rewrite_join_aggr_exprs(ObSEArray<ObRawExpr *
       if (OB_FAIL(ret)) {
       } else if (OB_FAIL(new_expr->formalize(opt_ctx_.get_session_info()))) {
         LOG_WARN("failed to formalize expr", K(ret));
+      } else if (OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(opt_ctx_.get_expr_factory(),
+                                                                        aggr_expr,
+                                                                        new_expr,
+                                                                        opt_ctx_.get_session_info()))) {
+        LOG_WARN("failed to add cast for rewritten aggr expr", K(ret));
       } else if (OB_FAIL(new_aggr_exprs.push_back(new_expr))) {
         LOG_WARN("failed to push back new expr", K(ret));
       }
@@ -1743,33 +1749,40 @@ int ObGroupByPushDownPlanRewriter::set_context_flags_for_exchange(ObLogExchange 
   if (OB_ISNULL(exchange) || OB_ISNULL(ctx)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null", K(ret), KP(exchange), KP(ctx));
-  } else if (exchange->is_slave_mapping()) {
-    ctx->enable_reshuffle_ = false;
-    ctx->enable_place_groupby_ = false;
-    OPT_TRACE("set context flags for exchange, is slave mapping, disable reshuffle and place groupby");
   } else {
-    OPT_TRACE("set context flags for exchange: ", exchange->get_name(), exchange->get_op_id());
-    switch (exchange->get_dist_method()) {
-      case ObPQDistributeMethod::HASH:
-      case ObPQDistributeMethod::PARTITION: {
-        ctx->enable_reshuffle_ = true;
-        ctx->enable_place_groupby_ = true;
-        ctx->benefit_from_reshuffle_ = false;
-        break;
-      }
-      case ObPQDistributeMethod::BC2HOST:
-      case ObPQDistributeMethod::BROADCAST:
-      case ObPQDistributeMethod::RANDOM: {
-        ctx->enable_reshuffle_ = true;
-        ctx->enable_place_groupby_ = true;
-        ctx->benefit_from_reshuffle_ = true;
-        break;
-      }
-      default: {
-        ctx->enable_reshuffle_ = false;
-        ctx->enable_place_groupby_ = false;
-        ctx->benefit_from_reshuffle_ = false;
-        break;
+    if (exchange->get_dist_method() == ObPQDistributeMethod::BC2HOST
+        || exchange->get_dist_method() == ObPQDistributeMethod::BROADCAST) {
+      // The pushdown path has crossed a broadcast/BC2HOST exchange, clear the marker.
+      ctx->in_broadcast_side_path_ = false;
+    }
+    if (exchange->is_slave_mapping()) {
+      ctx->enable_reshuffle_ = false;
+      ctx->enable_place_groupby_ = false;
+      OPT_TRACE("set context flags for exchange, is slave mapping, disable reshuffle and place groupby");
+    } else {
+      OPT_TRACE("set context flags for exchange: ", exchange->get_name(), exchange->get_op_id());
+      switch (exchange->get_dist_method()) {
+        case ObPQDistributeMethod::HASH:
+        case ObPQDistributeMethod::PARTITION: {
+          ctx->enable_reshuffle_ = true;
+          ctx->enable_place_groupby_ = true;
+          ctx->benefit_from_reshuffle_ = false;
+          break;
+        }
+        case ObPQDistributeMethod::BC2HOST:
+        case ObPQDistributeMethod::BROADCAST:
+        case ObPQDistributeMethod::RANDOM: {
+          ctx->enable_reshuffle_ = true;
+          ctx->enable_place_groupby_ = true;
+          ctx->benefit_from_reshuffle_ = true;
+          break;
+        }
+        default: {
+          ctx->enable_reshuffle_ = false;
+          ctx->enable_place_groupby_ = false;
+          ctx->benefit_from_reshuffle_ = false;
+          break;
+        }
       }
     }
   }
@@ -2004,6 +2017,7 @@ int ObGroupByPushDownPlanRewriter::get_aggr_item_for_new_groupby(ObLogicalOperat
     }
     for (int64_t i = 0; OB_SUCC(ret) && i < ctx->aggr_exprs_.count(); ++i) {
       ObAggFunRawExpr *new_aggr_expr = NULL;
+      ObRawExpr *new_expr = NULL;
       if (OB_ISNULL(ctx->aggr_exprs_.at(i))) {
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("unexpected null aggr expr", K(ret));
@@ -2025,8 +2039,14 @@ int ObGroupByPushDownPlanRewriter::get_aggr_item_for_new_groupby(ObLogicalOperat
         LOG_WARN("failed to formalize new aggr expr", K(ret));
       } else if (OB_FAIL(aggr_items.push_back(new_aggr_expr))) {
         LOG_WARN("failed to push back new aggr expr", K(ret));
+      } else if (FALSE_IT(new_expr = new_aggr_expr)) {
+      } else if (OB_FAIL(ObTransformUtils::add_cast_for_replace_if_need(opt_ctx_.get_expr_factory(),
+                                                                        ctx->aggr_exprs_.at(i),
+                                                                        new_expr,
+                                                                        opt_ctx_.get_session_info()))) {
+        LOG_WARN("failed to add cast for replace if need", K(ret));
       } else {
-        result->new_aggr_exprs_.at(i) = new_aggr_expr;
+        result->new_aggr_exprs_.at(i) = new_expr;
       }
     } // for end
     // build count(*) expr
@@ -2132,6 +2152,8 @@ int ObGroupByPushDownPlanRewriter::try_place_groupby(ObLogicalOperator *op,
   if (OB_FAIL(ret)) {
   } else if (!ctx->enable_place_groupby_) {
     OPT_TRACE("enable_place_groupby_ is false, do nothing");
+  } else if (ctx->in_broadcast_side_path_) {
+    OPT_TRACE("in broadcast side path, do nothing");
   } else if (op->get_parent()->get_type() == log_op_def::LOG_GROUP_BY) {
     OPT_TRACE("parent is groupby, do nothing");
     // do nothing

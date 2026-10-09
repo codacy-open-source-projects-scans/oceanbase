@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_RESOLVER_EXPR_OB_RAW_EXPR_PRINTER_H_
@@ -122,6 +115,8 @@ public:
   // stmt中会出现若干expr, 为了避免反复实例化，这里将expr作为do_print的参数
   int do_print(ObRawExpr *expr, ObStmtScope scope, bool only_column_namespace = false, bool print_cte = false);
   int pre_check_treat_opt(ObRawExpr *expr, bool &is_treat);
+  int print_quote_for_const(ObRawExpr* expr, ObStmtScope scope, bool &print_quote);
+  int print_alias_for_expr(ObRawExpr* expr, ObStmtScope scope, bool &print_alias);
 private:
   int print_bool_expr(ObRawExpr *expr);
   int print_select_expr(ObRawExpr *expr);
@@ -139,6 +134,7 @@ private:
   int print(ObUDFRawExpr *expr);
   int print(ObWinFunRawExpr *expr);
   int print(ObPseudoColumnRawExpr *expr);
+  int print(ObOpPseudoColumnRawExpr *expr);
   int print(ObMatchFunRawExpr *expr);
   int print(ObUnpivotRawExpr *expr);
 
@@ -161,6 +157,7 @@ private:
   int print_json_object(ObSysFunRawExpr *expr);
   int print_ora_json_arrayagg(ObAggFunRawExpr *expr);
   int print_ora_json_objectagg(ObAggFunRawExpr *expr);
+  int print_window_funnel(ObAggFunRawExpr *expr);
   int print_partition_exprs(ObWinFunRawExpr *expr);
   int print_order_items(ObWinFunRawExpr *expr);
   int print_window_clause(ObWinFunRawExpr *expr);

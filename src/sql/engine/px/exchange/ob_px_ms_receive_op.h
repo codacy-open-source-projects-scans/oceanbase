@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ENGINE_PX_EXCHANGE_OB_PX_MS_RECEIVE_OP_H_
@@ -249,7 +242,7 @@ private:
   int process_dump(const common::ObIArray<ObChunkDatumStore *> &full_dump_array,
                    const common::ObIArray<ObChunkDatumStore *> &part_dump_array);
 
-  OB_INLINE virtual int64_t get_channel_count() { return task_channels_.count(); }
+  OB_INLINE int64_t get_channel_count() { return task_channels_.count(); }
 private:
   int new_local_order_input(MergeSortInput *&out_msi);
   int get_all_rows_from_channels(

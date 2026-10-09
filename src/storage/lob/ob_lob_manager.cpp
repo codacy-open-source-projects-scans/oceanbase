@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -39,30 +32,30 @@ static int check_write_length(ObLobAccessParam& param, int64_t expected_len)
 const ObLobCommon ObLobManager::ZERO_LOB = ObLobCommon();
 
 // for only one lob meta in mysql mode, we can have no char len here
-static int is_store_char_len(ObLobAccessParam& param, int64_t store_chunk_size, int64_t add_len)
+static int is_store_char_len(ObLobAccessParam& param, int64_t store_chunk_size, int64_t new_len)
 {
   int ret = OB_SUCCESS;
   if (! lib::is_mysql_mode()) {
-    LOG_DEBUG("not mysql mode", K(add_len), K(store_chunk_size), K(param));
+    LOG_DEBUG("not mysql mode", K(new_len), K(store_chunk_size), K(param));
   } else if (! param.is_char()) {
-    LOG_DEBUG("not text", K(add_len), K(store_chunk_size), K(param));
-  } else if (store_chunk_size <= (param.byte_size_ + add_len)) {
-    LOG_DEBUG("not single", K(add_len), K(store_chunk_size), K(param));
+    LOG_DEBUG("not text", K(new_len), K(store_chunk_size), K(param));
+  } else if (store_chunk_size <= new_len) {
+    LOG_DEBUG("not single", K(new_len), K(store_chunk_size), K(param));
   } else if (param.tablet_id_.is_inner_tablet()) {
-    LOG_DEBUG("inner table skip", K(add_len), K(store_chunk_size), K(param));
+    LOG_DEBUG("inner table skip", K(new_len), K(store_chunk_size), K(param));
   } else {
     uint64_t tenant_id = param.tenant_id_;
     uint64_t data_version = 0;
     if (OB_FAIL(GET_MIN_DATA_VERSION(tenant_id, data_version))) {
       LOG_WARN("failed to get data version", K(ret), K(store_chunk_size), K(tenant_id));
     } else if (data_version < MOCK_DATA_VERSION_4_2_3_0) {
-      LOG_DEBUG("before 4.2.3", K(add_len), K(store_chunk_size), K(param));
+      LOG_DEBUG("before 4.2.3", K(new_len), K(store_chunk_size), K(param));
     } else if (data_version >= DATA_VERSION_4_3_0_0 && data_version < DATA_VERSION_4_3_2_0) {
-      LOG_DEBUG("before 4.3.2", K(add_len), K(store_chunk_size), K(param));
+      LOG_DEBUG("before 4.3.2", K(new_len), K(store_chunk_size), K(param));
     } else {
       // sinlge not need char_len after >= 4.3.2 or (>= 4.2.3 and < 4.3.0
       param.is_store_char_len_ = false;
-      LOG_DEBUG("not store char_len for single piece", K(add_len), K(store_chunk_size), K(param));
+      LOG_DEBUG("not store char_len for single piece", K(new_len), K(store_chunk_size), K(param));
     }
   }
   return ret;
@@ -888,7 +881,7 @@ int ObLobManager::check_need_out_row(
       if (OB_ISNULL(buf)) {
         ret = OB_ALLOCATE_MEMORY_FAILED;
         LOG_WARN("alloc buf failed.", K(ret));
-      } else if (OB_FAIL(is_store_char_len(param, param.get_schema_chunk_size(), add_len))) {
+      } else if (OB_FAIL(is_store_char_len(param, param.get_schema_chunk_size(), param.byte_size_ + add_len))) {
         LOG_WARN("cacl is_store_char_len failed.", K(ret), K(add_len), K(param));
       } else {
         MEMCPY(buf, param.lob_common_, sizeof(ObLobCommon));
@@ -934,7 +927,7 @@ int ObLobManager::check_need_out_row(
       param.is_store_char_len_ = has_char_len;
     } else if (OB_FAIL(param.get_store_chunk_size(store_chunk_size))) {
       LOG_WARN("get_store_chunk_size fail", K(ret), K(param));
-    } else if (OB_FAIL(is_store_char_len(param, store_chunk_size, add_len))) {
+    } else if (OB_FAIL(is_store_char_len(param, store_chunk_size, param.byte_size_ + add_len))) {
       LOG_WARN("cacl is_store_char_len failed.", K(ret), K(store_chunk_size), K(add_len), K(param));
     } else if (param.op_type_ != ObLobDataOutRowCtx::OpType::SQL) {
       if (! param.is_store_char_len_) {
@@ -2361,6 +2354,12 @@ int ObLobManager::prepare_char_len(ObLobAccessParam& param, ObLobDiskLocatorBuil
       LOG_WARN("init spilter fail", K(ret), K(src_data_locator));
     } else {
       char_len = spilter.char_pos();
+      // Fill ttl_column when lob_meta_list is generated, so ObLobSimplePersistInsertIter can use it directly
+      for (int64_t i = 0; OB_SUCC(ret) && i < task.lob_meta_list_.count(); ++i) {
+        if (OB_FAIL(param.fill_hidden_ttl_column(task.lob_meta_list_.at(i)))) {
+          LOG_WARN("fill hidden ttl column fail", K(ret), K(i));
+        }
+      }
     }
   }
 
@@ -2450,20 +2449,20 @@ int ObLobManager::prepare_seq_no(ObLobAccessParam& param, ObLobDiskLocatorBuilde
   return ret;
 }
 
-int ObLobManager::get_table_param(const ObTableParam *&table_param)
+int ObLobManager::get_table_param(ObTTLFilterColType ttl_type, const ObTableParam *&table_param)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(lob_ctx_.lob_meta_mngr_->get_table_param(table_param))) {
-    LOG_WARN("get table param fail", K(ret), K(table_param));
+  if (OB_FAIL(lob_ctx_.lob_meta_mngr_->get_table_param(ttl_type, table_param))) {
+    LOG_WARN("get table param fail", K(ret), K(ttl_type));
   }
   return ret;
 }
 
-int ObLobManager::get_table_dml_param(const ObTableDMLParam *&table_dml_param)
+int ObLobManager::get_table_dml_param(ObTTLFilterColType ttl_type, const ObTableDMLParam *&table_dml_param)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(lob_ctx_.lob_meta_mngr_->get_table_dml_param(table_dml_param))) {
-    LOG_WARN("get table dml param fail", K(ret), K(table_dml_param));
+  if (OB_FAIL(lob_ctx_.lob_meta_mngr_->get_table_dml_param(ttl_type, table_dml_param))) {
+    LOG_WARN("get table dml param fail", K(ret), K(ttl_type));
   }
   return ret;
 }

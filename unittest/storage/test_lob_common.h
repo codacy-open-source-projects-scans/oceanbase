@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define protected public
@@ -369,7 +362,7 @@ int TestLobCommon::build_lob_meta_table_scan_param(
   int64_t expire_time = ObTimeUtility::current_time() + TX_LOB_EXPIRE_TIME_US;
   const uint64_t table_id = TEST_LOB_META_TABLE_ID;
 
-  for (int i = 0; i < ObLobMetaUtil::LOB_META_COLUMN_CNT; i++) {
+  for (int i = 0; i < ObLobMetaUtil::LOB_META_WITHOUT_TTL_COLUMN_CNT; i++) {
     scan_param.column_ids_.push_back(OB_APP_MIN_COLUMN_ID + i);
   }
 

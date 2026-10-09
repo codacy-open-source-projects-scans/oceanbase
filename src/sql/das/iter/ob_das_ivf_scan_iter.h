@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBDEV_SRC_SQL_DAS_ITER_OB_DAS_IVF_SCAN_ITER_H_
@@ -25,11 +18,11 @@ namespace oceanbase
 using namespace common;
 namespace sql
 {
-#define IVF_GET_NEXT_ROWS_BEGIN_IMPL(iter, batch_size)                   \
+#define IVF_GET_NEXT_ROWS_BEGIN(iter)                                    \
   bool index_end = false;                                                \
   iter->clear_evaluated_flag();                                          \
   int64_t scan_row_cnt = 0;                                              \
-  int64_t batch_row_count = batch_size;                                  \
+  int64_t batch_row_count = ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE; \
   while (!index_end && OB_SUCC(ret)) {                                   \
     if (OB_FAIL(iter->get_next_rows(scan_row_cnt, batch_row_count))) {   \
       if (OB_ITER_END != ret) {                                          \
@@ -42,12 +35,6 @@ namespace sql
     } else if (scan_row_cnt > 0) {                                       \
       ret = OB_SUCCESS;                                                  \
     }
-
-#define IVF_GET_NEXT_ROWS_BEGIN(iter)                                    \
-  IVF_GET_NEXT_ROWS_BEGIN_IMPL(iter, ObVectorParamData::VI_PARAM_DATA_BATCH_SIZE)
-
-#define IVF_GET_NEXT_ROWS_BEGIN_WITH_BATCH(iter, batch_size)            \
-  IVF_GET_NEXT_ROWS_BEGIN_IMPL(iter, batch_size)
 
 #define IVF_GET_NEXT_ROWS_END(iter, scan_param, tablet_id)                             \
   }                                                                                    \
@@ -476,10 +463,12 @@ protected:
   }
   int get_main_rowkey_brute(ObIAllocator &allocator, const ObDASScanCtDef *cid_vec_ctdef, const int64_t rowkey_cnt,
                             ObRowkey &main_rowkey);
-  int get_main_rowkey(const ObDASScanCtDef *ctdef, ObRowkey &main_rowkey);
   template <typename T>
   int calc_vec_dis(T *a, T *b, int dim, float &dis, ObExprVectorDistance::ObVecDisType dis_type);
   int get_rowkey_brute_post(bool is_vectorized, IvfRowkeyHeap& nearest_rowkey_heap);
+  int do_brute_force_prefilter_rowkeys(bool is_vectorized,
+                                       float *search_vec,
+                                       ObExprVectorDistance::ObVecDisType raw_dis_type);
   uint64_t hash_val_for_rk(const common::ObRowkey& rk);
   int build_rowkey_hash_set(
     ObIvfPreFilter &prefilter,
@@ -508,7 +497,6 @@ protected:
   inline double get_default_selectivity_rate() const { return ObVecIdxExtraInfo::get_default_selectivity_rate(vec_index_param_.type_); }
   bool has_next_center(); // check if there are more centers available
   virtual void reuse_cid_ctx();
-  int64_t get_cid_vec_batch_count();
 
 protected:
   static const int64_t CENTROID_PRI_KEY_CNT = 1;

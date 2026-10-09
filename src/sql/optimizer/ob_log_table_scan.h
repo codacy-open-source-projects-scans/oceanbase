@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_LOG_TABLE_SCAN_H
@@ -271,13 +264,15 @@ struct ObVecIndexInfo
     vec_index_name_(),
     has_get_visible_column_(false),
     all_filters_can_be_picked_out_(false),
-    knn_filter_mode_(ObKnnFilterMode::INVALID_KNN_FILTER_MODE)
+    knn_filter_mode_(ObKnnFilterMode::INVALID_KNN_FILTER_MODE),
+    strategy_(ObVecIdxQueryStrategy::RECALL_FIRST),
+    pre_filtering_timeout_(-1)
   { }
   ~ObVecIndexInfo() {}
 
   TO_STRING_KV(K_(sort_key), KPC_(topk_limit_expr), KPC_(topk_offset_expr), KPC_(target_vec_column),
               KPC_(vec_id_column), K_(aux_table_column), K_(aux_table_id), K_(main_table_tid),
-              K_(vec_type), K_(vector_index_param), K_(query_param), K_(vec_index_name), K_(has_get_visible_column));
+              K_(vec_type), K_(vector_index_param), K_(query_param), K_(vec_index_name), K_(has_get_visible_column), K_(strategy), K_(pre_filtering_timeout));
   bool need_sort() const { return sort_key_.expr_ != nullptr; }
   inline void set_has_get_visible_column(bool value) { has_get_visible_column_ = value; }
   inline void set_vec_algorithm_type(ObVectorIndexAlgorithmType type) { vector_index_param_.type_ = type; }
@@ -364,6 +359,8 @@ struct ObVecIndexInfo
   bool all_filters_can_be_picked_out_;
   // hybrid search search options
   ObKnnFilterMode knn_filter_mode_;
+  ObVecIdxQueryStrategy strategy_;
+  int64_t pre_filtering_timeout_;
 };
 
 struct ObPushDownTopNInfo
@@ -471,7 +468,7 @@ public:
         match_tr_infos_(plan.get_allocator()),
         vec_iter_tr_infos_(plan.get_allocator()),
         merge_tr_infos_(plan.get_allocator()),
-        vector_index_info_(plan.get_allocator()),
+        vector_index_info_(nullptr),
         das_keep_ordering_(false),
         filter_monotonicity_(plan.get_allocator()),
         auto_split_filter_type_(OB_INVALID_ID),
@@ -493,7 +490,9 @@ public:
         aggr_param_mono_(plan.get_allocator()),
         is_gtt_temp_table_v2_(false),
         is_scan_resumable_(false),
-	      is_hybrid_search_(false)
+	      is_hybrid_search_(false),
+        hybrid_search_exprs_(plan.get_allocator()),
+        hybrid_search_scores_(plan.get_allocator())
   {
   }
 
@@ -1181,20 +1180,20 @@ public:
   }
   void set_identify_seq_expr(ObRawExpr *expr) { identify_seq_expr_ = expr; }
   inline bool can_batch_rescan() const { return NULL != access_path_ && access_path_->can_batch_rescan_; }
-  inline bool is_ivf_vec_scan() const {return vector_index_info_.is_ivf_vec_scan();}
-  inline bool is_ivf_pq_scan() const {return vector_index_info_.is_ivf_pq_scan();}
-  inline bool is_hnsw_vec_scan() const {return vector_index_info_.is_hnsw_vec_scan();}
+  inline bool is_ivf_vec_scan() const {return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_ivf_vec_scan();}
+  inline bool is_ivf_pq_scan() const {return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_ivf_pq_scan();}
+  inline bool is_hnsw_vec_scan() const {return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_hnsw_vec_scan();}
   inline bool is_primary_vec_idx_scan() const { return is_vec_idx_scan_pre_filter() && ref_table_id_ == index_table_id_; }
-  inline bool is_vec_index_table_id(const uint64_t tid) const { return vector_index_info_.is_vec_aux_table_id(tid); }
-  inline bool is_vec_idx_scan_pre_filter() const { return vector_index_info_.vec_index_pre_filter() || vector_index_info_.is_vec_adaptive_scan(); }
-  inline bool is_vec_idx_scan_post_filter() const { return is_index_scan() && vector_index_info_.vec_index_post_filter(); }
+  inline bool is_vec_index_table_id(const uint64_t tid) const { return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_vec_aux_table_id(tid); }
+  inline bool is_vec_idx_scan_pre_filter() const { return OB_NOT_NULL(vector_index_info_) && (vector_index_info_->vec_index_pre_filter() || vector_index_info_->is_vec_adaptive_scan()); }
+  inline bool is_vec_idx_scan_post_filter() const { return is_index_scan() && OB_NOT_NULL(vector_index_info_) && vector_index_info_->vec_index_post_filter(); }
   inline bool is_vec_idx_scan() const { return is_vec_idx_scan_pre_filter() || is_vec_idx_scan_post_filter(); }
-  inline bool is_vec_adaptive_scan() const { return vector_index_info_.is_vec_adaptive_scan(); }
-  inline bool is_ivf_adaptive_scan() const { return vector_index_info_.is_ivf_adaptive_scan(); }
-  inline bool is_ipivf_adaptive_scan() const { return vector_index_info_.is_ipivf_adaptive_scan(); }
-  inline bool is_spiv_vec_scan() const {return vector_index_info_.is_spiv_scan();}
-  inline ObVecIndexInfo &get_vector_index_info() { return vector_index_info_; }
-  inline const ObVecIndexInfo &get_vector_index_info() const { return vector_index_info_; }
+  inline bool is_vec_adaptive_scan() const { return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_vec_adaptive_scan(); }
+  inline bool is_ivf_adaptive_scan() const { return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_ivf_adaptive_scan(); }
+  inline bool is_ipivf_adaptive_scan() const { return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_ipivf_adaptive_scan(); }
+  inline bool is_spiv_vec_scan() const {return OB_NOT_NULL(vector_index_info_) && vector_index_info_->is_spiv_scan();}
+  inline ObVecIndexInfo *get_vector_index_info() { return vector_index_info_; }
+  inline const ObVecIndexInfo *get_vector_index_info() const { return vector_index_info_; }
   inline bool has_limit() const {
     return (push_down_top_n_info_.limit_count_expr_ != NULL ||
             push_down_top_n_info_.limit_offset_expr_ != NULL);
@@ -1208,6 +1207,9 @@ public:
 
   int check_das_need_keep_ordering();
   int check_das_need_scan_with_domain_id();
+  int alloc_vector_index_info_if_need();
+  // Prune domain_id plan when access columns do not contain any domain_id column (called after ALLOC_EXPR).
+  int prune_domain_id_plan_if_access_not_need();
 
   const ObIArray<ObRawFilterMonotonicity>& get_filter_monotonicity() const
   { return filter_monotonicity_; }
@@ -1361,24 +1363,16 @@ protected: // memeber variables
   const common::ObIArray<int64_t> *part_ids_;
   ObSqlArray<ObRawExpr *> range_conds_;
 
-  // for index merge, we need to prepare range conds and filters for each index scan, and we need
-  // to store full query filters for final check.
-  // for example, consider following query:
-  // create table t1(c1 int primary key, c2 int, c3 int, c4 int);
-  // create index c2 on t1(c2) local;
-  // create index c3 on t1(c3) local;
-  // create index c4 on t1(c4) local;
-  //     select /*+union_merge(t1 c2 c3 c4)*/ * from t1 where c1=1 or c2=1 or c4<1;
-  // when we choose index merge plan, range conds and filters need to be prepared, thus:
-  //  ---------------------------------------------------------
-  //  |  index table  |     range conds     |      filters    |
-  //  ---------------------------------------------------------
-  //  |      c2       |         NULL       |      c1 = 1      |
-  //  |      c3       |         NULL        |       NULL      |
-  //  |      c4       |        c4 < 1       |       NULL      |
-  //  ---------------------------------------------------------
-  // NOTE: only filters before index back can be pushed down to index scan.
-  // and full filters 'c1=1 or c2=1 or c4<1' will be used after lookup for final check.
+  // Current status of the index merge plan:
+  // 1. Index scans involved in index merge must be able to extract a query range,
+  //    which is recorded in @AccessPath::get_query_range_provider(). The range is NOT required to be precise.
+  // 2. Index scans involved in index merge cannot evaluate pushdown filters.
+  //    (Limited applicable scenarios, and some filters cannot be evaluated on index tables.)
+  // 3. All unevaluated filters caused by imprecise ranges or missing indexes, recorded in @get_filter_exprs(),
+  //    are evaluated uniformly in final table lookup.
+  // 4. The complete original filters, recorded in @full_filters_, are used in the vector index adaptive scan with index merge.
+  //
+  // @index_range_conds_ is just for explain plan now and @index_filters_ is always empty and unused.
   typedef ObSqlArray<ObRawExpr *> ExprArray;
   ObSqlArray<ExprArray, true> index_range_conds_;
   ObSqlArray<ExprArray, true> index_filters_;
@@ -1483,7 +1477,7 @@ protected: // memeber variables
   ObSqlArray<ObTextRetrievalInfo> match_tr_infos_;
   ObSqlArray<ObTextRetrievalInfo> vec_iter_tr_infos_;
   ObSqlArray<ObTextRetrievalInfo> merge_tr_infos_;
-  ObVecIndexInfo vector_index_info_;
+  ObVecIndexInfo *vector_index_info_;
 
   ObPxRFStaticInfo px_rf_info_;
   bool das_keep_ordering_;
@@ -1519,8 +1513,8 @@ protected: // memeber variables
   bool is_gtt_temp_table_v2_;
   bool is_scan_resumable_;
   bool is_hybrid_search_;
-  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> hybrid_search_exprs_;
-  common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> hybrid_search_scores_;
+  ObSqlArray<ObRawExpr*> hybrid_search_exprs_;
+  ObSqlArray<ObRawExpr*> hybrid_search_scores_;
 
   // disallow copy and assign
   DISALLOW_COPY_AND_ASSIGN(ObLogTableScan);

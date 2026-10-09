@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_SYSTEM_VARIABLE_OB_SYSTEM_VARIABLE_ALIAS_
@@ -860,10 +853,13 @@ namespace share
   static const char* const OB_SV__OPTIMIZER_MAX_PERMUTATIONS = "_optimizer_max_permutations";
   static const char* const OB_SV__IDP_STEP_REDUCTION_THRESHOLD = "_idp_step_reduction_threshold";
   static const char* const OB_SV_ENABLE_PL_ASYNC_COMMIT = "ob_enable_pl_async_commit";
+  static const char* const OB_SV_JSON_FLOAT_FULL_PRECISION = "json_float_full_precision";
   static const char* const OB_SV_CACHING_SHA2_PASSWORD_DIGEST_ROUNDS = "caching_sha2_password_digest_rounds";
   static const char* const OB_SV_AP_QUERY_ROUTE_POLICY = "ap_query_route_policy";
   static const char* const OB_SV_AP_QUERY_COST_THRESHOLD = "ap_query_cost_threshold";
   static const char* const OB_SV_AP_QUERY_REPLICA_FALLBACK = "ap_query_replica_fallback";
+  static const char* const OB_SV_UDF_COST_FACTOR = "ob_udf_cost_factor";
+  static const char* const OB_SV_UDF_SELECTIVITY = "ob_udf_selectivity";
 
 }
 }

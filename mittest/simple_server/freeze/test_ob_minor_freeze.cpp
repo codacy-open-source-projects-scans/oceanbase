@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include <gtest/gtest.h>
@@ -94,8 +87,7 @@ int ObPartTransCtx::submit_redo_log_for_freeze(const uint32_t freeze_clock)
   int ret = OB_SUCCESS;
   int64_t sleep_time = rand() % SLEEP_TIME;
   ob_usleep(sleep_time);
-  // Use REDO_FLUSH_X to match production path; submit_redo_log_for_freeze_ acquires CTX internally
-  CtxLockGuard guard(lock_, CtxLockGuard::MODE::REDO_FLUSH_X);
+  CtxLockGuard guard(lock_);
   bool submitted = false;
   ret = submit_redo_log_for_freeze_(submitted, freeze_clock);
   if (sleep_time > 50 && sleep_time < 90) {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -1160,6 +1153,7 @@ int ObMPStmtExecute::execute_response(ObSQLSessionInfo &session,
       ret = tmp_ret;
     }
   } else if (FALSE_IT(ctx_.enable_sql_resource_manage_ = true)) {
+  } else if (FALSE_IT(ctx_.enable_database_isolation_mode_ = session.is_enable_database_isolation_mode())) {
   } else if (OB_FAIL(gctx_.sql_engine_->stmt_execute(stmt_id_,
                                                       stmt_type_,
                                                       *params_,
@@ -1381,7 +1375,7 @@ int ObMPStmtExecute::do_process(ObSQLSessionInfo &session,
       sqlstat_record.set_is_route_miss(result.get_session().partition_hit().get_bool()? 0 : 1);
       sqlstat_record.set_is_plan_cache_hit(ctx_.plan_cache_hit_);
       ObString sql_id = ObString::make_string(ctx_.sql_id_);
-      sqlstat_record.set_is_muti_query(session.get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+      sqlstat_record.set_is_muti_query(ctx_.multi_stmt_item_.is_part_of_multi_stmt());
       sqlstat_record.set_is_muti_query_batch(ctx_.multi_stmt_item_.is_batched_multi_stmt());
       if (OB_NOT_NULL(result.get_physical_plan())) {
         sqlstat_record.set_is_full_table_scan(result.get_physical_plan()->contain_table_scan());
@@ -1494,7 +1488,7 @@ int ObMPStmtExecute::do_process(ObSQLSessionInfo &session,
     }
 
     // reset thread waring buffer in sync mode
-    if (!async_resp_used) {
+    if (!async_resp_used && !is_arraybinding_) {
       clear_wb_content(session);
     }
 
@@ -1838,18 +1832,8 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
         LOG_WARN("fail to do process", K(ret), K(ctx_.cur_sql_));
       }
 
-      /* Function setup_user_resource_group cause performance regression.
-          No need to setup group_id here,
-          Only setup group_id in MPConnect
-      */
       if (is_conn_valid()) {
-        // int bak_ret = ret;
-        // // Call setup_user_resource_group no matter OB_SUCC or OB_FAIL
-        // if (OB_FAIL(setup_user_resource_group(*conn, sess->get_effective_tenant_id(), sess))) {
-        //   LOG_WARN("fail setup user resource group", K(ret));
-        // }
         set_request_expect_group_id(&session);
-        // ret = OB_SUCC(bak_ret) ? ret : bak_ret;
       }
     }
     ObThreadLogLevelUtils::clear();
@@ -1864,12 +1848,12 @@ int ObMPStmtExecute::process_execute_stmt(const ObMultiStmtItem &multi_stmt_item
     }
   }
 
-  //对于tracelog的处理, 不影响正常逻辑, 错误码无须赋值给ret, 清空WARNING BUFFER
-  do_after_process(session, async_resp_used);
-
   if (OB_FAIL(ret) && need_response_error && is_conn_valid()) {
     send_error_packet(ret, NULL, (void *)(ctx_.get_reroute_info()));
   }
+
+  //对于tracelog的处理, 不影响正常逻辑, 错误码无须赋值给ret, 清空WARNING BUFFER
+  do_after_process(session, async_resp_used);
 
   return ret;
 }
@@ -1954,6 +1938,22 @@ int ObMPStmtExecute::process()
     } else if (!is_prexecute() && FALSE_IT(session.set_txn_free_route(pkt.txn_free_route()))) {
     } else if (!is_prexecute() && OB_FAIL(process_extra_info(session, pkt, need_response_error))) {
       LOG_WARN("fail get process extra info", K(ret));
+    } else if (!is_prexecute() && OB_FAIL(check_proxy_db_resource_group(session))) {
+      if (OB_NEED_SWITCH_CONSUMER_GROUP == ret && THIS_WORKER.can_retry()) {
+        THIS_WORKER.set_need_retry();
+        retry_ctrl_.set_packet_retry(ret);
+        session.get_retry_info_for_update().set_last_query_retry_err(ret);
+        session.get_retry_info_for_update().inc_retry_cnt();
+        need_response_error = false;
+        LOG_TRACE("retry stmt execute by proxy specified database group", K(ret));
+      } else if (OB_NEED_SWITCH_CONSUMER_GROUP == ret) {
+        // Let PlanCache/Resolver stage fall back to the existing local retry path
+        // when packet retry is not available for this request.
+        session.set_expect_group_id(sql::ISOLATION_DB, OB_INVALID_ID);
+        ret = OB_SUCCESS;
+      } else {
+        LOG_WARN("fail to check proxy database resource group", K(ret));
+      }
     } else if (!is_prexecute() && FALSE_IT(session.post_sync_session_info())) {
     } else if (OB_UNLIKELY(packet_len > session.get_max_packet_size())) {
       //packet size check with session variable max_allowd_packet or net_buffer_length
@@ -2430,7 +2430,6 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
     case MYSQL_TYPE_OB_UROWID:
     case MYSQL_TYPE_ORA_BLOB:
     case MYSQL_TYPE_ORA_CLOB:
-    case MYSQL_TYPE_JSON:
     case MYSQL_TYPE_GEOMETRY: {
       ObString str;
       ObString dst;
@@ -2484,7 +2483,6 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
             || MYSQL_TYPE_VARCHAR == type
             || MYSQL_TYPE_VAR_STRING == type
             || MYSQL_TYPE_ORA_CLOB == type
-            || MYSQL_TYPE_JSON == type
             || MYSQL_TYPE_GEOMETRY == type) {
           int64_t extra_len = 0;
           bool has_inrow_data = false;
@@ -2595,7 +2593,6 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
                     || MYSQL_TYPE_MEDIUM_BLOB == type
                     || MYSQL_TYPE_BLOB == type
                     || MYSQL_TYPE_LONG_BLOB == type
-                    || MYSQL_TYPE_JSON == type
                     || MYSQL_TYPE_GEOMETRY == type) {
             // in ps protocol:
             //    Oracle mode: client driver will call hextoraw()
@@ -2613,8 +2610,6 @@ int ObMPStmtExecute::parse_basic_param_value(ObIAllocator &allocator,
               param.set_lob_value(ObTextType, dst.ptr(), dst.length());
             } else if (MYSQL_TYPE_LONG_BLOB == type) {
               param.set_lob_value(ObLongTextType, dst.ptr(), dst.length());
-            } else if (MYSQL_TYPE_JSON == type) {
-              param.set_json_value(ObJsonType, dst.ptr(), dst.length());
             } else if (MYSQL_TYPE_GEOMETRY == type) {
               param.set_geometry_value(ObGeometryType, dst.ptr(), dst.length());
             }
@@ -3141,13 +3136,13 @@ int ObMPStmtExecute::parse_oracle_timestamp_value(const obmysql::EMySQLFieldType
     const char *&data, const ObTimeConvertCtx &cvrt_ctx, ObObj &param, ObPSAnalysisChecker *checker)
 {
   int ret = OB_SUCCESS;
-  int8_t total_len = 0;
+  uint8_t total_len = 0;
   ObObjType obj_type;
   ObOTimestampData ot_data;
   int8_t scale = -1;
   PS_STATIC_DEFENSE_CHECK(checker, 1)
   {
-    ObMySQLUtil::get_int1(data, total_len);
+    ObMySQLUtil::get_uint1(data, total_len);
   }
   if (OB_FAIL(ret)) {
   } else if (OB_FAIL(ObSMUtils::get_ob_type(obj_type, field_type))) {
@@ -3244,11 +3239,11 @@ int ObMPStmtExecute::parse_mysql_time_value(const char *&data, ObObj &param, ObP
 int ObMPStmtExecute::parse_oracle_interval_ds_value(const char *&data, ObObj &param, ObPSAnalysisChecker *checker)
 {
   int ret = OB_SUCCESS;
-  int8_t length = 0;
+  uint8_t length = 0;
   ObScale scale = 0;
   ObIntervalDSValue value;
 
-  ObMySQLUtil::get_int1(data, length);
+  ObMySQLUtil::get_uint1(data, length);
   PS_STATIC_DEFENSE_CHECK(checker, length)
   {
     if (OB_FAIL(ObTimeConverter::decode_interval_ds(data, length, value, scale))) {
@@ -3266,11 +3261,11 @@ int ObMPStmtExecute::parse_oracle_interval_ds_value(const char *&data, ObObj &pa
 int ObMPStmtExecute::parse_oracle_interval_ym_value(const char *&data, ObObj &param, ObPSAnalysisChecker *checker)
 {
   int ret = OB_SUCCESS;
-  int8_t length = 0;
+  uint8_t length = 0;
   ObScale scale = 0;
   ObIntervalYMValue value;
 
-  ObMySQLUtil::get_int1(data, length);
+  ObMySQLUtil::get_uint1(data, length);
   PS_STATIC_DEFENSE_CHECK(checker, length)
   {
     if (OB_FAIL(ObTimeConverter::decode_interval_ym(data, length, value, scale))) {

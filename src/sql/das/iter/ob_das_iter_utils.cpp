@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_DAS
@@ -2458,7 +2451,20 @@ int ObDASIterUtils::create_function_lookup_tree(ObTableScanParam &scan_param,
     const bool need_rewind = true;
     const bool need_distinct = false;
 
-    if (OB_FAIL(ObDASUtils::find_child_das_def(
+    if (OB_UNLIKELY(1 != sort_ctdef->children_cnt_)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected children cnt", K(ret), K(sort_ctdef->children_cnt_));
+    } else if (ObDASOpType::DAS_OP_IR_AUX_LOOKUP == sort_ctdef->children_[0]->op_type_) {
+      if (OB_FAIL(create_mvi_lookup_sub_tree(scan_param, alloc, sort_ctdef, sort_rtdef, nullptr,
+                                             related_tablet_ids, trans_desc, snapshot, sort_result))) {
+        LOG_WARN("failed to create mvi lookup sub tree", K(ret));
+      } else {
+        rowkey_scan_iter = sort_result;
+        const ObDASIRAuxLookupCtDef *mvi_lookup_ctdef
+            = static_cast<const ObDASIRAuxLookupCtDef *>(sort_ctdef->children_[0]);
+        rowkey_scan_output_exprs = &mvi_lookup_ctdef->get_lookup_scan_ctdef()->pd_expr_spec_.access_exprs_;
+      }
+    } else if (OB_FAIL(ObDASUtils::find_child_das_def(
         rowkey_scan_ctdef,
         rowkey_scan_rtdef,
         ObDASOpType::DAS_OP_IR_SCAN,
@@ -2511,7 +2517,8 @@ int ObDASIterUtils::create_function_lookup_tree(ObTableScanParam &scan_param,
       }
     }
 
-    if (FAILEDx(create_sort_sub_tree(
+    if (OB_FAIL(ret) || ObDASOpType::DAS_OP_IR_AUX_LOOKUP == sort_ctdef->children_[0]->op_type_) {
+    } else if (OB_FAIL(create_sort_sub_tree(
         alloc, sort_ctdef, sort_rtdef, need_rewind, need_distinct, child_iter, sort_result))) {
       LOG_WARN("failed to create sort sub tree", K(ret));
     } else {
@@ -2881,69 +2888,9 @@ int ObDASIterUtils::create_mvi_lookup_tree(ObTableScanParam &scan_param,
 
   if (OB_FAIL(ret)) {
   } else if (sort_ctdef->children_[0]->op_type_ == DAS_OP_IR_AUX_LOOKUP) {
-    const ObDASIRAuxLookupCtDef *mvi_lookup_ctdef = nullptr;
-    ObDASIRAuxLookupRtDef *mvi_lookup_rtdef = nullptr;
-    if (OB_FAIL(ObDASUtils::find_target_das_def(attach_ctdef, attach_rtdef, DAS_OP_IR_AUX_LOOKUP, mvi_lookup_ctdef, mvi_lookup_rtdef))) {
-      LOG_WARN("find ir aux lookup def failed", K(ret));
-    } else if (mvi_lookup_ctdef->children_cnt_ != 2) {
-      ret = OB_ERR_UNEXPECTED;
-      LOG_WARN("find index def failed", K(ret), K(mvi_lookup_ctdef->children_cnt_));
-    } else {
-      ObDASScanIter *docid_rowkey_table_iter = nullptr;
-      ObDASMVILookupIter *mvi_lookup_iter = nullptr;
-
-      const ObDASScanCtDef* index_ctdef = static_cast<const ObDASScanCtDef*>(mvi_lookup_ctdef->children_[0]);
-      ObDASScanRtDef * index_rtdef = static_cast<ObDASScanRtDef *>(mvi_lookup_rtdef->children_[0]);
-      const ObDASScanCtDef* docid_table_ctdef = mvi_lookup_ctdef->get_lookup_scan_ctdef();
-      ObDASScanRtDef * docid_table_rtdef = mvi_lookup_rtdef->get_lookup_scan_rtdef();
-
-      ObDASScanIterParam index_table_param;
-      init_scan_iter_param(index_table_param, index_ctdef, index_rtdef);
-      ObDASScanIterParam docid_rowkey_table_param;
-      init_scan_iter_param(docid_rowkey_table_param, docid_table_ctdef, docid_table_rtdef);
-
-      if (OB_FAIL(create_das_iter(alloc, index_table_param, index_table_iter))) {
-        LOG_WARN("failed to create index table scan iter", K(ret));
-      } else if (OB_FAIL(create_das_iter(alloc, docid_rowkey_table_param, docid_rowkey_table_iter))){
-        LOG_WARN("failed to create docid rowkey table scan iter", K(ret));
-      } else {
-        ObDASLocalLookupIterParam mvi_lookup_param;
-        mvi_lookup_param.max_size_ = 1;
-        mvi_lookup_param.eval_ctx_ = mvi_lookup_rtdef->eval_ctx_;
-        mvi_lookup_param.exec_ctx_ = &mvi_lookup_rtdef->eval_ctx_->exec_ctx_;
-        mvi_lookup_param.output_ = &mvi_lookup_ctdef->result_output_;
-        mvi_lookup_param.index_ctdef_ = index_ctdef;
-        mvi_lookup_param.index_rtdef_ = index_rtdef;
-        mvi_lookup_param.lookup_ctdef_ = docid_table_ctdef;
-        mvi_lookup_param.lookup_rtdef_ = docid_table_rtdef;
-        mvi_lookup_param.index_table_iter_ = index_table_iter;
-        mvi_lookup_param.data_table_iter_ = docid_rowkey_table_iter;
-        mvi_lookup_param.trans_desc_ = trans_desc;
-        mvi_lookup_param.snapshot_ = snapshot;
-        mvi_lookup_param.rowkey_exprs_ = &mvi_lookup_ctdef->get_lookup_scan_ctdef()->rowkey_exprs_;
-        if (OB_FAIL(create_das_iter(alloc, mvi_lookup_param, mvi_lookup_iter))) {
-          LOG_WARN("failed to create mvi lookup iter", K(ret));
-        } else if (OB_FAIL(create_iter_children_array(2, alloc, mvi_lookup_iter))) {
-          LOG_WARN("failed to create iter children array", K(ret));
-        } else {
-          mvi_lookup_iter->get_children()[0] = index_table_iter;
-          mvi_lookup_iter->get_children()[1] = docid_rowkey_table_iter;
-          index_table_iter->set_scan_param(scan_param);
-          if (OB_NOT_NULL(vec_aux_ctdef) && vec_aux_ctdef->algorithm_type_ != ObVectorIndexAlgorithmType::VIAT_SPIV // LATENCY_FIRST does not support spiv
-            && vec_aux_ctdef->strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST) {
-            index_table_iter->set_pre_filtering_timeout(vec_aux_ctdef->pre_filtering_timeout_);
-          }
-          docid_rowkey_table_iter->set_scan_param(mvi_lookup_iter->get_lookup_param());
-          mvi_lookup_iter->set_tablet_id(related_tablet_ids.doc_rowkey_tablet_id_);
-          mvi_lookup_iter->set_ls_id(scan_param.ls_id_);
-        }
-      }
-
-      if (OB_FAIL(ret)) {
-      } else if (OB_FAIL(create_sort_sub_tree(alloc, sort_ctdef, sort_rtdef, false/*need_rewind*/,
-                                              true/*need_distinct*/, mvi_lookup_iter, sort_iter))) {
-        LOG_WARN("failed to create sort sub tree", K(ret));
-      }
+    if (OB_FAIL(create_mvi_lookup_sub_tree(scan_param, alloc, sort_ctdef, sort_rtdef, vec_aux_ctdef,
+                                           related_tablet_ids, trans_desc, snapshot, sort_iter))) {
+      LOG_WARN("failed to create mvi lookup sub tree", K(ret));
     }
   } else {
     // do not need docid index back
@@ -2975,6 +2922,103 @@ int ObDASIterUtils::create_mvi_lookup_tree(ObTableScanParam &scan_param,
     LOG_WARN("failed to create local lookup sub tree", K(ret));
   }
 
+  return ret;
+}
+
+/*                 sort_distinct
+ *                     |
+ *               aux_local_lookup
+ *                 |        |
+ *           index_table  docid_rowkey_table
+*/
+int ObDASIterUtils::create_mvi_lookup_sub_tree(ObTableScanParam &scan_param,
+                                               common::ObIAllocator &alloc,
+                                               const ObDASSortCtDef *sort_ctdef,
+                                               ObDASSortRtDef *sort_rtdef,
+                                               const ObDASVecAuxScanCtDef *vec_aux_ctdef,
+                                               const ObDASRelatedTabletID &related_tablet_ids,
+                                               transaction::ObTxDesc *trans_desc,
+                                               transaction::ObTxReadSnapshot *snapshot,
+                                               ObDASIter *&iter_tree)
+{
+  int ret = OB_SUCCESS;
+  const ObDASIRAuxLookupCtDef *mvi_lookup_ctdef = nullptr;
+  ObDASIRAuxLookupRtDef *mvi_lookup_rtdef = nullptr;
+  if (OB_ISNULL(sort_ctdef) || OB_ISNULL(sort_rtdef)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected nullptr", K(ret), KP(sort_ctdef), KP(sort_rtdef));
+  } else if (OB_UNLIKELY(1 != sort_ctdef->children_cnt_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected children cnt", K(ret), K(sort_ctdef->children_cnt_));
+  } else if (OB_UNLIKELY(ObDASOpType::DAS_OP_IR_AUX_LOOKUP != sort_ctdef->children_[0]->op_type_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected child op type", K(ret), K(sort_ctdef->children_[0]->op_type_));
+  } else if (FALSE_IT(mvi_lookup_ctdef = static_cast<const ObDASIRAuxLookupCtDef *>(sort_ctdef->children_[0]))) {
+  } else if (FALSE_IT(mvi_lookup_rtdef = static_cast<ObDASIRAuxLookupRtDef *>(sort_rtdef->children_[0]))) {
+  } else if (OB_UNLIKELY(2 != mvi_lookup_ctdef->children_cnt_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected children cnt", K(ret), K(mvi_lookup_ctdef->children_cnt_));
+  } else {
+    const ObDASScanCtDef *index_ctdef = static_cast<const ObDASScanCtDef*>(mvi_lookup_ctdef->children_[0]);
+    ObDASScanRtDef *index_rtdef = static_cast<ObDASScanRtDef *>(mvi_lookup_rtdef->children_[0]);
+    const ObDASScanCtDef* docid_table_ctdef = mvi_lookup_ctdef->get_lookup_scan_ctdef();
+    ObDASScanRtDef *docid_table_rtdef = mvi_lookup_rtdef->get_lookup_scan_rtdef();
+
+    ObDASScanIter *index_table_iter = nullptr;
+    ObDASScanIter *docid_rowkey_table_iter = nullptr;
+    ObDASMVILookupIter *mvi_lookup_iter = nullptr;
+    ObDASIter *sort_iter = nullptr;
+
+    ObDASScanIterParam index_table_param;
+    init_scan_iter_param(index_table_param, index_ctdef, index_rtdef);
+    ObDASScanIterParam docid_rowkey_table_param;
+    init_scan_iter_param(docid_rowkey_table_param, docid_table_ctdef, docid_table_rtdef);
+
+    if (OB_FAIL(create_das_iter(alloc, index_table_param, index_table_iter))) {
+      LOG_WARN("failed to create index table scan iter", K(ret));
+    } else if (OB_FAIL(create_das_iter(alloc, docid_rowkey_table_param, docid_rowkey_table_iter))){
+      LOG_WARN("failed to create docid rowkey table scan iter", K(ret));
+    } else {
+      ObDASLocalLookupIterParam mvi_lookup_param;
+      mvi_lookup_param.max_size_ = 1;
+      mvi_lookup_param.eval_ctx_ = mvi_lookup_rtdef->eval_ctx_;
+      mvi_lookup_param.exec_ctx_ = &mvi_lookup_rtdef->eval_ctx_->exec_ctx_;
+      mvi_lookup_param.output_ = &mvi_lookup_ctdef->result_output_;
+      mvi_lookup_param.index_ctdef_ = index_ctdef;
+      mvi_lookup_param.index_rtdef_ = index_rtdef;
+      mvi_lookup_param.lookup_ctdef_ = docid_table_ctdef;
+      mvi_lookup_param.lookup_rtdef_ = docid_table_rtdef;
+      mvi_lookup_param.index_table_iter_ = index_table_iter;
+      mvi_lookup_param.data_table_iter_ = docid_rowkey_table_iter;
+      mvi_lookup_param.trans_desc_ = trans_desc;
+      mvi_lookup_param.snapshot_ = snapshot;
+      mvi_lookup_param.rowkey_exprs_ = &mvi_lookup_ctdef->get_lookup_scan_ctdef()->rowkey_exprs_;
+      if (OB_FAIL(create_das_iter(alloc, mvi_lookup_param, mvi_lookup_iter))) {
+        LOG_WARN("failed to create mvi lookup iter", K(ret));
+      } else if (OB_FAIL(create_iter_children_array(2, alloc, mvi_lookup_iter))) {
+        LOG_WARN("failed to create iter children array", K(ret));
+      } else {
+        mvi_lookup_iter->get_children()[0] = index_table_iter;
+        mvi_lookup_iter->get_children()[1] = docid_rowkey_table_iter;
+        index_table_iter->set_scan_param(scan_param);
+        if (OB_NOT_NULL(vec_aux_ctdef) && vec_aux_ctdef->algorithm_type_ != ObVectorIndexAlgorithmType::VIAT_SPIV // LATENCY_FIRST does not support spiv
+          && vec_aux_ctdef->strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST) {
+          index_table_iter->set_pre_filtering_timeout(vec_aux_ctdef->pre_filtering_timeout_);
+        }
+        docid_rowkey_table_iter->set_scan_param(mvi_lookup_iter->get_lookup_param());
+        mvi_lookup_iter->set_tablet_id(related_tablet_ids.doc_rowkey_tablet_id_);
+        mvi_lookup_iter->set_ls_id(scan_param.ls_id_);
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(create_sort_sub_tree(alloc, sort_ctdef, sort_rtdef, false/*need_rewind*/,
+                                            true/*need_distinct*/, mvi_lookup_iter, sort_iter))) {
+      LOG_WARN("failed to create sort sub tree", K(ret));
+    } else {
+      iter_tree = sort_iter;
+    }
+  }
   return ret;
 }
 
@@ -4400,7 +4444,6 @@ int ObDASIterUtils::create_vec_search_iter(
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected nullptr", K(vec_index_driver_ctdef), K(vec_index_driver_rtdef));
   } else {
-    ObDASSearchCost cost;
     ObIDASSearchRtDef *filter_rtdef = nullptr;
     ObIDASSearchCtDef *filter_ctdef = nullptr;
     ObIDASSearchRtDef *extracted_filter_rtdef = nullptr;
@@ -4409,13 +4452,7 @@ int ObDASIterUtils::create_vec_search_iter(
     if (vec_index_driver_ctdef->children_cnt_ >= 2) {
       filter_rtdef = static_cast<ObIDASSearchRtDef *>(vec_index_driver_rtdef->children_[1]);
       filter_ctdef = static_cast<ObIDASSearchCtDef *>(vec_index_driver_ctdef->children_[1]);
-      if (OB_FAIL(filter_rtdef->get_cost(*search_ctx, cost))) {
-        LOG_WARN("failed to get cost", K(ret));
-      } else if (!cost.is_valid()) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected invalid cost", K(ret));
-      }
-      if (OB_SUCC(ret) && vec_index_driver_ctdef->children_cnt_ == 3) {
+      if (vec_index_driver_ctdef->children_cnt_ == 3) {
         extracted_filter_rtdef = static_cast<ObIDASSearchRtDef *>(vec_index_driver_rtdef->children_[2]);
         extracted_filter_ctdef = static_cast<ObIDASSearchCtDef *>(vec_index_driver_ctdef->children_[2]);
       }
@@ -4429,7 +4466,10 @@ int ObDASIterUtils::create_vec_search_iter(
     ObVecIndexType vec_index_type = ObVecIndexType::VEC_INDEX_INVALID;
     ObDASVecIndexScanIter *vec_index_scan_iter = nullptr;
 
-    if(OB_FAIL(ret)) {
+    const bool user_forced_vec_path = (ObVecIndexType::VEC_INDEX_INVALID != vec_index_driver_ctdef->vec_type_);
+    const bool has_filter = (nullptr != filter_rtdef && nullptr != filter_ctdef);
+
+    if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(vec_index_scan_ctdef) || OB_ISNULL(vec_index_scan_rtdef)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected nullptr", K(ret));
@@ -4438,51 +4478,88 @@ int ObDASIterUtils::create_vec_search_iter(
     } else if (OB_ISNULL(vec_index_scan_iter)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("unexpected nullptr vec_index_scan_iter", K(ret));
-    } else if (!cost.is_valid()) {
+    } else if (!has_filter) {
       vec_index_type = ObVecIndexType::VEC_INDEX_POST_WITHOUT_FILTER;
-    } else if (static_cast<double>(cost.cost()) / vec_index_driver_ctdef->row_count_ > 0.3) {
-      vec_index_type = ObVecIndexType::VEC_INDEX_POST_ITERATIVE_FILTER;
-    } else if (cost.cost() <= ObDASVecIndexHNSWScanIter::MAX_HNSW_BRUTE_FORCE_SIZE) {
-      vec_index_type = ObVecIndexType::VEC_INDEX_PRE;
-      go_brute_force = true;
-    } else {
-      vec_index_type = ObVecIndexType::VEC_INDEX_PRE;
-      go_brute_force = false;
-    }
-
-    if (OB_SUCC(ret) && cost.is_valid()) {
-      // Search option override
-      if (ObVecIndexType::VEC_INDEX_INVALID != vec_index_driver_ctdef->vec_type_) {
-        vec_index_type = vec_index_driver_ctdef->vec_type_;
-        if (ObKnnFilterMode::PRE_BRUTE_FORCE == vec_index_driver_ctdef->filter_mode_) {
-          go_brute_force = true;
-        } else if (ObKnnFilterMode::PRE_KNN == vec_index_driver_ctdef->filter_mode_) {
-          go_brute_force = false;
-        }
+    } else if (user_forced_vec_path) {
+      vec_index_type = vec_index_driver_ctdef->vec_type_;
+      if (ObKnnFilterMode::PRE_BRUTE_FORCE == vec_index_driver_ctdef->filter_mode_) {
+        go_brute_force = true;
+      } else if (ObKnnFilterMode::PRE_KNN == vec_index_driver_ctdef->filter_mode_) {
+        go_brute_force = false;
       }
+    } else {
+      // Auto path: default to POST; evaluate_partition_path() refines per-partition
+      // before the first scan in inner_get_next_rows.
+      vec_index_type = ObVecIndexType::VEC_INDEX_POST_ITERATIVE_FILTER;
     }
 
     ObDASIter *filter_iter = nullptr;
-    ObDASSearchDriverIter *filter_driver_iter = nullptr;
+    ObDASIter *pre_filter_iter = nullptr;
+    ObDASIter *post_filter_iter = nullptr;
+    ObDASSearchDriverIter *pre_filter_driver_iter = nullptr;
+    ObDASSearchDriverIter *post_filter_driver_iter = nullptr;
     ObVecFilterMode filter_mode = ObVecFilterMode::VEC_FILTER_MODE_INVALID;
+    ObVecFilterMode pre_filter_mode = ObVecFilterMode::VEC_FILTER_MODE_INVALID;
+    ObVecFilterMode post_filter_mode = ObVecFilterMode::VEC_FILTER_MODE_INVALID;
     const ObDASScalarScanCtDef *scalar_scan_ctdef = nullptr;
     ObDASScalarScanRtDef *scalar_scan_rtdef = nullptr;
+    const ObDASScalarScanCtDef *post_scalar_scan_ctdef = nullptr;
+    ObDASScalarScanRtDef *post_scalar_scan_rtdef = nullptr;
+    ObIDASSearchRtDef *filter_rtdef_for_reeval = nullptr;
 
-    if (OB_SUCC(ret) && cost.is_valid()) {
-      bool is_post_filter = vec_index_type != ObVecIndexType::VEC_INDEX_PRE;
-      ObDASSearchCost lead_cost = is_post_filter ? ObDASSearchCost(64) : ObDASSearchCost(); // todo: adjust by limit+offset
-      common::ObLimitParam top_k_limit_param;
-      top_k_limit_param.limit_ = -1;
-
-      if (ObVecIndexType::VEC_INDEX_PRE == vec_index_type) {
-        filter_mode = ObVecFilterMode::VEC_FILTER_MODE_PRE_FILTER;
-        // for vector index pre-filtering with only single filter, adjust the really_need_rowkey_order_ to false.
+    if (OB_SUCC(ret) && has_filter) {
+      const bool need_post_iter = !user_forced_vec_path ||
+                                  ObVecIndexType::VEC_INDEX_PRE != vec_index_type;
+      const bool need_pre_iter  = !user_forced_vec_path ||
+                                  ObVecIndexType::VEC_INDEX_PRE == vec_index_type;
+      if (!user_forced_vec_path
+          || ObKnnFilterMode::PRE_ADAPTIVE == vec_index_driver_ctdef->filter_mode_
+          || ObKnnFilterMode::POST_FILTER == vec_index_driver_ctdef->filter_mode_
+          || ObKnnFilterMode::POST_INDEX_MERGE == vec_index_driver_ctdef->filter_mode_) {
+        filter_rtdef_for_reeval = filter_rtdef;
+      }
+      if (OB_SUCC(ret) && need_post_iter) {
+        ObDASSearchCost post_lead(64);
+        common::ObLimitParam top_k_limit_param_post;
+        top_k_limit_param_post.limit_ = -1;
+        if (OB_NOT_NULL(extracted_filter_rtdef) && OB_NOT_NULL(extracted_filter_ctdef)) {
+          ObDASScalarRtDef *extracted_scalar_rtdef = static_cast<ObDASScalarRtDef *>(extracted_filter_rtdef);
+          post_scalar_scan_rtdef = extracted_scalar_rtdef->get_main_scan_rtdef();
+          if (OB_ISNULL(post_scalar_scan_rtdef)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("unexpected nullptr extracted scalar scan rtdef", K(ret));
+          } else {
+            post_scalar_scan_rtdef->really_need_rowkey_order_ = false;
+            post_scalar_scan_ctdef = post_scalar_scan_rtdef->get_ctdef();
+            post_filter_mode = ObVecFilterMode::VEC_FILTER_MODE_EXPR_FILTER;
+            if (OB_FAIL(create_search_driver_iter(alloc, post_scalar_scan_rtdef, search_ctx, top_k_limit_param_post,
+                                                  post_filter_driver_iter, nullptr, post_filter_mode, post_lead))) {
+              LOG_WARN("failed to create post search driver iter from extracted filter", K(ret));
+            } else if (DAS_SEARCH_OP_SCALAR_SCAN != post_filter_driver_iter->get_root_op_type()) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("unexpected root op type", K(ret), K(post_filter_driver_iter->get_root_op_type()));
+            } else {
+              post_filter_iter = post_filter_driver_iter;
+            }
+          }
+        } else {
+          post_filter_mode = ObVecFilterMode::VEC_FILTER_MODE_SEARCH_DRIVER_FILTER;
+          if (OB_FAIL(create_search_driver_iter(alloc, filter_rtdef, search_ctx, top_k_limit_param_post,
+                                                post_filter_driver_iter, nullptr, post_filter_mode, post_lead))) {
+            LOG_WARN("failed to create post search driver iter", K(ret));
+          } else {
+            post_filter_iter = post_filter_driver_iter;
+          }
+        }
+      }
+      if (OB_SUCC(ret) && need_pre_iter) {
+        pre_filter_mode = ObVecFilterMode::VEC_FILTER_MODE_PRE_FILTER;
+        common::ObLimitParam top_k_limit_param_pre;
+        top_k_limit_param_pre.limit_ = -1;
+        const ObDASSearchCost pre_lead;
         ObDASScalarRtDef *scalar_rtdef = nullptr;
         bool is_valid = true;
-        if (OB_ISNULL(filter_rtdef) || OB_ISNULL(filter_ctdef)) {
-          ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("unexpected nullptr", K(ret));
-        } else if (OB_FAIL(check_single_scalar_filter(*filter_rtdef, scalar_rtdef, is_valid))) {
+        if (OB_FAIL(check_single_scalar_filter(*filter_rtdef, scalar_rtdef, is_valid))) {
           LOG_WARN("failed to check single scalar filter", K(ret));
         } else if (is_valid && nullptr != scalar_rtdef) {
           if (nullptr != scalar_rtdef->get_index_scan_rtdef()) {
@@ -4492,77 +4569,63 @@ int ObDASIterUtils::create_vec_search_iter(
             scalar_rtdef->get_main_scan_rtdef()->really_need_rowkey_order_ = false;
           }
         }
-        if (OB_FAIL(create_search_driver_iter(alloc, filter_rtdef, search_ctx, top_k_limit_param,
-                                              filter_driver_iter, nullptr, filter_mode, lead_cost))) {
-          LOG_WARN("failed to create search driver iter", K(ret));
+        if (OB_FAIL(ret)) {
+        } else if (OB_FAIL(create_search_driver_iter(alloc, filter_rtdef, search_ctx, top_k_limit_param_pre,
+                                                     pre_filter_driver_iter, nullptr, pre_filter_mode, pre_lead))) {
+          LOG_WARN("failed to create pre search driver iter", K(ret));
         } else {
-          filter_iter = filter_driver_iter;
+          pre_filter_iter = pre_filter_driver_iter;
         }
-      } else {
-        if (OB_NOT_NULL(extracted_filter_rtdef) && OB_NOT_NULL(extracted_filter_ctdef)) {
-          ObDASScalarRtDef *extracted_scalar_rtdef = static_cast<ObDASScalarRtDef*>(extracted_filter_rtdef);
-          scalar_scan_rtdef = extracted_scalar_rtdef->get_main_scan_rtdef();
-          if (OB_ISNULL(scalar_scan_rtdef)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("unexpected nullptr extracted scalar scan rtdef", K(ret));
-          } else {
-            scalar_scan_rtdef->really_need_rowkey_order_ = false;
-            scalar_scan_ctdef = scalar_scan_rtdef->get_ctdef();
-
-            filter_mode = ObVecFilterMode::VEC_FILTER_MODE_EXPR_FILTER;
-            if (OB_FAIL(create_search_driver_iter(alloc, scalar_scan_rtdef, search_ctx, top_k_limit_param,
-                                                  filter_driver_iter, nullptr, filter_mode, lead_cost))) {
-              LOG_WARN("failed to create search driver iter from extracted filter", K(ret));
-            } else if (DAS_SEARCH_OP_SCALAR_SCAN != filter_driver_iter->get_root_op_type()) {
-              ret = OB_ERR_UNEXPECTED;
-              LOG_WARN("unexpected root op type", K(ret), K(filter_driver_iter->get_root_op_type()));
-            } else {
-              filter_iter = filter_driver_iter;
-            }
-          }
+      }
+      if (OB_SUCC(ret)) {
+        if (ObVecIndexType::VEC_INDEX_PRE == vec_index_type) {
+          filter_iter = pre_filter_iter;
+          filter_mode = pre_filter_mode;
         } else {
-          filter_mode = ObVecFilterMode::VEC_FILTER_MODE_SEARCH_DRIVER_FILTER;
-          if (OB_FAIL(create_search_driver_iter(alloc, filter_rtdef, search_ctx, top_k_limit_param,
-                                                filter_driver_iter, nullptr, filter_mode, lead_cost))) {
-            LOG_WARN("failed to create search driver iter", K(ret));
-          } else {
-            filter_iter = filter_driver_iter;
-          }
+          filter_iter = post_filter_iter;
+          filter_mode = post_filter_mode;
+          scalar_scan_ctdef = post_scalar_scan_ctdef;
+          scalar_scan_rtdef = post_scalar_scan_rtdef;
         }
       }
     }
 
-    LOG_INFO("vec index type", K(vec_index_type), K(go_brute_force), K(cost.cost()),
-             K(vec_index_driver_ctdef->row_count_), K(filter_mode));
+    if (OB_SUCC(ret)) {
+      LOG_INFO("vec index type", K(vec_index_type), K(go_brute_force), K(vec_index_driver_ctdef->row_count_), K(filter_mode));
 
-    ObEvalCtx *eval_ctx = vec_index_driver_rtdef->eval_ctx_;
-    ObDASVecIndexDriverIterParam vec_index_driver_param;
-    vec_index_driver_param.max_size_ = eval_ctx->is_vectorized() ? eval_ctx->max_batch_size_ : 1;
-    vec_index_driver_param.ls_id_ = scan_param.ls_id_;
-    vec_index_driver_param.tx_desc_ = trans_desc;
-    vec_index_driver_param.snapshot_ = snapshot;
-    vec_index_driver_param.vec_index_scan_iter_ = vec_index_scan_iter;
-    vec_index_driver_param.filter_iter_ = filter_iter;
-    vec_index_driver_param.vec_index_driver_ctdef_ = vec_index_driver_ctdef;
-    vec_index_driver_param.vec_index_driver_rtdef_ = vec_index_driver_rtdef;
-    vec_index_driver_param.vec_index_type_ = vec_index_type;
-    vec_index_driver_param.vec_idx_try_path_ = vec_index_path;
-    vec_index_driver_param.sort_expr_ = vec_index_driver_ctdef->sort_expr_;
-    vec_index_driver_param.limit_expr_ = vec_index_driver_ctdef->limit_expr_;
-    vec_index_driver_param.offset_expr_ = vec_index_driver_ctdef->offset_expr_;
-    vec_index_driver_param.dim_ = vec_index_driver_ctdef->dim_;
-    vec_index_driver_param.search_ctx_ = search_ctx;
-    vec_index_driver_param.score_expr_ = score_expr;
-    vec_index_driver_param.filter_mode_ = filter_mode;
-    vec_index_driver_param.scalar_scan_ctdef_ = scalar_scan_ctdef;
-    vec_index_driver_param.scalar_scan_rtdef_ = scalar_scan_rtdef;
-
-    ObDASVecIndexDriverIter *vec_driver_iter = nullptr;
-    if (FAILEDx(create_das_iter(alloc, vec_index_driver_param, vec_driver_iter))) {
-      LOG_WARN("failed to create vec index driver iter", K(ret));
-    } else {
+      ObEvalCtx *eval_ctx = vec_index_driver_rtdef->eval_ctx_;
+      ObDASVecIndexDriverIterParam vec_index_driver_param;
+      vec_index_driver_param.max_size_ = eval_ctx->is_vectorized() ? eval_ctx->max_batch_size_ : 1;
+      vec_index_driver_param.ls_id_ = scan_param.ls_id_;
+      vec_index_driver_param.tx_desc_ = trans_desc;
+      vec_index_driver_param.snapshot_ = snapshot;
+      vec_index_driver_param.vec_index_scan_iter_ = vec_index_scan_iter;
+      vec_index_driver_param.filter_iter_ = filter_iter;
+      vec_index_driver_param.pre_filter_iter_ = pre_filter_iter;
+      vec_index_driver_param.post_filter_iter_ = post_filter_iter;
+      vec_index_driver_param.vec_index_driver_ctdef_ = vec_index_driver_ctdef;
+      vec_index_driver_param.vec_index_driver_rtdef_ = vec_index_driver_rtdef;
+      vec_index_driver_param.vec_index_type_ = vec_index_type;
+      vec_index_driver_param.vec_idx_try_path_ = vec_index_path;
+      vec_index_driver_param.sort_expr_ = vec_index_driver_ctdef->sort_expr_;
+      vec_index_driver_param.limit_expr_ = vec_index_driver_ctdef->limit_expr_;
+      vec_index_driver_param.offset_expr_ = vec_index_driver_ctdef->offset_expr_;
+      vec_index_driver_param.dim_ = vec_index_driver_ctdef->dim_;
+      vec_index_driver_param.search_ctx_ = search_ctx;
+      vec_index_driver_param.score_expr_ = score_expr;
+      vec_index_driver_param.filter_mode_ = filter_mode;
+      vec_index_driver_param.scalar_scan_ctdef_ = scalar_scan_ctdef;
+      vec_index_driver_param.scalar_scan_rtdef_ = scalar_scan_rtdef;
+      vec_index_driver_param.filter_rtdef_for_reeval_ = filter_rtdef_for_reeval;
+      vec_index_driver_param.go_brute_force_ = go_brute_force;
       vec_index_scan_iter->set_vec_index_type(vec_index_type, vec_index_path, go_brute_force);
-      vec_search_iter = vec_driver_iter;
+
+      ObDASVecIndexDriverIter *vec_driver_iter = nullptr;
+      if (OB_FAIL(create_das_iter(alloc, vec_index_driver_param, vec_driver_iter))) {
+        LOG_WARN("failed to create vec index driver iter", K(ret));
+      } else {
+        vec_search_iter = vec_driver_iter;
+      }
     }
   }
 
@@ -5154,6 +5217,7 @@ int ObDASIterUtils::create_vec_hnsw_lookup_tree(ObTableScanParam &scan_param,
               && OB_FAIL(create_das_scan_iter(alloc, rowkey_vid_ctdef, rowkey_vid_rtdef, rowkey_vid_table_iter))) {
         LOG_WARN("failed to create rowkey vid table iter", K(ret));
       } else if (OB_NOT_NULL(rowkey_vid_table_iter)
+                 && vec_aux_ctdef->adaptive_try_path_ != ObVecIdxAdaTryPath::VEC_INDEX_IN_FILTER // VEC_INDEX_IN_FILTER cannot change path from pre-filter to post-iterative
                  && vec_aux_ctdef->can_use_vec_pri_opt()
                  && vec_aux_ctdef->strategy_ == ObVecIdxQueryStrategy::LATENCY_FIRST) {
         rowkey_vid_table_iter->set_pre_filtering_timeout(vec_aux_ctdef->pre_filtering_timeout_);

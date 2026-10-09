@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
@@ -26,6 +19,7 @@
 #include "sql/ob_sql_utils.h"
 #include "sql/rewrite/ob_range_generator.h"
 #include "share/search_index/ob_search_index_encoder.h"
+#include "share/search_index/ob_search_index_config_filter.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/rewrite/ob_search_index_query_range_utils.h"
 #include "sql/engine/expr/ob_expr_json_func_helper.h"
@@ -447,8 +441,21 @@ int ObExprRangeConverter::gen_column_cmp_node(const ObRawExpr &l_expr,
       cmp_type = T_OP_GE;
     }
     if (is_search_index) {
-      if (OB_FAIL(gen_search_index_cmp_node(*column_expr, const_expr, cmp_type,
-                                            null_safe, is_valid, range_node))) {
+      const bool is_range_cmp = IS_RANGE_CMP_OP(cmp_type);
+      const share::ObSearchIndexConfigFilter *json_filter =
+            OB_NOT_NULL(ctx_.search_index_range_ctx_) ?
+              ctx_.search_index_range_ctx_->get_json_filter() :
+              nullptr;
+      const bool has_excluded_json_type =
+        OB_NOT_NULL(json_filter) && json_filter->has_exclude_paths();
+      const bool is_root_path =
+        OB_NOT_NULL(ctx_.search_index_range_ctx_) &&
+        ctx_.search_index_range_ctx_->path_prefix_.empty();
+      if (ob_is_json(column_expr->get_result_type().get_type()) && is_range_cmp
+          && has_excluded_json_type && is_root_path) {
+        // do nothing
+      } else if (OB_FAIL(gen_search_index_cmp_node(*column_expr, const_expr, cmp_type, null_safe,
+                                                   is_valid, range_node))) {
         LOG_WARN("failed to gen search index cmp node", K(ret));
       }
     } else {
@@ -2735,12 +2742,26 @@ int ObExprRangeConverter::get_nvl_cmp_node(const ObRawExpr &l_expr,
              OB_ISNULL(ctx_.session_info_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("get unexpected nvl expr", K(ret));
+  } else if (!ObSQLUtils::is_same_type_for_compare(const_expr->get_result_type().get_obj_meta(),
+                                                   nvl_first_expr->get_result_type().get_obj_meta()) ||
+             !ObSQLUtils::is_same_type_for_compare(const_expr->get_result_type().get_obj_meta(),
+                                                   nvl_second_expr->get_result_type().get_obj_meta())) {
+    // The NVL column and the NVL default value carry different types after
+    // stripping lossless casts (a residual implicit cast remains on the
+    // default value). Building a new comparison expression here would force
+    // deduce_type to stack another implicit cast on an existing one, which
+    // try_add_cast_expr_above rejects with OB_ERR_INVALID_TYPE_FOR_OP. Skip
+    // range extraction and let the fall-through produce always_true.
   } else if (OB_FAIL(ObOptimizerUtil::get_expr_without_lossless_cast(nvl_first_expr,
                                                                      nvl_first_expr,
                                                                      use_implicit_cast_feature))) {
     LOG_WARN("failed to get expr without lossless cast", K(ret));
   } else if (!nvl_first_expr->is_column_ref_expr()) {
     // do nothing
+  } else if (OB_FAIL(ObOptimizerUtil::get_expr_without_lossless_cast(nvl_second_expr,
+                                                                     nvl_second_expr,
+                                                                     use_implicit_cast_feature))) {
+    LOG_WARN("failed to get expr without lossless cast for nvl second arg", K(ret));
   } else if (OB_FAIL(gen_column_cmp_node(*nvl_first_expr,
                                          *const_expr,
                                          cmp_type,
@@ -4392,13 +4413,16 @@ int ObExprRangeConverter::get_json_access_expr_range(const ObRawExpr *l_expr,
                                                       ObRangeNode *&range_node)
 {
   int ret = OB_SUCCESS;
+  if (OB_NOT_NULL(ctx_.search_index_range_ctx_)) {
+    ctx_.search_index_range_ctx_->path_prefix_.reset();
+  }
   bool can_extract = true;
   if (is_json_access_expr(*l_expr)) {
-    if (OB_FAIL(preprocess_json_access_expr(l_expr, cmp_type, l_expr, can_extract, r_expr))) {
+    if (OB_FAIL(preprocess_json_access_expr(l_expr, cmp_type, l_expr, can_extract))) {
       LOG_WARN("failed to preprocess json access expr", K(ret));
     }
   } else if (is_json_access_expr(*r_expr)) {
-    if (OB_FAIL(preprocess_json_access_expr(r_expr, cmp_type, r_expr, can_extract, l_expr))) {
+    if (OB_FAIL(preprocess_json_access_expr(r_expr, cmp_type, r_expr, can_extract))) {
       LOG_WARN("failed to preprocess json access expr", K(ret));
     }
   }
@@ -4441,11 +4465,10 @@ bool ObExprRangeConverter::is_json_access_expr(const ObRawExpr &expr)
 int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr,
                                                       const ObItemType op_type,
                                                       const ObRawExpr *&new_expr,
-                                                      bool &can_extract,
-                                                      const ObRawExpr *const_expr)
+                                                      bool &can_extract)
 {
   int ret = OB_SUCCESS;
-  bool is_range_cmp = IS_RANGE_CMP_OP(op_type);
+  bool index_sub_path = IS_RANGE_CMP_OP(op_type);
   new_expr = json_expr;
   const ObRawExpr *origin_expr = json_expr;
   json_expr = ObRawExprUtils::skip_implicit_cast(json_expr);
@@ -4462,6 +4485,7 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     can_extract = false;
     bool is_valid = false;
     ObString encoded_path;
+    ctx_.search_index_range_ctx_->pick_type_ = json_expr->get_pick();
     if (OB_UNLIKELY(json_expr->get_param_count() < 2) ||
               OB_ISNULL(doc_expr = json_expr->get_param_expr(0)) ||
               OB_ISNULL(path_expr = json_expr->get_param_expr(1))) {
@@ -4494,7 +4518,7 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     } else if (!is_valid) {
       // do nothing
     } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::json_prefix_path_encode(allocator_, ctx_,
-        *path_expr, encoded_path, is_range_cmp, is_valid, const_expr))) {
+        *path_expr, encoded_path, index_sub_path, is_valid))) {
       LOG_WARN("failed to check json path can extract range", K(ret));
     } else if (!is_valid) {
       // path is not a single member path, no need to extract range.
@@ -4502,7 +4526,6 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     } else {
       new_expr = column_expr;
       ctx_.search_index_range_ctx_->path_prefix_ = encoded_path;
-      ctx_.search_index_range_ctx_->pick_type_ = json_expr->get_pick();
       can_extract = true;
     }
   } else if (json_expr->get_expr_type() == T_FUN_SYS_JSON_VALUE &&
@@ -4514,6 +4537,7 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     can_extract = false;
     bool is_valid = false;
     ObString encoded_path;
+    ctx_.search_index_range_ctx_->pick_type_ = json_expr->get_pick();
     if (OB_UNLIKELY(json_expr->get_param_count() < 2) ||
         OB_ISNULL(doc_expr = json_expr->get_param_expr(0)) ||
         OB_ISNULL(path_expr = json_expr->get_param_expr(1))) {
@@ -4543,7 +4567,7 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     } else if (!is_valid) {
       // do nothing
     } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::json_prefix_path_encode(allocator_, ctx_,
-        *path_expr, encoded_path, false, is_valid, const_expr))) {
+        *path_expr, encoded_path, false, is_valid))) {
       LOG_WARN("failed to check json path can extract range", K(ret));
     } else if (!is_valid) {
       // path is not a single member path, no need to extract range.
@@ -4551,7 +4575,6 @@ int ObExprRangeConverter::preprocess_json_access_expr(const ObRawExpr *json_expr
     } else {
       new_expr = column_expr;
       ctx_.search_index_range_ctx_->path_prefix_ = encoded_path;
-      ctx_.search_index_range_ctx_->pick_type_ = json_expr->get_pick();
       can_extract = true;
     }
   }
@@ -4571,6 +4594,24 @@ int ObExprRangeConverter::get_final_search_index_value_param_idx(const ObRawExpr
   } else if (OB_FAIL(get_final_expr_idx(value_expr, get_column_meta(SEARCH_INDEX_VALUE),
                                         value_param_idx))) {
     LOG_WARN("failed to get final expr idx for value", K(ret));
+  }
+  return ret;
+}
+
+int ObExprRangeConverter::check_str_length_for_search_index_range(
+    const ObRawExpr *const_expr,
+    bool &can_extract)
+{
+  int ret = OB_SUCCESS;
+  ObObj string_value;
+  if (OB_FAIL(get_calculable_expr_val(const_expr, string_value, can_extract))) {
+    LOG_WARN("failed to get calculable expr val", K(ret), KPC(const_expr));
+  } else if (!can_extract) {
+    // do nothing
+  } else if (string_value.is_null()) {
+    can_extract = false;
+  } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::is_string_length_match_index(string_value, can_extract))) {
+    LOG_WARN("fail to check string length match index", K(ret));
   }
   return ret;
 }
@@ -4603,7 +4644,8 @@ int ObExprRangeConverter::gen_search_index_cmp_node(const ObColumnRefRawExpr &co
     ObObj json_value;
     const ObObjType const_type = const_expr->get_result_type().get_type();
     const bool constraint_json_scalar = ob_is_json(const_type);
-    const bool constraint_str_length = ob_is_string_tc(const_type);
+    const bool constraint_str_length = ob_is_string_type(const_type);
+    const uint8_t cons_encode_type = ctx_.search_index_range_ctx_->get_cons_encode_type();
     if (OB_FAIL(get_calculable_expr_val(const_expr, json_value, is_valid))) {
       LOG_WARN("failed to get calculable expr val", K(ret), KPC(const_expr));
     } else if (!is_valid) {
@@ -4613,10 +4655,16 @@ int ObExprRangeConverter::gen_search_index_cmp_node(const ObColumnRefRawExpr &co
     } else if (constraint_json_scalar &&
         OB_FAIL(ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(*ctx_.exec_ctx_,
                                                                          json_value,
+                                                                         cons_encode_type,
                                                                          is_valid))) {
       LOG_WARN("fail to check is scalar json", K(ret));
     } else if (!is_valid) {
       // is not scalar json, unsupported json value for search index range
+    } else if (constraint_str_length &&
+        OB_FAIL(ObSearchIndexQueryRangeUtils::is_string_length_match_index(json_value, is_valid))) {
+      LOG_WARN("fail to check string length match index", K(ret));
+    } else if (!is_valid) {
+      // is not string length match, unsupported string value for search index range
     } else if (OB_FAIL(fill_json_search_index_range_node(column_expr, *const_expr, cmp_type,
                                                          null_safe, range_node))) {
       LOG_WARN("failed to fill json search index range node", K(ret));
@@ -4634,7 +4682,14 @@ int ObExprRangeConverter::gen_search_index_cmp_node(const ObColumnRefRawExpr &co
     // When the column value may exceed the index value encoding limit
     // (need_constraint), add a string length constraint on the constant.
     int64_t value_param_idx = -1;
-    if (OB_FAIL(get_final_search_index_value_param_idx(*const_expr, nullptr, value_param_idx))) {
+    const bool need_constraint = ctx_.search_index_range_ctx_->need_constraint();
+    bool can_extract = true;
+    if (need_constraint && OB_FAIL(check_str_length_for_search_index_range(const_expr, can_extract))) {
+      LOG_WARN("failed to check string length for search index range", K(ret));
+    }
+    if (OB_FAIL(ret) || !can_extract) {
+      // do nothing
+    } else if (OB_FAIL(get_final_search_index_value_param_idx(*const_expr, nullptr, value_param_idx))) {
       LOG_WARN("failed to get final search index value param idx", K(ret));
     } else if (OB_FAIL(fill_scalar_search_index_range_node(column_expr, value_param_idx,
                                                            cmp_type, null_safe, range_node))) {
@@ -4662,7 +4717,7 @@ int ObExprRangeConverter::fill_scalar_search_index_range_node(const ObColumnRefR
   ObRawExpr *path_expr = nullptr;
   if (OB_FAIL(ObSearchIndexQueryRangeUtils::build_column_idx_expr(ctx_, column_expr, column_idx_expr))) {
     LOG_WARN("failed to build column idx expr", K(ret));
-  } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::build_null_path_expr(ctx_, path_expr))) {
+  } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::build_array_or_scalar_path_expr(ctx_, path_expr))) {
     LOG_WARN("failed to build json single path expr", K(ret));
   } else if (OB_FAIL(get_final_expr_idx(column_idx_expr, get_column_meta(SEARCH_INDEX_COL_IDX), col_idx_val))) {
     LOG_WARN("failed to get final expr idx for col_idx", K(ret));
@@ -4862,7 +4917,7 @@ int ObExprRangeConverter::get_domain_param_expr(const ObRawExpr &domain_expr,
         } else if (!can_extract) {
           // do nothing
         } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::json_prefix_path_encode(allocator_, ctx_,
-            *path_expr, encoded_path, false, can_extract, const_expr))) {
+            *path_expr, encoded_path, false, can_extract))) {
           LOG_WARN("failed to check json path can extract range", K(ret));
         } else if (!can_extract) {
           // path is not a single member path, no need to extract range.
@@ -4885,7 +4940,7 @@ int ObExprRangeConverter::get_domain_param_expr(const ObRawExpr &domain_expr,
       can_extract = false;
     } else if (is_json_access_expr(*jdoc_expr)) {
       const ObItemType op_type = domain_expr.get_expr_type();
-      if (OB_FAIL(preprocess_json_access_expr(jdoc_expr, op_type, jdoc_expr, can_extract, const_expr))) {
+      if (OB_FAIL(preprocess_json_access_expr(jdoc_expr, op_type, jdoc_expr, can_extract))) {
         LOG_WARN("failed to preprocess json access expr", K(ret));
       }
     }
@@ -4961,6 +5016,8 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
     // do nothing.
   } else if (expr->is_domain_json_expr()) {
     ObObj json_value;
+    uint8_t cons_encode_type =
+      ctx_.search_index_range_ctx_ ? ctx_.search_index_range_ctx_->get_cons_encode_type() : 0;
     if (OB_FAIL(get_calculable_expr_val(const_expr, json_value, need_extract))) {
       LOG_WARN("failed to get calculable expr val", K(ret), KPC(const_expr));
     } else if (!need_extract) {
@@ -4973,6 +5030,7 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
       if (json_value.is_json()) {
         if (OB_FAIL(ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(*ctx_.exec_ctx_,
                                                                              json_value,
+                                                                             cons_encode_type,
                                                                              need_extract))) {
           LOG_WARN("fail to check is scalar json", K(ret));
         } else if (!need_extract) {
@@ -4984,7 +5042,20 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
         // not json value, no need to add json scalar constraint
         // '[1]' member of jdoc, the `[1]` is scalar json_string, not json array.
         // but need to add string length constraint if const_expr is string type.
-        constraint_str_length = ob_is_string_tc(const_expr->get_result_type().get_type());
+        const ObObjType const_type = const_expr->get_result_type().get_type();
+        if (cons_encode_type != 0) {
+          if (ob_is_string_tc(const_type)) {
+            need_extract = ObSearchIndexConfigFilter::is_type_indexed(cons_encode_type,
+                                                                      ObJsonNodeType::J_STRING);
+          } else if (ob_is_numeric_type(const_type)) {
+            need_extract = ObSearchIndexConfigFilter::is_type_indexed(cons_encode_type,
+                                                                      ObJsonNodeType::J_DECIMAL);
+          }
+        }
+        constraint_str_length = need_extract && ob_is_string_tc(const_type);
+        if (constraint_str_length && OB_FAIL(check_str_length_for_search_index_range(const_expr, need_extract))) {
+          LOG_WARN("failed to check string length for search index range", K(ret));
+        }
       }
       if (OB_SUCC(ret) && need_extract) {
         // member_of means JDOC eq MEMBER or JDOC contains MEMBER
@@ -5007,6 +5078,7 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
         need_extract = false;
       } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::is_json_scalar_match_index(*ctx_.exec_ctx_,
                                                                                   json_value,
+                                                                                  cons_encode_type,
                                                                                   need_extract))) {
         LOG_WARN("fail to check is all member scalar json", K(ret));
       } else if (!need_extract) {
@@ -5039,6 +5111,7 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
       } else if (OB_FAIL(ObSearchIndexQueryRangeUtils::is_json_scalar_or_array_match_index(
           *ctx_.exec_ctx_,
           json_value,
+          cons_encode_type,
           need_extract))) {
         LOG_WARN("fail to check is all member scalar json", K(ret));
       } else if (!need_extract) {
@@ -5054,11 +5127,17 @@ int ObExprRangeConverter::convert_domain_expr_on_search_index(const ObRawExpr *d
   } else if (expr->is_domain_array_expr()) {
     if (T_FUNC_SYS_ARRAY_CONTAINS == expr->get_expr_type()) {
       int64_t value_param_idx = -1;
-      if (OB_FAIL(get_final_search_index_value_param_idx(*const_expr, nullptr, value_param_idx))) {
+      bool can_extract = true;
+      if (ctx_.search_index_range_ctx_->need_constraint() &&
+          OB_FAIL(check_str_length_for_search_index_range(const_expr, can_extract))) {
+        LOG_WARN("failed to check string length for search index range", K(ret));
+      } else if (!can_extract) {
+        // string length doesn't match index, skip range extraction
+      } else if (OB_FAIL(get_final_search_index_value_param_idx(*const_expr, nullptr, value_param_idx))) {
         LOG_WARN("failed to get final search index value param idx", K(ret));
       } else if (OB_FAIL(fill_scalar_search_index_range_node(*column_expr, value_param_idx,
                                                              ObItemType::T_OP_EQ,
-                                                             false,
+                                                             true,
                                                              range_node))) {
         LOG_WARN("failed to fill scalar search index range node", K(ret));
       } else if (ctx_.search_index_range_ctx_->need_constraint()) {
@@ -5198,7 +5277,7 @@ int ObExprRangeConverter::fill_search_index_domain_range_node(const ObColumnRefR
       path_expr = path_prefix_expr;
     }
   } else {
-    if (OB_FAIL(ObSearchIndexQueryRangeUtils::build_null_path_expr(ctx_, path_expr))) {
+    if (OB_FAIL(ObSearchIndexQueryRangeUtils::build_array_or_scalar_path_expr(ctx_, path_expr))) {
       LOG_WARN("failed to build null path expr", K(ret));
     }
   }

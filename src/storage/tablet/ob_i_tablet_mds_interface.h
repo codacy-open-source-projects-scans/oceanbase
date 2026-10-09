@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_TABLET_OB_TABLET_MDS_PART
@@ -17,6 +10,9 @@
 #include "common/meta_programming/ob_meta_serialization.h"
 #include "common/meta_programming/ob_meta_copy.h"
 #include "storage/multi_data_source/mds_table_handle.h"
+#include "storage/multi_data_source/mds_table_impl.h"
+#include "storage/multi_data_source/compile_utility/compile_mapper.h"
+#include "storage/multi_data_source/adapter_define/mds_dump_node.h"
 #include "storage/meta_mem/ob_tablet_pointer.h"
 #include "storage/tablet/ob_mds_row_iterator.h"
 #include "storage/tablet/ob_tablet_mds_data.h"
@@ -96,6 +92,8 @@ public:
 
   int get_split_data(ObTabletSplitMdsUserData &data,
                      const int64_t timeout) const;
+  int get_random_part_data(ObTabletRandomMdsUserData &data,
+                           const int64_t timeout) const;
   int split_partkey_compare(const blocksstable::ObDatumRowkey &rowkey,
                             const ObITableReadInfo &rowkey_read_info,
                             const ObIArray<uint64_t> &partkey_projector,
@@ -303,17 +301,6 @@ struct ReadAutoIncSeqOp
   share::ObTabletAutoincSeq &auto_inc_seq_;
 };
 
-struct ReadAutoIncSeqValueOp
-{
-  ReadAutoIncSeqValueOp(uint64_t &auto_inc_seq_value)
-    : auto_inc_seq_value_(auto_inc_seq_value) {}
-  int operator()(const share::ObTabletAutoincSeq &data)
-  {
-    return data.get_autoinc_seq_value(auto_inc_seq_value_);
-  }
-  uint64_t &auto_inc_seq_value_;
-};
-
 struct ReadSplitDataOp
 {
   ReadSplitDataOp(ObTabletSplitMdsUserData &split_data) : split_data_(split_data) {}
@@ -322,6 +309,16 @@ struct ReadSplitDataOp
     return split_data_.assign(data);
   }
   ObTabletSplitMdsUserData &split_data_;
+};
+
+struct ReadRandomPartDataOp
+{
+  ReadRandomPartDataOp(ObTabletRandomMdsUserData &random_part_data) : random_part_data_(random_part_data) {}
+  int operator()(const ObTabletRandomMdsUserData &data)
+  {
+    return random_part_data_.assign(data);
+  }
+  ObTabletRandomMdsUserData &random_part_data_;
 };
 
 struct ReadSplitDataPartkeyCompareOp

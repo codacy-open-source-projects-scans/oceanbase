@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -187,9 +180,7 @@ int ObTableApiReplaceExecutor::delete_row_to_das()
       bool is_primary_table = (i == 0);
       ObExpr *calc_part_id_expr = is_primary_table ? conflict_checker_.checker_ctdef_.calc_part_id_expr_
                                                     : del_ctdef.old_part_id_expr_;
-      if (OB_FAIL(ObTableApiModifyExecutor::delete_row_to_das(is_primary_table,
-                                                              calc_part_id_expr,
-                                                              conflict_checker_.checker_ctdef_.part_id_dep_exprs_,
+      if (OB_FAIL(ObTableApiModifyExecutor::delete_row_to_das(calc_part_id_expr,
                                                               del_ctdef,
                                                               del_rtdef))) {
         LOG_WARN("fail to delete row to das", K(ret), K(del_ctdef), K(del_rtdef), K(i));

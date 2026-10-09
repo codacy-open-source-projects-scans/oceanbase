@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
 #include "observer/ob_inner_sql_connection.h"  //ObInnerSQLConnection
 #include "rootserver/parallel_ddl/ob_ddl_helper.h"
+#include "share/ob_debug_sync.h"
 #include "storage/tablelock/ob_lock_inner_connection_util.h" //ObInnerConnectionLockUtil
 
 using namespace oceanbase::lib;
@@ -258,7 +252,9 @@ ObDDLHelper::ObDDLHelper(
     lock_object_id_map_(),
     allocator_(),
     parallel_ddl_type_(parallel_ddl_type),
-    schema_guard_wrapper_(tenant_id, schema_service, !enable_ddl_parallel, external_trans),
+    local_schema_guard_(),
+    latest_schema_guard_(schema_service, tenant_id, external_trans),
+    schema_guard_wrapper_(tenant_id, schema_service),
     enable_ddl_parallel_(enable_ddl_parallel),
     trans_(schema_service_,
            false, /*need_end_signal*/
@@ -286,6 +282,9 @@ int ObDDLHelper::init(rootserver::ObDDLService &ddl_service)
   } else if (OB_ISNULL(schema_service_)) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("schema_service is null", KR(ret));
+  } else if (OB_UNLIKELY(!enable_ddl_parallel_ && OB_NOT_NULL(external_trans_))) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("external_trans requires enable_ddl_parallel", KR(ret));
   } else if (OB_FAIL(lock_database_name_map_.create(
              OBJECT_BUCKET_NUM, "LockDBNameMap", "LockDBNameMap"))) {
     LOG_WARN("fail to create lock database name map", KR(ret));
@@ -302,9 +301,18 @@ int ObDDLHelper::init(rootserver::ObDDLService &ddl_service)
     task_id_ = OB_INVALID_ID;
     schema_version_cnt_ = 0;
     object_id_cnt_ = 0;
-    if (OB_FAIL(schema_guard_wrapper_.init(&ddl_service))) {
+    if (enable_ddl_parallel_) {
+      if (OB_FAIL(schema_guard_wrapper_.init(latest_schema_guard_))) {
+        LOG_WARN("fail to init schema guard wrapper", KR(ret));
+      }
+    } else if (OB_FAIL(ddl_service.get_tenant_schema_guard_with_version_in_inner_table(
+        tenant_id_, local_schema_guard_))) {
+      LOG_WARN("fail to get tenant schema guard with version in inner table",
+               KR(ret), K(tenant_id_));
+    } else if (OB_FAIL(schema_guard_wrapper_.init(local_schema_guard_))) {
       LOG_WARN("fail to init schema guard wrapper", KR(ret));
-    } else {
+    }
+    if (OB_SUCC(ret)) {
       inited_ = true;
     }
   }
@@ -457,7 +465,14 @@ int ObDDLHelper::execute()
     LOG_WARN("fail to lock objects", KR(ret));
   }
   /* ----------------------------------------------
-   * 3. fetch & generate schema:
+   * 3. check after lock:
+   * - validate schemas and args after all locks are acquired.
+   */
+  if (FAILEDx(check_after_lock_())) {
+    LOG_WARN("fail to check after lock", KR(ret));
+  }
+  /* ----------------------------------------------
+   * 4. fetch & generate schema:
    * - fetch the latest schemas from inner table.
    * - generate schema with arg and the latests schemas.
    */
@@ -465,7 +480,7 @@ int ObDDLHelper::execute()
     LOG_WARN("fail to generate schemas", KR(ret));
   }
   /* ----------------------------------------------
-   * 4. calculate needed schema version count, register task id & generate schema versions:
+   * 5. calculate needed schema version count, register task id & generate schema versions:
    * - generate an appropriate number of schema versions for this DDL and register task id.
    * - concurrent DDL trans will be committed in descending order of version later.
    * - when has external_trans_, we need to skip calc_schema_version and gen_task_id_and_schema_versions. The reason is that
@@ -480,14 +495,14 @@ int ObDDLHelper::execute()
     LOG_WARN("fail to gen task id and schema versions", KR(ret));
   }
   /* ----------------------------------------------
-   * 5. operate schemas:
+   * 6. operate schemas:
    * - persist schema in inner table.
    */
   if (FAILEDx(operate_schemas_())) {
     LOG_WARN("fail to create schemas", KR(ret));
   }
   /* ----------------------------------------------
-   * 6. [optional] serialize increment data dictionary:
+   * 7. [optional] serialize increment data dictionary:
    * - if table/database/tenant schema changed, records changed schemas in log and commits with DDL trans.
    */
   if (FAILEDx(serialize_inc_schema_dict_())) {
@@ -495,14 +510,14 @@ int ObDDLHelper::execute()
   }
 
   /* ----------------------------------------------
-   * 7. operate before commit
+   * 8. operate before commit
    */
   if (FAILEDx(operation_before_commit_())) {
     LOG_WARN("fail to do operation before commits", KR(ret));
   }
 
   /* ----------------------------------------------
-   * 8. wait and end ddl trans:
+   * 9. wait and end ddl trans:
    * - wait concurrent DDL trans with smallest schema version ended.
    * - abort/commit ddl trans.
    * - check schema version
@@ -621,12 +636,13 @@ int ObDDLHelper::lock_objects_in_map_(
       }
     } // end foreach
     if (OB_SUCC(ret)) {
+      const int64_t rpc_timeout = GCONF.rpc_timeout;
       lib::ob_sort(lock_pairs.begin(), lock_pairs.end(), ObLockObjPair::less_than);
       FOREACH_X(it, lock_pairs, OB_SUCC(ret)) {
-        const int64_t timeout = ctx.get_timeout();
-        if (OB_UNLIKELY(timeout <= 0)) {
+        const int64_t remaining_timeout = ctx.get_timeout();
+        if (OB_UNLIKELY(remaining_timeout <= 0)) {
           ret = OB_TIMEOUT;
-          LOG_WARN("already timeout", KR(ret), K(timeout));
+          LOG_WARN("already timeout", KR(ret), K(remaining_timeout));
         } else {
           transaction::tablelock::ObLockObjRequest lock_arg;
           lock_arg.obj_type_ = obj_type;
@@ -634,10 +650,16 @@ int ObDDLHelper::lock_objects_in_map_(
           lock_arg.obj_id_ = it->get_obj_id();
           lock_arg.lock_mode_ = it->get_lock_mode();
           lock_arg.op_type_ = ObTableLockOpType::IN_TRANS_COMMON_LOCK;
-          lock_arg.timeout_us_ = timeout;
+          lock_arg.timeout_us_ = min(rpc_timeout, remaining_timeout);
           LOG_INFO("try lock object", KR(ret), K(lock_arg));
           if (OB_FAIL(ObInnerConnectionLockUtil::lock_obj(tenant_id_, lock_arg, conn))) {
             LOG_WARN("lock obj failed", KR(ret), K_(tenant_id), K(lock_arg));
+            if (OB_EAGAIN == ret && ctx.get_timeout() > 0) {
+              ret = OB_ERR_PARALLEL_DDL_CONFLICT;
+              LOG_WARN("convert OB_EAGAIN to OB_ERR_PARALLEL_DDL_CONFLICT", KR(ret), K_(tenant_id), K(lock_arg));
+            }
+          } else {
+            DEBUG_SYNC(AFTER_DDL_OBJ_LOCK);
           }
         }
       } // end foreach
@@ -950,11 +972,18 @@ int ObDDLHelper::obj_lock_with_lock_id_(
     lock_arg.obj_id_ = obj_id;
     lock_arg.lock_mode_ = lock_mode;
     lock_arg.op_type_ = ObTableLockOpType::IN_TRANS_COMMON_LOCK;
-    if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, GCONF.rpc_timeout))) {
+    const int64_t rpc_timeout = GCONF.rpc_timeout;
+    if (OB_FAIL(ObShareUtil::set_default_timeout_ctx(ctx, rpc_timeout))) {
       LOG_WARN("fail to set timeout ctx", KR(ret));
-    } else if (FALSE_IT(lock_arg.timeout_us_ = ctx.get_timeout())) {
+    } else if (FALSE_IT(lock_arg.timeout_us_ = min(rpc_timeout, ctx.get_timeout()))) {
     } else if (OB_FAIL(ObInnerConnectionLockUtil::lock_obj(tenant_id, lock_arg, conn))) {
       LOG_WARN("lock obj failed", KR(ret), K(tenant_id), K(lock_arg));
+      if (OB_EAGAIN == ret && ctx.get_timeout() > 0) {
+        ret = OB_ERR_PARALLEL_DDL_CONFLICT;
+        LOG_WARN("convert OB_EAGAIN to OB_ERR_PARALLEL_DDL_CONFLICT", KR(ret), K(tenant_id), K(lock_arg));
+      }
+    } else {
+      DEBUG_SYNC(AFTER_DDL_OBJ_LOCK);
     }
   }
   return ret;

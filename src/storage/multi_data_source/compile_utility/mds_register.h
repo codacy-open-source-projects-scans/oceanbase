@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // ################################### 使用多源事务兼容性占位须知 ##################################
@@ -90,6 +83,8 @@
   #include "src/storage/tablet/ob_tablet_split_info_mds_user_data.h"
   #include "src/storage/direct_load/ob_direct_load_auto_inc_seq_mds_helper.h"
   #include "src/storage/direct_load/ob_direct_load_auto_inc_seq_data.h"
+  #include "src/storage/tablet/ob_tablet_random_mds_helper.h"
+  #include "src/storage/tablet/ob_tablet_random_mds_user_data.h"
 #endif
 
 /**************************************************************************************************/
@@ -249,13 +244,17 @@ _GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION_(HELPER_CLASS, BUFFER_CTX_TYPE, ID, ENU
                                           44,\
                                           DIRECT_LOAD_AUTO_INC_SEQ)
   GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObTabletRandomMdsHelper,\
-                                           ::oceanbase::storage::mds::MdsCtx,\
-                                           45,\
-                                           TABLET_RANDOM)
+                                          ::oceanbase::storage::mds::MdsCtx,\
+                                          45,\
+                                          TABLET_RANDOM)
   GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::share::ObSyncStandbyStatusMDSHelper, \
                                        ::oceanbase::storage::mds::MdsCtx, \
                                        46,\
                                        SYNC_STANDBY_STATUS)
+  GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION(::oceanbase::storage::ObTabletTruncateMdsHelper,\
+                                          ::oceanbase::storage::mds::ObTabletTruncateMdsCtx,\
+                                          47,\
+                                          TRUNCATE_TABLET)
   // # 余留位置（此行之前占位）
 #undef GENERATE_MDS_FRAME_CODE_FOR_TRANSACTION
 #endif
@@ -301,12 +300,25 @@ public: \
 
 namespace storage
 {
-  DEFINE_EMPTY(ObTabletRandomMdsHelper)
+  DEFINE_EMPTY(ObTabletTruncateMdsHelper)
 }
 namespace share
 {
   DEFINE_EMPTY(ObSyncStandbyStatusMDSHelper)
 }
+namespace storage
+{
+namespace mds
+{
+class ObTabletTruncateMdsCtx : public MdsCtx
+{
+public:
+  using MdsCtx::MdsCtx;
+  int assign(const ObTabletTruncateMdsCtx &rhs)
+  { return OB_SUCCESS; }
+};
+} // namespace mds
+} // namespace storage
 
 #undef DEFINE_EMPTY
 
@@ -395,8 +407,11 @@ _GENERATE_MDS_UNIT_(KEY_TYPE, VALUE_TYPE, NEED_MULTI_VERSION)
   GENERATE_MDS_UNIT(::oceanbase::storage::mds::DummyKey,\
                     ::oceanbase::storage::ObDirectLoadAutoIncSeqData,\
                     false)
+  GENERATE_MDS_UNIT(::oceanbase::storage::mds::DummyKey,\
+                    ::oceanbase::storage::ObTabletRandomMdsUserData,\
+                    false)
   // GENERATE_MDS_UNIT(::oceanbase::storage::mds::DummyKey,\
-  //                   ::oceanbase::storage::ObTabletRandomMdsUserData,\
+  //                   ::oceanbase::storage::ObTabletTruncateMdsUserData,\
   //                   false)
   // # 余留位置（此行之前占位）
 #endif

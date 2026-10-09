@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_sql_stat_manager.h"
@@ -153,7 +146,14 @@ void ObSqlStatManager::wait() {
       ob_usleep(1000 * 1000);
       LOG_WARN("wait sql stat linkhash map to be empty", K(alloc_handle_.get_alloc_count()));
     }
-    LOG_INFO("success to wait sql stat manager", K(MTL_ID()), K(alloc_handle_.get_alloc_count()));
+    LOG_INFO("sql stat manager values freed, before purge",
+             K(MTL_ID()), K(alloc_handle_.get_alloc_count()), K(alloc_handle_.get_alloc_node_count()), K(allocator_.allocated()));
+    sql_stat_infos_.purge();
+    LOG_INFO("sql stat manager after hashmap purge",
+             K(MTL_ID()), K(alloc_handle_.get_alloc_count()), K(alloc_handle_.get_alloc_node_count()), K(allocator_.allocated()));
+    allocator_.purge();
+    LOG_INFO("success to wait sql stat manager",
+             K(MTL_ID()), K(alloc_handle_.get_alloc_count()), K(alloc_handle_.get_alloc_node_count()), K(allocator_.allocated()));
   }
 }
 
@@ -168,6 +168,8 @@ void ObSqlStatManager::destroy() {
     ret = OB_ERROR;
     LOG_WARN("sql stat manager is not stopped", K(ret));
   } else {
+    LOG_INFO("sql stat manager before destroy",
+             K(MTL_ID()), K(alloc_handle_.get_alloc_count()), K(alloc_handle_.get_alloc_node_count()), K(allocator_.allocated()));
     is_inited_ = false;
   }
 }

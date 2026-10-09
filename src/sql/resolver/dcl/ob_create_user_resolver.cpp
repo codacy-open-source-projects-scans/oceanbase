@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_RESV
@@ -15,6 +8,8 @@
 #include "sql/resolver/ddl/ob_database_resolver.h"
 #include "sql/resolver/dcl/ob_set_password_resolver.h"
 #include "lib/encrypt/ob_encrypted_helper.h"
+#include "sql/resolver/ob_resolver_utils.h"
+#include "share/ob_compatibility_control.h"
 
 using namespace oceanbase::sql;
 using namespace oceanbase::common;
@@ -34,7 +29,7 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
 {
   int ret = OB_SUCCESS;
   ObCreateUserStmt *create_user_stmt = NULL;
-  if (OB_UNLIKELY(lib::is_oracle_mode() && 5 != parse_tree.num_child_)
+  if (OB_UNLIKELY(lib::is_oracle_mode() && 6 != parse_tree.num_child_)
       || OB_UNLIKELY(lib::is_mysql_mode() && 4 != parse_tree.num_child_)
       || OB_UNLIKELY(T_CREATE_USER != parse_tree.type_)) {
     ret = OB_INVALID_ARGUMENT;
@@ -56,7 +51,8 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
     ParseNode *require_info = const_cast<ParseNode*>(parse_tree.children_[2]);
     ParseNode *resource_options = !lib::is_oracle_mode() ? const_cast<ParseNode*>(parse_tree.children_[3]) : NULL;
     ParseNode *profile = lib::is_oracle_mode() ? const_cast<ParseNode*>(parse_tree.children_[3]) : NULL;
-    ParseNode *primary_zone = lib::is_oracle_mode() ? const_cast<ParseNode*>(parse_tree.children_[4]) : NULL; 
+    ParseNode *default_tablespace = lib::is_oracle_mode() ? const_cast<ParseNode*>(parse_tree.children_[4]) : NULL;
+    ParseNode *primary_zone = lib::is_oracle_mode() ? const_cast<ParseNode*>(parse_tree.children_[5]) : NULL;
     ParseNode *ssl_infos = NULL;
     create_user_stmt->set_tenant_id(params_.session_info_->get_effective_tenant_id());
 		//resolve if_not_exists
@@ -175,8 +171,26 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
                                                                profile_id))) {
               LOG_WARN("fail to get profile id", K(ret));
             }
+            if (OB_SUCC(ret)) {
+              create_user_stmt->set_profile_id(profile_id);  //只有oracle模式profile id是有效的
+            }
           }
-          create_user_stmt->set_profile_id(profile_id);  //只有oracle模式profile id是有效的
+          if (OB_SUCC(ret) && NULL != default_tablespace) {
+            uint64_t tablespace_id = OB_INVALID_ID;
+            if (OB_FAIL(ObResolverUtils::check_default_tablespace_enable(params_.session_info_))) {
+              LOG_WARN("fail to check default tablespace enable", K(ret));
+            } else if (OB_UNLIKELY(T_TABLESPACE != default_tablespace->type_)
+                       || OB_UNLIKELY(default_tablespace->num_child_ != 1)) {
+              ret = OB_ERR_UNEXPECTED;
+              LOG_WARN("invalid default_tablespace node", K(ret), K(default_tablespace->type_));
+            } else if (OB_NOT_NULL(default_tablespace->children_[0])) {
+              common::ObString tablespace_name(default_tablespace->children_[0]->str_len_,
+                                               default_tablespace->children_[0]->str_value_);
+              create_user_stmt->set_default_tablespace_name(tablespace_name);
+            } else {
+              create_user_stmt->set_default_tablespace_name(ObString::make_string("NULL"));
+            }
+          }
 
           // check password strength
           if (OB_SUCC(ret) && need_enc) {
@@ -192,9 +206,19 @@ int ObCreateUserResolver::resolve(const ParseNode &parse_tree)
 
           // check user name and password length
           if (OB_SUCC(ret)) {
-            if (user_name.length() > OB_MAX_USER_NAME_LENGTH) {
+            int64_t max_user_name_len = OB_MAX_USER_NAME_LENGTH;
+            if (lib::is_mysql_mode()) {
+              bool use_32_limit = false;
+              if (OB_FAIL(params_.session_info_->check_feature_enable(ObCompatFeatureType::MYSQL_USERNAME_LENGTH_32,
+                                                                      use_32_limit))) {
+                LOG_WARN("failed to check username length compat feature", K(ret));
+              } else if (use_32_limit) {
+                max_user_name_len = OB_MAX_USERNAME_LENGTH;
+              }
+            }
+            if (OB_SUCC(ret) && user_name.length() > max_user_name_len) {
               ret = OB_WRONG_USER_NAME_LENGTH;
-              LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr());
+              LOG_USER_ERROR(OB_WRONG_USER_NAME_LENGTH, user_name.length(), user_name.ptr(), max_user_name_len);
             } else if (password.length() > OB_MAX_PASSWORD_LENGTH) {
               if (lib::is_oracle_mode()) {
                 ret = OB_ERR_MISSING_OR_INVALID_PASSWORD;

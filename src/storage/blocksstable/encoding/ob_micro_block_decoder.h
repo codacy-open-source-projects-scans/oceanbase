@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_STORAGE_BLOCKSSTABLE_ENCODING_OB_MICRO_BLOCK_DECODER_H_
@@ -59,7 +52,8 @@ public:
 
   int decode_vector(
       const ObIRowIndex* row_index,
-      ObVectorDecodeCtx &vector_ctx);
+      ObVectorDecodeCtx &vector_ctx,
+      const bool need_reverse_trans_version = true);
 
   int get_row_count(
       const ObIRowIndex *row_index,
@@ -429,7 +423,7 @@ private:
       const share::schema::ObColumnParam *col_param,
       ObStorageDatum &decoded_datum,
       common::ObBitmap &result_bitmap);
-  int get_col_data(const int32_t col_id, ObVectorDecodeCtx &vector_ctx);
+  virtual int get_col_data(const int32_t col_id, ObVectorDecodeCtx &vector_ctx, const bool need_reverse_trans_version = true) override;
   virtual const ObMicroBlockHeader* get_micro_header() const override final
   {
     return micro_header_;
@@ -440,7 +434,6 @@ private:
                                                common::ObBitmap &result_bitmap);
 
 private:
-  int64_t request_cnt_; // request column count
   const ObColumnHeader *col_header_;
   const char *meta_data_;
   const char *row_data_;
@@ -453,7 +446,6 @@ private:
   static ObNoneExistColumnDecoder none_exist_column_decoder_;
   static ObColumnDecoderCtx none_exist_column_decoder_ctx_;
   static ObNewColumnDecoder new_column_decoder_;
-  ObBlockReaderAllocator decoder_allocator_;
   common::ObArenaAllocator buf_allocator_;
   char *allocated_decoders_buf_;
   int64_t allocated_decoders_buf_size_;

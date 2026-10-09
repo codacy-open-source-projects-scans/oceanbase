@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_multiple_scan_merge.h"
+#include "ob_tablet_read_tables.h"
 
 namespace oceanbase
 {
@@ -61,11 +55,11 @@ int ObMultipleScanMerge::open(const ObDatumRange &range)
 int ObMultipleScanMerge::init(
   ObTableAccessParam &param,
   ObTableAccessContext &context,
-  ObGetTableParam &get_table_param)
+  ObTabletReadTables &tablet_read_tables)
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(ObMultipleMerge::init(param, context, get_table_param))) {
-    STORAGE_LOG(WARN, "failed to init ObMultipleMerge", K(ret), K(param), K(context), K(get_table_param));
+  if (OB_FAIL(ObMultipleMerge::init(param, context, tablet_read_tables))) {
+    STORAGE_LOG(WARN, "failed to init ObMultipleMerge", K(ret), K(param), K(context), K(tablet_read_tables));
   } else {
     const ObITableReadInfo *read_info = nullptr;
     if (OB_ISNULL(read_info = access_param_->iter_param_.get_read_info())) {
@@ -83,14 +77,14 @@ int ObMultipleScanMerge::init(
 int ObMultipleScanMerge::switch_table(
     ObTableAccessParam &param,
     ObTableAccessContext &context,
-    ObGetTableParam &get_table_param)
+    ObTabletReadTables &tablet_read_tables)
 {
   int ret = OB_SUCCESS;
   const ObITableReadInfo *read_info = nullptr;
   if (OB_ISNULL(read_info = param.iter_param_.get_read_info())) {
     ret = OB_ERR_UNEXPECTED;
     STORAGE_LOG(WARN, "Unexpected null read info", K(ret));
-  } else if (OB_FAIL(ObMultipleMerge::switch_table(param, context, get_table_param))) {
+  } else if (OB_FAIL(ObMultipleMerge::switch_table(param, context, tablet_read_tables))) {
     LOG_WARN("Failed to switch table for ObMultipleMerge", K(ret));
   } else if (OB_FAIL(tree_cmp_.init(access_param_->iter_param_.get_schema_rowkey_count(),
                                     read_info->get_datum_utils(),
@@ -393,16 +387,7 @@ int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
   int ret = OB_SUCCESS;
   is_unprojected_row_valid_ = false;
   ObStoreRowIterator *iter = nullptr;
-  for (int64_t i = 0; OB_SUCC(ret) && i < iters_.count(); ++i) {
-    if (OB_ISNULL(iter = iters_.at(i))) {
-      ret = OB_ERR_UNEXPECTED;
-      STORAGE_LOG(WARN, "unexpected null iter", K(ret), K(i));
-    } else if (OB_FAIL(iter->advance_scan(range))) {
-      STORAGE_LOG(WARN, "failed to advance scan", K(ret), K(i), KPC(iter));
-    }
-  }
-  if (OB_FAIL(ret)) {
-  } else if (OB_LIKELY(rows_merger_ != nullptr && !rows_merger_->empty())) {
+  if (OB_LIKELY(rows_merger_ != nullptr && !rows_merger_->empty())) {
     if (OB_NOT_NULL(block_row_store_)) {
       block_row_store_->disable();
     }
@@ -412,6 +397,7 @@ int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
     const ObScanMergeLoserTreeItem *top_item = nullptr;
     blocksstable::ObDatumRowkey top_key;
     ObScanMergeLoserTreeItem item;
+    int64_t pop_iter_idx = 0;
     while (OB_SUCC(ret) && !rows_merger_->empty()) {
       if (OB_FAIL(rows_merger_->rebuild())) {
         LOG_WARN("failed to rebuild rows merger", K(ret), KPC(rows_merger_));
@@ -426,29 +412,44 @@ int ObMultipleScanMerge::advance_scan(const blocksstable::ObDatumRange &range)
         LOG_WARN("failed to compare top key", K(ret), K(top_key), K(range));
       } else if (cmp_ret > 0 || (0 == cmp_ret && range.is_left_closed())) {
         break;
+      } else if (FALSE_IT(pop_iter_idx = top_item->iter_idx_)) {
       } else if (OB_FAIL(rows_merger_->pop())) {
         STORAGE_LOG(WARN, "failed to pop rows merger", K(ret), KPC(rows_merger_));
-      } else if (FALSE_IT(iter = iters_.at(top_item->iter_idx_))) {
+      } else if (FALSE_IT(iter = iters_.at(pop_iter_idx))) {
+      } else if (OB_FAIL(iter->advance_scan(range))) {
+        STORAGE_LOG(WARN, "failed to advance scan for memtable iter", K(ret), K(pop_iter_idx), KP(iter));
       } else if (OB_FAIL(iter->get_next_row(item.row_))) {
         if (OB_ITER_END == ret) {
           ret = OB_SUCCESS;
         } else {
-          LOG_WARN("failed to get next row from iterator", K(ret), K(top_item), KPC(iter));
+          LOG_WARN("failed to get next row from iterator", K(ret), K(pop_iter_idx), KP(iter));
         }
       } else if (OB_ISNULL(item.row_)) {
         ret = OB_ERR_UNEXPECTED;
-        STORAGE_LOG(WARN, "get next row return NULL row", K(ret), "iter_index", top_item->iter_idx_);
-      } else if (FALSE_IT(item.iter_idx_ = top_item->iter_idx_)) {
+        STORAGE_LOG(WARN, "get next row return NULL row", K(ret), "iter_index", pop_iter_idx);
+      } else if (FALSE_IT(item.iter_idx_ = pop_iter_idx)) {
       } else if (OB_FAIL(rows_merger_->push(item))) {
         STORAGE_LOG(WARN, "loser tree push error", K(ret));
       } else {
-        STORAGE_LOG(DEBUG, "yuanzhe debug", K(consumer_cnt_), K(top_item->iter_idx_));
+        STORAGE_LOG(DEBUG, "yuanzhe debug", K(consumer_cnt_), K(pop_iter_idx), K(item));
       }
     }
     if (FAILEDx(rows_merger_->rebuild())) {
       LOG_WARN("failed to rebuild rows merger", K(ret), KPC(rows_merger_));
     } else if (OB_NOT_NULL(block_row_store_)) {
       block_row_store_->enable();
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < consumer_cnt_; ++i) {
+    const int64_t iter_idx = consumers_[i];
+    if (OB_UNLIKELY(iter_idx < 0 || iter_idx >= iters_.count())) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "unexpected consumer iter idx", K(ret), K(iter_idx), K(i), K_(consumer_cnt), K(iters_.count()));
+    } else if (OB_ISNULL(iter = iters_.at(iter_idx))) {
+      ret = OB_ERR_UNEXPECTED;
+      STORAGE_LOG(WARN, "unexpected null iter", K(ret), K(iter_idx), K(i));
+    } else if (OB_FAIL(iter->advance_scan(range))) {
+      STORAGE_LOG(WARN, "failed to advance remaining iter", K(ret), K(iter_idx), KP(iter));
     }
   }
   return ret;

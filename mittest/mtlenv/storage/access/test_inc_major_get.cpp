@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "test_scan_basic.h"
@@ -139,7 +132,7 @@ TEST_P(TestIncMajorGet, test_crossed_version_minor_get)
 
   mock_tablet_table_store(table_store_iter);
   ObSingleMerge single_merge;
-  OK(single_merge.init(access_param_, context_, get_table_param_));
+  OK(single_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(single_merge);
   OK(single_merge.open(rowkey));
   single_merge.disable_padding();
@@ -247,7 +240,7 @@ TEST_P(TestIncMajorGet, test_crossed_version_minor_get_not_filter)
 
   mock_tablet_table_store(table_store_iter);
   ObSingleMerge single_merge;
-  OK(single_merge.init(access_param_, context_, get_table_param_));
+  OK(single_merge.init(access_param_, context_, tablet_read_tables_));
   refresh_iter(single_merge);
   OK(single_merge.open(rowkey));
   single_merge.disable_padding();
@@ -329,7 +322,7 @@ TEST_P(TestIncMajorGet, test_old_version_mini_single_merge)
   prepare_get_param(trans_version_range, table_store_iter);
 
   ObSingleMerge single_merge;
-  OK(single_merge.init(access_param_, context_, get_table_param_));
+  OK(single_merge.init(access_param_, context_, tablet_read_tables_));
   OK(single_merge.open(rowkey));
   single_merge.disable_padding();
   single_merge.disable_fill_virtual_column();

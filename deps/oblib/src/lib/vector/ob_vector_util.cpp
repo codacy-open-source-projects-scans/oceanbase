@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX LIB
@@ -153,6 +146,16 @@ int build_index(obvsag::VectorIndexPtr &index_handler, uint32_t *lens, uint32_t 
 #endif
 }
 
+int tune_index(obvsag::VectorIndexPtr index_handler, int new_index_type)
+{
+  INIT_SUCC(ret);
+#ifdef OB_BUILD_CDC_DISABLE_VSAG
+  return ret;
+#else
+  return obvsag::tune_index(index_handler, new_index_type);
+#endif
+}
+
 int add_index(obvsag::VectorIndexPtr index_handler, float* vector_list, int64_t* ids, int dim, char *extra_info, int size)
 {
   INIT_SUCC(ret);
@@ -243,6 +246,16 @@ int get_vid_bound(obvsag::VectorIndexPtr index_handler, int64_t &min_vid, int64_
 #endif
 }
 
+int check_id_exist(obvsag::VectorIndexPtr index_handler, int64_t id, bool &exist)
+{
+  INIT_SUCC(ret);
+#ifdef OB_BUILD_CDC_DISABLE_VSAG
+  return ret;
+#else
+  return obvsag::check_id_exist(index_handler, id, exist);
+#endif
+}
+
 int get_extra_info_by_ids(obvsag::VectorIndexPtr& index_handler,
                           const int64_t* ids,
                           int64_t count,
@@ -259,7 +272,7 @@ return ret;
 int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector,int dim, int64_t topk,
                const float*& result_dist, const int64_t*& result_ids, const char *&extra_info, int64_t &result_size, int ef_search,
                void* invalid, bool reverse_filter, bool is_extra_info_filter, float valid_ratio, void *allocator, bool need_extra_info,
-               float distance_threshold)
+               float distance_threshold, float timeout_ms)
 {
   INIT_SUCC(ret);
 #ifdef OB_BUILD_CDC_DISABLE_VSAG
@@ -269,14 +282,14 @@ int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector,int dim
                                   result_dist, result_ids, result_size,
                                   ef_search, need_extra_info, extra_info,
                                   invalid, reverse_filter, is_extra_info_filter,
-                                  allocator, valid_ratio, distance_threshold);
+                                  allocator, valid_ratio, distance_threshold, timeout_ms);
 #endif
 }
 
 int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector,int dim, int64_t topk,
                const float*& result_dist, const int64_t*& result_ids, const char *&extra_info, int64_t &result_size, int ef_search,
                void* invalid, bool reverse_filter, bool is_extra_info_filter, float valid_ratio, void *allocator,
-               bool need_extra_info, void *&iter_ctx, bool is_last_search)
+               bool need_extra_info, void *&iter_ctx, bool is_last_search, float timeout_ms)
 {
   INIT_SUCC(ret);
 #ifdef OB_BUILD_CDC_DISABLE_VSAG
@@ -286,7 +299,7 @@ int knn_search(obvsag::VectorIndexPtr index_handler, float* query_vector,int dim
                                 result_dist, result_ids, result_size,
                                 ef_search, need_extra_info, extra_info,
                                 invalid, reverse_filter, is_extra_info_filter,
-                                valid_ratio, iter_ctx, is_last_search, allocator);
+                                valid_ratio, iter_ctx, is_last_search, allocator, timeout_ms);
 #endif
 }
 

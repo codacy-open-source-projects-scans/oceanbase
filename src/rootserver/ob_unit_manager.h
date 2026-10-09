@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_UNIT_MANAGER_H_
@@ -657,6 +650,7 @@ private:
       const int64_t new_unit_num,
       const common::ObIArray<uint64_t> &delete_unit_id_array);
   int fill_delete_unit_ptr_array(
+      common::ObISQLClient &client,
       share::ObResourcePool *pool,
       const common::ObIArray<uint64_t> &delete_unit_id_array,
       const int64_t new_unit_num,
@@ -1126,7 +1120,7 @@ private:
          bool &is_exist);
   static int read_parameter_from_seed_tenant_(
          const char * parameter_name,
-         ObString &parameter_value);
+         ObSqlString &parameter_value);
   //LOCK IN
   int commit_alter_unit_num_in_trans_(
     const common::ObIArray<share::ObResourcePool *> &pools,

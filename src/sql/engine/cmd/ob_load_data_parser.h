@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #ifndef _OB_LOAD_DATA_PARSER_H_
 #define _OB_LOAD_DATA_PARSER_H_
@@ -64,7 +57,10 @@ struct ObODPSGeneralFormat {
     compression_code_(),
     collect_statistics_on_create_(false),
     region_(),
-    api_mode_(ApiMode::TUNNEL_API)
+    api_mode_(ApiMode::TUNNEL_API),
+    use_odps_jni_connector_(true),
+    odps_data_transfer_mode_(0),  // 0=arrowTable, 1=offHeapTable
+    odps_jdk_storage_batch_size_(-1)  // -1=not set, use default capacity
   {
   }
   int deep_copy_str(const ObString &src,
@@ -87,7 +83,10 @@ struct ObODPSGeneralFormat {
     "COLLECT_STATISTICS_ON_CREATE",
     "REGION",
     "API_MODE",
-    "SPLIT"
+    "SPLIT",
+    "USE_ODPS_JNI_CONNECTOR",
+    "ODPS_DATA_TRANSFER_MODE",
+    "ODPS_JDK_STORAGE_BATCH_SIZE"
   };
   common::ObString access_type_;
   common::ObString access_id_;
@@ -103,12 +102,16 @@ struct ObODPSGeneralFormat {
   bool collect_statistics_on_create_;
   common::ObString region_;
   ApiMode api_mode_;
+  bool use_odps_jni_connector_;
+  int8_t odps_data_transfer_mode_;
+  int64_t odps_jdk_storage_batch_size_;
   common::ObArenaAllocator arena_alloc_;
   int to_json_kv_string(char* buf, const int64_t buf_len, int64_t &pos) const;
   int load_from_json_data(json::Pair *&node, common::ObIAllocator &allocator);
   TO_STRING_KV(K_(access_type), K_(access_id), K_(access_key), K_(sts_token),
                K_(endpoint), K_(tunnel_endpoint), K_(project), K_(schema), K_(table), K_(quota),
-               K_(compression_code), K_(collect_statistics_on_create), K_(region), K(api_mode_));
+               K_(compression_code), K_(collect_statistics_on_create), K_(region), K(api_mode_),
+               K_(use_odps_jni_connector), K_(odps_data_transfer_mode), K_(odps_jdk_storage_batch_size));
   OB_UNIS_VERSION(1);
 };
 
@@ -135,7 +138,8 @@ struct ObCSVGeneralFormat {
     ignore_last_empty_col_(true),
     parallel_parse_on_single_file_(true),
     parallel_parse_file_size_threshold_(DEFAULT_CSV_LARGE_FILE_SIZE_THRESHOLD),
-    max_row_length_(DEFAULT_MAX_CSV_ROW_LENGTH)
+    max_row_length_(DEFAULT_MAX_CSV_ROW_LENGTH),
+    export_header_(false)
   {}
   static constexpr const char *OPTION_NAMES[] = {
     "LINE_DELIMITER",
@@ -156,7 +160,8 @@ struct ObCSVGeneralFormat {
     "IGNORE_LAST_EMPTY_COLUMN",
     "PARALLEL_PARSE_ON_SINGLE_FILE",
     "PARALLEL_PARSE_FILE_SIZE_THRESHOLD",
-    "MAX_ROW_LENGTH"
+    "MAX_ROW_LENGTH",
+    "EXPORT_HEADER"
   };
 
   // ObCSVOptionsEnum should keep the same order as OPTION_NAMES
@@ -180,6 +185,7 @@ struct ObCSVGeneralFormat {
     PARALLEL_PARSE_ON_SINGLE_FILE,
     PARALLEL_PARSE_FILE_SIZE_THRESHOLD,
     MAX_ROW_LENGTH,
+    EXPORT_HEADER,
     // put new options here, before MAX_OPTIONS
     // ....
     MAX_OPTIONS
@@ -197,7 +203,7 @@ struct ObCSVGeneralFormat {
     GZIP = 2,
     DEFLATE = 3,
     ZSTD = 4,
-    SNAPPY = 5,
+    SNAPPY_BLOCK = 5,
   };
   enum class ObCSVBinaryFormat {
     DEFAULT = 0,
@@ -229,6 +235,7 @@ struct ObCSVGeneralFormat {
   int64_t max_row_length_;
   static constexpr int64_t DEFAULT_CSV_LARGE_FILE_SIZE_THRESHOLD = 256 * 1024 * 1024; // 256MB
   static constexpr int64_t DEFAULT_MAX_CSV_ROW_LENGTH = 2 * 1024 * 1024; // 2MB
+  bool export_header_;
 
   int init_format(const ObDataInFileStruct &format,
                   int64_t file_column_nums,
@@ -364,20 +371,26 @@ struct ObKAFKAGeneralFormat {
     // SASL authentication
     "security.protocol",
     "sasl.mechanism",
+    "sasl.mechanisms",
     "sasl.username",
     "sasl.password",
     "sasl.jaas.config",
     // SASL Kerberos
     "sasl.kerberos.service.name",
     "sasl.kerberos.kinit.cmd",
+    "sasl.kerberos.keytab",
     "sasl.kerberos.min.time.before.relogin",
     "sasl.kerberos.ticket.renew.window.factor",
     "sasl.kerberos.ticket.renew.jitter",
     "sasl.kerberos.principal",
     // SSL/TLS
     "ssl.ca.location",
+    "ssl.ca.pem",
+    "ssl.ca.certificate.stores",
     "ssl.certificate.location",
+    "ssl.certificate.pem",
     "ssl.key.location",
+    "ssl.key.pem",
     "ssl.key.password",
     "ssl.keystore.location",
     "ssl.keystore.password",
@@ -388,11 +401,40 @@ struct ObKAFKAGeneralFormat {
     "ssl.sigalgs.list",
     "ssl.endpoint.identification.algorithm",
     "ssl.crl.location",
-    // SASL OAuthBearer
+    "ssl.providers",
+    "ssl.engine.location",
+    "ssl.engine.id",
+    "enable.ssl.certificate.verification",
+    // HTTPS (OAuth/OIDC token endpoint verification)
+    "https.ca.location",
+    "https.ca.pem",
+    // SASL OAuthBearer / OIDC
     "sasl.oauthbearer.config",
     "sasl.oauthbearer.token.endpoint.url",
     "sasl.oauthbearer.scope.claim.name",
-    "sasl.oauthbearer.sub.claim.name"
+    "sasl.oauthbearer.sub.claim.name",
+    "enable.sasl.oauthbearer.unsecure.jwt",
+    "sasl.oauthbearer.method",
+    "sasl.oauthbearer.client.id",
+    "sasl.oauthbearer.client.credentials.client.id",
+    "sasl.oauthbearer.client.credentials.client.secret",
+    "sasl.oauthbearer.client.secret",
+    "sasl.oauthbearer.scope",
+    "sasl.oauthbearer.extensions",
+    "sasl.oauthbearer.grant.type",
+    "sasl.oauthbearer.assertion.algorithm",
+    "sasl.oauthbearer.assertion.private.key.file",
+    "sasl.oauthbearer.assertion.private.key.passphrase",
+    "sasl.oauthbearer.assertion.private.key.pem",
+    "sasl.oauthbearer.assertion.file",
+    "sasl.oauthbearer.assertion.claim.aud",
+    "sasl.oauthbearer.assertion.claim.exp.seconds",
+    "sasl.oauthbearer.assertion.claim.iss",
+    "sasl.oauthbearer.assertion.claim.jti.include",
+    "sasl.oauthbearer.assertion.claim.nbf.seconds",
+    "sasl.oauthbearer.assertion.claim.sub",
+    "sasl.oauthbearer.assertion.jwt.template.file",
+    "sasl.oauthbearer.metadata.authentication.type"
   };
 
   // Check if a parameter name is a security/authentication parameter
@@ -633,8 +675,12 @@ public:
     }
     find_new_line = true;
     if (field_idx < format_.file_column_nums_) {
+      // 这里处理行尾的最后一个字段：
+      // 1. str > ori_field_begin 表示最后一个字段有内容，需要生成字段。
+      // 2. 最后一个字段为空时，若 ignore_last_empty_col_ 为 false，则保留该空字段；
+      //    但 skip_blank_lines_ 为 true 时，需要通过 field_idx > 0 排除真正的空行。
       if ((str > ori_field_begin) ||
-          (!SKIP_BLANK_LINES && !IGNORE_LAST_EMPTY_COLUMN)) {
+          (!IGNORE_LAST_EMPTY_COLUMN && (!SKIP_BLANK_LINES || field_idx > 0))) {
         ++field_idx;
         if (USE_HANDLE_BATCH_LINES) {
           gen_new_field(false, ori_field_begin, str, field_begin, str, field_idx, output_line_no);
@@ -792,12 +838,22 @@ public:
                       ObString line_data, bool is_file_end)
       : fields_(fields), field_cnt_(field_cnt), line_data_(line_data), is_file_end_(is_file_end) {}
     common::ObIArray<FieldValue> &fields_;
+    // field_cnt_ records the actual parsed field count for this line, while fields_
+    // only materializes up to file_column_nums_ fields, so field_cnt_ can exceed
+    // fields_.count() when the input line contains more fields than the buffer holds.
     int field_cnt_;
     ObString line_data_;
     bool is_file_end_;
   };
   struct HandleBatchLinesParam {
     HandleBatchLinesParam(common::ObIArray<FieldValue> &fields, int field_cnt, int batch_size)
+      : fields_(fields), field_cnt_(field_cnt), batch_size_(batch_size) {}
+    common::ObIArray<FieldValue> &fields_;
+    int field_cnt_;
+    int batch_size_;
+  };
+  struct HandleSampleLinesParam {
+    HandleSampleLinesParam(common::ObIArray<FieldValue> &fields, int field_cnt, int batch_size)
       : fields_(fields), field_cnt_(field_cnt), batch_size_(batch_size) {}
     common::ObIArray<FieldValue> &fields_;
     int field_cnt_;
@@ -1026,10 +1082,16 @@ int ObCSVGeneralParser::scan_proto(const char *&str,
             field_end = escape_buf_pos;
           }
         }
+        // 判断当前解析到的内容是否需要生成字段：
+        // 1. is_field_term 表示遇到字段分隔符，分隔符前的字段已经结束，需要生成字段；
+        // 2. ori_field_end > ori_field_begin 表示字段本身有内容，需要生成字段;
+        // 3. 如果当前行以分隔符结尾，最后一个字段为空，只有在 ignore_last_empty_col_ 为 false
+        //    时才保留；同时 skip_blank_lines_ 只跳过真正的空行，field_idx > 0 说明当前行
+        //    已经有字段，是非空数据行，尾部空字段也需要按参数语义保留下来。
         if (is_field_term || ori_field_end > ori_field_begin ||
             (field_idx < format_.file_column_nums_
-            && !format_.skip_blank_lines_
-            && !format_.ignore_last_empty_col_)
+            && !format_.ignore_last_empty_col_
+            && (!format_.skip_blank_lines_ || field_idx > 0))
         ) {
           if (field_idx++ < format_.file_column_nums_) {
             if (USE_HANDLE_BATCH_LINES) {
@@ -1271,6 +1333,7 @@ struct ObExternalFileFormat
     ORC_FORMAT,
     PLUGIN_FORMAT,
     KAFKA_FORMAT,
+    PAIMON_FORMAT,
     MAX_FORMAT
   };
 

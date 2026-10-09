@@ -1,14 +1,7 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
-#ifndef OB_STORAGE_TRUNCATE_INFO_TRUNCATE_INFO_DISTINCT_MGR_H_
-#define OB_STORAGE_TRUNCATE_INFO_TRUNCATE_INFO_DISTINCT_MGR_H_
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
+#ifndef OB_STORAGE_TRUNCATE_INFO_MDS_INFO_DISTINCT_MGR_H_
+#define OB_STORAGE_TRUNCATE_INFO_MDS_INFO_DISTINCT_MGR_H_
 #include "storage/meta_mem/ob_tablet_handle.h"
 #include "storage/truncate_info/ob_truncate_info_array.h"
 #include "storage/truncate_info/ob_truncate_info_kv_cache.h"
@@ -112,6 +105,7 @@ public:
   bool is_empty() const { return truncate_info_distinct_mgr_.empty() && ttl_filter_info_distinct_mgr_.empty(); }
   int64_t get_newest_commit_version() const
   { return MAX(truncate_info_distinct_mgr_.get_newest_commit_version(), ttl_filter_info_distinct_mgr_.get_newest_commit_version()); }
+  int64_t get_ttl_newest_commit_version() const { return ttl_filter_info_distinct_mgr_.get_newest_commit_version(); }
   int init(ObArenaAllocator &allocator,
            ObTablet &tablet,
            const ObIArray<ObTabletHandle> *split_extra_tablet_handles,
@@ -175,4 +169,4 @@ private:
 } // namespace storage
 } // namespace oceanbase
 
-#endif // OB_STORAGE_TRUNCATE_INFO_TRUNCATE_INFO_DISTINCT_MGR_H_
+#endif // OB_STORAGE_TRUNCATE_INFO_MDS_INFO_DISTINCT_MGR_H_

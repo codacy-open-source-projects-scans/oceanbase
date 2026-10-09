@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX COMMON
@@ -25,6 +18,16 @@ using namespace share;
 using namespace sql;
 namespace  common
 {
+
+void ObLakeTableStat::reset()
+{
+  total_row_count_ = 0;
+  pruned_row_count_ = 0;
+  data_size_ = 0;
+  part_cnt_ = 0;
+  file_cnt_ = 0;
+  last_analyzed_ = 0;
+}
 
 void ObLakeColumnStat::reset()
 {

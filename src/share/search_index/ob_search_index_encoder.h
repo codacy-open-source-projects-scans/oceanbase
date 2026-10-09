@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2024 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SHARE_OB_SEARCH_INDEX_ENCODER_H_
@@ -195,9 +188,20 @@ public:
                           const common::ObIJsonBase *j_base,
                           common::ObString &value);
 
+  // For UTF-16/UTF-16LE charsets whose strnxfrm_varlen is unimplemented, convert the
+  // string to UTF-8 and remap the collation to the corresponding UTF-8 equivalent.
+  // Safe because utf16_general_ci / utf8mb4_general_ci share the same UCA weight
+  // algorithm, and utf16_bin / utf8mb4_bin both sort by Unicode code point order.
+  static int normalize_string_for_encoding(common::ObIAllocator &allocator,
+                                           common::ObString &str_value,
+                                           common::ObCollationType &cs_type);
+
   static bool string_safety_to_compare(const ObString &str);
   static bool string_column_may_truncate(const ObObjMeta &column_meta,
                                          const ObLength column_length);
+  // Check whether the column type is supported by the search index row generator.
+  // Keep in sync with ObSearchIndexRowGenerator::Generator::generate_rows().
+  static bool is_supported_column_type(const ObObjType type);
 };
 
 } // namespace share

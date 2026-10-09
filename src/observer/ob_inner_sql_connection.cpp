@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
 
 #include "ob_inner_sql_connection.h"
+#include "sql/ob_spi.h"
 #include "share/ob_time_utility2.h"
 #include "observer/ob_server.h"
 #include "observer/ob_server_event_history_table_operator.h"
@@ -434,6 +428,9 @@ int ObInnerSQLConnection::init_session_info(
             ddl_info.set_is_ddl(is_ddl);
             session->reset_timezone();
             session->init_use_rich_format();
+            if (is_ddl && GET_MIN_CLUSTER_VERSION() >= CLUSTER_VERSION_4_3_0_0) {
+              session->set_force_rich_format(sql::ObBasicSessionInfo::ForceRichFormatStatus::FORCE_ON);
+            }
             if (OB_FAIL(session->get_ddl_info().init(ddl_info, 0 /*session_id*/))) {
               LOG_WARN("fail to init ddl info", KR(ret), K(ddl_info));
             }
@@ -640,12 +637,16 @@ int ObInnerSQLConnection::process_record(sql::ObResultSet &result_set,
   ObExecStatUtils::record_exec_timestamp(time_record, first_record, exec_timestamp);
   audit_record.exec_timestamp_ = exec_timestamp;
   audit_record.exec_timestamp_.update_stage_time();
+  audit_record.cursor_executor_t_ = 0;
+  audit_record.cursor_elapsed_ = 0;
 
   if (OB_NOT_NULL(cursor) && cursor->is_streaming()) {
     int64_t current_exec_time = audit_record.exec_timestamp_.executor_t_;
     cursor->add_cursor_exec_time(current_exec_time);
     int64_t current_elapsed_time = audit_record.get_elapsed_time();
     cursor->add_cursor_elapsed_time(current_elapsed_time);
+    audit_record.cursor_executor_t_ = cursor->get_cursor_total_exec_time();
+    audit_record.cursor_elapsed_ = cursor->get_cursor_total_elapsed_time();
   }
 
   audit_record.plsql_exec_time_ = session.get_plsql_exec_time();
@@ -686,7 +687,7 @@ int ObInnerSQLConnection::process_record(sql::ObResultSet &result_set,
   ObSQLUtils::handle_audit_record(false, sql::PSCursor == audit_record.exec_timestamp_.exec_type_
                                          ? EXECUTE_PS_EXECUTE :
                                            (is_from_pl ? EXECUTE_PL_EXECUTE : EXECUTE_INNER),
-                                  session, sql_ctx.is_sensitive_);
+                                  session, sql_ctx.is_sensitive_, sql_ctx.cur_stmt_, &result_set, sql_ctx.schema_guard_);
 
   // 临时allocator 申请的内存，需要在这里 置 NULL
   {
@@ -763,22 +764,39 @@ int ObInnerSQLConnection::process_audit_record(sql::ObResultSet &result_set,
     }
 
     //update v$sql statistics
-    if (((OB_SUCC(last_ret) && OB_ISNULL(cursor))|| (OB_NOT_NULL(cursor) && OB_READ_NOTHING == last_ret)) && session.get_local_ob_enable_plan_cache()) {
-      int64_t old_total_time = audit_record.exec_timestamp_.executor_t_;
-      audit_record.exec_timestamp_.executor_t_ = OB_NOT_NULL(cursor) ? cursor->get_cursor_total_exec_time() : audit_record.exec_timestamp_.executor_t_;
-      audit_record.cursor_elapsed_ = OB_NOT_NULL(cursor) ? cursor->get_cursor_total_elapsed_time() : 0;
-      if (NULL != plan) {
+    if (OB_NOT_NULL(plan) && session.get_local_ob_enable_plan_cache()) {
+      bool need_update_plan_stat = false;
+      if (OB_NOT_NULL(cursor) && cursor->is_streaming()) {
+        // cursor_elapsed_ holds accumulated total; zero it so get_elapsed_time() returns
+        // per-fetch elapsed_t_ for update_evolution_stat_time (which uses ATOMIC_AAF).
+        int64_t saved_cursor_elapsed = audit_record.cursor_elapsed_;
+        audit_record.cursor_elapsed_ = 0;
+        plan->update_evolution_stat_time(audit_record.exec_timestamp_.executor_t_,
+                                         audit_record.get_elapsed_time(),
+                                         audit_record.exec_timestamp_.executor_end_ts_);
+        audit_record.cursor_elapsed_ = saved_cursor_elapsed;
+      }
+      if (OB_ISNULL(cursor) || !cursor->is_streaming()) {
+        need_update_plan_stat = true;
+      } else if (OB_SUCCESS != last_ret) {
+        need_update_plan_stat = true;
+      }
+
+      if (need_update_plan_stat) {
         if (!(sql_ctx.self_add_plan_) && sql_ctx.plan_cache_hit_) {
           plan->update_plan_stat(audit_record,
                                 false, // false mean not first update plan stat
                                 table_row_count_list);
-        } else if (sql_ctx.self_add_plan_ && !sql_ctx.plan_cache_hit_) {
+        } else if (sql_ctx.self_add_plan_) {
           plan->update_plan_stat(audit_record,
                                 true,
                                 table_row_count_list);
         }
+        if (OB_NOT_NULL(cursor) && cursor->is_streaming()
+            && OB_NOT_NULL(cursor->get_cursor_handler())) {
+          cursor->get_cursor_handler()->set_streaming_stat_pending(false);
+        }
       }
-      audit_record.exec_timestamp_.executor_t_ = old_total_time;
     }
   }
   return ret;
@@ -1048,7 +1066,7 @@ int ObInnerSQLConnection::query(sqlclient::ObIExecutor &executor,
             sqlstat_record.set_partition_cnt(res.result_set().get_exec_context().get_das_ctx().get_related_tablet_cnt());
             sqlstat_record.set_is_route_miss(get_session().partition_hit().get_bool()? 0 : 1);
             sqlstat_record.set_is_plan_cache_hit(res.sql_ctx().plan_cache_hit_);
-            sqlstat_record.set_is_muti_query(get_session().get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+            sqlstat_record.set_is_muti_query(res.sql_ctx().multi_stmt_item_.is_part_of_multi_stmt());
             sqlstat_record.set_is_muti_query_batch(res.sql_ctx().multi_stmt_item_.is_batched_multi_stmt());
             if (OB_NOT_NULL(res.result_set().get_physical_plan())) {
               sqlstat_record.set_is_full_table_scan(res.result_set().get_physical_plan()->contain_table_scan());
@@ -2367,13 +2385,13 @@ lib::Worker::CompatMode ObInnerSQLConnection::get_compat_mode() const
 // nested session and sql execute for foreign key.
 
 int ObInnerSQLConnection::begin_nested_session(ObSQLSessionInfo::StmtSavedValue &saved_session,
-                                               SavedValue &saved_conn, bool skip_cur_stmt_tables)
+                                               SavedValue &saved_conn)
 {
   int ret = OB_SUCCESS;
   if (!is_extern_session()) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("connection is not extern session", K(ret));
-  } else if (OB_FAIL(extern_session_->begin_nested_session(saved_session, skip_cur_stmt_tables))) {
+  } else if (OB_FAIL(extern_session_->begin_nested_session(saved_session))) {
     LOG_WARN("failed to begin nested session", K(ret));
   } else {
     saved_conn.ref_ctx_ = ref_ctx_;

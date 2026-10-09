@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_TRANSACTION_OB_TRANS_PART_CTX_
@@ -219,7 +212,8 @@ public:
              const MonotonicTs &commit_time,
              const int64_t &expire_ts,
              const common::ObString &app_trace_info,
-             const int64_t &request_id);
+             const int64_t &request_id,
+             const common::ObString &app_trace_id);
   int abort(const int reason);
   int one_phase_commit_();
   int get_prepare_version_if_prepared(bool &is_prepared, share::SCN &prepare_version);
@@ -237,7 +231,8 @@ public:
                   const int64_t &expire_ts,
                   const common::ObString &app_trace_info,
                   const int64_t &request_id,
-                  const ObXATransID &xid);
+                  const ObXATransID &xid,
+                  const common::ObString &app_trace_id);
   int sub_end_tx(const int64_t &request_id,
                  const ObXATransID &xid,
                  const common::ObAddr &tmp_scheduler,
@@ -1027,7 +1022,7 @@ public:
   int handle_tx_keepalive_response(const int64_t status);
   bool is_for_sslog() const { return is_for_sslog_(); }
 private:
-  bool fast_check_need_submit_redo_for_freeze_(uint32_t freeze_clock) const;
+  bool fast_check_need_submit_redo_for_freeze_() const;
   int check_status_();
   int tx_keepalive_response_(const int64_t status);
   void post_keepalive_msg_(const int status);
@@ -1059,6 +1054,7 @@ public:
                           ObTxLogCb *&log_cb,
                           memtable::ObRedoLogSubmitHelper &helper,
                           const int64_t replay_hint,
+                          const bool has_hold_ctx_lock,
                           share::SCN &submitted_scn);
   bool is_parallel_logging() const;
   int assign_commit_parts(const share::ObLSArray &log_participants,

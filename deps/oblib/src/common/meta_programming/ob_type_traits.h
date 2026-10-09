@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef DEPS_OBLIB_SRC_COMMON_META_PROGRAMMING_OB_TYPE_TRAIT_H
@@ -63,6 +56,21 @@ private:\
   typedef decltype(check<C>(0)) type;\
 public:\
   static constexpr bool value = type::value;\
+};
+
+#define REGISTER_STRICT_FUNCTION_TRAIT(function_name) \
+template<typename, typename>\
+struct has_##function_name {};\
+template<typename C, typename Ret, typename... Args>\
+struct has_##function_name<C, Ret(Args...)> {\
+private:\
+  template<typename T>\
+  static constexpr auto check(T*)\
+  -> decltype( static_cast<Ret(T::*)(Args...)>(&T::function_name), std::true_type() );\
+  template<typename>\
+  static constexpr std::false_type check(...);\
+public:\
+  static constexpr bool value = decltype(check<C>(0))::value;\
 };
 
 template<typename, typename>
@@ -126,7 +134,7 @@ REGISTER_FUNCTION_TRAIT(destroy)
 REGISTER_FUNCTION_TRAIT(start)
 REGISTER_FUNCTION_TRAIT(stop)
 REGISTER_FUNCTION_TRAIT(wait)
-REGISTER_FUNCTION_TRAIT(assign)
+REGISTER_STRICT_FUNCTION_TRAIT(assign)
 REGISTER_FUNCTION_TRAIT(to_string)
 REGISTER_FUNCTION_TRAIT(serialize)
 REGISTER_FUNCTION_TRAIT(deserialize)

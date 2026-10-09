@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_COMPACTION_OB_TABLET_MERGE_TASK_H_
@@ -67,7 +60,8 @@ struct ObMergeParameter {
     return nullptr != mview_merge_param_;
   }
   ObMergeType get_merge_type() const;
-  bool is_delete_insert_merge() const;
+  bool decide_merge_by_row() const;
+  ObMergeEngineType get_original_merge_engine_type() const;
   int get_rowid_range_by_scn_range(const share::ObScnRange &scn_range, const blocksstable::ObDatumRange *&rowid_range) const;
   bool is_ha_compeleted() const;
   const ObVersionRange &get_merge_version_range() const;
@@ -83,8 +77,6 @@ struct ObMergeParameter {
   share::ObDiagnoseLocation *error_location_;
   ObMviewMergeParameter *mview_merge_param_;
   ObIAllocator *allocator_;
-  // Built once per merge task for mini merge (schema not simplified, CS encoding); used by merge iters via iter_param.default_row_
-  blocksstable::ObDatumRow *default_row_;
 
   int64_t to_string(char* buf, const int64_t buf_len) const;
 private:

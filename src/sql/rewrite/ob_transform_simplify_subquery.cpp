@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_REWRITE
 #include "sql/rewrite/ob_transform_simplify_subquery.h"
 #include "sql/optimizer/ob_optimizer_util.h"
+#include "sql/resolver/expr/ob_raw_expr_copier.h"
 
 using namespace oceanbase::sql;
 
@@ -67,6 +61,15 @@ int ObTransformSimplifySubquery::transform_one_stmt(common::ObIArray<ObParentDML
       trans_happened |= is_happened;
       OPT_TRACE("add limit for exists subquery:", is_happened);
       LOG_TRACE("succeed to add limit for exists subquery", K(is_happened));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(pullup_nested_correlated_subquery(stmt, is_happened))) {
+      LOG_WARN("failed to pullup outer only correlated conds", K(ret));
+    } else {
+      trans_happened |= is_happened;
+      OPT_TRACE("pullup outer-only correlated conds from any/in subquery:", is_happened);
+      LOG_TRACE("succeed to pullup outer only correlated conds", K(is_happened));
     }
   }
   if (OB_SUCC(ret)) {
@@ -549,14 +552,12 @@ int ObTransformSimplifySubquery::get_push_down_conditions(ObDMLStmt *stmt,
     } else if (OB_FAIL(ObTransformUtils::extract_query_ref_expr(join_conds.at(i), query_refs))) {
       LOG_WARN("extract_query_ref_expr failed", K(ret), K(join_conds), K(i));
     } else {
-      bool can_push_down = false;
-      for (int64_t j = 0; OB_SUCC(ret) && j < query_refs.count(); ++j) {
+      bool can_push_down = true; // set to false on the first shared reference
+      for (int64_t j = 0; OB_SUCC(ret) && can_push_down && j < query_refs.count(); ++j) {
         if (OB_ISNULL(query_refs.at(j))) {
           ret = OB_ERR_UNEXPECTED;
           LOG_WARN("unexpected NULL", K(ret));
-        } else if (query_refs.at(j)->is_non_shared_reference()){
-          can_push_down = true;
-        } else {
+        } else if (!query_refs.at(j)->is_non_shared_reference()) {
           can_push_down = false;
         }
       }
@@ -718,6 +719,292 @@ int ObTransformSimplifySubquery::recursive_add_limit_for_exists_expr(ObRawExpr *
   return ret;
 }
 
+/*
+ * Pullup nested correlated subquery cond (2nd level) inside an subquery (1st level) to the outer stmt.
+ * This transformation is valid when:
+ * 1. the 1st-level condition is false/NULL propagate-able, that is,
+ *    when the 2nd-level cond evaluates as false,
+ *    the 1st level cond will also evaluate as false.
+ * 2. the 2nd-level subquery is correlated with the outer stmt
+ *    but not correlated with the 1st-level subquery.
+ *
+ * -- before
+ * SELECT * FROM t1
+ * WHERE t1.c1 = ANY (SELECT c2 FROM t2 WHERE EXISTS (SELECT * FROM t3 WHERE t3.c3 = t1.c1))
+ *             ^^^^^                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ * ANY/EXISTS is false/NULL propagate-able          correlated to outer stmt only
+ *
+ * -- after
+ * SELECT * FROM t1
+ * WHERE t1.c1 = ANY (SELECT c2 FROM t2)
+ *   AND EXISTS (SELECT * FROM t3 WHERE t3.c3 = t1.c1)
+ *   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ *         2nd level cond is pulled-up
+ */
+int ObTransformSimplifySubquery::pullup_nested_correlated_subquery(ObDMLStmt *stmt,
+                                                                    bool &trans_happened)
+{
+  int ret = OB_SUCCESS;
+  trans_happened = false;
+  if (OB_ISNULL(stmt) || OB_ISNULL(stmt->get_query_ctx())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(stmt));
+  } else if (!stmt->get_query_ctx()->check_opt_compat_version(COMPAT_VERSION_4_6_1)) {
+  } else {
+    ObIArray<ObRawExpr *> &conds = stmt->get_condition_exprs();
+    for (int64_t i = 0; OB_SUCC(ret) && i < conds.count(); ++i) {
+      bool is_happened = false;
+      if (OB_FAIL(try_pullup_nested_correlated_subquery(stmt, conds.at(i), is_happened))) {
+        LOG_WARN("failed to try pullup outer only correlated conds", K(ret));
+      } else {
+        trans_happened |= is_happened;
+      }
+    }
+  }
+  return ret;
+}
+
+int ObTransformSimplifySubquery::try_pullup_nested_correlated_subquery(ObDMLStmt *stmt,
+                                                                       ObRawExpr *expr,
+                                                                       bool &trans_happened)
+{
+  int ret = OB_SUCCESS;
+  trans_happened = false;
+  ObQueryRefRawExpr *query_ref = NULL;
+  ObSelectStmt *subquery = NULL;
+  const bool is_any = (NULL != expr) && expr->has_flag(IS_WITH_ANY);
+  const bool is_exists = (NULL != expr) && (T_OP_EXISTS == expr->get_expr_type());
+  const int64_t sq_param_idx = is_exists ? 0 : 1;
+  if (OB_ISNULL(stmt) || OB_ISNULL(expr) || OB_ISNULL(ctx_) || OB_ISNULL(ctx_->session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(stmt), K(expr), K(ctx_));
+  } else if (!is_any && !is_exists) {
+    // Only ANY and EXISTS are semi-join class where an empty subquery yields FALSE,
+    // so pulling up a pred preserves the result (false/NULL propagate-able).
+    // For NOT IN / =ALL / NOT EXISTS (anti-join): an empty subquery yields TRUE,
+    // so pulling up a pred would flip the result -- which is not equivalent.
+  } else if (OB_ISNULL(expr->get_param_expr(sq_param_idx))
+             || OB_UNLIKELY(!expr->get_param_expr(sq_param_idx)->is_query_ref_expr())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected subquery", K(ret), K(stmt), K(expr));
+  } else if (OB_FALSE_IT(query_ref = static_cast<ObQueryRefRawExpr *>(expr->get_param_expr(sq_param_idx)))) {
+  } else if (!query_ref->has_exec_param()) {
+    // already non-correlated, nothing to pull up
+  } else if (OB_ISNULL(subquery = query_ref->get_ref_stmt())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("null ref stmt", K(ret));
+  } else {
+    ObSEArray<ObRawExpr *, 2> pullup_conds;
+    if (OB_FAIL(collect_nested_correlated_subquery(query_ref, subquery, pullup_conds))) {
+      LOG_WARN("failed to collect outer only correlated conds", K(ret));
+    } else if (pullup_conds.empty()) {
+      // nothing to pull up
+    } else if (OB_FAIL(ObOptimizerUtil::remove_item(subquery->get_condition_exprs(), pullup_conds))) {
+      LOG_WARN("failed to remove pullup conds from subquery", K(ret));
+    } else if (OB_FAIL(decorrelate_pulled_up_nested_conds(pullup_conds, query_ref->get_exec_params()))) {
+      LOG_WARN("failed to decorrelate pullup conds", K(ret));
+    } else if (OB_FAIL(append(stmt->get_condition_exprs(), pullup_conds))) {
+      LOG_WARN("failed to append pullup conds to outer where", K(ret));
+    } else if (OB_FAIL(subquery->adjust_subquery_list())) {
+      LOG_WARN("failed to adjust subquery list", K(ret));
+    } else if (OB_FAIL(subquery->formalize_stmt(ctx_->session_info_, false))) {
+      LOG_WARN("failed to formalize subquery", K(ret));
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < pullup_conds.count(); ++i) {
+        if (OB_ISNULL(pullup_conds.at(i))) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("null pullup cond", K(ret));
+        } else if (OB_FAIL(pullup_conds.at(i)->formalize(ctx_->session_info_))) {
+          LOG_WARN("failed to formalize pulled-up cond", K(ret));
+        }
+      }
+      if (OB_SUCC(ret)) {
+        trans_happened = true;
+        OPT_TRACE("pulled-up outer-only correlated conds to outer WHERE", pullup_conds);
+      }
+    }
+  }
+  return ret;
+}
+
+/*
+ * Decorrelate pulled-up nested conds and deep-copy ExecParam before de-correlation and inheritance.
+ * Deep-Copy is needed because:
+ * 1. Before de-correlation: to make sure each ExecParam is de-correlated solely, or else all shared
+ *    instances will be de-correlated at the same time.
+ *    But the ExecParams that are not pulled-up should not be de-correlated.
+ * 2. Before inheritance: Use `inherit_exec_params()` instead would cause the ExecParams to be existed
+ *    in both the mid-level subquery and the pulled-up subquery. Such shared ExecParams cannot be
+ *    cleared in `formalize_query_ref_exec_params()` so the mid-level subquery will still carry
+ *    all the ExecParams even if they are not referred by the mid-level subquery after the pull-up.
+ */
+int ObTransformSimplifySubquery::decorrelate_pulled_up_nested_conds(
+  ObIArray<ObRawExpr *> &pullup_conds,
+  ObIArray<ObExecParamRawExpr *> &exec_params)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(ctx_) || OB_ISNULL(ctx_->expr_factory_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null ctx", K(ret), K(ctx_));
+  } else {
+    ObRawExprCopier copier(*ctx_->expr_factory_);
+    ObSEArray<ObQueryRefRawExpr *, 2> query_refs; // subqueries in pulled-up conds
+    // mark ExecParam - Column replacement pairs
+    for (int64_t i = 0; OB_SUCC(ret) && i < exec_params.count(); ++i) {
+      ObExecParamRawExpr *exec_param = exec_params.at(i);
+      if (OB_ISNULL(exec_param) || OB_ISNULL(exec_param->get_ref_expr())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("unexpected null exec param", K(ret), K(exec_param));
+      } else if (OB_FAIL(copier.add_replaced_expr(exec_param, exec_param->get_ref_expr()))) {
+        LOG_WARN("failed to add replaced expr", K(ret));
+      }
+    }
+    // 1. copy on de-correlate. e.g.
+    // outer.c1 IN (SELECT c2 FROM inner WHERE inner.c2 = outer.c1)
+    // ^^^^^^^^ this ExecParam should be replaced by ColumnRefRawExpr
+    for (int64_t i = 0; OB_SUCC(ret) && i < pullup_conds.count(); ++i) {
+      ObRawExpr *new_cond = NULL;
+      if (OB_FAIL(copier.copy_on_replace(pullup_conds.at(i), new_cond))) {
+        LOG_WARN("failed to copy on replace pullup cond", K(ret));
+      } else if (OB_FAIL(ObTransformUtils::extract_query_ref_expr(new_cond, query_refs, false))) {
+        LOG_WARN("failed to extract query ref exprs", K(ret));
+      } else {
+        pullup_conds.at(i) = new_cond;
+      }
+    }
+    // 2. pulled-up subqueries inherit ExecParam (using deep-copy) from the mid-level subquery. e.g.
+    // outer.c1 IN (SELECT c2 FROM inner WHERE inner.c2 = outer.c1)
+    //                                                    ^^^^^^^^ this ExecParam should be deep-copied
+    for (int64_t i = 0; OB_SUCC(ret) && i < query_refs.count(); ++i) {
+      ObQueryRefRawExpr *query_ref = query_refs.at(i);
+      ObSEArray<ObExecParamRawExpr *, 4> used_exec_params;
+      ObSEArray<ObRawExpr *, 4> old_exec_params;
+      ObSEArray<ObRawExpr *, 4> new_exec_params;
+      if (OB_ISNULL(query_ref) || OB_ISNULL(query_ref->get_ref_stmt())) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("null query ref", K(ret), K(query_ref));
+      } else if (OB_FAIL(ObTransformUtils::get_exec_params(exec_params,
+                                                           query_ref->get_ref_stmt(),
+                                                           used_exec_params))) {
+        LOG_WARN("failed to get exec params", K(ret));
+      }
+      for (int64_t j = 0; OB_SUCC(ret) && j < used_exec_params.count(); ++j) {
+        ObExecParamRawExpr *new_exec_param = NULL;
+        if (OB_FAIL(ObRawExprCopier::copy_expr_node(*ctx_->expr_factory_,
+                                                    used_exec_params.at(j),
+                                                    (ObRawExpr *&)new_exec_param))) {
+          LOG_WARN("failed to copy expr node", K(ret));
+        } else if (OB_ISNULL(new_exec_param)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("null new exec param", K(ret));
+        } else if (OB_FAIL(query_ref->add_exec_param_expr(new_exec_param))) {
+          LOG_WARN("failed to add exec param expr", K(ret));
+        } else if (OB_FAIL(new_exec_params.push_back(new_exec_param))) {
+          LOG_WARN("failed to push back new exec param", K(ret));
+        } else if (OB_FAIL(old_exec_params.push_back(used_exec_params.at(j)))) {
+          LOG_WARN("failed to push back old exec param", K(ret));
+        }
+      }
+      if (OB_FAIL(ret) || used_exec_params.empty()) {
+        // do nothing
+      } else {
+        // do `replace_relation_exprs` in a recursive way.
+        // because ExecParams in child stmts are also need to be replaced.
+        ObStmtExprReplacer replacer;
+        replacer.set_relation_scope();
+        replacer.set_recursive(true);
+        if (OB_FAIL(replacer.add_replace_exprs(old_exec_params, new_exec_params))) {
+          LOG_WARN("failed to add replace exprs", K(ret));
+        } else if (OB_FAIL(query_ref->get_ref_stmt()->iterate_stmt_expr(replacer))) {
+          LOG_WARN("failed to replace exec params in subquery body", K(ret));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+/*
+ * Collect WHERE conds that contain a nested subquery correlated ONLY to an upper stmt,
+ * not to its direct parent.
+ */
+int ObTransformSimplifySubquery::collect_nested_correlated_subquery(
+    ObQueryRefRawExpr *query_ref,
+    ObSelectStmt *subquery,
+    ObIArray<ObRawExpr *> &pullup_conds)
+{
+  int ret = OB_SUCCESS;
+  pullup_conds.reuse();
+  if (OB_ISNULL(query_ref) || OB_ISNULL(subquery)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected null", K(ret), K(query_ref), K(subquery));
+  } else if (subquery->is_set_stmt()
+             || subquery->is_hierarchical_query()
+             || subquery->is_scala_group_by()
+             || subquery->get_having_expr_size() > 0) {
+    // these break "empty filtered input => empty output" or carry correlation outside WHERE
+  } else {
+    const ObIArray<ObExecParamRawExpr *> &exec_params = query_ref->get_exec_params();
+    const ObIArray<ObRawExpr *> &conds = subquery->get_condition_exprs();
+    for (int64_t i = 0; OB_SUCC(ret) && i < conds.count(); ++i) {
+      ObRawExpr *cond = conds.at(i);
+      bool is_correlated = false;
+      if (OB_ISNULL(cond)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("null condition expr", K(ret));
+      } else if (!cond->has_flag(CNT_SUB_QUERY)) {
+        // no subquery in condition, skip
+      } else if (!cond->is_deterministic()) {
+        // condition evaluation order would change after pull uping, do not pull up non-deterministic conds
+      } else if (OB_FAIL(ObTransformUtils::is_correlated_expr(exec_params, cond, is_correlated))) {
+        LOG_WARN("failed to check is correlated expr", K(ret));
+      } else if (!is_correlated) {
+        // condition is not correlated to the upper stmt, skip
+      } else if (!cond->get_relation_ids().is_empty()) {
+        // directly references a local table of this subquery, cannot pullup
+      } else {
+        bool is_valid = true;
+        ObSEArray<ObQueryRefRawExpr *, 4> query_refs_in_conds;
+        /*
+         * An `exec_param` is stored in the `exec_params_` of the direct subquery
+         * of the stmt where the param's `ref_expr_` belongs to.
+         * For example, the `t1.a` is referred by S3 but stored in S2's `exec_params_`,
+         * because S2 is the direct subquery of S1 who carries the `t1.a`.
+         *                                                      -- [ exec_params_ ]
+         * select t1.a, t1.b, t1.c from t1 where exists (       -- S1: []
+         *   select 1 from t2 where t2.a = 1 and exists (       -- S2: [ S1.t1.a ]
+         *     select 1 from t4 where t4.a = t1.a and exists (  -- S3: [] # who actually refers t1.a
+         *       select 1 from t3 where t3.a = t4.b)));         -- S4: [ S3.t4.b ]
+         *
+         * So `S2.has_exec_param() == true` means S2 is correlated to S1 (because its child, S3, refers t1.a),
+         * and `S3.has_exec_param() == false` means S3 (and also its child S4), is not correlated with S2.
+         * Hence the `exists(S3)` can be pulled up to the S1's where condition as a whole.
+         * S4 can be safely pulled up along with S3 because it's not correlated to S2 either.
+         * Notice that `extract_query_ref_expr` will only extract S3 but will not iteratively extract S4.
+         */
+        if (OB_FAIL(ObTransformUtils::extract_query_ref_expr(cond, query_refs_in_conds))) {
+          LOG_WARN("failed to extract nested query refs", K(ret));
+        }
+        for (int64_t j = 0; is_valid && j < query_refs_in_conds.count(); ++j) {
+          if (OB_ISNULL(query_refs_in_conds.at(j))) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("null nested query ref", K(ret));
+          } else if (query_refs_in_conds.at(j)->is_shared_reference()
+                     || query_refs_in_conds.at(j)->has_exec_param()) {
+            is_valid = false;
+          }
+        }
+        if (OB_FAIL(ret) || !is_valid) {
+          // do nothing
+        } else if (OB_FAIL(pullup_conds.push_back(cond))) {
+          LOG_WARN("failed to push back pullup cond", K(ret));
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformSimplifySubquery::transform_any_all(ObDMLStmt *stmt, bool &trans_happened)
 {
   int ret = OB_SUCCESS;
@@ -737,7 +1024,9 @@ int ObTransformSimplifySubquery::transform_any_all(ObDMLStmt *stmt, bool &trans_
     if (OB_FAIL(relation_expr_pointers.at(i).get(target))) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("find to get expr from group", K(ret), K(target));
-    } else if (OB_FAIL(try_transform_any_all(stmt, target, is_happened))) {
+    // Pass target as root_expr so descendants can be checked in condition context
+    // via check_expr_used_as_condition(stmt, root_expr, expr, ...).
+    } else if (OB_FAIL(try_transform_any_all(stmt, target, target, is_happened))) {
       LOG_WARN("fail to transform expr", K(ret));
     } else if (!is_happened) {
       // do nothing
@@ -750,7 +1039,10 @@ int ObTransformSimplifySubquery::transform_any_all(ObDMLStmt *stmt, bool &trans_
   return ret;
 }
 
-int ObTransformSimplifySubquery::try_transform_any_all(ObDMLStmt *stmt, ObRawExpr *&expr, bool &trans_happened)
+int ObTransformSimplifySubquery::try_transform_any_all(ObDMLStmt *stmt,
+                                                       ObRawExpr *root_expr,
+                                                       ObRawExpr *&expr,
+                                                       bool &trans_happened)
 {
   int ret = OB_SUCCESS;
   bool is_happened = false;
@@ -765,7 +1057,7 @@ int ObTransformSimplifySubquery::try_transform_any_all(ObDMLStmt *stmt, ObRawExp
     ret = OB_SIZE_OVERFLOW;
     LOG_WARN("too deep recursive", K(ret), K(is_stack_overflow));
   } else if (IS_SUBQUERY_COMPARISON_OP(expr->get_expr_type())) {
-    if (OB_FAIL(do_transform_any_all(stmt, expr, is_happened))) {
+    if (OB_FAIL(do_transform_any_all(stmt, root_expr, expr, is_happened))) {
       LOG_WARN("failed to do_trans_any_all", K(ret));
     } else {
       trans_happened |= is_happened;
@@ -773,7 +1065,10 @@ int ObTransformSimplifySubquery::try_transform_any_all(ObDMLStmt *stmt, ObRawExp
   } else if (expr->has_flag(CNT_SUB_QUERY)) {
     //check children
     for (int64_t i = 0; OB_SUCC(ret) && i < expr->get_param_count(); ++i) {
-      if (OB_FAIL(SMART_CALL(try_transform_any_all(stmt, expr->get_param_expr(i), is_happened)))) {
+      if (OB_FAIL(SMART_CALL(try_transform_any_all(stmt,
+                                                   root_expr,
+                                                   expr->get_param_expr(i),
+                                                   is_happened)))) {
         LOG_WARN("failed to try_transform_any_all for param", K(ret));
       } else {
         trans_happened |= is_happened;
@@ -783,7 +1078,10 @@ int ObTransformSimplifySubquery::try_transform_any_all(ObDMLStmt *stmt, ObRawExp
   return ret;
 }
 
-int ObTransformSimplifySubquery::do_transform_any_all(ObDMLStmt *stmt, ObRawExpr *&expr, bool &trans_happened)
+int ObTransformSimplifySubquery::do_transform_any_all(ObDMLStmt *stmt,
+                                                      ObRawExpr *root_expr,
+                                                      ObRawExpr *&expr,
+                                                      bool &trans_happened)
 {
   int ret = OB_SUCCESS;
   bool is_happened = false;
@@ -800,7 +1098,7 @@ int ObTransformSimplifySubquery::do_transform_any_all(ObDMLStmt *stmt, ObRawExpr
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(transform_any_all_as_min_max(stmt, expr, is_happened))) {
+    } else if (OB_FAIL(transform_any_all_as_min_max(stmt, root_expr, expr, is_happened))) {
       LOG_WARN("failed to trans_any_all_as_min_max", K(ret));
     } else {
       trans_happened |= is_happened;
@@ -823,16 +1121,19 @@ int ObTransformSimplifySubquery::do_transform_any_all(ObDMLStmt *stmt, ObRawExpr
   return ret;
 }
 
-int ObTransformSimplifySubquery::check_any_all_as_min_max(ObRawExpr *expr, bool &is_valid)
+int ObTransformSimplifySubquery::check_any_all_as_min_max(ObDMLStmt *stmt,
+                                                          ObRawExpr *root_expr,
+                                                          ObRawExpr *expr,
+                                                          bool &is_valid)
 {
   int ret = OB_SUCCESS;
   ObSelectStmt *child_stmt = NULL;
   is_valid = false;
 
   //check op_expr
-  if (OB_ISNULL(expr) || OB_ISNULL(ctx_)) {
+  if (OB_ISNULL(stmt) || OB_ISNULL(root_expr) || OB_ISNULL(expr) || OB_ISNULL(ctx_)) {
     ret = OB_ERR_UNEXPECTED;
-    LOG_WARN("params have null", K(ret), K(expr));
+    LOG_WARN("params have null", K(ret), K(stmt), K(root_expr), K(expr));
   } else if (IS_SUBQUERY_COMPARISON_OP(expr->get_expr_type())
              && T_OP_SQ_EQ != expr->get_expr_type()
              && T_OP_SQ_NSEQ != expr->get_expr_type()
@@ -884,7 +1185,20 @@ int ObTransformSimplifySubquery::check_any_all_as_min_max(ObRawExpr *expr, bool 
       } else if (!is_match) {
         /*不能利用基表索引，不改写*/
       } else if (expr->has_flag(IS_WITH_ANY)) {
-        is_valid = true;
+        // ANY(empty set) is FALSE, but MIN/MAX over empty set yields NULL.
+        // So for projection/value expressions, rewriting ANY to MIN/MAX can change
+        // observable results (e.g. 0 -> NULL). check_expr_used_as_condition()
+        // restricts this rewrite to boolean-condition context only, where this
+        // mismatch is acceptable for current rewrite strategy.
+        bool used_as_condition = false;
+        if (OB_FAIL(ObTransformUtils::check_expr_used_as_condition(stmt,
+                                                                   root_expr,
+                                                                   expr,
+                                                                   used_as_condition))) {
+          LOG_WARN("failed to check expr used as condition", K(ret));
+        } else if (used_as_condition) {
+          is_valid = true;
+        }
       } else if (expr->has_flag(IS_WITH_ALL)) {
         if (OB_FAIL(ObTransformUtils::is_column_nullable(child_stmt,
                                                          ctx_->schema_checker_,
@@ -903,6 +1217,7 @@ int ObTransformSimplifySubquery::check_any_all_as_min_max(ObRawExpr *expr, bool 
 }
 
 int ObTransformSimplifySubquery::transform_any_all_as_min_max(ObDMLStmt *stmt,
+                                                              ObRawExpr *root_expr,
                                                               ObRawExpr *expr,
                                                               bool &trans_happened)
 {
@@ -912,7 +1227,7 @@ int ObTransformSimplifySubquery::transform_any_all_as_min_max(ObDMLStmt *stmt,
   if (OB_ISNULL(stmt) || OB_ISNULL(expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("params have null", K(ret), K(stmt), K(expr));
-  } else if (OB_FAIL(check_any_all_as_min_max(expr, is_valid))) {
+  } else if (OB_FAIL(check_any_all_as_min_max(stmt, root_expr, expr, is_valid))) {
     LOG_WARN("failed to check_any_all_as_min_max", K(ret));
   } else if (!is_valid) {
     /* do nothing */
@@ -1549,7 +1864,6 @@ int ObTransformSimplifySubquery::simplify_select_items(ObDMLStmt *stmt,
                                                       bool &trans_happened)
 {
   int ret = OB_SUCCESS;
-  bool has_limit = false;
   ObRawExprFactory *expr_factory = NULL;
   bool can_be_simplified = false;
   if (OB_ISNULL(subquery) || OB_ISNULL(stmt) || OB_ISNULL(ctx_) ||
@@ -1563,36 +1877,48 @@ int ObTransformSimplifySubquery::simplify_select_items(ObDMLStmt *stmt,
   } else if (!can_be_simplified) {
     //do nothing
   } else if (ObSelectStmt::UNION == subquery->get_set_op() && !subquery->is_recursive_union()) {
-    const ObIArray<ObSelectStmt*> &child_stmts = subquery->get_set_query();
+    ObIArray<ObSelectStmt*> &child_stmts = subquery->get_set_query();
+    ObSEArray<bool, 4> child_happened;
     for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
       ObSelectStmt *child = child_stmts.at(i);
-      if (OB_FAIL(SMART_CALL(simplify_select_items(stmt, op_type, child, true, trans_happened)))) {
+      bool is_happened = false;
+      if (OB_FAIL(SMART_CALL(simplify_select_items(stmt, op_type, child, true, is_happened)))) {
         LOG_WARN("Simplify select list in EXISTS fails", K(ret));
-      }
-    }
-    ObRawExprResType res_type;
-    res_type.set_type(ObIntType);
-    for(int64_t i = 0; OB_SUCC(ret) && i < subquery->get_select_item_size(); i++) {
-      SelectItem &select_item = subquery->get_select_item(i);
-      if(OB_ISNULL(select_item.expr_)) {
-        ret = OB_ERR_UNEXPECTED;
-        LOG_WARN("unexpected null select expr", K(ret), K(select_item));
+      } else if (OB_FAIL(child_happened.push_back(is_happened))) {
+        LOG_WARN("failed to push back", K(ret));
       } else {
-        select_item.expr_->set_result_type(res_type);
+        trans_happened |= is_happened;
       }
     }
-    bool has_limit = false;
-    if (OB_FAIL(ret)){
+    if (OB_FAIL(ret) || !trans_happened) {
       // do nothing
-    } else if (OB_FAIL(check_limit(op_type, subquery, has_limit))) {
-      LOG_WARN("failed to check subquery has unremovable limit", K(ret));
-    } else if(!has_limit
-              && is_add_limit_for_exists_subquery_enabled(stmt->get_query_ctx()->optimizer_features_enable_version_)
-              && NULL != subquery->get_limit_expr() &&
-              OB_FAIL(ObTransformUtils::add_compare_int_constraint(ctx_, subquery->get_limit_expr(), T_OP_GE, 1))) {
-      LOG_WARN("failed to add const param constraints", K(ret));
-    } else if (!has_limit) {
-      subquery->assign_set_all();
+    } else if (OB_FAIL(wrap_const_view_for_set_child_if_needed(child_stmts, child_happened))) {
+      LOG_WARN("failed to wrap const view for set child if needed", K(ret));
+    } else {
+      ObRawExprResType res_type;
+      res_type.set_type(ObIntType);
+      for(int64_t i = 0; OB_SUCC(ret) && i < subquery->get_select_item_size(); i++) {
+        SelectItem &select_item = subquery->get_select_item(i);
+        if(OB_ISNULL(select_item.expr_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected null select expr", K(ret), K(select_item));
+        } else {
+          select_item.expr_->set_result_type(res_type);
+        }
+      }
+      bool has_limit = false;
+      if (OB_FAIL(ret)){
+        // do nothing
+      } else if (OB_FAIL(check_limit(op_type, subquery, has_limit))) {
+        LOG_WARN("failed to check subquery has unremovable limit", K(ret));
+      } else if(!has_limit
+                && is_add_limit_for_exists_subquery_enabled(stmt->get_query_ctx()->optimizer_features_enable_version_)
+                && NULL != subquery->get_limit_expr() &&
+                OB_FAIL(ObTransformUtils::add_compare_int_constraint(ctx_, subquery->get_limit_expr(), T_OP_GE, 1))) {
+        LOG_WARN("failed to add const param constraints", K(ret));
+      } else if (!has_limit) {
+        subquery->assign_set_all();
+      }
     }
   } else {
     // Add single select item with const int 1
@@ -1648,6 +1974,74 @@ int ObTransformSimplifySubquery::simplify_select_items(ObDMLStmt *stmt,
   }
   return ret;
 }
+
+// Branches that can not be simplified (e.g. MINUS/INTERSECT) keep their original select items.
+// Wrap them into a const view `select 1, ... from (branch)` so that
+// all select items of all set branches will be const int 1.
+int ObTransformSimplifySubquery::wrap_const_view_for_set_child_if_needed(ObIArray<ObSelectStmt*> &child_stmts,
+                                                                         const ObIArray<bool> &child_happened)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(ctx_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("unexpected NULL", K(ret));
+  } else if (OB_UNLIKELY(child_stmts.count() != child_happened.count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("array size mismatch", K(ret), K(child_stmts.count()), K(child_happened.count()));
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < child_stmts.count(); ++i) {
+    ObSelectStmt *child_stmt = child_stmts.at(i);
+    ObSelectStmt *view_stmt = NULL;
+    bool need_wrap = false;
+    int64_t select_item_size = 0;
+    if (OB_ISNULL(child_stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("child stmt is null", K(ret));
+    } else if (child_happened.at(i)) {
+      // child stmt already rewritten do not need to be wrapped
+    } else {
+      // only wrap children whose select item types are not all INT type
+      select_item_size = child_stmt->get_select_item_size();
+      for (int64_t j = 0; OB_SUCC(ret) && !need_wrap && j < select_item_size; ++j) {
+        const ObRawExpr *expr = child_stmt->get_select_item(j).expr_;
+        if (OB_ISNULL(expr)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("select expr is null", K(ret));
+        } else if (ObIntType != expr->get_result_type().get_type()) {
+          need_wrap = true;
+        }
+      }
+    }
+    if (OB_FAIL(ret) || !need_wrap) {
+      // do nothing
+    } else if (OB_FAIL(ObTransformUtils::create_stmt_with_generated_table(ctx_,
+                                                                          child_stmt,
+                                                                          view_stmt))) {
+      LOG_WARN("failed to create stmt with generated table", K(ret));
+    } else if (OB_ISNULL(view_stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("view stmt is null", K(ret));
+    } else {
+      // the view's output is only used for set type deduction, replace it with const int 1
+      // so that this branch matches the simplified branches without adding any cast
+      view_stmt->clear_select_item();
+      view_stmt->clear_column_items();
+      for (int64_t j = 0; OB_SUCC(ret) && j < select_item_size; ++j) {
+        if (OB_FAIL(ObTransformUtils::create_dummy_select_item(*view_stmt, ctx_))) {
+          LOG_WARN("failed to create dummy select item", K(ret));
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(view_stmt->formalize_stmt(ctx_->session_info_))) {
+        LOG_WARN("failed to formalize stmt", K(ret));
+      } else {
+        child_stmts.at(i) = view_stmt;
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformSimplifySubquery::eliminate_groupby_in_exists(ObDMLStmt *stmt,
                                                        const ObItemType op_type,
                                                        ObSelectStmt *&subquery,

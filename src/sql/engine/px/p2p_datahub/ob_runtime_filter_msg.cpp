@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -214,6 +207,26 @@ OB_DEF_SERIALIZE_SIZE(ObRFInFilterMsg)
   return len;
 }
 
+int ObRFInFilterMsg::regenerate()
+{
+  int ret = OB_SUCCESS;
+  if (is_active_) {
+    for (int64_t r = 0; OB_SUCC(ret) && r < serial_rows_.count(); ++r) {
+      ObFixedArray<ObDatum, ObIAllocator> *row = serial_rows_.at(r);
+      if (OB_NOT_NULL(row)) {
+        for (int64_t c = 0; OB_SUCC(ret) && c < row->count(); ++c) {
+          ObDatum copy;
+          if (OB_FAIL(copy.deep_copy(row->at(c), get_allocator()))) {
+            LOG_WARN("rehome in-filter row datum failed", K(ret), K(r), K(c));
+          } else {
+            row->at(c) = copy;
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
 
 //ObRFBloomFilterMsg
 int ObRFBloomFilterMsg::process_msg_internal(bool &need_free)
@@ -239,7 +252,18 @@ int ObRFBloomFilterMsg::process_msg_internal(bool &need_free)
       }
       need_free = true;
     } else {
+      need_free = false;
       need_merge = false; // set success, not need to merge
+      if (!is_finish_regen_) {
+        (void) leader_memset();
+        {
+          ObThreadCondGuard guard(regen_cond_);
+          is_finish_regen_ = true;
+        }
+        if (OB_FAIL(regen_cond_.broadcast())) {
+          LOG_WARN("failed to broadcast");
+        }
+      }
       if (is_first_phase() && get_msg_receive_expect_cnt() == 1 && expect_first_phase_count_ == 1) {
         // for the bloom filter which only contain one piece, we should forward
         // the second phase message directly, otherwise, we will forward the
@@ -494,6 +518,23 @@ int ObRFBloomFilterMsg::shadow_copy(const ObRFBloomFilterMsg &other_msg)
   return ret;
 }
 
+int ObRFBloomFilterMsg::prepare_memset_helper()
+{
+  int ret = OB_SUCCESS;
+  void *buf = allocator_.alloc(sizeof(ObPxBfMemsetHelper));
+  if (OB_ISNULL(buf)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("fail to allocate memory for memset helper", K(ret));
+  } else {
+    memset_helper_ = new (buf) ObPxBfMemsetHelper();
+  }
+  return ret;
+}
+
+// Multi-piece regenerate: alloc a new full-size buffer,
+// swap bits_array_ to it, cooperatively zero it, then OR-copy the old piece.
+// Runs inside the hashmap bucket lock when driven by P2PMsgSetCall.
+ERRSIM_POINT_DEF(DISABLE_RPC_BF_COOP)
 int ObRFBloomFilterMsg::regenerate()
 {
   int ret = OB_SUCCESS;
@@ -502,11 +543,22 @@ int ObRFBloomFilterMsg::regenerate()
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("fail to reset receive count array", K(ret));
     } else if (1 == receive_count_array_.count()) {
+      // Single piece: current buffer IS the full filter; no alloc/MEMSET.
       is_finish_regen_ = true;
-    } else if (OB_FAIL(bloom_filter_.regenerate())) {
-      LOG_WARN("fail to to regnerate bloom filter", K(ret));
     } else {
-      is_finish_regen_ = true;
+      int64_t total_bits_array_length = ceil((double)bloom_filter_.get_bits_count() / 64);
+      const int64_t total_bytes = total_bits_array_length * sizeof(int64_t);
+      bool need_coop_memset = !DISABLE_RPC_BF_COOP && total_bytes >= ObPxBfMemsetHelper::PARALLEL_MEMSET_THRESHOLD;
+      if (need_coop_memset && OB_FAIL(regen_cond_.init(
+          common::ObWaitEventIds::SHARED_JOIN_FILTER_CONSTRUCTOR_COND_WAIT))) {
+        LOG_WARN("fail to init regen cond", K(ret));
+      } else if (need_coop_memset && OB_FAIL(prepare_memset_helper())) {
+        LOG_WARN("fail to prepare memset helper", K(ret));
+      } else if (OB_FAIL(bloom_filter_.regenerate(memset_helper_))) {
+        LOG_WARN("fail to regenerate bloom filter", K(ret));
+      } else if (!need_coop_memset) {
+        is_finish_regen_ = true;
+      }
     }
   }
   return ret;
@@ -515,6 +567,21 @@ int ObRFBloomFilterMsg::regenerate()
 int ObRFBloomFilterMsg::atomic_merge(ObP2PDatahubMsgBase &other_msg)
 {
   int ret = OB_SUCCESS;
+  // R1: wait for leader to finish cooperative regenerate (MEMSET + first-piece OR-copy)
+  // before touching bits_array_ via merge_filter.  While waiting, help drain MEMSET slices.
+  while (OB_SUCC(ret) && !is_finish_regen_) {
+    follower_help_memset();
+    {
+      ObThreadCondGuard guard(regen_cond_);
+      if (is_finish_regen_) {
+        break;
+      }
+      regen_cond_.wait_us(100 /*us*/);
+      if (is_finish_regen_) {
+        break;
+      }
+    }
+  }
   if (!other_msg.is_empty() && (OB_FAIL(merge(other_msg)))) {
     LOG_WARN("fail to merge dh msg", K(ret));
   }
@@ -530,7 +597,12 @@ int ObRFBloomFilterMsg::merge(ObP2PDatahubMsgBase &msg)
 {
   int ret = OB_SUCCESS;
   ObRFBloomFilterMsg &bf_msg = static_cast<ObRFBloomFilterMsg &>(msg);
-  if (bf_msg.is_empty_) {
+  if (OB_UNLIKELY(bf_msg.bloom_filter_.get_bits_count() != bloom_filter_.get_bits_count())) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("bloom filter's bits count not match", K(bf_msg.bloom_filter_.get_bits_count()),
+        K(bloom_filter_.get_bits_count()));
+    is_active_ = false;
+  } else if (bf_msg.is_empty_) {
   } else if (OB_FAIL(bloom_filter_.merge_filter(&bf_msg.bloom_filter_))) {
     LOG_WARN("fail to merge bloom filter msg", K(ret));
   } else {
@@ -546,7 +618,12 @@ int ObRFBloomFilterMsg::destroy()
   bloom_filter_.reset();
   filter_indexes_.reset();
   receive_count_array_.reset();
+  if (OB_NOT_NULL(memset_helper_)) {
+    memset_helper_->~ObPxBfMemsetHelper();
+    memset_helper_ = nullptr;
+  }
   allocator_.reset();
+  regen_cond_.destroy();
   return ret;
 }
 
@@ -600,7 +677,7 @@ int ObRFBloomFilterMsg::might_contain(const ObExpr &expr,
           LOG_WARN("failed to eval_vector", K(ret));
         } else {
           ObIVector *arg_vec = expr.args_[i]->get_vector(ctx);
-          if (OB_FAIL(arg_vec->murmur_hash_v3_for_one_row(*expr.args_[i], hash_val, batch_idx,
+          if (OB_FAIL(arg_vec->hash_for_one_row(*expr.args_[i], hash_val, batch_idx,
                                                           batch_size, hash_val))) {
             LOG_WARN("failed to cal hash");
           }
@@ -874,7 +951,7 @@ int ObRFBloomFilterMsg::do_might_contain_vector(
     } else {
       const bool is_batch_seed = (i > 0);
       ObIVector *arg_vec = e->get_vector(ctx);
-      if (OB_FAIL(arg_vec->murmur_hash_v3(*e, hash_values, skip,
+      if (OB_FAIL(arg_vec->hash(*e, hash_values, skip,
           bound, is_batch_seed ? hash_values : &seed, is_batch_seed))) {
         LOG_WARN("failed to cal hash");
       }
@@ -882,8 +959,8 @@ int ObRFBloomFilterMsg::do_might_contain_vector(
   }
   if (OB_FAIL(ret)) {
   } else {
-    ret = bloom_filter_.might_contain_vector(expr, ctx, skip, bound, hash_values, total_count,
-                                             filter_count);
+    ret = bloom_filter_.might_contain_vector(expr, ctx, skip, bound, hash_values,
+                                             filter_ctx.selector_, total_count, filter_count);
   }
   if (OB_FAIL(ret)) {
   } else {
@@ -910,9 +987,15 @@ int ObRFBloomFilterMsg::might_contain_vector(
     if (VEC_UNIFORM == res_format) {
       IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
       ret = proc_filter_not_active(res_vec, skip, bound);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_not_active(res_vec, skip, bound);
     } else if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_not_active(res_vec, skip, bound);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -925,9 +1008,15 @@ int ObRFBloomFilterMsg::might_contain_vector(
     if (VEC_UNIFORM == res_format) {
       IntegerUniVec *res_vec = static_cast<IntegerUniVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else if (VEC_UNIFORM_CONST == res_format) {
+      IntegerUniCVec *res_vec = static_cast<IntegerUniCVec *>(expr.get_vector(ctx));
+      ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
     } else if (VEC_FIXED == res_format) {
       IntegerFixedVec *res_vec = static_cast<IntegerFixedVec *>(expr.get_vector(ctx));
       ret = proc_filter_empty(res_vec, skip, bound, total_count, filter_count);
+    } else {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected res_format", K(res_format));
     }
     if (OB_SUCC(ret)) {
       eval_flags.set_all(true);
@@ -995,12 +1084,25 @@ int ObRFBloomFilterMsg::insert_by_row_vector(
         LOG_WARN("failed to eval vector", K(ret));
       } else {
         VectorFormat arg_format = calc_tablet_id_expr->get_format(eval_ctx);
+        // partition-aware bloom filter: probe side (ObGranuleIteratorOp::do_join_filter_partition_pruning)
+        // uses MY_SPEC.hash_func_.hash_func_ which is bound to murmur at codegen time
+        // (set_murmur_hash_func in ob_static_engine_cg.cpp). Build side must match -> force murmur.
         if (VEC_UNIFORM == arg_format) {
           IntegerUniVec *arg_vec =
               static_cast<IntegerUniVec *>(calc_tablet_id_expr->get_vector(eval_ctx));
           if (OB_FAIL(arg_vec->murmur_hash_v3(*calc_tablet_id_expr, batch_hash_values,
                                               *(child_brs->skip_), bound, &seed, false))) {
-            LOG_WARN("failed to cal murmur_hash_v2");
+            LOG_WARN("failed to cal murmur_hash_v3");
+          } else if (OB_FAIL(insert_partition_bloom_filter(arg_vec,
+                                                           child_brs, batch_hash_values))) {
+             LOG_WARN("failed to cal insert_partition_bloom_filter");
+          }
+        } else if (VEC_UNIFORM_CONST == arg_format) {
+          IntegerUniCVec *arg_vec =
+              static_cast<IntegerUniCVec *>(calc_tablet_id_expr->get_vector(eval_ctx));
+          if (OB_FAIL(arg_vec->murmur_hash_v3(*calc_tablet_id_expr, batch_hash_values,
+                                              *(child_brs->skip_), bound, &seed, false))) {
+            LOG_WARN("failed to cal murmur_hash_v3");
           } else if (OB_FAIL(insert_partition_bloom_filter(arg_vec,
                                                            child_brs, batch_hash_values))) {
              LOG_WARN("failed to cal insert_partition_bloom_filter");
@@ -1010,11 +1112,14 @@ int ObRFBloomFilterMsg::insert_by_row_vector(
               static_cast<IntegerFixedVec *>(calc_tablet_id_expr->get_vector(eval_ctx));
           if (OB_FAIL(arg_vec->murmur_hash_v3(*calc_tablet_id_expr, batch_hash_values,
                                               *(child_brs->skip_), bound, &seed, false))) {
-            LOG_WARN("failed to cal murmur_hash_v2");
+            LOG_WARN("failed to cal murmur_hash_v3");
           } else if (OB_FAIL(insert_partition_bloom_filter(arg_vec,
                                                            child_brs, batch_hash_values))) {
              LOG_WARN("failed to cal insert_partition_bloom_filter");
           }
+        } else {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("unexpected arg_format", K(arg_format));
         }
       }
     } else {
@@ -1025,7 +1130,7 @@ int ObRFBloomFilterMsg::insert_by_row_vector(
         } else {
           const bool is_batch_seed = (i > 0);
           ObIVector *arg_vec = expr->get_vector(eval_ctx);
-          arg_vec->murmur_hash_v3(*expr, batch_hash_values, *(child_brs->skip_), bound, is_batch_seed ? batch_hash_values : &seed, is_batch_seed);
+          arg_vec->hash(*expr, batch_hash_values, *(child_brs->skip_), bound, is_batch_seed ? batch_hash_values : &seed, is_batch_seed);
         }
       }
       if (OB_FAIL(ret)) {
@@ -1467,6 +1572,28 @@ int ObRFRangeFilterMsg::adjust_cell_size()
         std::min(cells_size_.at(i).min_datum_buf_size_, (int64_t)lower_bounds_.at(i).len_);
     cells_size_.at(i).max_datum_buf_size_ =
         std::min(cells_size_.at(i).max_datum_buf_size_, (int64_t)upper_bounds_.at(i).len_);
+  }
+  return ret;
+}
+
+int ObRFRangeFilterMsg::regenerate()
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < lower_bounds_.count(); ++i) {
+    ObDatum copy;
+    if (OB_FAIL(copy.deep_copy(lower_bounds_.at(i), get_allocator()))) {
+      SQL_LOG(WARN, "rehome lower bound datum failed", K(ret), K(i));
+    } else {
+      lower_bounds_.at(i) = copy;
+    }
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < upper_bounds_.count(); ++i) {
+    ObDatum copy;
+    if (OB_FAIL(copy.deep_copy(upper_bounds_.at(i), get_allocator()))) {
+      SQL_LOG(WARN, "rehome upper bound datum failed", K(ret), K(i));
+    } else {
+      upper_bounds_.at(i) = copy;
+    }
   }
   return ret;
 }
@@ -1949,7 +2076,9 @@ int ObRFInFilterMsg::ObRFInFilterNode::hash(uint64_t &hash_ret) const
   } else {
     hash_ret = ObExprJoinFilter::JOIN_FILTER_SEED;
     for (int i = 0; i < row_->count() && OB_SUCC(ret); ++i) {
-      if (OB_FAIL(hash_funcs_->at(i).hash_func_(row_->at(i), hash_ret, hash_ret))) {
+      if (row_->at(i).is_null()) {
+        // Keep NULL hash consistent with operator==, which treats NULL = NULL.
+      } else if (OB_FAIL(hash_funcs_->at(i).hash_func_(row_->at(i), hash_ret, hash_ret))) {
         LOG_WARN("fail to calc hash value", K(ret), K(hash_ret));
       }
     }

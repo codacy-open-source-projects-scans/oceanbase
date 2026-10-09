@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_EXPR_RES_TYPE_H
@@ -369,10 +362,12 @@ public:
       set_calc_type_default_varchar();
     }
   }
-  OB_INLINE void set_calc_collation_by_charset(common::ObCharsetType charset_type)
+  OB_INLINE void set_calc_collation_by_charset(
+      common::ObCharsetType charset_type,
+      common::ObCharsetCompatType compat_type = common::CHARSET_COMPAT_MYSQL57)
   {
     set_calc_collation_type(
-          common::ObCharset::get_default_collation_by_mode(charset_type, lib::is_oracle_mode()));
+          common::ObCharset::get_default_collation_by_mode(charset_type, lib::is_oracle_mode(), compat_type));
   }
   OB_INLINE common::ObObjType get_calc_type() const { return calc_type_.get_type(); }
   OB_INLINE common::ObObjTypeClass get_calc_type_class() const

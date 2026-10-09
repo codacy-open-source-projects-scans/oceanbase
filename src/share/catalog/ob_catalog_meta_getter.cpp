@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -195,8 +188,8 @@ int ObCatalogMetaGetter::fetch_table_statistics(
     const ObILakeTableMetadata *table_metadata,
     const ObIArray<ObString> &partition_values,
     const ObIArray<ObString> &column_names,
-    ObOptExternalTableStat *&external_table_stat,
-    ObIArray<ObOptExternalColumnStat *> &external_table_column_stats)
+    common::ObIArray<share::ObOptCatalogTableStat *> &catalog_table_stats,
+    common::ObIArray<share::ObOptCatalogColumnStat *> &catalog_table_column_stats)
 {
   int ret = OB_SUCCESS;
   ObIExternalCatalog *catalog = nullptr;
@@ -214,8 +207,8 @@ int ObCatalogMetaGetter::fetch_table_statistics(
                                                      table_metadata,
                                                      partition_values,
                                                      column_names,
-                                                     external_table_stat,
-                                                     external_table_column_stats))) {
+                                                     catalog_table_stats,
+                                                     catalog_table_column_stats))) {
     LOG_WARN("failed to fetch table statistics", K(ret));
   }
   return ret;
@@ -223,7 +216,8 @@ int ObCatalogMetaGetter::fetch_table_statistics(
 
 int ObCatalogMetaGetter::fetch_partitions(ObIAllocator &allocator,
                                           const ObILakeTableMetadata *table_metadata,
-                                          Partitions &partitions)
+                                          const ObIArray<ObString> &part_col_names,
+                                          ObIArray<common::ObCatalogExtPartitionInfo> &partition_infos)
 {
   int ret = OB_SUCCESS;
   ObIExternalCatalog *catalog = nullptr;
@@ -236,7 +230,10 @@ int ObCatalogMetaGetter::fetch_partitions(ObIAllocator &allocator,
   } else if (OB_ISNULL(catalog)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("catalog is nullptr", K(ret));
-  } else if (OB_FAIL(catalog->fetch_partitions(allocator, table_metadata, partitions))) {
+  } else if (OB_FAIL(catalog->fetch_partitions(allocator,
+                                               table_metadata,
+                                               part_col_names,
+                                               partition_infos))) {
     LOG_WARN("failed to fetch partition values", K(ret));
   }
   return ret;
@@ -289,7 +286,6 @@ int ObCatalogMetaGetter::get_catalog(const uint64_t tenant_id,
     } else {
       switch (catalog_type) {
         case ObCatalogProperties::CatalogType::ODPS_TYPE: {
-#ifdef OB_BUILD_CPP_ODPS
           catalog = OB_NEWx(ObOdpsCatalog, &allocator_, allocator_);
           if (OB_ISNULL(catalog)) {
             ret = OB_ERR_UNEXPECTED;
@@ -299,10 +295,6 @@ int ObCatalogMetaGetter::get_catalog(const uint64_t tenant_id,
                                            schema->get_catalog_properties()))) {
             LOG_WARN("failed to init odps catalog", K(ret));
           }
-#else
-          ret = OB_NOT_SUPPORTED;
-          LOG_WARN("ODPS CPP connector is not enabled", K(ret));
-#endif
           break;
         }
         case ObCatalogProperties::CatalogType::FILESYSTEM_TYPE: {

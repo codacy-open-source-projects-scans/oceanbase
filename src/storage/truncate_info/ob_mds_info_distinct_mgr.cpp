@@ -1,12 +1,5 @@
-//Copyright (c) 2024 OceanBase
-// OceanBase is licensed under Mulan PubL v2.
-// You can use this software according to the terms and conditions of the Mulan PubL v2.
-// You may obtain a copy of Mulan PubL v2 at:
-//          http://license.coscl.org.cn/MulanPubL-2.0
-// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-// EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-// MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-// See the Mulan PubL v2 for more details.
+// Copyright (c) 2024 OceanBase
+// SPDX-License-Identifier: Apache-2.0
 #include "storage/compaction_ttl/ob_ttl_filter_info_array.h"
 #define USING_LOG_PREFIX STORAGE
 #include "storage/truncate_info/ob_mds_info_distinct_mgr.h"
@@ -227,10 +220,19 @@ int ObMdsInfoDistinctMgrImpl<MDSInfo, MDSInfoArray, MDSInfoCacheKey>::need_repla
   replace = false;
 
   if (exist_info.ttl_filter_col_idx_ == input_info.ttl_filter_col_idx_) {
-    equal = true;
-    // if the input info has a larger value, replace the exist info
-    if (exist_info.ttl_filter_value_ < input_info.ttl_filter_value_) {
-      replace = true;
+    if (exist_info.ttl_filter_col_type_ == ObTTLFilterColType::ROWSCN) {
+      equal = true;
+      // if the input info has a larger value, replace the exist info
+      if (exist_info.ttl_filter_value_ < input_info.ttl_filter_value_) {
+        replace = true;
+      }
+    } else {
+      // for non-rowscn ttl filter, should check both value and commit version
+      if (exist_info.ttl_filter_value_ < input_info.ttl_filter_value_
+          && exist_info.commit_version_ < input_info.commit_version_) {
+        equal = true;
+        replace = true;
+      }
     }
   }
 

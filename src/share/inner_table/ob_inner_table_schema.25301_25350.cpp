@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -60,7 +53,7 @@ int ObInnerTableSchema::user_mvref_stmt_stats_ora_schema(ObTableSchema &table_sc
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       CAST(A.DATABASE_NAME AS VARCHAR2(128)) AS MV_OWNER,       CAST(B.TABLE_NAME AS VARCHAR2(128)) AS MV_NAME,       CAST(C.REFRESH_ID AS NUMBER) AS REFRESH_ID,       CAST(C.STEP AS NUMBER) AS STEP,       CAST(C.SQLID AS VARCHAR2(14)) AS SQLID /* TODO: VARCHAR2(14) */,       C.STMT AS STMT /* TODO: CLOB */,       CAST(C.EXECUTION_TIME AS NUMBER) AS EXECUTION_TIME,       C.EXECUTION_PLAN AS EXECUTION_PLAN /* TODO: XMLTYPE STORAGE BINARY */     FROM       SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT A,       SYS.ALL_VIRTUAL_TABLE_REAL_AGENT B,       SYS.ALL_VIRTUAL_MVIEW_REFRESH_STMT_STATS_REAL_AGENT C     WHERE A.DATABASE_ID = B.DATABASE_ID       AND B.TABLE_ID = C.MVIEW_ID       AND A.TENANT_ID = EFFECTIVE_TENANT_ID()       AND B.TENANT_ID = EFFECTIVE_TENANT_ID()       AND C.TENANT_ID = EFFECTIVE_TENANT_ID()       AND A.DATABASE_NAME = SYS_CONTEXT('USERENV','CURRENT_USER') )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       CAST(A.DATABASE_NAME AS VARCHAR2(128)) AS MV_OWNER,       CAST(B.TABLE_NAME AS VARCHAR2(128)) AS MV_NAME,       CAST(C.REFRESH_ID AS NUMBER) AS REFRESH_ID,       CAST(C.RETRY_ID AS NUMBER) AS RETRY_ID,       CAST(C.STEP AS NUMBER) AS STEP,       CAST(C.SQLID AS VARCHAR2(14)) AS SQLID /* TODO: VARCHAR2(14) */,       C.STMT AS STMT /* TODO: CLOB */,       CAST(C.EXECUTION_TIME AS NUMBER) AS EXECUTION_TIME,       C.EXECUTION_PLAN AS EXECUTION_PLAN /* TODO: XMLTYPE STORAGE BINARY */,       CAST(C.RESULT AS NUMBER) AS RESULT,       CAST(C.PARALLELISM AS NUMBER) AS PARALLELISM     FROM       SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT A,       SYS.ALL_VIRTUAL_TABLE_REAL_AGENT B,       SYS.ALL_VIRTUAL_MVIEW_REFRESH_STMT_STATS_REAL_AGENT C     WHERE A.DATABASE_ID = B.DATABASE_ID       AND B.TABLE_ID = C.MVIEW_ID       AND A.TENANT_ID = EFFECTIVE_TENANT_ID()       AND B.TENANT_ID = EFFECTIVE_TENANT_ID()       AND C.TENANT_ID = EFFECTIVE_TENANT_ID()       AND A.DATABASE_NAME = SYS_CONTEXT('USERENV','CURRENT_USER') )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -468,7 +461,7 @@ int ObInnerTableSchema::dba_mview_running_jobs_ora_schema(ObTableSchema &table_s
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       A.SVR_IP AS SVR_IP,       A.SVR_PORT AS SVR_PORT,       B.TABLE_NAME AS TABLE_NAME,       CAST (        CASE A.JOB_TYPE         WHEN 0 THEN 'INVALID'         WHEN 1 THEN 'COMPLETE REFRESH'         WHEN 2 THEN 'FAST REFRESH'         WHEN 3 THEN 'PURGE MLOG'         ELSE NULL        END AS CHAR(64)       ) AS JOB_TYPE,       A.SESSION_ID AS SESSION_ID,       A.READ_SNAPSHOT AS READ_SNAPSHOT,       A.PARALLEL AS PARALLEL,       A.JOB_START_TIME AS JOB_START_TIME     FROM SYS.ALL_VIRTUAL_MVIEW_RUNNING_JOB A,          SYS.ALL_VIRTUAL_TABLE_REAL_AGENT B     WHERE A.TABLE_ID = B.TABLE_ID )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       A.SVR_IP AS SVR_IP,       A.SVR_PORT AS SVR_PORT,       B.TABLE_NAME AS TABLE_NAME,       CAST (        CASE A.JOB_TYPE         WHEN 0 THEN 'INVALID'         WHEN 1 THEN 'COMPLETE REFRESH'         WHEN 2 THEN 'FAST REFRESH'         WHEN 3 THEN 'PURGE MLOG'         WHEN 4 THEN 'NESTED SYNC REFRESH'         ELSE NULL        END AS CHAR(64)       ) AS JOB_TYPE,       A.SESSION_ID AS SESSION_ID,       A.READ_SNAPSHOT AS READ_SNAPSHOT,       A.PARALLEL AS PARALLEL,       A.JOB_START_TIME AS JOB_START_TIME,       A.REFRESH_ID AS REFRESH_ID     FROM SYS.ALL_VIRTUAL_MVIEW_RUNNING_JOB A,          SYS.ALL_VIRTUAL_TABLE_REAL_AGENT B     WHERE A.TABLE_ID = B.TABLE_ID )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -672,7 +665,7 @@ int ObInnerTableSchema::dba_ob_backup_validate_job_history_ora_schema(ObTableSch
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       JOB_ID,       INCARNATION,       INITIATOR_TENANT_ID,       INITIATOR_JOB_ID,       EXECUTOR_TENANT_ID,       TYPE,       PATH,       PATH_TYPE,       ID,       VALIDATE_LEVEL,       TO_CHAR(START_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') AS START_TIMESTAMP,       CASE         WHEN END_TS = 0           THEN NULL         ELSE           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')         END AS END_TIMESTAMP,       STATUS,       TASK_COUNT,       SUCCESS_TASK_COUNT,       RESULT,       "COMMENT"     FROM SYS.ALL_VIRTUAL_BACKUP_VALIDATE_JOB_HISTORY     WHERE TENANT_ID = EFFECTIVE_TENANT_ID() )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       JOB_ID,       INCARNATION,       INITIATOR_TENANT_ID,       INITIATOR_JOB_ID,       EXECUTOR_TENANT_ID,       TYPE,       PATH,       PATH_TYPE,       ID,       VALIDATE_LEVEL,       TO_CHAR(START_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') AS START_TIMESTAMP,       CASE         WHEN END_TS = 0           THEN NULL         ELSE           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')         END AS END_TIMESTAMP,       STATUS,       RETRY_COUNT,       TASK_COUNT,       SUCCESS_TASK_COUNT,       RESULT,       "COMMENT",       DESCRIPTION     FROM SYS.ALL_VIRTUAL_BACKUP_VALIDATE_JOB_HISTORY     WHERE TENANT_ID = EFFECTIVE_TENANT_ID() )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -723,7 +716,7 @@ int ObInnerTableSchema::dba_ob_backup_validate_tasks_ora_schema(ObTableSchema &t
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       TENANT_ID,       TASK_ID,       INCARNATION,       JOB_ID,       TASK_TYPE,       ID,       PATH,       PATH_TYPE,       DEST_ID,       PLUS_ARCHIVELOG,       INITIATOR_TASK_ID,       VALIDATE_LEVEL,       ROUND_ID,       TO_CHAR(START_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') AS START_TIMESTAMP,       CASE         WHEN END_TS = 0           THEN NULL         ELSE           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')         END AS END_TIMESTAMP,       STATUS,       TOTAL_LS_COUNT,       FINISH_LS_COUNT,       TOTAL_BYTES,       VALIDATED_BYTES,       RESULT,       "COMMENT"     FROM SYS.ALL_VIRTUAL_BACKUP_VALIDATE_TASK     WHERE TENANT_ID = EFFECTIVE_TENANT_ID() )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       TASK_ID,       INCARNATION,       JOB_ID,       TASK_TYPE,       ID,       PATH,       PATH_TYPE,       DEST_ID,       PLUS_ARCHIVELOG,       INITIATOR_TASK_ID,       VALIDATE_LEVEL,       ROUND_ID,       TO_CHAR(START_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') AS START_TIMESTAMP,       CASE         WHEN END_TS = 0           THEN NULL         ELSE           TO_CHAR(END_TS / (1000 * 60 * 60 * 24 * 1000) + TO_DATE('1970-01-01 08:00:00', 'yyyy-mm-dd hh:mi:ss'), 'yyyy-mm-dd hh24:mi:ss')         END AS END_TIMESTAMP,       STATUS,       TOTAL_LS_COUNT,       FINISH_LS_COUNT,       TOTAL_BYTES,       VALIDATED_BYTES,       RESULT,       "COMMENT"     FROM SYS.ALL_VIRTUAL_BACKUP_VALIDATE_TASK     WHERE TENANT_ID = EFFECTIVE_TENANT_ID() )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }
@@ -979,6 +972,159 @@ int ObInnerTableSchema::user_ob_source_schema(ObTableSchema &table_schema)
 
   if (OB_SUCC(ret)) {
     if (OB_FAIL(table_schema.set_view_definition(R"__(WITH s AS (       SELECT name, type, line, text, origin_con_id       FROM user_source     ),     r (name, type, line, origin_con_id, part_no, part_text, rest_text) AS (       SELECT name, type, line, origin_con_id,             1 AS part_no,             CASE WHEN INSTR(text, CHR(10)) > 0 THEN CASE WHEN INSTR(text, CHR(10)) <= 4000 THEN SUBSTR(text, 1, INSTR(text, CHR(10)) - 1) ELSE SUBSTR(text, 1, 4000) END WHEN LENGTH(text) > 4000 THEN SUBSTR(text, 1, 4000) ELSE text END AS part_text,             CASE WHEN INSTR(text, CHR(10)) > 0 THEN CASE WHEN INSTR(text, CHR(10)) <= 4000 THEN SUBSTR(text, INSTR(text, CHR(10)) + 1) ELSE SUBSTR(text, 4001) END WHEN LENGTH(text) > 4000 THEN SUBSTR(text, 4001) ELSE NULL END AS rest_text       FROM s       UNION ALL       SELECT name, type, line, origin_con_id,             part_no + 1,             CASE WHEN INSTR(rest_text, CHR(10)) > 0 THEN CASE WHEN INSTR(rest_text, CHR(10)) <= 4000 THEN SUBSTR(rest_text, 1, INSTR(rest_text, CHR(10)) - 1) ELSE SUBSTR(rest_text, 1, 4000) END WHEN LENGTH(rest_text) > 4000 THEN SUBSTR(rest_text, 1, 4000) ELSE rest_text END AS part_text,             CASE WHEN INSTR(rest_text, CHR(10)) > 0 THEN CASE WHEN INSTR(rest_text, CHR(10)) <= 4000 THEN SUBSTR(rest_text, INSTR(rest_text, CHR(10)) + 1) ELSE SUBSTR(rest_text, 4001) END WHEN LENGTH(rest_text) > 4000 THEN SUBSTR(rest_text, 4001) ELSE NULL END AS rest_text       FROM r       WHERE rest_text IS NOT NULL     )     SELECT name,           type,           line + part_no - 1 AS line,           CASE WHEN part_text IS NULL THEN TO_CLOB(CHR(10)) ELSE part_text END AS text,           origin_con_id     FROM r     ORDER BY type, name, line; )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+  table_schema.set_micro_index_clustered(false);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::dba_java_policy_ora_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_ORA_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_DBA_JAVA_POLICY_ORA_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_DBA_JAVA_POLICY_ORA_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(       select       case jp.kind when 0 then 'GRANT' when 1 then 'RESTRICT' end KIND,         u.user_name GRANTEE,         db.database_name TYPE_SCHEMA,         jp.type_name TYPE_NAME,         jp.name NAME,         jp.action ACTION,         case jp.status when 2 then 'ENABLED' when 3 then 'DISABLED' end ENABLED,         jp.key SEQ       from         SYS.ALL_VIRTUAL_JAVA_POLICY_REAL_AGENT jp, SYS.ALL_VIRTUAL_USER_REAL_AGENT u, SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT db       where         jp.TENANT_ID = EFFECTIVE_TENANT_ID() and jp.grantee = u.user_id and jp.type_schema = db.database_id       order by u.user_name, db.database_name, jp.type_name, jp.name, jp.action              )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+  table_schema.set_micro_index_clustered(false);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::user_java_policy_ora_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_ORA_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_USER_JAVA_POLICY_ORA_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_USER_JAVA_POLICY_ORA_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(       select       case jp.kind when 0 then 'GRANT' when 1 then 'RESTRICT' end KIND,         u.user_name GRANTEE,         db.database_name TYPE_SCHEMA,         jp.type_name TYPE_NAME,         jp.name NAME,         jp.action ACTION,         case jp.status when 2 then 'ENABLED' when 3 then 'DISABLED' end ENABLED,         jp.key SEQ       from         SYS.ALL_VIRTUAL_JAVA_POLICY_REAL_AGENT jp, SYS.ALL_VIRTUAL_USER_REAL_AGENT u, SYS.ALL_VIRTUAL_DATABASE_REAL_AGENT db       where         jp.TENANT_ID = EFFECTIVE_TENANT_ID() and jp.grantee = u.user_id and jp.type_schema = db.database_id and u.user_name = SYS_CONTEXT('USERENV','CURRENT_USER')       order by u.user_name, db.database_name, jp.type_name, jp.name, jp.action              )__"))) {
+      LOG_ERROR("fail to set view_definition", K(ret));
+    }
+  }
+  table_schema.set_index_using_type(USING_BTREE);
+  table_schema.set_row_store_type(ENCODING_ROW_STORE);
+  table_schema.set_store_format(OB_STORE_FORMAT_DYNAMIC_MYSQL);
+  table_schema.set_progressive_merge_round(1);
+  table_schema.set_storage_format_version(3);
+  table_schema.set_tablet_id(0);
+  table_schema.set_micro_index_clustered(false);
+
+  table_schema.set_max_used_column_id(column_id);
+  return ret;
+}
+
+int ObInnerTableSchema::v_ob_keywords_ora_schema(ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+  uint64_t column_id = OB_APP_MIN_COLUMN_ID - 1;
+
+  //generated fields:
+  table_schema.set_tenant_id(OB_SYS_TENANT_ID);
+  table_schema.set_tablegroup_id(OB_INVALID_ID);
+  table_schema.set_database_id(OB_ORA_SYS_DATABASE_ID);
+  table_schema.set_table_id(OB_V_OB_KEYWORDS_ORA_TID);
+  table_schema.set_rowkey_split_pos(0);
+  table_schema.set_is_use_bloomfilter(false);
+  table_schema.set_progressive_merge_num(0);
+  table_schema.set_rowkey_column_num(0);
+  table_schema.set_load_type(TABLE_LOAD_TYPE_IN_DISK);
+  table_schema.set_table_type(SYSTEM_VIEW);
+  table_schema.set_index_type(INDEX_TYPE_IS_NOT);
+  table_schema.set_def_type(TABLE_DEF_TYPE_INTERNAL);
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_table_name(OB_V_OB_KEYWORDS_ORA_TNAME))) {
+      LOG_ERROR("fail to set table_name", K(ret));
+    }
+  }
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_compress_func_name(OB_DEFAULT_COMPRESS_FUNC_NAME))) {
+      LOG_ERROR("fail to set compress_func_name", K(ret));
+    }
+  }
+  table_schema.set_part_level(PARTITION_LEVEL_ZERO);
+  table_schema.set_charset_type(ObCharset::get_default_charset());
+  table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
+
+  if (OB_SUCC(ret)) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       CAST(keyword_name AS VARCHAR2(128)) AS KEYWORD,       CAST(keyword_length AS NUMBER) AS LENGTH,       CAST(keyword_type AS VARCHAR2(16)) AS TYPE,       CAST(reserved AS INT) AS RESERVED     FROM SYS.ALL_VIRTUAL_KEYWORD   )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }

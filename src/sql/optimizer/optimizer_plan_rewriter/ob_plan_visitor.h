@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_PLAN_VISITOR_H
@@ -155,8 +148,8 @@ public:
   PLAN_VISITOR_VISIT_DECL(delete, ObLogDelete)
   PLAN_VISITOR_VISIT_DECL(insert, ObLogInsert)
 
-  protected:
-  // do notuse dipatch_visit in visitor
+private:
+  // do notuse dipatch_visit in visitor impementation
   // use visit instead
   int dispatch_visit(ObLogicalOperator* plannode, C* context, R*& result);
 
@@ -166,7 +159,7 @@ public:
     if (OB_ISNULL(plannode)) {
       return OB_ERR_UNEXPECTED;
     }
-    return dispatch_visit(plannode, context, result);
+    return SMART_CALL(dispatch_visit(plannode, context, result));
   }
 };
 
@@ -179,7 +172,7 @@ public:
     int ret = OB_SUCCESS;
     if (OB_ISNULL(child)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(SMART_CALL((this->dispatch_visit(child, context, result))))) {
+    } else if (OB_FAIL(SMART_CALL((this->visit(child, context, result))))) {
     }
     return ret;
   }
@@ -232,7 +225,7 @@ SimplePlanVisitor() {}
     int ret = OB_SUCCESS;
     if (OB_ISNULL(child)) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(SMART_CALL((this->dispatch_visit(child, context, result))))) {
+    } else if (OB_FAIL(SMART_CALL((this->visit(child, context, result))))) {
     }
     return ret;
   }

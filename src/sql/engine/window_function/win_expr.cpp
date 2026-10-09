@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 #define USING_LOG_PREFIX SQL_ENG
 
@@ -105,6 +98,58 @@ int StreamingWinExprEvalCtx::on_batch_end(StreamingWinExprEvalCtx &ctx, int64_t 
 
   return ret;
 }
+ObExprPtrIArray &WinExprEvalCtx::get_input_exprs() {
+  return win_col_.op_.get_all_expr();
+}
+
+ObEvalCtx &WinExprEvalCtx::eval_ctx_() { return win_col_.op_.get_eval_ctx(); }
+
+bool WinExprEvalCtx::allow_eval_in_expr(
+    const WinFuncColExpr &win_col, const int64_t partition_end_index_in_expr,
+    const int64_t total_size, const ObBatchRows *input_brs,
+    int64_t & /* out */ partition_start_index_in_expr) {
+  partition_start_index_in_expr = -1;
+  // should have valid input
+  bool allow_tiny_partition = input_brs != nullptr && input_brs->size_ > 0;
+  // pusdown optimization only works for less partitions
+  const ObWindowFunctionVecSpec &spec = static_cast<const ObWindowFunctionVecSpec &>(win_col.op_.get_spec());
+  allow_tiny_partition &= !spec.is_push_down();
+  // partition within expr
+  allow_tiny_partition &= partition_end_index_in_expr >= 0 &&
+                          partition_end_index_in_expr >= total_size;
+  // supported functions: only aggregate functions are supported for this commit
+  allow_tiny_partition &= win_col.wf_expr_->is_aggregate_expr();
+  if (allow_tiny_partition) {
+    // there might be some rows skipped in the input, we need to count them
+    if (!input_brs->all_rows_active_) {
+      for (int i = partition_end_index_in_expr - total_size; i < partition_end_index_in_expr; i++) {
+        if (input_brs->skip_->at(i)) {
+          // disable tiny partition optimization if there are some rows skipped
+          // in the input between (partition_start_index_in_expr_,
+          // partition_end_index_in_expr_)
+          LOG_TRACE("disallow use tiny partition because of skip", K(i), K(partition_end_index_in_expr), K(total_size), K(input_brs->size_));
+          allow_tiny_partition = false;
+          break;
+        }
+      }
+    }
+    if (allow_tiny_partition) {
+      partition_start_index_in_expr = partition_end_index_in_expr - total_size;
+    }
+  }
+  return allow_tiny_partition;
+}
+
+// called every batch/partition, whichever is smaller
+void WinExprEvalCtx::set_index_in_expr(const int64_t partition_end_index_in_expr, const int64_t total_size, const ObBatchRows *input_brs) {
+  if (WinExprEvalCtx::allow_eval_in_expr(win_col_, partition_end_index_in_expr, total_size, input_brs, partition_start_index_in_expr_)) {
+    expr_to_row_store_offset_ = partition_start_index_in_expr_ - win_col_.part_first_row_idx_;
+    partition_end_index_in_expr_ = partition_end_index_in_expr;
+    input_brs_ = input_brs;
+    LOG_TRACE("set index in expr", K(partition_start_index_in_expr_), K(partition_end_index_in_expr), K(win_col_.part_first_row_idx_), K(total_size), K(input_brs->size_), K(input_brs->all_rows_active_), K(win_col_.wf_idx_));
+  }
+}
+namespace {
 
 template<VecValueTypeClass vec_tc>
 struct int_trunc
@@ -112,30 +157,38 @@ struct int_trunc
   static int get(const char *payload, const int32_t len,const ObDatumMeta &meta, int64_t &value);
 };
 
+template<bool all_active>
 static int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t batch_size,
                             const ObBitVector &skip, const bool is_upper);
 
+template<bool all_active>
 static int calc_borders_for_current_row(WinExprEvalCtx &ctx, const int64_t row_start,
                                         const int64_t batch_size, const ObBitVector &skip,
                                         const bool is_upper);
 
+template<bool all_active>
 static int eval_and_check_between_literal(WinExprEvalCtx &ctx, ObBitVector &eval_skip,
                                           const ObExpr *between_expr, const int64_t batch_size,
                                           int64_t *pos_arr);
+template<bool all_active>
 static int calc_borders_for_rows_between(WinExprEvalCtx &ctx, const int64_t row_start,
                                          const int64_t batch_size, const ObBitVector &eval_skip,
                                          const ObExpr *between_expr, const bool is_preceding,
                                          const bool is_upper, int64_t *pos_arr);
 
+template<bool all_active>
 static int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx,
                                          const int64_t batch_size, const ObBitVector &eval_skip,
                                          const ObExpr *bound_expr, const bool is_upper,
                                          int64_t *pos_arr);
 
+template<bool all_active>
 static int calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const ObExpr *bound_expr,
                                       const int64_t batch_size, const int64_t row_start,
                                       ObBitVector &eval_skip, const bool is_upper,
                                       int64_t *pos_arr);
+} // namespace
+
 
 int NonAggrWinExpr::eval_param_int_value(ObExpr *param, ObEvalCtx &ctx, const bool need_check_valid,
                                          const bool need_nmb, ParamStatus &status)
@@ -249,7 +302,7 @@ int NonAggrWinExpr::eval_param_int_value(ObExpr *param, ObEvalCtx &ctx, const bo
     fmt *data = static_cast<fmt *>(non_agg_expr->get_vector(eval_ctx));                            \
     int32_t step = win_col.non_aggr_reserved_row_size(), offset = row_start * step;           \
     for (int i = row_start; OB_SUCC(ret) && i < row_end; i++, offset += step) {                    \
-      if (skip.at(i)) { continue; }                                                                \
+      if (!all_active && skip.at(i + expr_to_row_store_offset)) { continue; }                      \
       guard.set_batch_idx(i);                                                                      \
       char *res_row = win_col.non_aggr_results_ + offset;                                     \
       if (!win_col.null_nonaggr_results_->at(i)) {                                            \
@@ -283,7 +336,7 @@ int NonAggrWinExpr::eval_param_int_value(ObExpr *param, ObEvalCtx &ctx, const bo
   } break
 
 int NonAggrWinExpr::collect_part_results(sql::WinFuncColExpr& win_col, const int64_t row_start,
-                                         const int64_t row_end, const ObBitVector &skip, bool set_evaluated_projected)
+                                         const int64_t row_end, const ObBitVector &skip, bool all_active, bool set_evaluated_projected, int64_t expr_to_row_store_offset)
 {
   int ret = OB_SUCCESS;
   ObExpr *non_agg_expr = win_col.wf_info_.expr_;
@@ -1524,10 +1577,48 @@ int RowNumber::process_next_row_streaming(StreamingWinExprEvalCtx &,
 }
 
 
-int AggrExpr::process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
-                             char *agg_row, bool &is_null)
-{
+namespace {
+int handle_varlen(WinExprEvalCtx &ctx, char *agg_row) {
   int ret = OB_SUCCESS;
+  char* res_buf = nullptr;
+  // if result is variable-length type, address stored in agg_row maybe invalid
+  // after `attach_rows` thus we copy results into res_buf and store
+  // corresponding address instread.
+  bool is_res_not_null = ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).at(0);
+  bool is_arg_max_min = (T_FUN_ARG_MAX == ctx.win_col_.wf_info_.func_type_ ||
+                         T_FUN_ARG_MIN == ctx.win_col_.wf_info_.func_type_);
+  if (ctx.win_col_.agg_ctx_->row_meta().is_var_len(0) && is_res_not_null && !is_arg_max_min) {
+    int64_t addr_val = *reinterpret_cast<int64_t *>(
+        ctx.win_col_.agg_ctx_->row_meta().locate_cell_payload(0, agg_row));
+    int32_t val_len =
+        ctx.win_col_.agg_ctx_->row_meta().get_cell_len(0, agg_row);
+    const char *val = reinterpret_cast<const char *>(addr_val);
+    if (val != res_buf && val_len > 0) { // new value
+      res_buf = ctx.reserved_per_batch_buf(val_len);
+      if (OB_ISNULL(res_buf)) {
+        ret = OB_ALLOCATE_MEMORY_FAILED;
+        LOG_WARN("allocate memory failed", K(ret));
+        log_allocator_stat(ctx, ret);
+      } else {
+        MEMCPY(res_buf, val, val_len);
+        addr_val = reinterpret_cast<int64_t>(res_buf);
+        *reinterpret_cast<int64_t *>(
+            ctx.win_col_.agg_ctx_->row_meta().locate_cell_payload(0, agg_row)) =
+            addr_val;
+      }
+    }
+  }
+  return ret;
+}
+} // namespace
+
+int AggrExpr::process_agg_expr_from_store(WinExprEvalCtx &ctx, const Frame &frame,
+                                     char *agg_row,
+                                     int64_t &pushdown_skip_cnt) {
+  int ret = OB_SUCCESS;
+  // update metrics
+  store_row_cnt_ += 1;
+
   ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
   ObExpr *agg_expr = ctx.win_col_.wf_info_.expr_;
   ObWindowFunctionVecOp &op = ctx.win_col_.op_;
@@ -1539,7 +1630,7 @@ int AggrExpr::process_window(WinExprEvalCtx &ctx, const Frame &frame, const int6
   ObBatchRows tmp_brs;
   aggregate::RemovalInfo &removal_info = ctx.win_col_.agg_ctx_->removal_info_;
   LOG_DEBUG("aggregate expr process window", K(frame), K(removal_info), K(row_start));
-  int total_calc_size = 0, pushdown_skip_cnt = 0;
+  int total_calc_size = 0;
   while (OB_SUCC(ret) && total_size > 0) {
     op.clear_evaluated_flag();
     int64_t batch_size = std::min(total_size, op.get_spec().max_batch_size_);
@@ -1570,48 +1661,83 @@ int AggrExpr::process_window(WinExprEvalCtx &ctx, const Frame &frame, const int6
     if (OB_SUCC(ret)) {
       total_size -= batch_size;
       row_start += batch_size;
-    }
-    char *res_buf = nullptr;
-    // if result is variable-length type, address stored in agg_row maybe invalid after `attach_rows`
-    // thus we copy results into res_buf and store corresponding address instread.
-    bool is_res_not_null = ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).at(0);
-    bool is_arg_max_min = (T_FUN_ARG_MAX == ctx.win_col_.wf_info_.func_type_
-                           || T_FUN_ARG_MIN == ctx.win_col_.wf_info_.func_type_);
-    if (ctx.win_col_.agg_ctx_->row_meta().is_var_len(0) && is_res_not_null && !is_arg_max_min) {
-      int64_t addr_val = *reinterpret_cast<int64_t *>(ctx.win_col_.agg_ctx_->row_meta().locate_cell_payload(0, agg_row));
-      int32_t val_len = ctx.win_col_.agg_ctx_->row_meta().get_cell_len(0, agg_row);
-      const char *val = reinterpret_cast<const char *>(addr_val);
-      if (val != res_buf && val_len > 0) { // new value
-        res_buf = ctx.reserved_per_batch_buf(val_len);
-        if (OB_ISNULL(res_buf)) {
-          ret = OB_ALLOCATE_MEMORY_FAILED;
-          LOG_WARN("allocate memory failed", K(ret));
-          log_allocator_stat(ctx, ret);
-        } else {
-          MEMCPY(res_buf, val, val_len);
-          addr_val = reinterpret_cast<int64_t>(res_buf);
-          *reinterpret_cast<int64_t *>(ctx.win_col_.agg_ctx_->row_meta().locate_cell_payload(0, agg_row)) = addr_val;
-        }
+      if (OB_FAIL(handle_varlen(ctx, agg_row))) {
+        LOG_WARN("handle varlen failed", K(ret));
       }
     }
   } // end while
+  return ret;
+}
+
+int AggrExpr::process_agg_expr_from_expr(WinExprEvalCtx &ctx,
+                                         const Frame &frame, char *agg_row) {
+  int ret = OB_SUCCESS;
+  // update metrics
+  expr_row_cnt_ += 1;
+  aggregate::RemovalInfo &removal_info = ctx.win_col_.agg_ctx_->removal_info_;
+  // if mostly tiny partition, all the rows have been evaluated in init_batch, so no need to eval again
+  bool should_eval_aggr_params = !ctx.win_col_.op_.is_mostly_tiny_partition();
+  if (ctx.win_col_.wf_info_.aggr_info_.has_order_by_) {
+    // TODO: this might be a bug, I'll check it later
+    ctx.win_col_.op_.clear_evaluated_flag();
+    should_eval_aggr_params = true;
+  }
+  if (should_eval_aggr_params &&
+      OB_FAIL(aggr_processor_->eval_aggr_param_batch(*ctx.input_brs_, frame.head_, frame.tail_, true))) {
+    LOG_WARN("eval aggr params failed", K(ret));
+  } else if (OB_FAIL(aggr_processor_->add_batch_rows(
+                 0, 1, agg_row, *ctx.input_brs_, frame.head_, frame.tail_))) {
+    LOG_WARN("add batch rows failed", K(ret), K(frame.head_), K(frame.tail_));
+  } else if (ctx.win_col_.wf_info_.remove_type_ == REMOVE_EXTRENUM &&
+             removal_info.is_max_min_idx_changed_) {
+    removal_info.is_max_min_idx_changed_ = false;
+  }
+  if (OB_SUCC(ret) && OB_FAIL(handle_varlen(ctx, agg_row))) {
+    LOG_WARN("handle varlen failed", K(ret));
+  }
+  return ret;
+}
+
+int AggrExpr::process_window(WinExprEvalCtx &ctx, const Frame &frame, const int64_t row_idx,
+                             char *agg_row, bool &is_null)
+{
+  int ret = OB_SUCCESS;
+  ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
+  aggregate::RemovalInfo &removal_info = ctx.win_col_.agg_ctx_->removal_info_;
+  int64_t pushdown_skip_cnt = 0;
+  const ObWindowFunctionVecSpec &spec =
+    static_cast<const ObWindowFunctionVecSpec &>(ctx.win_col_.op_.get_spec());
+  if (!ctx.use_tiny_partition_opt()) {
+    if (OB_FAIL(process_agg_expr_from_store(ctx, frame, agg_row, pushdown_skip_cnt))) {
+      LOG_WARN("process agg expr store failed", K(ret));
+    }
+  } else if (spec.is_push_down()) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("should not use expr in pushdown mode", K(ret), K(ctx.partition_start_index_in_expr_));
+  } else if (OB_FAIL(process_agg_expr_from_expr(ctx, frame, agg_row))) {
+    LOG_WARN("process agg expr expr failed", K(ret));
+  }
+
   if (OB_SUCC(ret)) {
     const_cast<Frame &>(frame).skip_cnt_ = pushdown_skip_cnt;
     if (OB_FAIL(aggr_processor_->advance_collect_result(eval_ctx.get_batch_idx(),
                                                         ctx.win_col_.wf_res_row_meta_, agg_row))) {
       LOG_WARN("advance collect failed", K(ret));
-    }
-  }
-  LOG_DEBUG("aggregate process window", K(frame), K(frame.is_accum_frame_), K(frame.skip_cnt_),
-            K(removal_info.null_cnt_), K(removal_info.enable_removal_opt_));
-  if (OB_FAIL(ret)) {
-  } else if (aggregate::agg_res_not_null(ctx.win_col_.wf_info_.func_type_)) {
-    ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).set(0);
-  } else if (removal_info.enable_removal_opt_ && !frame.is_accum_frame_) {
-    if (removal_info.null_cnt_ == frame.tail_ - frame.head_ - frame.skip_cnt_) {
-      ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).unset(0);
     } else {
-      ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).set(0);
+      LOG_DEBUG("aggregate process window", K(frame), K(frame.is_accum_frame_),
+                K(frame.skip_cnt_), K(removal_info.null_cnt_),
+                K(removal_info.enable_removal_opt_));
+      if (aggregate::agg_res_not_null(ctx.win_col_.wf_info_.func_type_)) {
+        ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).set(0);
+      } else if (removal_info.enable_removal_opt_ && !frame.is_accum_frame_) {
+        if (removal_info.null_cnt_ == frame.tail_ - frame.head_ - frame.skip_cnt_) {
+          ctx.win_col_.agg_ctx_->row_meta()
+              .locate_notnulls_bitmap(agg_row)
+              .unset(0);
+        } else {
+          ctx.win_col_.agg_ctx_->row_meta().locate_notnulls_bitmap(agg_row).set(0);
+        }
+      }
     }
   }
   return ret;
@@ -1773,7 +1899,7 @@ int AggrExpr::streaming_on_batch_start(StreamingWinExprEvalCtx &eval_ctx) {
 // always use per-partition allocator
 // copy last aggr row to allocated_buf_
 template<typename CTX>
-int AggrExpr::on_batch_end(CTX &ctx, int64_t prev_calc_idx) {
+int AggrExpr::on_batch_end(CTX &ctx, int64_t prev_calc_idx, bool is_last_row) {
   int ret = OB_SUCCESS;
   int32_t row_size = ctx.win_col_.agg_ctx_->row_meta().row_size_;
   void *tmp_buf = nullptr;
@@ -1782,6 +1908,10 @@ int AggrExpr::on_batch_end(CTX &ctx, int64_t prev_calc_idx) {
     if (OB_FAIL(ret)) {
       LOG_WARN("copy aggr row failed", K(ret));
     }
+  } else if (is_last_row) {
+    // this is the last row of the partition
+    // last_aggr_row_ won't be used anymore
+    last_aggr_row_ = nullptr;
   } else {
     if (OB_ISNULL(tmp_buf = ctx.reserved_per_partition_buf(row_size))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -1824,10 +1954,11 @@ void AggrExpr::destroy()
     aggr_processor_->destroy();
     aggr_processor_ = nullptr;
   }
+  LOG_TRACE("AggrExpr destroy", K(expr_row_cnt_), K(store_row_cnt_));
 }
 
 int AggrExpr::collect_part_results(sql::WinFuncColExpr& win_col, const int64_t row_start,
-                                   const int64_t row_end, const ObBitVector &skip, bool set_evaluated_projected)
+                                   const int64_t row_end, const ObBitVector &skip, bool all_active, bool set_evaluated_projected, int64_t expr_to_row_store_offset)
 {
   int ret = OB_SUCCESS;
   aggregate::IAggregate *iagg = aggr_processor_->get_aggregates().at(0);
@@ -1844,6 +1975,8 @@ int AggrExpr::collect_part_results(sql::WinFuncColExpr& win_col, const int64_t r
 }
 
 // >>>>>>>> helper functions
+namespace {
+template<bool all_active>
 int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t batch_size,
                      const ObBitVector &skip, const bool is_upper)
 {
@@ -1863,7 +1996,11 @@ int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t
   ObExpr *bound_expr =
     (is_upper ? wf_info.upper_.range_bound_expr_ : wf_info.lower_.range_bound_expr_);
 
-  eval_skip->deep_copy(skip, batch_size);
+  if (!ctx.use_tiny_partition_opt()) {
+    eval_skip->deep_copy(skip, batch_size);
+  } else {
+    eval_skip = ctx.input_brs_->skip_;
+  }
   MEMSET(pos_arr, -1, batch_size * sizeof(int64_t));
   LOG_DEBUG("eval bound exprs", K(is_rows), K(is_upper), K(is_preceding), K(is_unbounded),
             K(is_nmb_literal), K(batch_size), KPC(between_value_expr), KPC(bound_expr),
@@ -1875,19 +2012,23 @@ int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t
     // no care rows if range, no need to evaluated;
     if (is_preceding) {
       for (int i = 0; i < batch_size; i++) {
-        if (eval_skip->at(i)) { continue; }
-        pos_arr[i] = ctx.win_col_.part_first_row_idx_;
+        if constexpr (!all_active) {
+          if (eval_skip->at(i)) { continue; }
+        }
+        pos_arr[i] = ctx.win_col_.part_first_row_idx_ + ctx.expr_to_row_store_offset_;
       }
     } else {
       for (int i = 0; i < batch_size; i++) {
-        if (eval_skip->at(i)) { continue; }
-        pos_arr[i] = ctx.win_col_.op_.get_part_end_idx();
+        if constexpr (!all_active) {
+          if (eval_skip->at(i)) { continue; }
+        }
+        pos_arr[i] = ctx.win_col_.op_.get_part_end_idx() + ctx.expr_to_row_store_offset_;
       }
     }
     is_finished = true;
   } else if (NULL == between_value_expr && !is_unbounded) {
     // current row by rows/range, no need to evaluate bound exprs
-    if (OB_FAIL(calc_borders_for_current_row(ctx, row_start, batch_size, *eval_skip, is_upper))) {
+    if (OB_FAIL(calc_borders_for_current_row<all_active>(ctx, row_start, batch_size, *eval_skip, is_upper))) {
       LOG_WARN("calc borders for current_row failed", K(ret));
     } else {
       is_finished = true;
@@ -1901,7 +2042,7 @@ int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t
       ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
       LOG_WARN("frame start or end is negative, NULL or non-integral type", K(ret),
                K(between_value_expr->obj_meta_));
-    } else if (OB_FAIL(eval_and_check_between_literal(ctx, *eval_skip, between_value_expr,
+    } else if (OB_FAIL(eval_and_check_between_literal<all_active>(ctx, *eval_skip, between_value_expr,
                                                       batch_size, pos_arr))) {
       LOG_WARN("eval and check between literal is failed", K(ret));
     }
@@ -1913,7 +2054,7 @@ int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t
     if (OB_UNLIKELY(between_value_expr->obj_meta_.is_interval_type())) {
       ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
       LOG_WARN("frame start or end is negative, NULL or of not supported type", K(ret));
-    } else if (OB_FAIL(calc_borders_for_rows_between(ctx, row_start, batch_size, *eval_skip,
+    } else if (OB_FAIL(calc_borders_for_rows_between<all_active>(ctx, row_start, batch_size, *eval_skip,
                                               between_value_expr, is_preceding, is_upper, pos_arr))) {
       LOG_WARN("calculate borders for `rows between ... and ...` failed", K(ret));
     }
@@ -1921,14 +2062,14 @@ int eval_bound_exprs(WinExprEvalCtx &ctx, const int64_t row_start, const int64_t
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null bound expr", K(ret));
   } else if (wf_info.sort_exprs_.count() == 0) {
-    if (OB_FAIL(calc_borders_for_no_sort_expr(ctx, batch_size, *eval_skip, bound_expr, is_upper,
+    if (OB_FAIL(calc_borders_for_no_sort_expr<all_active>(ctx, batch_size, *eval_skip, bound_expr, is_upper,
                                               pos_arr))) {
       LOG_WARN("calc borders failed", K(ret));
     }
   } else if (wf_info.sort_exprs_.count() != 1) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("only need one sort expr", K(ret));
-  } else if (OB_FAIL(calc_borders_for_sort_expr(ctx, bound_expr, batch_size, row_start, *eval_skip,
+  } else if (OB_FAIL(calc_borders_for_sort_expr<all_active>(ctx, bound_expr, batch_size, row_start, *eval_skip,
                                                 is_upper, pos_arr))) {
     LOG_WARN("calc borders failed", K(ret));
   }
@@ -1951,6 +2092,7 @@ struct __data_tuple
   TO_STRING_KV(KP_(data), K_(len), K_(is_null));
 };
 
+template<bool all_active>
 int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row_start,
                                  const int64_t batch_size, const ObBitVector &skip,
                                  const bool is_upper)
@@ -1963,8 +2105,10 @@ int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row
   ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
   if (is_rows) {
     for (int i = 0; i < batch_size; i++) {
-      if (skip.at(i)) { continue; }
-      pos_arr[i] = row_start + i + (is_upper ? 0 : 1);
+      if constexpr (!all_active) {
+        if (skip.at(i)) { continue; }
+      }
+      pos_arr[i] = row_start + ctx.expr_to_row_store_offset_ + i + (is_upper ? 0 : 1);
     }
   } else {
     // range
@@ -1981,18 +2125,20 @@ int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row
     int32_t l_len = 0, r_len = 0;
     int cmp_ret = 0;
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-      if (skip.at(i)) { continue; }
+      if constexpr (!all_active) {
+        if (skip.at(i)) { continue; }
+      }
       int32_t cur_idx = i;
       if (prev_row_pos != -1) {
         if (OB_FAIL(cmp_prev_row(ctx, i + row_start, cmp_ret))) {
           LOG_WARN("compare previous row failed", K(ret));
         } else if (cmp_ret == 0) { // same as before
-          pos_arr[i] = prev_row_pos;
+          pos_arr[i] = prev_row_pos + ctx.expr_to_row_store_offset_;
           continue;
         } else if (is_upper) {
           // cur_row != prev_row, cur_row's upper border equals to cur_idx
-          pos_arr[i] = cur_idx + row_start;
-          prev_row_pos = pos_arr[i];
+          prev_row_pos = cur_idx + row_start;
+          pos_arr[i] = prev_row_pos + ctx.expr_to_row_store_offset_;
           continue;
         }
       }
@@ -2002,14 +2148,15 @@ int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row
         int32_t step = 1;
         int32_t pos = cur_idx + row_start;
         ObSEArray<__data_tuple, 16> cur_row_tuple;
+        int skip_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
         for (int i = 0; OB_SUCC(ret) && i < sort_collations.count(); i++) {
           const char *payload = nullptr;
           int32_t len = 0;
           bool is_cur_null = false;
           int64_t field_idx = sort_collations.at(i).field_idx_;
           ObIVector *data = all_exprs.at(field_idx)->get_vector(eval_ctx);
-          data->get_payload(cur_idx, payload, len);
-          is_cur_null = data->is_null(cur_idx);
+          data->get_payload(cur_idx + skip_start, payload, len);
+          is_cur_null = data->is_null(cur_idx + skip_start);
           if (OB_FAIL(cur_row_tuple.push_back(__data_tuple(payload, len, is_cur_null)))) {
             LOG_WARN("push back element failed", K(ret));
           }
@@ -2064,8 +2211,9 @@ int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row
             ret = OB_ERR_UNEXPECTED;
             LOG_WARN("invalid position", K(ret), K(pos));
           } else {
-            pos_arr[i] = pos + (is_upper ? 0 : 1);
-            prev_row_pos = pos_arr[i];
+            // final result, adjust offset for tiny partition optimization
+            prev_row_pos = pos + (is_upper ? 0 : 1);
+            pos_arr[i] = prev_row_pos + ctx.expr_to_row_store_offset_;
           }
         }
       }
@@ -2076,14 +2224,14 @@ int calc_borders_for_current_row(winfunc::WinExprEvalCtx &ctx, const int64_t row
 
 template <typename Fmt, VecValueTypeClass vec_tc>
 static int _check_betweenn_value(const ObExpr *expr, ObEvalCtx &ctx, const ObBitVector &skip,
-                                 const EvalBound &bound)
+                                 const int64_t start_idx, const int64_t end_idx)
 {
   int ret = OB_SUCCESS;
   Fmt *columns = static_cast<Fmt *>(expr->get_vector(ctx));
   const char *payload = nullptr;
   int32_t len = 0;
   int64_t value = 0;
-  for (int i = bound.start(); OB_SUCC(ret) && i < bound.end(); i++) {
+  for (int i = start_idx; OB_SUCC(ret) && i < end_idx; i++) {
     if (skip.at(i) || columns->is_null(i)) { continue; }
     if (vec_tc == VEC_TC_INTERVAL_DS) {
       if (OB_UNLIKELY(columns->get_interval_ds(i).is_negative())) {
@@ -2114,32 +2262,48 @@ static int _check_betweenn_value(const ObExpr *expr, ObEvalCtx &ctx, const ObBit
 #define CHECK_BTW_FIXED_VAL(vec_tc)                                                                \
   case (vec_tc): {                                                                                 \
     ret = _check_betweenn_value<ObFixedLengthFormat<RTCType<vec_tc>>, vec_tc>(                     \
-      between_expr, eval_ctx, eval_skip, eval_bound);                                              \
+      between_expr, eval_ctx, eval_skip, expr_start, expr_start + batch_size);                     \
   } break
 
 #define CHECK_BTW_UNI_VAL(vec_tc)                                                                  \
   case (vec_tc): {                                                                                 \
     ret = _check_betweenn_value<ObUniformFormat<false>, vec_tc>(between_expr, eval_ctx, eval_skip, \
-                                                                eval_bound);                       \
+                                                                expr_start, expr_start + batch_size); \
   } break
 
 #define CHECK_BTW_CONST_VAL(vec_tc)                                                                \
   case (vec_tc): {                                                                                 \
     ret = _check_betweenn_value<ObUniformFormat<true>, vec_tc>(between_expr, eval_ctx, eval_skip,  \
-                                                               eval_bound);                        \
+                                                               expr_start, expr_start + batch_size); \
   } break
 
+template<bool all_active>
 int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &eval_skip,
                                    const ObExpr *between_expr, const int64_t batch_size, int64_t *pos_arr)
 {
   int ret = OB_SUCCESS;
   ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
-  EvalBound eval_bound(batch_size, false);
+  int64_t expr_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
   if (OB_ISNULL(between_expr)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("unexpected null between expr", K(ret));
-  } else if (OB_FAIL(between_expr->eval_vector(eval_ctx, eval_skip, eval_bound))) {
-    LOG_WARN("expr evaluation failed", K(ret));
+  } else {
+    if (ctx.use_tiny_partition_opt()) {
+      EvalBound eval_bound(ctx.input_brs_->size_, ctx.partition_start_index_in_expr_, ctx.partition_start_index_in_expr_ + batch_size, true);
+      if (OB_FAIL(between_expr->eval_vector(
+              eval_ctx, *ctx.input_brs_->skip_,
+              eval_bound))) {
+        LOG_WARN("expr evaluation failed", K(ret));
+      }
+    } else {
+      if (OB_FAIL(between_expr->eval_vector(
+              eval_ctx, eval_skip,
+              EvalBound(batch_size, 0, batch_size, all_active)))) {
+        LOG_WARN("expr evaluation failed", K(ret));
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
   } else {
     VectorFormat fmt = between_expr->get_format(eval_ctx);
     VecValueTypeClass vec_tc = between_expr->get_vec_value_tc();
@@ -2150,16 +2314,20 @@ int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &ev
       ObBitmapNullVectorBase *data = static_cast<ObBitmapNullVectorBase *>(between_expr->get_vector(eval_ctx));
       if (lib::is_mysql_mode()) {
         for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-          if (eval_skip.at(i)) { continue; }
-          if (data->is_null(i)) {
+          if constexpr (!all_active) {
+            if (eval_skip.at(i + expr_start)) { continue; }
+          }
+          if (data->is_null(i + expr_start)) {
             ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
             LOG_WARN("frame start or end is negative, NULL or non-integral type", K(ret));
           }
         }
       } else {
         for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-          if (eval_skip.at(i)) { continue; }
-          if (data->is_null(i)) {
+          if constexpr (!all_active) {
+            if (eval_skip.at(i + expr_start)) { continue; }
+          }
+          if (data->is_null(i + expr_start)) {
             // frame of current must be invalid,
             // we set pos_arr[i] to INT64_MAX to represent invalid frame border
             pos_arr[i] = INT64_MAX;
@@ -2171,16 +2339,20 @@ int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &ev
       ObUniformFormat<false> *data = static_cast<ObUniformFormat<false> *>(between_expr->get_vector(eval_ctx));
       if (lib::is_mysql_mode()) {
         for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-          if (eval_skip.at(i)) { continue; }
-          if (data->is_null(i)) {
+          if constexpr (!all_active) {
+            if (eval_skip.at(i + expr_start)) { continue; }
+          }
+          if (data->is_null(i + expr_start)) {
             ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
             LOG_WARN("frame start or end is_negative, NULL or non-integral type", K(ret));
           }
         }
       } else {
         for (int i = 0; i < batch_size; i++) {
-          if (eval_skip.at(i)) { continue; }
-          if (data->is_null(i)) {
+          if constexpr (!all_active) {
+            if (eval_skip.at(i + expr_start)) { continue; }
+          }
+          if (data->is_null(i + expr_start)) {
             pos_arr[i] = INT64_MAX;
           }
         }
@@ -2190,8 +2362,10 @@ int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &ev
       ObUniformFormat<true> *data = static_cast<ObUniformFormat<true> *>(between_expr->get_vector(eval_ctx));
       bool has_null = false;
       for (int i = 0; i < batch_size; i++) {
-        if (eval_skip.at(i)) {continue; }
-        has_null = data->is_null(i);
+        if constexpr (!all_active) {
+          if (eval_skip.at(i + expr_start)) { continue; }
+        }
+        has_null = data->is_null(i + expr_start);
         break;
       }
       if (has_null) {
@@ -2200,7 +2374,9 @@ int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &ev
           LOG_WARN("frame start or end is negative, NULL or non-integral type", K(ret));
         } else {
           for (int i = 0; i < batch_size; i++) {
-            if (eval_skip.at(i)) { continue; }
+            if constexpr (!all_active) {
+              if (eval_skip.at(i + expr_start)) { continue; }
+            }
             pos_arr[i] = INT64_MAX;
           }
         }
@@ -2215,7 +2391,7 @@ int eval_and_check_between_literal(winfunc::WinExprEvalCtx &ctx, ObBitVector &ev
       // check interval value valid
       switch(fmt) {
       case common::VEC_DISCRETE: {
-        ret = _check_betweenn_value<ObDiscreteFormat, VEC_TC_NUMBER>(between_expr, eval_ctx, eval_skip, eval_bound);
+        ret = _check_betweenn_value<ObDiscreteFormat, VEC_TC_NUMBER>(between_expr, eval_ctx, eval_skip, expr_start, expr_start + batch_size);
         break;
       }
       case common::VEC_FIXED: {
@@ -2288,7 +2464,7 @@ static OB_INLINE int check_interval_valid(const int64_t row_idx, const int64_t i
   }
   return ret;
 }
-template <typename ColumnFmt>
+template <typename ColumnFmt, bool all_active>
 int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t row_start,
                                    const int64_t batch_size, const ObBitVector &eval_skip,
                                    ColumnFmt *between_data, const ObDatumMeta &meta,
@@ -2298,11 +2474,16 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
   const char *payload = nullptr;
   int32_t len = 0;
   int64_t interval = 0;
+  int64_t expr_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
   if (ob_is_number_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       const number::ObCompactNumber *cnum = reinterpret_cast<const number::ObCompactNumber *>(payload);
       number::ObNumber result_nmb(*cnum);
       if (lib::is_mysql_mode()) {
@@ -2319,6 +2500,7 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
       } else {
         pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
         pos_arr[i] += (is_upper ? 0 : 1);
+        pos_arr[i] += ctx.expr_to_row_store_offset_;
       }
     }
   } else if (ob_is_decimal_int(meta.type_)) {
@@ -2329,8 +2511,12 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
     ObDatum in_datum;
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       if (lib::is_mysql_mode()) {
         if (OB_UNLIKELY(wide::is_negative(reinterpret_cast<const ObDecimalInt *>(payload), len))) {
           ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2360,14 +2546,19 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
         } else {
           pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
           pos_arr[i] += (is_upper ? 0 : 1);
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
     }
   } else if (ob_is_int_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       interval = *reinterpret_cast<const int64_t *>(payload);
       if (lib::is_mysql_mode() && OB_UNLIKELY(interval < 0)) {
         ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2377,13 +2568,18 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
       } else {
         pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
         pos_arr[i] += (is_upper ? 0 : 1);
+        pos_arr[i] += ctx.expr_to_row_store_offset_;
       }
     }
   } else if (ob_is_uint_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       uint64_t tmp_val = *reinterpret_cast<const uint64_t *>(payload);
       if (lib::is_mysql_mode() && static_cast<int64_t>(tmp_val) < 0) {
         ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2398,14 +2594,19 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
         } else {
           pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
           pos_arr[i] += (is_upper ? 0 : 1);
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
     }
   } else if (ob_is_float_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       float tmp_val = *reinterpret_cast<const float *>(payload);
       if (lib::is_mysql_mode() && tmp_val < 0) {
         ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2420,14 +2621,19 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
         } else {
           pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
           pos_arr[i] += (is_upper ? 0 : 1);
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
     }
   } else if (ob_is_double_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       double tmp_val = *reinterpret_cast<const double *>(payload);
       if (lib::is_mysql_mode() && tmp_val < 0) {
         ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2442,14 +2648,19 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
         } else {
           pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
           pos_arr[i] += (is_upper ? 0 : 1);
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
     }
   } else if (ob_is_bit_tc(meta.type_)) {
     for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
       int64_t row_idx = row_start + i;
-      if (eval_skip.at(i) || between_data->is_null(i)) { continue; }
-      between_data->get_payload(i, payload, len);
+      int64_t expr_idx = expr_start + i;
+      if constexpr (!all_active) {
+        if (eval_skip.at(expr_idx)) { continue; }
+      }
+      if (between_data->is_null(expr_idx)) { continue; }
+      between_data->get_payload(expr_idx, payload, len);
       uint64_t tmp_val = *reinterpret_cast<const uint64_t *>(payload);
       if (lib::is_mysql_mode() && static_cast<int64_t>(tmp_val) < 0) {
         ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
@@ -2464,6 +2675,7 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
         } else {
           pos_arr[i] = (is_preceding ? row_idx - interval : row_idx + interval);
           pos_arr[i] += (is_upper ? 0 : 1);
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
     }
@@ -2474,13 +2686,14 @@ int _calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t r
   return ret;
 }
 
+template<bool all_active>
 int calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t row_start,
                                   const int64_t batch_size, const ObBitVector &eval_skip,
                                   const ObExpr *between_expr, const bool is_preceding, const bool is_upper,
                                   int64_t *pos_arr)
 {
 #define CALC_BORDER(fmt)                                                                           \
-  ret = _calc_borders_for_rows_between(ctx, row_start, batch_size, eval_skip,                      \
+  ret = _calc_borders_for_rows_between<fmt, all_active>(ctx, row_start, batch_size, eval_skip,                      \
                                        static_cast<fmt *>(data), meta, is_preceding, is_upper,     \
                                        pos_arr)
 #define CALC_FIXED_TYPE_BORDER(vec_tc)                                                             \
@@ -2532,18 +2745,34 @@ int calc_borders_for_rows_between(winfunc::WinExprEvalCtx &ctx, const int64_t ro
 #undef CALC_FIXED_TYPE_BORDER
 }
 
+template<bool all_active>
 int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
                                   const ObBitVector &eval_skip, const ObExpr *bound_expr,
                                   const bool is_upper, int64_t *pos_arr)
 {
   int ret = OB_SUCCESS;
   ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
+  int64_t expr_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
   if (OB_UNLIKELY(!ob_is_integer_type(bound_expr->datum_meta_.type_))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("invalid bound value type", K(ret));
-  } else if (OB_FAIL(bound_expr->eval_vector(eval_ctx, eval_skip, EvalBound(batch_size, false)))) {
-    LOG_WARN("expr eval_vector failed", K(ret));
   } else {
+    if (ctx.use_tiny_partition_opt()) {
+      if (OB_FAIL(bound_expr->eval_vector(
+              eval_ctx, *ctx.input_brs_->skip_,
+              EvalBound(ctx.input_brs_->size_, ctx.partition_start_index_in_expr_, ctx.partition_start_index_in_expr_ + batch_size, true)))) {
+        LOG_WARN("expr eval_vector failed", K(ret));
+      }
+    } else {
+      if (OB_FAIL(bound_expr->eval_vector(
+              eval_ctx, eval_skip,
+              EvalBound(batch_size, 0, batch_size, all_active)))) {
+        LOG_WARN("expr eval_vector failed", K(ret));
+      }
+    }
+  }
+
+  if (OB_SUCC(ret)) {
     VectorFormat fmt = bound_expr->get_format(eval_ctx);
     VecValueTypeClass vec_tc = bound_expr->get_vec_value_tc();
     switch(fmt) {
@@ -2552,12 +2781,17 @@ int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
       int64_t part_first_idx = ctx.win_col_.part_first_row_idx_;
       int64_t part_end_idx = ctx.win_col_.op_.get_part_end_idx();
       for (int i = 0; i < batch_size; i++) {
-        if (eval_skip.at(i) || pos_arr[i] == INT64_MAX) { continue; }
-        if (data->is_null(i) || data->get_bool(i)) {
+        int64_t expr_idx = expr_start + i;
+        if constexpr (!all_active) {
+          if (eval_skip.at(expr_idx)) { continue; }
+        }
+        if (pos_arr[i] == INT64_MAX) { continue; }
+        if (data->is_null(expr_idx) || data->get_bool(expr_idx)) {
           pos_arr[i] = (is_upper ? part_first_idx : part_end_idx);
         } else {
           pos_arr[i] = (is_upper ? part_end_idx : part_first_idx - 1);
         }
+        pos_arr[i] += ctx.expr_to_row_store_offset_;
       }
       break;
     }
@@ -2566,12 +2800,17 @@ int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
       int64_t part_first_idx = ctx.win_col_.part_first_row_idx_;
       int64_t part_end_idx = ctx.win_col_.op_.get_part_end_idx();
       for (int i = 0; i < batch_size; i++) {
-        if (eval_skip.at(i) || pos_arr[i] == INT64_MAX) { continue; }
-        if (data->is_null(i) || data->get_bool(i)) {
+        int64_t expr_idx = expr_start + i;
+        if constexpr (!all_active) {
+          if (eval_skip.at(expr_idx)) { continue; }
+        }
+        if (pos_arr[i] == INT64_MAX) { continue; }
+        if (data->is_null(expr_idx) || data->get_bool(expr_idx)) {
           pos_arr[i] = (is_upper ? part_first_idx : part_end_idx);
         } else {
           pos_arr[i] = (is_upper ? part_end_idx : part_first_idx - 1);
         }
+        pos_arr[i] += ctx.expr_to_row_store_offset_;
       }
       break;
     }
@@ -2586,12 +2825,17 @@ int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
         int64_t part_first_idx = ctx.win_col_.part_first_row_idx_;
         int64_t part_end_idx = ctx.win_col_.op_.get_part_end_idx();
         for (int i = 0; i < batch_size; i++) {
-          if (eval_skip.at(i) || pos_arr[i] == INT64_MAX) { continue; }
-          if (data->is_null(i) || data->get_bool(i)) {
+          int64_t expr_idx = expr_start + i;
+          if constexpr (!all_active) {
+            if (eval_skip.at(expr_idx)) { continue; }
+          }
+          if (pos_arr[i] == INT64_MAX) { continue; }
+          if (data->is_null(expr_idx) || data->get_bool(expr_idx)) {
             pos_arr[i] = (is_upper ? part_first_idx : part_end_idx);
           } else {
             pos_arr[i] = (is_upper ? part_end_idx : part_first_idx - 1);
           }
+          pos_arr[i] += ctx.expr_to_row_store_offset_;
         }
       }
       break;
@@ -2605,23 +2849,26 @@ int calc_borders_for_no_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
   return ret;
 }
 
-template <typename IntervalFmt, typename UnitFmt>
+template <typename IntervalFmt, typename UnitFmt, bool all_active>
 static int _batch_check_datetime_interval(IntervalFmt *interval_data, UnitFmt *unit_data,
-                                          const int64_t batch_size, const ObBitVector &eval_skip)
+                                          const int64_t expr_start, const int64_t batch_size, const ObBitVector &eval_skip)
 {
   int ret = OB_SUCCESS;
   ObString interval_val;
   int64_t unit_value;
   ObInterval interval_time;
-  for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-    if (eval_skip.at(i)) {
-    } else if (interval_data->is_null(i) || unit_data->is_null(i)) {
+  for (int i = 0; OB_SUCC(ret) && i <  batch_size; i++) {
+    int64_t expr_idx = expr_start + i;
+    if constexpr (!all_active) {
+      if (eval_skip.at(expr_idx)) { continue; }
+    }
+    if (interval_data->is_null(expr_idx) || unit_data->is_null(expr_idx)) {
       ret = OB_ERR_WINDOW_FRAME_ILLEGAL;
       LOG_WARN("frame start or end is negative, NULL or of non-integral type", K(ret),
                K(interval_data->is_null(i)), K(unit_data->is_null(i)));
     } else {
-      interval_val = interval_data->get_string(i);
-      unit_value = unit_data->get_int(i);
+      interval_val = interval_data->get_string(expr_idx);
+      unit_value = unit_data->get_int(expr_idx);
       ObDateUnitType unit_val = static_cast<ObDateUnitType>(unit_value);
       if (OB_FAIL(ObTimeConverter::str_to_ob_interval(interval_val, unit_val, interval_time))) {
         if (OB_UNLIKELY(OB_INVALID_DATE_VALUE == ret)) {
@@ -2641,35 +2888,48 @@ static int _batch_check_datetime_interval(IntervalFmt *interval_data, UnitFmt *u
   }
   return ret;
 }
-static int _check_datetime_interval_valid(ObEvalCtx &eval_ctx, const ObExpr *bound_expr,
-                                         const int64_t batch_size, const ObBitVector &eval_skip)
+
+template<bool all_active>
+static int _check_datetime_interval_valid(WinExprEvalCtx &ctx, ObEvalCtx &eval_ctx, const ObExpr *bound_expr,
+                                         const int64_t expr_start, const int64_t batch_size, const ObBitVector &eval_skip)
 {
   int ret = OB_SUCCESS;
   if (bound_expr->type_ == T_FUN_SYS_DATE_ADD || bound_expr->type_ == T_FUN_SYS_DATE_SUB) {
     ObExpr *interval_expr = bound_expr->args_[1];
     ObExpr *unit_expr = bound_expr->args_[2];
-    if (OB_FAIL(interval_expr->eval_vector(eval_ctx, eval_skip, EvalBound(batch_size, false)))
-        || OB_FAIL(unit_expr->eval_vector(eval_ctx, eval_skip, EvalBound(batch_size, false)))) {
-      LOG_WARN("expr evaluation failed", K(ret));
+
+    if (ctx.use_tiny_partition_opt()) {
+      EvalBound eval_bound(ctx.input_brs_->size_, ctx.partition_start_index_in_expr_, ctx.partition_start_index_in_expr_ + batch_size, true);
+      if (OB_FAIL(interval_expr->eval_vector(eval_ctx, *ctx.input_brs_->skip_, eval_bound))
+        || OB_FAIL(unit_expr->eval_vector(eval_ctx, *ctx.input_brs_->skip_, eval_bound))) {
+        LOG_WARN("expr evaluation failed", K(ret));
+      }
+    } else {
+      EvalBound eval_bound(batch_size, 0, batch_size, all_active);
+      if (OB_FAIL(interval_expr->eval_vector(eval_ctx, eval_skip, eval_bound))
+        || OB_FAIL(unit_expr->eval_vector(eval_ctx, eval_skip, eval_bound))) {
+        LOG_WARN("expr evaluation failed", K(ret));
+      }
+    }
+    if (!OB_SUCC(ret)) {
     } else if (OB_LIKELY(interval_expr->get_format(eval_ctx) == VEC_DISCRETE
                          && unit_expr->get_format(eval_ctx) == VEC_FIXED)) {
       ObDiscreteFormat *interval_data = static_cast<ObDiscreteFormat *>(interval_expr->get_vector(eval_ctx));
       ObFixedLengthFormat<int64_t> *unit_data = static_cast<ObFixedLengthFormat<int64_t> *>(unit_expr->get_vector(eval_ctx));
-      if (OB_FAIL(_batch_check_datetime_interval(interval_data, unit_data, batch_size, eval_skip))) {
-        LOG_WARN("check failed", K(ret));
-      }
+      ret = _batch_check_datetime_interval<ObDiscreteFormat, ObFixedLengthFormat<int64_t>, all_active>(interval_data, unit_data, expr_start, batch_size, eval_skip);
     } else {
       ObIVector *interval_data = interval_expr->get_vector(eval_ctx);
       ObIVector *unit_data = unit_expr->get_vector(eval_ctx);
-      if (OB_FAIL(_batch_check_datetime_interval(interval_data, unit_data, batch_size, eval_skip))) {
-        LOG_WARN("check failed", K(ret));
-      }
+      ret = _batch_check_datetime_interval<ObIVector, ObIVector, all_active>(interval_data, unit_data, expr_start, batch_size, eval_skip);
+    }
+    if (OB_FAIL(ret)) {
+      LOG_WARN("check failed", K(ret));
     }
   }
   return ret;
 }
 
-template <typename ColumnFmt>
+template <typename ColumnFmt, bool all_active>
 int _calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
                                 const int64_t row_start, const ObBitVector &eval_skip,
                                 const bool is_upper, ColumnFmt *bound_data,
@@ -2700,8 +2960,12 @@ int _calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
   bool l_isnull = false, r_isnull = false;
   int64_t part_first_idx = ctx.win_col_.part_first_row_idx_;
   int64_t part_end_idx = ctx.win_col_.op_.get_part_end_idx();
+  int64_t expr_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
   for (int i = 0; OB_SUCC(ret) && i < batch_size; i++) {
-    if (eval_skip.at(i) || pos_arr[i] == INT64_MAX) { continue; }
+    if constexpr (!all_active) {
+      if (eval_skip.at(i + expr_start)) {continue; }
+    }
+    if (pos_arr[i] == INT64_MAX) { continue; }
     int64_t row_idx = row_start + i;
     bool found = false;
     if (prev_row_border != -1) {
@@ -2709,7 +2973,7 @@ int _calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
         LOG_WARN("compare previous row failed", K(ret));
       } else if (cmp_ret == 0) {
         found = true;
-        pos_arr[i] = prev_row_border;
+        pos_arr[i] = prev_row_border + ctx.expr_to_row_store_offset_;
       }
     }
     if (OB_FAIL(ret)) {
@@ -2722,8 +2986,8 @@ int _calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
       }
       int step = (cmp_mode & ROLL) ? 1 : 0;
       int cmp_times = 0;
-      r_isnull = bound_data->is_null(i);
-      bound_data->get_payload(i, r_ptr, r_len);
+      r_isnull = bound_data->is_null(i + expr_start);
+      bound_data->get_payload(i + expr_start, r_ptr, r_len);
       while (OB_SUCC(ret)) {
         cmp_times++;
         bool match = false;
@@ -2779,19 +3043,21 @@ int _calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const int64_t batch_size,
       } // end inner while
       if (OB_FAIL(ret)) {
       } else {
-        pos_arr[i] = pos + (is_upper ? 0 : 1);
-        prev_row_border = pos_arr[i];
+        prev_row_border = pos + (is_upper ? 0 : 1);
+        pos_arr[i] = prev_row_border + ctx.expr_to_row_store_offset_;
       }
     }
   } // end for
   return ret;
 }
+
+template<bool all_active>
 int calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const ObExpr *bound_expr,
                                const int64_t batch_size, const int64_t row_start,
                                ObBitVector &eval_skip, const bool is_upper, int64_t *pos_arr)
 {
 #define CALC_BORDER(fmt)                                                                           \
-  ret = _calc_borders_for_sort_expr(ctx, batch_size, row_start, eval_skip, is_upper,               \
+  ret = _calc_borders_for_sort_expr<fmt, all_active>(ctx, batch_size, row_start, eval_skip, is_upper,               \
                                     static_cast<fmt *>(data), bound_expr, pos_arr)
 
 #define CALC_FIXED_TYPE_BORDER(vec_tc)                                                             \
@@ -2799,15 +3065,25 @@ int calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const ObExpr *bound_expr,
 
   int ret = OB_SUCCESS;
   ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
+  int64_t expr_start = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : 0;
   bool is_nmb_literal = (is_upper ? ctx.win_col_.wf_info_.upper_.is_nmb_literal_ :
                                     ctx.win_col_.wf_info_.lower_.is_nmb_literal_);
-  if (OB_FAIL(bound_expr->eval_vector(
-        eval_ctx, eval_skip,
-        EvalBound(batch_size, eval_skip.accumulate_bit_cnt(batch_size) == 0)))) {
-    LOG_WARN("eval vector failed", K(ret));
+
+  if (ctx.use_tiny_partition_opt()) {
+    EvalBound eval_bound(ctx.input_brs_->size_, ctx.partition_start_index_in_expr_, ctx.partition_start_index_in_expr_ + batch_size, true);
+    if (OB_FAIL(bound_expr->eval_vector(eval_ctx, *ctx.input_brs_->skip_, eval_bound))) {
+      LOG_WARN("eval vector failed", K(ret));
+    }
+  } else {
+    EvalBound eval_bound(batch_size, 0, batch_size, all_active);
+    if (OB_FAIL(bound_expr->eval_vector(eval_ctx, eval_skip, eval_bound))) {
+      LOG_WARN("eval vector failed", K(ret));
+    }
+  }
+  if (!OB_SUCC(ret)) {
   } else if (lib::is_mysql_mode() && !is_nmb_literal
              && ob_is_temporal_type(bound_expr->datum_meta_.type_)) {
-    if (OB_FAIL(_check_datetime_interval_valid(eval_ctx, bound_expr, batch_size, eval_skip))) {
+    if (OB_FAIL(_check_datetime_interval_valid<all_active>(ctx, eval_ctx, bound_expr, expr_start, batch_size, eval_skip))) {
       LOG_WARN("invalid datetime interval", K(ret));
     }
   }
@@ -2852,6 +3128,7 @@ int calc_borders_for_sort_expr(WinExprEvalCtx &ctx, const ObExpr *bound_expr,
   }
   return ret;
 }
+} // namespace
 
 int cmp_prev_row(WinExprEvalCtx &ctx, const int64_t cur_idx, int &cmp_ret)
 {
@@ -2912,6 +3189,9 @@ struct int_trunc<VEC_TC_INTEGER>
 
 template<>
 struct int_trunc<VEC_TC_INTERVAL_YM>: public int_trunc<VEC_TC_INTEGER> {};
+
+template<>
+struct int_trunc<VEC_TC_INTERVAL_DS>: public int_trunc<VEC_TC_INTEGER> {};
 
 template <>
 struct int_trunc<VEC_TC_UINTEGER>
@@ -3010,8 +3290,8 @@ int WinExprWrapper<Derived>::update_frame(WinExprEvalCtx &ctx, const Frame &prev
                                           bool &valid_frame)
 {
   int ret = OB_SUCCESS;
-  int64_t part_first_idx = ctx.win_col_.part_first_row_idx_;
-  int64_t part_end_idx = ctx.win_col_.op_.get_part_end_idx();
+  int64_t part_first_idx = ctx.use_tiny_partition_opt() ? ctx.partition_start_index_in_expr_ : ctx.win_col_.part_first_row_idx_;
+  int64_t part_end_idx = part_first_idx + ctx.win_col_.op_.get_part_end_idx() - ctx.win_col_.part_first_row_idx_;
   int64_t *upper_pos_arr = ctx.win_col_.op_.batch_ctx_.upper_pos_arr_;
   int64_t *lower_pos_arr = ctx.win_col_.op_.batch_ctx_.lower_pos_arr_;
   Frame part_frame(part_first_idx, part_end_idx);
@@ -3165,26 +3445,37 @@ int AggrExpr::copy_aggr_row(CTX &ctx, const char *src_row, char *dst_row)
 template <typename Derived>
 int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_t part_start,
                                                const int64_t part_end, const int64_t row_start,
-                                               const int64_t row_end, const ObBitVector &skip)
+                                               const int64_t row_end, const ObBitVector &wf_skip, bool all_active)
 {
   int ret = OB_SUCCESS;
+  const ObBitVector& skip = ctx.use_tiny_partition_opt() ? (*ctx.win_col_.op_.get_batch_ctx().calc_wf_skip_) : wf_skip;
   if (OB_UNLIKELY(part_start > row_start || part_end < row_end)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("invalid partition", K(part_start), K(part_end), K(row_start), K(row_end));
     } else if (OB_UNLIKELY(part_start >= part_end || row_start >= row_end)) {
       LOG_DEBUG("empty partition", K(part_start), K(part_end), K(row_start), K(row_end));
-    } else if (OB_UNLIKELY(skip.accumulate_bit_cnt(row_end - row_start) == row_end - row_start)) {
-      // do nothing
+    } else if (OB_UNLIKELY(!all_active && skip.accumulate_bit_cnt(row_end - row_start) == row_end - row_start)) {
+      // all_active = false meaning not tiny partition opt
     } else {
       ctx.reset_per_batch_allocator();
       Frame prev_frame, cur_frame;
       bool whole_frame = true, valid_frame = true;
       ObEvalCtx::BatchInfoScopeGuard guard(ctx.win_col_.op_.get_eval_ctx());
       guard.set_batch_size(row_end - row_start);
-      if (OB_FAIL(eval_bound_exprs(ctx, row_start, row_end - row_start, skip, true))) {
-        LOG_WARN("eval upper bound failed", K(ret));
-      } else if (OB_FAIL(eval_bound_exprs(ctx, row_start, row_end-row_start, skip, false))) {
-        LOG_WARN("eval lower bound failed", K(ret));
+      if (all_active) {
+        if (OB_FAIL(eval_bound_exprs<true>(ctx, row_start, row_end - row_start, skip, true))) {
+          LOG_WARN("eval upper bound failed", K(ret));
+        } else if (OB_FAIL(eval_bound_exprs<true>(ctx, row_start, row_end-row_start, skip, false))) {
+          LOG_WARN("eval lower bound failed", K(ret));
+        }
+      } else {
+        if (OB_FAIL(eval_bound_exprs<false>(ctx, row_start, row_end - row_start, skip, true))) {
+          LOG_WARN("eval upper bound failed", K(ret));
+        } else if (OB_FAIL(eval_bound_exprs<false>(ctx, row_start, row_end-row_start, skip, false))) {
+          LOG_WARN("eval lower bound failed", K(ret));
+        }
+      }
+      if (OB_FAIL(ret)) {
       } else if (is_aggregate_expr()) {
         AggrExpr *agg_expr = reinterpret_cast<AggrExpr *>(this);
         prev_frame = agg_expr->last_valid_frame_;
@@ -3195,10 +3486,11 @@ int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_
         int prev_calc_idx = -1;
 
         // Only Group Concat without distinct and order by can avoid use the whole frame
-        bool group_concat_whole_frame = ctx.win_col_.group_concat_whole_frame();
+        bool need_whole_frame = ctx.win_col_.group_concat_whole_frame()
+                            || ctx.win_col_.agg_ctx_->aggr_infos_.at(0).get_expr_type() == T_FUN_WINDOW_FUNNEL;
         for (int64_t row_idx = row_start; OB_SUCC(ret) && row_idx < row_end; row_idx++) {
           int64_t batch_idx = row_idx - row_start;
-          if (skip.at(batch_idx)) {
+          if (!all_active && skip.at(batch_idx)) {
             continue;
           }
           guard.set_batch_idx(batch_idx);
@@ -3219,7 +3511,7 @@ int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_
             if (OB_FAIL(AggrExpr::copy_aggr_row(ctx, copied_row, agg_row))) {
               LOG_WARN("copy aggr row failed", K(ret));
             }
-          } else if (whole_frame || group_concat_whole_frame) {
+          } else if (whole_frame || need_whole_frame) {
             ctx.win_col_.agg_ctx_->removal_info_.reset_for_new_frame();
             if (OB_FAIL(static_cast<Derived *>(this)->process_window(ctx, cur_frame, row_idx, agg_row, is_null))) {
               LOG_WARN("eval aggregate function failed", K(ret));
@@ -3240,7 +3532,8 @@ int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_
             agg_expr->last_removal_info_ = ctx.win_col_.agg_ctx_->removal_info_;
           }
           // use per-partition allocator
-          if (OB_FAIL(agg_expr->on_batch_end(ctx, prev_calc_idx))) {
+          bool is_last_row = (part_end == row_end);
+          if (OB_FAIL(agg_expr->on_batch_end(ctx, prev_calc_idx, is_last_row))) {
             LOG_WARN("on batch end failed", K(ret));
           }
         }
@@ -3251,7 +3544,7 @@ int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_
         MEMSET(ctx.win_col_.non_aggr_results_, 0, non_aggr_row_size * (row_end - row_start));
         for (int64_t row_idx = row_start; OB_SUCC(ret) && row_idx < row_end; row_idx++) {
           int64_t batch_idx = row_idx - row_start;
-          if (skip.at(batch_idx)) {
+          if (!all_active && skip.at(batch_idx)) {
             continue;
           }
           guard.set_batch_idx(batch_idx);
@@ -3278,7 +3571,7 @@ int WinExprWrapper<Derived>::process_partition(WinExprEvalCtx &ctx, const int64_
         ObEvalCtx &eval_ctx = ctx.win_col_.op_.get_eval_ctx();
         if (OB_FAIL(ret)) {
         } else if (OB_FAIL(static_cast<Derived *>(this)->collect_part_results(ctx.win_col_, 0, row_end - row_start,
-                                                                              skip, true))) {
+                                                                              skip, all_active, true, ctx.expr_to_row_store_offset_))) {
           LOG_WARN("collect partition results failed", K(ret));
         }
       }

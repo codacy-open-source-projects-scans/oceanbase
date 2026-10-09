@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_EXPR_NEXTVAL_H
@@ -51,7 +44,9 @@ public:
 
   static int get_uint_value(const ObExpr &input_expr, ObDatum *input_value,
                             bool &is_zero, uint64_t &casted_value);
-private:
+protected:
+  static int get_uint_value_with_tc(const ObObjTypeClass tc, ObDatum *input_value,
+                            bool &is_zero, uint64_t &casted_value);
   //check to generate auto-inc value or not and cast.
   static int check_and_cast(common::ObObj &result,
                             common::ObObjType result_type,
@@ -61,6 +56,7 @@ private:
                             share::AutoincParam *autoinc_param,
                             bool &is_to_generate,
                             uint64_t &casted_value);
+private:
   static int generate_autoinc_value(const ObSQLSessionInfo &my_session,
                                     uint64_t &new_val,
                                     share::ObAutoincrementService &auto_service,

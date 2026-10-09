@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_PARTITION_RANGE_SPLITER_H
@@ -15,6 +8,7 @@
 
 #include "storage/access/ob_table_access_param.h"
 #include "storage/access/ob_table_access_context.h"
+#include "storage/access/ob_tablet_read_tables.h"
 #include "ob_storage_struct.h"
 #include "lib/utility/ob_print_utils.h"
 #include "lib/container/ob_heap.h"
@@ -686,7 +680,7 @@ protected:
     ObStoreCtx store_ctx_;
     ObTableAccessContext tbl_xs_ctx_;
     ObTableStoreIterator tbls_iter_;
-    ObGetTableParam get_tbl_param_;
+    ObTabletReadTables tablet_read_tables;
     blocksstable::ObDatumRange range_to_scan_;
     ObIStoreRowIterator *iter_;
     bool is_inited_;

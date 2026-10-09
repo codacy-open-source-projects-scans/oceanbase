@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_OB_EXEC_CONTEXT_H
@@ -438,7 +431,6 @@ public:
   void set_px_sqc_id(const int64_t sqc_id) { px_sqc_id_ = sqc_id; }
   int64_t get_px_sqc_id() const { return px_sqc_id_; }
 
-  common::ObIArray<ObJoinFilterDataCtx> &get_bloom_filter_ctx_array() { return bloom_filter_ctx_array_; }
 
   char **get_frames() const { return frames_; }
   void set_frames(char **frames) { frames_ = frames; }
@@ -605,6 +597,7 @@ public:
   void set_granule_type(ObGranuleType granule_type) { current_granule_type_ = granule_type; }
   bool is_block_granule_type() { return current_granule_type_ == OB_BLOCK_RANGE_GRANULE; }
   ObPLComplexTypeLazyMgr &get_pl_complex_type_lazy_mgr() { return pl_complex_type_lazy_mgr_; }
+  transaction::ObTxExecResult &get_trans_result() { return tx_result_; }
 
 private:
   pl::ObPLPackageGuard* get_package_guard();
@@ -715,9 +708,6 @@ protected:
   int64_t px_task_id_;
   int64_t px_sqc_id_;
 
-  //bloom filter ctx array
-  common::ObArray<ObJoinFilterDataCtx> bloom_filter_ctx_array_;
-
   // data frames and count
   char **frames_;
   uint64_t frame_cnt_;
@@ -818,6 +808,7 @@ protected:
   // Granule type for current GI task
   ObGranuleType current_granule_type_;
   ObPLComplexTypeLazyMgr pl_complex_type_lazy_mgr_;
+  transaction::ObTxExecResult tx_result_;
 
   common::ObZone first_weak_select_zone_;
   common::hash::ObHashMap<ObOdpsPartitionKey, int64_t> odps_partition_str_to_file_size_;

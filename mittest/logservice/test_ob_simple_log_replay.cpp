@@ -3,14 +3,7 @@
 
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define private public
@@ -267,6 +260,10 @@ TEST_F(TestObSimpleLogReplayFunc, test_flashback_to_padding)
   {
     int ret = OB_SUCCESS;
     bool is_done = false;
+    // iterator看到的终点是padding日志头
+    iterator_end_lsn = padding_header;
+    // replay看到的committed位点是padding头
+    rp_st->unblock_submit();
     while (!is_done) {
       rp_sv.is_replay_done(ls_id, padding_header, is_done);
       usleep(10*1000);

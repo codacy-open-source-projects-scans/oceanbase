@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -17,7 +10,11 @@
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 #include "sql/engine/cmd/ob_ddl_executor_util.h"
 #include "share/ob_fts_index_builder_util.h"
+#include "share/ob_rpc_struct.h"
 #include "share/search_index/ob_search_index_builder_util.h"
+#include "share/ob_ddl_common.h"
+#include "share/schema/ob_table_schema.h"
+#include "share/schema/ob_column_schema.h"
 namespace oceanbase
 {
 using namespace common;
@@ -1056,73 +1053,86 @@ int ObSchemaUtils::batch_get_table_schemas_by_version(
   return ret;
 }
 
-int ObSchemaUtils::alter_rowkey_column_group(share::schema::ObTableSchema &table_schema)
+int ObSchemaUtils::check_need_rowkey_column_group(
+    const share::schema::ObTableSchema &table_schema,
+    bool &need_rowkey_cg,
+    bool &need_hidden_rowkey_cg)
 {
   int ret = OB_SUCCESS;
   bool is_each_cg_exist = false;
   bool is_all_cg_exist = false;
-  ObColumnGroupSchema *rowkey_cg = nullptr;
-  /* scan all column column group*/
+  bool allow_hidden_rowkey_cg = false;
 
-  /*get rowkey_cg*/
-  if (OB_FAIL(table_schema.get_column_group_by_name(OB_ROWKEY_COLUMN_GROUP_NAME, rowkey_cg))) {
+  if (OB_FAIL(table_schema.is_column_group_exist(OB_ALL_COLUMN_GROUP_NAME, is_all_cg_exist))) {
+    LOG_WARN("Fail to check whether all column group exist", K(ret));
+  } else if (OB_FAIL(table_schema.is_column_group_exist(OB_EACH_COLUMN_GROUP_NAME, is_each_cg_exist))) {
+    LOG_WARN("Fail to check whether each column group exist", K(ret));
+  } else if (OB_FAIL(check_allow_hidden_rowkey_column_group(table_schema, allow_hidden_rowkey_cg))) {
+    LOG_WARN("fail to check allow hidden rowkey column group", K(ret), K(table_schema));
+  } else {
+    need_rowkey_cg = !is_all_cg_exist && is_each_cg_exist;
+    need_hidden_rowkey_cg = is_all_cg_exist && is_each_cg_exist && allow_hidden_rowkey_cg;
+  }
+  return ret;
+}
+
+int ObSchemaUtils::alter_rowkey_column_group(share::schema::ObTableSchema &table_schema)
+{
+  int ret = OB_SUCCESS;
+
+  const ObColumnGroupSchema *hidden_rowkey_cg = table_schema.get_hidden_rowkey_column_group();
+  ObColumnGroupSchema *rowkey_cg = nullptr;
+  if (OB_FAIL(table_schema.check_column_group_valid())) {
+    LOG_WARN("fail to check column group valid", K(ret), K(table_schema));
+  } else if (OB_FAIL(table_schema.get_column_group_by_name(OB_ROWKEY_COLUMN_GROUP_NAME, rowkey_cg))) {
     if (OB_HASH_NOT_EXIST == ret) {
       ret = OB_SUCCESS;
-      rowkey_cg = nullptr;
     } else {
-      LOG_WARN("Fail to get rowkey column group", K(ret), K(table_schema));
+      LOG_WARN("fail to get rowkey column group", K(ret), K(table_schema));
+    }
+  } else {
+    rowkey_cg = (nullptr != hidden_rowkey_cg) ? nullptr : rowkey_cg;
+  }
+
+  bool need_rowkey_cg = false;
+  bool need_hidden_rowkey_cg = false;
+  if (FAILEDx(check_need_rowkey_column_group(table_schema, need_rowkey_cg, need_hidden_rowkey_cg))) {
+    LOG_WARN("fail to check need rowkey column group", K(ret), K(table_schema));
+  } else if ((!need_rowkey_cg && nullptr != rowkey_cg)
+          || (!need_hidden_rowkey_cg && nullptr != hidden_rowkey_cg)) {
+    if (OB_FAIL(table_schema.remove_column_group(OB_ROWKEY_COLUMN_GROUP_NAME))) {
+      LOG_WARN("fail to remove rowkey column group", K(ret));
     }
   }
 
-  if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.is_column_group_exist(OB_ALL_COLUMN_GROUP_NAME, is_all_cg_exist))) {
-      LOG_WARN("Fail to check whetehre all column group exist", K(ret));
-    } else if (OB_FAIL(table_schema.is_column_group_exist(OB_EACH_COLUMN_GROUP_NAME, is_each_cg_exist))) {
-      LOG_WARN("Fail to check whether each column group exist", K(ret));
+  if (OB_FAIL(ret)) {
+  } else if ((need_rowkey_cg && nullptr == rowkey_cg)
+          || (need_hidden_rowkey_cg && nullptr == hidden_rowkey_cg)) {
+    ObSEArray<uint64_t, 8> rowkey_ids;
+    ObTableSchema::const_column_iterator iter_begin = table_schema.column_begin();
+    ObTableSchema::const_column_iterator iter_end = table_schema.column_end();
+    for (; OB_SUCC(ret) && iter_begin != iter_end; ++iter_begin) {
+      ObColumnSchemaV2 *column = (*iter_begin);
+      if (OB_ISNULL(column)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column schema should not be null", K(ret));
+      } else if (column->is_rowkey_column()) {
+        if (OB_FAIL(rowkey_ids.push_back(column->get_column_id()))) {
+          LOG_WARN("fail to push back value", K(ret));
+        }
+      }
     }
-  }
 
-
-  if (OB_SUCC(ret)) {
-    /* only when only each exist, rowkey_cg is needed*/
-    if (is_each_cg_exist && (!is_all_cg_exist)) {
-      if (OB_ISNULL(rowkey_cg)) {
-        ObColumnGroupSchema new_rowkey_cg;
-        ObArray<uint64_t> rowkey_ids;
-        ObTableSchema::const_column_iterator iter_begin = table_schema.column_begin();
-        ObTableSchema::const_column_iterator iter_end = table_schema.column_end();
-        for (; OB_SUCC(ret) && iter_begin != iter_end; ++iter_begin) {
-          ObColumnSchemaV2 *column = (*iter_begin);
-          if (OB_ISNULL(column)) {
-            ret = OB_ERR_UNEXPECTED;
-            LOG_WARN("column schema should not be null", K(ret));
-          } else if (column->is_rowkey_column()) {
-            if (OB_FAIL(rowkey_ids.push_back(column->get_column_id()))) {
-              LOG_WARN("fail to push back value", K(ret));
-            }
-          }
-        }
-        bool build_old_version_cg = false;
-        if (OB_FAIL(ret)) {
-        } else if (OB_FAIL(ObSchemaUtils::check_build_old_version_column_group(table_schema, build_old_version_cg))) {
-          LOG_WARN("fail to check build old version column group", K(ret), K(table_schema));
-        } else if (OB_FAIL(ObSchemaUtils::build_column_group(
-                               table_schema, table_schema.get_tenant_id(),ObColumnGroupType::ROWKEY_COLUMN_GROUP,
-                               OB_ROWKEY_COLUMN_GROUP_NAME, rowkey_ids, build_old_version_cg ? table_schema.get_max_used_column_group_id() + 1 : ROWKEY_COLUMN_GROUP_ID, new_rowkey_cg))) {
-          LOG_WARN("fail to build rowkey column group", K(ret));
-        } else if (OB_FAIL(table_schema.add_column_group(new_rowkey_cg))) {
-          LOG_WARN("fail to add rowkey column group to table_schema", K(ret));
-        }
-      } else {
-        /*rowkey cg exist skip*/
-      }
-    } else {
-      /*other situation, rowkey column group should not exist*/
-      if (OB_NOT_NULL(rowkey_cg)) {
-        if (OB_FAIL(table_schema.remove_column_group(rowkey_cg->get_column_group_name()))){
-          LOG_WARN("fail to remove rowkey cg", K(ret));
-        }
-      }
+    ObColumnGroupSchema new_rowkey_cg;
+    bool build_old_version_cg = false;
+    if (FAILEDx(ObSchemaUtils::check_build_old_version_column_group(table_schema, build_old_version_cg))) {
+      LOG_WARN("fail to check build old version column group", K(ret), K(table_schema));
+    } else if (OB_FAIL(ObSchemaUtils::build_column_group(table_schema, table_schema.get_tenant_id(),
+                                                         ObColumnGroupType::ROWKEY_COLUMN_GROUP, OB_ROWKEY_COLUMN_GROUP_NAME, rowkey_ids,
+                                                         build_old_version_cg ? table_schema.get_max_used_column_group_id() + 1 : ROWKEY_COLUMN_GROUP_ID, new_rowkey_cg))) {
+      LOG_WARN("fail to build rowkey column group", K(ret));
+    } else if (OB_FAIL(table_schema.add_column_group(new_rowkey_cg))) {
+      LOG_WARN("fail to add rowkey column group to table_schema", K(ret));
     }
   }
   return ret;
@@ -1635,13 +1645,47 @@ int ObSchemaUtils::check_build_old_version_column_group(const share::schema::ObT
   return ret;
 }
 
+ERRSIM_POINT_DEF(ERRSIM_DISABLE_HIDDEN_ROWKEY_CG);
+int ObSchemaUtils::check_allow_hidden_rowkey_column_group(
+    const share::schema::ObTableSchema &table_schema,
+    bool &allow_hidden_rowkey_cg)
+{
+  int ret = OB_SUCCESS;
+  allow_hidden_rowkey_cg = false;
+  uint64_t data_version = 0;
+  if (OB_FAIL(GET_MIN_DATA_VERSION(table_schema.get_tenant_id(), data_version))) {
+    LOG_WARN("failed to get min data version", K(ret), K(table_schema.get_tenant_id()), K(data_version));
+  } else {
+    if (data_version >= DATA_VERSION_4_6_1_0) {
+      allow_hidden_rowkey_cg = true;
+    }
+
+    if (OB_UNLIKELY(ERRSIM_DISABLE_HIDDEN_ROWKEY_CG)) {
+      allow_hidden_rowkey_cg = false;
+      ret = OB_SUCCESS;
+      FLOG_INFO("ERRSIM_DISABLE_HIDDEN_ROWKEY_CG: disable hidden rowkey cg", K(ret), "table_id", table_schema.get_table_id());
+    }
+  }
+
+  FLOG_INFO("check allow hidden rowkey cg", K(data_version), K(allow_hidden_rowkey_cg));
+  return ret;
+}
+
 const char* DDLType[]
 {
   "TRUNCATE_TABLE",
   "SET_COMMENT",
   "CREATE_INDEX",
   "CREATE_VIEW",
-  "DROP_TABLE"
+  "DROP_TABLE",
+  "ADD_COLUMN",
+  "DROP_COLUMN",
+  "ADD_PARTITION",
+  "ADD_SUB_PARTITION",
+  "DROP_PARTITION",
+  "DROP_SUB_PARTITION",
+  "TRUNCATE_PARTITION",
+  "TRUNCATE_SUB_PARTITION"
 };
 
 const char* NOT_SUPPORT_DDLType[]
@@ -1874,6 +1918,588 @@ int ObParallelDDLControlMode::parse_from_config_string(const char *str)
   return ret;
 }
 
+static int check_alter_column_arg_for_parallel_(
+           const obrpc::ObAlterTableArg &arg,
+           bool &can_parallel_alter,
+           const char *&reason)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = true;
+  bool has_add = false;
+  bool has_drop = false;
+  const AlterTableSchema &alter_table_schema = arg.alter_table_schema_;
+  ObTableSchema::const_column_iterator it = alter_table_schema.column_begin();
+  ObTableSchema::const_column_iterator it_end = alter_table_schema.column_end();
+  for (; OB_SUCC(ret) && it != it_end; ++it) {
+    if (OB_ISNULL(*it)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("column schema is null", KR(ret));
+    } else {
+      const AlterColumnSchema *alter_col = static_cast<const AlterColumnSchema *>(*it);
+      if (OB_DDL_ADD_COLUMN == alter_col->alter_type_) {
+        has_add = true;
+      } else if (OB_DDL_DROP_COLUMN == alter_col->alter_type_) {
+        has_drop = true;
+      } else {
+        can_parallel_alter = false;
+        reason = "unsupported column alter type for parallel DDL";
+        LOG_TRACE("unsupported column alter type for parallel DDL",
+                  "alter_type", alter_col->alter_type_);
+        break;
+      }
+    }
+  }
+  if (OB_FAIL(ret) || !can_parallel_alter) {
+  } else if (has_add && has_drop) {
+    can_parallel_alter = false;
+    reason = "compound add+drop column not supported for parallel";
+    LOG_TRACE("compound add+drop column falls back to serial", KR(ret));
+  } else if (has_add) {
+    bool can_parallel_add_column = false;
+    if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+                ObParallelDDLControlMode::ADD_COLUMN,
+                arg.exec_tenant_id_, can_parallel_add_column))) {
+      LOG_WARN("fail to check parallel ddl enable for add column", KR(ret));
+    } else if (!can_parallel_add_column) {
+      can_parallel_alter = false;
+      reason = "parallel add column disabled by config";
+    } else {
+      can_parallel_alter = true;
+    }
+  } else if (has_drop) {
+    bool can_parallel_drop_column = false;
+    if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+                ObParallelDDLControlMode::DROP_COLUMN,
+                arg.exec_tenant_id_, can_parallel_drop_column))) {
+      LOG_WARN("fail to check parallel ddl enable for drop column", KR(ret));
+    } else if (!can_parallel_drop_column) {
+      can_parallel_alter = false;
+      reason = "parallel drop column disabled by config";
+    } else {
+      can_parallel_alter = true;
+    }
+  }
+  return ret;
+}
+
+static int check_alter_partition_arg_for_parallel_(
+           const obrpc::ObAlterTableArg &arg,
+           bool &can_parallel_alter)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = false;
+  const obrpc::ObAlterTableArg::AlterPartitionType part_type = arg.alter_part_type_;
+  switch (part_type) {
+    case obrpc::ObAlterTableArg::ADD_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::ADD_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for add partition", KR(ret));
+      }
+      break;
+    }
+    case obrpc::ObAlterTableArg::ADD_SUB_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::ADD_SUB_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for add sub partition", KR(ret));
+      }
+      break;
+    }
+    case obrpc::ObAlterTableArg::DROP_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::DROP_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for drop partition", KR(ret));
+      }
+      break;
+    }
+    case obrpc::ObAlterTableArg::DROP_SUB_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::DROP_SUB_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for drop sub partition", KR(ret));
+      }
+      break;
+    }
+    case obrpc::ObAlterTableArg::TRUNCATE_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::TRUNCATE_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for truncate partition", KR(ret));
+      }
+      break;
+    }
+    case obrpc::ObAlterTableArg::TRUNCATE_SUB_PARTITION: {
+      if (OB_FAIL(ObParallelDDLControlMode::is_parallel_ddl_enable(
+          ObParallelDDLControlMode::TRUNCATE_SUB_PARTITION,
+          arg.exec_tenant_id_, can_parallel_alter))) {
+        LOG_WARN("fail to check parallel ddl enable for truncate sub partition", KR(ret));
+      }
+      break;
+    }
+    default:
+      can_parallel_alter = false;
+      break;
+  }
+  return ret;
+}
+
+// Thin wrapper over ObAlterTableArg::has_no_non_column_operation(). The field
+// whitelist lives on the class so it stays colocated with the struct definition;
+// adding a new ObAlterTableArg member requires updating the whitelist there and
+// the serialize_size_tripwire UT in test_alter_table_helper.cpp.
+int check_non_column_arg_for_parallel(
+    const obrpc::ObAlterTableArg &arg,
+    bool &can_parallel,
+    const char *&reason)
+{
+  int ret = OB_SUCCESS;
+  can_parallel = arg.has_no_non_column_operation(reason);
+  return ret;
+}
+
+int check_alter_table_arg_for_parallel(
+    const obrpc::ObAlterTableArg &arg,
+    bool &can_parallel_alter,
+    const char *&reason)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = false;
+  reason = nullptr;
+  bool can_alter_column = false;
+  bool can_non_column = false;
+  if (OB_FAIL(check_alter_column_arg_for_parallel_(arg, can_alter_column, reason))) {
+    LOG_WARN("fail to check alter column arg for parallel", KR(ret));
+  } else if (!can_alter_column) {
+    can_parallel_alter = false;
+  } else if (OB_FAIL(check_non_column_arg_for_parallel(arg, can_non_column, reason))) {
+    LOG_WARN("fail to check non column arg for parallel", KR(ret));
+  } else if (!can_non_column) {
+    can_parallel_alter = false;
+  } else {
+    const AlterTableSchema &alter_table_schema = arg.alter_table_schema_;
+    bool has_column_op = (alter_table_schema.column_begin() != alter_table_schema.column_end());
+    bool has_partition_op = (obrpc::ObAlterTableArg::NO_OPERATION != arg.alter_part_type_);
+    if (!has_column_op && !has_partition_op) {
+      can_parallel_alter = false;
+      reason = "no_column_op_and_no_partition_op";
+    } else if (has_partition_op) {
+      bool can_alter_partition = false;
+      if (OB_FAIL(check_alter_partition_arg_for_parallel_(arg, can_alter_partition))) {
+        LOG_WARN("fail to check alter partition arg for parallel", KR(ret));
+      } else if (!can_alter_partition) {
+        can_parallel_alter = false;
+        reason = "partition op parallel disabled by config";
+      } else {
+        can_parallel_alter = true;
+      }
+    } else {
+      can_parallel_alter = true;
+    }
+  }
+  if (OB_SUCC(ret) && !can_parallel_alter && nullptr != reason) {
+    LOG_INFO("alter table arg not eligible for parallel DDL, falling back to legacy path",
+             "reason", reason);
+  }
+  return ret;
+}
+
+bool is_drop_column_lob(const ObColumnSchemaV2 &column_schema)
+{
+  return (is_lob_storage(column_schema.get_data_type()) && !column_schema.is_udt_hidden_column())
+         || column_schema.is_xmltype();
+}
+
+int count_drop_column_lob_columns(const ObTableSchema &table_schema,
+                                  int64_t &lob_column_count)
+{
+  int ret = OB_SUCCESS;
+  lob_column_count = 0;
+  const ObColumnSchemaV2 *column_schema = nullptr;
+  ObColumnIterByPrevNextID iter(table_schema);
+  while (OB_SUCC(ret)) {
+    if (OB_FAIL(iter.next(column_schema))) {
+      if (OB_ITER_END == ret) {
+        ret = OB_SUCCESS;
+        break;
+      } else {
+        LOG_WARN("fail to iterate table columns", KR(ret), K(table_schema));
+      }
+    } else if (OB_ISNULL(column_schema)) {
+      ret = OB_ERR_UNEXPECTED;
+      LOG_WARN("unexpected null column", KR(ret), K(lob_column_count), K(table_schema));
+    } else if (is_drop_column_lob(*column_schema)) {
+      ++lob_column_count;
+    }
+  }
+  return ret;
+}
+
+// Check if all drop columns can go through instant/online DDL path
+// If any condition fails, can_parallel_alter = false and we fall back to serial
+int check_drop_column_can_parallel(const obrpc::ObAlterTableArg &arg,
+                                   const ObTableSchema &orig_table_schema,
+                                   ObSchemaGetterGuard &schema_guard,
+                                   bool &can_parallel_alter,
+                                   const char *&reason)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = true;
+  if (obrpc::ObAlterTableArg::AlterAlgorithm::INSTANT != arg.alter_algorithm_) {
+    can_parallel_alter = false;
+    reason = "alter algorithm is not instant";
+    LOG_TRACE("non-instant drop column should fall back to serial",
+              "algorithm", arg.alter_algorithm_);
+  } else if (orig_table_schema.is_view_table()) {
+    can_parallel_alter = false;
+    reason = "target is a view";
+    LOG_TRACE("target is a view, fall back to serial");
+  } else {
+    const uint64_t tenant_id = orig_table_schema.get_tenant_id();
+    lib::Worker::CompatMode compat_mode = lib::Worker::CompatMode::INVALID;
+    bool is_oracle_mode = false;
+    if (OB_FAIL(share::ObCompatModeGetter::get_tenant_mode(tenant_id, compat_mode))) {
+      LOG_WARN("fail to get tenant mode", KR(ret), K(tenant_id));
+    } else {
+      is_oracle_mode = (lib::Worker::CompatMode::ORACLE == compat_mode);
+    }
+    // 1. Single-pass check on dropped columns: delegate per-column eligibility
+    //    to ObAlterColumnDDLHelper::compute_drop_column_ddl_type (the same predicate the
+    //    serial path uses). Also collect dropped column IDs and count LOB
+    //    columns for the table-level checks below.
+    ObSEArray<uint64_t, 16> drop_col_ids;
+    int64_t drop_lob_cnt = 0;
+    const AlterTableSchema &alter_table_schema = arg.alter_table_schema_;
+    ObTableSchema::const_column_iterator it = alter_table_schema.column_begin();
+    ObTableSchema::const_column_iterator it_end = alter_table_schema.column_end();
+    for (; OB_SUCC(ret) && can_parallel_alter && it != it_end; ++it) {
+      if (OB_ISNULL(*it)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column is null", KR(ret));
+      } else {
+        const AlterColumnSchema *alter_col = static_cast<const AlterColumnSchema *>(*it);
+        if (OB_DDL_DROP_COLUMN != alter_col->alter_type_) {
+          can_parallel_alter = false;
+          reason = "mixed column operations";
+          LOG_TRACE("non-drop column in drop-column check, fall back to serial",
+                    "alter_type", alter_col->alter_type_);
+        } else {
+          const ObString &col_name = alter_col->get_origin_column_name();
+          const ObColumnSchemaV2 *orig_col = orig_table_schema.get_column_schema(col_name);
+          if (OB_ISNULL(orig_col)) {
+            // Column not found in orig schema is not our concern;
+            // RS will report OB_ERR_CANT_DROP_FIELD_OR_KEY in both serial and parallel paths.
+          } else {
+            ObDDLType per_col_ddl_type = ObDDLType::DDL_INVALID;
+            int64_t algo_hint = static_cast<int64_t>(arg.alter_algorithm_);
+            if (OB_FAIL(share::ObAlterColumnDDLHelper::compute_drop_column_ddl_type(*orig_col,
+                                                                                    tenant_id,
+                                                                                    is_oracle_mode,
+                                                                                    arg.data_version_,
+                                                                                    per_col_ddl_type,
+                                                                                    algo_hint))) {
+              LOG_WARN("fail to compute drop column ddl type", KR(ret), K(col_name));
+            } else if (ObDDLType::DDL_DROP_COLUMN_INSTANT != per_col_ddl_type) {
+              can_parallel_alter = false;
+              reason = "drop column requires offline ddl";
+              LOG_TRACE("drop column requires offline ddl, fall back to serial",
+                        K(col_name), K(per_col_ddl_type));
+            } else if (OB_FAIL(drop_col_ids.push_back(orig_col->get_column_id()))) {
+              LOG_WARN("fail to push back column id", KR(ret));
+            } else if (is_drop_column_lob(*orig_col)) {
+              ++drop_lob_cnt;
+            }
+          }
+        }
+      }
+    }
+    // 2. MySQL mode only: column in index requires TABLE_REDEFINITION, fall back to serial.
+    //    Oracle mode handles indexed columns in parallel path via async DDL_DROP_INDEX.
+    if (OB_SUCC(ret) && can_parallel_alter && !is_oracle_mode) {
+      ObSEArray<ObAuxTableMetaInfo, 16> simple_index_infos;
+      if (OB_FAIL(orig_table_schema.get_simple_index_infos(simple_index_infos))) {
+        LOG_WARN("fail to get simple index infos", KR(ret));
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && can_parallel_alter && i < simple_index_infos.count(); ++i) {
+        const ObTableSchema *index_schema = nullptr;
+        if (OB_FAIL(schema_guard.get_table_schema(tenant_id,
+                                                  simple_index_infos.at(i).table_id_,
+                                                  index_schema))) {
+          LOG_WARN("fail to get index schema", KR(ret));
+        } else if (OB_ISNULL(index_schema)) {
+          // Index may have been dropped between schema snapshot and execution;
+          // skip it here — RS will re-validate with latest schema.
+          continue;
+        } else {
+          for (int64_t j = 0; OB_SUCC(ret) && can_parallel_alter && j < drop_col_ids.count(); ++j) {
+            bool has_drop_column = false;
+            if (OB_FAIL(index_schema->has_column(drop_col_ids.at(j), has_drop_column))) {
+              LOG_WARN("fail to check has_column", KR(ret));
+            } else if (has_drop_column) {
+              can_parallel_alter = false;
+              reason = "drop column referenced by index (MySQL mode)";
+              LOG_TRACE("drop column in index, fall back to serial", K(drop_col_ids.at(j)));
+            }
+          }
+        }
+      }
+    }
+    // 3. Check if dropping all LOB columns
+    if (OB_SUCC(ret) && can_parallel_alter && drop_lob_cnt > 0) {
+      int64_t table_lob_cnt = 0;
+      if (OB_FAIL(count_drop_column_lob_columns(orig_table_schema, table_lob_cnt))) {
+        LOG_WARN("fail to count drop column lob columns", KR(ret), K(orig_table_schema));
+      } else if (drop_lob_cnt >= table_lob_cnt) {
+        can_parallel_alter = false;
+        reason = "dropping all lob columns";
+        LOG_TRACE("dropping all lob columns, fall back to serial");
+      }
+    }
+    // 4. Check append_only table (defensive, resolver already blocks this)
+    if (OB_SUCC(ret) && can_parallel_alter) {
+      if (orig_table_schema.is_append_only_merge_engine()) {
+        can_parallel_alter = false;
+        reason = "append_only table";
+        LOG_TRACE("append_only table, fall back to serial");
+      }
+    }
+    // 5. MVIEW handling:
+    //    - has_mlog_table() / is_materialized_view(): resolver rejects with
+    //      OB_NOT_SUPPORTED. Even under a race past the resolver, the parallel
+    //      path's check_can_drop_column_ reports the same error.
+    //    - table_referenced_by_mv() (and not in the two cases above): serial
+    //      path can rebuild the MV container schema via
+    //      ObMviewAlterService::update_mview_in_modify_column; the parallel
+    //      path has no equivalent (ObSchemaGuardWrapper cannot feed
+    //      ObSchemaChecker), so fall back to serial here. Serial will further
+    //      reject nested MV via exists_nested_mv.
+    if (OB_SUCC(ret) && can_parallel_alter) {
+      if (orig_table_schema.table_referenced_by_mv()) {
+        can_parallel_alter = false;
+        reason = "table referenced by materialized view";
+        LOG_TRACE("table referenced by materialized view, fall back to serial",
+                  "table_id", orig_table_schema.get_table_id());
+      }
+    }
+  }
+  return ret;
+}
+
+// Check if all add columns can go through instant/online DDL path.
+// If any condition fails, can_parallel_alter = false and we fall back to serial.
+// Some conditions are intentionally conservative (e.g. MySQL DEFAULT
+// expression, ON UPDATE CURRENT_TIMESTAMP, virtual generated column using UDF)
+// until expr-level determinism analysis is added.
+static bool check_add_column_has_unsupported_special_type_(
+    const AlterColumnSchema &alter_col,
+    const bool is_oracle_mode,
+    const char *&reason)
+{
+  bool unsupported = false;
+  if (alter_col.is_udt_related_column(is_oracle_mode)) {
+    unsupported = true;
+    reason = "add udt related column";
+  } else if (alter_col.is_xmltype()) {
+    unsupported = true;
+    reason = "add xmltype column";
+  } else if (ob_is_collection_sql_type(alter_col.get_data_type())) {
+    unsupported = true;
+    reason = "add collection column";
+  } else if (alter_col.is_vec_index_column()) {
+    unsupported = true;
+    reason = "add vector index aux column";
+  }
+  return unsupported;
+}
+
+static bool check_add_column_has_unsupported_nullable_for_parallel_(
+    const AlterColumnSchema &alter_col,
+    const bool is_oracle_mode,
+    const char *&reason)
+{
+  bool unsupported = false;
+  if (!alter_col.is_nullable()) {
+    if (is_oracle_mode) {
+      unsupported = true;
+      reason = "add oracle not null column";
+    } else {
+      // MySQL NOT NULL is a column property and can reuse the serial compute path.
+    }
+  }
+  return unsupported;
+}
+
+static bool check_add_column_has_unsupported_default_for_parallel_(
+    const AlterColumnSchema &alter_col,
+    const bool is_oracle_mode,
+    const char *&reason)
+{
+  bool unsupported = false;
+  const ObObj &cur_default_value = alter_col.get_cur_default_value();
+  if (!cur_default_value.is_null()) {
+    if (is_oracle_mode) {
+      // Oracle defaults are stored as expression text and can reuse the serial compute path.
+    } else if (alter_col.is_default_expr_v2_column()
+               || IS_DEFAULT_NOW_OBJ(cur_default_value)) {
+      unsupported = true;
+      reason = "add mysql column with unsupported default value";
+    } else {
+      // MySQL literal defaults can reuse the serial compute path.
+    }
+  }
+  return unsupported;
+}
+
+int check_add_column_can_parallel(const obrpc::ObAlterTableArg &arg,
+                                  const ObTableSchema &orig_table_schema,
+                                  bool &can_parallel_alter,
+                                  const char *&reason)
+{
+  int ret = OB_SUCCESS;
+  can_parallel_alter = true;
+  bool is_oracle_mode = false;
+  if (OB_FAIL(orig_table_schema.check_if_oracle_compat_mode(is_oracle_mode))) {
+    LOG_WARN("fail to check oracle mode", KR(ret), K(orig_table_schema));
+  } else if (!is_oracle_mode
+             && obrpc::ObAlterTableArg::AlterAlgorithm::INSTANT != arg.alter_algorithm_) {
+    can_parallel_alter = false;
+    reason = "alter algorithm is not instant";
+    LOG_TRACE("non-instant add column should fall back to serial",
+              "algorithm", arg.alter_algorithm_);
+  } else if (orig_table_schema.is_view_table()) {
+    can_parallel_alter = false;
+    reason = "target is a view";
+    LOG_TRACE("target is a view, fall back to serial");
+  } else if (is_inner_table(orig_table_schema.get_table_id())) {
+    can_parallel_alter = false;
+    reason = "inner/system table";
+    LOG_TRACE("inner/system table, fall back to serial",
+              "table_id", orig_table_schema.get_table_id());
+  } else if (arg.index_arg_list_.count() > 0) {
+    can_parallel_alter = false;
+    reason = "same statement carries index operations";
+    LOG_TRACE("same statement has index ops, fall back to serial");
+  } else if (obrpc::ObAlterTableArg::CONSTRAINT_NO_OPERATION != arg.alter_constraint_type_) {
+    can_parallel_alter = false;
+    reason = "same statement carries constraint operations";
+    LOG_TRACE("same statement has constraint ops, fall back to serial",
+              "alter_constraint_type", arg.alter_constraint_type_);
+  } else if (orig_table_schema.table_referenced_by_mv()) {
+    can_parallel_alter = false;
+    reason = "table referenced by materialized view";
+    LOG_TRACE("table referenced by materialized view, fall back to serial",
+              "table_id", orig_table_schema.get_table_id());
+  } else {
+    const AlterTableSchema &alter_table_schema = arg.alter_table_schema_;
+    ObTableSchema::const_column_iterator it = alter_table_schema.column_begin();
+    ObTableSchema::const_column_iterator it_end = alter_table_schema.column_end();
+    for (; OB_SUCC(ret) && can_parallel_alter && it != it_end; ++it) {
+      if (OB_ISNULL(*it)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("column is null", KR(ret));
+      } else {
+        const AlterColumnSchema *alter_col = static_cast<const AlterColumnSchema *>(*it);
+        if (OB_DDL_ADD_COLUMN != alter_col->alter_type_) {
+          can_parallel_alter = false;
+          reason = "mixed column operations";
+          LOG_TRACE("non-add column in add-column check, fall back to serial",
+                    "alter_type", alter_col->alter_type_);
+        } else if (alter_col->is_identity_column()) {
+          can_parallel_alter = false;
+          reason = "add identity column";
+          LOG_TRACE("add identity column, fall back to serial");
+        // Belt-and-braces: helper already maps has_not_null_constraint() to
+        // DDL_TABLE_REDEFINITION (rejecting parallel). The explicit oracle
+        // gate below also catches the rare case where is_nullable_=false but
+        // the column-flag bit is not yet set.
+        } else if (check_add_column_has_unsupported_nullable_for_parallel_(
+                       *alter_col, is_oracle_mode, reason)) {
+          can_parallel_alter = false;
+          LOG_TRACE("add column has unsupported nullable property, fall back to serial",
+                    "reason", reason);
+        } else if (alter_col->is_virtual_generated_column()
+                   && alter_col->is_generated_column_using_udf()) {
+          can_parallel_alter = false;
+          reason = "add virtual generated column using udf";
+          LOG_TRACE("add virtual generated column using udf, fall back to serial");
+        } else if (alter_col->is_on_update_current_timestamp()) {
+          can_parallel_alter = false;
+          reason = "add column with on update current_timestamp";
+          LOG_TRACE("add column with on update current_timestamp, fall back to serial");
+        } else if (check_add_column_has_unsupported_special_type_(
+                       *alter_col, is_oracle_mode, reason)) {
+          can_parallel_alter = false;
+          LOG_TRACE("add unsupported special type column, fall back to serial",
+                    "reason", reason,
+                    "column", alter_col->get_column_name_str(),
+                    "data_type", alter_col->get_data_type());
+        // Literal defaults and Oracle defaults can reuse the serial compute
+        // path. Keep MySQL expression defaults conservative until expr-level
+        // determinism analysis is available.
+        } else if (!alter_col->is_generated_column()
+                   && check_add_column_has_unsupported_default_for_parallel_(
+                       *alter_col, is_oracle_mode, reason)) {
+          can_parallel_alter = false;
+          LOG_TRACE("add column has unsupported default value, fall back to serial",
+                    "reason", reason);
+        // Column-order change (FIRST / AFTER) requires instant column-order
+        // metadata support (>= 4.3.5), independent of compatibility mode.
+        } else if ((alter_col->is_first_
+                    || !alter_col->get_prev_column_name().empty()
+                    || !alter_col->get_next_column_name().empty())
+                   && arg.data_version_ < DATA_VERSION_4_3_5_0) {
+          can_parallel_alter = false;
+          reason = "column-order change requires data version >= 4.3.5";
+          LOG_TRACE("column-order change low data version, fall back to serial",
+                    "data_version", arg.data_version_);
+        // Charset mismatch: let MySQL parallel add-column reuse the serial
+        // compute path's fill_column_collation flow; keep Oracle conservative.
+        } else if (is_oracle_mode
+                   && CHARSET_INVALID != alter_col->get_charset_type()
+                   && alter_col->get_charset_type() != orig_table_schema.get_charset_type()) {
+          can_parallel_alter = false;
+          reason = "column charset mismatches table charset";
+          LOG_TRACE("column charset mismatch, fall back to serial");
+        } else {
+          // Delegate the remaining per-column predicates (autoincrement,
+          // primary_key, stored_generated, NOT NULL implying redefinition,
+          // duplicate name with concurrent drop, change-order requiring
+          // offline) to ObAlterColumnDDLHelper::compute_add_column_ddl_type — the same
+          // routing used by the serial path. Only DDL_ADD_COLUMN_ONLINE and
+          // DDL_ADD_COLUMN_INSTANT are admissible for parallel.
+          ObDDLType per_col_ddl_type = ObDDLType::DDL_INVALID;
+          int tmp_ret = share::ObAlterColumnDDLHelper::compute_add_column_ddl_type(alter_table_schema,
+                                                               orig_table_schema,
+                                                               *alter_col,
+                                                               static_cast<int64_t>(arg.alter_algorithm_),
+                                                               is_oracle_mode,
+                                                               arg.data_version_,
+                                                               per_col_ddl_type);
+          if (OB_NOT_SUPPORTED == tmp_ret) {
+            // INSTANT algorithm unsupported (e.g. Oracle mode or low version);
+            // serial path already rejects this at admission, so for parallel
+            // we just fall back rather than propagate the error.
+            can_parallel_alter = false;
+            reason = "instant algorithm not supported in this mode/version";
+            LOG_TRACE("instant algorithm unsupported, fall back to serial");
+          } else if (OB_FAIL(tmp_ret)) {
+            LOG_WARN("fail to compute add column ddl type", KR(ret));
+          } else if (ObDDLType::DDL_ADD_COLUMN_ONLINE != per_col_ddl_type
+                     && ObDDLType::DDL_ADD_COLUMN_INSTANT != per_col_ddl_type) {
+            can_parallel_alter = false;
+            reason = "add column requires offline ddl";
+            LOG_TRACE("add column not online/instant, fall back to serial",
+                      "column", alter_col->get_column_name_str(),
+                      K(per_col_ddl_type));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTenantDDLCountGuard::try_inc_ddl_count(const int64_t cpu_quota_concurrency)
 {
   int ret = OB_SUCCESS;
@@ -1907,5 +2533,6 @@ ObTenantDDLCountGuard::~ObTenantDDLCountGuard()
 }
 
 } // end schema
+
 } // end share
 } // end oceanbase

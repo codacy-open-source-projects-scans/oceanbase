@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_TABLE_DML_PARAM_H_
@@ -93,6 +86,8 @@ public:
   int set_search_index_arr_types(const common::ObIArray<common::ObCollectionArrayType*> &arr_types);
   OB_INLINE void set_inc_pk_doc_id_col_id(const int32_t col_id) { inc_pk_doc_id_col_id_ = col_id; }
   OB_INLINE int32_t get_inc_pk_doc_id_col_id() const { return inc_pk_doc_id_col_id_; }
+  OB_INLINE ObMergeEngineType get_merge_engine_type() const { return merge_engine_type_; }
+  OB_INLINE bool is_user_data_table() const { return share::schema::ObSimpleTableSchemaV2::is_user_data_table(table_type_); }
   OB_INLINE bool is_index_table() const { return share::schema::is_index_table(table_type_); }
   OB_INLINE bool is_lob_meta_table() const { return share::schema::is_aux_lob_meta_table(table_type_); }
   OB_INLINE bool is_materialized_view() const
@@ -103,6 +98,7 @@ public:
   { return is_index_table(); }
   OB_INLINE bool can_read_index() const { return ObTableSchema::can_read_index(index_status_); }
   OB_INLINE bool is_unique_index() const { return ObTableSchema::is_unique_index(index_type_); }
+  OB_INLINE bool is_global_unique_index() const { return ObTableSchema::is_global_unique_index_table(index_type_); }
   OB_INLINE bool is_domain_index() const { return ObTableSchema::is_domain_index(index_type_); }
   OB_INLINE bool is_spatial_index() const { return ObTableSchema::is_spatial_index(index_type_); }
   OB_INLINE bool is_fts_index() const { return share::schema::is_fts_index(index_type_); }
@@ -140,6 +136,7 @@ public:
   OB_INLINE bool is_delete_insert() const { return static_cast<ObMergeEngineType>(merge_engine_type_) == ObMergeEngineType::OB_MERGE_ENGINE_DELETE_INSERT; }
   OB_INLINE bool is_append_only() const { return static_cast<ObMergeEngineType>(merge_engine_type_) == ObMergeEngineType::OB_MERGE_ENGINE_APPEND_ONLY; }
   OB_INLINE bool is_rowscn_ttl_table() const { return is_rowscn_ttl_table_; }
+  OB_INLINE uint64_t get_user_ttl_column_id() const { return user_ttl_column_id_; }
   OB_INLINE const common::ObString &get_index_name() const { return index_name_; }
 
   const ObColumnParam * get_column(const uint64_t column_id) const;
@@ -206,6 +203,7 @@ private:
   Projector search_idx_included_cid_idxes_;
   ArrayTypeArray search_idx_arr_types_;
   ColumnConfigArray search_idx_column_comments_;
+  uint64_t user_ttl_column_id_;
 };
 
 class ObTableDMLParam

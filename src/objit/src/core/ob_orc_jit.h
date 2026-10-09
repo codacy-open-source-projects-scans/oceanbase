@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OBJIT_CORE_ORCJIT_H
@@ -28,6 +21,7 @@
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 
 #include <string>
+#include "lib/lock/ob_spin_lock.h"
 
 #include "core/ob_jit_memory_manager.h"
 #include "lib/hash/ob_hashmap.h"
@@ -209,7 +203,7 @@ public:
   using ObJitEngineT = llvm::orc::LLJIT;
 
   explicit ObOrcJit(common::ObIAllocator &Allocator);
-  virtual ~ObOrcJit() {};
+  virtual ~ObOrcJit();
 
   int addModule(std::unique_ptr<Module> M, std::unique_ptr<ObLLVMContext> TheContext);
   int get_function_address(const std::string &name, uint64_t &addr);
@@ -231,6 +225,10 @@ public:
 
   inline void update_stack_size(uint64_t stack_size) { StackSize = std::max(StackSize, stack_size); }
   inline uint64_t get_stack_size() const { return StackSize; }
+
+  void set_eh_frame_info(const uint8_t* addr, size_t size);
+  void ensure_registered();
+  void unregister_eh_frame();
 
 private:
   int lookup(const std::string &name, ObJITSymbol &symbol);
@@ -254,6 +252,10 @@ private:
   std::unique_ptr<ObJitEngineT> ObJitEngine;
 
   uint64_t StackSize = 0;
+
+  const void* eh_frame_ = nullptr;
+  int64_t ref_count_ = 0;
+  common::ObSpinLock register_lock_;
 };
 
 } // core

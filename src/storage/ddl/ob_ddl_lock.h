@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_STORAGE_OB_DDL_LOCK_H_
@@ -40,8 +33,24 @@ public:
       ObMySQLTransaction &trans);
   static int unlock_for_add_drop_index(
       const ObTableSchema &data_table_schema,
+      const ObIArray<ObTabletID> *data_tablet_ids,
       const uint64_t index_table_id,
       const bool is_global_index,
+      const transaction::tablelock::ObTableLockOwnerID lock_owner,
+      ObMySQLTransaction &trans);
+  static int lock_for_add_drop_index_inc_data_part_in_trans(
+      const uint64_t tenant_id,
+      const uint64_t data_table_id,
+      const ObIArray<ObTabletID> &inc_data_tablet_ids,
+      ObMySQLTransaction &trans);
+  static int lock_for_add_drop_index_inc_data_part(
+      const uint64_t tenant_id,
+      const ObIArray<ObTabletID> &inc_data_tablet_ids,
+      const transaction::tablelock::ObTableLockOwnerID lock_owner,
+      ObMySQLTransaction &trans);
+  static int unlock_for_add_drop_index_inc_data_part(
+      const uint64_t tenant_id,
+      const ObIArray<ObTabletID> &inc_data_tablet_ids,
       const transaction::tablelock::ObTableLockOwnerID lock_owner,
       ObMySQLTransaction &trans);
   static int lock_for_rebuild_index(
@@ -91,6 +100,11 @@ public:
       const uint64_t tenant_id,
       const uint64_t data_table_id,
       const ObIArray<uint64_t> &global_index_table_ids,
+      ObMySQLTransaction &trans);
+
+  static int lock_for_modify_random_part_size_in_trans(
+      const uint64_t tenant_id,
+      const uint64_t data_table_id,
       ObMySQLTransaction &trans);
 
   static int lock_for_sync_mds_in_trans(

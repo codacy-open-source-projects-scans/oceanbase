@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -38,6 +31,7 @@
 #include "sql/engine/expr/ob_expr_array_map.h"
 #include "sql/engine/expr/ob_expr_ai/ob_ai_func.h"
 #include "sql/engine/expr/ob_expr_get_package_var.h"
+#include "sql/engine/expr/ob_expr_random_part_nextval.h"
 
 namespace oceanbase
 {
@@ -124,6 +118,7 @@ void ObExprExtraInfoFactory::register_expr_extra_infos()
   REG_EXTRA_INFO(T_FUN_SYS_AI_EMBED, ObAIFuncExprInfo);
   REG_EXTRA_INFO(T_FUN_SYS_AI_RERANK, ObAIFuncExprInfo);
   REG_EXTRA_INFO(T_OP_GET_PACKAGE_VAR, ObExprGetPackageVar::ExtraInfo);
+  REG_EXTRA_INFO(T_FUN_SYS_RANDOM_PART_NEXTVAL, ObAutoincNextvalInfo);
 }
 
 } // end namespace sql

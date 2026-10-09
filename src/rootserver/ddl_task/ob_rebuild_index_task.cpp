@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX RS
@@ -465,6 +458,15 @@ int ObRebuildIndexTask::create_and_wait_rebuild_task_finish(const ObDDLTaskStatu
     }
     LOG_WARN("check ddl task finish failed", K(ret), K(index_build_task_id_));
   }
+
+#ifdef ERRSIM
+  if (OB_SUCC(ret)) {
+    ret = OB_E(EventTable::EN_VEC_INDEX_HNSW_REBUILD_CREATE_ERR) OB_SUCCESS;
+    if (OB_FAIL(ret)) {
+      LOG_WARN("errsim ddl execute building the subtask of rebuild index failed", KR(ret));
+    }
+  }
+#endif
 
   if (state_finished || OB_FAIL(ret)) {
     DEBUG_SYNC(REBUILD_INDEX_WAIT_CREATE_TASK_FINISH);

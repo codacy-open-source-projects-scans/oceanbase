@@ -1,19 +1,13 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_pl_expr_subquery.h"
 #include "pl/ob_pl_resolver.h"
+#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
 
 namespace oceanbase
@@ -182,7 +176,8 @@ int ObExprOpSubQueryInPl::eval_subquery(const ObExpr &expr,
     pl::ObPLExecCtx pl_exec_ctx(&alloc, &alloc, &ctx.exec_ctx_, params, nullptr, &ret, nullptr);
 
     SMART_VAR(ObSPIResultSet, spi_result) {
-      OZ (spi_result.init(*session));
+      OZ (spi_result.init_memory_context(*session));
+      OZ (spi_result.init_result_set(*session));
       OZ (spi_result.start_nested_stmt_if_need(&pl_exec_ctx, info->route_sql_, static_cast<stmt::StmtType>(info->type_), false));
 
       if (OB_SUCC(ret)) {

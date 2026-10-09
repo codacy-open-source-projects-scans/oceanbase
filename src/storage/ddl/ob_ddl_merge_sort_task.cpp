@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX STORAGE
@@ -159,8 +152,9 @@ int ObDDLMergeSortTask::process()
       // Cleanup output_sort_op_chunk if it wasn't successfully transferred to slice
       if (OB_FAIL(ret) && OB_NOT_NULL(output_sort_op_chunk)) {
         using ChunkType = ObDDLSortProvider::ChunkType;
+        ObIAllocator &allocator = output_sort_op_chunk->sort_row_store_mgr_.get_allocator();
         output_sort_op_chunk->~ChunkType();
-        sort_impl->get_allocator()->free(output_sort_op_chunk);
+        allocator.free(output_sort_op_chunk);
         output_sort_op_chunk = nullptr;
       }
     }

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_PC
@@ -248,8 +241,8 @@ struct ObGetEvolutionTaskPcvSetOp : public ObKVEntryTraverseOp
 
 struct ObGetTableIdOp
 {
-  explicit ObGetTableIdOp(uint64_t table_id)
-    : table_id_(table_id)
+  explicit ObGetTableIdOp(uint64_t table_id, int64_t plan_expired_before)
+    : table_id_(table_id), plan_expired_before_(plan_expired_before)
   {}
 
   int operator()(common::hash::HashMapPair<ObCacheObjID, ObILibCacheObject *> &entry)
@@ -269,11 +262,19 @@ struct ObGetTableIdOp
     } else if (OB_FAIL(plan->get_base_table_version(table_id_, version))) {
       LOG_WARN("failed to get base table version", K(ret));
     } else if (version > 0) {
+      if (!plan->is_plan_expired_time_exists()) {
+        int64_t current_time = ObTimeUtility::current_time();
+        int64_t plan_expired_at = plan_expired_before_ <= current_time ?
+                                       plan_expired_before_ :
+                                       ObRandom::rand(current_time, plan_expired_before_);
+        plan->set_opt_stat_plan_expired_at(plan_expired_at);
+      }
       plan->set_is_expired(EXPIRED_BY_OPT_STAT);
     }
     return ret;
   }
   const uint64_t table_id_;
+  const int64_t plan_expired_before_;
 };
 
 // true means entry_left is more active than entry_right
@@ -283,13 +284,8 @@ bool stat_compare(const LCKeyValue &left, const LCKeyValue &right)
   if (OB_ISNULL(left.node_) || OB_ISNULL(right.node_)) {
     cmp_ret = false;
     SQL_PC_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "invalid argument", KP(left.node_), KP(right.node_), K(cmp_ret));
-  } else if (OB_ISNULL(left.node_->get_node_stat())
-             || OB_ISNULL(right.node_->get_node_stat())) {
-    cmp_ret = false;
-    SQL_PC_LOG_RET(ERROR, OB_INVALID_ARGUMENT, "invalid argument", K(left.node_->get_node_stat()),
-                      K(right.node_->get_node_stat()), K(cmp_ret));
   } else {
-    cmp_ret = left.node_->get_node_stat()->weight() < right.node_->get_node_stat()->weight();
+    cmp_ret = left.weight_ < right.weight_;
   }
   return cmp_ret;
 }
@@ -313,7 +309,7 @@ struct ObNodeStatFilterOp : public ObKVEntryTraverseOp
       SQL_PC_LOG(WARN, "invalid argument",
       K(key_value_list_), K(entry.first), K(entry.second), K(ret));
     } else {
-      ObLCKeyValue lc_kv(entry.first, entry.second);
+      ObLCKeyValue lc_kv(entry.first, entry.second, entry.second->get_node_stat()->weight());
       if (key_value_list_->count() < evict_num_) {
         if (OB_FAIL(key_value_list_->push_back(lc_kv))) {
            SQL_PC_LOG(WARN, "fail to push into evict_array", K(ret));
@@ -534,8 +530,13 @@ int ObPlanCache::check_after_get_plan(int tmp_ret,
       RECORD_CACHE_MISS(EXPIRED_PHY_PLAN, ctx, "Physical plan is expired",
                           K(pc_ctx.regenerating_expired_plan_), K(plan->stat_.is_expired_));
     }
-    LOG_INFO("the statistics of table is stale and evict plan.", K(plan->stat_.is_expired_),
-                                        K(pc_ctx.regenerating_expired_plan_), K(plan->stat_));
+    if (EXPIRED_BY_OPT_STAT == plan->stat_.is_expired_) {
+      LOG_INFO("the statistics of table is stale and evict plan.", K(plan->stat_.is_expired_),
+                                          K(pc_ctx.regenerating_expired_plan_), K(plan->stat_));
+    } else {
+      LOG_INFO("the execution stat of plan is unstable and evict plan.", K(plan->stat_.is_expired_),
+                                      K(pc_ctx.regenerating_expired_plan_), K(plan->stat_));
+    }
   }
   return ret;
 }
@@ -1400,10 +1401,10 @@ int ObPlanCache::get_value(ObILibCacheKey *key,
   return ret;
 }
 
-int ObPlanCache::evict_plan(uint64_t table_id)
+int ObPlanCache::evict_plan(uint64_t table_id, int64_t plan_expired_before)
 {
   int ret = OB_SUCCESS;
-  ObGetTableIdOp get_ids_op(table_id);
+  ObGetTableIdOp get_ids_op(table_id, plan_expired_before);
   if (OB_FAIL(co_mgr_.foreach_cache_obj(get_ids_op))) {
     SQL_PC_LOG(WARN, "fail to get all sql_ids in id2value_map", K(ret));
   }
@@ -1598,9 +1599,7 @@ int ObPlanCache::cache_evict_by_glitch_node()
              "cache_obj_num", get_cache_obj_size(),
              "cache_node_num", cache_key_node_map_.size());
       LCKeyValueArray to_evict_list;
-      std::pop_heap(co_list.begin(), co_list.end(), [](const LCKeyValue &left, const LCKeyValue &right) {
-        return left.node_->get_node_stat()->weight() > right.node_->get_node_stat()->weight();
-      });
+      lib::ob_sort(co_list.begin(), co_list.end(), stat_compare);
       for (int64_t i = 0; OB_SUCC(ret) && mem_to_free > 0 && i < N; i++) {
         mem_to_free -= co_list.at(i).node_->get_mem_size();
         ++cache_evict_num;
@@ -2352,6 +2351,17 @@ OB_INLINE int ObPlanCache::construct_plan_cache_key(ObSQLSessionInfo &session,
   pc_key.is_weak_read_ = is_weak;
   pc_key.enable_mysql_compatible_dates_ = session.enable_mysql_compatible_dates();
   OZ (session.get_collation_connection(pc_key.collation_connection_));
+  if (OB_SUCC(ret)) {
+    int tmp_ret = OB_E(EventTable::EN_CHECK_PROXY_DB_ACCURACY) OB_SUCCESS;
+    if (OB_SUCCESS != tmp_ret) {
+      const ObString &proxy_db = session.get_proxy_specified_db_name();
+      if (!proxy_db.empty() && proxy_db != session.get_database_name()) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_ERROR("proxy specified db does not match session db in plan cache",
+                  K(ret), K(proxy_db), "session_db", session.get_database_name());
+      }
+    }
+  }
   return ret;
 }
 

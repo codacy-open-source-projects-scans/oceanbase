@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -260,7 +253,7 @@ int ObPxTaskProcess::process()
       const ObPhysicalPlan *phy_plan = arg_.des_phy_plan_;
       ObString sql = ObString::make_string("");
       sqlstat_record.set_is_plan_cache_hit(true);
-      sqlstat_record.set_is_muti_query(session->get_capability().cap_flags_.OB_CLIENT_MULTI_STATEMENTS);
+      sqlstat_record.set_is_muti_query(arg_.exec_ctx_->get_sql_ctx()->multi_stmt_item_.is_part_of_multi_stmt());
       if (OB_NOT_NULL(arg_.exec_ctx_->get_sql_ctx()) && OB_NOT_NULL(arg_.exec_ctx_->get_sql_ctx())) {
         sqlstat_record.set_is_muti_query_batch(arg_.exec_ctx_->get_sql_ctx()->multi_stmt_item_.is_batched_multi_stmt());
       }
@@ -701,7 +694,7 @@ int ObPxTaskProcess::record_tx_desc()
       transaction::ObTxDesc *&task_tx_desc = arg_.sqc_task_ptr_->get_tx_desc();
       task_tx_desc = cur_tx_desc;
       cur_tx_desc = NULL;
-      OZ (arg_.sqc_task_ptr_->get_tx_result().assign(cur_session->get_trans_result()));
+      OZ (arg_.sqc_task_ptr_->get_tx_result().assign(cur_exec_ctx->get_trans_result()));
     }
   }
   return ret;

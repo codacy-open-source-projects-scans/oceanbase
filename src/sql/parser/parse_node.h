@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_PARSER_PARSE_NODE_H_
@@ -148,6 +141,8 @@ typedef struct _ParseNode
       uint32_t is_input_quoted_ : 1; // indicate name_ob input whether with double quote
       uint32_t is_forbid_parameter_ : 1; //1 indicate forbid parameter
       uint32_t is_default_literal_expression_ : 1; // 1 indicate in default literal expression, "DEFAULT NOW()"
+      uint32_t is_forbid_param_partial_ : 1; // 1 indicate anonymous block parameterization is prohibited in certain scenarios
+      uint32_t has_plsql_variable_ : 1; // 1 indicates the SQL parse tree contains $$xxx (T_PLSQL_VARIABLE_IDENTIFIER)
       uint32_t reserved_;
     };
   };
@@ -221,9 +216,11 @@ typedef struct _PLParseInfo
   bool is_pl_parse_expr_; //用于标识当前parser逻辑是否在解析PLParser的expr
   bool is_forbid_pl_fp_;
   bool is_inner_parse_;
+  bool has_null_param_; // 是否存在null literal
   int last_pl_symbol_pos_; //上一个pl变量的结束位置
   bool is_parse_dynamic_sql_;
   int plsql_line_;
+  bool has_plsql_variable_; // whether $$xxx (T_PLSQL_VARIABLE_IDENTIFIER) exists
   /*for mysql pl*/
   void *pl_ns_; //ObPLBlockNS
   RefObjList *ref_object_nodes_; //依赖对象链表头

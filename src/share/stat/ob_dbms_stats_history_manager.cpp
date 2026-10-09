@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -783,6 +776,7 @@ int ObDbmsStatsHistoryManager::purge_stats(ObExecContext &ctx, const int64_t spe
   ObSQLSessionInfo *session = ctx.get_my_session();
   ObSqlString time_str;
   ObSqlString gather_time_str;
+  ObSqlString cache_invalidate_time_str;
   bool only_delete_one_batch = false;
   if (OB_ISNULL(session)) {
     ret = OB_ERR_UNEXPECTED;
@@ -804,6 +798,10 @@ int ObDbmsStatsHistoryManager::purge_stats(ObExecContext &ctx, const int64_t spe
                                                   "date_sub(CURRENT_TIMESTAMP, interval %ld day)",
                                                    retention_val))) {
       LOG_WARN("failed to append fmt", K(ret));
+    } else if (OB_FAIL(cache_invalidate_time_str.append_fmt("WHERE tenant_id = 0 and last_analyzed < "\
+                                                            "date_sub(CURRENT_TIMESTAMP, interval %ld day)",
+                                                            retention_val))) {
+      LOG_WARN("failed to append fmt", K(ret));
     } else {/*do nothing*/}
   //Attempt to delete all opt stats at once. Since this is a synchronous operation,
   //to avoid impacting user feedback, a batch of data will be synchronously deleted first,
@@ -813,12 +811,16 @@ int ObDbmsStatsHistoryManager::purge_stats(ObExecContext &ctx, const int64_t spe
       LOG_WARN("failed to append", K(ret));
     } else if (OB_FAIL(gather_time_str.append(" "))) {
       LOG_WARN("failed to append", K(ret));
+    } else if (OB_FAIL(cache_invalidate_time_str.append(" "))) {
+      LOG_WARN("failed to append", K(ret));
     } else {
       only_delete_one_batch = true;
     }
   } else if (OB_FAIL(time_str.append_fmt("WHERE savtime < usec_to_time(%ld)", specify_time))) {
     LOG_WARN("failed to append fmt", K(ret));
   } else if (OB_FAIL(gather_time_str.append_fmt("WHERE start_time < usec_to_time(%ld)", specify_time))) {
+    LOG_WARN("failed to append fmt", K(ret));
+  } else if (OB_FAIL(cache_invalidate_time_str.append_fmt("WHERE tenant_id = 0 and last_analyzed < usec_to_time(%ld)", specify_time))) {
     LOG_WARN("failed to append fmt", K(ret));
   } else {/*do nothing*/}
   if (OB_SUCC(ret)) {
@@ -873,6 +875,13 @@ int ObDbmsStatsHistoryManager::purge_stats(ObExecContext &ctx, const int64_t spe
                                                         ObOptStatsDeleteFlags::DELETE_TAB_GATHER_HISTORY,
                                                         delete_flags))) {
         LOG_WARN("failed to do delete expired stat history", K(ret));
+      } else if ((delete_flags & ObOptStatsDeleteFlags::DELETE_CACHE_INVALIDATE) &&
+                 OB_FAIL(do_delete_expired_stat_history(trans, tenant_id, start_time,
+                                                        max_duration_time, cache_invalidate_time_str.ptr(),
+                                                        share::OB_ALL_TABLE_OPT_STAT_INVALIDATE_PLAN_TNAME,
+                                                        ObOptStatsDeleteFlags::DELETE_CACHE_INVALIDATE,
+                                                        delete_flags))) {
+        LOG_WARN("failed to do delete expired cache invalidate", K(ret));
       } else if ((delete_flags & ObOptStatsDeleteFlags::DELETE_USELESS_COL_STAT ||
                   delete_flags & ObOptStatsDeleteFlags::DELETE_USELESS_HIST_STAT) &&
                  OB_FAIL(remove_useless_column_stats(trans, tenant_id, start_time, max_duration_time, delete_flags))) {

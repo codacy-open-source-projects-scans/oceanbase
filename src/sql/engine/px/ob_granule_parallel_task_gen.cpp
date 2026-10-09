@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_EXE
@@ -189,8 +182,9 @@ int GIOdpsParallelTaskGen::odps_one_task_processing(
       odps_scan_task->last_lineno_ = 0;
     } else {
       ObString session_id = odps_scan_task->session_id_;
+      const bool use_odps_jni_connector = external_odps_format_.odps_format_.use_odps_jni_connector_;
       if (session_id.empty()) {
-        if (GCONF._use_odps_jni_connector) {
+        if (use_odps_jni_connector) {
 #if defined(OB_BUILD_JNI_ODPS)
           // JniRowTableIter::fetch_odps_row_count_and_session_id
           sql::ObODPSJNITableRowIterator odps_driver;
@@ -250,7 +244,7 @@ int GIOdpsParallelTaskGen::odps_one_task_processing(
 #endif
         }
       } else { // session id not empty
-        if (GCONF._use_odps_jni_connector) {
+        if (use_odps_jni_connector) {
 #if defined(OB_BUILD_JNI_ODPS)
           // do nothing
 #else
@@ -768,7 +762,10 @@ int GICsvFullScanParallelTaskGen::csv_full_scan_one_task_processing(
     };
     FullScanFunctor func;
     func.bound_helper_.is_escaped_ = csv_parallel_info->is_gambling_end_with_escaped_;
-    if (OB_FAIL(share::ObExternalTableUtils::read_data_for_bound(
+    // chunk小于max_row_length_的情况下gambling阶段可能就已经做完了全量扫描，此时下发的start_pos > end_pos.
+    // 所以直接跳过扫描，但仍然需要提交结果。因为full_scan join时是按idx分别获取gambling阶段和full_scan阶段的结果.
+    // 两个结果的长度一致便于合并.
+    if (start_pos < end_pos && OB_FAIL(share::ObExternalTableUtils::read_data_for_bound(
                                              external_location_, external_access_info_,
                                              external_file_format_, url, start_pos,
                                              end_pos, func))) {

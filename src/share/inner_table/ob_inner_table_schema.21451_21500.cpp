@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
@@ -1284,7 +1277,7 @@ int ObInnerTableSchema::dba_ob_format_outlines_schema(ObTableSchema &table_schem
   table_schema.set_collation_type(ObCharset::get_default_collation(ObCharset::get_default_charset()));
 
   if (OB_SUCC(ret)) {
-    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       B.GMT_CREATE AS CREATE_TIME,       B.GMT_MODIFIED AS MODIFY_TIME,       A.TENANT_ID,       A.DATABASE_ID,       A.OUTLINE_ID,       A.DATABASE_NAME,       A.OUTLINE_NAME,       A.VISIBLE_SIGNATURE,       A.FORMAT_SQL_TEXT,       A.OUTLINE_TARGET,       A.OUTLINE_SQL,       A.FORMAT_SQL_ID,       A.OUTLINE_CONTENT     FROM oceanbase.__tenant_virtual_outline A, oceanbase.__all_outline B     WHERE A.OUTLINE_ID = B.OUTLINE_ID AND B.FORMAT_OUTLINE != 0 )__"))) {
+    if (OB_FAIL(table_schema.set_view_definition(R"__(     SELECT       B.GMT_CREATE AS CREATE_TIME,       B.GMT_MODIFIED AS MODIFY_TIME,       A.TENANT_ID,       A.DATABASE_ID,       A.OUTLINE_ID,       A.DATABASE_NAME,       A.OUTLINE_NAME,       A.VISIBLE_SIGNATURE,       A.FORMAT_SQL_TEXT,       A.OUTLINE_TARGET,       A.OUTLINE_SQL,       A.FORMAT_SQL_ID,       A.OUTLINE_CONTENT,       B.PATTERN_RULES     FROM oceanbase.__tenant_virtual_outline A, oceanbase.__all_outline B     WHERE A.OUTLINE_ID = B.OUTLINE_ID AND B.FORMAT_OUTLINE != 0 )__"))) {
       LOG_ERROR("fail to set view_definition", K(ret));
     }
   }

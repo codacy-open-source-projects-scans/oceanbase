@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_redo_log_generator.h"
@@ -66,7 +59,6 @@ int ObRedoLogGenerator::set(ObTransCallbackMgr *mgr, ObMemtableCtx *mem_ctx)
 //                    on waiting the previous frozen siblings logged
 // - OB_ITER_END: reach end of *ctx.epoch_to_*
 // - OB_XXX: other error
-ERRSIM_POINT_DEF(EN_DISABLE_FLUSH_REDO_CHECK_FREEZE_CLOCK);
 class ObFillRedoLogFunctor final : public ObITxFillRedoFunctor
 {
 public:
@@ -107,11 +99,6 @@ public:
     } else if (iter->is_logging_blocked()) {
       ret = OB_BLOCK_FROZEN;
       ctx_.last_log_blocked_memtable_ = static_cast<memtable::ObMemtable *>(iter->get_memtable());
-    } else if (iter->get_freeze_clock() >= ctx_.freeze_clock_
-               && (OB_SUCCESS == EN_DISABLE_FLUSH_REDO_CHECK_FREEZE_CLOCK)) {
-      ret = OB_BLOCK_FROZEN;
-      ctx_.reach_freeze_clock_ = true;
-      TRANS_LOG(TRACE, "reach freeze clock", K(ctx_), KPC(iter));
     } else {
       bool fake_fill = false;
       if (MutatorType::MUTATOR_ROW == iter->get_mutator_type()) {

@@ -1,18 +1,12 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "ob_sql_mem_mgr_processor.h"
+#include "lib/utility/ob_tracepoint.h"
 
 namespace oceanbase {
 
@@ -185,7 +179,8 @@ void ObSqlMemMgrProcessor::update_used_mem_size(int64_t used_size)
   }
   if (OB_NOT_NULL(sql_mem_mgr_) && OB_NOT_NULL(mem_callback_)) {
     total_alloc_size_ += delta_size;
-    if (OB_UNLIKELY(total_alloc_size_ < 0)) {
+    if (OB_UNLIKELY(total_alloc_size_ < 0)
+        && OB_UNLIKELY(OB_SUCCESS != (OB_E(EventTable::EN_SQL_MEM_TOTAL_ALLOC_SIZE_CHECK) OB_SUCCESS))) {
       int64_t ret = OB_ERR_UNEXPECTED;
       LOG_ERROR("total_alloc_size_ is less than 0",
                 K(total_alloc_size_), "free_size", delta_size, K(used_size),
@@ -248,6 +243,7 @@ int ObSqlMemMgrProcessor::extend_max_memory_size(
       LOG_WARN("failed to get max available memory size", K(ret));
     }
     int64_t times = 0;
+    const int64_t init_cache_size = profile_.get_cache_size();
     while ((need_dump = dump_fun(profile_.get_expect_size())) && OB_SUCC(ret)) {
       int64_t pre_cache_size = profile_.get_cache_size();
       int64_t pre_expect_size = profile_.get_expect_size();
@@ -288,7 +284,28 @@ int ObSqlMemMgrProcessor::extend_max_memory_size(
         break;
       }
     }
-    LOG_TRACE("extend memory size", K(profile_.get_expect_size()), K(profile_.get_cache_size()));
+    const int64_t cur_cache_size = profile_.get_cache_size();
+    const int64_t growth = cur_cache_size - init_cache_size;
+    if (growth > 0) {
+      LOG_TRACE("cache_size status in extend_max_memory_size",
+          K(init_cache_size), K(cur_cache_size), K(growth),
+          K(times), K(profile_.get_expect_size()), K(mem_used), K(need_dump),
+          "op_id", profile_.get_operator_id(),
+          "op_type", profile_.get_operator_type());
+      const int64_t surge_threshold_pct = std::abs(EVENT_CALL(EventTable::EN_SQL_MEM_CACHESIZE_GROWTH_LIMIT));
+      if (OB_SUCC(ret) && surge_threshold_pct > 0 && init_cache_size > 0) {
+        const int64_t growth_pct = growth * 100 / init_cache_size;
+        if (growth_pct > surge_threshold_pct) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("cache_size surge detected in extend_max_memory_size", K(ret),
+              K(init_cache_size), K(cur_cache_size), K(growth), K(growth_pct),
+              K(surge_threshold_pct), K(times),
+              K(profile_.get_expect_size()), K(mem_used), K(need_dump),
+              "op_id", profile_.get_operator_id(),
+              "op_type", profile_.get_operator_type());
+        }
+      }
+    }
   }
   return ret;
 }

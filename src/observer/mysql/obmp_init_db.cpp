@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -189,6 +182,17 @@ int ObMPInitDB::process()
       LOG_WARN("failed to send error packet", K(ret));
     }
   } else if (OB_LIKELY(NULL != session)) {
+    // USE database 成功后，根据新的 database 更新 conn.group_id_，使后续 SQL 请求进入对应的 resource group
+    // 否则 group_id 仅在 MPConnect 时设置，USE 后不会更新，导致 database mapping 失效
+    if (is_conn_valid()) {
+      ObSMConnection *conn = get_conn();
+      if (OB_NOT_NULL(conn)) {
+        int tmp_ret = setup_user_resource_group(*conn, session->get_effective_tenant_id(), session);
+        if (OB_SUCCESS != tmp_ret) {
+          LOG_WARN("fail setup user resource group after use database", K(tmp_ret), K(session->get_database_name()));
+        }
+      }
+    }
     ObOKPParam ok_param; // use defualt value
     if (OB_FAIL(send_ok_packet(*session, ok_param))) {
       LOG_WARN("fail to send ok packet", K(ok_param), K(ret));

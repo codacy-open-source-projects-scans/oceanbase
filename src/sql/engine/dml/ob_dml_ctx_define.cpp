@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -207,7 +200,8 @@ OB_SERIALIZE_MEMBER(ColumnContent,
                     is_nullable_,
                     is_implicit_,
                     is_predicate_column_,
-                    srs_id_);
+                    srs_id_,
+                    is_key_column_);
 
 int SeRowkeyItem::init(
     const ObExprPtrIArray &row, ObEvalCtx &ctx, ObIAllocator &alloc, const int64_t rowkey_cnt)
@@ -293,7 +287,8 @@ OB_SERIALIZE_MEMBER(ObDMLBaseCtDef,
                     has_instead_of_trigger_,
                     trans_info_expr_,
                     is_table_with_clustering_key_,
-                    is_vec_hnsw_index_vid_opt_);
+                    is_vec_hnsw_index_vid_opt_,
+                    is_compaction_ttl_table_);
 
 OB_SERIALIZE_MEMBER(ObMultiInsCtDef,
                     calc_part_id_expr_,
@@ -520,6 +515,7 @@ OB_DEF_SERIALIZE(ObUpdCtDef)
   OZ(ObDASUtils::serialize_das_ctdefs(buf, buf_len, pos, related_upd_ctdefs_));
   OZ(ObDASUtils::serialize_das_ctdefs(buf, buf_len, pos, related_del_ctdefs_));
   OZ(ObDASUtils::serialize_das_ctdefs(buf, buf_len, pos, related_ins_ctdefs_));
+  OB_UNIS_ENCODE(enable_update_split_trace_id_);
   return ret;
 }
 
@@ -579,6 +575,7 @@ OB_DEF_DESERIALIZE(ObUpdCtDef)
   OZ(ObDASUtils::deserialize_das_ctdefs(buf, data_len, pos,
                                         alloc_, DAS_OP_TABLE_INSERT,
                                         related_ins_ctdefs_));
+  OB_UNIS_DECODE(enable_update_split_trace_id_);
   return ret;
 }
 
@@ -612,6 +609,7 @@ OB_DEF_SERIALIZE_SIZE(ObUpdCtDef)
   len += ObDASUtils::das_ctdefs_serialize_size(related_upd_ctdefs_);
   len += ObDASUtils::das_ctdefs_serialize_size(related_del_ctdefs_);
   len += ObDASUtils::das_ctdefs_serialize_size(related_ins_ctdefs_);
+  OB_UNIS_ADD_LEN(enable_update_split_trace_id_);
   return len;
 }
 
@@ -762,38 +760,43 @@ OB_DEF_DESERIALIZE(ObInsertUpCtDef)
   int ret = OB_SUCCESS;
   ObDMLCtDefAllocator<ObInsCtDef> ins_ctdef_allocator(alloc_);
   ins_ctdef_ = ins_ctdef_allocator.alloc();
+  if (OB_ISNULL(ins_ctdef_)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("alloc ins_ctdef failed", K(ret));
+  } else {
+    OB_UNIS_DECODE(*ins_ctdef_);
+  }
   ObDMLCtDefAllocator<ObUpdCtDef> upd_ctdef_allocator(alloc_);
   upd_ctdef_ = upd_ctdef_allocator.alloc();
   if (OB_ISNULL(upd_ctdef_)) {
     ret = OB_ALLOCATE_MEMORY_FAILED;
     LOG_WARN("alloc upd_ctdef failed", K(ret));
-  } else if (OB_ISNULL(ins_ctdef_)) {
-    ret = OB_ALLOCATE_MEMORY_FAILED;
-    LOG_WARN("alloc ins_ctdef failed", K(ret));
+  } else {
+    OB_UNIS_DECODE(*upd_ctdef_);
   }
-  OB_UNIS_DECODE(*ins_ctdef_);
-  OB_UNIS_DECODE(*upd_ctdef_);
   OB_UNIS_DECODE(do_opt_path_);
   OB_UNIS_DECODE(do_index_lookup_);
   OB_UNIS_DECODE(unique_key_conv_exprs_);
   OB_UNIS_DECODE(unique_index_rowkey_exprs_);
 
   ObDMLCtDefAllocator<ObDASScanCtDef> das_scan_ctdef_allocator(alloc_);
-  if (do_index_lookup_) {
+  if (OB_SUCC(ret) && do_index_lookup_) {
     das_index_scan_ctdef_ = das_scan_ctdef_allocator.alloc();
     if (OB_ISNULL(das_index_scan_ctdef_)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("alloc das index scan ctdef failed", K(ret));
+    } else {
+      OB_UNIS_DECODE(*das_index_scan_ctdef_);
     }
-    OB_UNIS_DECODE(*das_index_scan_ctdef_);
   }
-  if (do_opt_path_) {
+  if (OB_SUCC(ret) && do_opt_path_) {
     lookup_ctdef_for_batch_ = das_scan_ctdef_allocator.alloc();
     if (OB_ISNULL(lookup_ctdef_for_batch_)) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
       LOG_WARN("alloc lookup ctdef for batch failed", K(ret));
+    } else {
+      OB_UNIS_DECODE(*lookup_ctdef_for_batch_);
     }
-    OB_UNIS_DECODE(*lookup_ctdef_for_batch_);
   }
   OB_UNIS_DECODE(enable_do_update_directly_);
   return ret;

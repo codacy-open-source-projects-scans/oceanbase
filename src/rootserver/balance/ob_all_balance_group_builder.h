@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_ALL_BALANCE_GROUP_BUILDER_H
@@ -126,7 +119,8 @@ public:
     // @param [in]  dest_ls_id                the LS that partition should be located
     // @param [in]  tablet_size               tablet data size
     // @param [in]  part_group_uid            partition group unique id
-    // @param [in]  balance_weight            balance weight of the partition
+    // @param [in]  bg_balance_weight         balance weight of balance group
+    // @param [in]  part_balance_weight       balance weight of partition
     virtual int on_new_partition(
         const ObBalanceGroup &bg,
         const share::schema::ObSimpleTableSchemaV2 &table_schema,
@@ -135,7 +129,8 @@ public:
         const share::ObLSID &dest_ls_id,
         const int64_t tablet_size,
         const uint64_t part_group_uid,
-        const int64_t balance_weight) = 0;
+        const int64_t bg_balance_weight,
+        const int64_t part_balance_weight) = 0;
   };
 
 private:
@@ -166,10 +161,18 @@ private:
       const share::schema::ObSimpleTablegroupSchema &tablegroup_schema,
       const common::ObArray<const share::schema::ObSimpleTableSchemaV2*> &table_schemas,
       const int64_t max_part_level);
-  int build_bg_for_tablegroup_sharding_subpart_(
+  int build_bg_for_tablegroup_sharding_adaptive_subpart_(
       const share::schema::ObSimpleTablegroupSchema &tablegroup_schema,
       const common::ObArray<const share::schema::ObSimpleTableSchemaV2*> &table_schemas,
       const int max_part_level);
+  int build_bg_for_tablegroup_sharding_subpartition_(
+      const share::schema::ObSimpleTablegroupSchema &tablegroup_schema,
+      const common::ObArray<const share::schema::ObSimpleTableSchemaV2*> &table_schemas,
+      const int max_part_level);
+  int get_matched_global_indexes_for_subpart_sharding_(
+      const common::ObArray<const share::schema::ObSimpleTableSchemaV2*> &table_schemas,
+      const share::schema::ObSimpleTableSchemaV2* primary_table_schema,
+      common::ObIArray<const share::schema::ObSimpleTableSchemaV2*> &matched_global_indexes);
   int build_bg_for_partlevel_zero_(const share::schema::ObSimpleTableSchemaV2 &table_schema);
   int build_bg_for_partlevel_one_(const share::schema::ObSimpleTableSchemaV2 &table_schema);
   int build_bg_for_partlevel_two_(const share::schema::ObSimpleTableSchemaV2 &table_schema);
@@ -179,7 +182,8 @@ private:
       const common::ObObjectID part_object_id,
       const common::ObTabletID tablet_id,
       const uint64_t part_group_uid,
-      const int64_t balance_weight);
+      const int64_t bg_balance_weight,
+      const int64_t part_balance_weight);
   int prepare_tablet_data_size_();
   int prepare_related_tablets_map_();
   int add_to_related_tablets_map_(
@@ -190,11 +194,6 @@ private:
   int check_table_schemas_in_tablegroup_(
       const ObIArray<const share::schema::ObSimpleTableSchemaV2 *> &table_schemas);
   int get_dup_to_normal_dest_ls_id_(share::ObLSID &dest_ls_id);
-  int add_part_to_bg_for_tablegroup_sharding_none_(
-      const ObBalanceGroup &bg,
-      const uint64_t tablegroup_id,
-      const ObArray<const share::schema::ObSimpleTableSchemaV2*> &table_schemas,
-      const int64_t tablegroup_weight);
   int get_global_indexes_of_tables_(
       const ObArray<const share::schema::ObSimpleTableSchemaV2 *> &table_schemas,
       ObIArray<const share::schema::ObSimpleTableSchemaV2 *> &global_index_schemas);

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_role_change_service.h"
@@ -602,15 +595,6 @@ int ObRoleChangeService::switch_follower_to_leader_(
     } else {
       CLOG_LOG(WARN, "wait_replay_service_replay_done_ failed", K(ret), K(end_lsn));
     }
-#ifdef OB_BUILD_SHARED_STORAGE
-  } else if (FALSE_IT(time_guard.click("ls->notify_switch_to_leader_and_wait_replace_complete"))
-      || OB_FAIL(ls->notify_switch_to_leader_and_wait_replace_complete(new_proposal_id))) {
-    if (need_retry_submit_role_change_event_(ret)) {
-      retry_ctx.set_retry_reason(RetrySubmitRoleChangeEventReason::WAIT_REPLACE_DONE_TIMEOUT);
-    } else {
-      CLOG_LOG(WARN, "notify_switch_to_leader_and_wait_replace_complete failed", K(ret), K(new_proposal_id));
-    }
-#endif
   } else if (FALSE_IT(time_guard.click("apply_service->switch_to_leader"))
       || OB_FAIL(apply_service_->switch_to_leader(ls_id, new_proposal_id))) {
     CLOG_LOG(WARN, "apply_service_ switch_to_leader failed", K(ret), K(new_role), K(new_proposal_id));

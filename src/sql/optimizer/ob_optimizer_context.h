@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef _OB_OPTIMIZER_CONTEXT_H
@@ -239,6 +232,7 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
     expr_factory_(expr_factory),
     log_plan_factory_(allocator),
     force_serial_set_order_(false),
+    force_add_serial_path_(false),
     parallel_(ObGlobalHint::UNSET_PARALLEL),
     px_parallel_rule_(PXParallelRule::USE_PX_DEFAULT),
     can_use_pdml_(false),
@@ -320,12 +314,19 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
     extend_sql_plan_monitor_metrics_(false),
     enable_delete_insert_scan_(false),
     is_weak_read_(false),
+    enable_nested_sql_local_optimize_(false),
+    nested_sql_try_basic_first_(true),
+    need_retry_plan_(false),
     min_cluster_version_(GET_MIN_CLUSTER_VERSION()),
     next_op_id_(0),
     enable_hash_groupby_limit_pushdown_(true),
     join_order_enum_threshold_(10),
     max_permutation_(2000),
-    idp_reduction_threshold_(5000)
+    idp_reduction_threshold_(5000),
+    slave_mapping_id_gen_(0),
+    udf_cost_factor_(1.0),
+    udf_selectivity_(0.005),
+    enable_separate_spf_for_select_items_(false)
   { }
   inline common::ObOptStatManager *get_opt_stat_manager() { return opt_stat_manager_; }
   inline void set_opt_stat_manager(common::ObOptStatManager *sm) { opt_stat_manager_ = sm; }
@@ -399,6 +400,9 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
   inline bool is_pdml_heap_table() const { return is_pdml_heap_table_; }
   inline bool force_serial_set_order() const { return force_serial_set_order_; }
   void set_serial_set_order(bool force_serial_set_order) { force_serial_set_order_ = force_serial_set_order; }
+
+  inline bool force_add_serial_path() const { return force_add_serial_path_; }
+  inline void set_force_add_serial_path(bool v) { force_add_serial_path_ = v; }
 
   inline bool is_storage_estimation_enabled() const { return storage_estimation_enabled_; }
   void set_storage_estimation_enabled(bool storage_estimation_enabled) { storage_estimation_enabled_ = storage_estimation_enabled; }
@@ -536,10 +540,6 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
     // when enable das batch rescan flag and opt_version >= 4.2.5, use new interface to check can batch rescan,
     // otherwise, use old interface to check can batch rescan for compatibility.
     enable_425_exec_batch_rescan_ = (batch_rescan_flag != 0) && enable_425_opt_version;
-    // when use tracepoint, enable all batch rescan.
-    if ((OB_E(EventTable::EN_DAS_GROUP_RESCAN_TEST_MODE) OB_SUCCESS) != OB_SUCCESS) {
-      batch_rescan_flags_ = INT64_MAX;
-    }
   }
 
   inline bool enable_nlj_batch_rescan() const { return enable_nlj_batch_rescan_; }
@@ -720,8 +720,19 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
       add_plan_note(s);
     }
   }
+  inline bool has_plan_note(const common::ObString &str) const
+  {
+    bool existed = false;
+    for (int64_t i = 0; !existed && i < plan_notes_.count(); ++i) {
+      existed = (0 == plan_notes_.at(i).compare(str));
+    }
+    return existed;
+  }
   void add_plan_note(const common::ObString &str)
   {
+    if (has_plan_note(str)){
+      return;
+    }
     common::ObString s;
     int ret = common::ob_write_string(allocator_, str, s);
     if (OB_SUCC(ret)) {
@@ -789,6 +800,10 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
   inline void set_generate_random_plan(bool rand_plan) { generate_random_plan_ = rand_plan; }
   inline int64_t get_optimizer_index_cost_adj() const { return optimizer_index_cost_adj_; }
   inline void set_optimizer_index_cost_adj(int64_t v) { optimizer_index_cost_adj_ = v; }
+  inline double get_udf_cost_factor() const { return udf_cost_factor_; }
+  inline void set_udf_cost_factor(double v) { udf_cost_factor_ = v; }
+  inline double get_udf_selectivity() const { return udf_selectivity_; }
+  inline void set_udf_selectivity(double v) { udf_selectivity_ = v; }
   inline bool get_is_skip_scan_enabled() const { return is_skip_scan_enabled_; }
   inline void set_is_skip_scan_enabled(bool v) { is_skip_scan_enabled_ = v; }
   inline bool get_enable_better_inlist_costing() const { return enable_better_inlist_costing_; }
@@ -840,6 +855,12 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
   inline uint64_t get_min_cluster_version() const { return min_cluster_version_; }
   inline bool enable_delete_insert_scan() const { return enable_delete_insert_scan_; }
   inline void set_enable_delete_insert_scan(bool enabled) { enable_delete_insert_scan_ = enabled; }
+  inline bool enable_nested_sql_local_optimize() const { return enable_nested_sql_local_optimize_; }
+  inline void set_enable_nested_sql_local_optimize(bool enabled) { enable_nested_sql_local_optimize_ = enabled; }
+  inline bool is_nested_sql_try_basic_first() const { return nested_sql_try_basic_first_; }
+  inline void set_nested_sql_try_basic_first(bool is_first) { nested_sql_try_basic_first_ = is_first; }
+  inline bool need_retry_plan() const { return need_retry_plan_; }
+  inline void set_need_retry_plan(bool need_retry) { need_retry_plan_ = need_retry; }
   inline int64_t get_next_op_id() { return next_op_id_++; }
   inline bool enable_hash_groupby_limit_pushdown() const { return enable_hash_groupby_limit_pushdown_; }
   inline void set_enable_hash_groupby_limit_pushdown(bool enabled) { enable_hash_groupby_limit_pushdown_= enabled; }
@@ -849,8 +870,11 @@ ObOptimizerContext(ObSQLSessionInfo *session_info,
   inline void set_max_permutation(uint64_t max_permutation) { max_permutation_ = max_permutation; }
   inline uint64_t get_idp_reduction_threshold() const { return idp_reduction_threshold_; }
   inline void set_idp_reduction_threshold(uint64_t threshold) { idp_reduction_threshold_ = threshold; }
+  inline bool enable_separate_spf_for_select_items() const { return enable_separate_spf_for_select_items_; }
+  inline void set_enable_separate_spf_for_select_items(bool v) { enable_separate_spf_for_select_items_ = v; }
   inline bool get_is_weak_read() const { return is_weak_read_; }
   inline void set_is_weak_read(bool is_weak_read) { is_weak_read_ = is_weak_read; }
+  inline int64_t generate_slave_mapping_id() { return ++slave_mapping_id_gen_; }
 private:
   ObSQLSessionInfo *session_info_;
   ObExecContext *exec_ctx_;
@@ -867,6 +891,7 @@ private:
   ObRawExprFactory &expr_factory_;
   ObLogPlanFactory log_plan_factory_;
   bool force_serial_set_order_; //to keep a serial execute for set query
+  bool force_add_serial_path_; // force add a serial (parallel=1) access path during plan generation
   int64_t parallel_;
   // 决定计划并行度的规则
   PXParallelRule px_parallel_rule_;
@@ -988,12 +1013,19 @@ private:
   bool extend_sql_plan_monitor_metrics_;
   bool enable_delete_insert_scan_;
   bool is_weak_read_;
+  bool enable_nested_sql_local_optimize_;
+  bool nested_sql_try_basic_first_; // Flag for nested SQL local optimization: try basic plan first, fallback to DAS if not local
+  bool need_retry_plan_; // Flag to indicate if plan needs to be regenerated (set by LogPlan, checked by Optimizer)
   uint64_t min_cluster_version_; // Record the unified cluster version during the optimizer phase
   int64_t next_op_id_;
   bool enable_hash_groupby_limit_pushdown_;
   uint64_t join_order_enum_threshold_;
   uint64_t max_permutation_;
   uint64_t idp_reduction_threshold_;
+  int64_t slave_mapping_id_gen_; // generate slave mapping id, start from 1
+  double udf_cost_factor_;
+  double udf_selectivity_;
+  bool enable_separate_spf_for_select_items_;
 };
 }
 }

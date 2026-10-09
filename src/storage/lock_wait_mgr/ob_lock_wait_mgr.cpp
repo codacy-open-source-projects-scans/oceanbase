@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_lock_wait_mgr.h"
@@ -193,7 +186,7 @@ void ObLockWaitMgr::handle_lock_conflict(const ObExecContext &exec_ctx,
         on_lock_conflict(*tx, is_lock_wait_timeout);
       }
     } else {
-      transaction::ObTxExecResult &result = session.get_trans_result();
+      transaction::ObTxExecResult &result = const_cast<ObExecContext&>(exec_ctx).get_trans_result();
       on_lock_conflict(const_cast<ObSArray<storage::ObRowConflictInfo>&>(result.get_conflict_info_array()),
          NULL, session.get_server_sid(), is_lock_wait_timeout);
     }
@@ -836,7 +829,11 @@ void ObLockWaitMgr::on_lock_conflict(ObSArray<ObRowConflictInfo> &cflict_infos,
     }
   }
   if (OB_UNLIKELY(!ObDeadLockDetectorMgr::is_deadlock_enabled())) {
-    cflict_infos.reset();
+    if (OB_NOT_NULL(tx)) {
+      tx->reset_conflict_info_array();
+    } else {
+      cflict_infos.reset();
+    }
   }
 }
 

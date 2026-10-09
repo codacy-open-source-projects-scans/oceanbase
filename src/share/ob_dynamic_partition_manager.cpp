@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SHARE
@@ -814,22 +807,8 @@ int ObDynamicPartitionManager::add_timestamp_(const int64_t num, const ObDateUni
       LOG_WARN("fail to append str", KR(ret));
     } else if (OB_FAIL(ObTimeConverter::date_adjust(datetime, interval_str.string(), time_unit, datetime, is_add, date_sql_mode))) {
       LOG_WARN("fail to adjust date", KR(ret), K(timestamp), K(interval_str), K(time_unit));
-    } else if (OB_FAIL(ObTimeConverter::datetime_to_timestamp(datetime, time_zone_info_wrap.get_time_zone_info(), timestamp))) {
+    } else if (OB_FAIL(datetime_to_timestamp_skip_gap_(datetime, time_zone_info_wrap.get_time_zone_info(), timestamp))) {
       LOG_WARN("fail to convert datetime to timestamp", KR(ret), K(datetime), K(time_zone_info_wrap.get_time_zone_info()));
-      if (OB_ERR_FIELD_NOT_FOUND_IN_DATETIME_OR_INTERVAL == ret // oracle mode error code
-          || OB_ERR_UNEXPECTED_TZ_TRANSITION == ret ) {  // mysql mode error code
-        // hit the gap of timezone transition, temporarily reduce one us to avoid the gap
-        // e.g. datetime is 2025-03-09 02:00:00.000000, time zone is America/New_York,
-        //      [2025-03-09 02:00:00.000000, 2025-03-09 03:00:00.000000) is gap of timezone transition,
-        //      so we reduce one us to avoid the gap, and after convert to timestamp, add one us back to get the correct timestamp
-        datetime -= 1;
-        // overwrite ret
-        if (OB_FAIL(ObTimeConverter::datetime_to_timestamp(datetime, time_zone_info_wrap.get_time_zone_info(), timestamp))) {
-          LOG_WARN("fail to convert datetime to timestamp", KR(ret), K(datetime), K(time_zone_info_wrap.get_time_zone_info()));
-        } else {
-          timestamp += 1;
-        }
-      }
     }
   }
 
@@ -846,7 +825,6 @@ int ObDynamicPartitionManager::floor_timestamp_(const ObDateUnitType time_unit, 
     ObTime ob_time;
     ObTimeZoneInfoWrap time_zone_info_wrap;
     const ObTimeZoneInfo *tz_info = NULL;
-    int32_t sec_offset = 0;
     if (OB_FAIL(get_table_time_zone_wrap_(time_zone_info_wrap))) {
       LOG_WARN("fail to get table time zone wrap", KR(ret));
     } else if (OB_ISNULL(tz_info = time_zone_info_wrap.get_time_zone_info())) {
@@ -854,8 +832,6 @@ int ObDynamicPartitionManager::floor_timestamp_(const ObDateUnitType time_unit, 
       LOG_WARN("tz info is null", KR(ret));
     } else if (OB_FAIL(ObTimeConverter::datetime_to_ob_time(timestamp, tz_info, ob_time))) {
       LOG_WARN("fail to convert timestamp to ob time", KR(ret), K(timestamp));
-    } else if (OB_FAIL(tz_info->get_timezone_offset(USEC_TO_SEC(timestamp), sec_offset))) {
-      LOG_WARN("fail to get timezone offset", KR(ret), K(timestamp));
     } else {
       // To floor a datetime:
       //
@@ -872,7 +848,7 @@ int ObDynamicPartitionManager::floor_timestamp_(const ObDateUnitType time_unit, 
       //   - to floor with month  get 2025-02-01 00:00:00         DT_MDAY = 7, so DT_DATE = DT_DATE - (DT_MDAY - 1)
       //   - to floor with year   get 2025-01-01 00:00:00         DT_YDAY = 38, so DT_DATE = DT_DATE - (DT_YDAY - 1)
       //
-      // Finally, add time zone offset to get timestamp.
+      // Finally, convert the floored local datetime back to timestamp.
 
       int32_t day_offset = 0;
       int32_t day_count = ob_time.parts_[DT_DATE];
@@ -898,7 +874,21 @@ int ObDynamicPartitionManager::floor_timestamp_(const ObDateUnitType time_unit, 
       }
 
       if (OB_SUCC(ret)) {
-        timestamp = (day_count - day_offset) * USECS_PER_DAY + (hour_count * MINS_PER_HOUR * SECS_PER_MIN - sec_offset) * USECS_PER_SEC;
+        const int64_t floored_datetime =
+            static_cast<int64_t>(day_count - day_offset) * USECS_PER_DAY
+            + static_cast<int64_t>(hour_count) * MINS_PER_HOUR * SECS_PER_MIN * USECS_PER_SEC;
+        // Floor on local datetime. For day/week/month/year, converting from the
+        // original timestamp may cross a DST transition and use the wrong offset.
+        if (ObDateUnitType::DATE_UNIT_HOUR == time_unit) {
+          int32_t sec_offset = 0;
+          if (OB_FAIL(tz_info->get_timezone_offset(USEC_TO_SEC(timestamp), sec_offset))) {
+            LOG_WARN("fail to get timezone offset", KR(ret), K(timestamp));
+          } else {
+            timestamp = floored_datetime - SEC_TO_USEC(sec_offset);
+          }
+        } else if (OB_FAIL(datetime_to_timestamp_skip_gap_(floored_datetime, tz_info, timestamp))) {
+          LOG_WARN("fail to convert floored datetime to timestamp", KR(ret), K(floored_datetime), K(time_unit));
+        }
       }
     }
   }
@@ -1452,6 +1442,7 @@ int ObDynamicPartitionManager::update_dynamic_partition_policy_with_str_(
       } else if (OB_UNLIKELY(kv.count() != 2)) {
         ret = OB_INVALID_ARGUMENT;
         LOG_WARN("dynamic partition policy is invalid", KR(ret), K(kv.count()));
+        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition policy format, expected key=value");
       } else {
         ObString k = kv.at(0);
         ObString v = kv.at(1);
@@ -1463,6 +1454,7 @@ int ObDynamicPartitionManager::update_dynamic_partition_policy_with_str_(
           } else {
             ret = OB_INVALID_ARGUMENT;
             LOG_WARN("invalid dynamic partition policy params", KR(ret), K(k), K(v));
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition enable, expected TRUE or FALSE");
           }
         } else if (0 == k.case_compare("TIME_UNIT")) {
           if (is_alter) {
@@ -1470,14 +1462,17 @@ int ObDynamicPartitionManager::update_dynamic_partition_policy_with_str_(
             LOG_WARN("not support to alter dynamic partition time unit", KR(ret));
           } else if (OB_FAIL(str_to_time_unit(v, policy.time_unit_))) {
             LOG_WARN("fail to convert str to time unit", KR(ret), K(v));
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition time_unit, expected HOUR/DAY/WEEK/MONTH/YEAR");
           }
         } else if (0 == k.case_compare("PRECREATE_TIME")) {
           if (OB_FAIL(str_to_time(v, policy.precreate_time_num_, policy.precreate_time_unit_))) {
             LOG_WARN("fail to convert str to time interval", KR(ret), K(v));
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition precreate_time, expected format like '2MONTH'");
           }
         } else if (0 == k.case_compare("EXPIRE_TIME")) {
           if (OB_FAIL(str_to_time(v, policy.expire_time_num_, policy.expire_time_unit_))) {
             LOG_WARN("fail to convert str to time interval", KR(ret), K(v));
+            LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition expire_time, expected format like '13MONTH'");
           }
         } else if (0 == k.case_compare("TIME_ZONE")) {
           int32_t offset = 0;
@@ -1506,11 +1501,13 @@ int ObDynamicPartitionManager::update_dynamic_partition_policy_with_str_(
             } else {
               ret = OB_INVALID_ARGUMENT;
               LOG_WARN("invalid dynamic partition policy params", KR(ret), K(k), K(v));
+              LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition bigint_precision, expected S/MS/US/NONE");
             }
           }
         } else {
           ret = OB_INVALID_ARGUMENT;
           LOG_WARN("unknown dynamic partition policy params", KR(ret), K(k));
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "dynamic partition policy, unknown parameter");
         }
       }
     }
@@ -1609,6 +1606,28 @@ int64_t ObDynamicPartitionManager::get_current_timestamp_()
     LOG_INFO("dynamic partition use mock time", K(current_timestamp));
   }
   return current_timestamp;
+}
+
+int ObDynamicPartitionManager::datetime_to_timestamp_skip_gap_(const int64_t datetime,
+                                                               const ObTimeZoneInfo *tz_info,
+                                                               int64_t &timestamp)
+{
+  int ret = OB_SUCCESS;
+  int64_t adjusted_datetime = datetime;
+  if (OB_FAIL(ObTimeConverter::datetime_to_timestamp(adjusted_datetime, tz_info, timestamp))) {
+    if (OB_ERR_FIELD_NOT_FOUND_IN_DATETIME_OR_INTERVAL == ret // oracle mode error code
+        || OB_ERR_UNEXPECTED_TZ_TRANSITION == ret) {  // mysql mode error code
+      // Hit the gap of timezone transition. Move to the last valid local moment
+      // before the gap, convert it to timestamp, then add one us back to get the
+      // first valid timestamp after the gap.
+      adjusted_datetime -= 1;
+      if (OB_FAIL(ObTimeConverter::datetime_to_timestamp(adjusted_datetime, tz_info, timestamp))) {
+      } else {
+        timestamp += 1;
+      }
+    }
+  }
+  return ret;
 }
 
 int ObDynamicPartitionManager::get_enable(

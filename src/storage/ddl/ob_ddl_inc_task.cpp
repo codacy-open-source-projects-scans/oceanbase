@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2025 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SERVER
@@ -23,6 +16,7 @@
 #include "storage/compaction/ob_schedule_dag_func.h"
 #include "lib/ob_define.h"
 #include "storage/ddl/ob_inc_ddl_merge_task_utils.h"
+#include "storage/ddl/ob_ddl_merge_schedule.h"
 
 namespace oceanbase
 {
@@ -68,8 +62,7 @@ int ObDDLIncStartTask::process()
 {
   int ret = OB_SUCCESS;
   ObDDLIndependentDag *dag = static_cast<ObDDLIndependentDag *>(dag_);
-  const std::pair<share::ObLSID, ObTabletID> &ls_tablet_id =
-    dag->get_ls_tablet_ids().at(tablet_idx_);
+  const std::pair<share::ObLSID, ObTabletID> &ls_tablet_id = dag->get_ls_tablet_ids().at(tablet_idx_);
   ObDDLTabletContext *tablet_ctx = nullptr;
   ObDDLIncRedoLogWriter redo_writer;
   SCN start_scn;
@@ -95,6 +88,7 @@ int ObDDLIncStartTask::process()
                                                                 dag->get_tx_info().tx_desc_,
                                                                 start_scn))) {
     LOG_WARN("fail to write inc start log", KR(ret), KPC(tablet_ctx), K(dag->get_ddl_task_param()), K(dag->get_tx_info()));
+  } else if (FALSE_IT(tablet_ctx->set_start_scn(start_scn))) {
   } else if (is_incremental_major_direct_load(dag->get_direct_load_type())) {
     ObArenaAllocator allocator(ObMemAttr(MTL_ID(), "DdlIncStartTask"));
     if (OB_FAIL(record_inc_major_start_info_to_mds(*storage_schema,
@@ -231,6 +225,7 @@ int ObDDLIncCommitTask::process()
                                                                  tablet_ctx->lob_meta_tablet_id_,
                                                                  dag->get_ddl_task_param().snapshot_version_,
                                                                  dag->get_ddl_task_param().tenant_data_version_,
+                                                                 tablet_ctx->get_start_scn(),
                                                                  dag->get_tx_info().tx_desc_,
                                                                  tablet_ctx->merge_ctx_.inc_major_,
                                                                  tablet_ctx->lob_merge_ctx_.inc_major_,
@@ -403,9 +398,15 @@ int ObDDLIncPrepareTask::process()
         (void) ObIncDDLMergeTaskUtils::gc_ss_inc_major_ddl_dump(ls_tablet_ids);
       }
 #endif
-      ret = OB_SIZE_OVERFLOW;
+      ret = OB_INC_MAJOR_COUNT_REACH_LIMIT;
       LOG_WARN("inc major count exceeds max limit",
-               KR(ret), "ls_id", ls_tablet_id.first, "tablet_id", ls_tablet_id.second, KPC(dag));
+               KR(ret), "ls_id", ls_tablet_id.first, "tablet_id", ls_tablet_id.second,
+               "count", trans_ids_.size());
+      // trigger inc major merge
+      int tmp_ret = OB_SUCCESS;
+      if (OB_TMP_FAIL(ObDDLMergeScheduler::schedule_tablet_ddl_inc_major_merge(ls_tablet_id.first, ls_tablet_id.second))) {
+        LOG_WARN("fail to schedule tablet ddl inc major merge", KR(tmp_ret), K(ls_tablet_id.first), K(ls_tablet_id.second));
+      }
     }
   }
   return ret;

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2022 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_ROOTSERVER_OB_TENANT_TRANSFER_SERVICE_H
@@ -191,7 +184,6 @@ private:
       const common::ObIArray<common::ObTableID> &table_ids,
       common::ObIArray<common::ObTabletID> &temporary_tablet_ids);
   int get_tablet_ids_for_oracle_tmp_table_v2_for_unlock_(
-      const share::ObLSID &ls_id,
       const common::ObIArray<common::ObTableID> &table_ids,
       const share::ObTransferTabletList &trans_tablet_list,
       common::ObIArray<common::ObTabletID> &temporary_tablet_ids);
@@ -214,7 +206,11 @@ private:
       const transaction::tablelock::ObTableLockOwnerID &lock_owner_id,
       share::schema::ObSimpleTableSchemaV2 &table_schema,
       const share::ObTransferPartInfo &part_info,
-      const common::ObIArray<common::ObTabletID> &tablet_ids);
+      const common::ObIArray<common::ObTabletID> &tablet_ids,
+      const common::ObIArray<common::ObTabletID> &gtt_index_tablet_ids);
+  // For oracle tmp table v2, `gtt_index_tablet_ids` must be the precomputed
+  // index session tablets returned by generate_related_tablet_ids_for_oracle_tmp_table_v2_.
+  // It is ignored for other table types.
   int generate_related_tablet_ids_(
       const share::schema::ObSimpleTableSchemaV2 *table_schema,
       const ObIArray<share::schema::ObSimpleTableSchemaV2 *> &related_table_schemas,
@@ -222,13 +218,22 @@ private:
       const int64_t subpart_idx,
       const share::ObLSID &src_ls,
       common::ObIArray<common::ObTabletID> &tablet_ids_get_by_data_table_id,
+      const common::ObIArray<common::ObTabletID> &gtt_index_tablet_ids,
       common::ObIArray<common::ObTabletID> &tablet_ids);
+  // For GTT (oracle tmp table v2), output the index session tablets on `src_ls`
+  // whose session group (session_id, sequence) shares any tablet with
+  // `tablet_ids_get_by_data_table_id`. The data table tablets themselves are
+  // excluded from the output. The output array is reset before being populated.
   int generate_related_tablet_ids_for_oracle_tmp_table_v2_(
       const share::schema::ObSimpleTableSchemaV2 *table_schema,
       const common::ObIArray<share::schema::ObSimpleTableSchemaV2 *> &related_table_schemas,
       const share::ObLSID &src_ls,
       const common::ObIArray<common::ObTabletID> &tablet_ids_get_by_data_table_id,
-      common::ObIArray<common::ObTabletID> &tablet_ids);
+      common::ObIArray<common::ObTabletID> &index_tablet_ids);
+  int add_in_trans_lock_for_gtt_index_tablets_(
+      ObMySQLTransaction &trans,
+      const common::ObIArray<common::ObTabletID> &index_tablet_ids,
+      bool &is_lock_conflict);
   int get_temp_tablet_ids_can_be_transferred_for_oracle_tmp_table_v2_(
       const uint64_t related_table_count, // 1 data table + N related tables
       const common::ObIArray<common::ObTabletID> &tablet_ids_will_be_transferred,

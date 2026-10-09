@@ -1,14 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
- * This file contains implementation for st_geomfromwkb.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_ENG
@@ -258,7 +250,7 @@ int ObIExprSTGeomFromWKB::create_by_wkb_without_srid(ObIAllocator &allocator,
           LOG_WARN("invalid wkb", K(ret), K(type), K(srid), K(crs));
         }
       } else {
-        ObGeoWkbCheckVisitor wkb_check(wkb_nosrid, bo);
+        ObGeoWkbCheckVisitor wkb_check(wkb_nosrid, bo, true /* need_check_ring */, true /* need_check_finite */);
         ObIWkbGeometry *geo_bin = static_cast<ObIWkbGeometry *>(geo);
         if (OB_FAIL(geo->do_visit(wkb_check))) {
           ret = OB_ERR_GIS_INVALID_DATA;

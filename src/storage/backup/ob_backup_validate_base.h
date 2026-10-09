@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef STORAGE_LOG_STREAM_BACKUP_VALIDATE_BASE_H_
@@ -108,7 +101,7 @@ public:
   int set_tablet_array(const common::ObIArray<common::ObTabletID> &tablet_array);
   int get_tablet_id(const int64_t task_id, common::ObTabletID &tablet_id);
   int add_archive_piece_lsn_range(const ObBackupArchivePieceLSNRange &lsn_range);
-  int get_archive_piece_lsn_range(const int64_t group_id, ObBackupArchivePieceLSNRange* &lsn_range, bool &is_last_task);
+  int get_archive_piece_lsn_range(const int64_t group_id, ObBackupArchivePieceLSNRange* &lsn_range);
   int set_validate_result(
       const int result,
       const char *error_msg,

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_information_partitions_table.h"
@@ -342,7 +335,7 @@ int ObInfoSchemaPartitionsTable::add_partitions(const ObSimpleTableSchemaV2 &tab
         }
         case PARTITION_DESCRIPTION: {
           ObString desc;
-          if (table_schema.is_range_part()) {
+          if (table_schema.is_range_or_random_part()) {
             if (OB_FAIL(gen_high_bound_val_str(is_oracle_mode, part_info.part_, desc))) {
               SERVER_LOG(WARN, "fail to generate PARTITION_DESCRIPTION", K(ret), K(part_info));
             } else {

@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_CONTEXT_
@@ -559,6 +552,8 @@ public:
 public:
   static TableItem *get_table_item_by_ref_id(const ObDMLStmt *stmt, uint64_t ref_table_id);
   static bool is_link_table(const ObDMLStmt *stmt, uint64_t table_id);
+private:
+  uint64_t get_tenant_id() const;
 
 private:
   share::schema::ObSchemaGetterGuard *schema_guard_;
@@ -788,6 +783,7 @@ public:
   ObSpmCacheCtx spm_ctx_;
   bool is_execute_call_stmt_;
   bool enable_sql_resource_manage_;
+  bool enable_database_isolation_mode_;
   ObPCResourceMapRule resource_map_rule_;
   uint64_t res_map_rule_version_;
   bool is_text_ps_mode_;
@@ -805,7 +801,8 @@ public:
       uint32_t enable_strict_defensive_check_: 1; //TRUE if the _enable_defensive_check is '2'
       uint32_t enable_user_defined_rewrite_ : 1;//TRUE if enable_user_defined_rewrite_rules is open
       uint32_t is_from_pl_ : 1;
-      uint32_t reserved_ : 29;
+      uint32_t is_ps_cursor_ : 1;
+      uint32_t reserved_ : 28;
     };
   };
   common::ObString raw_sql_;

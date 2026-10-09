@@ -1,24 +1,20 @@
 /**
  * Copyright (c) 2023 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #pragma once
 
 #include "sql/engine/ob_exec_context.h"
 #include "lib/mysqlclient/ob_isql_client.h"
+#include "pl/ob_pl.h"
 
 namespace oceanbase
 {
 namespace pl
 {
+
+class ObPLExecCtx;
 
 class ObDBMSMViewMysql
 {
@@ -30,7 +26,18 @@ enum ObDBMSMViewRefreshParam
   REFRESH_PARALLEL = 2,
   NESTED = 3,
   NESTED_REFRESH_MODE = 4,
+  ASYNC = 5,
+  FORCE = 6,
   MAX_PARAM
+};
+
+enum ObDBMSMViewRefreshReportParam
+{
+  REPORT_REFRESH_ID = 0,
+  REPORT_MV_NAME = 1,
+  REPORT_TENANT_ID = 2,
+  REPORT_FORMAT = 3,
+  REPORT_MAX_PARAM
 };
 
 public:
@@ -38,12 +45,17 @@ public:
   virtual ~ObDBMSMViewMysql() {}
 
 #define DECLARE_FUNC(func) \
-  static int func(sql::ObExecContext &ctx, sql::ParamStore &params, common::ObObj &result);
+  static int func(ObPLExecCtx &pl_ctx, sql::ParamStore &params, common::ObObj &result);
 
   DECLARE_FUNC(purge_log);
   DECLARE_FUNC(refresh);
+  DECLARE_FUNC(refresh_report);
+  DECLARE_FUNC(kill);
+  DECLARE_FUNC(set_refresh_params);
 
 #undef DECLARE_FUNC
+
+  static int explain_refresh(ObPLExecCtx &ctx, sql::ParamStore &params, common::ObObj &result);
 
 };
 

@@ -1,17 +1,9 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "ob_mvcc_trans_ctx.h"
-#include "storage/memtable/ob_memtable.h"
 #include "storage/lock_wait_mgr/ob_lock_wait_mgr.h"
 #include "storage/tx/ob_trans_part_ctx.h"
 
@@ -398,6 +390,7 @@ int ObTransCallbackMgr::append(ObITransCallback *head,
       // We donot support batch append for replay now
       OB_ASSERT(1 == length);
     }
+
     // Step1: prepare the callback append(epoch for pdml and statistic)
     for (ObITransCallback *cb = head; cb != nullptr; cb = cb->get_next()) {
       (void)before_append(cb);
@@ -642,24 +635,16 @@ int ObTransCallbackMgr::remove_callbacks_for_fast_commit(const int16_t callback_
 }
 
 // for leader
-// called after log apply thread has called the log_cb
-// @callback_scope_host_bitmap: the log's callback-list idx bitmap [0-63]
-int ObTransCallbackMgr::remove_callbacks_for_fast_commit(const uint64_t callback_scope_host_bitmap)
+// called after log apply thread has callbacked the log_cb
+// @scopes: the log's callback-list scopes
+int ObTransCallbackMgr::remove_callbacks_for_fast_commit(const ObCallbackScopeArray &scopes)
 {
   const share::SCN stop_scn = is_serial_final_() ? share::SCN::invalid_scn() : serial_sync_scn_;
   int ret = OB_SUCCESS;
-  uint64_t bitmap = callback_scope_host_bitmap;
-  while (bitmap != 0 && OB_SUCC(ret)) {
-    // Position of the lowest set bit in [0, 63]. Note: undefined behavior when bitmap == 0.
-    int idx = __builtin_ctzll(bitmap);
-    ObTxCallbackList *list = get_callback_list_(idx, true);
-    if (OB_ISNULL(list)) {
-      ret = OB_ERR_UNEXPECTED;
-      TRANS_LOG(ERROR, "callback list is null", K(ret), K(idx));
-    } else if (OB_FAIL(list->remove_callbacks_for_fast_commit(stop_scn))) {
-      TRANS_LOG(WARN, "remove callbacks for fast commit fail", K(ret), K(idx), KPC(list));
+  ARRAY_FOREACH(scopes, i) {
+    if (OB_FAIL(scopes.at(i).host_->remove_callbacks_for_fast_commit(stop_scn))) {
+      TRANS_LOG(WARN, "remove callbacks for fast commit fail", K(ret), K(i), KPC(scopes.at(i).host_));
     }
-    bitmap &= (bitmap - 1); // Clear the lowest set bit.
   }
   return ret;
 }
@@ -1260,31 +1245,6 @@ int ObTransCallbackMgr::log_sync_succ(const ObCallbackScopeArray &callbacks,
   return ret;
 }
 
-int ObTransCallbackMgr::prepare_log_submitted(const ObCallbackScopeArray &callbacks)
-{
-  int ret = OB_SUCCESS;
-  uint64_t prepared_bitmap = 0;
-  ARRAY_FOREACH(callbacks, i) {
-    const ObCallbackScope &scope = callbacks.at(i);
-    if (!scope.is_empty()) {
-      if (OB_FAIL(scope.host_->prepare_log_submitted())) {
-        TRANS_LOG(ERROR, "prepare log submitted fail", K(ret));
-      } else {
-        prepared_bitmap |= (1ULL << scope.host_->get_id());
-      }
-    }
-  }
-  if (OB_FAIL(ret)) {
-    ARRAY_FOREACH_NORET(callbacks, i) {
-      const ObCallbackScope &scope = callbacks.at(i);
-      if (prepared_bitmap & (1ULL << scope.host_->get_id())) {
-        scope.host_->clear_prepared_log_submitted();
-      }
-    }
-  }
-  return ret;
-}
-
 int ObTransCallbackMgr::log_sync_fail(const ObCallbackScopeArray &callbacks,
                                       const share::SCN scn,
                                       int64_t &removed_cnt)
@@ -1352,10 +1312,9 @@ int ObTransCallbackMgr::get_memtable_key_arr(ObMemtableKeyArray &memtable_key_ar
 {
   int ret = OB_SUCCESS;
   int fail_at = 0;
-  int64_t timeout = ObClockGenerator::getClock() + 100_ms;
   CALLBACK_LISTS_FOREACH(idx, list) {
     fail_at = idx;
-    ret = list->get_memtable_key_arr_w_timeout(memtable_key_arr, timeout);
+    ret = list->get_memtable_key_arr_w_timeout(memtable_key_arr);
     if (OB_ITER_STOP == ret) { ret = OB_SUCCESS; }
   }
   if (OB_FAIL(ret)) {
@@ -1558,22 +1517,6 @@ void ObTransCallbackMgr::trans_start()
   reset();
 }
 
-ObMvccRowCallback::ObMvccRowCallback(ObIMvccCtx &ctx, ObMvccRow &value, ObMemtable *memtable)
-  : ObITransCallback(),
-    ctx_(ctx),
-    value_(value),
-    tnode_(NULL),
-    data_size_(-1),
-    memtable_(memtable),
-    is_link_(false),
-    not_calc_checksum_(false),
-    is_non_unique_local_index_cb_(false),
-    seq_no_(),
-    column_cnt_(0),
-    freeze_clock_(memtable == NULL ? 0 : memtable->get_freeze_clock())
-{
-}
-
 int ObMvccRowCallback::before_append(const bool is_replay)
 {
   int ret = OB_SUCCESS;
@@ -1630,7 +1573,6 @@ uint32_t ObMvccRowCallback::get_freeze_clock() const
 {
   if (OB_ISNULL(memtable_)) {
     TRANS_LOG_RET(ERROR, OB_ERR_UNEXPECTED, "mvcc row memtable is NULL", KPC(this));
-    ob_abort();
     return 0;
   } else {
     return memtable_->get_freeze_clock();
@@ -1963,7 +1905,7 @@ int ObMvccRowCallback::trans_commit()
             TRANS_LOG(INFO, "[FF] trans commit and set hotspot row success", K_(*memtable), K_(value), K_(ctx), K(*this));
           }
           (void)ATOMIC_FAA(&value_.update_since_compact_, 1);
-          if (value_.need_compact(for_read, ctx_.is_for_replay(), memtable_->is_delete_insert_table())) {
+          if (value_.need_compact(for_read, ctx_.is_for_replay())) {
             if (ctx_.is_for_replay()) {
               if (ctx_.get_replay_compact_version().is_valid_and_not_min()
                   && SCN::max_scn() != ctx_.get_replay_compact_version()) {
@@ -2173,7 +2115,6 @@ int64_t ObMvccRowCallback::to_string(char *buf, const int64_t buf_len) const
   databuff_printf(buf, buf_len, pos, "), seq_no=%ld, memtable=%p, scn=",
       seq_no_.cast_to_int(), memtable_);
   databuff_printf(buf, buf_len, pos, scn_);
-  databuff_printf(buf, buf_len, pos, ", freeze_clock=%u", get_freeze_clock());
   return pos;
 }
 
@@ -2383,20 +2324,25 @@ void ObTransCallbackMgr::set_skip_checksum_calc()
   ATOMIC_STORE(&skip_checksum_, true);
 }
 
-bool ObTransCallbackMgr::has_pending_log_for_freeze(const uint32_t freeze_clock) const
+bool ObTransCallbackMgr::is_logging_blocked(bool &has_pending_log) const
 {
-  bool bret = false;
+  int ret = OB_SUCCESS;
+  bool all_blocked = false;
   RDLockGuard guard(rwlock_);
   if (!for_replay_) {
-    int ret = OB_SUCCESS;
     CALLBACK_LISTS_FOREACH_CONST(idx, list) {
-      if (list->has_pending_log_for_freeze(freeze_clock)) {
-        bret = true;
-        break;
+      if (list->has_pending_log()) {
+        has_pending_log = true;
+        if (list->is_logging_blocked()) {
+          all_blocked = true;
+        } else {
+          all_blocked = false;
+          break;
+        }
       }
     }
   }
-  return bret;
+  return all_blocked;
 }
 
 int64_t ObTransCallbackMgr::get_pending_log_size() const

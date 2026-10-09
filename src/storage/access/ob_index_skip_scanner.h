@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OB_ACCESS_ROWKEY_PREFIX_FILTER_H
@@ -158,7 +151,11 @@ enum class ObSkipScannerType : int8_t
 class ObISkipScanner
 {
 public:
-  ObISkipScanner(const bool is_for_memtable, const ObSkipScannerType type, const blocksstable::ObStorageDatumUtils &datum_utils);
+  ObISkipScanner(
+      const bool is_for_memtable,
+      const bool is_multi_version_sstable,
+      const ObSkipScannerType type,
+      const blocksstable::ObStorageDatumUtils &datum_utils);
   virtual ~ObISkipScanner();
   virtual void reset();
   virtual int init(
@@ -220,6 +217,7 @@ public:
     return type_ == ObSkipScannerType::ADVANCE_SCAN;
   }
   VIRTUAL_TO_STRING_KV(K_(is_inited),
+                       K_(is_multi_version_sstable),
                        K_(type),
                        K_(micro_start),
                        K_(micro_last),
@@ -230,8 +228,13 @@ public:
                        KP_(read_info),
                        KP_(stmt_alloc));
 protected:
+  OB_INLINE const blocksstable::ObDatumRange& get_sst_complete_range()
+  {
+    return is_multi_version_sstable_ ? multi_version_complete_range_ : complete_range_;
+  }
   common::ObArenaAllocator range_alloc_;
   bool is_inited_;
+  bool is_multi_version_sstable_;
   ObSkipScannerType type_;
   int64_t micro_start_;
   int64_t micro_last_;
@@ -239,6 +242,7 @@ protected:
   ObIndexSkipCtlStrategy index_skip_strategy_;
   const blocksstable::ObStorageDatumUtils &datum_utils_;
   blocksstable::ObDatumRange complete_range_;
+  blocksstable::ObDatumRange multi_version_complete_range_;
   blocksstable::ObStorageDatum *range_datums_;
   const blocksstable::ObDatumRange *scan_range_;
   const ObITableReadInfo *read_info_;
@@ -248,7 +252,10 @@ protected:
 class ObIndexSkipScanner : public ObISkipScanner
 {
 public:
-  ObIndexSkipScanner(const bool is_for_memtable, const blocksstable::ObStorageDatumUtils &datum_utils);
+  ObIndexSkipScanner(
+      const bool is_for_memtable,
+      const bool is_multi_version_sstable,
+      const blocksstable::ObStorageDatumUtils &datum_utils);
   virtual ~ObIndexSkipScanner();
   virtual void reset() override;
   virtual int init(
@@ -391,7 +398,10 @@ private:
 class ObAdvanceSkipScanner : public ObISkipScanner
 {
 public:
-  ObAdvanceSkipScanner(const bool is_for_memtable, const blocksstable::ObStorageDatumUtils &datum_utils);
+  ObAdvanceSkipScanner(
+      const bool is_for_memtable,
+      const bool is_multi_version_sstable,
+      const blocksstable::ObStorageDatumUtils &datum_utils);
   virtual ~ObAdvanceSkipScanner();
   virtual void reset() override;
   virtual int init(
@@ -468,7 +478,8 @@ public:
       ObTableAccessContext &access_ctx,
       const blocksstable::ObDatumRange *range,
       ObISkipScanner *&skip_scanner,
-      const bool is_for_memtable = false);
+      const bool is_for_memtable = false,
+      const bool is_multi_version_sstable = false);
   static void destroy_index_skip_scanner(ObISkipScanner *&skip_scanner);
 
   ObIndexSkipScanFactory();

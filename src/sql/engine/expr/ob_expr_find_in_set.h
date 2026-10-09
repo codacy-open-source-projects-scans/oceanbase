@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #ifndef OCEANBASE_SQL_ENGINE_EXPR_FIND_IN_SET_H_
@@ -45,9 +38,6 @@ public:
 
 private:
   template <typename Arg0Vec, typename Arg1Vec, typename ResVec>
-  static int calc_find_in_set_vector_dispatch(VECTOR_EVAL_FUNC_ARG_DECL);
-
-  template <typename Arg0Vec, typename ResVec>
   static int calc_find_in_set_vector_dispatch(VECTOR_EVAL_FUNC_ARG_DECL);
   DISALLOW_COPY_AND_ASSIGN(ObExprFindInSet);
 };

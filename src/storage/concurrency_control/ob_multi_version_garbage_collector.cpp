@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #include "storage/concurrency_control/ob_multi_version_garbage_collector.h"
@@ -15,6 +8,7 @@
 #include "storage/tx/ob_trans_service.h"
 #include "storage/tx/wrs/ob_weak_read_util.h"
 #include "rootserver/mview/ob_mview_maintenance_service.h"
+#include "share/ob_io_device_helper.h"
 
 namespace oceanbase
 {
@@ -22,7 +16,7 @@ namespace concurrency_control
 {
 
 int64_t ObMultiVersionGarbageCollector::GARBAGE_COLLECT_PRECISION = 1_s;
-int64_t ObMultiVersionGarbageCollector::GARBAGE_COLLECT_RETRY_INTERVAL = 1_min;
+int64_t ObMultiVersionGarbageCollector::GARBAGE_COLLECT_RETRY_INTERVAL = 10_s;
 int64_t ObMultiVersionGarbageCollector::GARBAGE_COLLECT_EXEC_INTERVAL = 10 * GARBAGE_COLLECT_RETRY_INTERVAL;
 int64_t ObMultiVersionGarbageCollector::GARBAGE_COLLECT_RECLAIM_DURATION = 3 * GARBAGE_COLLECT_EXEC_INTERVAL;
 
@@ -511,6 +505,14 @@ int ObMultiVersionGarbageCollector::study_min_active_txn_version(
   } else if (min_mview_mds_snapshot.is_valid() && min_mview_mds_snapshot < min_active_txn_version) {
     MVCC_LOG(INFO, "study_min_active_txn_version", K(min_active_txn_version), K(min_mview_mds_snapshot));
     min_active_txn_version = min_mview_mds_snapshot;
+  }
+
+  share::SCN min_mview_pending_snapshot;
+  if (FAILEDx(MTL(rootserver::ObMViewMaintenanceService*)->get_min_mview_pending_task_snapshot(min_mview_pending_snapshot))) {
+    MVCC_LOG(WARN, "get min mview pending task snapshot failed", K(ret));
+  } else if (min_mview_pending_snapshot.is_valid() && min_mview_pending_snapshot < min_active_txn_version) {
+    MVCC_LOG(INFO, "study_min_active_txn_version", K(min_active_txn_version), K(min_mview_pending_snapshot));
+    min_active_txn_version = min_mview_pending_snapshot;
   }
   return ret;
 }

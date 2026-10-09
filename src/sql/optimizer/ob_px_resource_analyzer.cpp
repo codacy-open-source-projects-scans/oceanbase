@@ -1,13 +1,6 @@
 /**
  * Copyright (c) 2021 OceanBase
- * OceanBase CE is licensed under Mulan PubL v2.
- * You can use this software according to the terms and conditions of the Mulan PubL v2.
- * You may obtain a copy of Mulan PubL v2 at:
- *          http://license.coscl.org.cn/MulanPubL-2.0
- * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
- * EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
- * MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
- * See the Mulan PubL v2 for more details.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 #define USING_LOG_PREFIX SQL_OPT
@@ -393,14 +386,14 @@ int ObPxResourceAnalyzer::do_split(
         }
       }
       if (parent_dfo->location_addr_.size() == 0) {
-        if (parent_dfo->has_child()) {
+        if (parent_dfo->has_child() && all_access_addrs_.size() > 0) {
           DfoInfo *child_dfo = nullptr;
-            for (ObHashSet<ObAddr>::const_iterator it = all_access_addrs_.begin();
-                OB_SUCC(ret) && it != all_access_addrs_.end(); ++it) {
-              if (OB_FAIL(parent_dfo->location_addr_.set_refactored(it->first))){
-                LOG_WARN("set refactored failed", K(ret), K(it->first));
-              }
+          for (ObHashSet<ObAddr>::const_iterator it = all_access_addrs_.begin();
+              OB_SUCC(ret) && it != all_access_addrs_.end(); ++it) {
+            if (OB_FAIL(parent_dfo->location_addr_.set_refactored(it->first))){
+              LOG_WARN("set refactored failed", K(ret), K(it->first));
             }
+          }
         } else if (OB_FAIL(parent_dfo->location_addr_.set_refactored(GCTX.self_addr()))){
           LOG_WARN("set refactored failed", K(ret), K(GCTX.self_addr()));
         }
